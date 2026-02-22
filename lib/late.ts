@@ -1,12 +1,6 @@
-import Late from "@getlatedev/node";
-
-// Initialize the Late SDK client
-// Reads LATE_API_KEY from environment automatically, but we pass it explicitly
-export const late = new Late({ apiKey: process.env.LATE_API_KEY! });
-
 export const LATE_API_BASE = "https://getlate.dev/api/v1";
 
-// Fallback fetch helper for any endpoints not yet in the SDK
+// Fetch helper for Late API endpoints
 export async function lateApiFetch(
   endpoint: string,
   options: RequestInit = {}
