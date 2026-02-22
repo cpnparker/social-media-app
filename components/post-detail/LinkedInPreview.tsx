@@ -7,6 +7,10 @@ interface LinkedInPreviewProps {
   content: string;
   publishedAt?: string;
   platformPostUrl?: string;
+  media?: string[];
+  accountName?: string;
+  accountUsername?: string;
+  accountAvatarUrl?: string;
   analytics?: {
     impressions?: number;
     likes?: number;
@@ -19,8 +23,24 @@ export default function LinkedInPreview({
   content,
   publishedAt,
   platformPostUrl,
+  media,
+  accountName,
+  accountUsername,
+  accountAvatarUrl,
   analytics,
 }: LinkedInPreviewProps) {
+  // Fix LinkedIn "Organization XXXXX" display names — Late API stores org IDs for company pages
+  const orgPattern = /^Organization \d+$/;
+  let displayName = accountName || "Your Account";
+  if (orgPattern.test(displayName)) {
+    displayName = (accountUsername && !orgPattern.test(accountUsername)) ? accountUsername : "LinkedIn Page";
+  }
+  let subtitle = accountUsername;
+  if (subtitle && orgPattern.test(subtitle)) {
+    subtitle = undefined; // Don't show org ID as subtitle
+  }
+  const initials = displayName.charAt(0).toUpperCase();
+
   const timeAgo = publishedAt
     ? (() => {
         const diff = Date.now() - new Date(publishedAt).getTime();
@@ -37,15 +57,19 @@ export default function LinkedInPreview({
     <div className="border rounded-lg bg-white dark:bg-gray-950 overflow-hidden max-w-[520px]">
       {/* Header */}
       <div className="px-4 pt-3 flex gap-2">
-        <div className="h-12 w-12 rounded-full bg-blue-700 flex items-center justify-center text-white font-bold text-lg shrink-0">
-          U
-        </div>
+        {accountAvatarUrl ? (
+          <img src={accountAvatarUrl} alt={displayName} className="h-12 w-12 rounded-full object-cover shrink-0" />
+        ) : (
+          <div className="h-12 w-12 rounded-full bg-blue-700 flex items-center justify-center text-white font-bold text-lg shrink-0">
+            {initials}
+          </div>
+        )}
         <div className="flex-1 min-w-0">
           <p className="font-semibold text-sm text-gray-900 dark:text-gray-100">
-            Your Account
+            {displayName}
           </p>
           <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-            Social Media Manager
+            {subtitle || "Social Media Manager"}
           </p>
           <p className="text-xs text-gray-500 dark:text-gray-400">
             {timeAgo && `${timeAgo} \u00B7 `}
@@ -66,6 +90,17 @@ export default function LinkedInPreview({
           {content}
         </p>
       </div>
+
+      {/* Media */}
+      {media && media.length > 0 && (
+        <div className="border-t border-gray-100 dark:border-gray-800">
+          <img
+            src={media[0]}
+            alt="Post media"
+            className="w-full max-h-[300px] object-cover"
+          />
+        </div>
+      )}
 
       {/* Reactions summary */}
       {(analytics?.likes || analytics?.comments) && (

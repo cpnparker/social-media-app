@@ -24,6 +24,14 @@ export async function POST(req: NextRequest) {
         return handleBestTime(body);
       case "insights":
         return handleInsights(body);
+      case "auto-tag":
+        return handleAutoTag(body);
+      case "score-idea":
+        return handleScoreIdea(body);
+      case "suggest-ideas":
+        return handleSuggestIdeas(body);
+      case "promo-drafts":
+        return handlePromoDrafts(body);
       default:
         return NextResponse.json(
           { error: "Invalid action" },
@@ -320,5 +328,226 @@ Include 3-5 insights. Be specific — reference actual numbers from the data. Ke
       insights: [],
       recommendation: "",
     });
+  }
+}
+
+// Auto-tag an idea with topic and strategic tags
+async function handleAutoTag(body: any) {
+  const { title, description } = body;
+
+  const message = await anthropic.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 512,
+    messages: [
+      {
+        role: "user",
+        content: `You are a content strategist. Given this content idea, suggest relevant tags.
+
+Title: ${title}
+Description: ${description || "No description provided"}
+
+Return a JSON object with this exact structure:
+{
+  "topicTags": ["tag1", "tag2", "tag3"],
+  "strategicTags": ["strategy1", "strategy2"]
+}
+
+Rules:
+- topicTags: 3-6 topic/subject tags (e.g., "AI", "marketing", "social media", "startup")
+- strategicTags: 2-4 strategic/purpose tags (e.g., "thought leadership", "brand awareness", "lead generation", "community building")
+- Keep tags lowercase, concise (1-3 words each)
+- Return ONLY the JSON object, no explanations`,
+      },
+    ],
+  });
+
+  const text = message.content[0].type === "text" ? message.content[0].text : "{}";
+
+  try {
+    const match = text.match(/\{[\s\S]*\}/);
+    const result = match ? JSON.parse(match[0]) : { topicTags: [], strategicTags: [] };
+    return NextResponse.json(result);
+  } catch {
+    return NextResponse.json({ topicTags: [], strategicTags: [] });
+  }
+}
+
+// Score an idea based on workspace performance model
+async function handleScoreIdea(body: any) {
+  const { title, description, topicTags, performanceModel } = body;
+
+  const modelContext = performanceModel
+    ? `Historical performance data for this workspace:
+- Topic performance: ${JSON.stringify(performanceModel.topicPerformanceMap || {})}
+- Format performance: ${JSON.stringify(performanceModel.formatPerformanceMap || {})}
+- Average engagement baseline: ${performanceModel.averageEngagementBaseline || 0}
+- High performance threshold: ${performanceModel.highPerformanceThreshold || 0}`
+    : "No historical performance data available — use general social media best practices.";
+
+  const message = await anthropic.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 512,
+    messages: [
+      {
+        role: "user",
+        content: `You are a content performance predictor. Score this content idea's predicted engagement.
+
+Idea Title: ${title}
+Description: ${description || "No description"}
+Topic Tags: ${(topicTags || []).join(", ") || "none"}
+
+${modelContext}
+
+Return a JSON object with this exact structure:
+{
+  "score": 72,
+  "reasoning": "Brief 1-2 sentence explanation of why this score was assigned",
+  "strengthFactors": ["factor1", "factor2"],
+  "riskFactors": ["risk1"]
+}
+
+Rules:
+- Score is 0-100 (0 = very low engagement potential, 100 = viral potential)
+- Base your score on the topic's historical performance if available
+- Consider the topic tags' alignment with high-performing topics
+- Return ONLY the JSON object`,
+      },
+    ],
+  });
+
+  const text = message.content[0].type === "text" ? message.content[0].text : "{}";
+
+  try {
+    const match = text.match(/\{[\s\S]*\}/);
+    const result = match ? JSON.parse(match[0]) : { score: 50, reasoning: "Unable to score" };
+    return NextResponse.json(result);
+  } catch {
+    return NextResponse.json({ score: 50, reasoning: "Unable to score", strengthFactors: [], riskFactors: [] });
+  }
+}
+
+// Suggest new ideas based on workspace performance
+async function handleSuggestIdeas(body: any) {
+  const { performanceModel, recentTopics } = body;
+
+  const modelContext = performanceModel
+    ? `Top performing topics: ${JSON.stringify(performanceModel.topicPerformanceMap || {})}
+Best formats: ${JSON.stringify(performanceModel.formatPerformanceMap || {})}`
+    : "No historical data available.";
+
+  const recentContext = recentTopics?.length
+    ? `Recent content topics (avoid repetition): ${recentTopics.join(", ")}`
+    : "";
+
+  const message = await anthropic.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 1024,
+    messages: [
+      {
+        role: "user",
+        content: `You are a content strategist. Suggest 5 new content ideas based on performance data.
+
+${modelContext}
+${recentContext}
+
+Return a JSON array with this structure:
+[
+  {
+    "title": "Compelling content idea title",
+    "description": "1-2 sentence description of the content",
+    "topicTags": ["tag1", "tag2"],
+    "contentType": "article",
+    "predictedScore": 75,
+    "reasoning": "Brief explanation of why this would perform well"
+  }
+]
+
+Rules:
+- Suggest 5 diverse ideas spanning different topics and formats
+- contentType must be one of: article, video, graphic, thread, newsletter, podcast
+- Prioritize topics that historically performed well
+- Include a mix of safe bets and creative risks
+- predictedScore range: 0-100
+- Return ONLY the JSON array`,
+      },
+    ],
+  });
+
+  const text = message.content[0].type === "text" ? message.content[0].text : "[]";
+
+  try {
+    const match = text.match(/\[[\s\S]*\]/);
+    const suggestions = match ? JSON.parse(match[0]) : [];
+    return NextResponse.json({ suggestions });
+  } catch {
+    return NextResponse.json({ suggestions: [] });
+  }
+}
+
+// Generate promotional social media drafts per platform from content
+async function handlePromoDrafts(body: any) {
+  const { title, bodyContent, platforms } = body;
+
+  const platformList = (platforms || ["twitter", "linkedin", "instagram"]).join(", ");
+
+  const platformGuidelines: Record<string, string> = {
+    twitter: "Twitter/X (280 chars max): Punchy, concise, hook-first. 1-2 hashtags inline.",
+    instagram: "Instagram (2200 chars max): Engaging caption, line breaks for readability, 5-10 hashtags at end, emojis welcome.",
+    linkedin: "LinkedIn (3000 chars max): Professional storytelling, lessons/takeaways, short paragraphs, 2-3 hashtags max at end.",
+    facebook: "Facebook: Conversational, question-driven for engagement, medium length.",
+    tiktok: "TikTok: Very casual, trendy, short, reference trends naturally.",
+    bluesky: "Bluesky (300 chars max): Concise, conversational, similar to Twitter.",
+    threads: "Threads (500 chars max): Conversational, Instagram-adjacent audience.",
+  };
+
+  const guides = (platforms || ["twitter", "linkedin", "instagram"])
+    .map((p: string) => platformGuidelines[p.toLowerCase()] || `${p}: Adapt appropriately.`)
+    .join("\n");
+
+  const message = await anthropic.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 2048,
+    messages: [
+      {
+        role: "user",
+        content: `You are a social media promotion expert. Generate one promotional social media draft for EACH platform below, based on this content piece.
+
+Content Title: ${title}
+Content Body/Summary: ${bodyContent || "No body content provided — generate based on the title alone."}
+
+Target platforms and guidelines:
+${guides}
+
+Return a JSON array with this exact structure:
+[
+  {
+    "platform": "twitter",
+    "content": "The full post text ready to publish",
+    "characterCount": 142
+  }
+]
+
+Rules:
+- Generate exactly ONE draft per platform listed: ${platformList}
+- Each draft should promote/tease the content piece, driving interest
+- Include a hook in the first line of each draft
+- Vary the approach per platform (don't just shorten/lengthen the same text)
+- Include relevant emojis naturally
+- Respect each platform's character limits
+- Include hashtags according to each platform's conventions
+- characterCount must be the actual character count of the content field
+- Return ONLY the JSON array, no explanations`,
+      },
+    ],
+  });
+
+  const text = message.content[0].type === "text" ? message.content[0].text : "[]";
+
+  try {
+    const match = text.match(/\[[\s\S]*\]/);
+    const drafts = match ? JSON.parse(match[0]) : [];
+    return NextResponse.json({ drafts });
+  } catch {
+    return NextResponse.json({ drafts: [] });
   }
 }

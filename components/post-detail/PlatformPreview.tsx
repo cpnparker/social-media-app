@@ -9,7 +9,7 @@ import { platformLabels } from "@/lib/platform-utils";
 
 interface PlatformEntry {
   platform: string;
-  accountId?: string;
+  accountId?: string | Record<string, any>;
   status?: string;
   publishedAt?: string;
   platformPostUrl?: string;
@@ -30,12 +30,20 @@ interface PlatformPreviewProps {
   content: string;
   platformEntry: PlatformEntry;
   media?: string[];
+  accountName?: string;
+  accountUsername?: string;
+  accountAvatarUrl?: string;
+  mode?: "published" | "draft";
 }
 
 export default function PlatformPreview({
   content,
   platformEntry,
   media,
+  accountName,
+  accountUsername,
+  accountAvatarUrl,
+  mode = "published",
 }: PlatformPreviewProps) {
   const platform = platformEntry.platform?.toLowerCase() || "";
   const label =
@@ -43,9 +51,13 @@ export default function PlatformPreview({
 
   const commonProps = {
     content,
-    publishedAt: platformEntry.publishedAt,
-    platformPostUrl: platformEntry.platformPostUrl,
-    analytics: platformEntry.analytics,
+    publishedAt: mode === "draft" ? undefined : platformEntry.publishedAt,
+    platformPostUrl: mode === "draft" ? undefined : platformEntry.platformPostUrl,
+    analytics: mode === "draft" ? undefined : platformEntry.analytics,
+    accountName,
+    accountUsername,
+    accountAvatarUrl,
+    media,
   };
 
   return (

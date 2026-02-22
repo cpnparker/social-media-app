@@ -7,6 +7,10 @@ interface FacebookPreviewProps {
   content: string;
   publishedAt?: string;
   platformPostUrl?: string;
+  media?: string[];
+  accountName?: string;
+  accountUsername?: string;
+  accountAvatarUrl?: string;
   analytics?: {
     likes?: number;
     comments?: number;
@@ -19,8 +23,14 @@ export default function FacebookPreview({
   content,
   publishedAt,
   platformPostUrl,
+  media,
+  accountName,
+  accountAvatarUrl,
   analytics,
 }: FacebookPreviewProps) {
+  const displayName = accountName || "Your Account";
+  const initials = displayName.charAt(0).toUpperCase();
+
   const timeAgo = publishedAt
     ? (() => {
         const diff = Date.now() - new Date(publishedAt).getTime();
@@ -39,12 +49,16 @@ export default function FacebookPreview({
     <div className="border rounded-lg bg-white dark:bg-gray-950 overflow-hidden max-w-[520px]">
       {/* Header */}
       <div className="px-4 pt-3 flex gap-2.5">
-        <div className="h-10 w-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
-          U
-        </div>
+        {accountAvatarUrl ? (
+          <img src={accountAvatarUrl} alt={displayName} className="h-10 w-10 rounded-full object-cover shrink-0" />
+        ) : (
+          <div className="h-10 w-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
+            {initials}
+          </div>
+        )}
         <div className="flex-1">
           <p className="font-semibold text-[15px] text-gray-900 dark:text-gray-100">
-            Your Account
+            {displayName}
           </p>
           <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
             {timeAgo && <span>{timeAgo}</span>}
@@ -66,6 +80,17 @@ export default function FacebookPreview({
           {content}
         </p>
       </div>
+
+      {/* Media */}
+      {media && media.length > 0 && (
+        <div>
+          <img
+            src={media[0]}
+            alt="Post media"
+            className="w-full max-h-[300px] object-cover"
+          />
+        </div>
+      )}
 
       {/* Reactions summary */}
       {(analytics?.likes || analytics?.comments || analytics?.shares) && (

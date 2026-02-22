@@ -49,6 +49,7 @@ export async function POST(req: NextRequest) {
       pathname: blob.pathname,
       contentType: file.type,
       size: file.size,
+      filename: file.name,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
