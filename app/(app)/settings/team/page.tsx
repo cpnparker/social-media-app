@@ -491,7 +491,7 @@ export default function TeamSettingsPage() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Add Team Member</DialogTitle>
-            <DialogDescription>Enter the email address of the user to add.</DialogDescription>
+            <DialogDescription>Enter an email address. If the user doesn&apos;t exist yet, they&apos;ll be invited automatically.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <div>

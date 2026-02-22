@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { teamMembers, users } from "@/lib/db/schema";
+import { teamMembers, users, workspaceMembers, teams } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
 
 // GET /api/teams/[id]/members — list members
@@ -41,22 +41,63 @@ export async function POST(
     const body = await req.json();
     const { userId, email, role } = body;
 
-    // Resolve the user — accept either userId directly or email lookup
+    // Resolve the user — accept userId directly, email lookup, or create new user
     let resolvedUserId = userId;
     if (!resolvedUserId && email) {
-      const [user] = await db
+      const normalizedEmail = email.trim().toLowerCase();
+      const [existingUser] = await db
         .select({ id: users.id })
         .from(users)
-        .where(eq(users.email, email.trim().toLowerCase()))
+        .where(eq(users.email, normalizedEmail))
         .limit(1);
 
-      if (!user) {
-        return NextResponse.json(
-          { error: "No user found with that email address" },
-          { status: 404 }
-        );
+      if (existingUser) {
+        resolvedUserId = existingUser.id;
+      } else {
+        // Auto-create a new user with the provided email
+        const namePart = normalizedEmail.split("@")[0].replace(/[._-]/g, " ");
+        const displayName = body.name || namePart.replace(/\b\w/g, (c: string) => c.toUpperCase());
+
+        const [newUser] = await db
+          .insert(users)
+          .values({
+            email: normalizedEmail,
+            name: displayName,
+            provider: "email",
+          })
+          .returning();
+
+        resolvedUserId = newUser.id;
+
+        // Also add the new user as a workspace member
+        const [team] = await db
+          .select({ workspaceId: teams.workspaceId })
+          .from(teams)
+          .where(eq(teams.id, teamId))
+          .limit(1);
+
+        if (team) {
+          // Check if already a workspace member
+          const [existingWsMember] = await db
+            .select()
+            .from(workspaceMembers)
+            .where(
+              and(
+                eq(workspaceMembers.workspaceId, team.workspaceId),
+                eq(workspaceMembers.userId, resolvedUserId)
+              )
+            )
+            .limit(1);
+
+          if (!existingWsMember) {
+            await db.insert(workspaceMembers).values({
+              workspaceId: team.workspaceId,
+              userId: resolvedUserId,
+              role: "viewer",
+            });
+          }
+        }
       }
-      resolvedUserId = user.id;
     }
 
     if (!resolvedUserId) {
