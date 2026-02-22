@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { users, workspaceMembers, workspaces } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
+import { auth } from "@/lib/auth";
 
 // GET /api/workspace-members — list all users in the workspace
 export async function GET() {
@@ -10,6 +11,38 @@ export async function GET() {
     const [ws] = await db.select({ id: workspaces.id }).from(workspaces).limit(1);
     if (!ws) {
       return NextResponse.json({ members: [] });
+    }
+
+    // Ensure the logged-in user is a workspace member
+    const session = await auth();
+    if (session?.user?.email) {
+      const [sessionUser] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, session.user.email))
+        .limit(1);
+
+      if (sessionUser) {
+        const [existingMember] = await db
+          .select()
+          .from(workspaceMembers)
+          .where(
+            and(
+              eq(workspaceMembers.workspaceId, ws.id),
+              eq(workspaceMembers.userId, sessionUser.id)
+            )
+          )
+          .limit(1);
+
+        if (!existingMember) {
+          await db.insert(workspaceMembers).values({
+            workspaceId: ws.id,
+            userId: sessionUser.id,
+            role: "admin",
+            joinedAt: new Date(),
+          });
+        }
+      }
     }
 
     const members = await db
