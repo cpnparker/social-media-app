@@ -23,7 +23,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 const navigation = [
   {
@@ -50,7 +50,7 @@ const navigation = [
     label: "Inbox",
     href: "/inbox",
     icon: Inbox,
-    badge: 3,
+    badgeKey: "inbox",
   },
   {
     label: "Analytics",
@@ -79,6 +79,39 @@ interface SidebarProps {
 export function Sidebar({ onClose }: SidebarProps) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const [inboxCount, setInboxCount] = useState(0);
+
+  const fetchInboxCount = useCallback(async () => {
+    try {
+      const res = await fetch("/api/inbox?type=conversations&limit=50");
+      if (!res.ok) return;
+      const data = await res.json();
+      const conversations =
+        data.conversations || data.comments || data.reviews || data.data || [];
+      // Count conversations that have unread status or are open
+      const unread = Array.isArray(conversations)
+        ? conversations.filter(
+            (c: any) => c.status === "open" || c.unread === true
+          ).length
+        : 0;
+      // If no unread filter available, show total count
+      setInboxCount(unread || (Array.isArray(conversations) ? conversations.length : 0));
+    } catch {
+      // Inbox may require paid addon — fail silently
+      setInboxCount(0);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchInboxCount();
+    // Refresh count every 60 seconds
+    const interval = setInterval(fetchInboxCount, 60000);
+    return () => clearInterval(interval);
+  }, [fetchInboxCount]);
+
+  // Build badge map from live data
+  const badges: Record<string, number> = {};
+  if (inboxCount > 0) badges.inbox = inboxCount;
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -157,9 +190,9 @@ export function Sidebar({ onClose }: SidebarProps) {
                 {!collapsed && (
                   <>
                     <span className="truncate">{item.label}</span>
-                    {item.badge && (
+                    {item.badgeKey && badges[item.badgeKey] > 0 && (
                       <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-500 px-1.5 text-[11px] font-semibold text-white">
-                        {item.badge}
+                        {badges[item.badgeKey]}
                       </span>
                     )}
                   </>
@@ -173,9 +206,9 @@ export function Sidebar({ onClose }: SidebarProps) {
                   <TooltipTrigger asChild>{linkContent}</TooltipTrigger>
                   <TooltipContent side="right" className="font-medium">
                     {item.label}
-                    {item.badge && (
+                    {item.badgeKey && badges[item.badgeKey] > 0 && (
                       <span className="ml-2 text-blue-400">
-                        ({item.badge})
+                        ({badges[item.badgeKey]})
                       </span>
                     )}
                   </TooltipContent>
