@@ -32,7 +32,11 @@ export async function POST(req: NextRequest) {
     };
 
     if (body.mediaUrls?.length) {
-      postPayload.mediaUrls = body.mediaUrls;
+      // Ensure all media URLs are absolute (local uploads are relative paths)
+      const baseUrl = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+      postPayload.mediaUrls = body.mediaUrls.map((url: string) =>
+        url.startsWith("http") ? url : `${baseUrl}${url}`
+      );
     }
 
     if (body.publishNow) {
