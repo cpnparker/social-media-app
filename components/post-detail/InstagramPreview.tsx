@@ -14,6 +14,9 @@ interface InstagramPreviewProps {
   publishedAt?: string;
   platformPostUrl?: string;
   media?: string[];
+  accountName?: string;
+  accountUsername?: string;
+  accountAvatarUrl?: string;
   analytics?: {
     likes?: number;
     comments?: number;
@@ -27,8 +30,14 @@ export default function InstagramPreview({
   publishedAt,
   platformPostUrl,
   media,
+  accountName,
+  accountUsername,
+  accountAvatarUrl,
   analytics,
 }: InstagramPreviewProps) {
+  const handle = accountUsername || accountName || "youraccount";
+  const initials = (accountName || handle).charAt(0).toUpperCase();
+
   const timeAgo = publishedAt
     ? (() => {
         const diff = Date.now() - new Date(publishedAt).getTime();
@@ -46,15 +55,19 @@ export default function InstagramPreview({
       {/* Header */}
       <div className="px-3 py-2.5 flex items-center gap-2.5">
         <div className="h-8 w-8 rounded-full bg-gradient-to-br from-purple-500 via-pink-500 to-orange-400 p-[2px]">
-          <div className="h-full w-full rounded-full bg-white dark:bg-gray-950 flex items-center justify-center">
-            <span className="text-xs font-bold text-gray-900 dark:text-gray-100">
-              U
-            </span>
+          <div className="h-full w-full rounded-full bg-white dark:bg-gray-950 flex items-center justify-center overflow-hidden">
+            {accountAvatarUrl ? (
+              <img src={accountAvatarUrl} alt={handle} className="w-full h-full object-cover" />
+            ) : (
+              <span className="text-xs font-bold text-gray-900 dark:text-gray-100">
+                {initials}
+              </span>
+            )}
           </div>
         </div>
         <div className="flex-1">
           <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-            youraccount
+            {handle}
           </p>
         </div>
         <MoreHorizontal className="h-5 w-5 text-gray-900 dark:text-gray-100" />
@@ -99,7 +112,7 @@ export default function InstagramPreview({
       {/* Content */}
       <div className="px-3 pt-1 pb-2">
         <p className="text-sm text-gray-900 dark:text-gray-100">
-          <span className="font-semibold mr-1">youraccount</span>
+          <span className="font-semibold mr-1">{handle}</span>
           {content}
         </p>
       </div>

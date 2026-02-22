@@ -17,6 +17,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
+import {
+  platformLabels,
+  platformHexColors,
+} from "@/lib/platform-utils";
 
 interface DashboardData {
   totals: {
@@ -181,25 +185,25 @@ export default function DashboardPage() {
   const stats = [
     {
       title: "Total Impressions",
-      value: totals ? formatNumber(totals.impressions) : "—",
+      value: totals ? formatNumber(totals.impressions) : "\u2014",
       icon: Eye,
       color: "blue",
     },
     {
       title: "Engagements",
-      value: totals ? formatNumber(totals.engagements) : "—",
+      value: totals ? formatNumber(totals.engagements) : "\u2014",
       icon: Heart,
       color: "rose",
     },
     {
       title: "Published Posts",
-      value: totals ? totals.publishedPosts.toString() : "—",
+      value: totals ? totals.publishedPosts.toString() : "\u2014",
       icon: TrendingUp,
       color: "violet",
     },
     {
       title: "Engagement Rate",
-      value: totals ? `${totals.engagementRate}%` : "—",
+      value: totals ? `${totals.engagementRate}%` : "\u2014",
       icon: Users,
       color: "amber",
     },
@@ -244,12 +248,12 @@ export default function DashboardPage() {
             <RefreshCw className="h-4 w-4" />
             Refresh
           </Button>
-          <Link href="/compose">
-            <Button className="gap-2 bg-blue-500 hover:bg-blue-600 shadow-lg shadow-blue-500/20">
+          <Button className="gap-2 bg-blue-500 hover:bg-blue-600 shadow-lg shadow-blue-500/20" asChild>
+            <Link href="/compose">
               <PenSquare className="h-4 w-4" />
               New Post
-            </Button>
-          </Link>
+            </Link>
+          </Button>
         </div>
       </div>
 
@@ -310,26 +314,22 @@ export default function DashboardPage() {
             <CardTitle className="text-lg font-semibold">
               Recent Posts
             </CardTitle>
-            <Link href="/queue">
-              <Button variant="ghost" size="sm" className="text-muted-foreground">
-                View all
-              </Button>
-            </Link>
+            <Button variant="ghost" size="sm" className="text-muted-foreground" asChild>
+              <Link href="/queue">View all</Link>
+            </Button>
           </CardHeader>
           <CardContent>
             {recentPosts.length === 0 ? (
               <div className="text-center py-8">
                 <p className="text-sm text-muted-foreground">No posts yet</p>
-                <Link href="/compose">
-                  <Button variant="outline" size="sm" className="mt-3">
-                    Create your first post
-                  </Button>
-                </Link>
+                <Button variant="outline" size="sm" className="mt-3" asChild>
+                  <Link href="/compose">Create your first post</Link>
+                </Button>
               </div>
             ) : (
               <div className="space-y-1">
                 {recentPosts.map((post) => {
-                  const platforms = getPostPlatforms(post);
+                  const postPlatforms = getPostPlatforms(post);
                   const dateStr =
                     post.publishedAt || post.scheduledFor || post.createdAt || "";
                   const engagements = getPostEngagements(post);
@@ -341,19 +341,27 @@ export default function DashboardPage() {
                       href={`/posts/${post._id}`}
                       className="flex items-center gap-4 py-3.5 px-3 rounded-lg hover:bg-muted/50 transition-colors cursor-pointer group"
                     >
-                      {/* Platform dots */}
-                      <div className="flex -space-x-1.5">
-                        {platforms.length > 0 ? (
-                          platforms.slice(0, 3).map((platform, i) => (
-                            <div
+                      {/* Platform pills */}
+                      <div className="flex flex-wrap gap-1 shrink-0 max-w-[140px]">
+                        {postPlatforms.length > 0 ? (
+                          postPlatforms.slice(0, 3).map((platform, i) => (
+                            <span
                               key={i}
-                              className={`h-6 w-6 rounded-full ${
-                                platformColors[platform] || "bg-gray-400"
-                              } border-2 border-background`}
-                            />
+                              className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium text-white"
+                              style={{ backgroundColor: platformHexColors[platform] || "#6b7280" }}
+                            >
+                              {platformLabels[platform] || platform}
+                            </span>
                           ))
                         ) : (
-                          <div className="h-6 w-6 rounded-full bg-gray-400 border-2 border-background" />
+                          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium bg-gray-400 text-white">
+                            No platform
+                          </span>
+                        )}
+                        {postPlatforms.length > 3 && (
+                          <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                            +{postPlatforms.length - 3}
+                          </span>
                         )}
                       </div>
 
@@ -363,7 +371,7 @@ export default function DashboardPage() {
                           {post.content || "(No content)"}
                         </p>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          {dateStr ? formatDate(dateStr) : "—"}
+                          {dateStr ? formatDate(dateStr) : "\u2014"}
                         </p>
                       </div>
 
@@ -371,11 +379,11 @@ export default function DashboardPage() {
                       <div className="hidden sm:flex items-center gap-6 text-sm text-muted-foreground">
                         <div className="flex items-center gap-1.5">
                           <Eye className="h-3.5 w-3.5" />
-                          <span>{impressions > 0 ? formatNumber(impressions) : "—"}</span>
+                          <span>{impressions > 0 ? formatNumber(impressions) : "\u2014"}</span>
                         </div>
                         <div className="flex items-center gap-1.5">
                           <Heart className="h-3.5 w-3.5" />
-                          <span>{engagements > 0 ? formatNumber(engagements) : "—"}</span>
+                          <span>{engagements > 0 ? formatNumber(engagements) : "\u2014"}</span>
                         </div>
                       </div>
 
@@ -398,42 +406,46 @@ export default function DashboardPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              <Link href="/compose" className="block">
-                <Button
-                  variant="outline"
-                  className="w-full justify-start gap-3 h-11"
-                >
+              <Button
+                variant="outline"
+                className="w-full justify-start gap-3 h-11"
+                asChild
+              >
+                <Link href="/compose">
                   <PenSquare className="h-4 w-4 text-blue-500" />
                   Compose a post
-                </Button>
-              </Link>
-              <Link href="/calendar" className="block">
-                <Button
-                  variant="outline"
-                  className="w-full justify-start gap-3 h-11"
-                >
+                </Link>
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full justify-start gap-3 h-11"
+                asChild
+              >
+                <Link href="/calendar">
                   <Calendar className="h-4 w-4 text-violet-500" />
                   View calendar
-                </Button>
-              </Link>
-              <Link href="/accounts" className="block">
-                <Button
-                  variant="outline"
-                  className="w-full justify-start gap-3 h-11"
-                >
+                </Link>
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full justify-start gap-3 h-11"
+                asChild
+              >
+                <Link href="/accounts">
                   <Zap className="h-4 w-4 text-amber-500" />
                   Connect account
-                </Button>
-              </Link>
-              <Link href="/inbox" className="block">
-                <Button
-                  variant="outline"
-                  className="w-full justify-start gap-3 h-11"
-                >
+                </Link>
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full justify-start gap-3 h-11"
+                asChild
+              >
+                <Link href="/inbox">
                   <MessageCircle className="h-4 w-4 text-emerald-500" />
                   Check inbox
-                </Button>
-              </Link>
+                </Link>
+              </Button>
             </CardContent>
           </Card>
 
@@ -449,16 +461,14 @@ export default function DashboardPage() {
                   <p className="text-sm text-muted-foreground">
                     No upcoming posts scheduled
                   </p>
-                  <Link href="/compose">
-                    <Button variant="outline" size="sm" className="mt-3">
-                      Schedule a post
-                    </Button>
-                  </Link>
+                  <Button variant="outline" size="sm" className="mt-3" asChild>
+                    <Link href="/compose">Schedule a post</Link>
+                  </Button>
                 </div>
               ) : (
                 <div className="space-y-4">
                   {scheduledPosts.map((post) => {
-                    const platforms = getPostPlatforms(post);
+                    const postPlatforms = getPostPlatforms(post);
                     return (
                       <Link key={post._id} href={`/posts/${post._id}`} className="flex items-start gap-3 rounded-lg hover:bg-muted/50 p-2 -mx-2 transition-colors">
                         <div className="h-10 w-10 rounded-lg bg-blue-500/10 flex items-center justify-center shrink-0">
@@ -468,15 +478,32 @@ export default function DashboardPage() {
                           <p className="text-sm font-medium truncate">
                             {post.content || "(No content)"}
                           </p>
-                          <p className="text-xs text-muted-foreground">
-                            {post.scheduledFor
-                              ? formatDate(post.scheduledFor)
-                              : "Scheduled"}
-                            {platforms.length > 0 &&
-                              ` \u00B7 ${platforms.length} ${
-                                platforms.length === 1 ? "platform" : "platforms"
-                              }`}
-                          </p>
+                          <div className="flex flex-wrap items-center gap-1 mt-1">
+                            <span className="text-xs text-muted-foreground">
+                              {post.scheduledFor
+                                ? formatDate(post.scheduledFor)
+                                : "Scheduled"}
+                            </span>
+                            {postPlatforms.length > 0 && (
+                              <>
+                                <span className="text-xs text-muted-foreground">&middot;</span>
+                                {postPlatforms.slice(0, 2).map((platform, i) => (
+                                  <span
+                                    key={i}
+                                    className="inline-flex items-center rounded-full px-1.5 py-px text-[9px] font-medium text-white"
+                                    style={{ backgroundColor: platformHexColors[platform] || "#6b7280" }}
+                                  >
+                                    {platformLabels[platform] || platform}
+                                  </span>
+                                ))}
+                                {postPlatforms.length > 2 && (
+                                  <span className="text-[9px] text-muted-foreground">
+                                    +{postPlatforms.length - 2}
+                                  </span>
+                                )}
+                              </>
+                            )}
+                          </div>
                         </div>
                       </Link>
                     );

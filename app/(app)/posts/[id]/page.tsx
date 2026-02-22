@@ -36,7 +36,7 @@ import {
 
 interface PlatformEntry {
   platform: string;
-  accountId?: string;
+  accountId?: string | Record<string, any>;
   status?: string;
   publishedAt?: string;
   platformPostUrl?: string;
@@ -66,12 +66,21 @@ interface Post {
   hashtags?: string[];
 }
 
+interface ConnectedAccount {
+  _id: string;
+  platform: string;
+  username?: string;
+  displayName?: string;
+  avatarUrl?: string;
+}
+
 export default function PostDetailPage() {
   const params = useParams();
   const router = useRouter();
   const postId = params.id as string;
 
   const [post, setPost] = useState<Post | null>(null);
+  const [accounts, setAccounts] = useState<ConnectedAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -79,11 +88,17 @@ export default function PostDetailPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`/api/posts/${postId}`);
-      if (!res.ok) throw new Error("Failed to load post");
-      const data = await res.json();
+      const [postRes, accountsRes] = await Promise.all([
+        fetch(`/api/posts/${postId}`),
+        fetch("/api/accounts"),
+      ]);
+      if (!postRes.ok) throw new Error("Failed to load post");
+      const data = await postRes.json();
       // The Late API may return the post directly or inside a wrapper
       setPost(data.post || data);
+
+      const accountsData = await accountsRes.json();
+      setAccounts(accountsData.accounts || []);
     } catch (err: any) {
       setError(err.message || "Something went wrong");
     } finally {
@@ -94,6 +109,48 @@ export default function PostDetailPage() {
   useEffect(() => {
     fetchPost();
   }, [fetchPost]);
+
+  // Resolve account name for a platform entry
+  const getAccountInfo = (entry: PlatformEntry) => {
+    if (!entry.accountId) return { name: undefined, username: undefined, avatarUrl: undefined };
+
+    // The Late API sometimes populates accountId as an object with full account details
+    const populatedAccount = typeof entry.accountId === "object" ? entry.accountId as any : null;
+
+    let displayName: string | undefined;
+    let username: string | undefined;
+    let avatarUrl: string | undefined;
+
+    if (populatedAccount) {
+      // Use the populated account data directly
+      displayName = populatedAccount.displayName;
+      username = populatedAccount.username;
+      avatarUrl = populatedAccount.profilePicture || populatedAccount.avatarUrl;
+    } else {
+      // Fallback: look up by string ID in the accounts list
+      const account = accounts.find((a) => a._id === entry.accountId);
+      if (!account) return { name: undefined, username: undefined, avatarUrl: undefined };
+      displayName = account.displayName;
+      username = account.username;
+      avatarUrl = account.avatarUrl;
+    }
+
+    // Fix LinkedIn "Organization XXXXX" display names — the Late API stores org IDs
+    // as names for company pages. Use a friendly fallback.
+    const orgPattern = /^Organization \d+$/;
+    if (displayName && orgPattern.test(displayName)) {
+      displayName = (username && !orgPattern.test(username)) ? username : "LinkedIn Page";
+    }
+    if (username && orgPattern.test(username)) {
+      username = undefined; // Don't show "Organization XXXXX" as a subtitle
+    }
+
+    return {
+      name: displayName || username || undefined,
+      username: username || undefined,
+      avatarUrl: avatarUrl || undefined,
+    };
+  };
 
   if (loading) {
     return (
@@ -304,14 +361,20 @@ export default function PostDetailPage() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-6">
-                  {post.platforms.map((entry, i) => (
-                    <PlatformPreview
-                      key={i}
-                      content={post.content}
-                      platformEntry={entry}
-                      media={mediaUrls}
-                    />
-                  ))}
+                  {post.platforms.map((entry, i) => {
+                    const accountInfo = getAccountInfo(entry);
+                    return (
+                      <PlatformPreview
+                        key={i}
+                        content={post.content}
+                        platformEntry={entry}
+                        media={mediaUrls}
+                        accountName={accountInfo.name}
+                        accountUsername={accountInfo.username}
+                        accountAvatarUrl={accountInfo.avatarUrl}
+                      />
+                    );
+                  })}
                 </div>
               </CardContent>
             </Card>

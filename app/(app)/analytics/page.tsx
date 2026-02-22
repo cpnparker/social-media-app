@@ -43,6 +43,9 @@ import {
   Cell,
 } from "recharts";
 import { toast } from "sonner";
+import { useTeamSafe } from "@/lib/contexts/TeamContext";
+import { platformLabels, platformHexColors } from "@/lib/platform-utils";
+import { ChevronDown, X, Filter } from "lucide-react";
 
 interface AnalyticsData {
   overview: {
@@ -158,10 +161,25 @@ export default function AnalyticsPage() {
   const [aiInsights, setAiInsights] = useState<any>(null);
   const [loadingInsights, setLoadingInsights] = useState(false);
 
+  // Filter state
+  const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
+  const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
+  const [platformDropdownOpen, setPlatformDropdownOpen] = useState(false);
+
+  const teamCtx = useTeamSafe();
+
   const fetchAnalytics = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/analytics?period=${period}`);
+      const params = new URLSearchParams({ period });
+      if (selectedAccountIds.length > 0) {
+        params.set("accountIds", selectedAccountIds.join(","));
+      }
+      if (selectedPlatforms.length > 0) {
+        params.set("platforms", selectedPlatforms.join(","));
+      }
+      const res = await fetch(`/api/analytics?${params.toString()}`);
       const json = await res.json();
       if (json.data) {
         setData(json.data);
@@ -174,11 +192,61 @@ export default function AnalyticsPage() {
     } finally {
       setLoading(false);
     }
-  }, [period]);
+  }, [period, selectedAccountIds, selectedPlatforms]);
 
   useEffect(() => {
     fetchAnalytics();
   }, [fetchAnalytics]);
+
+  // Available platforms for filtering
+  const availablePlatforms = useMemo(() => {
+    const platforms: { key: string; label: string; color: string }[] = [
+      { key: "twitter", label: "Twitter / X", color: "#1DA1F2" },
+      { key: "instagram", label: "Instagram", color: "#E4405F" },
+      { key: "facebook", label: "Facebook", color: "#1877F2" },
+      { key: "linkedin", label: "LinkedIn", color: "#0A66C2" },
+      { key: "tiktok", label: "TikTok", color: "#000000" },
+      { key: "youtube", label: "YouTube", color: "#FF0000" },
+      { key: "bluesky", label: "Bluesky", color: "#0085FF" },
+    ];
+    return platforms;
+  }, []);
+
+  const toggleAccount = (accountId: string) => {
+    setSelectedAccountIds((prev) =>
+      prev.includes(accountId)
+        ? prev.filter((id) => id !== accountId)
+        : [...prev, accountId]
+    );
+  };
+
+  const togglePlatform = (platform: string) => {
+    setSelectedPlatforms((prev) =>
+      prev.includes(platform)
+        ? prev.filter((p) => p !== platform)
+        : [...prev, platform]
+    );
+  };
+
+  const clearFilters = () => {
+    setSelectedAccountIds([]);
+    setSelectedPlatforms([]);
+  };
+
+  const hasFilters = selectedAccountIds.length > 0 || selectedPlatforms.length > 0;
+
+  // Close dropdowns on click outside
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as HTMLElement;
+      if (!target.closest("[data-filter-dropdown]")) {
+        setAccountDropdownOpen(false);
+        setPlatformDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const handleExport = async () => {
     setExporting(true);
@@ -360,6 +428,12 @@ export default function AnalyticsPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <Button variant="outline" size="sm" className="gap-2" asChild>
+            <a href="/analytics/growth">
+              <TrendingUp className="h-4 w-4" />
+              Growth Insights
+            </a>
+          </Button>
           {/* Period Selector */}
           <div className="flex items-center bg-muted/50 rounded-lg p-1">
             {periods.map((p) => (
@@ -394,6 +468,160 @@ export default function AnalyticsPage() {
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           </Button>
         </div>
+      </div>
+
+      {/* Filters */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <Filter className="h-3.5 w-3.5" />
+          <span className="font-medium">Filters:</span>
+        </div>
+
+        {/* Accounts filter */}
+        {teamCtx && teamCtx.teamAccounts.length > 0 && (
+          <div className="relative" data-filter-dropdown>
+            <button
+              onClick={() => {
+                setAccountDropdownOpen(!accountDropdownOpen);
+                setPlatformDropdownOpen(false);
+              }}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
+                selectedAccountIds.length > 0
+                  ? "bg-blue-500/10 border-blue-500/30 text-blue-600"
+                  : "bg-background border-border text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Accounts
+              {selectedAccountIds.length > 0 && (
+                <Badge variant="secondary" className="h-5 min-w-5 px-1 text-[10px] bg-blue-500 text-white">
+                  {selectedAccountIds.length}
+                </Badge>
+              )}
+              <ChevronDown className="h-3.5 w-3.5" />
+            </button>
+            {accountDropdownOpen && (
+              <div className="absolute left-0 top-full mt-1 z-50 w-64 rounded-lg border bg-popover shadow-lg overflow-hidden">
+                <div className="max-h-64 overflow-y-auto p-1">
+                  {teamCtx.teamAccounts.map((acc) => {
+                    const platform = acc.platform?.toLowerCase();
+                    const color = platformHexColors[platform] || "#6b7280";
+                    const isSelected = selectedAccountIds.includes(acc.lateAccountId);
+                    return (
+                      <button
+                        key={acc.id}
+                        onClick={() => toggleAccount(acc.lateAccountId)}
+                        className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors ${
+                          isSelected
+                            ? "bg-blue-500/10 text-foreground"
+                            : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                        }`}
+                      >
+                        <span
+                          className="h-2 w-2 rounded-full shrink-0"
+                          style={{ backgroundColor: color }}
+                        />
+                        <span className="flex-1 text-left truncate">
+                          {acc.displayName}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {platformLabels[platform] || acc.platform}
+                        </span>
+                        {isSelected && (
+                          <CheckCircle2 className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="border-t p-2">
+                  <button
+                    onClick={() => {
+                      setSelectedAccountIds([]);
+                      setAccountDropdownOpen(false);
+                    }}
+                    className="w-full text-xs text-muted-foreground hover:text-foreground py-1"
+                  >
+                    Clear selection
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Platform filter */}
+        <div className="relative" data-filter-dropdown>
+          <button
+            onClick={() => {
+              setPlatformDropdownOpen(!platformDropdownOpen);
+              setAccountDropdownOpen(false);
+            }}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
+              selectedPlatforms.length > 0
+                ? "bg-violet-500/10 border-violet-500/30 text-violet-600"
+                : "bg-background border-border text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Platforms
+            {selectedPlatforms.length > 0 && (
+              <Badge variant="secondary" className="h-5 min-w-5 px-1 text-[10px] bg-violet-500 text-white">
+                {selectedPlatforms.length}
+              </Badge>
+            )}
+            <ChevronDown className="h-3.5 w-3.5" />
+          </button>
+          {platformDropdownOpen && (
+            <div className="absolute left-0 top-full mt-1 z-50 w-56 rounded-lg border bg-popover shadow-lg overflow-hidden">
+              <div className="p-1">
+                {availablePlatforms.map((plat) => {
+                  const isSelected = selectedPlatforms.includes(plat.key);
+                  return (
+                    <button
+                      key={plat.key}
+                      onClick={() => togglePlatform(plat.key)}
+                      className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors ${
+                        isSelected
+                          ? "bg-violet-500/10 text-foreground"
+                          : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                      }`}
+                    >
+                      <span
+                        className="h-2 w-2 rounded-full shrink-0"
+                        style={{ backgroundColor: plat.color }}
+                      />
+                      <span className="flex-1 text-left">{plat.label}</span>
+                      {isSelected && (
+                        <CheckCircle2 className="h-3.5 w-3.5 text-violet-500 shrink-0" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="border-t p-2">
+                <button
+                  onClick={() => {
+                    setSelectedPlatforms([]);
+                    setPlatformDropdownOpen(false);
+                  }}
+                  className="w-full text-xs text-muted-foreground hover:text-foreground py-1"
+                >
+                  Clear selection
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Clear all filters */}
+        {hasFilters && (
+          <button
+            onClick={clearFilters}
+            className="inline-flex items-center gap-1 px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <X className="h-3 w-3" />
+            Clear all
+          </button>
+        )}
       </div>
 
       {/* KPI Cards */}

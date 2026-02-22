@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   ListOrdered,
   Loader2,
@@ -14,6 +14,9 @@ import {
   Plus,
   CalendarDays,
   GripVertical,
+  ChevronDown,
+  X,
+  Filter,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,6 +31,10 @@ import {
 import { toast } from "sonner";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import {
+  platformLabels,
+  platformHexColors,
+} from "@/lib/platform-utils";
 
 interface Post {
   _id: string;
@@ -48,22 +55,6 @@ interface QueueSlot {
   day: string;
   time: string;
 }
-
-const platformColors: Record<string, string> = {
-  twitter: "bg-sky-500",
-  instagram: "bg-gradient-to-br from-purple-500 to-pink-500",
-  facebook: "bg-blue-600",
-  linkedin: "bg-blue-700",
-  tiktok: "bg-gray-900",
-  youtube: "bg-red-500",
-  pinterest: "bg-red-600",
-  reddit: "bg-orange-500",
-  bluesky: "bg-blue-500",
-  threads: "bg-gray-800",
-  googlebusiness: "bg-blue-500",
-  telegram: "bg-cyan-500",
-  snapchat: "bg-yellow-400",
-};
 
 const statusStyles: Record<string, string> = {
   published: "bg-emerald-500/10 text-emerald-600",
@@ -113,7 +104,10 @@ export default function QueuePage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("posts");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
+  const [platformDropdownOpen, setPlatformDropdownOpen] = useState(false);
   const [queueSlots, setQueueSlots] = useState<QueueSlot[]>(defaultSlots);
+  const platformDropdownRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
 
   const fetchPosts = useCallback(async () => {
@@ -133,6 +127,50 @@ export default function QueuePage() {
   useEffect(() => {
     fetchPosts();
   }, [fetchPosts]);
+
+  // Close platform dropdown on outside click
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        platformDropdownRef.current &&
+        !platformDropdownRef.current.contains(event.target as Node)
+      ) {
+        setPlatformDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Derive the unique platforms that appear in fetched posts
+  const availablePlatforms = useMemo(() => {
+    const set = new Set<string>();
+    for (const post of posts) {
+      for (const p of post.platforms || []) {
+        if (p.platform) set.add(p.platform.toLowerCase());
+      }
+    }
+    return Array.from(set).sort();
+  }, [posts]);
+
+  // Apply client-side platform filter
+  const filteredPosts = useMemo(() => {
+    if (selectedPlatforms.length === 0) return posts;
+    return posts.filter((post) => {
+      const postPlatforms = (post.platforms || []).map((p) =>
+        p.platform?.toLowerCase()
+      );
+      return selectedPlatforms.some((sp) => postPlatforms.includes(sp));
+    });
+  }, [posts, selectedPlatforms]);
+
+  const togglePlatform = (platform: string) => {
+    setSelectedPlatforms((prev) =>
+      prev.includes(platform)
+        ? prev.filter((p) => p !== platform)
+        : [...prev, platform]
+    );
+  };
 
   const handleDelete = async (postId: string) => {
     try {
@@ -180,12 +218,12 @@ export default function QueuePage() {
             <RefreshCw className="h-4 w-4" />
             Refresh
           </Button>
-          <Link href="/compose">
-            <Button size="sm" className="gap-2 bg-blue-500 hover:bg-blue-600">
+          <Button size="sm" className="gap-2 bg-blue-500 hover:bg-blue-600" asChild>
+            <Link href="/compose">
               <Plus className="h-4 w-4" />
               New Post
-            </Button>
-          </Link>
+            </Link>
+          </Button>
         </div>
       </div>
 
@@ -203,8 +241,9 @@ export default function QueuePage() {
 
         {/* Posts tab */}
         <TabsContent value="posts" className="mt-4 space-y-4">
-          {/* Status filter pills */}
-          <div className="flex gap-2">
+          {/* Filters row */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Status filter pills */}
             {["all", "draft", "scheduled", "published", "failed"].map((s) => (
               <Button
                 key={s}
@@ -216,6 +255,92 @@ export default function QueuePage() {
                 {s}
               </Button>
             ))}
+
+            {/* Separator */}
+            <div className="h-6 w-px bg-border mx-1" />
+
+            {/* Platform filter dropdown */}
+            <div className="relative" ref={platformDropdownRef}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPlatformDropdownOpen(!platformDropdownOpen)}
+                className="gap-2"
+              >
+                <Filter className="h-3.5 w-3.5" />
+                Platform
+                {selectedPlatforms.length > 0 && (
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px] bg-blue-500/10 text-blue-600 border-0">
+                    {selectedPlatforms.length}
+                  </Badge>
+                )}
+                <ChevronDown className="h-3 w-3 opacity-50" />
+              </Button>
+
+              {platformDropdownOpen && (
+                <div className="absolute top-full mt-1 left-0 z-50 bg-background border rounded-lg shadow-lg py-1 min-w-[200px]">
+                  {availablePlatforms.length === 0 ? (
+                    <p className="px-3 py-2 text-xs text-muted-foreground">
+                      No platforms found in posts
+                    </p>
+                  ) : (
+                    availablePlatforms.map((platform) => {
+                      const isSelected = selectedPlatforms.includes(platform);
+                      return (
+                        <button
+                          key={platform}
+                          onClick={() => togglePlatform(platform)}
+                          className="w-full flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-muted/50 transition-colors"
+                        >
+                          <div
+                            className="h-3 w-3 rounded-full shrink-0"
+                            style={{
+                              backgroundColor: platformHexColors[platform] || "#6b7280",
+                            }}
+                          />
+                          <span className="flex-1 text-left">
+                            {platformLabels[platform] || platform}
+                          </span>
+                          {isSelected && (
+                            <div className="h-4 w-4 rounded bg-blue-500 flex items-center justify-center">
+                              <svg className="h-3 w-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                              </svg>
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })
+                  )}
+                  {selectedPlatforms.length > 0 && (
+                    <>
+                      <div className="border-t my-1" />
+                      <button
+                        onClick={() => setSelectedPlatforms([])}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground hover:bg-muted/50 transition-colors"
+                      >
+                        <X className="h-3 w-3" />
+                        Clear filters
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Active platform filter badges */}
+            {selectedPlatforms.map((platform) => (
+              <Badge
+                key={platform}
+                variant="secondary"
+                className="gap-1 pl-1.5 pr-1 py-0.5 text-white cursor-pointer hover:opacity-80"
+                style={{ backgroundColor: platformHexColors[platform] || "#6b7280" }}
+                onClick={() => togglePlatform(platform)}
+              >
+                {platformLabels[platform] || platform}
+                <X className="h-3 w-3" />
+              </Badge>
+            ))}
           </div>
 
           {loading ? (
@@ -224,87 +349,106 @@ export default function QueuePage() {
                 <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
               </CardContent>
             </Card>
-          ) : posts.length === 0 ? (
+          ) : filteredPosts.length === 0 ? (
             <Card className="border-dashed border-2 border-muted-foreground/20">
               <CardContent className="flex flex-col items-center justify-center py-16 text-center">
                 <div className="h-14 w-14 rounded-full bg-muted flex items-center justify-center mb-4">
                   <ListOrdered className="h-6 w-6 text-muted-foreground" />
                 </div>
-                <h3 className="text-lg font-semibold mb-1">No posts yet</h3>
+                <h3 className="text-lg font-semibold mb-1">No posts found</h3>
                 <p className="text-sm text-muted-foreground max-w-sm">
-                  {statusFilter === "all"
+                  {statusFilter === "all" && selectedPlatforms.length === 0
                     ? "Create your first post to get started."
+                    : selectedPlatforms.length > 0
+                    ? `No posts found for the selected platform${selectedPlatforms.length > 1 ? "s" : ""}.`
                     : `No ${statusFilter} posts found.`}
                 </p>
-                <Link href="/compose">
-                  <Button className="mt-4 bg-blue-500 hover:bg-blue-600">
-                    Create a post
-                  </Button>
-                </Link>
+                <Button className="mt-4 bg-blue-500 hover:bg-blue-600" asChild>
+                  <Link href="/compose">Create a post</Link>
+                </Button>
               </CardContent>
             </Card>
           ) : (
             <div className="space-y-2">
-              {posts.map((post) => (
-                <Card key={post._id} className="border-0 shadow-sm hover:shadow-md transition-shadow cursor-pointer" onClick={() => router.push(`/posts/${post._id}`)}>
-                  <CardContent className="flex items-start gap-4 py-4">
-                    <div className="flex -space-x-1.5 pt-1 shrink-0">
-                      {(post.platforms || []).slice(0, 3).map((p, i) => (
-                        <div
-                          key={i}
-                          className={`h-7 w-7 rounded-full ${
-                            platformColors[p.platform?.toLowerCase()] || "bg-gray-400"
-                          } border-2 border-background`}
-                        />
-                      ))}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm leading-relaxed line-clamp-2">{post.content}</p>
-                      <p className="text-xs text-muted-foreground mt-1.5">
-                        {post.scheduledFor
-                          ? `Scheduled for ${formatDate(post.scheduledFor)}`
-                          : post.publishedAt
-                          ? `Published ${formatDate(post.publishedAt)}`
-                          : `Created ${formatDate(post.createdAt)}`}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      <Badge
-                        variant="secondary"
-                        className={`${statusStyles[post.status] || statusStyles.draft} border-0 font-medium capitalize`}
-                      >
-                        {post.status}
-                      </Badge>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem className="gap-2" onClick={(e) => { e.stopPropagation(); router.push(`/posts/${post._id}`); }}>
-                            <Eye className="h-4 w-4" /> View details
-                          </DropdownMenuItem>
-                          <DropdownMenuItem className="gap-2">
-                            <Copy className="h-4 w-4" /> Duplicate
-                          </DropdownMenuItem>
-                          {post.status === "failed" && (
-                            <DropdownMenuItem className="gap-2">
-                              <RotateCcw className="h-4 w-4" /> Retry
+              {filteredPosts.map((post) => {
+                const postPlatforms = (post.platforms || []).map((p) =>
+                  p.platform?.toLowerCase()
+                );
+                return (
+                  <Card key={post._id} className="border-0 shadow-sm hover:shadow-md transition-shadow cursor-pointer" onClick={() => router.push(`/posts/${post._id}`)}>
+                    <CardContent className="flex items-start gap-4 py-4">
+                      {/* Platform pills */}
+                      <div className="flex flex-wrap gap-1 pt-0.5 shrink-0 max-w-[140px]">
+                        {postPlatforms.length > 0 ? (
+                          postPlatforms.slice(0, 3).map((platform, i) => (
+                            <span
+                              key={i}
+                              className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium text-white"
+                              style={{ backgroundColor: platformHexColors[platform || ""] || "#6b7280" }}
+                            >
+                              {platformLabels[platform || ""] || platform}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium bg-gray-400 text-white">
+                            No platform
+                          </span>
+                        )}
+                        {postPlatforms.length > 3 && (
+                          <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                            +{postPlatforms.length - 3}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm leading-relaxed line-clamp-2">{post.content}</p>
+                        <p className="text-xs text-muted-foreground mt-1.5">
+                          {post.scheduledFor
+                            ? `Scheduled for ${formatDate(post.scheduledFor)}`
+                            : post.publishedAt
+                            ? `Published ${formatDate(post.publishedAt)}`
+                            : `Created ${formatDate(post.createdAt)}`}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <Badge
+                          variant="secondary"
+                          className={`${statusStyles[post.status] || statusStyles.draft} border-0 font-medium capitalize`}
+                        >
+                          {post.status}
+                        </Badge>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(e) => e.stopPropagation()}>
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem className="gap-2" onClick={(e) => { e.stopPropagation(); router.push(`/posts/${post._id}`); }}>
+                              <Eye className="h-4 w-4" /> View details
                             </DropdownMenuItem>
-                          )}
-                          <DropdownMenuItem
-                            className="gap-2 text-destructive focus:text-destructive"
-                            onClick={() => handleDelete(post._id)}
-                          >
-                            <Trash2 className="h-4 w-4" /> Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                            <DropdownMenuItem className="gap-2">
+                              <Copy className="h-4 w-4" /> Duplicate
+                            </DropdownMenuItem>
+                            {post.status === "failed" && (
+                              <DropdownMenuItem className="gap-2">
+                                <RotateCcw className="h-4 w-4" /> Retry
+                              </DropdownMenuItem>
+                            )}
+                            <DropdownMenuItem
+                              className="gap-2 text-destructive focus:text-destructive"
+                              onClick={(e) => { e.stopPropagation(); handleDelete(post._id); }}
+                            >
+                              <Trash2 className="h-4 w-4" /> Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           )}
         </TabsContent>
@@ -340,7 +484,7 @@ export default function QueuePage() {
                   </div>
                   {slots.length === 0 ? (
                     <p className="text-xs text-muted-foreground py-2">
-                      No time slots — posts won&apos;t be queued on this day
+                      No time slots &mdash; posts won&apos;t be queued on this day
                     </p>
                   ) : (
                     <div className="flex flex-wrap gap-2">

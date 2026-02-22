@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lateApiFetch } from "@/lib/late";
+import { db } from "@/lib/db";
+import { posts as postsTable } from "@/lib/db/schema";
 
 // GET /api/posts — list posts
 export async function GET(req: NextRequest) {
@@ -44,6 +46,27 @@ export async function POST(req: NextRequest) {
       method: "POST",
       body: JSON.stringify(postPayload),
     });
+
+    // If this post is linked to a content object, store the mapping locally
+    if (body.contentObjectId) {
+      const latePostId = data.post?._id || data._id;
+      try {
+        await db.insert(postsTable).values({
+          workspaceId: body.workspaceId || "00000000-0000-0000-0000-000000000000",
+          latePostId: latePostId,
+          content: body.content,
+          status: body.publishNow ? "scheduled" : "draft",
+          scheduledFor: body.scheduledFor ? new Date(body.scheduledFor) : undefined,
+          timezone: body.timezone || "UTC",
+          contentObjectId: body.contentObjectId,
+          standalone: false,
+          createdBy: body.createdBy || "00000000-0000-0000-0000-000000000000",
+        });
+      } catch (dbErr) {
+        // Don't fail the whole request if local DB insert fails
+        console.error("[Posts] Failed to store content object linkage:", dbErr);
+      }
+    }
 
     return NextResponse.json(data);
   } catch (error: any) {

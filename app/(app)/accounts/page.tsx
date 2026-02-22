@@ -237,25 +237,40 @@ export default function AccountsPage() {
                       </p>
                     )}
                   </div>
-                  <Button
-                    size="sm"
-                    onClick={() => handleConnect(platform.slug)}
-                    disabled={isConnecting}
-                    className={
-                      isConnected
-                        ? "shrink-0 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 border-0"
-                        : "shrink-0 bg-blue-500 hover:bg-blue-600 text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                    }
-                    variant={isConnected ? "outline" : "default"}
-                  >
-                    {isConnecting ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : isConnected ? (
-                      "Reconnect"
-                    ) : (
-                      "Connect"
+                  <div className="flex gap-1.5 shrink-0">
+                    {isConnected && (
+                      <Button
+                        size="sm"
+                        onClick={() => handleConnect(platform.slug)}
+                        disabled={isConnecting}
+                        variant="outline"
+                        className="bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 border-0"
+                      >
+                        {isConnecting ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          "Reconnect"
+                        )}
+                      </Button>
                     )}
-                  </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => handleConnect(platform.slug)}
+                      disabled={isConnecting}
+                      className="bg-blue-500 hover:bg-blue-600 text-white"
+                    >
+                      {isConnecting && !isConnected ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : isConnected ? (
+                        <>
+                          <Plus className="h-3.5 w-3.5 mr-1" />
+                          Add
+                        </>
+                      ) : (
+                        "Connect"
+                      )}
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
             );

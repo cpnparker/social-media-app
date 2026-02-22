@@ -12,6 +12,9 @@ interface GenericPreviewProps {
   platform: string;
   publishedAt?: string;
   platformPostUrl?: string;
+  accountName?: string;
+  accountUsername?: string;
+  accountAvatarUrl?: string;
   analytics?: {
     impressions?: number;
     likes?: number;
@@ -26,10 +29,14 @@ export default function GenericPreview({
   platform,
   publishedAt,
   platformPostUrl,
+  accountName,
+  accountAvatarUrl,
   analytics,
 }: GenericPreviewProps) {
   const label = platformLabels[platform.toLowerCase()] || platform;
   const color = platformHexColors[platform.toLowerCase()] || "#6b7280";
+  const displayName = accountName || "Your Account";
+  const initials = displayName.charAt(0).toUpperCase();
 
   const date = publishedAt
     ? new Date(publishedAt).toLocaleDateString("en-US", {
@@ -48,15 +55,19 @@ export default function GenericPreview({
         className="px-4 py-3 flex items-center gap-3"
         style={{ borderBottom: `3px solid ${color}` }}
       >
-        <div
-          className="h-10 w-10 rounded-full flex items-center justify-center text-white font-bold text-sm shrink-0"
-          style={{ backgroundColor: color }}
-        >
-          {label.charAt(0).toUpperCase()}
-        </div>
+        {accountAvatarUrl ? (
+          <img src={accountAvatarUrl} alt={displayName} className="h-10 w-10 rounded-full object-cover shrink-0" />
+        ) : (
+          <div
+            className="h-10 w-10 rounded-full flex items-center justify-center text-white font-bold text-sm shrink-0"
+            style={{ backgroundColor: color }}
+          >
+            {initials}
+          </div>
+        )}
         <div className="flex-1">
           <p className="font-semibold text-sm text-gray-900 dark:text-gray-100">
-            Your Account
+            {displayName}
           </p>
           <p className="text-xs" style={{ color }}>
             {label}

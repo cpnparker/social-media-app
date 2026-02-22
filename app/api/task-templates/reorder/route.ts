@@ -1,0 +1,34 @@
+import { NextRequest, NextResponse } from "next/server";
+import { db } from "@/lib/db";
+import { taskTemplates } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
+
+// POST /api/task-templates/reorder
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { orderedIds } = body;
+
+    if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+      return NextResponse.json(
+        { error: "orderedIds array is required" },
+        { status: 400 }
+      );
+    }
+
+    // Update sortOrder for each template to match its index
+    await Promise.all(
+      orderedIds.map((id: string, index: number) =>
+        db
+          .update(taskTemplates)
+          .set({ sortOrder: index })
+          .where(eq(taskTemplates.id, id))
+      )
+    );
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    console.error("Task templates reorder error:", error.message);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}

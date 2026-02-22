@@ -18,6 +18,8 @@ const PLATFORM_META: Record<string, { name: string; color: string }> = {
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const period = searchParams.get("period") || "30";
+  const accountIds = searchParams.get("accountIds"); // comma-separated Late account IDs
+  const platformsFilter = searchParams.get("platforms"); // comma-separated platform names
 
   try {
     // Build query params for the Late API
@@ -31,7 +33,30 @@ export async function GET(req: NextRequest) {
       `/analytics?startDate=${startDate}&endDate=${endDate}&limit=50`
     );
 
-    const transformed = transformLateData(raw.posts || [], raw, parseInt(period));
+    let posts = raw.posts || [];
+
+    // Filter by account IDs if specified
+    if (accountIds) {
+      const ids = accountIds.split(",").map((id) => id.trim());
+      posts = posts.filter((p: any) => {
+        const raw = p.accountId;
+        const postAccountId = (typeof raw === "object" && raw !== null) ? raw._id : raw;
+        return (postAccountId && ids.includes(postAccountId)) ||
+               (p.account?._id && ids.includes(p.account._id)) ||
+               (p.account?.id && ids.includes(p.account.id));
+      });
+    }
+
+    // Filter by platforms if specified
+    if (platformsFilter) {
+      const plats = platformsFilter.split(",").map((p) => p.trim().toLowerCase());
+      posts = posts.filter((p: any) => {
+        const postPlatform = (p.platform || "").toLowerCase();
+        return plats.includes(postPlatform);
+      });
+    }
+
+    const transformed = transformLateData(posts, raw, parseInt(period));
     return NextResponse.json({ data: transformed });
   } catch (error: any) {
     console.error("Analytics fetch error:", error.message);
