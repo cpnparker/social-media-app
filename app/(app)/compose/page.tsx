@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, Suspense, useMemo } from "react";
 import {
   Send,
   Clock,
@@ -26,6 +26,8 @@ import {
   Eye,
   EyeOff,
   Video,
+  Save,
+  Trash2,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -149,6 +151,103 @@ function ComposePageInner() {
   const [suggestedHashtags, setSuggestedHashtags] = useState<string[]>([]);
   const [bestTimeData, setBestTimeData] = useState<any>(null);
   const [loadingBestTime, setLoadingBestTime] = useState(false);
+
+  // ——— Auto-save draft to localStorage ———
+  const DRAFT_KEY = "compose-draft";
+  const DRAFT_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+  const [draftSaved, setDraftSaved] = useState(false);
+  const [draftRestored, setDraftRestored] = useState(false);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasUrlOverride = useMemo(
+    () => !!searchParams.get("prefillContent") || !!searchParams.get("edit"),
+    [searchParams]
+  );
+
+  // Save draft to localStorage (debounced via caller)
+  const saveDraft = useCallback(() => {
+    try {
+      const draft = {
+        content,
+        selectedAccounts,
+        mediaItems,
+        scheduleMode,
+        scheduledDate,
+        scheduledTime,
+        savedAt: Date.now(),
+      };
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+      setDraftSaved(true);
+      // Hide the indicator after 2s
+      setTimeout(() => setDraftSaved(false), 2000);
+    } catch { /* localStorage full or unavailable */ }
+  }, [content, selectedAccounts, mediaItems, scheduleMode, scheduledDate, scheduledTime]);
+
+  // Auto-save when content changes (500ms debounce)
+  useEffect(() => {
+    if (!draftRestored) return; // Don't save before restore runs
+    if (!content.trim() && mediaItems.length === 0) {
+      // Nothing to save — clear any stale draft
+      localStorage.removeItem(DRAFT_KEY);
+      return;
+    }
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(saveDraft, 500);
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+  }, [content, selectedAccounts, mediaItems, scheduleMode, scheduledDate, scheduledTime, saveDraft, draftRestored]);
+
+  // Restore draft on mount (once)
+  useEffect(() => {
+    if (hasUrlOverride) {
+      setDraftRestored(true);
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (!raw) { setDraftRestored(true); return; }
+      const draft = JSON.parse(raw);
+      // Expiry check
+      if (draft.savedAt && Date.now() - draft.savedAt > DRAFT_EXPIRY_MS) {
+        localStorage.removeItem(DRAFT_KEY);
+        setDraftRestored(true);
+        return;
+      }
+      if (draft.content) setContent(draft.content);
+      if (draft.mediaItems?.length) setMediaItems(draft.mediaItems);
+      if (draft.scheduleMode) setScheduleMode(draft.scheduleMode);
+      if (draft.scheduledDate) setScheduledDate(draft.scheduledDate);
+      if (draft.scheduledTime) setScheduledTime(draft.scheduledTime);
+      // Store selectedAccounts to restore after accounts load
+      if (draft.selectedAccounts?.length) {
+        draftAccountsRef.current = draft.selectedAccounts;
+      }
+    } catch { /* corrupt data */ }
+    setDraftRestored(true);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Restore selected accounts once accounts have loaded
+  const draftAccountsRef = useRef<string[]>([]);
+  useEffect(() => {
+    if (accounts.length > 0 && draftAccountsRef.current.length > 0 && !hasUrlOverride) {
+      const validIds = draftAccountsRef.current.filter((id) =>
+        accounts.some((a) => a._id === id)
+      );
+      if (validIds.length > 0) setSelectedAccounts(validIds);
+      draftAccountsRef.current = []; // Only restore once
+    }
+  }, [accounts, hasUrlOverride]);
+
+  const discardDraft = () => {
+    localStorage.removeItem(DRAFT_KEY);
+    setContent("");
+    setSelectedAccounts([]);
+    setMediaItems([]);
+    setScheduleMode("now");
+    setScheduledDate("");
+    setScheduledTime("");
+    setSuggestedHashtags([]);
+    setBestTimeData(null);
+    toast.success("Draft discarded");
+  };
 
   const fetchAccounts = useCallback(async () => {
     try {
@@ -338,6 +437,7 @@ function ComposePageInner() {
         body: JSON.stringify(body),
       });
       if (res.ok) {
+        localStorage.removeItem(DRAFT_KEY);
         toast.success(
           scheduleMode === "now"
             ? "Post published successfully!"
@@ -859,7 +959,33 @@ function ComposePageInner() {
             </CardContent>
           </Card>
 
-          {/* Publish button */}
+          {/* Draft indicator + Publish button */}
+          {(content.trim() || mediaItems.length > 0) && (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                {draftSaved ? (
+                  <>
+                    <Save className="h-3.5 w-3.5 text-green-500" />
+                    <span className="text-green-600 font-medium">Draft saved</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="h-3.5 w-3.5" />
+                    <span>Auto-saving draft</span>
+                  </>
+                )}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={discardDraft}
+                className="text-xs text-muted-foreground hover:text-destructive gap-1.5"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Discard draft
+              </Button>
+            </div>
+          )}
           <Button
             onClick={handlePublish}
             disabled={publishing || !content.trim() || selectedAccounts.length === 0 || isOverLimit || (scheduleMode === "schedule" && (!scheduledDate || !scheduledTime))}

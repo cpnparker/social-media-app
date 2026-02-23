@@ -63,6 +63,7 @@ interface Post {
   updatedAt?: string;
   platforms?: PlatformEntry[];
   media?: Array<{ url: string; type?: string }>;
+  mediaItems?: Array<{ url: string; type?: string }>;
   hashtags?: string[];
 }
 
@@ -221,7 +222,12 @@ export default function PostDetailPage() {
     totalAnalytics.likes > 0 ||
     totalAnalytics.comments > 0;
 
-  const mediaUrls = (post.media || []).map((m) => m.url);
+  const mediaUrls = (post.mediaItems || post.media || []).map((m) => m.url);
+
+  // Derive publishedAt from platform entries if not on the top-level post
+  const publishedAt =
+    post.publishedAt ||
+    (post.platforms || []).find((p) => p.publishedAt)?.publishedAt;
 
   const statItems = [
     { icon: Eye, label: "Impressions", value: totalAnalytics.impressions },
@@ -262,9 +268,9 @@ export default function PostDetailPage() {
             <p className="text-sm text-muted-foreground mt-0.5">
               {post.platforms?.length || 0} platform
               {(post.platforms?.length || 0) !== 1 ? "s" : ""}
-              {post.publishedAt &&
-                ` \u00B7 Published ${formatFullDate(post.publishedAt)}`}
-              {!post.publishedAt &&
+              {publishedAt &&
+                ` \u00B7 Published ${formatFullDate(publishedAt)}`}
+              {!publishedAt &&
                 post.scheduledFor &&
                 ` \u00B7 Scheduled for ${formatFullDate(post.scheduledFor)}`}
             </p>
@@ -335,13 +341,13 @@ export default function PostDetailPage() {
                   <Clock className="h-3.5 w-3.5" />
                   Created {formatFullDate(post.createdAt)}
                 </div>
-                {post.publishedAt && (
+                {publishedAt && (
                   <div className="flex items-center gap-1.5">
                     <Calendar className="h-3.5 w-3.5" />
-                    Published {formatFullDate(post.publishedAt)}
+                    Published {formatFullDate(publishedAt)}
                   </div>
                 )}
-                {post.scheduledFor && !post.publishedAt && (
+                {post.scheduledFor && !publishedAt && (
                   <div className="flex items-center gap-1.5">
                     <Calendar className="h-3.5 w-3.5" />
                     Scheduled for {formatFullDate(post.scheduledFor)}

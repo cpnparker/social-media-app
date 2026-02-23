@@ -35,9 +35,9 @@
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
     --radius: 0.625rem;
-    --sidebar: 224 71% 4%;
-    --sidebar-foreground: 220 14% 96%;
-    --sidebar-muted: 217 33% 17%;
+    --sidebar: 0 0% 100%;
+    --sidebar-foreground: 224 71% 4%;
+    --sidebar-muted: 220 14% 96%;
     --sidebar-accent: 220 90% 56%;
   }
   .dark {
@@ -65,7 +65,7 @@
     --chart-3: 30 80% 55%;
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
-    --sidebar: 224 71% 4%;
+    --sidebar: 223 47% 11%;
     --sidebar-foreground: 220 14% 96%;
     --sidebar-muted: 217 33% 17%;
     --sidebar-accent: 220 90% 56%;

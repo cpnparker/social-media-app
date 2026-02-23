@@ -31,12 +31,16 @@ export async function POST(req: NextRequest) {
       platforms: body.platforms, // [{platform, accountId, content?}]
     };
 
-    if (body.mediaUrls?.length) {
-      // Ensure all media URLs are absolute (local uploads are relative paths)
+    if (body.mediaUrls?.length || body.mediaItems?.length) {
       const baseUrl = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-      postPayload.mediaUrls = body.mediaUrls.map((url: string) =>
-        url.startsWith("http") ? url : `${baseUrl}${url}`
-      );
+      // Late API expects mediaItems: [{ url, type }]
+      const urls: string[] = body.mediaUrls || body.mediaItems?.map((m: any) => m.url) || [];
+      postPayload.mediaItems = urls.map((url: string) => {
+        const absoluteUrl = url.startsWith("http") ? url : `${baseUrl}${url}`;
+        const isVideo = /\.(mp4|mov|webm)$/i.test(absoluteUrl) ||
+          body.mediaItems?.find((m: any) => m.url === url)?.contentType?.startsWith("video/");
+        return { url: absoluteUrl, type: isVideo ? "video" : "image" };
+      });
     }
 
     if (body.publishNow) {
@@ -45,6 +49,8 @@ export async function POST(req: NextRequest) {
       postPayload.scheduledFor = body.scheduledFor;
       postPayload.timezone = body.timezone || "UTC";
     }
+
+    console.log("[Posts] Sending to Late API:", JSON.stringify(postPayload, null, 2));
 
     const data = await lateApiFetch("/posts", {
       method: "POST",

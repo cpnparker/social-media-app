@@ -47,6 +47,7 @@ export async function POST(req: NextRequest) {
     if (process.env.BLOB_READ_WRITE_TOKEN) {
       const blob = await put(file.name, file, {
         access: "public",
+        addRandomSuffix: true,
       });
 
       return NextResponse.json({
@@ -78,6 +79,7 @@ export async function POST(req: NextRequest) {
       filename: file.name,
     });
   } catch (error: any) {
+    console.error("[Media Upload] Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
