@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useCallback, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   FileText,
   Plus,
@@ -35,12 +35,26 @@ function deriveStatus(totalTasks: number, doneTasks: number) {
 
 const filterTabs = ["all", "not_started", "in_progress", "complete"];
 
-export default function ContentPage() {
+const sidebarStatusMap: Record<string, string> = {
+  "in-progress": "in_progress",
+};
+
+function ContentPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const statusParam = searchParams.get("status");
+  const initialTab = statusParam ? (sidebarStatusMap[statusParam] || statusParam.replace("-", "_")) : "all";
+
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState("all");
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [search, setSearch] = useState("");
+
+  // Sync URL param changes
+  useEffect(() => {
+    const newTab = statusParam ? (sidebarStatusMap[statusParam] || statusParam.replace("-", "_")) : "all";
+    setActiveTab(newTab);
+  }, [statusParam]);
 
   const fetchContent = useCallback(async () => {
     setLoading(true);
@@ -242,5 +256,13 @@ export default function ContentPage() {
         </Card>
       )}
     </div>
+  );
+}
+
+export default function ContentPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>}>
+      <ContentPageContent />
+    </Suspense>
   );
 }

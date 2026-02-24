@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useCallback, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Lightbulb,
   Plus,
@@ -26,14 +26,32 @@ const statusColors: Record<string, string> = {
 
 const statusTabs = ["all", "submitted", "shortlisted", "commissioned", "rejected"];
 
-export default function IdeasPage() {
+// Map sidebar URL params to DB status values
+const sidebarStatusMap: Record<string, string> = {
+  new: "submitted",
+  pending: "shortlisted",
+  commissioned: "commissioned",
+  spiked: "rejected",
+};
+
+function IdeasPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const statusParam = searchParams.get("status");
+  const initialTab = statusParam ? (sidebarStatusMap[statusParam] || statusParam) : "all";
+
   const [ideas, setIdeas] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState("all");
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [sortBy, setSortBy] = useState("date");
   const [search, setSearch] = useState("");
   const [suggesting, setSuggesting] = useState(false);
+
+  // Sync URL param changes (e.g. sidebar click while on ideas page)
+  useEffect(() => {
+    const newTab = statusParam ? (sidebarStatusMap[statusParam] || statusParam) : "all";
+    setActiveTab(newTab);
+  }, [statusParam]);
 
   const fetchIdeas = useCallback(async () => {
     setLoading(true);
@@ -142,7 +160,12 @@ export default function IdeasPage() {
           {statusTabs.map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab)}
+              onClick={() => {
+                setActiveTab(tab);
+                const reverseMap: Record<string, string> = { submitted: "new", shortlisted: "pending", commissioned: "commissioned", rejected: "spiked" };
+                const urlStatus = reverseMap[tab];
+                router.replace(tab === "all" ? "/ideas" : `/ideas?status=${urlStatus || tab}`, { scroll: false });
+              }}
               className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors capitalize ${
                 activeTab === tab
                   ? "bg-background text-foreground shadow-sm"
@@ -279,5 +302,13 @@ export default function IdeasPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function IdeasPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>}>
+      <IdeasPageContent />
+    </Suspense>
   );
 }
