@@ -67,7 +67,7 @@ const navSections: NavSection[] = [
   {
     label: "Customers",
     icon: Building2,
-    defaultOpen: false,
+    defaultOpen: true,
     items: [
       { label: "All Customers", href: "/customers" },
       { label: "Active Contracts", href: "/customers/contracts" },

@@ -33,7 +33,7 @@ export default function SettingsLayout({
       </div>
 
       {/* Sub-navigation tabs */}
-      <nav className="flex gap-1 border-b -mb-px">
+      <nav className="flex gap-1 border-b -mb-px overflow-x-auto scrollbar-hide">
         {settingsNav.map(({ label, href, icon: Icon }) => {
           const isActive =
             pathname === href || pathname.startsWith(href + "/");
@@ -42,13 +42,13 @@ export default function SettingsLayout({
               key={href}
               href={href}
               className={cn(
-                "flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+                "flex items-center gap-2 px-3 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px whitespace-nowrap shrink-0",
                 isActive
                   ? "border-foreground text-foreground"
                   : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
               )}
             >
-              <Icon className="h-4 w-4" />
+              <Icon className="h-4 w-4 shrink-0" />
               {label}
             </Link>
           );
