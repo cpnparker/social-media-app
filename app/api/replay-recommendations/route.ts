@@ -4,13 +4,16 @@ import { supabase } from "@/lib/supabase";
 // GET /api/replay-recommendations — ranked list of evergreen content suitable for replay
 export async function GET(req: NextRequest) {
   try {
-    // Fetch all evergreen content objects from the content table
-    // flag_evergreen is a smallint (1 = true)
+    // Fetch published, non-spiked content objects as replay candidates.
+    // The existing Supabase content table doesn't have a flag_evergreen column,
+    // so we use published + completed content as the candidate pool.
     const { data: evergreenContent, error: contentErr } = await supabase
       .from("content")
-      .select("id_content, name_content, id_type, flag_evergreen")
-      .eq("flag_evergreen", 1)
-      .is("date_deleted", null);
+      .select("id_content, name_content, id_type")
+      .eq("flag_completed", 1)
+      .eq("flag_spiked", 0)
+      .is("date_deleted", null)
+      .not("date_published", "is", null);
 
     if (contentErr) throw contentErr;
 
