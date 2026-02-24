@@ -49,6 +49,8 @@ function ContentPageContent() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState(initialTab);
   const [search, setSearch] = useState("");
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [customerFilter, setCustomerFilter] = useState("");
 
   // Sync URL param changes
   useEffect(() => {
@@ -56,10 +58,20 @@ function ContentPageContent() {
     setActiveTab(newTab);
   }, [statusParam]);
 
+  // Fetch customers for filter
+  useEffect(() => {
+    fetch("/api/customers?status=active&limit=200")
+      .then((r) => r.json())
+      .then((d) => setCustomers(d.customers || []))
+      .catch(() => {});
+  }, []);
+
   const fetchContent = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/content-objects?limit=100");
+      let url = "/api/content-objects?limit=100";
+      if (customerFilter) url += `&customerId=${customerFilter}`;
+      const res = await fetch(url);
       const data = await res.json();
       setItems(data.contentObjects || []);
     } catch (err) {
@@ -67,7 +79,7 @@ function ContentPageContent() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [customerFilter]);
 
   useEffect(() => {
     fetchContent();
@@ -148,6 +160,19 @@ function ContentPageContent() {
             className="pl-9 h-9"
           />
         </div>
+
+        {customers.length > 0 && (
+          <select
+            value={customerFilter}
+            onChange={(e) => setCustomerFilter(e.target.value)}
+            className="h-9 rounded-md border bg-background px-3 text-sm"
+          >
+            <option value="">All Customers</option>
+            {customers.map((c: any) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        )}
       </div>
 
       {loading ? (
@@ -180,7 +205,13 @@ function ContentPageContent() {
                     Title
                   </th>
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">
+                    Customer
+                  </th>
+                  <th className="text-left px-4 py-3 font-medium text-muted-foreground">
                     Type
+                  </th>
+                  <th className="text-left px-4 py-3 font-medium text-muted-foreground">
+                    CU
                   </th>
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">
                     Production
@@ -208,6 +239,15 @@ function ContentPageContent() {
                         </p>
                       </td>
                       <td className="px-4 py-3">
+                        {item.customerName ? (
+                          <span className="text-xs text-emerald-600 bg-emerald-500/10 rounded-full px-2 py-0.5 font-medium">
+                            {item.customerName}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
                         <Badge
                           variant="secondary"
                           className={cn(
@@ -217,6 +257,9 @@ function ContentPageContent() {
                         >
                           {item.contentType}
                         </Badge>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground">
+                        {item.contentUnits ? `${Number(item.contentUnits).toFixed(1)}` : "—"}
                       </td>
                       <td className="px-4 py-3">
                         {total > 0 ? (

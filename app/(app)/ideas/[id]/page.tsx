@@ -162,6 +162,15 @@ export default function IdeaDetailPage() {
   const [uploadingImage, setUploadingImage] = useState(false);
   const [generatingImage, setGeneratingImage] = useState(false);
 
+  // Customer & Contract state for commission
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [customerContracts, setCustomerContracts] = useState<any[]>([]);
+  const [selectedContractId, setSelectedContractId] = useState("");
+  const [cuCost, setCuCost] = useState<string>("");
+  const [cuDefinitions, setCuDefinitions] = useState<any[]>([]);
+  const [contractBalance, setContractBalance] = useState<{ total: number; used: number; remaining: number } | null>(null);
+
   // Editable fields
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -187,6 +196,7 @@ export default function IdeaDetailPage() {
         setTopicTags(data.idea.topicTags || []);
         setStrategicTags(data.idea.strategicTags || []);
         setEventTags(data.idea.eventTags || []);
+        if (data.idea.customerId) setSelectedCustomerId(data.idea.customerId);
       }
       setContentObjects(data.contentObjects || []);
     } catch (err) {
@@ -199,6 +209,76 @@ export default function IdeaDetailPage() {
   useEffect(() => {
     fetchIdea();
   }, [fetchIdea]);
+
+  // Fetch customers
+  useEffect(() => {
+    fetch("/api/customers?status=active&limit=200")
+      .then((r) => r.json())
+      .then((d) => setCustomers(d.customers || []))
+      .catch(() => {});
+  }, []);
+
+  // Fetch CU definitions
+  useEffect(() => {
+    fetch("/api/content-unit-definitions")
+      .then((r) => r.json())
+      .then((d) => setCuDefinitions(d.definitions || []))
+      .catch(() => {});
+  }, []);
+
+  // When customer changes, fetch their contracts
+  useEffect(() => {
+    if (!selectedCustomerId) {
+      setCustomerContracts([]);
+      setSelectedContractId("");
+      setContractBalance(null);
+      return;
+    }
+    fetch(`/api/customers/${selectedCustomerId}/contracts`)
+      .then((r) => r.json())
+      .then((d) => {
+        const active = (d.contracts || []).filter((c: any) => c.status === "active");
+        setCustomerContracts(active);
+        if (active.length === 1) {
+          setSelectedContractId(active[0].id);
+          const total = (active[0].totalContentUnits || 0) + (active[0].rolloverUnits || 0);
+          const used = active[0].usedContentUnits || 0;
+          setContractBalance({ total, used, remaining: total - used });
+        } else {
+          setSelectedContractId("");
+          setContractBalance(null);
+        }
+      })
+      .catch(() => {});
+  }, [selectedCustomerId]);
+
+  // When contract changes, update balance
+  useEffect(() => {
+    if (!selectedContractId) {
+      setContractBalance(null);
+      return;
+    }
+    const c = customerContracts.find((ct: any) => ct.id === selectedContractId);
+    if (c) {
+      const total = (c.totalContentUnits || 0) + (c.rolloverUnits || 0);
+      const used = c.usedContentUnits || 0;
+      setContractBalance({ total, used, remaining: total - used });
+    }
+  }, [selectedContractId, customerContracts]);
+
+  // Auto-fill CU cost when content type changes
+  useEffect(() => {
+    if (cuDefinitions.length > 0 && commissionContentType) {
+      // Find a matching definition by category or name
+      const match = cuDefinitions.find((d: any) =>
+        d.formatName?.toLowerCase().includes(commissionContentType) ||
+        d.category === commissionContentType
+      );
+      if (match) {
+        setCuCost(String(match.defaultContentUnits));
+      }
+    }
+  }, [commissionContentType, cuDefinitions]);
 
   const saveIdea = async (updates: any) => {
     setSaving(true);
@@ -273,12 +353,22 @@ export default function IdeaDetailPage() {
   const handleCommission = async () => {
     setCommissioning(true);
     try {
+      const payload: any = { contentType: commissionContentType };
+      if (selectedCustomerId) payload.customerId = selectedCustomerId;
+      if (selectedContractId) payload.contractId = selectedContractId;
+      if (cuCost) payload.contentUnits = parseFloat(cuCost);
+
       const res = await fetch(`/api/ideas/${ideaId}/commission`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contentType: commissionContentType }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
+      if (data.error) {
+        alert(data.error);
+        setCommissioning(false);
+        return;
+      }
       if (data.contentObject?.id) {
         router.push(`/content/${data.contentObject.id}`);
       }
@@ -712,6 +802,83 @@ export default function IdeaDetailPage() {
                   </div>
                 </div>
 
+                {/* Customer selector */}
+                {customers.length > 0 && (
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Customer</label>
+                    <select
+                      value={selectedCustomerId}
+                      onChange={(e) => {
+                        setSelectedCustomerId(e.target.value);
+                        saveIdea({ customerId: e.target.value || null });
+                      }}
+                      className="w-full h-8 rounded-md border bg-background px-2 text-sm"
+                    >
+                      <option value="">No customer</option>
+                      {customers.map((c: any) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Contract selector (shown if customer selected) */}
+                {selectedCustomerId && customerContracts.length > 0 && (
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Contract</label>
+                    <select
+                      value={selectedContractId}
+                      onChange={(e) => setSelectedContractId(e.target.value)}
+                      className="w-full h-8 rounded-md border bg-background px-2 text-sm"
+                    >
+                      <option value="">Select contract...</option>
+                      {customerContracts.map((c: any) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} ({((c.totalContentUnits || 0) + (c.rolloverUnits || 0) - (c.usedContentUnits || 0)).toFixed(1)} CU left)
+                        </option>
+                      ))}
+                    </select>
+                    {contractBalance && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${
+                              contractBalance.remaining < parseFloat(cuCost || "0")
+                                ? "bg-red-500"
+                                : "bg-blue-500"
+                            }`}
+                            style={{ width: `${contractBalance.total > 0 ? Math.min(100, (contractBalance.used / contractBalance.total) * 100) : 0}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                          {contractBalance.remaining.toFixed(1)} CU left
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* CU cost */}
+                {selectedContractId && (
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Content Units Cost</label>
+                    <Input
+                      type="number"
+                      step="0.05"
+                      min="0"
+                      value={cuCost}
+                      onChange={(e) => setCuCost(e.target.value)}
+                      placeholder="e.g. 1.0"
+                      className="h-8 text-sm"
+                    />
+                    {contractBalance && cuCost && parseFloat(cuCost) > contractBalance.remaining && (
+                      <p className="text-[11px] text-red-500 mt-1 font-medium">
+                        ⚠ Insufficient balance ({contractBalance.remaining.toFixed(1)} CU available)
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <div>
                   <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Content Type</label>
                   <div className="grid grid-cols-2 gap-1.5">
@@ -735,7 +902,7 @@ export default function IdeaDetailPage() {
                 <Button
                   className="w-full gap-2 bg-violet-600 hover:bg-violet-700 text-white shadow-md"
                   onClick={handleCommission}
-                  disabled={commissioning}
+                  disabled={commissioning || (!!selectedContractId && !!cuCost && contractBalance !== null && parseFloat(cuCost) > contractBalance.remaining)}
                 >
                   {commissioning ? (
                     <Loader2 className="h-4 w-4 animate-spin" />

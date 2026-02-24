@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { ideas, contentObjects } from "@/lib/db/schema";
+import { ideas, contentObjects, customers } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 
 // GET /api/ideas/[id]
@@ -22,8 +22,16 @@ export async function GET(
       .from(contentObjects)
       .where(eq(contentObjects.ideaId, id));
 
+    // Fetch customer if assigned
+    let customer = null;
+    if (idea.customerId) {
+      const [c] = await db.select().from(customers).where(eq(customers.id, idea.customerId)).limit(1);
+      customer = c || null;
+    }
+
     return NextResponse.json({
       idea,
+      customer,
       contentObjectCount: linkedContent.length,
       contentObjects: linkedContent,
     });
@@ -53,6 +61,7 @@ export async function PUT(
       updateData.predictedEngagementScore = body.predictedEngagementScore;
     if (body.authorityScore !== undefined) updateData.authorityScore = body.authorityScore;
     if (body.sourceType !== undefined) updateData.sourceType = body.sourceType;
+    if (body.customerId !== undefined) updateData.customerId = body.customerId || null;
 
     const [updated] = await db
       .update(ideas)

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { contentObjects, productionTasks, posts, contentPerformance, ideas, promoDrafts } from "@/lib/db/schema";
+import { contentObjects, productionTasks, posts, contentPerformance, ideas, promoDrafts, customers, contracts } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 
 // GET /api/content-objects/[id]
@@ -42,9 +42,24 @@ export async function GET(
       .from(promoDrafts)
       .where(eq(promoDrafts.contentObjectId, id));
 
+    // Fetch customer and contract if assigned
+    let customer = null;
+    if (obj.customerId) {
+      const [c] = await db.select().from(customers).where(eq(customers.id, obj.customerId)).limit(1);
+      customer = c || null;
+    }
+
+    let contract = null;
+    if (obj.contractId) {
+      const [ct] = await db.select().from(contracts).where(eq(contracts.id, obj.contractId)).limit(1);
+      contract = ct || null;
+    }
+
     return NextResponse.json({
       contentObject: obj,
       idea: linkedIdea || null,
+      customer,
+      contract,
       tasks,
       posts: linkedPosts,
       performance: perf || null,
@@ -70,6 +85,7 @@ export async function PUT(
       "assignedWriterId", "assignedEditorId", "assignedProducerId",
       "formatTags", "campaignTags", "evergreenFlag",
       "externalDocUrl", "socialCopyDocUrl",
+      "customerId", "contractId", "contentUnits",
     ];
 
     for (const field of fields) {

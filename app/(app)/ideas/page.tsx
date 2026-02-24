@@ -51,6 +51,8 @@ function IdeasPageContent() {
   const [sortBy, setSortBy] = useState("date");
   const [search, setSearch] = useState("");
   const [suggesting, setSuggesting] = useState(false);
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [customerFilter, setCustomerFilter] = useState("");
 
   // Sync URL param changes (e.g. sidebar click while on ideas page)
   useEffect(() => {
@@ -58,11 +60,20 @@ function IdeasPageContent() {
     setActiveTab(newTab);
   }, [statusParam]);
 
+  // Fetch customers for filter dropdown
+  useEffect(() => {
+    fetch("/api/customers?status=active&limit=200")
+      .then((r) => r.json())
+      .then((d) => setCustomers(d.customers || []))
+      .catch(() => {});
+  }, []);
+
   const fetchIdeas = useCallback(async () => {
     setLoading(true);
     try {
       let url = `/api/ideas?sortBy=${sortBy}&limit=100`;
       if (activeTab !== "all") url += `&status=${activeTab}`;
+      if (customerFilter) url += `&customerId=${customerFilter}`;
       const res = await fetch(url);
       const data = await res.json();
       setIdeas(data.ideas || []);
@@ -71,7 +82,7 @@ function IdeasPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [activeTab, sortBy]);
+  }, [activeTab, sortBy, customerFilter]);
 
   useEffect(() => {
     fetchIdeas();
@@ -192,6 +203,19 @@ function IdeasPageContent() {
           />
         </div>
 
+        {customers.length > 0 && (
+          <select
+            value={customerFilter}
+            onChange={(e) => setCustomerFilter(e.target.value)}
+            className="h-9 rounded-md border bg-background px-3 text-sm"
+          >
+            <option value="">All Customers</option>
+            {customers.map((c: any) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        )}
+
         <Button
           variant="outline"
           size="sm"
@@ -292,6 +316,18 @@ function IdeasPageContent() {
                     ))}
                   </div>
                 )}
+
+                {/* Customer badge */}
+                {idea.customerId && (() => {
+                  const cust = customers.find((c: any) => c.id === idea.customerId);
+                  return cust ? (
+                    <div className="mb-3">
+                      <span className="text-[10px] bg-emerald-500/10 text-emerald-600 rounded-full px-2 py-0.5 font-medium">
+                        {cust.name}
+                      </span>
+                    </div>
+                  ) : null;
+                })()}
 
                 {/* Score + date */}
                 <div className="flex items-center justify-between text-xs text-muted-foreground">

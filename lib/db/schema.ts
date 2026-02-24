@@ -97,6 +97,27 @@ export const promoDraftStatusEnum = pgEnum("promo_draft_status", [
   "published",
 ]);
 
+// Customer & Contract Enums
+export const customerStatusEnum = pgEnum("customer_status", [
+  "active",
+  "inactive",
+  "archived",
+]);
+export const contractStatusEnum = pgEnum("contract_status", [
+  "draft",
+  "active",
+  "completed",
+  "expired",
+]);
+export const cuCategoryEnum = pgEnum("cu_category", [
+  "blogs",
+  "video",
+  "animation",
+  "visuals",
+  "social",
+  "other",
+]);
+
 // Tables
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -254,6 +275,65 @@ export const activityLog = pgTable("activity_log", {
 });
 
 // ============================================================
+// Customers & Contracts
+// ============================================================
+
+export const customers = pgTable("customers", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspaces.id)
+    .notNull(),
+  name: text("name").notNull(),
+  slug: text("slug").notNull(),
+  logoUrl: text("logo_url"),
+  website: text("website"),
+  primaryContactName: text("primary_contact_name"),
+  primaryContactEmail: text("primary_contact_email"),
+  industry: text("industry"),
+  notes: text("notes"),
+  status: customerStatusEnum("status").default("active").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const contracts = pgTable("contracts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  customerId: uuid("customer_id")
+    .references(() => customers.id, { onDelete: "cascade" })
+    .notNull(),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspaces.id)
+    .notNull(),
+  name: text("name").notNull(),
+  totalContentUnits: real("total_content_units").notNull(),
+  usedContentUnits: real("used_content_units").default(0).notNull(),
+  rolloverUnits: real("rollover_units").default(0).notNull(),
+  monthlyFee: real("monthly_fee"),
+  status: contractStatusEnum("status").default("draft").notNull(),
+  startDate: timestamp("start_date").notNull(),
+  endDate: timestamp("end_date").notNull(),
+  renewalDate: timestamp("renewal_date"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const contentUnitDefinitions = pgTable("content_unit_definitions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspaces.id)
+    .notNull(),
+  category: cuCategoryEnum("category").notNull(),
+  formatName: text("format_name").notNull(),
+  description: text("description"),
+  defaultContentUnits: real("default_content_units").notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  sortOrder: integer("sort_order").default(0).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// ============================================================
 // Ideation & Content Intelligence Layer
 // ============================================================
 
@@ -274,6 +354,7 @@ export const ideas = pgTable("ideas", {
   predictedEngagementScore: real("predicted_engagement_score"),
   authorityScore: real("authority_score"),
   status: ideaStatusEnum("status").default("submitted").notNull(),
+  customerId: uuid("customer_id").references(() => customers.id),
   createdBy: uuid("created_by")
     .references(() => users.id)
     .notNull(),
@@ -301,6 +382,9 @@ export const contentObjects = pgTable("content_objects", {
   formatTags: text("format_tags").array(),
   campaignTags: text("campaign_tags").array(),
   evergreenFlag: boolean("evergreen_flag").default(false).notNull(),
+  customerId: uuid("customer_id").references(() => customers.id),
+  contractId: uuid("contract_id").references(() => contracts.id),
+  contentUnits: real("content_units"),
   createdBy: uuid("created_by")
     .references(() => users.id)
     .notNull(),

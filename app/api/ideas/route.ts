@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { ideas } from "@/lib/db/schema";
-import { eq, desc, asc, sql } from "drizzle-orm";
+import { eq, desc, asc, sql, and } from "drizzle-orm";
 import { resolveWorkspaceAndUser } from "@/lib/api-utils";
 
 // GET /api/ideas — list ideas
@@ -9,6 +9,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const status = searchParams.get("status");
   const topic = searchParams.get("topic");
+  const customerId = searchParams.get("customerId");
   const sortBy = searchParams.get("sortBy") || "date";
   const limit = parseInt(searchParams.get("limit") || "50");
   const offset = parseInt(searchParams.get("offset") || "0");
@@ -25,8 +26,12 @@ export async function GET(req: NextRequest) {
       conditions.push(sql`${ideas.topicTags} @> ARRAY[${topic}]::text[]`);
     }
 
+    if (customerId) {
+      conditions.push(eq(ideas.customerId, customerId));
+    }
+
     if (conditions.length > 0) {
-      query = query.where(conditions.length === 1 ? conditions[0] : sql`${conditions[0]} AND ${conditions[1]}`) as any;
+      query = query.where(conditions.length === 1 ? conditions[0] : and(...conditions)) as any;
     }
 
     const orderCol =
@@ -49,7 +54,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { title, description, sourceType, topicTags, strategicTags, createdBy, workspaceId } = body;
+    const { title, description, sourceType, topicTags, strategicTags, createdBy, workspaceId, customerId: bodyCustomerId } = body;
 
     if (!title) {
       return NextResponse.json({ error: "Title is required" }, { status: 400 });
@@ -67,6 +72,7 @@ export async function POST(req: NextRequest) {
         topicTags: topicTags || [],
         strategicTags: strategicTags || [],
         createdBy: resolved.createdBy,
+        customerId: bodyCustomerId || null,
       })
       .returning();
 
