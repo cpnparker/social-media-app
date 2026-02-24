@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
@@ -136,6 +136,7 @@ interface SidebarProps {
 
 export function Sidebar({ onClose }: SidebarProps) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [inboxCount, setInboxCount] = useState(0);
   const teamCtx = useTeamSafe();
 
@@ -182,11 +183,26 @@ export function Sidebar({ onClose }: SidebarProps) {
   }, [fetchInboxCount]);
 
   const checkActive = (href: string) => {
-    const basePath = href.split("?")[0];
-    return (
-      pathname === basePath ||
-      (basePath !== "/dashboard" && pathname.startsWith(basePath))
-    );
+    const [basePath, queryString] = href.split("?");
+
+    // If the href has query params, require exact match on both path AND the specific param
+    if (queryString) {
+      if (pathname !== basePath) return false;
+      const hrefParams = new URLSearchParams(queryString);
+      let allMatch = true;
+      hrefParams.forEach((value, key) => {
+        if (searchParams.get(key) !== value) allMatch = false;
+      });
+      return allMatch;
+    }
+
+    // No query params: match path, but NOT if current URL has query params that belong to a sub-item
+    // (e.g. /ideas should not highlight when on /ideas?status=new)
+    if (pathname === basePath) {
+      return searchParams.toString() === "";
+    }
+
+    return false;
   };
 
   return (
