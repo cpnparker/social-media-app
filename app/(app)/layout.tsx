@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopBar } from "@/components/layout/TopBar";
 import { TeamProvider } from "@/lib/contexts/TeamContext";
@@ -28,7 +28,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           lg:translate-x-0
         `}
       >
-        <Sidebar onClose={() => setSidebarOpen(false)} />
+        <Suspense>
+          <Sidebar onClose={() => setSidebarOpen(false)} />
+        </Suspense>
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
