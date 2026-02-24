@@ -69,9 +69,8 @@ const navSections: NavSection[] = [
     defaultOpen: true,
     items: [
       { label: "New Ideas", href: "/ideas?status=new" },
-      { label: "Pending Ideas", href: "/ideas?status=pending" },
-      { label: "Commissioned Ideas", href: "/ideas?status=commissioned" },
-      { label: "Spiked Ideas", href: "/ideas?status=spiked" },
+      { label: "Commissioned", href: "/ideas?status=commissioned" },
+      { label: "Spiked", href: "/ideas?status=spiked" },
     ],
   },
   {

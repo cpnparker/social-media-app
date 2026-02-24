@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -10,6 +10,18 @@ import {
   FileText,
   Trash2,
   X,
+  ImagePlus,
+  Upload,
+  Search,
+  Wand2,
+  ExternalLink,
+  Calendar,
+  Flag,
+  Hash,
+  Rocket,
+  BarChart3,
+  Clock,
+  LinkIcon,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,19 +31,125 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import Link from "next/link";
 
-const statusColors: Record<string, string> = {
-  submitted: "bg-blue-500/10 text-blue-500",
-  shortlisted: "bg-amber-500/10 text-amber-500",
-  commissioned: "bg-green-500/10 text-green-500",
-  rejected: "bg-red-500/10 text-red-500",
+const statusConfig: Record<string, { color: string; bg: string; label: string }> = {
+  submitted: { color: "text-blue-600", bg: "bg-blue-500/10", label: "New" },
+  commissioned: { color: "text-green-600", bg: "bg-green-500/10", label: "Commissioned" },
+  rejected: { color: "text-red-500", bg: "bg-red-500/10", label: "Spiked" },
+  shortlisted: { color: "text-amber-500", bg: "bg-amber-500/10", label: "Pending" },
 };
 
-const statusFlow = ["submitted", "shortlisted", "commissioned", "rejected"];
+const contentTypes = [
+  { value: "article", label: "Article", icon: "📝" },
+  { value: "video", label: "Video", icon: "🎬" },
+  { value: "graphic", label: "Graphic", icon: "🎨" },
+  { value: "thread", label: "Thread", icon: "🧵" },
+  { value: "newsletter", label: "Newsletter", icon: "📧" },
+  { value: "podcast", label: "Podcast", icon: "🎙️" },
+  { value: "other", label: "Other", icon: "📋" },
+];
+
+// Auto-linkify URLs in text
+function LinkifiedText({ text }: { text: string }) {
+  if (!text) return null;
+  const urlRegex = /(https?:\/\/[^\s<]+[^\s<.,;:!?)}\]"'])/g;
+  const parts = text.split(urlRegex);
+
+  return (
+    <span>
+      {parts.map((part, i) => {
+        if (urlRegex.test(part)) {
+          urlRegex.lastIndex = 0;
+          return (
+            <a
+              key={i}
+              href={part}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-500 hover:text-blue-600 underline underline-offset-2 inline-flex items-center gap-0.5"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {part.length > 60 ? part.substring(0, 57) + "..." : part}
+              <ExternalLink className="h-3 w-3 inline shrink-0" />
+            </a>
+          );
+        }
+        return <span key={i}>{part}</span>;
+      })}
+    </span>
+  );
+}
+
+// Tag input component with colored styling
+function TagSection({
+  label,
+  icon,
+  tags,
+  color,
+  inputValue,
+  onInputChange,
+  onAdd,
+  onRemove,
+  placeholder,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  tags: string[];
+  color: string;
+  inputValue: string;
+  onInputChange: (v: string) => void;
+  onAdd: (tag: string) => void;
+  onRemove: (tag: string) => void;
+  placeholder: string;
+}) {
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 mb-2">
+        {icon}
+        <label className="text-sm font-medium text-foreground/80">{label}</label>
+        <span className="text-xs text-muted-foreground ml-auto">{tags.length}</span>
+      </div>
+      {tags.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {tags.map((tag) => (
+            <span
+              key={tag}
+              className={`text-xs ${color} rounded-full px-2.5 py-1 flex items-center gap-1 font-medium`}
+            >
+              {tag}
+              <button
+                onClick={() => onRemove(tag)}
+                className="hover:opacity-70 transition-opacity"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <Input
+        value={inputValue}
+        onChange={(e) => onInputChange(e.target.value)}
+        placeholder={placeholder}
+        className="h-8 text-sm bg-muted/30 border-dashed"
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            const tag = inputValue.trim().toLowerCase();
+            if (tag && !tags.includes(tag)) {
+              onAdd(tag);
+            }
+          }
+        }}
+      />
+    </div>
+  );
+}
 
 export default function IdeaDetailPage() {
   const params = useParams();
   const router = useRouter();
   const ideaId = params.id as string;
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [idea, setIdea] = useState<any>(null);
   const [contentObjects, setContentObjects] = useState<any[]>([]);
@@ -40,16 +158,21 @@ export default function IdeaDetailPage() {
   const [scoring, setScoring] = useState(false);
   const [autoTagging, setAutoTagging] = useState(false);
   const [commissioning, setCommissioning] = useState(false);
-  const [showCommissionDialog, setShowCommissionDialog] = useState(false);
   const [commissionContentType, setCommissionContentType] = useState("article");
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [generatingImage, setGeneratingImage] = useState(false);
 
   // Editable fields
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [imageUrl, setImageUrl] = useState("");
   const [topicTags, setTopicTags] = useState<string[]>([]);
   const [strategicTags, setStrategicTags] = useState<string[]>([]);
-  const [tagInput, setTagInput] = useState("");
-  const [strategicInput, setStrategicInput] = useState("");
+  const [eventTags, setEventTags] = useState<string[]>([]);
+  const [topicInput, setTopicInput] = useState("");
+  const [campaignInput, setCampaignInput] = useState("");
+  const [eventInput, setEventInput] = useState("");
+  const [editingDescription, setEditingDescription] = useState(false);
 
   const fetchIdea = useCallback(async () => {
     setLoading(true);
@@ -60,8 +183,10 @@ export default function IdeaDetailPage() {
         setIdea(data.idea);
         setTitle(data.idea.title);
         setDescription(data.idea.description || "");
+        setImageUrl(data.idea.imageUrl || "");
         setTopicTags(data.idea.topicTags || []);
         setStrategicTags(data.idea.strategicTags || []);
+        setEventTags(data.idea.eventTags || []);
       }
       setContentObjects(data.contentObjects || []);
     } catch (err) {
@@ -92,10 +217,6 @@ export default function IdeaDetailPage() {
     }
   };
 
-  const handleStatusChange = async (newStatus: string) => {
-    await saveIdea({ status: newStatus });
-  };
-
   const handleAutoTag = async () => {
     setAutoTagging(true);
     try {
@@ -105,13 +226,11 @@ export default function IdeaDetailPage() {
         body: JSON.stringify({ action: "auto-tag", title, description }),
       });
       const data = await res.json();
-      if (data.topicTags?.length) {
-        setTopicTags(data.topicTags);
-        await saveIdea({ topicTags: data.topicTags, strategicTags: data.strategicTags || strategicTags });
-      }
-      if (data.strategicTags?.length) {
-        setStrategicTags(data.strategicTags);
-      }
+      const newTopics = data.topicTags || topicTags;
+      const newCampaigns = data.strategicTags || strategicTags;
+      setTopicTags(newTopics);
+      setStrategicTags(newCampaigns);
+      await saveIdea({ topicTags: newTopics, strategicTags: newCampaigns });
     } catch (err) {
       console.error("Auto-tag failed:", err);
     } finally {
@@ -122,7 +241,6 @@ export default function IdeaDetailPage() {
   const handleScore = async () => {
     setScoring(true);
     try {
-      // Optionally fetch performance model
       let performanceModel = null;
       try {
         const modelRes = await fetch("/api/profile-performance");
@@ -168,7 +286,6 @@ export default function IdeaDetailPage() {
       console.error("Commission failed:", err);
     } finally {
       setCommissioning(false);
-      setShowCommissionDialog(false);
     }
   };
 
@@ -182,9 +299,66 @@ export default function IdeaDetailPage() {
     }
   };
 
-  const handleSaveFields = () => {
-    saveIdea({ title, description, topicTags, strategicTags });
+  const handleImageUpload = async (file: File) => {
+    setUploadingImage(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/media/upload", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (data.url) {
+        setImageUrl(data.url);
+        await saveIdea({ imageUrl: data.url });
+      }
+    } catch (err) {
+      console.error("Image upload failed:", err);
+    } finally {
+      setUploadingImage(false);
+    }
   };
+
+  const handleGenerateImageSuggestions = async () => {
+    setGeneratingImage(true);
+    try {
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "generate",
+          topic: `Suggest 3 image search keywords for a content piece titled "${title}". ${description ? `Description: ${description.substring(0, 200)}` : ""}. Return ONLY a comma-separated list of 3 search terms, nothing else.`,
+          platform: "internal",
+        }),
+      });
+      const data = await res.json();
+      if (data.content) {
+        const searchQuery = encodeURIComponent(data.content.split(",")[0]?.trim() || title);
+        window.open(`https://unsplash.com/s/photos/${searchQuery}`, "_blank");
+      }
+    } catch (err) {
+      console.error("Image suggestion failed:", err);
+      // Fallback: open search with title
+      const searchQuery = encodeURIComponent(title);
+      window.open(`https://unsplash.com/s/photos/${searchQuery}`, "_blank");
+    } finally {
+      setGeneratingImage(false);
+    }
+  };
+
+  const handleRemoveImage = async () => {
+    setImageUrl("");
+    await saveIdea({ imageUrl: "" });
+  };
+
+  const handleSaveFields = () => {
+    saveIdea({ title, description, topicTags, strategicTags, eventTags, imageUrl });
+  };
+
+  const canCommission = idea && idea.status !== "commissioned" && idea.status !== "rejected";
+  const isCommissioned = idea?.status === "commissioned";
+  const isRejected = idea?.status === "rejected";
 
   if (loading) {
     return (
@@ -205,160 +379,278 @@ export default function IdeaDetailPage() {
     );
   }
 
+  const statusInfo = statusConfig[idea.status] || statusConfig.submitted;
+  const score = idea.predictedEngagementScore;
+  const scoreColor = score >= 70 ? "text-green-500" : score >= 40 ? "text-amber-500" : "text-red-400";
+
   return (
-    <div className="space-y-6 max-w-4xl">
-      {/* Header */}
+    <div className="space-y-6 max-w-5xl">
+      {/* Top navigation bar */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => router.back()} className="h-9 w-9">
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold tracking-tight">Idea Details</h1>
-              <Badge
-                variant="secondary"
-                className={`${statusColors[idea.status] || ""} border-0 capitalize`}
-              >
-                {idea.status}
-              </Badge>
-            </div>
-            <p className="text-sm text-muted-foreground mt-0.5">
-              Created {new Date(idea.createdAt).toLocaleDateString()}
-            </p>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleDelete}
-            disabled={contentObjects.length > 0}
-            className="gap-2 text-red-500 hover:text-red-600"
+        <button
+          onClick={() => router.back()}
+          className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to Ideas
+        </button>
+        <div className="flex items-center gap-2">
+          {saving && (
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Saving...
+            </span>
+          )}
+          <Badge
+            variant="secondary"
+            className={`${statusInfo.bg} ${statusInfo.color} border-0 capitalize font-medium`}
           >
-            <Trash2 className="h-4 w-4" />
-            Delete
-          </Button>
+            {statusInfo.label}
+          </Badge>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Main content */}
-        <div className="lg:col-span-2 space-y-6">
+        {/* ───── LEFT: Main content ───── */}
+        <div className="lg:col-span-2 space-y-5">
+
+          {/* Image Section */}
+          <Card className="border-0 shadow-sm overflow-hidden">
+            {imageUrl ? (
+              <div className="relative group">
+                <img
+                  src={imageUrl}
+                  alt={title}
+                  className="w-full h-56 object-cover"
+                />
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="gap-1.5 bg-white/90 hover:bg-white text-gray-900"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Upload className="h-3.5 w-3.5" />
+                    Replace
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="gap-1.5 bg-white/90 hover:bg-white text-red-600"
+                    onClick={handleRemoveImage}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Remove
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="h-44 bg-gradient-to-br from-muted/50 to-muted flex flex-col items-center justify-center gap-3">
+                <div className="h-12 w-12 rounded-xl bg-muted-foreground/10 flex items-center justify-center">
+                  <ImagePlus className="h-6 w-6 text-muted-foreground/50" />
+                </div>
+                <p className="text-sm text-muted-foreground">Add a cover image for this idea</p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 h-8 text-xs"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploadingImage}
+                  >
+                    {uploadingImage ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                    Upload
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 h-8 text-xs"
+                    onClick={handleGenerateImageSuggestions}
+                    disabled={generatingImage}
+                  >
+                    {generatingImage ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
+                    AI Search
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 h-8 text-xs"
+                    onClick={() => {
+                      const query = encodeURIComponent(title);
+                      window.open(`https://unsplash.com/s/photos/${query}`, "_blank");
+                    }}
+                  >
+                    <Search className="h-3.5 w-3.5" />
+                    Browse
+                  </Button>
+                </div>
+              </div>
+            )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/gif,image/webp"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleImageUpload(file);
+                e.target.value = "";
+              }}
+            />
+          </Card>
+
+          {/* Title & Description */}
           <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">Details</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="p-5 space-y-4">
               <div>
-                <label className="text-sm font-medium">Title</label>
                 <Input
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                   onBlur={handleSaveFields}
-                  className="mt-1"
-                />
-              </div>
-              <div>
-                <label className="text-sm font-medium">Description</label>
-                <Textarea
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  onBlur={handleSaveFields}
-                  rows={4}
-                  className="mt-1"
+                  className="text-lg font-semibold border-0 px-0 h-auto focus-visible:ring-0 bg-transparent shadow-none"
+                  placeholder="Idea title..."
                 />
               </div>
 
-              {/* Topic Tags */}
+              <Separator />
+
               <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-sm font-medium">Topic Tags</label>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleAutoTag}
-                    disabled={autoTagging}
-                    className="gap-1 text-xs h-7"
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-1.5">
+                    <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+                    <label className="text-sm font-medium text-muted-foreground">Description</label>
+                  </div>
+                  {description && !editingDescription && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs px-2"
+                      onClick={() => setEditingDescription(true)}
+                    >
+                      Edit
+                    </Button>
+                  )}
+                </div>
+
+                {editingDescription || !description ? (
+                  <Textarea
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    onBlur={() => {
+                      handleSaveFields();
+                      if (description) setEditingDescription(false);
+                    }}
+                    onFocus={() => setEditingDescription(true)}
+                    rows={5}
+                    placeholder="Describe your idea... URLs will be automatically linked."
+                    className="resize-none text-sm"
+                  />
+                ) : (
+                  <div
+                    className="text-sm text-foreground/80 whitespace-pre-wrap leading-relaxed cursor-text min-h-[80px] p-3 rounded-md hover:bg-muted/30 transition-colors"
+                    onClick={() => setEditingDescription(true)}
                   >
-                    {autoTagging ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
-                    Auto-tag
-                  </Button>
-                </div>
-                <div className="flex flex-wrap gap-1.5 mb-2">
-                  {topicTags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="text-xs bg-blue-500/10 text-blue-500 rounded-full px-2.5 py-1 flex items-center gap-1"
-                    >
-                      {tag}
-                      <button onClick={() => {
-                        const next = topicTags.filter((t) => t !== tag);
-                        setTopicTags(next);
-                        saveIdea({ topicTags: next });
-                      }}>
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-                <Input
-                  value={tagInput}
-                  onChange={(e) => setTagInput(e.target.value)}
-                  placeholder="Add topic tag..."
-                  className="h-8 text-sm"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      const tag = tagInput.trim().toLowerCase();
-                      if (tag && !topicTags.includes(tag)) {
-                        const next = [...topicTags, tag];
-                        setTopicTags(next);
-                        setTagInput("");
-                        saveIdea({ topicTags: next });
-                      }
-                    }
-                  }}
-                />
+                    <LinkifiedText text={description} />
+                  </div>
+                )}
+
+                {description && !editingDescription && (
+                  <p className="text-[11px] text-muted-foreground mt-1.5 flex items-center gap-1">
+                    <LinkIcon className="h-3 w-3" />
+                    URLs are automatically linked
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Tags: Topics, Campaigns, Events */}
+          <Card className="border-0 shadow-sm">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-semibold">Classification</h3>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleAutoTag}
+                  disabled={autoTagging}
+                  className="gap-1.5 text-xs h-7"
+                >
+                  {autoTagging ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3 w-3 text-violet-500" />
+                  )}
+                  AI Auto-tag
+                </Button>
               </div>
 
-              {/* Strategic Tags */}
-              <div>
-                <label className="text-sm font-medium">Strategic Tags</label>
-                <div className="flex flex-wrap gap-1.5 mt-1 mb-2">
-                  {strategicTags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="text-xs bg-purple-500/10 text-purple-500 rounded-full px-2.5 py-1 flex items-center gap-1"
-                    >
-                      {tag}
-                      <button onClick={() => {
-                        const next = strategicTags.filter((t) => t !== tag);
-                        setStrategicTags(next);
-                        saveIdea({ strategicTags: next });
-                      }}>
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-                <Input
-                  value={strategicInput}
-                  onChange={(e) => setStrategicInput(e.target.value)}
-                  placeholder="Add strategic tag..."
-                  className="h-8 text-sm"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      const tag = strategicInput.trim().toLowerCase();
-                      if (tag && !strategicTags.includes(tag)) {
-                        const next = [...strategicTags, tag];
-                        setStrategicTags(next);
-                        setStrategicInput("");
-                        saveIdea({ strategicTags: next });
-                      }
-                    }
+              <div className="space-y-4">
+                <TagSection
+                  label="Topics"
+                  icon={<Hash className="h-3.5 w-3.5 text-blue-500" />}
+                  tags={topicTags}
+                  color="bg-blue-500/10 text-blue-600"
+                  inputValue={topicInput}
+                  onInputChange={setTopicInput}
+                  onAdd={(tag) => {
+                    const next = [...topicTags, tag];
+                    setTopicTags(next);
+                    setTopicInput("");
+                    saveIdea({ topicTags: next });
                   }}
+                  onRemove={(tag) => {
+                    const next = topicTags.filter((t) => t !== tag);
+                    setTopicTags(next);
+                    saveIdea({ topicTags: next });
+                  }}
+                  placeholder="Add topic (press Enter)..."
+                />
+
+                <Separator className="my-1" />
+
+                <TagSection
+                  label="Campaigns"
+                  icon={<Flag className="h-3.5 w-3.5 text-purple-500" />}
+                  tags={strategicTags}
+                  color="bg-purple-500/10 text-purple-600"
+                  inputValue={campaignInput}
+                  onInputChange={setCampaignInput}
+                  onAdd={(tag) => {
+                    const next = [...strategicTags, tag];
+                    setStrategicTags(next);
+                    setCampaignInput("");
+                    saveIdea({ strategicTags: next });
+                  }}
+                  onRemove={(tag) => {
+                    const next = strategicTags.filter((t) => t !== tag);
+                    setStrategicTags(next);
+                    saveIdea({ strategicTags: next });
+                  }}
+                  placeholder="Add campaign (press Enter)..."
+                />
+
+                <Separator className="my-1" />
+
+                <TagSection
+                  label="Events"
+                  icon={<Calendar className="h-3.5 w-3.5 text-amber-500" />}
+                  tags={eventTags}
+                  color="bg-amber-500/10 text-amber-600"
+                  inputValue={eventInput}
+                  onInputChange={setEventInput}
+                  onAdd={(tag) => {
+                    const next = [...eventTags, tag];
+                    setEventTags(next);
+                    setEventInput("");
+                    saveIdea({ eventTags: next });
+                  }}
+                  onRemove={(tag) => {
+                    const next = eventTags.filter((t) => t !== tag);
+                    setEventTags(next);
+                    saveIdea({ eventTags: next });
+                  }}
+                  placeholder="Add event (press Enter)..."
                 />
               </div>
             </CardContent>
@@ -367,24 +659,35 @@ export default function IdeaDetailPage() {
           {/* Linked Content Objects */}
           {contentObjects.length > 0 && (
             <Card className="border-0 shadow-sm">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Linked Content</CardTitle>
+              <CardHeader className="pb-2 px-5 pt-5">
+                <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-muted-foreground" />
+                  Commissioned Content
+                  <Badge variant="secondary" className="text-[10px] ml-1">
+                    {contentObjects.length}
+                  </Badge>
+                </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-2">
+              <CardContent className="px-5 pb-5 space-y-2">
                 {contentObjects.map((obj: any) => (
                   <Link
                     key={obj.id}
                     href={`/content/${obj.id}`}
-                    className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted transition-colors"
+                    className="flex items-center gap-3 p-3 rounded-lg bg-muted/30 hover:bg-muted/60 transition-colors group"
                   >
-                    <FileText className="h-4 w-4 text-muted-foreground" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">{obj.workingTitle}</p>
-                      <p className="text-xs text-muted-foreground capitalize">{obj.status}</p>
+                    <div className="h-8 w-8 rounded-lg bg-green-500/10 flex items-center justify-center shrink-0">
+                      <FileText className="h-4 w-4 text-green-600" />
                     </div>
-                    <Badge variant="secondary" className="text-[10px] capitalize">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate group-hover:text-foreground">
+                        {obj.workingTitle || obj.finalTitle}
+                      </p>
+                      <p className="text-xs text-muted-foreground capitalize">{obj.status?.replace("_", " ")}</p>
+                    </div>
+                    <Badge variant="secondary" className="text-[10px] capitalize shrink-0">
                       {obj.contentType}
                     </Badge>
+                    <ExternalLink className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
                   </Link>
                 ))}
               </CardContent>
@@ -392,138 +695,180 @@ export default function IdeaDetailPage() {
           )}
         </div>
 
-        {/* Right sidebar */}
-        <div className="space-y-6">
-          {/* Score */}
-          <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base flex items-center gap-2">
-                <TrendingUp className="h-4 w-4 text-green-500" />
-                Engagement Score
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {idea.predictedEngagementScore ? (
-                <div className="text-center">
-                  <p className="text-4xl font-bold">
-                    {Math.round(idea.predictedEngagementScore)}
+        {/* ───── RIGHT: Sidebar ───── */}
+        <div className="space-y-5">
+
+          {/* Commission CTA — the primary action */}
+          {canCommission && (
+            <Card className="border-0 shadow-sm bg-gradient-to-br from-violet-500/5 via-blue-500/5 to-cyan-500/5 ring-1 ring-violet-500/20">
+              <CardContent className="p-5 space-y-4">
+                <div className="flex items-center gap-2">
+                  <div className="h-8 w-8 rounded-lg bg-violet-500/10 flex items-center justify-center">
+                    <Rocket className="h-4 w-4 text-violet-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold">Commission Content</h3>
+                    <p className="text-[11px] text-muted-foreground">Turn this idea into content</p>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Content Type</label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {contentTypes.map((type) => (
+                      <button
+                        key={type.value}
+                        onClick={() => setCommissionContentType(type.value)}
+                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all ${
+                          commissionContentType === type.value
+                            ? "bg-violet-500/15 text-violet-700 ring-1 ring-violet-500/30"
+                            : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        }`}
+                      >
+                        <span>{type.icon}</span>
+                        {type.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <Button
+                  className="w-full gap-2 bg-violet-600 hover:bg-violet-700 text-white shadow-md"
+                  onClick={handleCommission}
+                  disabled={commissioning}
+                >
+                  {commissioning ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Rocket className="h-4 w-4" />
+                  )}
+                  Commission {contentTypes.find((t) => t.value === commissionContentType)?.label}
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Already commissioned message */}
+          {isCommissioned && contentObjects.length > 0 && (
+            <Card className="border-0 shadow-sm bg-green-500/5 ring-1 ring-green-500/20">
+              <CardContent className="p-5 text-center space-y-3">
+                <div className="h-10 w-10 rounded-full bg-green-500/10 flex items-center justify-center mx-auto">
+                  <Rocket className="h-5 w-5 text-green-600" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-green-700">Commissioned</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    This idea is now in production
                   </p>
-                  <p className="text-xs text-muted-foreground mt-1">out of 100</p>
+                </div>
+                <Link href={`/content/${contentObjects[0].id}`}>
+                  <Button variant="outline" size="sm" className="gap-1.5 w-full">
+                    <FileText className="h-3.5 w-3.5" />
+                    View Content
+                  </Button>
+                </Link>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Engagement Score */}
+          <Card className="border-0 shadow-sm">
+            <CardContent className="p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <BarChart3 className="h-4 w-4 text-emerald-500" />
+                <h3 className="text-sm font-semibold">Engagement Score</h3>
+              </div>
+
+              {score ? (
+                <div className="flex items-center gap-4 mb-3">
+                  <div className="relative h-16 w-16 shrink-0">
+                    <svg className="h-16 w-16 -rotate-90" viewBox="0 0 64 64">
+                      <circle cx="32" cy="32" r="28" fill="none" stroke="currentColor" strokeWidth="4" className="text-muted/50" />
+                      <circle
+                        cx="32" cy="32" r="28" fill="none" stroke="currentColor" strokeWidth="4"
+                        className={scoreColor}
+                        strokeDasharray={`${(score / 100) * 175.9} 175.9`}
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className={`text-lg font-bold ${scoreColor}`}>{Math.round(score)}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Predicted engagement</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {score >= 70 ? "High potential" : score >= 40 ? "Moderate potential" : "Low potential"}
+                    </p>
+                  </div>
                 </div>
               ) : (
-                <p className="text-sm text-muted-foreground text-center">
-                  Not scored yet
-                </p>
+                <div className="flex items-center gap-3 mb-3 p-3 rounded-lg bg-muted/30">
+                  <TrendingUp className="h-5 w-5 text-muted-foreground/40" />
+                  <p className="text-xs text-muted-foreground">Not yet scored. Use AI to predict engagement.</p>
+                </div>
               )}
+
               <Button
                 variant="outline"
                 size="sm"
                 onClick={handleScore}
                 disabled={scoring}
-                className="w-full mt-3 gap-2"
+                className="w-full gap-2"
               >
-                {scoring ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                {idea.predictedEngagementScore ? "Re-score" : "Score with AI"}
+                {scoring ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5 text-violet-500" />
+                )}
+                {score ? "Re-score" : "Score with AI"}
               </Button>
             </CardContent>
           </Card>
 
-          {/* Status Actions */}
+          {/* Quick Actions */}
           <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Status Actions</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {idea.status === "submitted" && (
-                <>
-                  <Button
-                    size="sm"
-                    className="w-full"
-                    onClick={() => handleStatusChange("shortlisted")}
-                    disabled={saving}
-                  >
-                    Shortlist
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    className="w-full"
-                    onClick={() => handleStatusChange("rejected")}
-                    disabled={saving}
-                  >
-                    Reject
-                  </Button>
-                </>
-              )}
-              {idea.status === "shortlisted" && !showCommissionDialog && (
-                <>
-                  <Button
-                    size="sm"
-                    className="w-full gap-2"
-                    onClick={() => setShowCommissionDialog(true)}
-                  >
-                    Commission Content
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    className="w-full"
-                    onClick={() => handleStatusChange("rejected")}
-                    disabled={saving}
-                  >
-                    Reject
-                  </Button>
-                </>
-              )}
-              {idea.status === "shortlisted" && showCommissionDialog && (
-                <div className="space-y-3">
-                  <div>
-                    <label className="text-sm font-medium">Content Type</label>
-                    <select
-                      value={commissionContentType}
-                      onChange={(e) => setCommissionContentType(e.target.value)}
-                      className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    >
-                      {["article", "video", "graphic", "thread", "newsletter", "podcast", "other"].map((t) => (
-                        <option key={t} value={t}>
-                          {t.charAt(0).toUpperCase() + t.slice(1)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <Button
-                    size="sm"
-                    className="w-full gap-2"
-                    onClick={handleCommission}
-                    disabled={commissioning}
-                  >
-                    {commissioning && <Loader2 className="h-4 w-4 animate-spin" />}
-                    Create Content
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full"
-                    onClick={() => setShowCommissionDialog(false)}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              )}
-              {idea.status === "rejected" && (
+            <CardContent className="p-5 space-y-2">
+              <h3 className="text-sm font-semibold mb-3">Actions</h3>
+
+              {isRejected && (
                 <Button
                   variant="outline"
                   size="sm"
                   className="w-full"
-                  onClick={() => handleStatusChange("submitted")}
+                  onClick={() => saveIdea({ status: "submitted" })}
                   disabled={saving}
                 >
-                  Reopen
+                  Reopen Idea
                 </Button>
               )}
-              {idea.status === "commissioned" && (
-                <p className="text-sm text-muted-foreground text-center">
-                  This idea has been commissioned into content.
+
+              {!isCommissioned && !isRejected && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full text-red-500 hover:text-red-600 hover:bg-red-500/5"
+                  onClick={() => saveIdea({ status: "rejected" })}
+                  disabled={saving}
+                >
+                  Spike Idea
+                </Button>
+              )}
+
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleDelete}
+                disabled={contentObjects.length > 0}
+                className="w-full gap-2 text-muted-foreground hover:text-red-500"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete
+              </Button>
+
+              {contentObjects.length > 0 && (
+                <p className="text-[11px] text-muted-foreground text-center">
+                  Cannot delete — has commissioned content
                 </p>
               )}
             </CardContent>
@@ -531,28 +876,41 @@ export default function IdeaDetailPage() {
 
           {/* Metadata */}
           <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Metadata</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Source</span>
-                <span className="capitalize">{idea.sourceType}</span>
-              </div>
-              <Separator />
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Created</span>
-                <span>{new Date(idea.createdAt).toLocaleDateString()}</span>
-              </div>
-              <Separator />
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Updated</span>
-                <span>{new Date(idea.updatedAt).toLocaleDateString()}</span>
-              </div>
-              <Separator />
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Content Objects</span>
-                <span>{contentObjects.length}</span>
+            <CardContent className="p-5">
+              <h3 className="text-sm font-semibold mb-3">Details</h3>
+              <div className="space-y-2.5 text-sm">
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground flex items-center gap-1.5">
+                    <Hash className="h-3 w-3" /> Source
+                  </span>
+                  <span className="capitalize text-foreground/80">{idea.sourceType}</span>
+                </div>
+                <Separator />
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground flex items-center gap-1.5">
+                    <Clock className="h-3 w-3" /> Created
+                  </span>
+                  <span className="text-foreground/80">
+                    {new Date(idea.createdAt).toLocaleDateString("en-US", {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
+                  </span>
+                </div>
+                <Separator />
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground flex items-center gap-1.5">
+                    <Clock className="h-3 w-3" /> Updated
+                  </span>
+                  <span className="text-foreground/80">
+                    {new Date(idea.updatedAt).toLocaleDateString("en-US", {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
+                  </span>
+                </div>
               </div>
             </CardContent>
           </Card>

@@ -19,17 +19,22 @@ import Link from "next/link";
 
 const statusColors: Record<string, string> = {
   submitted: "bg-blue-500/10 text-blue-500",
-  shortlisted: "bg-amber-500/10 text-amber-500",
   commissioned: "bg-green-500/10 text-green-500",
   rejected: "bg-red-500/10 text-red-500",
 };
 
-const statusTabs = ["all", "submitted", "shortlisted", "commissioned", "rejected"];
+const statusLabels: Record<string, string> = {
+  all: "All",
+  submitted: "New",
+  commissioned: "Commissioned",
+  rejected: "Spiked",
+};
+
+const statusTabs = ["all", "submitted", "commissioned", "rejected"];
 
 // Map sidebar URL params to DB status values
 const sidebarStatusMap: Record<string, string> = {
   new: "submitted",
-  pending: "shortlisted",
   commissioned: "commissioned",
   spiked: "rejected",
 };
@@ -162,17 +167,17 @@ function IdeasPageContent() {
               key={tab}
               onClick={() => {
                 setActiveTab(tab);
-                const reverseMap: Record<string, string> = { submitted: "new", shortlisted: "pending", commissioned: "commissioned", rejected: "spiked" };
+                const reverseMap: Record<string, string> = { submitted: "new", commissioned: "commissioned", rejected: "spiked" };
                 const urlStatus = reverseMap[tab];
                 router.replace(tab === "all" ? "/ideas" : `/ideas?status=${urlStatus || tab}`, { scroll: false });
               }}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors capitalize ${
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
                 activeTab === tab
                   ? "bg-background text-foreground shadow-sm"
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              {tab}
+              {statusLabels[tab] || tab}
             </button>
           ))}
         </div>
@@ -246,9 +251,9 @@ function IdeasPageContent() {
                   </h3>
                   <Badge
                     variant="secondary"
-                    className={`${statusColors[idea.status] || ""} border-0 shrink-0 text-[11px] capitalize`}
+                    className={`${statusColors[idea.status] || ""} border-0 shrink-0 text-[11px]`}
                   >
-                    {idea.status}
+                    {statusLabels[idea.status] || idea.status}
                   </Badge>
                 </div>
 
@@ -258,21 +263,29 @@ function IdeasPageContent() {
                   </p>
                 )}
 
-                {/* Tags */}
-                {(idea.topicTags?.length > 0 || idea.strategicTags?.length > 0) && (
+                {/* Tags: Topics, Campaigns, Events */}
+                {(idea.topicTags?.length > 0 || idea.strategicTags?.length > 0 || idea.eventTags?.length > 0) && (
                   <div className="flex flex-wrap gap-1 mb-3">
                     {(idea.topicTags || []).slice(0, 3).map((tag: string) => (
                       <span
-                        key={tag}
-                        className="text-[10px] bg-blue-500/10 text-blue-500 rounded-full px-2 py-0.5"
+                        key={`t-${tag}`}
+                        className="text-[10px] bg-blue-500/10 text-blue-600 rounded-full px-2 py-0.5"
                       >
                         {tag}
                       </span>
                     ))}
                     {(idea.strategicTags || []).slice(0, 2).map((tag: string) => (
                       <span
-                        key={tag}
-                        className="text-[10px] bg-purple-500/10 text-purple-500 rounded-full px-2 py-0.5"
+                        key={`c-${tag}`}
+                        className="text-[10px] bg-purple-500/10 text-purple-600 rounded-full px-2 py-0.5"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                    {(idea.eventTags || []).slice(0, 2).map((tag: string) => (
+                      <span
+                        key={`e-${tag}`}
+                        className="text-[10px] bg-amber-500/10 text-amber-600 rounded-full px-2 py-0.5"
                       >
                         {tag}
                       </span>

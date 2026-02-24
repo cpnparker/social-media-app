@@ -269,6 +269,8 @@ export const ideas = pgTable("ideas", {
   sourceMetadata: jsonb("source_metadata"),
   topicTags: text("topic_tags").array(),
   strategicTags: text("strategic_tags").array(),
+  eventTags: text("event_tags").array(),
+  imageUrl: text("image_url"),
   predictedEngagementScore: real("predicted_engagement_score"),
   authorityScore: real("authority_score"),
   status: ideaStatusEnum("status").default("submitted").notNull(),

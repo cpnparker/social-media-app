@@ -47,6 +47,8 @@ export async function PUT(
     if (body.status !== undefined) updateData.status = body.status;
     if (body.topicTags !== undefined) updateData.topicTags = body.topicTags;
     if (body.strategicTags !== undefined) updateData.strategicTags = body.strategicTags;
+    if (body.eventTags !== undefined) updateData.eventTags = body.eventTags;
+    if (body.imageUrl !== undefined) updateData.imageUrl = body.imageUrl;
     if (body.predictedEngagementScore !== undefined)
       updateData.predictedEngagementScore = body.predictedEngagementScore;
     if (body.authorityScore !== undefined) updateData.authorityScore = body.authorityScore;

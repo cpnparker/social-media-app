@@ -42,7 +42,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import LivePreviewPanel from "@/components/compose/LivePreviewPanel";
 
@@ -114,8 +114,142 @@ export default function ComposePage() {
   );
 }
 
+// Publishing progress steps
+interface PublishStep {
+  id: string;
+  label: string;
+  status: "pending" | "active" | "complete" | "error";
+  detail?: string;
+}
+
+function PublishingOverlay({
+  steps,
+  error,
+  postId,
+  scheduleMode,
+}: {
+  steps: PublishStep[];
+  error: string | null;
+  postId: string | null;
+  scheduleMode: "now" | "schedule";
+}) {
+  const router = useRouter();
+  const completedCount = steps.filter((s) => s.status === "complete").length;
+  const totalSteps = steps.length;
+  const progressPct = totalSteps > 0 ? (completedCount / totalSteps) * 100 : 0;
+  const allDone = completedCount === totalSteps && totalSteps > 0;
+
+  // Redirect after all complete
+  useEffect(() => {
+    if (allDone && postId) {
+      const timer = setTimeout(() => {
+        router.push(`/posts/${postId}`);
+      }, 1200);
+      return () => clearTimeout(timer);
+    }
+  }, [allDone, postId, router]);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center">
+      <Card className="w-full max-w-md mx-4 border-0 shadow-2xl">
+        <CardContent className="p-8">
+          {/* Header */}
+          <div className="text-center mb-6">
+            {allDone ? (
+              <>
+                <div className="h-14 w-14 rounded-full bg-green-500/10 flex items-center justify-center mx-auto mb-3">
+                  <CheckCircle2 className="h-7 w-7 text-green-500" />
+                </div>
+                <h3 className="text-lg font-bold">
+                  {scheduleMode === "now" ? "Published!" : "Scheduled!"}
+                </h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Redirecting to post details...
+                </p>
+              </>
+            ) : error ? (
+              <>
+                <div className="h-14 w-14 rounded-full bg-red-500/10 flex items-center justify-center mx-auto mb-3">
+                  <X className="h-7 w-7 text-red-500" />
+                </div>
+                <h3 className="text-lg font-bold text-red-600">Publishing Failed</h3>
+                <p className="text-sm text-muted-foreground mt-1">{error}</p>
+              </>
+            ) : (
+              <>
+                <div className="h-14 w-14 rounded-full bg-blue-500/10 flex items-center justify-center mx-auto mb-3">
+                  <Loader2 className="h-7 w-7 text-blue-500 animate-spin" />
+                </div>
+                <h3 className="text-lg font-bold">
+                  {scheduleMode === "now" ? "Publishing..." : "Scheduling..."}
+                </h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Please wait while we send your post
+                </p>
+              </>
+            )}
+          </div>
+
+          {/* Progress bar */}
+          <div className="h-2 rounded-full bg-muted overflow-hidden mb-6">
+            <div
+              className={cn(
+                "h-full rounded-full transition-all duration-700 ease-out",
+                error ? "bg-red-500" : allDone ? "bg-green-500" : "bg-blue-500"
+              )}
+              style={{ width: `${allDone ? 100 : Math.max(progressPct, 10)}%` }}
+            />
+          </div>
+
+          {/* Steps */}
+          <div className="space-y-3">
+            {steps.map((step) => (
+              <div key={step.id} className="flex items-center gap-3">
+                <div className="shrink-0">
+                  {step.status === "complete" ? (
+                    <div className="h-6 w-6 rounded-full bg-green-500/10 flex items-center justify-center">
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    </div>
+                  ) : step.status === "active" ? (
+                    <div className="h-6 w-6 rounded-full bg-blue-500/10 flex items-center justify-center">
+                      <Loader2 className="h-4 w-4 text-blue-500 animate-spin" />
+                    </div>
+                  ) : step.status === "error" ? (
+                    <div className="h-6 w-6 rounded-full bg-red-500/10 flex items-center justify-center">
+                      <X className="h-4 w-4 text-red-500" />
+                    </div>
+                  ) : (
+                    <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center">
+                      <div className="h-2 w-2 rounded-full bg-muted-foreground/30" />
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className={cn(
+                    "text-sm font-medium",
+                    step.status === "complete" ? "text-green-600" :
+                    step.status === "active" ? "text-foreground" :
+                    step.status === "error" ? "text-red-600" :
+                    "text-muted-foreground"
+                  )}>
+                    {step.label}
+                  </p>
+                  {step.detail && (
+                    <p className="text-xs text-muted-foreground truncate">{step.detail}</p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function ComposePageInner() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const [content, setContent] = useState("");
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccounts, setSelectedAccounts] = useState<string[]>([]);
@@ -127,6 +261,9 @@ function ComposePageInner() {
   const [scheduledTime, setScheduledTime] = useState("");
   const [timezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
   const [publishing, setPublishing] = useState(false);
+  const [publishSteps, setPublishSteps] = useState<PublishStep[]>([]);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [publishedPostId, setPublishedPostId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -405,6 +542,14 @@ function ComposePageInner() {
 
   // ——— Publish ———
 
+  const updateStep = (id: string, updates: Partial<PublishStep>) => {
+    setPublishSteps((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, ...updates } : s))
+    );
+  };
+
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
   const handlePublish = async () => {
     if (!content.trim()) {
       toast.error("Please write some content for your post.");
@@ -414,12 +559,42 @@ function ComposePageInner() {
       toast.error("Please select at least one account to publish to.");
       return;
     }
+
+    // Build platform entries with names for progress display
+    const platformEntries = selectedAccounts.map((accountId) => {
+      const account = accounts.find((a) => a._id === accountId);
+      return { platform: account?.platform, accountId: account?._id };
+    });
+
+    const selectedPlatformNames = platformEntries.map((p) => {
+      const meta = platformMeta[p.platform?.toLowerCase() || ""];
+      return meta?.name || p.platform || "Unknown";
+    });
+
+    // Initialize progress steps
+    const steps: PublishStep[] = [
+      { id: "prepare", label: "Preparing post", status: "pending" },
+      ...(mediaItems.length > 0 ? [{ id: "media", label: "Processing media", status: "pending" as const, detail: `${mediaItems.length} file${mediaItems.length > 1 ? "s" : ""}` }] : []),
+      { id: "send", label: scheduleMode === "now" ? "Sending to platforms" : "Scheduling post", status: "pending" as const, detail: selectedPlatformNames.join(", ") },
+      ...selectedPlatformNames.map((name, i) => ({
+        id: `platform-${i}`,
+        label: name,
+        status: "pending" as const,
+        detail: scheduleMode === "now" ? "Waiting to publish" : "Waiting to schedule",
+      })),
+      { id: "done", label: scheduleMode === "now" ? "Finalizing" : "Confirming schedule", status: "pending" as const },
+    ];
+
+    setPublishSteps(steps);
+    setPublishError(null);
+    setPublishedPostId(null);
     setPublishing(true);
+
     try {
-      const platformEntries = selectedAccounts.map((accountId) => {
-        const account = accounts.find((a) => a._id === accountId);
-        return { platform: account?.platform, accountId: account?._id };
-      });
+      // Step 1: Prepare
+      updateStep("prepare", { status: "active" });
+      await delay(400);
+
       const body: any = { content, platforms: platformEntries };
       if (mediaItems.length > 0) {
         body.mediaUrls = mediaItems.map((m) => m.url);
@@ -431,29 +606,81 @@ function ComposePageInner() {
         body.scheduledFor = `${scheduledDate}T${scheduledTime}:00`;
         body.timezone = timezone;
       }
+
+      updateStep("prepare", { status: "complete" });
+
+      // Step 2: Media (if any)
+      if (mediaItems.length > 0) {
+        updateStep("media", { status: "active" });
+        await delay(300);
+        updateStep("media", { status: "complete" });
+      }
+
+      // Step 3: Send to API
+      updateStep("send", { status: "active" });
+
       const res = await fetch("/api/posts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (res.ok) {
-        localStorage.removeItem(DRAFT_KEY);
-        toast.success(
-          scheduleMode === "now"
-            ? "Post published successfully!"
-            : "Post scheduled successfully!"
-        );
-        setContent("");
-        setSelectedAccounts([]);
-        setMediaItems([]);
-      } else {
+
+      if (!res.ok) {
         const err = await res.json();
-        toast.error(err.error || "Failed to create post");
+        throw new Error(err.error || "Failed to create post");
       }
-    } catch {
-      toast.error("Something went wrong. Please try again.");
-    } finally {
-      setPublishing(false);
+
+      const data = await res.json();
+      const postId = data.post?._id || data._id;
+
+      updateStep("send", { status: "complete" });
+
+      // Step 4: Platform confirmations (animate through them)
+      for (let i = 0; i < selectedPlatformNames.length; i++) {
+        updateStep(`platform-${i}`, {
+          status: "active",
+          detail: scheduleMode === "now" ? "Publishing..." : "Scheduling...",
+        });
+        await delay(350 + Math.random() * 300);
+        updateStep(`platform-${i}`, {
+          status: "complete",
+          detail: scheduleMode === "now" ? "Published" : "Scheduled",
+        });
+      }
+
+      // Step 5: Finalize
+      updateStep("done", { status: "active" });
+      await delay(400);
+      updateStep("done", { status: "complete" });
+
+      // Clear draft and form
+      localStorage.removeItem(DRAFT_KEY);
+
+      // Set postId for redirect
+      if (postId) {
+        setPublishedPostId(postId);
+      } else {
+        // No post ID returned — just show success and reset
+        toast.success(scheduleMode === "now" ? "Post published!" : "Post scheduled!");
+        setTimeout(() => {
+          setPublishing(false);
+          setContent("");
+          setSelectedAccounts([]);
+          setMediaItems([]);
+        }, 1500);
+      }
+    } catch (err: any) {
+      setPublishError(err.message || "Something went wrong");
+      // Mark current active step as error
+      setPublishSteps((prev) =>
+        prev.map((s) => (s.status === "active" ? { ...s, status: "error" } : s))
+      );
+      // Auto-dismiss after 3 seconds
+      setTimeout(() => {
+        setPublishing(false);
+        setPublishSteps([]);
+        setPublishError(null);
+      }, 4000);
     }
   };
 
@@ -1099,6 +1326,16 @@ function ComposePageInner() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Publishing progress overlay */}
+      {publishing && publishSteps.length > 0 && (
+        <PublishingOverlay
+          steps={publishSteps}
+          error={publishError}
+          postId={publishedPostId}
+          scheduleMode={scheduleMode}
+        />
+      )}
     </div>
   );
 }
