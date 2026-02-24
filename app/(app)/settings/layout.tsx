@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Settings, Users, UserPlus, ListChecks, Link2, CreditCard, Boxes } from "lucide-react";
+import { Settings, Users, UserPlus, ListChecks, Link2, CreditCard, Boxes, Building2 } from "lucide-react";
 
 const settingsNav = [
   { label: "Workspace", href: "/settings/workspace", icon: Settings },
-  { label: "Users", href: "/settings/users", icon: UserPlus },
+  { label: "Customers", href: "/settings/customers", icon: Building2 },
   { label: "Team", href: "/settings/team", icon: Users },
+  { label: "Users", href: "/settings/users", icon: UserPlus },
   { label: "Templates", href: "/settings/templates", icon: ListChecks },
   { label: "Content Units", href: "/settings/content-units", icon: Boxes },
   { label: "Links", href: "/settings/links", icon: Link2 },

@@ -343,7 +343,7 @@ export default function CustomerDetailPage() {
         method: "DELETE",
       });
       if (res.ok) {
-        router.push("/customers");
+        router.push("/settings/customers");
       } else {
         const data = await res.json();
         alert(data.error || "Failed to delete customer");
@@ -979,7 +979,7 @@ export default function CustomerDetailPage() {
           </Card>
 
           {/* Back to Customers Link */}
-          <Link href="/customers">
+          <Link href="/settings/customers">
             <Button
               variant="outline"
               size="sm"

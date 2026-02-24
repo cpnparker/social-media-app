@@ -34,7 +34,6 @@ import {
   Tag,
   Calendar,
   Flag,
-  Building2,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -64,15 +63,6 @@ interface NavSection {
 }
 
 const navSections: NavSection[] = [
-  {
-    label: "Customers",
-    icon: Building2,
-    defaultOpen: true,
-    items: [
-      { label: "All Customers", href: "/customers" },
-      { label: "Active Contracts", href: "/customers/contracts" },
-    ],
-  },
   {
     label: "Ideas",
     icon: Lightbulb,

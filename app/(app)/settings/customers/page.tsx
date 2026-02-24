@@ -217,7 +217,7 @@ export default function CustomersPage() {
               <Card
                 key={customer.id}
                 className="border-0 shadow-sm hover:shadow-md transition-shadow cursor-pointer"
-                onClick={() => router.push(`/customers/${customer.id}`)}
+                onClick={() => router.push(`/settings/customers/${customer.id}`)}
               >
                 <CardContent className="p-5 space-y-3">
                   {/* Name + Industry */}

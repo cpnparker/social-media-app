@@ -195,14 +195,14 @@ export default function ContractsPage() {
                       >
                         <td className="px-4 py-3">
                           <Link
-                            href={`/customers/${contract.customerId}`}
+                            href={`/settings/customers/${contract.customerId}`}
                             className="font-medium text-foreground hover:underline"
                           >
                             {contract.name}
                           </Link>
                         </td>
                         <td className="px-4 py-3 text-muted-foreground">
-                          <Link href={`/customers/${contract.customerId}`}>
+                          <Link href={`/settings/customers/${contract.customerId}`}>
                             {contract.customerName}
                           </Link>
                         </td>
