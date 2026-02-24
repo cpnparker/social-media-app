@@ -98,6 +98,11 @@ export const promoDraftStatusEnum = pgEnum("promo_draft_status", [
 ]);
 
 // Customer & Contract Enums
+export const customerRoleEnum = pgEnum("customer_role", [
+  "viewer",
+  "editor",
+  "manager",
+]);
 export const customerStatusEnum = pgEnum("customer_status", [
   "active",
   "inactive",
@@ -197,6 +202,7 @@ export const posts = pgTable("posts", {
   notes: text("notes"),
   labels: text("labels").array(),
   contentObjectId: uuid("content_object_id"),
+  customerId: uuid("customer_id").references(() => customers.id),
   standalone: boolean("standalone").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -316,6 +322,31 @@ export const contracts = pgTable("contracts", {
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const customerMembers = pgTable("customer_members", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  customerId: uuid("customer_id")
+    .references(() => customers.id, { onDelete: "cascade" })
+    .notNull(),
+  userId: uuid("user_id")
+    .references(() => users.id)
+    .notNull(),
+  role: customerRoleEnum("role").default("viewer").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const customerAccounts = pgTable("customer_accounts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  customerId: uuid("customer_id")
+    .references(() => customers.id, { onDelete: "cascade" })
+    .notNull(),
+  lateAccountId: text("late_account_id").notNull(),
+  platform: text("platform").notNull(),
+  displayName: text("display_name").notNull(),
+  username: text("username"),
+  avatarUrl: text("avatar_url"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 export const contentUnitDefinitions = pgTable("content_unit_definitions", {

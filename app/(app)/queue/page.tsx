@@ -35,6 +35,7 @@ import {
   platformLabels,
   platformHexColors,
 } from "@/lib/platform-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 
 interface Post {
   _id: string;
@@ -100,6 +101,9 @@ function formatDate(dateStr: string) {
 }
 
 export default function QueuePage() {
+  const customerCtx = useCustomerSafe();
+  const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
+
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("posts");
@@ -114,7 +118,8 @@ export default function QueuePage() {
     setLoading(true);
     try {
       const statusParam = statusFilter !== "all" ? `&status=${statusFilter}` : "";
-      const res = await fetch(`/api/posts?limit=50${statusParam}`);
+      const custParam = selectedCustomerId ? `&customerId=${selectedCustomerId}` : "";
+      const res = await fetch(`/api/posts?limit=50${statusParam}${custParam}`);
       const data = await res.json();
       setPosts(data.posts || []);
     } catch (err) {
@@ -122,7 +127,7 @@ export default function QueuePage() {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter]);
+  }, [statusFilter, selectedCustomerId]);
 
   useEffect(() => {
     fetchPosts();

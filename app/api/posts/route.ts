@@ -69,6 +69,7 @@ export async function POST(req: NextRequest) {
           scheduledFor: body.scheduledFor ? new Date(body.scheduledFor) : undefined,
           timezone: body.timezone || "UTC",
           contentObjectId: body.contentObjectId,
+          customerId: body.customerId || null,
           standalone: false,
           createdBy: body.createdBy || "00000000-0000-0000-0000-000000000000",
         });

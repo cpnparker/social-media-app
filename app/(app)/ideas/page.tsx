@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import Link from "next/link";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 
 const statusColors: Record<string, string> = {
   submitted: "bg-blue-500/10 text-blue-500",
@@ -40,6 +41,9 @@ const sidebarStatusMap: Record<string, string> = {
 };
 
 function IdeasPageContent() {
+  const customerCtx = useCustomerSafe();
+  const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
+
   const router = useRouter();
   const searchParams = useSearchParams();
   const statusParam = searchParams.get("status");
@@ -73,7 +77,9 @@ function IdeasPageContent() {
     try {
       let url = `/api/ideas?sortBy=${sortBy}&limit=100`;
       if (activeTab !== "all") url += `&status=${activeTab}`;
-      if (customerFilter) url += `&customerId=${customerFilter}`;
+      // Context customer overrides local filter when set
+      const effectiveCustomerId = selectedCustomerId || customerFilter;
+      if (effectiveCustomerId) url += `&customerId=${effectiveCustomerId}`;
       const res = await fetch(url);
       const data = await res.json();
       setIdeas(data.ideas || []);
@@ -82,7 +88,7 @@ function IdeasPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [activeTab, sortBy, customerFilter]);
+  }, [activeTab, sortBy, customerFilter, selectedCustomerId]);
 
   useEffect(() => {
     fetchIdeas();

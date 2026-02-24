@@ -15,8 +15,12 @@ export async function GET(req: NextRequest) {
   const offset = parseInt(searchParams.get("offset") || "0");
 
   try {
+    const { workspaceId } = await resolveWorkspaceAndUser();
+
     let query = db.select().from(ideas);
     const conditions: any[] = [];
+
+    conditions.push(eq(ideas.workspaceId, workspaceId));
 
     if (status) {
       conditions.push(eq(ideas.status, status as any));

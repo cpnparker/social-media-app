@@ -1,7 +1,18 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, Check, Key, Eye, EyeOff } from "lucide-react";
+import {
+  Loader2,
+  Check,
+  Key,
+  Eye,
+  EyeOff,
+  Building2,
+  FileText,
+  Zap,
+  Users,
+  UsersRound,
+} from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -16,10 +27,20 @@ const planLabels: Record<string, { label: string; color: string }> = {
   agency: { label: "Agency", color: "bg-amber-500/10 text-amber-500" },
 };
 
+interface WorkspaceStats {
+  totalCustomers: number;
+  activeContracts: number;
+  totalCUBudget: number;
+  usedCU: number;
+  totalUsers: number;
+  totalTeams: number;
+}
+
 export default function WorkspaceSettingsPage() {
   const [workspace, setWorkspace] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [stats, setStats] = useState<WorkspaceStats | null>(null);
 
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
@@ -44,9 +65,20 @@ export default function WorkspaceSettingsPage() {
     }
   }, []);
 
+  const fetchStats = useCallback(async () => {
+    try {
+      const res = await fetch("/api/workspace/stats");
+      const data = await res.json();
+      setStats(data.stats);
+    } catch (err) {
+      console.error("Failed to load workspace stats:", err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchWorkspace();
-  }, [fetchWorkspace]);
+    fetchStats();
+  }, [fetchWorkspace, fetchStats]);
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -88,8 +120,122 @@ export default function WorkspaceSettingsPage() {
 
   const plan = planLabels[workspace?.plan] || planLabels.free;
 
+  const statItems = stats
+    ? [
+        {
+          label: "Customers",
+          value: String(stats.totalCustomers),
+          icon: Building2,
+          color: "blue",
+        },
+        {
+          label: "Active Contracts",
+          value: String(stats.activeContracts),
+          icon: FileText,
+          color: "green",
+        },
+        {
+          label: "CU Budget",
+          value: `${stats.usedCU} / ${stats.totalCUBudget}`,
+          icon: Zap,
+          color: "violet",
+          progress:
+            stats.totalCUBudget > 0
+              ? (stats.usedCU / stats.totalCUBudget) * 100
+              : 0,
+        },
+        {
+          label: "Users",
+          value: String(stats.totalUsers),
+          icon: Users,
+          color: "amber",
+        },
+        {
+          label: "Teams",
+          value: String(stats.totalTeams),
+          icon: UsersRound,
+          color: "indigo",
+        },
+      ]
+    : [];
+
+  const colorMap: Record<string, { bg: string; text: string; bar: string }> = {
+    blue: {
+      bg: "bg-blue-500/10",
+      text: "text-blue-600",
+      bar: "bg-blue-500",
+    },
+    green: {
+      bg: "bg-green-500/10",
+      text: "text-green-600",
+      bar: "bg-green-500",
+    },
+    violet: {
+      bg: "bg-violet-500/10",
+      text: "text-violet-600",
+      bar: "bg-violet-500",
+    },
+    amber: {
+      bg: "bg-amber-500/10",
+      text: "text-amber-600",
+      bar: "bg-amber-500",
+    },
+    indigo: {
+      bg: "bg-indigo-500/10",
+      text: "text-indigo-600",
+      bar: "bg-indigo-500",
+    },
+  };
+
   return (
     <div className="space-y-6 max-w-2xl">
+      {/* Workspace Overview Stats */}
+      {stats && (
+        <div>
+          <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-3">
+            Workspace Overview
+          </h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {statItems.map((item) => {
+              const colors = colorMap[item.color];
+              return (
+                <Card
+                  key={item.label}
+                  className="border-0 shadow-sm"
+                >
+                  <CardContent className="p-4 flex items-start gap-3">
+                    <div
+                      className={`shrink-0 h-9 w-9 rounded-lg ${colors.bg} flex items-center justify-center`}
+                    >
+                      <item.icon className={`h-4 w-4 ${colors.text}`} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-lg font-semibold leading-tight">
+                        {item.value}
+                      </p>
+                      <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mt-0.5">
+                        {item.label}
+                      </p>
+                      {"progress" in item &&
+                        item.progress !== undefined && (
+                          <div className="mt-2 h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${colors.bar} transition-all`}
+                              style={{
+                                width: `${Math.min(item.progress, 100)}%`,
+                              }}
+                            />
+                          </div>
+                        )}
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* General */}
       <Card className="border-0 shadow-sm">
         <CardHeader className="pb-0">

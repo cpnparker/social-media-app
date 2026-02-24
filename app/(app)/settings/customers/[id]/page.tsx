@@ -14,6 +14,11 @@ import {
   Calendar,
   DollarSign,
   Package,
+  Users,
+  Link2,
+  Shield,
+  UserPlus,
+  Unlink,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -151,7 +156,7 @@ export default function CustomerDetailPage() {
 
   // Tab state
   const [activeTab, setActiveTab] = useState<
-    "overview" | "contracts" | "content"
+    "overview" | "contracts" | "content" | "members" | "accounts"
   >("overview");
 
   // Inline edit state
@@ -176,6 +181,18 @@ export default function CustomerDetailPage() {
     notes: "",
   });
   const [addingContract, setAddingContract] = useState(false);
+
+  // Members state
+  const [members, setMembers] = useState<any[]>([]);
+  const [showAddMember, setShowAddMember] = useState(false);
+  const [memberForm, setMemberForm] = useState({ email: "", role: "viewer" });
+  const [addingMember, setAddingMember] = useState(false);
+
+  // Accounts state
+  const [customerAccounts, setCustomerAccounts] = useState<any[]>([]);
+  const [allAccounts, setAllAccounts] = useState<any[]>([]);
+  const [showLinkAccount, setShowLinkAccount] = useState(false);
+  const [linkingAccount, setLinkingAccount] = useState(false);
 
   // ── Data fetching ──
 
@@ -214,6 +231,39 @@ export default function CustomerDetailPage() {
     }
   }, [customerId]);
 
+  const fetchMembers = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/customer-members?customerId=${customerId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setMembers(data.members || []);
+    } catch (err) {
+      console.error("Failed to fetch members:", err);
+    }
+  }, [customerId]);
+
+  const fetchCustomerAccounts = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/customer-accounts?customerId=${customerId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setCustomerAccounts(data.accounts || []);
+    } catch (err) {
+      console.error("Failed to fetch customer accounts:", err);
+    }
+  }, [customerId]);
+
+  const fetchAllAccounts = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/accounts`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setAllAccounts(data.accounts || []);
+    } catch (err) {
+      console.error("Failed to fetch all accounts:", err);
+    }
+  }, []);
+
   useEffect(() => {
     const load = async () => {
       setLoading(true);
@@ -229,6 +279,21 @@ export default function CustomerDetailPage() {
       fetchContent();
     }
   }, [activeTab, fetchContent]);
+
+  // Fetch members lazily when the members tab is activated
+  useEffect(() => {
+    if (activeTab === "members") {
+      fetchMembers();
+    }
+  }, [activeTab, fetchMembers]);
+
+  // Fetch accounts lazily when the accounts tab is activated
+  useEffect(() => {
+    if (activeTab === "accounts") {
+      fetchCustomerAccounts();
+      fetchAllAccounts();
+    }
+  }, [activeTab, fetchCustomerAccounts, fetchAllAccounts]);
 
   // ── Actions ──
 
@@ -350,6 +415,89 @@ export default function CustomerDetailPage() {
       }
     } catch (err) {
       console.error("Delete failed:", err);
+    }
+  };
+
+  // ── Member & Account actions ──
+
+  const handleAddMember = async (email: string, role: string) => {
+    setAddingMember(true);
+    try {
+      const res = await fetch("/api/customer-members", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customerId, email, role }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        await fetchMembers();
+        setShowAddMember(false);
+        setMemberForm({ email: "", role: "viewer" });
+      } else {
+        alert(data.error || "Failed to add member");
+      }
+    } catch (err) {
+      console.error("Add member failed:", err);
+    } finally {
+      setAddingMember(false);
+    }
+  };
+
+  const handleRemoveMember = async (userId: string) => {
+    if (!confirm("Remove this member from the customer?")) return;
+    try {
+      const res = await fetch(
+        `/api/customer-members?customerId=${customerId}&userId=${userId}`,
+        { method: "DELETE" }
+      );
+      if (res.ok) {
+        setMembers((prev) => prev.filter((m) => m.userId !== userId));
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to remove member");
+      }
+    } catch (err) {
+      console.error("Remove member failed:", err);
+    }
+  };
+
+  const handleLinkAccount = async (account: any) => {
+    setLinkingAccount(true);
+    try {
+      const res = await fetch("/api/customer-accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customerId, accountId: account.id }),
+      });
+      if (res.ok) {
+        await fetchCustomerAccounts();
+        setShowLinkAccount(false);
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to link account");
+      }
+    } catch (err) {
+      console.error("Link account failed:", err);
+    } finally {
+      setLinkingAccount(false);
+    }
+  };
+
+  const handleUnlinkAccount = async (accountId: string) => {
+    if (!confirm("Unlink this account from the customer?")) return;
+    try {
+      const res = await fetch(
+        `/api/customer-accounts?customerId=${customerId}&accountId=${accountId}`,
+        { method: "DELETE" }
+      );
+      if (res.ok) {
+        setCustomerAccounts((prev) => prev.filter((a) => a.id !== accountId));
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to unlink account");
+      }
+    } catch (err) {
+      console.error("Unlink account failed:", err);
     }
   };
 
@@ -826,12 +974,221 @@ export default function CustomerDetailPage() {
     </div>
   );
 
+  const renderMembersTab = () => {
+    const roleStyles: Record<string, string> = {
+      viewer: "bg-gray-500/10 text-gray-500",
+      editor: "bg-blue-500/10 text-blue-600",
+      manager: "bg-violet-500/10 text-violet-600",
+    };
+
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-muted-foreground">
+            {members.length} member{members.length !== 1 ? "s" : ""}
+          </h3>
+          <Button
+            size="sm"
+            onClick={() => setShowAddMember(true)}
+            className="gap-1.5 h-8 text-xs"
+          >
+            <UserPlus className="h-3 w-3" />
+            Add Member
+          </Button>
+        </div>
+
+        {members.length === 0 ? (
+          <Card className="border-0 shadow-sm">
+            <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+              <Users className="h-8 w-8 text-muted-foreground/30 mb-3" />
+              <p className="text-sm text-muted-foreground">
+                No members assigned to this customer yet.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-2">
+            {members.map((member) => {
+              const initials = (member.userName || member.userEmail || "?")
+                .split(" ")
+                .map((w: string) => w[0])
+                .join("")
+                .toUpperCase()
+                .slice(0, 2);
+
+              return (
+                <Card key={member.userId} className="border-0 shadow-sm">
+                  <CardContent className="p-3 flex items-center gap-3">
+                    <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center shrink-0">
+                      <span className="text-xs font-semibold text-muted-foreground">
+                        {initials}
+                      </span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {member.userName || "Unknown"}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {member.userEmail}
+                      </p>
+                    </div>
+                    <Badge
+                      variant="secondary"
+                      className={`${
+                        roleStyles[member.role] || "bg-gray-500/10 text-gray-500"
+                      } border-0 text-[10px] capitalize shrink-0`}
+                    >
+                      {member.role}
+                    </Badge>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleRemoveMember(member.userId)}
+                      className="h-7 w-7 p-0 text-muted-foreground hover:text-red-500 shrink-0"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
+
+        <p className="text-xs text-muted-foreground flex items-center gap-1.5 pt-1">
+          <Shield className="h-3 w-3" />
+          Workspace admins automatically have access to all customers.
+        </p>
+      </div>
+    );
+  };
+
+  const renderAccountsTab = () => {
+    const linkedIds = new Set(customerAccounts.map((a) => a.id));
+    const unlinkedAccounts = allAccounts.filter((a) => !linkedIds.has(a.id));
+
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-muted-foreground">
+            {customerAccounts.length} account
+            {customerAccounts.length !== 1 ? "s" : ""}
+          </h3>
+          <Button
+            size="sm"
+            onClick={() => setShowLinkAccount(true)}
+            className="gap-1.5 h-8 text-xs"
+          >
+            <Link2 className="h-3 w-3" />
+            Link Account
+          </Button>
+        </div>
+
+        {customerAccounts.length === 0 ? (
+          <Card className="border-0 shadow-sm">
+            <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+              <Link2 className="h-8 w-8 text-muted-foreground/30 mb-3" />
+              <p className="text-sm text-muted-foreground">
+                No accounts linked to this customer yet.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-2">
+            {customerAccounts.map((account) => (
+              <Card key={account.id} className="border-0 shadow-sm">
+                <CardContent className="p-3 flex items-center gap-3">
+                  <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                    <Badge
+                      variant="secondary"
+                      className="border-0 text-[9px] uppercase px-1.5 py-0"
+                    >
+                      {account.platform || "??"}
+                    </Badge>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">
+                      {account.displayName || account.username || "Unnamed"}
+                    </p>
+                    {account.username && account.displayName && (
+                      <p className="text-xs text-muted-foreground truncate">
+                        @{account.username}
+                      </p>
+                    )}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleUnlinkAccount(account.id)}
+                    className="h-7 w-7 p-0 text-muted-foreground hover:text-red-500 shrink-0"
+                  >
+                    <Unlink className="h-3.5 w-3.5" />
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+
+        {/* Link Account Dialog */}
+        <Dialog open={showLinkAccount} onOpenChange={setShowLinkAccount}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Link2 className="h-5 w-5 text-blue-500" />
+                Link Account
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-2 max-h-[400px] overflow-y-auto">
+              {unlinkedAccounts.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-6">
+                  All workspace accounts are already linked to this customer.
+                </p>
+              ) : (
+                unlinkedAccounts.map((account) => (
+                  <button
+                    key={account.id}
+                    onClick={() => handleLinkAccount(account)}
+                    disabled={linkingAccount}
+                    className="w-full flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/50 transition-colors text-left disabled:opacity-50"
+                  >
+                    <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                      <Badge
+                        variant="secondary"
+                        className="border-0 text-[9px] uppercase px-1.5 py-0"
+                      >
+                        {account.platform || "??"}
+                      </Badge>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {account.displayName || account.username || "Unnamed"}
+                      </p>
+                      {account.username && (
+                        <p className="text-xs text-muted-foreground truncate">
+                          @{account.username}
+                        </p>
+                      )}
+                    </div>
+                    <Plus className="h-4 w-4 text-muted-foreground shrink-0" />
+                  </button>
+                ))
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+      </div>
+    );
+  };
+
   // ── Render ──
 
   const tabs = [
     { key: "overview" as const, label: "Overview" },
     { key: "contracts" as const, label: "Contracts" },
     { key: "content" as const, label: "Content" },
+    { key: "members" as const, label: "Members" },
+    { key: "accounts" as const, label: "Accounts" },
   ];
 
   return (
@@ -911,6 +1268,8 @@ export default function CustomerDetailPage() {
           {activeTab === "overview" && renderOverviewTab()}
           {activeTab === "contracts" && renderContractsTab()}
           {activeTab === "content" && renderContentTab()}
+          {activeTab === "members" && renderMembersTab()}
+          {activeTab === "accounts" && renderAccountsTab()}
         </div>
 
         {/* RIGHT: Sidebar */}
@@ -1008,6 +1367,67 @@ export default function CustomerDetailPage() {
           )}
         </div>
       </div>
+
+      {/* ── Add Member Dialog ── */}
+      <Dialog open={showAddMember} onOpenChange={setShowAddMember}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <UserPlus className="h-5 w-5 text-blue-500" />
+              Add Member
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">
+                Email Address *
+              </label>
+              <Input
+                type="email"
+                value={memberForm.email}
+                onChange={(e) =>
+                  setMemberForm({ ...memberForm, email: e.target.value })
+                }
+                placeholder="user@example.com"
+                className="h-8 text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">
+                Role
+              </label>
+              <select
+                value={memberForm.role}
+                onChange={(e) =>
+                  setMemberForm({ ...memberForm, role: e.target.value })
+                }
+                className="w-full rounded-md border bg-background px-3 py-1.5 text-sm h-8"
+              >
+                <option value="viewer">Viewer</option>
+                <option value="editor">Editor</option>
+                <option value="manager">Manager</option>
+              </select>
+            </div>
+
+            <Button
+              className="w-full gap-2"
+              onClick={() =>
+                handleAddMember(memberForm.email, memberForm.role)
+              }
+              disabled={addingMember || !memberForm.email.trim()}
+            >
+              {addingMember ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <UserPlus className="h-4 w-4" />
+              )}
+              Add Member
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Add Contract Dialog ── */}
       <Dialog open={showAddContract} onOpenChange={setShowAddContract}>

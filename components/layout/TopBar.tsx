@@ -1,7 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { Bell, Menu, Sun, Moon, Monitor, Settings, Users, LogOut } from "lucide-react";
+import {
+  Bell,
+  Menu,
+  Sun,
+  Moon,
+  Monitor,
+  Settings,
+  Users,
+  LogOut,
+  Building2,
+  Globe,
+  Check,
+  ChevronDown,
+} from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -13,6 +26,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { signOut } from "next-auth/react";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { cn } from "@/lib/utils";
 
 interface TopBarProps {
   onMenuClick?: () => void;
@@ -20,6 +35,17 @@ interface TopBarProps {
 
 export function TopBar({ onMenuClick }: TopBarProps) {
   const { setTheme } = useTheme();
+  const customerCtx = useCustomerSafe();
+
+  const customers = customerCtx?.customers ?? [];
+  const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
+  const selectedCustomer = customerCtx?.selectedCustomer ?? null;
+  const canViewAll = customerCtx?.canViewAll ?? true;
+  const isSingleCustomer = customerCtx?.isSingleCustomer ?? false;
+  const loading = customerCtx?.loading ?? true;
+
+  const displayName = selectedCustomer?.name ?? "All Customers";
+  const isCustomerMode = selectedCustomerId !== null;
 
   return (
     <header className="sticky top-0 z-30 h-14 border-b bg-background/80 backdrop-blur-xl flex items-center justify-between px-4 sm:px-6 gap-4">
@@ -36,7 +62,79 @@ export function TopBar({ onMenuClick }: TopBarProps) {
       {/* Spacer */}
       <div className="flex-1" />
 
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1.5">
+        {/* Customer Selector */}
+        {!loading && customers.length > 0 && (
+          <>
+            {isSingleCustomer ? (
+              /* Single customer — static label, no dropdown */
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/50 mr-1">
+                <Building2 className="h-4 w-4 text-blue-500 shrink-0" />
+                <span className="text-sm font-medium truncate max-w-[180px]">
+                  {displayName}
+                </span>
+              </div>
+            ) : (
+              /* Multi-customer / admin — dropdown selector */
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className={cn(
+                      "gap-2 h-9 px-3 mr-1 max-w-[220px] font-medium",
+                      isCustomerMode &&
+                        "border-blue-500/30 bg-blue-500/5 text-blue-600 dark:text-blue-400"
+                    )}
+                  >
+                    {isCustomerMode ? (
+                      <Building2 className="h-4 w-4 shrink-0 text-blue-500" />
+                    ) : (
+                      <Globe className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="truncate">{displayName}</span>
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-64">
+                  {canViewAll && (
+                    <>
+                      <DropdownMenuItem
+                        onClick={() =>
+                          customerCtx?.setSelectedCustomerId(null)
+                        }
+                        className="gap-2"
+                      >
+                        <Globe className="h-4 w-4 text-muted-foreground" />
+                        <span className="flex-1">All Customers</span>
+                        {!isCustomerMode && (
+                          <Check className="h-4 w-4 text-blue-500" />
+                        )}
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                    </>
+                  )}
+                  {customers.map((customer) => (
+                    <DropdownMenuItem
+                      key={customer.id}
+                      onClick={() =>
+                        customerCtx?.setSelectedCustomerId(customer.id)
+                      }
+                      className="gap-2"
+                    >
+                      <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <span className="flex-1 truncate">{customer.name}</span>
+                      {selectedCustomerId === customer.id && (
+                        <Check className="h-4 w-4 text-blue-500 shrink-0" />
+                      )}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+          </>
+        )}
+
         {/* Theme toggle */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -80,7 +178,11 @@ export function TopBar({ onMenuClick }: TopBarProps) {
         {/* Profile avatar dropdown */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="relative h-9 w-9 rounded-full">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="relative h-9 w-9 rounded-full"
+            >
               <Avatar className="h-8 w-8">
                 <AvatarImage src="" />
                 <AvatarFallback className="bg-blue-500/20 text-blue-600 dark:text-blue-400 text-xs font-semibold">
@@ -92,7 +194,9 @@ export function TopBar({ onMenuClick }: TopBarProps) {
           <DropdownMenuContent align="end" className="w-56">
             <div className="px-3 py-2">
               <p className="text-sm font-medium">Chris Parker</p>
-              <p className="text-xs text-muted-foreground">chris@contentengine.io</p>
+              <p className="text-xs text-muted-foreground">
+                chris@contentengine.io
+              </p>
             </div>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>

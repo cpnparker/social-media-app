@@ -10,7 +10,9 @@ import {
   Shield,
   Eye,
   Pencil,
+  Building2,
 } from "lucide-react";
+import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,6 +36,12 @@ interface WorkspaceMember {
   role: string;
   invitedAt: string;
   joinedAt: string | null;
+}
+
+interface CustomerAssignment {
+  customerId: string;
+  customerName: string;
+  role: string;
 }
 
 const roleConfig: Record<
@@ -71,6 +79,9 @@ const roleOptions = ["owner", "admin", "editor", "viewer"];
 export default function UsersSettingsPage() {
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [loading, setLoading] = useState(true);
+  const [customerAssignments, setCustomerAssignments] = useState<
+    Record<string, CustomerAssignment[]>
+  >({});
 
   // Invite dialog
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -91,9 +102,36 @@ export default function UsersSettingsPage() {
     }
   }, []);
 
+  const fetchCustomerAssignments = useCallback(async () => {
+    try {
+      const res = await fetch("/api/workspace/customer-assignments");
+      if (!res.ok) return;
+      const data = await res.json();
+      const assignments: { userId: string; customerId: string; customerName: string; role: string }[] =
+        data.assignments || [];
+
+      // Group by userId
+      const grouped: Record<string, CustomerAssignment[]> = {};
+      for (const a of assignments) {
+        if (!grouped[a.userId]) {
+          grouped[a.userId] = [];
+        }
+        grouped[a.userId].push({
+          customerId: a.customerId,
+          customerName: a.customerName,
+          role: a.role,
+        });
+      }
+      setCustomerAssignments(grouped);
+    } catch {
+      // silently fail — badges just won't show
+    }
+  }, []);
+
   useEffect(() => {
     fetchMembers();
-  }, [fetchMembers]);
+    fetchCustomerAssignments();
+  }, [fetchMembers, fetchCustomerAssignments]);
 
   const handleInvite = async () => {
     if (!inviteEmail.trim()) return;
@@ -204,6 +242,7 @@ export default function UsersSettingsPage() {
             <div className="divide-y">
               {members.map((member) => {
                 const rc = roleConfig[member.role] || roleConfig.viewer;
+                const assignments = customerAssignments[member.id] || [];
                 return (
                   <div
                     key={member.id}
@@ -242,6 +281,21 @@ export default function UsersSettingsPage() {
                       <p className="text-xs text-muted-foreground truncate">
                         {member.email}
                       </p>
+                      {/* Customer assignment badges */}
+                      {assignments.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {assignments.map((a) => (
+                            <Link
+                              key={a.customerId}
+                              href={`/settings/customers/${a.customerId}`}
+                              className="inline-flex items-center gap-0.5 bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[10px] px-1.5 py-0.5 rounded hover:bg-blue-500/20 transition-colors"
+                            >
+                              <Building2 className="h-2.5 w-2.5 shrink-0" />
+                              {a.customerName}
+                            </Link>
+                          ))}
+                        </div>
+                      )}
                     </div>
 
                     {/* Role selector */}

@@ -43,6 +43,7 @@ import {
   formatNumber,
   formatFullDate,
 } from "@/lib/platform-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 
 const locales = { "en-US": enUS };
 const localizer = dateFnsLocalizer({
@@ -100,6 +101,9 @@ function EventComponent({ event }: { event: CalendarEvent }) {
 }
 
 export default function CalendarPage() {
+  const customerCtx = useCustomerSafe();
+  const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
+
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentView, setCurrentView] = useState<string>(Views.MONTH);
@@ -112,7 +116,8 @@ export default function CalendarPage() {
   const fetchPosts = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/posts?limit=100");
+      const custParam = selectedCustomerId ? `?customerId=${selectedCustomerId}` : "";
+      const res = await fetch(`/api/posts?limit=100${custParam ? `&customerId=${selectedCustomerId}` : ""}`);
       const data = await res.json();
       setPosts(data.posts || []);
     } catch (err) {
@@ -120,7 +125,7 @@ export default function CalendarPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedCustomerId]);
 
   useEffect(() => {
     fetchPosts();

@@ -14,7 +14,11 @@ export async function GET(req: NextRequest) {
   const offset = parseInt(searchParams.get("offset") || "0");
 
   try {
+    const { workspaceId } = await resolveWorkspaceAndUser();
+
     const conditions: any[] = [];
+
+    conditions.push(eq(contentObjects.workspaceId, workspaceId));
 
     if (contentType) conditions.push(eq(contentObjects.contentType, contentType as any));
     if (ideaId) conditions.push(eq(contentObjects.ideaId, ideaId));

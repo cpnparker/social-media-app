@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTeamSafe } from "@/lib/contexts/TeamContext";
+import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { signOut } from "next-auth/react";
 
 // ────────────────────────────────────────────────
@@ -138,6 +139,7 @@ export function Sidebar({ onClose }: SidebarProps) {
   const searchParams = useSearchParams();
   const [inboxCount, setInboxCount] = useState(0);
   const teamCtx = useTeamSafe();
+  const wsCtx = useWorkspaceSafe();
 
   // Track which sections are open
   const [openSections, setOpenSections] = useState<Record<string, boolean>>(
@@ -206,14 +208,66 @@ export function Sidebar({ onClose }: SidebarProps) {
 
   return (
     <aside className="h-screen sticky top-0 flex flex-col w-[260px] bg-[#3b4252] text-white">
-      {/* ──── Brand ──── */}
-      <div className="flex items-center gap-3 px-5 pt-5 pb-4 shrink-0">
-        <div className="h-9 w-9 rounded-xl bg-blue-500 flex items-center justify-center shrink-0">
-          <Zap className="h-4.5 w-4.5 text-white" />
-        </div>
-        <p className="text-[15px] font-bold tracking-tight truncate text-white">
-          The Content Engine
-        </p>
+      {/* ──── Workspace Switcher ──── */}
+      <div className="px-3 pt-4 pb-3 shrink-0">
+        {wsCtx && wsCtx.workspaces.length > 1 ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-white/10 transition-colors text-left">
+                <div className="h-9 w-9 rounded-xl bg-blue-500 flex items-center justify-center shrink-0">
+                  <Zap className="h-4 w-4 text-white" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[14px] font-bold tracking-tight truncate text-white">
+                    {wsCtx.selectedWorkspace?.name || "Workspace"}
+                  </p>
+                  <p className="text-[10px] text-white/40 capitalize">
+                    {wsCtx.selectedWorkspace?.plan || "free"} plan
+                  </p>
+                </div>
+                <ChevronsUpDown className="h-3.5 w-3.5 text-white/40 shrink-0" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" side="bottom" className="w-56">
+              {wsCtx.workspaces.map((ws) => (
+                <DropdownMenuItem
+                  key={ws.id}
+                  onClick={() => wsCtx.setSelectedWorkspace(ws.id)}
+                  className="gap-2"
+                >
+                  <Zap className="h-4 w-4 text-blue-500 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{ws.name}</p>
+                    <p className="text-[10px] text-muted-foreground capitalize">{ws.plan} &middot; {ws.role}</p>
+                  </div>
+                  {wsCtx.selectedWorkspace?.id === ws.id && (
+                    <Check className="h-4 w-4 text-blue-500 shrink-0" />
+                  )}
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="gap-2">
+                <Plus className="h-4 w-4" />
+                Create Workspace
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          /* Single workspace — static header */
+          <div className="flex items-center gap-3 px-2 py-1">
+            <div className="h-9 w-9 rounded-xl bg-blue-500 flex items-center justify-center shrink-0">
+              <Zap className="h-4 w-4 text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-[14px] font-bold tracking-tight truncate text-white">
+                {wsCtx?.selectedWorkspace?.name || "The Content Engine"}
+              </p>
+              <p className="text-[10px] text-white/40 capitalize">
+                {wsCtx?.selectedWorkspace?.plan || "free"} plan
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ──── Add New Idea CTA ──── */}

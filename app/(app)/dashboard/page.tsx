@@ -46,6 +46,8 @@ import { cn } from "@/lib/utils";
 
 import "react-big-calendar/lib/css/react-big-calendar.css";
 
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+
 import {
   platformHexColors,
   platformLabels,
@@ -278,6 +280,9 @@ function ListSkeleton({ rows = 4 }: { rows?: number }) {
 // Main Dashboard
 // ────────────────────────────────────────────────
 export default function DashboardPage() {
+  const customerCtx = useCustomerSafe();
+  const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
+
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [allPosts, setAllPosts] = useState<Post[]>([]);
   const [recentPosts, setRecentPosts] = useState<Post[]>([]);
@@ -296,14 +301,15 @@ export default function DashboardPage() {
   const fetchDashboardData = useCallback(async () => {
     setLoading(true);
     try {
+      const custParam = selectedCustomerId ? `&customerId=${selectedCustomerId}` : "";
       const [analyticsRes, allPostsRes, recentPostsRes, scheduledRes, contentRes, ideasRes] =
         await Promise.all([
           fetch("/api/analytics?period=30"),
           fetch("/api/posts?limit=100"),
           fetch("/api/posts?limit=5"),
           fetch("/api/posts?status=scheduled&limit=5"),
-          fetch("/api/content-objects?limit=20"),
-          fetch("/api/ideas?limit=10&sortBy=score"),
+          fetch(`/api/content-objects?limit=20${custParam}`),
+          fetch(`/api/ideas?limit=10&sortBy=score${custParam}`),
         ]);
 
       const [analyticsData, allPostsData, recentPostsData, scheduledData, contentData, ideasData] =
@@ -327,7 +333,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedCustomerId]);
 
   useEffect(() => {
     fetchDashboardData();
@@ -445,7 +451,14 @@ export default function DashboardPage() {
       {/* ────── Header ────── */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+          <h1 className="text-2xl font-bold tracking-tight">
+            Dashboard
+            {customerCtx?.selectedCustomer && (
+              <span className="text-lg font-normal text-muted-foreground ml-2">
+                — {customerCtx.selectedCustomer.name}
+              </span>
+            )}
+          </h1>
           <p className="text-muted-foreground mt-1">
             Your content and social media command centre
           </p>

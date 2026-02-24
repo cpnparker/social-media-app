@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 
 const typeColors: Record<string, string> = {
   article: "bg-blue-500/10 text-blue-500",
@@ -40,6 +41,9 @@ const sidebarStatusMap: Record<string, string> = {
 };
 
 function ContentPageContent() {
+  const customerCtx = useCustomerSafe();
+  const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
+
   const router = useRouter();
   const searchParams = useSearchParams();
   const statusParam = searchParams.get("status");
@@ -70,7 +74,9 @@ function ContentPageContent() {
     setLoading(true);
     try {
       let url = "/api/content-objects?limit=100";
-      if (customerFilter) url += `&customerId=${customerFilter}`;
+      // Context customer overrides local filter when set
+      const effectiveCustomerId = selectedCustomerId || customerFilter;
+      if (effectiveCustomerId) url += `&customerId=${effectiveCustomerId}`;
       const res = await fetch(url);
       const data = await res.json();
       setItems(data.contentObjects || []);
@@ -79,7 +85,7 @@ function ContentPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [customerFilter]);
+  }, [customerFilter, selectedCustomerId]);
 
   useEffect(() => {
     fetchContent();
