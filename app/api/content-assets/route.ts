@@ -1,8 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { contentAssets } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 import { resolveWorkspaceAndUser } from "@/lib/api-utils";
+
+// Helper: snake_case → camelCase
+function transformAsset(row: any) {
+  return {
+    id: row.id,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    workspaceId: row.workspace_id,
+    name: row.name,
+    url: row.url,
+    assetType: row.asset_type,
+    fileSize: row.file_size,
+    uploadedBy: row.uploaded_by,
+    createdAt: row.created_at,
+  };
+}
 
 // GET /api/content-assets
 export async function GET(req: NextRequest) {
@@ -11,19 +25,17 @@ export async function GET(req: NextRequest) {
   const entityId = searchParams.get("entityId");
 
   try {
-    const conditions: any[] = [];
-    if (entityType) conditions.push(eq(contentAssets.entityType, entityType));
-    if (entityId) conditions.push(eq(contentAssets.entityId, entityId));
+    let query = supabase.from("content_assets").select("*");
 
-    let query = db.select().from(contentAssets);
-    if (conditions.length === 1) {
-      query = query.where(conditions[0]) as any;
-    } else if (conditions.length > 1) {
-      query = query.where(and(...conditions)) as any;
-    }
+    if (entityType) query = query.eq("entity_type", entityType);
+    if (entityId) query = query.eq("entity_id", entityId);
 
-    const rows = await query;
-    return NextResponse.json({ assets: rows });
+    const { data: rows, error } = await query;
+    if (error) throw error;
+
+    return NextResponse.json({
+      assets: (rows || []).map(transformAsset),
+    });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -41,23 +53,29 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const resolved = await resolveWorkspaceAndUser(body.workspaceId, body.uploadedBy);
+    const resolved = await resolveWorkspaceAndUser(
+      body.workspaceId,
+      body.uploadedBy
+    );
 
-    const [asset] = await db
-      .insert(contentAssets)
-      .values({
-        entityType: body.entityType,
-        entityId: body.entityId,
-        workspaceId: resolved.workspaceId,
+    const { data: asset, error } = await supabase
+      .from("content_assets")
+      .insert({
+        entity_type: body.entityType,
+        entity_id: body.entityId,
+        workspace_id: resolved.workspaceId,
         name: body.name,
         url: body.url,
-        assetType: body.assetType || "document",
-        fileSize: body.fileSize || null,
-        uploadedBy: resolved.createdBy,
+        asset_type: body.assetType || "document",
+        file_size: body.fileSize || null,
+        uploaded_by: resolved.createdBy,
       })
-      .returning();
+      .select()
+      .single();
 
-    return NextResponse.json({ asset });
+    if (error) throw error;
+
+    return NextResponse.json({ asset: transformAsset(asset) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -73,14 +91,12 @@ export async function DELETE(req: NextRequest) {
   }
 
   try {
-    const [deleted] = await db
-      .delete(contentAssets)
-      .where(eq(contentAssets.id, id))
-      .returning();
+    const { error } = await supabase
+      .from("content_assets")
+      .delete()
+      .eq("id", id);
 
-    if (!deleted) {
-      return NextResponse.json({ error: "Asset not found" }, { status: 404 });
-    }
+    if (error) throw error;
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

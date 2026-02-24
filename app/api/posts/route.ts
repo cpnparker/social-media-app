@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lateApiFetch } from "@/lib/late";
-import { db } from "@/lib/db";
-import { posts as postsTable } from "@/lib/db/schema";
+import { supabase } from "@/lib/supabase";
 
-// GET /api/posts — list posts
+// GET /api/posts — list posts (via Late API)
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const status = searchParams.get("status");
@@ -21,19 +20,18 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST /api/posts — create a new post
+// POST /api/posts — create a new post (via Late API)
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
     const postPayload: any = {
       content: body.content,
-      platforms: body.platforms, // [{platform, accountId, content?}]
+      platforms: body.platforms,
     };
 
     if (body.mediaUrls?.length || body.mediaItems?.length) {
       const baseUrl = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-      // Late API expects mediaItems: [{ url, type }]
       const urls: string[] = body.mediaUrls || body.mediaItems?.map((m: any) => m.url) || [];
       postPayload.mediaItems = urls.map((url: string) => {
         const absoluteUrl = url.startsWith("http") ? url : `${baseUrl}${url}`;
@@ -43,38 +41,29 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    if (body.publishNow) {
-      postPayload.publishNow = true;
-    } else if (body.scheduledFor) {
+    if (body.publishNow) postPayload.publishNow = true;
+    else if (body.scheduledFor) {
       postPayload.scheduledFor = body.scheduledFor;
       postPayload.timezone = body.timezone || "UTC";
     }
-
-    console.log("[Posts] Sending to Late API:", JSON.stringify(postPayload, null, 2));
 
     const data = await lateApiFetch("/posts", {
       method: "POST",
       body: JSON.stringify(postPayload),
     });
 
-    // If this post is linked to a content object, store the mapping locally
+    // If linked to a content object, store in social table
     if (body.contentObjectId) {
-      const latePostId = data.post?._id || data._id;
       try {
-        await db.insert(postsTable).values({
-          workspaceId: body.workspaceId || "00000000-0000-0000-0000-000000000000",
-          latePostId: latePostId,
-          content: body.content,
-          status: body.publishNow ? "scheduled" : "draft",
-          scheduledFor: body.scheduledFor ? new Date(body.scheduledFor) : undefined,
-          timezone: body.timezone || "UTC",
-          contentObjectId: body.contentObjectId,
-          customerId: body.customerId || null,
-          standalone: false,
-          createdBy: body.createdBy || "00000000-0000-0000-0000-000000000000",
+        await supabase.from("social").insert({
+          id_content: parseInt(body.contentObjectId, 10),
+          id_client: body.customerId ? parseInt(body.customerId, 10) : null,
+          name_social: (body.content || "").substring(0, 200),
+          network: body.platforms?.[0]?.platform || "other",
+          type_post: "standard",
+          date_created: new Date().toISOString(),
         });
       } catch (dbErr) {
-        // Don't fail the whole request if local DB insert fails
         console.error("[Posts] Failed to store content object linkage:", dbErr);
       }
     }

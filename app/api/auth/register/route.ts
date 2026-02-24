@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { db } from "@/lib/db";
-import { users, workspaces, workspaceMembers } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
@@ -23,9 +21,12 @@ export async function POST(req: NextRequest) {
     }
 
     // Check if user already exists
-    const existing = await db.query.users.findFirst({
-      where: eq(users.email, email),
-    });
+    const { data: existing } = await supabase
+      .from("users")
+      .select("id_user")
+      .eq("email_user", email)
+      .is("date_deleted", null)
+      .single();
 
     if (existing) {
       return NextResponse.json(
@@ -37,35 +38,52 @@ export async function POST(req: NextRequest) {
     // Hash password and create user
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    const [newUser] = await db
-      .insert(users)
-      .values({
-        name,
-        email,
-        hashedPassword,
+    const { data: newUser, error: insertError } = await supabase
+      .from("users")
+      .insert({
+        name_user: name,
+        email_user: email,
+        hashed_password: hashedPassword,
         provider: "email",
       })
-      .returning();
+      .select("id_user, email_user, name_user")
+      .single();
+
+    if (insertError || !newUser) {
+      throw insertError || new Error("Failed to create user");
+    }
 
     // Create a default workspace for the new user
     const slug = email.split("@")[0].replace(/[^a-z0-9-]/gi, "-").toLowerCase();
-    const [workspace] = await db
-      .insert(workspaces)
-      .values({
+    const { data: workspace, error: wsError } = await supabase
+      .from("workspaces")
+      .insert({
         name: `${name}'s Workspace`,
-        slug: `${slug}-${newUser.id.slice(0, 8)}`,
+        slug: `${slug}-${newUser.id_user}`,
+        plan: "free",
       })
-      .returning();
+      .select("id")
+      .single();
+
+    if (wsError || !workspace) {
+      throw wsError || new Error("Failed to create workspace");
+    }
 
     // Add user as admin of their workspace
-    await db.insert(workspaceMembers).values({
-      workspaceId: workspace.id,
-      userId: newUser.id,
+    await supabase.from("workspace_members").insert({
+      workspace_id: workspace.id,
+      user_id: newUser.id_user,
       role: "admin",
     });
 
     return NextResponse.json(
-      { user: { id: newUser.id, email: newUser.email, name: newUser.name } },
+      {
+        user: {
+          id: String(newUser.id_user),
+          email: newUser.email_user,
+          name: newUser.name_user,
+        },
+      },
       { status: 201 }
     );
   } catch (error: any) {

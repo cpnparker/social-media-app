@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { lateApiFetch } from "@/lib/late";
 
 // GET /api/accounts/connect?platform=twitter&profileId=xxx
-// Returns the OAuth URL to redirect the user to
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const platform = searchParams.get("platform");

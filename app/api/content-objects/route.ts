@@ -1,68 +1,44 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { contentObjects, productionTasks } from "@/lib/db/schema";
-import { eq, desc, sql, and } from "drizzle-orm";
-import { resolveWorkspaceAndUser } from "@/lib/api-utils";
+import { supabase } from "@/lib/supabase";
 
 // GET /api/content-objects
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const contentType = searchParams.get("contentType");
-  const ideaId = searchParams.get("ideaId");
   const customerId = searchParams.get("customerId");
   const limit = parseInt(searchParams.get("limit") || "50");
   const offset = parseInt(searchParams.get("offset") || "0");
 
   try {
-    const { workspaceId } = await resolveWorkspaceAndUser();
+    let query = supabase
+      .from("app_content")
+      .select("*")
+      .order("date_created", { ascending: false })
+      .range(offset, offset + limit - 1);
 
-    const conditions: any[] = [];
+    if (contentType) query = query.eq("type_content", contentType);
+    if (customerId) query = query.eq("id_client", parseInt(customerId, 10));
 
-    conditions.push(eq(contentObjects.workspaceId, workspaceId));
+    const { data: rows, error } = await query;
+    if (error) throw error;
 
-    if (contentType) conditions.push(eq(contentObjects.contentType, contentType as any));
-    if (ideaId) conditions.push(eq(contentObjects.ideaId, ideaId));
-    if (customerId) conditions.push(eq(contentObjects.customerId, customerId));
+    const contentObjects = (rows || []).map((r) => ({
+      id: String(r.id_content),
+      ideaId: r.id_idea ? String(r.id_idea) : null,
+      contentType: r.type_content,
+      workingTitle: r.name_content,
+      status: r.flag_completed === 1 ? "published" : r.flag_spiked === 1 ? "spiked" : "draft",
+      customerId: r.id_client ? String(r.id_client) : null,
+      customerName: r.name_client,
+      contractId: r.id_contract ? String(r.id_contract) : null,
+      contentUnits: Number(r.units_content) || 0,
+      topicTags: r.name_topic_array || [],
+      campaignTags: r.name_campaign_array || [],
+      createdAt: r.date_created,
+      contentLeadName: r.name_user_content_lead,
+    }));
 
-    // Query content objects with task progress counts via subqueries
-    const totalTasksSq = sql<number>`(SELECT count(*) FROM production_tasks WHERE production_tasks.content_object_id = content_objects.id)`.as("total_tasks");
-    const doneTasksSq = sql<number>`(SELECT count(*) FROM production_tasks WHERE production_tasks.content_object_id = content_objects.id AND production_tasks.status = 'done')`.as("done_tasks");
-
-    // Customer name subquery
-    const customerNameSq = sql<string>`(SELECT name FROM customers WHERE customers.id = content_objects.customer_id)`.as("customer_name");
-
-    let query = db
-      .select({
-        id: contentObjects.id,
-        ideaId: contentObjects.ideaId,
-        workspaceId: contentObjects.workspaceId,
-        contentType: contentObjects.contentType,
-        workingTitle: contentObjects.workingTitle,
-        finalTitle: contentObjects.finalTitle,
-        status: contentObjects.status,
-        formatTags: contentObjects.formatTags,
-        campaignTags: contentObjects.campaignTags,
-        evergreenFlag: contentObjects.evergreenFlag,
-        createdAt: contentObjects.createdAt,
-        updatedAt: contentObjects.updatedAt,
-        customerId: contentObjects.customerId,
-        contractId: contentObjects.contractId,
-        contentUnits: contentObjects.contentUnits,
-        totalTasks: totalTasksSq,
-        doneTasks: doneTasksSq,
-        customerName: customerNameSq,
-      })
-      .from(contentObjects);
-
-    if (conditions.length === 1) {
-      query = query.where(conditions[0]) as any;
-    } else if (conditions.length > 1) {
-      query = query.where(and(...conditions)) as any;
-    }
-
-    const rows = await (query as any).orderBy(desc(contentObjects.updatedAt)).limit(limit).offset(offset);
-
-    return NextResponse.json({ contentObjects: rows });
+    return NextResponse.json({ contentObjects });
   } catch (error: any) {
     console.error("Content objects GET error:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -74,41 +50,37 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    if (!body.ideaId) {
-      return NextResponse.json(
-        { error: "ideaId is required — content must be commissioned from an idea" },
-        { status: 400 }
-      );
-    }
+    const insertData: Record<string, any> = {
+      name_content: body.workingTitle || body.title || "Untitled",
+      type_content: body.contentType || "article",
+      information_brief: body.body || "",
+      date_created: new Date().toISOString(),
+    };
 
-    const resolved = await resolveWorkspaceAndUser(body.workspaceId, body.createdBy);
+    if (body.ideaId) insertData.id_idea = parseInt(body.ideaId, 10);
+    if (body.customerId) insertData.id_client = parseInt(body.customerId, 10);
+    if (body.contractId) insertData.id_contract = parseInt(body.contractId, 10);
+    if (body.contentUnits) insertData.units_override = parseFloat(body.contentUnits);
+    if (body.createdBy) insertData.user_commissioned = parseInt(body.createdBy, 10);
 
-    const [obj] = await db
-      .insert(contentObjects)
-      .values({
-        ideaId: body.ideaId,
-        workspaceId: resolved.workspaceId,
-        contentType: body.contentType || "article",
-        workingTitle: body.workingTitle || body.title || "Untitled",
-        finalTitle: body.finalTitle || null,
-        body: body.body || "",
-        externalDocUrl: body.externalDocUrl || null,
-        socialCopyDocUrl: body.socialCopyDocUrl || null,
-        status: body.status || "draft",
-        assignedWriterId: body.assignedWriterId || null,
-        assignedEditorId: body.assignedEditorId || null,
-        assignedProducerId: body.assignedProducerId || null,
-        formatTags: body.formatTags || [],
-        campaignTags: body.campaignTags || [],
-        evergreenFlag: body.evergreenFlag || false,
-        createdBy: resolved.createdBy,
-        customerId: body.customerId || null,
-        contractId: body.contractId || null,
-        contentUnits: body.contentUnits ? parseFloat(body.contentUnits) : null,
-      })
-      .returning();
+    const { data: obj, error } = await supabase
+      .from("content")
+      .insert(insertData)
+      .select()
+      .single();
 
-    return NextResponse.json({ contentObject: obj });
+    if (error) throw error;
+
+    return NextResponse.json({
+      contentObject: {
+        id: String(obj.id_content),
+        ideaId: obj.id_idea ? String(obj.id_idea) : null,
+        workingTitle: obj.name_content,
+        contentType: obj.type_content,
+        status: "draft",
+        createdAt: obj.date_created,
+      },
+    });
   } catch (error: any) {
     console.error("Content objects POST error:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });

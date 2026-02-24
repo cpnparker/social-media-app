@@ -1,6 +1,4 @@
-import { db } from "@/lib/db";
-import { taskTemplates, productionTasks } from "@/lib/db/schema";
-import { eq, and, asc } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 
 /**
  * Creates production tasks from templates for a given content type.
@@ -12,32 +10,35 @@ export async function createTasksFromTemplates(
   workspaceId: string,
   createdBy: string
 ): Promise<void> {
-  // Fetch templates for this content type and workspace
-  const templates = await db
-    .select()
-    .from(taskTemplates)
-    .where(
-      and(
-        eq(taskTemplates.contentType, contentType as any),
-        eq(taskTemplates.workspaceId, workspaceId)
-      )
-    )
-    .orderBy(asc(taskTemplates.sortOrder));
+  // Resolve contentType to id_type
+  const { data: typeRow } = await supabase
+    .from("types_content")
+    .select("id_type")
+    .or(`key_type.eq.${contentType},type_content.ilike.${contentType}`)
+    .limit(1)
+    .single();
 
-  if (templates.length === 0) return;
+  if (!typeRow) return;
+
+  // Fetch templates for this content type
+  const { data: templates } = await supabase
+    .from("templates_tasks_content")
+    .select("*")
+    .eq("id_type", typeRow.id_type)
+    .order("order_sort", { ascending: true });
+
+  if (!templates || templates.length === 0) return;
 
   // Insert a production task for each template
-  await db.insert(productionTasks).values(
-    templates.map((template) => ({
-      contentObjectId,
-      workspaceId,
-      title: template.title,
-      description: template.description,
-      status: "todo" as const,
-      priority: "medium" as const,
-      sortOrder: template.sortOrder,
-      templateId: template.id,
-      createdBy,
-    }))
-  );
+  const taskRows = templates.map((template) => ({
+    id_content: parseInt(contentObjectId, 10),
+    type_task: template.type_task,
+    information_notes: template.information_notes,
+    order_sort: template.order_sort,
+    units_content: template.units_content,
+    user_created: parseInt(createdBy, 10),
+    date_created: new Date().toISOString(),
+  }));
+
+  await supabase.from("tasks_content").insert(taskRows);
 }

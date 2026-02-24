@@ -1,24 +1,21 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { customerMembers, customers } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
-import { resolveWorkspaceAndUser } from "@/lib/api-utils";
+import { supabase } from "@/lib/supabase";
 
-// GET /api/workspace/customer-assignments — all customer-member mappings for the workspace
+// GET /api/workspace/customer-assignments — all customer-member mappings
 export async function GET() {
   try {
-    const { workspaceId } = await resolveWorkspaceAndUser();
+    const { data: rows, error } = await supabase
+      .from("app_lookup_users_clients")
+      .select("*");
 
-    const assignments = await db
-      .select({
-        userId: customerMembers.userId,
-        customerId: customerMembers.customerId,
-        customerName: customers.name,
-        role: customerMembers.role,
-      })
-      .from(customerMembers)
-      .innerJoin(customers, eq(customerMembers.customerId, customers.id))
-      .where(eq(customers.workspaceId, workspaceId));
+    if (error) throw error;
+
+    const assignments = (rows || []).map((r) => ({
+      userId: String(r.id_user),
+      customerId: r.id_client ? String(r.id_client) : null,
+      customerName: r.name_client,
+      role: r.role_user,
+    }));
 
     return NextResponse.json({ assignments });
   } catch (error: any) {

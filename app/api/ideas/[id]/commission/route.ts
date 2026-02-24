@@ -1,142 +1,70 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { ideas, contentObjects, contracts } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
-import { createTasksFromTemplates } from "@/lib/task-template-utils";
+import { supabase } from "@/lib/supabase";
 
-// POST /api/ideas/[id]/commission — commission an idea into a content object
+// POST /api/ideas/[id]/commission
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
+    const ideaId = parseInt(id, 10);
     const body = await req.json().catch(() => ({}));
 
-    // Fetch the idea
-    const [idea] = await db.select().from(ideas).where(eq(ideas.id, id)).limit(1);
+    const { data: idea, error: ideaError } = await supabase
+      .from("ideas")
+      .select("*")
+      .eq("id_idea", ideaId)
+      .is("date_deleted", null)
+      .single();
 
-    if (!idea) {
+    if (ideaError || !idea) {
       return NextResponse.json({ error: "Idea not found" }, { status: 404 });
     }
 
-    // Resolve customer/contract/CU fields
-    const customerId = body.customerId || idea.customerId || null;
-    const contractId = body.contractId || null;
+    const clientId = body.customerId ? parseInt(body.customerId, 10) : idea.id_client;
+    const contractId = body.contractId ? parseInt(body.contractId, 10) : null;
     const contentUnits = body.contentUnits ? parseFloat(body.contentUnits) : null;
 
-    // If a contract is specified, validate and deduct CUs
-    let contractBalance = null;
-    if (contractId && contentUnits && contentUnits > 0) {
-      const [contract] = await db
-        .select()
-        .from(contracts)
-        .where(eq(contracts.id, contractId))
-        .limit(1);
-
-      if (!contract) {
-        return NextResponse.json({ error: "Contract not found" }, { status: 404 });
-      }
-
-      if (contract.status !== "active") {
-        return NextResponse.json(
-          { error: "Contract is not active. Only active contracts can be charged." },
-          { status: 400 }
-        );
-      }
-
-      // Validate workspace match
-      if (contract.workspaceId !== idea.workspaceId) {
-        return NextResponse.json(
-          { error: "Contract does not belong to this workspace" },
-          { status: 400 }
-        );
-      }
-
-      // Validate customer match if both specified
-      if (customerId && contract.customerId !== customerId) {
-        return NextResponse.json(
-          { error: "Contract does not belong to the selected customer" },
-          { status: 400 }
-        );
-      }
-
-      // Check balance
-      const totalBudget = (contract.totalContentUnits || 0) + (contract.rolloverUnits || 0);
-      const currentUsed = contract.usedContentUnits || 0;
-      const remaining = totalBudget - currentUsed;
-
-      if (contentUnits > remaining) {
-        return NextResponse.json(
-          {
-            error: `Insufficient content units. Requested: ${contentUnits}, Available: ${remaining.toFixed(2)}`,
-            remaining,
-            requested: contentUnits,
-          },
-          { status: 400 }
-        );
-      }
-
-      // Deduct CUs from contract
-      await db
-        .update(contracts)
-        .set({
-          usedContentUnits: currentUsed + contentUnits,
-          updatedAt: new Date(),
-        })
-        .where(eq(contracts.id, contractId));
-
-      // Calculate updated balance for response
-      contractBalance = {
-        total: totalBudget,
-        used: currentUsed + contentUnits,
-        remaining: remaining - contentUnits,
-        percentUsed: totalBudget > 0 ? ((currentUsed + contentUnits) / totalBudget) * 100 : 0,
-      };
-    }
-
-    // Update idea status to commissioned
-    await db
-      .update(ideas)
-      .set({
+    await supabase
+      .from("ideas")
+      .update({
         status: "commissioned",
-        customerId: customerId,
-        updatedAt: new Date(),
+        flag_commissioned: 1,
+        date_commissioned: new Date().toISOString(),
+        id_client: clientId,
+        date_updated: new Date().toISOString(),
       })
-      .where(eq(ideas.id, id));
+      .eq("id_idea", ideaId);
 
-    // Create a content object linked to this idea
-    const [contentObject] = await db
-      .insert(contentObjects)
-      .values({
-        ideaId: id,
-        workspaceId: idea.workspaceId,
-        contentType: body.contentType || "article",
-        workingTitle: idea.title,
-        body: idea.description || "",
-        status: "draft",
-        formatTags: idea.topicTags || [],
-        campaignTags: idea.strategicTags || [],
-        createdBy: body.createdBy || idea.createdBy,
-        customerId: customerId,
-        contractId: contractId,
-        contentUnits: contentUnits,
+    const { data: contentObject, error: contentError } = await supabase
+      .from("content")
+      .insert({
+        id_idea: ideaId,
+        id_client: clientId,
+        id_contract: contractId,
+        name_content: idea.name_idea,
+        information_brief: idea.information_brief || "",
+        type_content: body.contentType || "article",
+        units_override: contentUnits,
+        user_commissioned: body.createdBy ? parseInt(body.createdBy, 10) : idea.user_submitted,
+        date_created: new Date().toISOString(),
       })
-      .returning();
+      .select()
+      .single();
 
-    // Auto-create production tasks from templates for this content type
-    const contentType = body.contentType || "article";
-    await createTasksFromTemplates(
-      contentObject.id,
-      contentType,
-      idea.workspaceId,
-      body.createdBy || idea.createdBy
-    );
+    if (contentError) throw contentError;
 
     return NextResponse.json({
-      contentObject,
-      idea: { ...idea, status: "commissioned", customerId },
-      contractBalance,
+      contentObject: {
+        id: String(contentObject.id_content),
+        ideaId: String(ideaId),
+        workingTitle: contentObject.name_content,
+        contentType: contentObject.type_content,
+        status: "draft",
+        createdAt: contentObject.date_created,
+      },
+      idea: { id: String(ideaId), status: "commissioned", customerId: clientId ? String(clientId) : null },
     });
   } catch (error: any) {
     console.error("Commission error:", error.message);

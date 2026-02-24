@@ -1,21 +1,38 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { profileLinks } from "@/lib/db/schema";
-import { eq, asc, sql } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 import { resolveWorkspaceAndUser } from "@/lib/api-utils";
+
+// Helper: snake_case → camelCase
+function transformLink(row: any) {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    title: row.title,
+    url: row.url,
+    description: row.description,
+    icon: row.icon,
+    sortOrder: row.sort_order,
+    isActive: row.is_active,
+    createdAt: row.created_at,
+  };
+}
 
 // GET /api/profile-links — list all links for workspace
 export async function GET() {
   try {
     const { workspaceId } = await resolveWorkspaceAndUser();
 
-    const links = await db
-      .select()
-      .from(profileLinks)
-      .where(eq(profileLinks.workspaceId, workspaceId))
-      .orderBy(asc(profileLinks.sortOrder));
+    const { data: links, error } = await supabase
+      .from("profile_links")
+      .select("*")
+      .eq("workspace_id", workspaceId)
+      .order("sort_order", { ascending: true });
 
-    return NextResponse.json({ links });
+    if (error) throw error;
+
+    return NextResponse.json({
+      links: (links || []).map(transformLink),
+    });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -35,26 +52,31 @@ export async function POST(req: NextRequest) {
     }
 
     // Calculate next sortOrder
-    const [maxResult] = await db
-      .select({ maxOrder: sql<number>`coalesce(max(${profileLinks.sortOrder}), -1)` })
-      .from(profileLinks)
-      .where(eq(profileLinks.workspaceId, workspaceId));
+    const { data: maxRows } = await supabase
+      .from("profile_links")
+      .select("sort_order")
+      .eq("workspace_id", workspaceId)
+      .order("sort_order", { ascending: false })
+      .limit(1);
 
-    const nextOrder = (maxResult?.maxOrder ?? -1) + 1;
+    const nextOrder = ((maxRows?.[0]?.sort_order ?? -1) as number) + 1;
 
-    const [link] = await db
-      .insert(profileLinks)
-      .values({
-        workspaceId,
+    const { data: link, error } = await supabase
+      .from("profile_links")
+      .insert({
+        workspace_id: workspaceId,
         title: body.title.trim(),
         url: body.url.trim(),
         description: body.description?.trim() || null,
         icon: body.icon || null,
-        sortOrder: nextOrder,
+        sort_order: nextOrder,
       })
-      .returning();
+      .select()
+      .single();
 
-    return NextResponse.json({ link }, { status: 201 });
+    if (error) throw error;
+
+    return NextResponse.json({ link: transformLink(link) }, { status: 201 });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

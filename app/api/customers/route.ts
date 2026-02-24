@@ -1,62 +1,54 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { customers, contracts } from "@/lib/db/schema";
-import { eq, desc, sql, and, like } from "drizzle-orm";
-import { resolveWorkspaceAndUser } from "@/lib/api-utils";
+import { supabase } from "@/lib/supabase";
 
 // GET /api/customers
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const status = searchParams.get("status");
   const search = searchParams.get("search");
   const limit = parseInt(searchParams.get("limit") || "50");
   const offset = parseInt(searchParams.get("offset") || "0");
 
   try {
-    const { workspaceId } = await resolveWorkspaceAndUser();
+    // Use the app_clients view for denormalized read
+    let query = supabase
+      .from("app_clients")
+      .select("*")
+      .order("date_created", { ascending: false })
+      .range(offset, offset + limit - 1);
 
-    const conditions: any[] = [eq(customers.workspaceId, workspaceId)];
+    if (search) {
+      query = query.ilike("name_client", `%${search}%`);
+    }
 
-    if (status) conditions.push(eq(customers.status, status as any));
-    if (search) conditions.push(like(customers.name, `%${search}%`));
+    const { data: rows, error } = await query;
+    if (error) throw error;
 
-    const activeContractsSq = sql<number>`(SELECT count(*) FROM contracts WHERE contracts.customer_id = customers.id AND contracts.status = 'active')`.as("active_contracts");
-    const totalBudgetSq = sql<number>`(SELECT coalesce(sum(contracts.total_content_units), 0) FROM contracts WHERE contracts.customer_id = customers.id AND contracts.status = 'active')`.as("total_budget");
-    const usedBudgetSq = sql<number>`(SELECT coalesce(sum(contracts.used_content_units), 0) FROM contracts WHERE contracts.customer_id = customers.id AND contracts.status = 'active')`.as("used_budget");
+    // Transform to API shape the frontend expects
+    const customers = (rows || []).map((r) => ({
+      id: String(r.id_client),
+      name: r.name_client,
+      website: r.link_website,
+      industry: r.information_industry,
+      notes: r.information_description,
+      status: "active", // Supabase uses date_deleted for soft delete; if it's in app_clients, it's active
+      createdAt: r.date_created,
+      logoUrl: r.file_logo_bucket && r.file_logo_path
+        ? `https://dcwodczzdeltxlyepxmc.supabase.co/storage/v1/object/public/${r.file_logo_bucket}/${r.file_logo_path}`
+        : null,
+      accountManager: r.name_account_manager,
+      featureSocial: r.feature_social,
+      featureAnalytics: r.feature_analytics,
+      featureAutoschedule: r.feature_autoschedule,
+    }));
 
-    const rows = await db
-      .select({
-        id: customers.id,
-        workspaceId: customers.workspaceId,
-        name: customers.name,
-        slug: customers.slug,
-        logoUrl: customers.logoUrl,
-        website: customers.website,
-        primaryContactName: customers.primaryContactName,
-        primaryContactEmail: customers.primaryContactEmail,
-        industry: customers.industry,
-        notes: customers.notes,
-        status: customers.status,
-        createdAt: customers.createdAt,
-        updatedAt: customers.updatedAt,
-        activeContracts: activeContractsSq,
-        totalBudget: totalBudgetSq,
-        usedBudget: usedBudgetSq,
-      })
-      .from(customers)
-      .where(and(...conditions))
-      .orderBy(desc(customers.createdAt))
-      .limit(limit)
-      .offset(offset);
-
-    return NextResponse.json({ customers: rows });
+    return NextResponse.json({ customers });
   } catch (error: any) {
     console.error("Customers GET error:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
-// POST /api/customers
+// POST /api/customers — create a new client
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -68,30 +60,31 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { workspaceId } = await resolveWorkspaceAndUser(body.workspaceId);
-
-    const slug = body.name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)/g, "");
-
-    const [customer] = await db
-      .insert(customers)
-      .values({
-        workspaceId,
-        name: body.name,
-        slug,
-        logoUrl: body.logoUrl || null,
-        website: body.website || null,
-        primaryContactName: body.primaryContactName || null,
-        primaryContactEmail: body.primaryContactEmail || null,
-        industry: body.industry || null,
-        notes: body.notes || null,
-        status: body.status || "active",
+    const { data: customer, error } = await supabase
+      .from("clients")
+      .insert({
+        name_client: body.name,
+        link_website: body.website || null,
+        information_industry: body.industry || null,
+        information_description: body.notes || null,
+        date_created: new Date().toISOString(),
       })
-      .returning();
+      .select()
+      .single();
 
-    return NextResponse.json({ customer });
+    if (error) throw error;
+
+    return NextResponse.json({
+      customer: {
+        id: String(customer.id_client),
+        name: customer.name_client,
+        website: customer.link_website,
+        industry: customer.information_industry,
+        notes: customer.information_description,
+        status: "active",
+        createdAt: customer.date_created,
+      },
+    });
   } catch (error: any) {
     console.error("Customers POST error:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });

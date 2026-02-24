@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lateApiFetch } from "@/lib/late";
 
-// GET /api/posts/[id]
+// GET /api/posts/[id] — via Late API
 export async function GET(
   req: NextRequest,
   { params }: { params: { id: string } }
@@ -14,7 +14,7 @@ export async function GET(
   }
 }
 
-// PATCH /api/posts/[id] — update a post
+// PATCH /api/posts/[id]
 export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string } }
@@ -37,9 +37,7 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    const data = await lateApiFetch(`/posts/${params.id}`, {
-      method: "DELETE",
-    });
+    const data = await lateApiFetch(`/posts/${params.id}`, { method: "DELETE" });
     return NextResponse.json(data);
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { workspaces, workspaceMembers } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 import { auth } from "@/lib/auth";
 
 // POST /api/workspaces — create a new workspace
@@ -21,31 +19,37 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Insert workspace first to get the generated id
-    const [workspace] = await db
-      .insert(workspaces)
-      .values({
+    const baseSlug = name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+
+    const { data: workspace, error: createErr } = await supabase
+      .from("workspaces")
+      .insert({
         name,
-        // Temporary slug — will be updated with the id suffix
-        slug: name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""),
+        slug: baseSlug,
       })
-      .returning();
+      .select()
+      .single();
 
-    // Generate final slug with first 8 chars of the workspace id
-    const slug = `${name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")}-${workspace.id.slice(0, 8)}`;
+    if (createErr) throw createErr;
 
-    const [updatedWorkspace] = await db
-      .update(workspaces)
-      .set({ slug })
-      .where(eq(workspaces.id, workspace.id))
-      .returning();
+    // Update slug with id prefix
+    const slug = `${baseSlug}-${workspace.id.slice(0, 8)}`;
+
+    const { data: updatedWorkspace, error: updateErr } = await supabase
+      .from("workspaces")
+      .update({ slug })
+      .eq("id", workspace.id)
+      .select()
+      .single();
+
+    if (updateErr) throw updateErr;
 
     // Add the current user as owner
-    await db.insert(workspaceMembers).values({
-      workspaceId: workspace.id,
-      userId: session.user.id,
+    await supabase.from("workspace_members").insert({
+      workspace_id: workspace.id,
+      user_id: parseInt(session.user.id, 10),
       role: "owner",
-      joinedAt: new Date(),
+      joined_at: new Date().toISOString(),
     });
 
     return NextResponse.json({ workspace: updatedWorkspace }, { status: 201 });

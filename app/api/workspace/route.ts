@@ -1,20 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { workspaces } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 import { resolveWorkspaceAndUser } from "@/lib/api-utils";
 
 // GET /api/workspace — get current workspace
 export async function GET() {
   try {
     const { workspaceId } = await resolveWorkspaceAndUser();
-    const [workspace] = await db
-      .select()
-      .from(workspaces)
-      .where(eq(workspaces.id, workspaceId))
-      .limit(1);
+    const { data: workspace, error } = await supabase
+      .from("workspaces")
+      .select("*")
+      .eq("id", workspaceId)
+      .single();
 
-    if (!workspace) {
+    if (error || !workspace) {
       return NextResponse.json(
         { error: "Workspace not found" },
         { status: 404 }
@@ -33,19 +31,20 @@ export async function PUT(req: NextRequest) {
     const { workspaceId } = await resolveWorkspaceAndUser();
     const body = await req.json();
 
-    const updateData: any = { updatedAt: new Date() };
+    const updateData: Record<string, any> = { updated_at: new Date().toISOString() };
     if (body.name !== undefined) updateData.name = body.name;
     if (body.slug !== undefined) updateData.slug = body.slug;
     if (body.plan !== undefined) updateData.plan = body.plan;
-    if (body.lateApiKey !== undefined) updateData.lateApiKey = body.lateApiKey;
+    if (body.lateApiKey !== undefined) updateData.late_api_key = body.lateApiKey;
 
-    const [updated] = await db
-      .update(workspaces)
-      .set(updateData)
-      .where(eq(workspaces.id, workspaceId))
-      .returning();
+    const { data: updated, error } = await supabase
+      .from("workspaces")
+      .update(updateData)
+      .eq("id", workspaceId)
+      .select()
+      .single();
 
-    if (!updated) {
+    if (error || !updated) {
       return NextResponse.json(
         { error: "Workspace not found" },
         { status: 404 }

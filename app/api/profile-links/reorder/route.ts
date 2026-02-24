@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { profileLinks } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 
 // POST /api/profile-links/reorder — bulk update sort order
 export async function POST(req: NextRequest) {
@@ -16,13 +14,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Update each link's sortOrder to match its position in the array
+    // Update each link's sort_order to match its position in the array
     await Promise.all(
       orderedIds.map((id: string, index: number) =>
-        db
-          .update(profileLinks)
-          .set({ sortOrder: index })
-          .where(eq(profileLinks.id, id))
+        supabase
+          .from("profile_links")
+          .update({ sort_order: index })
+          .eq("id", id)
       )
     );
 

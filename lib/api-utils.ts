@@ -1,5 +1,4 @@
-import { db } from "@/lib/db";
-import { workspaces, users } from "@/lib/db/schema";
+import { supabase } from "@/lib/supabase";
 
 /**
  * Resolve the default workspace and user IDs for API routes.
@@ -13,13 +12,16 @@ export async function resolveWorkspaceAndUser(
   let workspaceId = bodyWorkspaceId;
   let createdBy = bodyCreatedBy;
 
-  // If valid UUIDs were provided and they aren't the null placeholder, use them
   const nullUUID = "00000000-0000-0000-0000-000000000000";
 
   if (!workspaceId || workspaceId === nullUUID) {
     try {
-      const [ws] = await db.select({ id: workspaces.id }).from(workspaces).limit(1);
-      workspaceId = ws?.id || nullUUID;
+      const { data } = await supabase
+        .from("workspaces")
+        .select("id")
+        .limit(1)
+        .single();
+      workspaceId = data?.id || nullUUID;
     } catch {
       workspaceId = nullUUID;
     }
@@ -27,12 +29,17 @@ export async function resolveWorkspaceAndUser(
 
   if (!createdBy || createdBy === nullUUID) {
     try {
-      const [user] = await db.select({ id: users.id }).from(users).limit(1);
-      createdBy = user?.id || nullUUID;
+      const { data } = await supabase
+        .from("users")
+        .select("id_user")
+        .is("date_deleted", null)
+        .limit(1)
+        .single();
+      createdBy = data ? String(data.id_user) : nullUUID;
     } catch {
       createdBy = nullUUID;
     }
   }
 
-  return { workspaceId, createdBy };
+  return { workspaceId: workspaceId!, createdBy: createdBy! };
 }

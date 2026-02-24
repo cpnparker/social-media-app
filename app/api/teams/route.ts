@@ -1,28 +1,44 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { teams, teamMembers, teamAccounts } from "@/lib/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
+
+// Helper: snake_case row → camelCase for frontend
+function transformTeam(row: any) {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    name: row.name,
+    description: row.description,
+    createdAt: row.created_at,
+  };
+}
 
 // GET /api/teams — list all teams with member/account counts
 export async function GET() {
   try {
-    const allTeams = await db.select().from(teams).orderBy(teams.name);
+    const { data: allTeams, error } = await supabase
+      .from("teams")
+      .select("*")
+      .order("name");
+
+    if (error) throw error;
 
     // Enrich with member and account counts
     const enriched = await Promise.all(
-      allTeams.map(async (team) => {
-        const [memberResult] = await db
-          .select({ count: sql<number>`count(*)::int` })
-          .from(teamMembers)
-          .where(eq(teamMembers.teamId, team.id));
-        const [accountResult] = await db
-          .select({ count: sql<number>`count(*)::int` })
-          .from(teamAccounts)
-          .where(eq(teamAccounts.teamId, team.id));
+      (allTeams || []).map(async (team) => {
+        const { count: memberCount } = await supabase
+          .from("team_members")
+          .select("*", { count: "exact", head: true })
+          .eq("team_id", team.id);
+
+        const { count: accountCount } = await supabase
+          .from("team_accounts")
+          .select("*", { count: "exact", head: true })
+          .eq("team_id", team.id);
+
         return {
-          ...team,
-          memberCount: memberResult?.count || 0,
-          accountCount: accountResult?.count || 0,
+          ...transformTeam(team),
+          memberCount: memberCount || 0,
+          accountCount: accountCount || 0,
         };
       })
     );
@@ -46,16 +62,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const [team] = await db
-      .insert(teams)
-      .values({
+    const { data: team, error } = await supabase
+      .from("teams")
+      .insert({
         name,
         description: description || null,
-        workspaceId: workspaceId,
+        workspace_id: workspaceId,
       })
-      .returning();
+      .select()
+      .single();
 
-    return NextResponse.json({ team }, { status: 201 });
+    if (error) throw error;
+
+    return NextResponse.json({ team: transformTeam(team) }, { status: 201 });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

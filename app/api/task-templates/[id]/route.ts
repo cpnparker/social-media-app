@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { taskTemplates } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 
 // PUT /api/task-templates/[id]
 export async function PUT(
@@ -10,29 +8,37 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
+    const templateId = parseInt(id, 10);
     const body = await req.json();
 
-    const updates: any = {};
-    if (body.title !== undefined) updates.title = body.title;
-    if (body.description !== undefined) updates.description = body.description;
-    if (body.defaultRole !== undefined) updates.defaultRole = body.defaultRole;
-    if (body.sortOrder !== undefined) updates.sortOrder = body.sortOrder;
+    const updateData: Record<string, any> = { date_updated: new Date().toISOString() };
+    if (body.title !== undefined) updateData.type_task = body.title;
+    if (body.description !== undefined) updateData.information_notes = body.description;
+    if (body.sortOrder !== undefined) updateData.order_sort = body.sortOrder;
 
-    if (Object.keys(updates).length === 0) {
+    if (Object.keys(updateData).length <= 1) {
       return NextResponse.json({ error: "No fields to update" }, { status: 400 });
     }
 
-    const [template] = await db
-      .update(taskTemplates)
-      .set(updates)
-      .where(eq(taskTemplates.id, id))
-      .returning();
+    const { data: template, error } = await supabase
+      .from("templates_tasks_content")
+      .update(updateData)
+      .eq("id_template", templateId)
+      .select()
+      .single();
 
-    if (!template) {
+    if (error || !template) {
       return NextResponse.json({ error: "Template not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ template });
+    return NextResponse.json({
+      template: {
+        id: String(template.id_template),
+        title: template.type_task,
+        description: template.information_notes,
+        sortOrder: template.order_sort,
+      },
+    });
   } catch (error: any) {
     console.error("Task template PUT error:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -46,15 +52,14 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
+    const templateId = parseInt(id, 10);
 
-    const [deleted] = await db
-      .delete(taskTemplates)
-      .where(eq(taskTemplates.id, id))
-      .returning();
+    const { error } = await supabase
+      .from("templates_tasks_content")
+      .delete()
+      .eq("id_template", templateId);
 
-    if (!deleted) {
-      return NextResponse.json({ error: "Template not found" }, { status: 404 });
-    }
+    if (error) throw error;
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

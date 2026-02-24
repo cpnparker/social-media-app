@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { contentUnitDefinitions } from "@/lib/db/schema";
-import { eq, and, asc } from "drizzle-orm";
-import { resolveWorkspaceAndUser } from "@/lib/api-utils";
+import { supabase } from "@/lib/supabase";
 
 // GET /api/content-unit-definitions?category=blogs
 export async function GET(req: NextRequest) {
@@ -10,18 +7,29 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const category = searchParams.get("category");
 
-    const resolved = await resolveWorkspaceAndUser();
+    let query = supabase
+      .from("calculator_content")
+      .select("*")
+      .order("sort_order", { ascending: true });
 
-    const conditions = [eq(contentUnitDefinitions.workspaceId, resolved.workspaceId)];
     if (category) {
-      conditions.push(eq(contentUnitDefinitions.category, category as any));
+      query = query.eq("format", category);
     }
 
-    const definitions = await db
-      .select()
-      .from(contentUnitDefinitions)
-      .where(and(...conditions))
-      .orderBy(asc(contentUnitDefinitions.category), asc(contentUnitDefinitions.sortOrder));
+    const { data: rows, error } = await query;
+    if (error) throw error;
+
+    const definitions = (rows || []).map((r) => ({
+      id: r.id,
+      category: r.format,
+      formatName: r.name,
+      defaultContentUnits: Number(r.units_content) || 0,
+      sortOrder: r.sort_order,
+      isActive: true,
+      splitText: r.split_text,
+      splitVideo: r.split_video,
+      splitVisual: r.split_visual,
+    }));
 
     return NextResponse.json({ definitions });
   } catch (error: any) {
@@ -42,22 +50,32 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const resolved = await resolveWorkspaceAndUser(body.workspaceId);
-
-    const [definition] = await db
-      .insert(contentUnitDefinitions)
-      .values({
-        workspaceId: resolved.workspaceId,
-        category: body.category,
-        formatName: body.formatName,
-        description: body.description || null,
-        defaultContentUnits: body.defaultContentUnits,
-        isActive: body.isActive ?? true,
-        sortOrder: body.sortOrder ?? 0,
+    const { data: definition, error } = await supabase
+      .from("calculator_content")
+      .insert({
+        format: body.category,
+        name: body.formatName,
+        units_content: body.defaultContentUnits,
+        sort_order: body.sortOrder ?? 0,
+        split_text: body.splitText ?? null,
+        split_video: body.splitVideo ?? null,
+        split_visual: body.splitVisual ?? null,
       })
-      .returning();
+      .select()
+      .single();
 
-    return NextResponse.json({ definition });
+    if (error) throw error;
+
+    return NextResponse.json({
+      definition: {
+        id: definition.id,
+        category: definition.format,
+        formatName: definition.name,
+        defaultContentUnits: Number(definition.units_content) || 0,
+        sortOrder: definition.sort_order,
+        isActive: true,
+      },
+    });
   } catch (error: any) {
     console.error("Content unit definitions POST error:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });

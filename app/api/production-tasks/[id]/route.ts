@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { productionTasks } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 
 // PUT /api/production-tasks/[id]
 export async function PUT(
@@ -10,43 +8,53 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
+    const taskId = parseInt(id, 10);
     const body = await req.json();
 
-    const updateData: any = { updatedAt: new Date() };
-    if (body.title !== undefined) updateData.title = body.title;
-    if (body.description !== undefined) updateData.description = body.description;
-    if (body.assignedTo !== undefined) updateData.assignedTo = body.assignedTo;
-    if (body.status !== undefined) updateData.status = body.status;
-    if (body.priority !== undefined) updateData.priority = body.priority;
-    if (body.sortOrder !== undefined) updateData.sortOrder = body.sortOrder;
-    if (body.dueDate !== undefined)
-      updateData.dueDate = body.dueDate ? new Date(body.dueDate) : null;
-    if (body.hoursPlanned !== undefined) updateData.hoursPlanned = body.hoursPlanned;
-    if (body.hoursSpent !== undefined) updateData.hoursSpent = body.hoursSpent;
-    if (body.aiUsed !== undefined) updateData.aiUsed = body.aiUsed;
-    if (body.aiDetails !== undefined) updateData.aiDetails = body.aiDetails;
-    if (body.notes !== undefined) updateData.notes = body.notes;
+    const updateData: Record<string, any> = { date_updated: new Date().toISOString() };
 
-    if (body.status === "done" && !body.completedAt) {
-      updateData.completedAt = new Date();
-      if (body.completedBy) updateData.completedBy = body.completedBy;
+    if (body.title !== undefined) updateData.type_task = body.title;
+    if (body.notes !== undefined) updateData.information_notes = body.notes;
+    if (body.sortOrder !== undefined) updateData.order_sort = body.sortOrder;
+    if (body.assignedTo !== undefined) {
+      updateData.user_assignee = body.assignedTo ? parseInt(body.assignedTo, 10) : null;
+    }
+    if (body.dueDate !== undefined) {
+      updateData.date_deadline = body.dueDate || null;
+    }
+
+    // Handle status transitions
+    if (body.status === "done") {
+      updateData.date_completed = new Date().toISOString();
+      if (body.completedBy) updateData.user_completed = parseInt(body.completedBy, 10);
     }
     if (body.status && body.status !== "done") {
-      updateData.completedAt = null;
-      updateData.completedBy = null;
+      updateData.date_completed = null;
+      updateData.user_completed = null;
     }
 
-    const [updated] = await db
-      .update(productionTasks)
-      .set(updateData)
-      .where(eq(productionTasks.id, id))
-      .returning();
+    const { data: updated, error } = await supabase
+      .from("tasks_content")
+      .update(updateData)
+      .eq("id_task", taskId)
+      .is("date_deleted", null)
+      .select()
+      .single();
 
-    if (!updated) {
+    if (error || !updated) {
       return NextResponse.json({ error: "Task not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ task: updated });
+    return NextResponse.json({
+      task: {
+        id: String(updated.id_task),
+        title: updated.type_task,
+        status: updated.date_completed ? "done" : "todo",
+        assignedTo: updated.user_assignee ? String(updated.user_assignee) : null,
+        sortOrder: updated.order_sort,
+        completedAt: updated.date_completed,
+      },
+    });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -59,15 +67,13 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
+    const taskId = parseInt(id, 10);
 
-    const [deleted] = await db
-      .delete(productionTasks)
-      .where(eq(productionTasks.id, id))
-      .returning();
-
-    if (!deleted) {
-      return NextResponse.json({ error: "Task not found" }, { status: 404 });
-    }
+    await supabase
+      .from("tasks_content")
+      .update({ date_deleted: new Date().toISOString() })
+      .eq("id_task", taskId)
+      .is("date_deleted", null);
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

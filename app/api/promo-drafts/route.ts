@@ -1,8 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { promoDrafts } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 import { resolveWorkspaceAndUser } from "@/lib/api-utils";
+
+// Helper: snake_case → camelCase
+function transformDraft(row: any) {
+  return {
+    id: row.id,
+    contentObjectId: row.content_object_id,
+    workspaceId: row.workspace_id,
+    platform: row.platform,
+    content: row.content,
+    mediaUrls: row.media_urls,
+    status: row.status,
+    generatedByAi: row.generated_by_ai,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
 // GET /api/promo-drafts?contentObjectId=xxx
 export async function GET(req: NextRequest) {
@@ -18,17 +32,17 @@ export async function GET(req: NextRequest) {
 
     const { workspaceId } = await resolveWorkspaceAndUser();
 
-    const drafts = await db
-      .select()
-      .from(promoDrafts)
-      .where(
-        and(
-          eq(promoDrafts.contentObjectId, contentObjectId),
-          eq(promoDrafts.workspaceId, workspaceId)
-        )
-      );
+    const { data: drafts, error } = await supabase
+      .from("promo_drafts")
+      .select("*")
+      .eq("content_object_id", contentObjectId)
+      .eq("workspace_id", workspaceId);
 
-    return NextResponse.json({ drafts });
+    if (error) throw error;
+
+    return NextResponse.json({
+      drafts: (drafts || []).map(transformDraft),
+    });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -50,17 +64,24 @@ export async function POST(req: NextRequest) {
     const { workspaceId } = await resolveWorkspaceAndUser(body.workspaceId);
 
     const rows = draftItems.map((d: any) => ({
-      contentObjectId,
-      workspaceId,
+      content_object_id: contentObjectId,
+      workspace_id: workspaceId,
       platform: d.platform,
       content: d.content,
-      mediaUrls: d.mediaUrls || null,
-      generatedByAi: d.generatedByAi ?? true,
+      media_urls: d.mediaUrls || null,
+      generated_by_ai: d.generatedByAi ?? true,
     }));
 
-    const inserted = await db.insert(promoDrafts).values(rows).returning();
+    const { data: inserted, error } = await supabase
+      .from("promo_drafts")
+      .insert(rows)
+      .select();
 
-    return NextResponse.json({ drafts: inserted });
+    if (error) throw error;
+
+    return NextResponse.json({
+      drafts: (inserted || []).map(transformDraft),
+    });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

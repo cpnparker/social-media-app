@@ -8,83 +8,103 @@
 import { config } from "dotenv";
 config({ path: ".env.local" });
 
-import { sql } from "@vercel/postgres";
-import { drizzle } from "drizzle-orm/vercel-postgres";
-import * as schema from "../lib/db/schema";
-import { eq } from "drizzle-orm";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
 const LATE_API_BASE = "https://getlate.dev/api/v1";
 
 async function main() {
-  const db = drizzle(sql, { schema });
-
   // 1. Find or create the first user
-  let allUsers = await db.select().from(schema.users).limit(1);
-  if (allUsers.length === 0) {
+  const { data: users } = await supabase
+    .from("users")
+    .select("*")
+    .is("date_deleted", null)
+    .limit(1);
+
+  let user = users?.[0];
+
+  if (!user) {
     console.log("No users found, creating default user...");
-    const [newUser] = await db
-      .insert(schema.users)
-      .values({
-        email: "chris@thecontentengine.com",
-        name: "Chris",
+    const { data: newUser, error } = await supabase
+      .from("users")
+      .insert({
+        email_user: "chris@thecontentengine.com",
+        name_user: "Chris",
         provider: "email",
+        date_created: new Date().toISOString(),
       })
-      .returning();
-    allUsers = [newUser];
+      .select()
+      .single();
+
+    if (error) throw error;
+    user = newUser;
   }
-  const user = allUsers[0];
-  console.log(`Found user: ${user.name} (${user.email})`);
+  console.log(`Found user: ${user.name_user} (${user.email_user})`);
 
   // 2. Find or create a workspace
-  let workspace: typeof schema.workspaces.$inferSelect | undefined;
-  const allWorkspaces = await db.select().from(schema.workspaces).limit(1);
-  if (allWorkspaces.length === 0) {
+  const { data: workspaces } = await supabase
+    .from("workspaces")
+    .select("*")
+    .limit(1);
+
+  let workspace = workspaces?.[0];
+
+  if (!workspace) {
     console.log("No workspace found, creating default workspace...");
-    const [ws] = await db
-      .insert(schema.workspaces)
-      .values({
+    const { data: ws, error } = await supabase
+      .from("workspaces")
+      .insert({
         name: "My Workspace",
         slug: "my-workspace",
         plan: "free",
-        lateApiKey: process.env.LATE_API_KEY || null,
+        late_api_key: process.env.LATE_API_KEY || null,
       })
-      .returning();
+      .select()
+      .single();
+
+    if (error) throw error;
     workspace = ws;
-  } else {
-    workspace = allWorkspaces[0];
   }
   console.log(`Using workspace: ${workspace.name} (${workspace.id})`);
 
   // 3. Check if Test team already exists
-  const existingTeams = await db
-    .select()
-    .from(schema.teams)
-    .where(eq(schema.teams.name, "Test"));
+  const { data: existingTeams } = await supabase
+    .from("teams")
+    .select("*")
+    .eq("name", "Test")
+    .eq("workspace_id", workspace.id);
 
-  if (existingTeams.length > 0) {
+  if (existingTeams && existingTeams.length > 0) {
     console.log("Test team already exists, skipping creation.");
     console.log(`Team ID: ${existingTeams[0].id}`);
     process.exit(0);
   }
 
   // 4. Create the Test team
-  const [team] = await db
-    .insert(schema.teams)
-    .values({
-      workspaceId: workspace.id,
+  const { data: team, error: teamErr } = await supabase
+    .from("teams")
+    .insert({
+      workspace_id: workspace.id,
       name: "Test",
       description: "Default test team with all accounts",
     })
-    .returning();
+    .select()
+    .single();
+
+  if (teamErr) throw teamErr;
   console.log(`Created team: ${team.name} (${team.id})`);
 
   // 5. Add user as admin
-  await db.insert(schema.teamMembers).values({
-    teamId: team.id,
-    userId: user.id,
+  await supabase.from("team_members").insert({
+    team_id: team.id,
+    user_id: user.id_user,
     role: "admin",
   });
-  console.log(`Added ${user.name} as admin`);
+  console.log(`Added ${user.name_user} as admin`);
 
   // 6. Fetch accounts from Late API
   const apiKey = process.env.LATE_API_KEY;
@@ -111,13 +131,13 @@ async function main() {
 
   // 7. Link each account to the team
   for (const acc of accounts) {
-    await db.insert(schema.teamAccounts).values({
-      teamId: team.id,
-      lateAccountId: acc._id || acc.id,
+    await supabase.from("team_accounts").insert({
+      team_id: team.id,
+      late_account_id: acc._id || acc.id,
       platform: (acc.platform || "unknown").toLowerCase(),
-      displayName: acc.displayName || acc.username || acc.platform || "Unknown",
+      display_name: acc.displayName || acc.username || acc.platform || "Unknown",
       username: acc.username || null,
-      avatarUrl: acc.avatarUrl || acc.avatar || null,
+      avatar_url: acc.avatarUrl || acc.avatar || null,
     });
     console.log(
       `  Linked: ${acc.displayName || acc.username} (${acc.platform})`
@@ -126,7 +146,7 @@ async function main() {
 
   console.log("\nSeed complete!");
   console.log(`Team: ${team.name}`);
-  console.log(`Members: 1 (${user.name} as admin)`);
+  console.log(`Members: 1 (${user.name_user} as admin)`);
   console.log(`Accounts: ${accounts.length}`);
 
   process.exit(0);

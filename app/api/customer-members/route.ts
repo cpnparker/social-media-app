@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { customerMembers, customers, users, workspaceMembers } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 import { auth } from "@/lib/auth";
 
-// GET /api/customer-members?customerId=xxx — list members for a customer with user details
+// GET /api/customer-members?customerId=xxx — list members for a customer
 export async function GET(req: NextRequest) {
   try {
     const session = await auth();
@@ -22,20 +20,23 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const members = await db
-      .select({
-        id: customerMembers.id,
-        customerId: customerMembers.customerId,
-        userId: customerMembers.userId,
-        role: customerMembers.role,
-        createdAt: customerMembers.createdAt,
-        userName: users.name,
-        userEmail: users.email,
-        userAvatar: users.avatarUrl,
-      })
-      .from(customerMembers)
-      .innerJoin(users, eq(customerMembers.userId, users.id))
-      .where(eq(customerMembers.customerId, customerId));
+    // Use the view to get user-client assignments with names
+    const { data: rows, error } = await supabase
+      .from("app_lookup_users_clients")
+      .select("*")
+      .eq("id_client", parseInt(customerId, 10));
+
+    if (error) throw error;
+
+    const members = (rows || []).map((r) => ({
+      id: `${r.id_user}-${r.id_client}`,
+      customerId: r.id_client ? String(r.id_client) : null,
+      userId: String(r.id_user),
+      role: r.role_user || "viewer",
+      userName: r.name_user,
+      userEmail: r.email_user,
+      userAvatar: null,
+    }));
 
     return NextResponse.json({ members });
   } catch (error: any) {
@@ -61,94 +62,72 @@ export async function POST(req: NextRequest) {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
+    const clientId = parseInt(customerId, 10);
 
-    // Find or create the user
-    let [existingUser] = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, normalizedEmail))
-      .limit(1);
+    // Find or create user
+    let { data: existingUser } = await supabase
+      .from("users")
+      .select("*")
+      .eq("email_user", normalizedEmail)
+      .is("date_deleted", null)
+      .limit(1)
+      .single();
 
     if (!existingUser) {
-      // Auto-create a new user with the provided email
       const namePart = normalizedEmail.split("@")[0].replace(/[._-]/g, " ");
       const displayName = name || namePart.replace(/\b\w/g, (c: string) => c.toUpperCase());
 
-      const [newUser] = await db
-        .insert(users)
-        .values({
-          email: normalizedEmail,
-          name: displayName,
+      const { data: newUser, error: createErr } = await supabase
+        .from("users")
+        .insert({
+          email_user: normalizedEmail,
+          name_user: displayName,
           provider: "email",
+          date_created: new Date().toISOString(),
         })
-        .returning();
+        .select()
+        .single();
 
+      if (createErr) throw createErr;
       existingUser = newUser;
-
-      // Also add the new user as a workspace member (viewer)
-      const [customer] = await db
-        .select({ workspaceId: customers.workspaceId })
-        .from(customers)
-        .where(eq(customers.id, customerId))
-        .limit(1);
-
-      if (customer) {
-        const [existingWsMember] = await db
-          .select()
-          .from(workspaceMembers)
-          .where(
-            and(
-              eq(workspaceMembers.workspaceId, customer.workspaceId),
-              eq(workspaceMembers.userId, existingUser.id)
-            )
-          )
-          .limit(1);
-
-        if (!existingWsMember) {
-          await db.insert(workspaceMembers).values({
-            workspaceId: customer.workspaceId,
-            userId: existingUser.id,
-            role: "viewer",
-          });
-        }
-      }
     }
 
-    // Check if already a customer member
-    const [existingMember] = await db
-      .select()
-      .from(customerMembers)
-      .where(
-        and(
-          eq(customerMembers.customerId, customerId),
-          eq(customerMembers.userId, existingUser.id)
-        )
-      )
-      .limit(1);
+    // Check if already assigned
+    const { data: existing } = await supabase
+      .from("lookup_users_clients")
+      .select("id_user")
+      .eq("id_client", clientId)
+      .eq("id_user", existingUser.id_user)
+      .limit(1)
+      .single();
 
-    if (existingMember) {
+    if (existing) {
       return NextResponse.json(
         { error: "User is already a member of this customer" },
         { status: 409 }
       );
     }
 
-    const [member] = await db
-      .insert(customerMembers)
-      .values({
-        customerId,
-        userId: existingUser.id,
-        role: role || "viewer",
-      })
-      .returning();
+    await supabase.from("lookup_users_clients").insert({
+      id_client: clientId,
+      id_user: existingUser.id_user,
+    });
 
-    return NextResponse.json({ member }, { status: 201 });
+    return NextResponse.json({
+      member: {
+        userId: String(existingUser.id_user),
+        customerId: String(clientId),
+        userName: existingUser.name_user,
+        userEmail: existingUser.email_user,
+        role: role || "viewer",
+      },
+    }, { status: 201 });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
-// DELETE /api/customer-members?customerId=xxx&userId=yyy — remove user from customer
+// DELETE /api/customer-members?customerId=xxx&userId=yyy
 export async function DELETE(req: NextRequest) {
   try {
     const session = await auth();
@@ -167,19 +146,13 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    const [deleted] = await db
-      .delete(customerMembers)
-      .where(
-        and(
-          eq(customerMembers.customerId, customerId),
-          eq(customerMembers.userId, userId)
-        )
-      )
-      .returning();
+    const { error } = await supabase
+      .from("lookup_users_clients")
+      .delete()
+      .eq("id_client", parseInt(customerId, 10))
+      .eq("id_user", parseInt(userId, 10));
 
-    if (!deleted) {
-      return NextResponse.json({ error: "Member not found" }, { status: 404 });
-    }
+    if (error) throw error;
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

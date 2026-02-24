@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { taskTemplates } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 
 // POST /api/task-templates/reorder
 export async function POST(req: NextRequest) {
@@ -16,13 +14,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Update sortOrder for each template to match its index
     await Promise.all(
       orderedIds.map((id: string, index: number) =>
-        db
-          .update(taskTemplates)
-          .set({ sortOrder: index })
-          .where(eq(taskTemplates.id, id))
+        supabase
+          .from("templates_tasks_content")
+          .update({ order_sort: index })
+          .eq("id_template", parseInt(id, 10))
       )
     );
 

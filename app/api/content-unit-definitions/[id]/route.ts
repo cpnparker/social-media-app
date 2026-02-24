@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { contentUnitDefinitions } from "@/lib/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 
 // PUT /api/content-unit-definitions/[id]
 export async function PUT(
@@ -12,31 +10,40 @@ export async function PUT(
     const { id } = await params;
     const body = await req.json();
 
-    const updateData: any = {};
-    if (body.formatName !== undefined) updateData.formatName = body.formatName;
-    if (body.description !== undefined) updateData.description = body.description;
-    if (body.defaultContentUnits !== undefined) updateData.defaultContentUnits = body.defaultContentUnits;
-    if (body.isActive !== undefined) updateData.isActive = body.isActive;
-    if (body.sortOrder !== undefined) updateData.sortOrder = body.sortOrder;
-    if (body.category !== undefined) updateData.category = body.category;
+    const updateData: Record<string, any> = {};
+    if (body.formatName !== undefined) updateData.name = body.formatName;
+    if (body.defaultContentUnits !== undefined) updateData.units_content = body.defaultContentUnits;
+    if (body.sortOrder !== undefined) updateData.sort_order = body.sortOrder;
+    if (body.category !== undefined) updateData.format = body.category;
+    if (body.splitText !== undefined) updateData.split_text = body.splitText;
+    if (body.splitVideo !== undefined) updateData.split_video = body.splitVideo;
+    if (body.splitVisual !== undefined) updateData.split_visual = body.splitVisual;
 
     if (Object.keys(updateData).length === 0) {
       return NextResponse.json({ error: "No fields to update" }, { status: 400 });
     }
 
-    updateData.updatedAt = sql`now()`;
+    const { data: definition, error } = await supabase
+      .from("calculator_content")
+      .update(updateData)
+      .eq("id", id)
+      .select()
+      .single();
 
-    const [definition] = await db
-      .update(contentUnitDefinitions)
-      .set(updateData)
-      .where(eq(contentUnitDefinitions.id, id))
-      .returning();
-
-    if (!definition) {
+    if (error || !definition) {
       return NextResponse.json({ error: "Definition not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ definition });
+    return NextResponse.json({
+      definition: {
+        id: definition.id,
+        category: definition.format,
+        formatName: definition.name,
+        defaultContentUnits: Number(definition.units_content) || 0,
+        sortOrder: definition.sort_order,
+        isActive: true,
+      },
+    });
   } catch (error: any) {
     console.error("Content unit definition PUT error:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -51,14 +58,12 @@ export async function DELETE(
   try {
     const { id } = await params;
 
-    const [deleted] = await db
-      .delete(contentUnitDefinitions)
-      .where(eq(contentUnitDefinitions.id, id))
-      .returning();
+    const { error } = await supabase
+      .from("calculator_content")
+      .delete()
+      .eq("id", id);
 
-    if (!deleted) {
-      return NextResponse.json({ error: "Definition not found" }, { status: 404 });
-    }
+    if (error) throw error;
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

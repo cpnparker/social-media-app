@@ -1,7 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { promoDrafts } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
+
+// Helper: snake_case → camelCase
+function transformDraft(row: any) {
+  return {
+    id: row.id,
+    contentObjectId: row.content_object_id,
+    workspaceId: row.workspace_id,
+    platform: row.platform,
+    content: row.content,
+    mediaUrls: row.media_urls,
+    status: row.status,
+    generatedByAi: row.generated_by_ai,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
 // PUT /api/promo-drafts/[id]
 export async function PUT(
@@ -12,26 +26,27 @@ export async function PUT(
     const { id } = await params;
     const body = await req.json();
 
-    const updateData: any = { updatedAt: new Date() };
+    const updateData: Record<string, any> = { updated_at: new Date().toISOString() };
 
     if (body.content !== undefined) updateData.content = body.content;
     if (body.status !== undefined) updateData.status = body.status;
-    if (body.mediaUrls !== undefined) updateData.mediaUrls = body.mediaUrls;
+    if (body.mediaUrls !== undefined) updateData.media_urls = body.mediaUrls;
 
-    const [updated] = await db
-      .update(promoDrafts)
-      .set(updateData)
-      .where(eq(promoDrafts.id, id))
-      .returning();
+    const { data: updated, error } = await supabase
+      .from("promo_drafts")
+      .update(updateData)
+      .eq("id", id)
+      .select()
+      .single();
 
-    if (!updated) {
+    if (error || !updated) {
       return NextResponse.json(
         { error: "Promo draft not found" },
         { status: 404 }
       );
     }
 
-    return NextResponse.json({ draft: updated });
+    return NextResponse.json({ draft: transformDraft(updated) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -45,17 +60,12 @@ export async function DELETE(
   try {
     const { id } = await params;
 
-    const [deleted] = await db
-      .delete(promoDrafts)
-      .where(eq(promoDrafts.id, id))
-      .returning();
+    const { error } = await supabase
+      .from("promo_drafts")
+      .delete()
+      .eq("id", id);
 
-    if (!deleted) {
-      return NextResponse.json(
-        { error: "Promo draft not found" },
-        { status: 404 }
-      );
-    }
+    if (error) throw error;
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

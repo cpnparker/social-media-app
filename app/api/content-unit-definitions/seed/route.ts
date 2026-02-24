@@ -1,33 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { contentUnitDefinitions } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
-import { resolveWorkspaceAndUser } from "@/lib/api-utils";
+import { supabase } from "@/lib/supabase";
 import { defaultContentUnitDefinitions } from "@/lib/seed-content-units";
 
 // POST /api/content-unit-definitions/seed
 export async function POST(req: NextRequest) {
   try {
-    const resolved = await resolveWorkspaceAndUser();
-
-    // Check if definitions already exist for this workspace
-    const existing = await db
-      .select()
-      .from(contentUnitDefinitions)
-      .where(eq(contentUnitDefinitions.workspaceId, resolved.workspaceId))
+    // Check if definitions already exist
+    const { data: existing } = await supabase
+      .from("calculator_content")
+      .select("id")
       .limit(1);
 
-    if (existing.length > 0) {
+    if (existing && existing.length > 0) {
       return NextResponse.json({ seeded: false, message: "Definitions already exist" });
     }
 
-    // Insert all default definitions with the workspace ID
+    // Insert all default definitions
     const rows = defaultContentUnitDefinitions.map((def) => ({
-      ...def,
-      workspaceId: resolved.workspaceId,
+      format: def.category,
+      name: def.formatName,
+      units_content: def.defaultContentUnits,
+      sort_order: def.sortOrder,
     }));
 
-    await db.insert(contentUnitDefinitions).values(rows);
+    const { error } = await supabase.from("calculator_content").insert(rows);
+    if (error) throw error;
 
     return NextResponse.json({ seeded: true, count: rows.length });
   } catch (error: any) {

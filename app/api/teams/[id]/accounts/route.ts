@@ -1,7 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { teamAccounts } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
+
+// Helper: snake_case → camelCase
+function transformAccount(row: any) {
+  return {
+    id: row.id,
+    teamId: row.team_id,
+    lateAccountId: row.late_account_id,
+    platform: row.platform,
+    displayName: row.display_name,
+    username: row.username,
+    avatarUrl: row.avatar_url,
+    createdAt: row.created_at,
+  };
+}
 
 // GET /api/teams/[id]/accounts — list linked accounts
 export async function GET(
@@ -11,12 +23,16 @@ export async function GET(
   try {
     const { id: teamId } = await params;
 
-    const accounts = await db
-      .select()
-      .from(teamAccounts)
-      .where(eq(teamAccounts.teamId, teamId));
+    const { data: accounts, error } = await supabase
+      .from("team_accounts")
+      .select("*")
+      .eq("team_id", teamId);
 
-    return NextResponse.json({ accounts });
+    if (error) throw error;
+
+    return NextResponse.json({
+      accounts: (accounts || []).map(transformAccount),
+    });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -39,19 +55,25 @@ export async function POST(
       );
     }
 
-    const [account] = await db
-      .insert(teamAccounts)
-      .values({
-        teamId,
-        lateAccountId,
+    const { data: account, error } = await supabase
+      .from("team_accounts")
+      .insert({
+        team_id: teamId,
+        late_account_id: lateAccountId,
         platform,
-        displayName,
+        display_name: displayName,
         username: username || null,
-        avatarUrl: avatarUrl || null,
+        avatar_url: avatarUrl || null,
       })
-      .returning();
+      .select()
+      .single();
 
-    return NextResponse.json({ account }, { status: 201 });
+    if (error) throw error;
+
+    return NextResponse.json(
+      { account: transformAccount(account) },
+      { status: 201 }
+    );
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -74,22 +96,13 @@ export async function DELETE(
       );
     }
 
-    const [deleted] = await db
-      .delete(teamAccounts)
-      .where(
-        and(
-          eq(teamAccounts.id, accountId),
-          eq(teamAccounts.teamId, teamId)
-        )
-      )
-      .returning();
+    const { error } = await supabase
+      .from("team_accounts")
+      .delete()
+      .eq("id", accountId)
+      .eq("team_id", teamId);
 
-    if (!deleted) {
-      return NextResponse.json(
-        { error: "Account link not found" },
-        { status: 404 }
-      );
-    }
+    if (error) throw error;
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

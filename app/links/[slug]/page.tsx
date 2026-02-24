@@ -1,6 +1,4 @@
-import { db } from "@/lib/db";
-import { workspaces, profileLinks } from "@/lib/db/schema";
-import { eq, and, asc } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 import { notFound } from "next/navigation";
 import { Metadata } from "next";
 import { ExternalLink, Zap } from "lucide-react";
@@ -11,11 +9,11 @@ interface Props {
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params;
-  const [workspace] = await db
-    .select()
-    .from(workspaces)
-    .where(eq(workspaces.slug, slug))
-    .limit(1);
+  const { data: workspace } = await supabase
+    .from("workspaces")
+    .select("name")
+    .eq("slug", slug)
+    .single();
 
   if (!workspace) return { title: "Links" };
 
@@ -28,24 +26,20 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function PublicLinksPage({ params }: Props) {
   const { slug } = await params;
 
-  const [workspace] = await db
-    .select()
-    .from(workspaces)
-    .where(eq(workspaces.slug, slug))
-    .limit(1);
+  const { data: workspace } = await supabase
+    .from("workspaces")
+    .select("id, name, slug")
+    .eq("slug", slug)
+    .single();
 
   if (!workspace) notFound();
 
-  const links = await db
-    .select()
-    .from(profileLinks)
-    .where(
-      and(
-        eq(profileLinks.workspaceId, workspace.id),
-        eq(profileLinks.isActive, true)
-      )
-    )
-    .orderBy(asc(profileLinks.sortOrder));
+  const { data: links } = await supabase
+    .from("profile_links")
+    .select("*")
+    .eq("workspace_id", workspace.id)
+    .eq("is_active", true)
+    .order("sort_order", { ascending: true });
 
   return (
     <div className="flex flex-col items-center min-h-screen px-4 py-12">
@@ -59,7 +53,7 @@ export default async function PublicLinksPage({ params }: Props) {
 
       {/* Links */}
       <div className="w-full max-w-md space-y-3">
-        {links.map((link) => (
+        {(links || []).map((link) => (
           <a
             key={link.id}
             href={link.url}
@@ -82,7 +76,7 @@ export default async function PublicLinksPage({ params }: Props) {
           </a>
         ))}
 
-        {links.length === 0 && (
+        {(!links || links.length === 0) && (
           <div className="text-center py-12">
             <p className="text-muted-foreground">No links yet</p>
           </div>

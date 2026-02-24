@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { customers, contracts, workspaceMembers, teams } from "@/lib/db/schema";
-import { eq, and, count, sum } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 import { resolveWorkspaceAndUser } from "@/lib/api-utils";
 
 // GET /api/workspace/stats — get workspace overview statistics
@@ -9,65 +7,53 @@ export async function GET() {
   try {
     const { workspaceId } = await resolveWorkspaceAndUser();
 
-    const [
-      [customerCount],
-      [activeContractCount],
-      [cuBudget],
-      [userCount],
-      [teamCount],
-    ] = await Promise.all([
-      // Total customers
-      db
-        .select({ value: count() })
-        .from(customers)
-        .where(eq(customers.workspaceId, workspaceId)),
+    const [clientsRes, contractsRes, cuRes, membersRes, teamsRes] = await Promise.all([
+      // Total clients (active)
+      supabase
+        .from("clients")
+        .select("id_client", { count: "exact", head: true })
+        .is("date_deleted", null),
 
       // Active contracts
-      db
-        .select({ value: count() })
-        .from(contracts)
-        .where(
-          and(
-            eq(contracts.workspaceId, workspaceId),
-            eq(contracts.status, "active")
-          )
-        ),
+      supabase
+        .from("contracts")
+        .select("id_contract", { count: "exact", head: true })
+        .eq("flag_active", 1)
+        .is("date_deleted", null),
 
-      // CU budget and used from active contracts
-      db
-        .select({
-          totalBudget: sum(contracts.totalContentUnits),
-          totalUsed: sum(contracts.usedContentUnits),
-        })
-        .from(contracts)
-        .where(
-          and(
-            eq(contracts.workspaceId, workspaceId),
-            eq(contracts.status, "active")
-          )
-        ),
+      // CU budget from active contracts
+      supabase
+        .from("contracts")
+        .select("units_contract")
+        .eq("flag_active", 1)
+        .is("date_deleted", null),
 
-      // Total workspace members (users)
-      db
-        .select({ value: count() })
-        .from(workspaceMembers)
-        .where(eq(workspaceMembers.workspaceId, workspaceId)),
+      // Total workspace members
+      supabase
+        .from("workspace_members")
+        .select("id", { count: "exact", head: true })
+        .eq("workspace_id", workspaceId),
 
       // Total teams
-      db
-        .select({ value: count() })
-        .from(teams)
-        .where(eq(teams.workspaceId, workspaceId)),
+      supabase
+        .from("teams")
+        .select("id", { count: "exact", head: true })
+        .eq("workspace_id", workspaceId),
     ]);
+
+    const totalCUBudget = (cuRes.data || []).reduce(
+      (sum, c) => sum + (Number(c.units_contract) || 0),
+      0
+    );
 
     return NextResponse.json({
       stats: {
-        totalCustomers: customerCount?.value ?? 0,
-        activeContracts: activeContractCount?.value ?? 0,
-        totalCUBudget: Number(cuBudget?.totalBudget) || 0,
-        usedCU: Number(cuBudget?.totalUsed) || 0,
-        totalUsers: userCount?.value ?? 0,
-        totalTeams: teamCount?.value ?? 0,
+        totalCustomers: clientsRes.count ?? 0,
+        activeContracts: contractsRes.count ?? 0,
+        totalCUBudget,
+        usedCU: 0, // would need to aggregate from tasks
+        totalUsers: membersRes.count ?? 0,
+        totalTeams: teamsRes.count ?? 0,
       },
     });
   } catch (error: any) {

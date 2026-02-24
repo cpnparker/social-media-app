@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { customerAccounts } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 import { auth } from "@/lib/auth";
 
-// GET /api/customer-accounts?customerId=xxx — list social accounts assigned to a customer
+// GET /api/customer-accounts?customerId=xxx
 export async function GET(req: NextRequest) {
   try {
     const session = await auth();
@@ -22,18 +20,20 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const accounts = await db
-      .select()
-      .from(customerAccounts)
-      .where(eq(customerAccounts.customerId, customerId));
+    const { data: accounts, error } = await supabase
+      .from("customer_accounts")
+      .select("*")
+      .eq("customer_id", parseInt(customerId, 10));
 
-    return NextResponse.json({ accounts });
+    if (error) throw error;
+
+    return NextResponse.json({ accounts: accounts || [] });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
-// POST /api/customer-accounts — assign account to customer
+// POST /api/customer-accounts
 export async function POST(req: NextRequest) {
   try {
     const session = await auth();
@@ -51,17 +51,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const [account] = await db
-      .insert(customerAccounts)
-      .values({
-        customerId,
-        lateAccountId,
+    const { data: account, error } = await supabase
+      .from("customer_accounts")
+      .insert({
+        customer_id: parseInt(customerId, 10),
+        late_account_id: lateAccountId,
         platform,
-        displayName,
+        display_name: displayName,
         username: username || null,
-        avatarUrl: avatarUrl || null,
+        avatar_url: avatarUrl || null,
       })
-      .returning();
+      .select()
+      .single();
+
+    if (error) throw error;
 
     return NextResponse.json({ account }, { status: 201 });
   } catch (error: any) {
@@ -69,7 +72,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// DELETE /api/customer-accounts?customerId=xxx&lateAccountId=yyy — unassign account
+// DELETE /api/customer-accounts?customerId=xxx&lateAccountId=yyy
 export async function DELETE(req: NextRequest) {
   try {
     const session = await auth();
@@ -88,19 +91,13 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    const [deleted] = await db
-      .delete(customerAccounts)
-      .where(
-        and(
-          eq(customerAccounts.customerId, customerId),
-          eq(customerAccounts.lateAccountId, lateAccountId)
-        )
-      )
-      .returning();
+    const { error } = await supabase
+      .from("customer_accounts")
+      .delete()
+      .eq("customer_id", parseInt(customerId, 10))
+      .eq("late_account_id", lateAccountId);
 
-    if (!deleted) {
-      return NextResponse.json({ error: "Account not found" }, { status: 404 });
-    }
+    if (error) throw error;
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

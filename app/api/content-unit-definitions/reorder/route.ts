@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { contentUnitDefinitions } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 
 // POST /api/content-unit-definitions/reorder
 export async function POST(req: NextRequest) {
@@ -16,13 +14,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Update sortOrder for each definition to match its index
     await Promise.all(
       orderedIds.map((id: string, index: number) =>
-        db
-          .update(contentUnitDefinitions)
-          .set({ sortOrder: index })
-          .where(eq(contentUnitDefinitions.id, id))
+        supabase
+          .from("calculator_content")
+          .update({ sort_order: index })
+          .eq("id", id)
       )
     );
 

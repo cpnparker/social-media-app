@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { users, workspaceMembers, workspaces } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 import { auth } from "@/lib/auth";
 
 // GET /api/workspace-members — list all users in the workspace
 export async function GET() {
   try {
     // Get the default workspace
-    const [ws] = await db.select({ id: workspaces.id }).from(workspaces).limit(1);
+    const { data: ws } = await supabase
+      .from("workspaces")
+      .select("id")
+      .limit(1)
+      .single();
+
     if (!ws) {
       return NextResponse.json({ members: [] });
     }
@@ -16,50 +19,65 @@ export async function GET() {
     // Ensure the logged-in user is a workspace member
     const session = await auth();
     if (session?.user?.email) {
-      const [sessionUser] = await db
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.email, session.user.email))
-        .limit(1);
+      const { data: sessionUser } = await supabase
+        .from("users")
+        .select("id_user")
+        .eq("email_user", session.user.email)
+        .is("date_deleted", null)
+        .limit(1)
+        .single();
 
       if (sessionUser) {
-        const [existingMember] = await db
-          .select()
-          .from(workspaceMembers)
-          .where(
-            and(
-              eq(workspaceMembers.workspaceId, ws.id),
-              eq(workspaceMembers.userId, sessionUser.id)
-            )
-          )
-          .limit(1);
+        const { data: existingMember } = await supabase
+          .from("workspace_members")
+          .select("id")
+          .eq("workspace_id", ws.id)
+          .eq("user_id", sessionUser.id_user)
+          .limit(1)
+          .single();
 
         if (!existingMember) {
-          await db.insert(workspaceMembers).values({
-            workspaceId: ws.id,
-            userId: sessionUser.id,
+          await supabase.from("workspace_members").insert({
+            workspace_id: ws.id,
+            user_id: sessionUser.id_user,
             role: "admin",
-            joinedAt: new Date(),
+            joined_at: new Date().toISOString(),
           });
         }
       }
     }
 
-    const members = await db
-      .select({
-        id: users.id,
-        name: users.name,
-        email: users.email,
-        avatarUrl: users.avatarUrl,
-        provider: users.provider,
-        createdAt: users.createdAt,
-        role: workspaceMembers.role,
-        invitedAt: workspaceMembers.invitedAt,
-        joinedAt: workspaceMembers.joinedAt,
-      })
-      .from(workspaceMembers)
-      .innerJoin(users, eq(workspaceMembers.userId, users.id))
-      .where(eq(workspaceMembers.workspaceId, ws.id));
+    // Fetch all members with user details
+    const { data: memberRows, error } = await supabase
+      .from("workspace_members")
+      .select("*")
+      .eq("workspace_id", ws.id);
+
+    if (error) throw error;
+
+    // Get user details for each member
+    const userIds = (memberRows || []).map((m) => m.user_id);
+    const { data: userRows } = await supabase
+      .from("users")
+      .select("id_user, name_user, email_user, url_avatar, provider, date_created")
+      .in("id_user", userIds);
+
+    const userMap = new Map((userRows || []).map((u) => [u.id_user, u]));
+
+    const members = (memberRows || []).map((m) => {
+      const user = userMap.get(m.user_id);
+      return {
+        id: String(m.user_id),
+        name: user?.name_user || null,
+        email: user?.email_user || null,
+        avatarUrl: user?.url_avatar || null,
+        provider: user?.provider || null,
+        createdAt: user?.date_created || null,
+        role: m.role,
+        invitedAt: m.invited_at,
+        joinedAt: m.joined_at,
+      };
+    });
 
     return NextResponse.json({ members, workspaceId: ws.id });
   } catch (error: any) {
@@ -78,46 +96,52 @@ export async function POST(req: NextRequest) {
 
     const normalizedEmail = email.trim().toLowerCase();
 
-    // Get the default workspace
-    const [ws] = await db.select({ id: workspaces.id }).from(workspaces).limit(1);
+    const { data: ws } = await supabase
+      .from("workspaces")
+      .select("id")
+      .limit(1)
+      .single();
+
     if (!ws) {
       return NextResponse.json({ error: "No workspace found" }, { status: 404 });
     }
 
     // Find or create the user
-    let [existingUser] = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, normalizedEmail))
-      .limit(1);
+    let { data: existingUser } = await supabase
+      .from("users")
+      .select("*")
+      .eq("email_user", normalizedEmail)
+      .is("date_deleted", null)
+      .limit(1)
+      .single();
 
     if (!existingUser) {
       const namePart = normalizedEmail.split("@")[0].replace(/[._-]/g, " ");
       const displayName = name || namePart.replace(/\b\w/g, (c: string) => c.toUpperCase());
 
-      const [newUser] = await db
-        .insert(users)
-        .values({
-          email: normalizedEmail,
-          name: displayName,
+      const { data: newUser, error: createErr } = await supabase
+        .from("users")
+        .insert({
+          email_user: normalizedEmail,
+          name_user: displayName,
           provider: "email",
+          date_created: new Date().toISOString(),
         })
-        .returning();
+        .select()
+        .single();
 
+      if (createErr) throw createErr;
       existingUser = newUser;
     }
 
     // Check if already a workspace member
-    const [existingMember] = await db
-      .select()
-      .from(workspaceMembers)
-      .where(
-        and(
-          eq(workspaceMembers.workspaceId, ws.id),
-          eq(workspaceMembers.userId, existingUser.id)
-        )
-      )
-      .limit(1);
+    const { data: existingMember } = await supabase
+      .from("workspace_members")
+      .select("id")
+      .eq("workspace_id", ws.id)
+      .eq("user_id", existingUser.id_user)
+      .limit(1)
+      .single();
 
     if (existingMember) {
       return NextResponse.json(
@@ -126,18 +150,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    await db.insert(workspaceMembers).values({
-      workspaceId: ws.id,
-      userId: existingUser.id,
+    await supabase.from("workspace_members").insert({
+      workspace_id: ws.id,
+      user_id: existingUser.id_user,
       role: role || "viewer",
     });
 
     return NextResponse.json(
       {
         member: {
-          id: existingUser.id,
-          name: existingUser.name,
-          email: existingUser.email,
+          id: String(existingUser.id_user),
+          name: existingUser.name_user,
+          email: existingUser.email_user,
           role: role || "viewer",
         },
       },
@@ -160,23 +184,25 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    const [ws] = await db.select({ id: workspaces.id }).from(workspaces).limit(1);
+    const { data: ws } = await supabase
+      .from("workspaces")
+      .select("id")
+      .limit(1)
+      .single();
+
     if (!ws) {
       return NextResponse.json({ error: "No workspace found" }, { status: 404 });
     }
 
-    const [updated] = await db
-      .update(workspaceMembers)
-      .set({ role })
-      .where(
-        and(
-          eq(workspaceMembers.workspaceId, ws.id),
-          eq(workspaceMembers.userId, userId)
-        )
-      )
-      .returning();
+    const { data: updated, error } = await supabase
+      .from("workspace_members")
+      .update({ role })
+      .eq("workspace_id", ws.id)
+      .eq("user_id", parseInt(userId, 10))
+      .select()
+      .single();
 
-    if (!updated) {
+    if (error || !updated) {
       return NextResponse.json({ error: "Member not found" }, { status: 404 });
     }
 
@@ -199,24 +225,23 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    const [ws] = await db.select({ id: workspaces.id }).from(workspaces).limit(1);
+    const { data: ws } = await supabase
+      .from("workspaces")
+      .select("id")
+      .limit(1)
+      .single();
+
     if (!ws) {
       return NextResponse.json({ error: "No workspace found" }, { status: 404 });
     }
 
-    const [deleted] = await db
-      .delete(workspaceMembers)
-      .where(
-        and(
-          eq(workspaceMembers.workspaceId, ws.id),
-          eq(workspaceMembers.userId, userId)
-        )
-      )
-      .returning();
+    const { error } = await supabase
+      .from("workspace_members")
+      .delete()
+      .eq("workspace_id", ws.id)
+      .eq("user_id", parseInt(userId, 10));
 
-    if (!deleted) {
-      return NextResponse.json({ error: "Member not found" }, { status: 404 });
-    }
+    if (error) throw error;
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

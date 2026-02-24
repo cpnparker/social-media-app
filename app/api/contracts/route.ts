@@ -1,9 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { contracts, customers } from "@/lib/db/schema";
-import { eq, and, sql, desc } from "drizzle-orm";
-import { resolveWorkspaceAndUser } from "@/lib/api-utils";
-import { calculateRollover } from "@/lib/contract-utils";
+import { supabase } from "@/lib/supabase";
 
 // GET /api/contracts
 export async function GET(req: NextRequest) {
@@ -13,40 +9,35 @@ export async function GET(req: NextRequest) {
   const limit = parseInt(searchParams.get("limit") || "50");
 
   try {
-    const { workspaceId } = await resolveWorkspaceAndUser();
-
-    const conditions: any[] = [eq(contracts.workspaceId, workspaceId)];
-
-    if (customerId) conditions.push(eq(contracts.customerId, customerId));
-    if (status) conditions.push(eq(contracts.status, status as any));
-
-    const customerNameSq = sql<string>`(SELECT name FROM customers WHERE customers.id = contracts.customer_id)`.as("customer_name");
-
-    const rows = await db
-      .select({
-        id: contracts.id,
-        customerId: contracts.customerId,
-        workspaceId: contracts.workspaceId,
-        name: contracts.name,
-        totalContentUnits: contracts.totalContentUnits,
-        usedContentUnits: contracts.usedContentUnits,
-        rolloverUnits: contracts.rolloverUnits,
-        monthlyFee: contracts.monthlyFee,
-        status: contracts.status,
-        startDate: contracts.startDate,
-        endDate: contracts.endDate,
-        renewalDate: contracts.renewalDate,
-        notes: contracts.notes,
-        createdAt: contracts.createdAt,
-        updatedAt: contracts.updatedAt,
-        customerName: customerNameSq,
-      })
-      .from(contracts)
-      .where(and(...conditions))
-      .orderBy(desc(contracts.startDate))
+    let query = supabase
+      .from("app_contracts")
+      .select("*")
+      .order("date_start", { ascending: false })
       .limit(limit);
 
-    return NextResponse.json({ contracts: rows });
+    if (customerId) query = query.eq("id_client", parseInt(customerId, 10));
+    if (status === "active") query = query.eq("flag_active", 1);
+    if (status === "inactive") query = query.eq("flag_active", 0);
+
+    const { data: rows, error } = await query;
+    if (error) throw error;
+
+    const contracts = (rows || []).map((c) => ({
+      id: String(c.id_contract),
+      customerId: String(c.id_client),
+      name: c.name_contract,
+      customerName: c.name_client,
+      totalContentUnits: Number(c.units_contract) || 0,
+      usedContentUnits: Number(c.units_total_completed) || 0,
+      rolloverUnits: 0,
+      status: c.flag_active === 1 ? "active" : "inactive",
+      startDate: c.date_start,
+      endDate: c.date_end,
+      notes: c.information_notes,
+      createdAt: c.date_created,
+    }));
+
+    return NextResponse.json({ contracts });
   } catch (error: any) {
     console.error("Contracts GET error:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -67,68 +58,51 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { workspaceId } = await resolveWorkspaceAndUser();
+    const clientId = parseInt(customerId, 10);
 
-    // Validate customer exists and belongs to workspace
-    const [customer] = await db
-      .select({ id: customers.id })
-      .from(customers)
-      .where(and(eq(customers.id, customerId), eq(customers.workspaceId, workspaceId)));
+    // Validate client exists
+    const { data: client } = await supabase
+      .from("clients")
+      .select("id_client")
+      .eq("id_client", clientId)
+      .is("date_deleted", null)
+      .single();
 
-    if (!customer) {
+    if (!client) {
       return NextResponse.json(
-        { error: "Customer not found or does not belong to this workspace" },
+        { error: "Customer not found" },
         { status: 404 }
       );
     }
 
-    // Auto-calculate rollover from most recent completed contract for this customer
-    let rolloverUnits = 0;
-
-    const [previousContract] = await db
-      .select({
-        totalContentUnits: contracts.totalContentUnits,
-        usedContentUnits: contracts.usedContentUnits,
+    const { data: contract, error } = await supabase
+      .from("contracts")
+      .insert({
+        id_client: clientId,
+        name_contract: name,
+        units_contract: totalContentUnits,
+        flag_active: body.status === "active" ? 1 : 0,
+        date_start: startDate,
+        date_end: endDate,
+        information_notes: body.notes || null,
+        date_created: new Date().toISOString(),
       })
-      .from(contracts)
-      .where(
-        and(
-          eq(contracts.customerId, customerId),
-          eq(contracts.workspaceId, workspaceId),
-          eq(contracts.status, "completed")
-        )
-      )
-      .orderBy(desc(contracts.endDate))
-      .limit(1);
+      .select()
+      .single();
 
-    if (previousContract) {
-      rolloverUnits = calculateRollover({
-        totalContentUnits: previousContract.totalContentUnits,
-        usedContentUnits: previousContract.usedContentUnits,
-      });
-    }
+    if (error) throw error;
 
-    const [contract] = await db
-      .insert(contracts)
-      .values({
-        customerId,
-        workspaceId,
-        name,
-        totalContentUnits,
-        rolloverUnits,
-        monthlyFee: body.monthlyFee ?? null,
-        status: body.status || "draft",
-        startDate: new Date(startDate),
-        endDate: new Date(endDate),
-        renewalDate: body.renewalDate ? new Date(body.renewalDate) : null,
-        notes: body.notes ?? null,
-      })
-      .returning();
-
-    return NextResponse.json(
-      { contract, rolloverApplied: rolloverUnits > 0 },
-      { status: 201 }
-    );
+    return NextResponse.json({
+      contract: {
+        id: String(contract.id_contract),
+        customerId: String(contract.id_client),
+        name: contract.name_contract,
+        totalContentUnits: Number(contract.units_contract) || 0,
+        status: contract.flag_active === 1 ? "active" : "inactive",
+        startDate: contract.date_start,
+        endDate: contract.date_end,
+      },
+    }, { status: 201 });
   } catch (error: any) {
     console.error("Contracts POST error:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });

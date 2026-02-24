@@ -1,53 +1,52 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { ideas } from "@/lib/db/schema";
-import { eq, desc, asc, sql, and } from "drizzle-orm";
-import { resolveWorkspaceAndUser } from "@/lib/api-utils";
+import { supabase } from "@/lib/supabase";
 
 // GET /api/ideas — list ideas
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const status = searchParams.get("status");
-  const topic = searchParams.get("topic");
   const customerId = searchParams.get("customerId");
-  const sortBy = searchParams.get("sortBy") || "date";
   const limit = parseInt(searchParams.get("limit") || "50");
   const offset = parseInt(searchParams.get("offset") || "0");
 
   try {
-    const { workspaceId } = await resolveWorkspaceAndUser();
+    // Use app_ideas view for denormalized read
+    let query = supabase
+      .from("app_ideas")
+      .select("*")
+      .order("date_created", { ascending: false })
+      .range(offset, offset + limit - 1);
 
-    let query = db.select().from(ideas);
-    const conditions: any[] = [];
+    if (status) query = query.eq("status", status);
+    if (customerId) query = query.eq("id_client", parseInt(customerId, 10));
 
-    conditions.push(eq(ideas.workspaceId, workspaceId));
+    const { data: rows, error } = await query;
+    if (error) throw error;
 
-    if (status) {
-      conditions.push(eq(ideas.status, status as any));
-    }
+    const ideas = (rows || []).map((r) => ({
+      id: String(r.id_idea),
+      title: r.name_idea,
+      description: r.information_brief,
+      status: r.status,
+      customerId: r.id_client ? String(r.id_client) : null,
+      customerName: r.name_client,
+      topicTags: r.name_topic_array || [],
+      strategicTags: r.name_campaign_array || [],
+      eventTags: r.name_event_array || [],
+      imageUrl: r.file_bucket && r.file_path
+        ? `https://dcwodczzdeltxlyepxmc.supabase.co/storage/v1/object/public/${r.file_bucket}/${r.file_path}`
+        : null,
+      linkUrl: r.link_url,
+      createdBy: r.id_user_submitted ? String(r.id_user_submitted) : null,
+      createdByName: r.name_user_submitted,
+      createdAt: r.date_created,
+      commissionedAt: r.date_commissioned,
+      // Linked content/social counts
+      contentIds: r.id_content || [],
+      socialIds: r.id_social || [],
+    }));
 
-    if (topic) {
-      conditions.push(sql`${ideas.topicTags} @> ARRAY[${topic}]::text[]`);
-    }
-
-    if (customerId) {
-      conditions.push(eq(ideas.customerId, customerId));
-    }
-
-    if (conditions.length > 0) {
-      query = query.where(conditions.length === 1 ? conditions[0] : and(...conditions)) as any;
-    }
-
-    const orderCol =
-      sortBy === "score"
-        ? desc(ideas.predictedEngagementScore)
-        : sortBy === "status"
-        ? asc(ideas.status)
-        : desc(ideas.createdAt);
-
-    const rows = await (query as any).orderBy(orderCol).limit(limit).offset(offset);
-
-    return NextResponse.json({ ideas: rows });
+    return NextResponse.json({ ideas });
   } catch (error: any) {
     console.error("Ideas GET error:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -58,29 +57,45 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { title, description, sourceType, topicTags, strategicTags, createdBy, workspaceId, customerId: bodyCustomerId } = body;
+    const { title, description, customerId: bodyCustomerId } = body;
 
     if (!title) {
       return NextResponse.json({ error: "Title is required" }, { status: 400 });
     }
 
-    const resolved = await resolveWorkspaceAndUser(workspaceId, createdBy);
+    const insertData: Record<string, any> = {
+      name_idea: title,
+      information_brief: description || null,
+      status: "submitted",
+      date_created: new Date().toISOString(),
+    };
 
-    const [idea] = await db
-      .insert(ideas)
-      .values({
-        workspaceId: resolved.workspaceId,
-        title,
-        description: description || null,
-        sourceType: sourceType || "manual",
-        topicTags: topicTags || [],
-        strategicTags: strategicTags || [],
-        createdBy: resolved.createdBy,
-        customerId: bodyCustomerId || null,
-      })
-      .returning();
+    if (bodyCustomerId) {
+      insertData.id_client = parseInt(bodyCustomerId, 10);
+    }
 
-    return NextResponse.json({ idea });
+    if (body.createdBy) {
+      insertData.user_submitted = parseInt(body.createdBy, 10);
+    }
+
+    const { data: idea, error } = await supabase
+      .from("ideas")
+      .insert(insertData)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return NextResponse.json({
+      idea: {
+        id: String(idea.id_idea),
+        title: idea.name_idea,
+        description: idea.information_brief,
+        status: idea.status,
+        customerId: idea.id_client ? String(idea.id_client) : null,
+        createdAt: idea.date_created,
+      },
+    });
   } catch (error: any) {
     console.error("Ideas POST error:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
