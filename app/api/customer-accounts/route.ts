@@ -3,6 +3,8 @@ import { supabase } from "@/lib/supabase";
 import { auth } from "@/lib/auth";
 
 // GET /api/customer-accounts?customerId=xxx
+// Derives accounts from the existing social→posting_distributions relationship
+// (which distribution channels have been used for this client's social posts)
 export async function GET(req: NextRequest) {
   try {
     const session = await auth();
@@ -20,20 +22,55 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const { data: accounts, error } = await supabase
-      .from("customer_accounts")
-      .select("*")
-      .eq("customer_id", parseInt(customerId, 10));
+    const clientId = parseInt(customerId, 10);
 
-    if (error) throw error;
+    // Get distinct distribution channels used for this client's social posts
+    const { data: socialLinks, error: socialErr } = await supabase
+      .from("social")
+      .select("id_distribution")
+      .eq("id_client", clientId)
+      .not("id_distribution", "is", null)
+      .is("date_deleted", null);
 
-    return NextResponse.json({ accounts: accounts || [] });
+    if (socialErr) throw socialErr;
+
+    // Deduplicate distribution IDs
+    const distIds = Array.from(new Set((socialLinks || []).map((r) => r.id_distribution)));
+
+    if (distIds.length === 0) {
+      return NextResponse.json({ accounts: [] });
+    }
+
+    // Fetch full distribution details
+    const { data: distributions, error: distErr } = await supabase
+      .from("posting_distributions")
+      .select("id_distribution, network, name_resource, type_distribution, flag_active, id_resource")
+      .in("id_distribution", distIds);
+
+    if (distErr) throw distErr;
+
+    // Transform to the API shape the frontend expects
+    const accounts = (distributions || []).map((d) => ({
+      id: String(d.id_distribution),
+      customerId: clientId,
+      lateAccountId: d.id_resource ? String(d.id_resource) : String(d.id_distribution),
+      platform: d.network,
+      displayName: d.name_resource || d.network,
+      username: null,
+      avatarUrl: null,
+      type: d.type_distribution,
+      isActive: d.flag_active === 1,
+    }));
+
+    return NextResponse.json({ accounts });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
 // POST /api/customer-accounts
+// Creates an explicit customer↔account link in the customer_accounts table
+// for new assignments not yet represented in social posts
 export async function POST(req: NextRequest) {
   try {
     const session = await auth();

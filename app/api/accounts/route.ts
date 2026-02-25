@@ -17,15 +17,36 @@ export async function GET(req: NextRequest) {
     let accounts = accountsData.accounts || [];
     const profiles = profilesData.profiles || [];
 
-    // If customerId is provided, filter accounts to only those assigned
+    // If customerId is provided, filter to accounts linked to this client
+    // via the social→posting_distributions implicit relationship
     if (customerId) {
-      const { data: assignedRows } = await supabase
-        .from("customer_accounts")
-        .select("late_account_id")
-        .eq("customer_id", parseInt(customerId, 10));
+      const clientId = parseInt(customerId, 10);
 
-      const assignedIds = new Set((assignedRows || []).map((r: any) => r.late_account_id));
-      accounts = accounts.filter((a: any) => assignedIds.has(a._id || a.id));
+      // Get distinct distribution IDs for this client from social posts
+      const { data: socialLinks } = await supabase
+        .from("social")
+        .select("id_distribution")
+        .eq("id_client", clientId)
+        .not("id_distribution", "is", null)
+        .is("date_deleted", null);
+
+      const distIds = Array.from(new Set((socialLinks || []).map((r: any) => r.id_distribution)));
+
+      if (distIds.length > 0) {
+        // Get the resource IDs from posting_distributions (these map to Late account IDs)
+        const { data: dists } = await supabase
+          .from("posting_distributions")
+          .select("id_distribution, id_resource")
+          .in("id_distribution", distIds);
+
+        const assignedIds = new Set(
+          (dists || []).map((d: any) => String(d.id_resource || d.id_distribution))
+        );
+
+        accounts = accounts.filter((a: any) => assignedIds.has(a._id || a.id));
+      } else {
+        accounts = [];
+      }
     }
 
     return NextResponse.json({

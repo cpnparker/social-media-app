@@ -1,40 +1,61 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
-import { resolveWorkspaceAndUser } from "@/lib/api-utils";
 
-// Helper: snake_case → camelCase
-function transformAsset(row: any) {
+// Maps entityType to the correct existing Supabase assets table
+// Existing tables: assets_content (7,459 rows), assets_clients (244), assets_ideas (940)
+// Enriched views: app_assets_content, app_assets_clients, app_assets_ideas
+const ENTITY_TABLE_MAP: Record<string, { table: string; view: string; fk: string }> = {
+  content: { table: "assets_content", view: "app_assets_content", fk: "id_content" },
+  client: { table: "assets_clients", view: "app_assets_clients", fk: "id_client" },
+  idea: { table: "assets_ideas", view: "app_assets_ideas", fk: "id_idea" },
+};
+
+// Transform existing asset row → camelCase API shape
+function transformAsset(row: any, entityType: string) {
   return {
-    id: row.id,
-    entityType: row.entity_type,
-    entityId: row.entity_id,
-    workspaceId: row.workspace_id,
-    name: row.name,
-    url: row.url,
-    assetType: row.asset_type,
-    fileSize: row.file_size,
-    uploadedBy: row.uploaded_by,
-    createdAt: row.created_at,
+    id: String(row.id_asset),
+    entityType,
+    entityId: String(row[ENTITY_TABLE_MAP[entityType]?.fk] || row.id_content || row.id_client || row.id_idea),
+    name: row.name_asset || row.file_name || null,
+    url: row.file_url || (row.file_path ? `/files/${row.file_path}` : null),
+    assetType: row.type_asset || "document",
+    description: row.information_description || null,
+    fileSize: null,
+    createdAt: row.date_created,
+    // Extra fields from app_ views
+    fileName: row.file_name || null,
+    filePath: row.file_path || null,
+    fileBucket: row.file_bucket || null,
   };
 }
 
 // GET /api/content-assets
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const entityType = searchParams.get("entityType");
+  const entityType = searchParams.get("entityType") || "content";
   const entityId = searchParams.get("entityId");
 
   try {
-    let query = supabase.from("content_assets").select("*");
+    const mapping = ENTITY_TABLE_MAP[entityType];
+    if (!mapping) {
+      return NextResponse.json(
+        { error: `Unknown entityType: ${entityType}. Supported: ${Object.keys(ENTITY_TABLE_MAP).join(", ")}` },
+        { status: 400 }
+      );
+    }
 
-    if (entityType) query = query.eq("entity_type", entityType);
-    if (entityId) query = query.eq("entity_id", entityId);
+    // Use the enriched app_ view for reads (includes file_name, file_url, file_path)
+    let query = supabase.from(mapping.view).select("*");
+
+    if (entityId) {
+      query = query.eq(mapping.fk, parseInt(entityId, 10));
+    }
 
     const { data: rows, error } = await query;
     if (error) throw error;
 
     return NextResponse.json({
-      assets: (rows || []).map(transformAsset),
+      assets: (rows || []).map((r) => transformAsset(r, entityType)),
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -45,37 +66,45 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
+    const entityType = body.entityType || "content";
 
-    if (!body.entityType || !body.entityId || !body.name || !body.url) {
+    if (!body.entityId || !body.name) {
       return NextResponse.json(
-        { error: "entityType, entityId, name, and url are required" },
+        { error: "entityId and name are required" },
         { status: 400 }
       );
     }
 
-    const resolved = await resolveWorkspaceAndUser(
-      body.workspaceId,
-      body.uploadedBy
-    );
+    const mapping = ENTITY_TABLE_MAP[entityType];
+    if (!mapping) {
+      return NextResponse.json(
+        { error: `Unknown entityType: ${entityType}` },
+        { status: 400 }
+      );
+    }
+
+    // Insert into the correct existing assets table
+    const insertData: any = {
+      [mapping.fk]: parseInt(body.entityId, 10),
+      name_asset: body.name,
+      type_asset: body.assetType || "document",
+      information_description: body.description || null,
+    };
+
+    // If a file ID is provided, link it; otherwise create file record first
+    if (body.fileId) {
+      insertData.id_file = parseInt(body.fileId, 10);
+    }
 
     const { data: asset, error } = await supabase
-      .from("content_assets")
-      .insert({
-        entity_type: body.entityType,
-        entity_id: body.entityId,
-        workspace_id: resolved.workspaceId,
-        name: body.name,
-        url: body.url,
-        asset_type: body.assetType || "document",
-        file_size: body.fileSize || null,
-        uploaded_by: resolved.createdBy,
-      })
+      .from(mapping.table)
+      .insert(insertData)
       .select()
       .single();
 
     if (error) throw error;
 
-    return NextResponse.json({ asset: transformAsset(asset) });
+    return NextResponse.json({ asset: transformAsset(asset, entityType) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -85,16 +114,26 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id");
+  const entityType = searchParams.get("entityType") || "content";
 
   if (!id) {
     return NextResponse.json({ error: "id is required" }, { status: 400 });
   }
 
+  const mapping = ENTITY_TABLE_MAP[entityType];
+  if (!mapping) {
+    return NextResponse.json(
+      { error: `Unknown entityType: ${entityType}` },
+      { status: 400 }
+    );
+  }
+
   try {
+    // Soft delete — set date_deleted (matches existing pattern)
     const { error } = await supabase
-      .from("content_assets")
-      .delete()
-      .eq("id", id);
+      .from(mapping.table)
+      .update({ date_deleted: new Date().toISOString() })
+      .eq("id_asset", parseInt(id, 10));
 
     if (error) throw error;
 
