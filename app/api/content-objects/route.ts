@@ -31,21 +31,87 @@ export async function GET(req: NextRequest) {
     const { data: rows, error } = await query;
     if (error) throw error;
 
-    const contentObjects = (rows || []).map((r) => ({
-      id: String(r.id_content),
-      ideaId: r.id_idea ? String(r.id_idea) : null,
-      contentType: r.type_content,
-      workingTitle: r.name_content,
-      status: r.flag_completed === 1 ? "published" : r.flag_spiked === 1 ? "spiked" : "draft",
-      customerId: r.id_client ? String(r.id_client) : null,
-      customerName: r.name_client,
-      contractId: r.id_contract ? String(r.id_contract) : null,
-      contentUnits: Number(r.units_content) || 0,
-      topicTags: r.name_topic_array || [],
-      campaignTags: r.name_campaign_array || [],
-      createdAt: r.date_created,
-      contentLeadName: r.name_user_content_lead,
-    }));
+    // Batch-fetch task counts for all returned content IDs
+    const contentIds = (rows || []).map((r: any) => r.id_content).filter(Boolean) as number[];
+    const taskCountMap: Record<number, { total: number; done: number }> = {};
+
+    if (contentIds.length > 0) {
+      // Fetch all tasks for these content items
+      const { data: allTasks } = await supabase
+        .from("tasks_content")
+        .select("id_content, date_completed")
+        .in("id_content", contentIds)
+        .is("date_deleted", null);
+
+      for (const task of allTasks || []) {
+        const cid = task.id_content as number;
+        if (!taskCountMap[cid]) {
+          taskCountMap[cid] = { total: 0, done: 0 };
+        }
+        taskCountMap[cid].total += 1;
+        if (task.date_completed) {
+          taskCountMap[cid].done += 1;
+        }
+      }
+    }
+
+    // Batch-fetch current tasks (next uncompleted task per content item)
+    const currentTaskMap: Record<number, { id: number; type: string; assignee: string | null }> = {};
+
+    if (contentIds.length > 0) {
+      const { data: currentTasks } = await supabase
+        .from("app_tasks_content")
+        .select("*")
+        .in("id_content", contentIds)
+        .is("date_completed", null)
+        .order("order_sort", { ascending: true });
+
+      // Take only the first uncompleted task per content item
+      for (const task of currentTasks || []) {
+        const cid = task.id_content as number;
+        if (!currentTaskMap[cid]) {
+          currentTaskMap[cid] = {
+            id: task.id_task as number,
+            type: task.type_task as string,
+            assignee: (task.name_user_assignee as string) || null,
+          };
+        }
+      }
+    }
+
+    const contentObjects = (rows || []).map((r: any) => {
+      const counts = taskCountMap[r.id_content] || { total: 0, done: 0 };
+      const currentTask = currentTaskMap[r.id_content] || null;
+
+      return {
+        id: String(r.id_content),
+        ideaId: r.id_idea ? String(r.id_idea) : null,
+        contentType: r.type_content,
+        workingTitle: r.name_content,
+        status: r.flag_completed === 1 ? "published" : r.flag_spiked === 1 ? "spiked" : "draft",
+        customerId: r.id_client ? String(r.id_client) : null,
+        customerName: r.name_client,
+        contractId: r.id_contract ? String(r.id_contract) : null,
+        contractName: r.name_contract || null,
+        contentUnits: Number(r.units_content) || 0,
+        topicTags: r.name_topic_array || [],
+        campaignTags: r.name_campaign_array || [],
+        eventTags: r.name_event_array || [],
+        createdAt: r.date_created,
+        completedAt: r.date_completed || null,
+        updatedAt: r.date_completed || r.date_created,
+        deadlineProduction: r.date_deadline_production || null,
+        deadlinePublication: r.date_deadline_publication || null,
+        isFastTurnaround: r.flag_fast_turnaround === 1,
+        contentLeadName: r.name_user_content_lead || null,
+        commissionedByName: r.name_user_commissioned || null,
+        // Task counts
+        totalTasks: counts.total,
+        doneTasks: counts.done,
+        // Current task (next uncompleted)
+        currentTask,
+      };
+    });
 
     return NextResponse.json({ contentObjects });
   } catch (error: any) {

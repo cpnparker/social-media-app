@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   RefreshCcw,
@@ -9,21 +9,46 @@ import {
   Calendar,
   BarChart2,
   Send,
+  Search,
+  X,
+  ArrowUpDown,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import Link from "next/link";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+
+interface Recommendation {
+  contentObjectId: string;
+  workingTitle: string;
+  contentType: string | null;
+  lastPostedDate: string | null;
+  daysSinceLastPost: number;
+  historicalEngagement: number;
+  replayCount: number;
+  score: number;
+  totalImpressions: number;
+  linkedPostCount: number;
+}
 
 export default function ReplayQueuePage() {
   const router = useRouter();
-  const [recommendations, setRecommendations] = useState<any[]>([]);
+  const customerCtx = useCustomerSafe();
+  const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
+
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortBy, setSortBy] = useState<"score" | "engagement" | "impressions" | "days">("score");
+  const [minScore, setMinScore] = useState<number>(0);
 
   const fetchRecommendations = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/replay-recommendations");
+      const custParam = selectedCustomerId ? `?customerId=${selectedCustomerId}` : "";
+      const res = await fetch(`/api/replay-recommendations${custParam}`);
       const data = await res.json();
       setRecommendations(data.recommendations || []);
     } catch (err) {
@@ -31,11 +56,46 @@ export default function ReplayQueuePage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedCustomerId]);
 
   useEffect(() => {
     fetchRecommendations();
   }, [fetchRecommendations]);
+
+  // Filtered + sorted recommendations
+  const filtered = useMemo(() => {
+    let result = recommendations;
+
+    // Search filter
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter((r) =>
+        (r.workingTitle || "").toLowerCase().includes(q)
+      );
+    }
+
+    // Min score filter
+    if (minScore > 0) {
+      result = result.filter((r) => r.score >= minScore);
+    }
+
+    // Sort
+    result = [...result].sort((a, b) => {
+      switch (sortBy) {
+        case "engagement":
+          return b.historicalEngagement - a.historicalEngagement;
+        case "impressions":
+          return b.totalImpressions - a.totalImpressions;
+        case "days":
+          return b.daysSinceLastPost - a.daysSinceLastPost;
+        case "score":
+        default:
+          return b.score - a.score;
+      }
+    });
+
+    return result;
+  }, [recommendations, searchQuery, sortBy, minScore]);
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -44,10 +104,10 @@ export default function ReplayQueuePage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <RefreshCcw className="h-6 w-6 text-green-500" />
-            Replay Queue
+            Replay Social Media
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Evergreen content recommended for re-posting based on performance
+            Published content ranked by engagement score for re-posting
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={fetchRecommendations} disabled={loading} className="gap-2">
@@ -56,29 +116,117 @@ export default function ReplayQueuePage() {
         </Button>
       </div>
 
+      {/* Filters */}
+      {recommendations.length > 0 && (
+        <div className="space-y-3">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search content titles..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 pr-9"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Sort options */}
+            <span className="text-xs text-muted-foreground">Sort by:</span>
+            {(
+              [
+                { key: "score", label: "Replay Score" },
+                { key: "engagement", label: "Engagement" },
+                { key: "impressions", label: "Impressions" },
+                { key: "days", label: "Days Since Post" },
+              ] as const
+            ).map((opt) => (
+              <Button
+                key={opt.key}
+                variant={sortBy === opt.key ? "default" : "outline"}
+                size="sm"
+                onClick={() => setSortBy(opt.key)}
+                className={sortBy === opt.key ? "bg-blue-500 hover:bg-blue-600" : ""}
+              >
+                {opt.label}
+              </Button>
+            ))}
+
+            <div className="h-6 w-px bg-border mx-1" />
+
+            {/* Min score filter */}
+            <span className="text-xs text-muted-foreground">Min score:</span>
+            <select
+              value={minScore}
+              onChange={(e) => setMinScore(Number(e.target.value))}
+              className="h-9 rounded-md border bg-background px-3 text-sm"
+            >
+              <option value={0}>Any</option>
+              <option value={10}>10+</option>
+              <option value={50}>50+</option>
+              <option value={100}>100+</option>
+              <option value={500}>500+</option>
+            </select>
+
+            {(searchQuery || minScore > 0) && (
+              <button
+                onClick={() => {
+                  setSearchQuery("");
+                  setMinScore(0);
+                }}
+                className="text-xs text-blue-500 hover:text-blue-600 underline"
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+
+          {(searchQuery || minScore > 0) && (
+            <p className="text-xs text-muted-foreground">
+              Showing {filtered.length} of {recommendations.length} recommendations
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* List */}
       {loading ? (
         <div className="flex items-center justify-center py-20">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
-      ) : recommendations.length === 0 ? (
+      ) : filtered.length === 0 ? (
         <Card className="border-0 shadow-sm">
           <CardContent className="flex flex-col items-center justify-center py-16 text-center">
             <RefreshCcw className="h-12 w-12 text-muted-foreground/40 mb-4" />
-            <p className="text-lg font-semibold mb-2">No replay recommendations</p>
-            <p className="text-sm text-muted-foreground mb-4">
-              Mark content as &quot;evergreen&quot; to see replay suggestions here.
-              Content must have been posted at least 14 days ago.
+            <p className="text-lg font-semibold mb-2">
+              {recommendations.length === 0
+                ? "No replay recommendations"
+                : "No matches"}
             </p>
-            <Link href="/content">
-              <Button variant="outline" size="sm">
-                Go to Content
-              </Button>
-            </Link>
+            <p className="text-sm text-muted-foreground mb-4">
+              {recommendations.length === 0
+                ? "Published content that hasn\u2019t been re-posted in 14+ days will appear here."
+                : "Try adjusting your search or filters."}
+            </p>
+            {recommendations.length === 0 && (
+              <Link href="/content">
+                <Button variant="outline" size="sm">
+                  Go to Content
+                </Button>
+              </Link>
+            )}
           </CardContent>
         </Card>
       ) : (
         <div className="space-y-3">
-          {recommendations.map((rec, i) => (
+          {filtered.map((rec, i) => (
             <Card key={rec.contentObjectId} className="border-0 shadow-sm hover:shadow-md transition-shadow">
               <CardContent className="p-4">
                 <div className="flex items-start gap-4">
@@ -98,9 +246,11 @@ export default function ReplayQueuePage() {
                           {rec.workingTitle}
                         </Link>
                         <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-                          <Badge variant="secondary" className="text-[10px] capitalize">
-                            {rec.contentType}
-                          </Badge>
+                          {rec.contentType && (
+                            <Badge variant="secondary" className="text-[10px] capitalize">
+                              {rec.contentType}
+                            </Badge>
+                          )}
                           <span className="flex items-center gap-1">
                             <Calendar className="h-3 w-3" />
                             Last posted {rec.daysSinceLastPost}d ago

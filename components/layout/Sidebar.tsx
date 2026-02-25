@@ -43,7 +43,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useTeamSafe } from "@/lib/contexts/TeamContext";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { signOut } from "next-auth/react";
 
@@ -98,8 +97,10 @@ const navSections: NavSection[] = [
     items: [
       { label: "Social Media Calendar", href: "/calendar" },
       { label: "Social Media Schedule", href: "/queue" },
-      { label: "Replay Social Promos", href: "/replay-queue" },
-      { label: "All Social Promos", href: "/compose" },
+      { label: "Replay Social Media", href: "/replay-queue" },
+      { label: "All Social Promos", href: "/social-promos" },
+      { label: "Compose New", href: "/compose" },
+      { label: "Analytics", href: "/analytics" },
     ],
   },
   {
@@ -119,7 +120,6 @@ const navSections: NavSection[] = [
     defaultOpen: false,
     items: [
       { label: "Accounts", href: "/accounts" },
-      { label: "Analytics", href: "/analytics" },
       { label: "Inbox", href: "/inbox" },
       { label: "Settings", href: "/settings" },
     ],
@@ -137,7 +137,6 @@ export function Sidebar({ onClose }: SidebarProps) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [inboxCount, setInboxCount] = useState(0);
-  const teamCtx = useTeamSafe();
   const wsCtx = useWorkspaceSafe();
 
   // Track which sections are open
@@ -214,7 +213,7 @@ export function Sidebar({ onClose }: SidebarProps) {
             <DropdownMenuTrigger asChild>
               <button className="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-white/10 transition-colors text-left">
                 <div className="h-9 w-9 rounded-lg shrink-0 flex items-center justify-center">
-                  <img src="/assets/favicon.png" alt="" width={36} height={36} className="h-9 w-9 brightness-0 invert" />
+                  <img src="/assets/logo_engine_icon.svg" alt="" width={36} height={36} className="h-9 w-9 brightness-0 invert" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-[14px] font-bold tracking-tight truncate text-white">
@@ -234,7 +233,7 @@ export function Sidebar({ onClose }: SidebarProps) {
                   onClick={() => wsCtx.setSelectedWorkspace(ws.id)}
                   className="gap-2"
                 >
-                  <img src="/assets/favicon.png" alt="" width={20} height={20} className="h-5 w-5 shrink-0" />
+                  <img src="/assets/logo_engine_icon.svg" alt="" width={20} height={20} className="h-5 w-5 shrink-0" />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{ws.name}</p>
                     <p className="text-[10px] text-muted-foreground capitalize">{ws.plan} &middot; {ws.role}</p>
@@ -255,7 +254,7 @@ export function Sidebar({ onClose }: SidebarProps) {
           /* Single workspace — static header */
           <div className="flex items-center gap-3 px-2 py-1">
             <div className="h-9 w-9 rounded-lg shrink-0 flex items-center justify-center">
-              <img src="/assets/favicon.png" alt="" width={36} height={36} className="h-9 w-9 brightness-0 invert" />
+              <img src="/assets/logo_engine_icon.svg" alt="" width={36} height={36} className="h-9 w-9 brightness-0 invert" />
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-[14px] font-bold tracking-tight truncate text-white">
@@ -299,7 +298,7 @@ export function Sidebar({ onClose }: SidebarProps) {
       </div>
 
       {/* ──── Navigation Sections ──── */}
-      <nav className="flex-1 overflow-y-auto px-3 pb-4 mt-1">
+      <nav className="flex-1 overflow-y-auto scrollbar-hide px-3 pb-4 mt-1">
         <div className="space-y-1">
           {navSections.map((section) => {
             const Icon = section.icon;
@@ -399,12 +398,6 @@ export function Sidebar({ onClose }: SidebarProps) {
               <Link href="/settings/workspace" className="gap-2">
                 <Settings className="h-4 w-4" />
                 Workspace settings
-              </Link>
-            </DropdownMenuItem>
-            <DropdownMenuItem asChild>
-              <Link href="/settings/team" className="gap-2">
-                <Users className="h-4 w-4" />
-                Team members
               </Link>
             </DropdownMenuItem>
             <DropdownMenuSeparator />

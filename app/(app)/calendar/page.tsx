@@ -116,8 +116,29 @@ export default function CalendarPage() {
   const fetchPosts = useCallback(async () => {
     setLoading(true);
     try {
-      const custParam = selectedCustomerId ? `?customerId=${selectedCustomerId}` : "";
-      const res = await fetch(`/api/posts?limit=100${custParam ? `&customerId=${selectedCustomerId}` : ""}`);
+      // If customer selected, get their linked accounts for scoping
+      let accountIdsParam = "";
+      if (selectedCustomerId) {
+        try {
+          const acctRes = await fetch(`/api/customer-accounts?customerId=${selectedCustomerId}`);
+          if (acctRes.ok) {
+            const acctData = await acctRes.json();
+            const ids = (acctData.accounts || []).map((a: any) => a.lateAccountId).filter(Boolean);
+            if (ids.length > 0) {
+              accountIdsParam = `&accountIds=${ids.join(",")}`;
+            } else {
+              // Customer has no linked accounts — show nothing, not everything
+              setPosts([]);
+              setLoading(false);
+              return;
+            }
+          }
+        } catch (e) {
+          console.error("Failed to fetch customer accounts:", e);
+        }
+      }
+
+      const res = await fetch(`/api/posts?limit=200${accountIdsParam}`);
       const data = await res.json();
       setPosts(data.posts || []);
     } catch (err) {

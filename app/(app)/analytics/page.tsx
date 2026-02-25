@@ -43,7 +43,7 @@ import {
   Cell,
 } from "recharts";
 import { toast } from "sonner";
-import { useTeamSafe } from "@/lib/contexts/TeamContext";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { platformLabels, platformHexColors } from "@/lib/platform-utils";
 import { ChevronDown, X, Filter } from "lucide-react";
 
@@ -167,15 +167,58 @@ export default function AnalyticsPage() {
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
   const [platformDropdownOpen, setPlatformDropdownOpen] = useState(false);
 
-  const teamCtx = useTeamSafe();
+  // Customer context for scoping accounts
+  const customerCtx = useCustomerSafe();
+  const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
+
+  // Customer-linked accounts (fetched from Supabase)
+  const [customerAccounts, setCustomerAccounts] = useState<
+    Array<{ id: string; lateAccountId: string; platform: string; displayName: string }>
+  >([]);
+
+  // Fetch customer-linked accounts when customer changes
+  useEffect(() => {
+    if (!selectedCustomerId) {
+      setCustomerAccounts([]);
+      setSelectedAccountIds([]);
+      return;
+    }
+    (async () => {
+      try {
+        const res = await fetch(`/api/customer-accounts?customerId=${selectedCustomerId}`);
+        if (res.ok) {
+          const json = await res.json();
+          setCustomerAccounts(json.accounts || []);
+        }
+      } catch (e) {
+        console.error("Failed to fetch customer accounts:", e);
+      }
+    })();
+  }, [selectedCustomerId]);
 
   const fetchAnalytics = useCallback(async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams({ period });
-      if (selectedAccountIds.length > 0) {
+
+      // Auto-scope to customer accounts when a customer is selected
+      if (selectedCustomerId && customerAccounts.length > 0) {
+        const custAccountIds = customerAccounts.map((a) => a.lateAccountId).filter(Boolean);
+        // If user has also manually selected specific accounts, intersect
+        if (selectedAccountIds.length > 0) {
+          params.set("accountIds", selectedAccountIds.join(","));
+        } else {
+          params.set("accountIds", custAccountIds.join(","));
+        }
+      } else if (selectedCustomerId && customerAccounts.length === 0) {
+        // Customer has no linked accounts — show nothing, not everything
+        setData(null);
+        setLoading(false);
+        return;
+      } else if (selectedAccountIds.length > 0) {
         params.set("accountIds", selectedAccountIds.join(","));
       }
+
       if (selectedPlatforms.length > 0) {
         params.set("platforms", selectedPlatforms.join(","));
       }
@@ -192,7 +235,7 @@ export default function AnalyticsPage() {
     } finally {
       setLoading(false);
     }
-  }, [period, selectedAccountIds, selectedPlatforms]);
+  }, [period, selectedAccountIds, selectedPlatforms, selectedCustomerId, customerAccounts]);
 
   useEffect(() => {
     fetchAnalytics();
@@ -477,8 +520,8 @@ export default function AnalyticsPage() {
           <span className="font-medium">Filters:</span>
         </div>
 
-        {/* Accounts filter */}
-        {teamCtx && teamCtx.teamAccounts.length > 0 && (
+        {/* Accounts filter — scoped to customer-linked accounts */}
+        {customerAccounts.length > 0 && (
           <div className="relative" data-filter-dropdown>
             <button
               onClick={() => {
@@ -502,7 +545,7 @@ export default function AnalyticsPage() {
             {accountDropdownOpen && (
               <div className="absolute left-0 top-full mt-1 z-50 w-64 rounded-lg border bg-popover shadow-lg overflow-hidden">
                 <div className="max-h-64 overflow-y-auto p-1">
-                  {teamCtx.teamAccounts.map((acc) => {
+                  {customerAccounts.map((acc) => {
                     const platform = acc.platform?.toLowerCase();
                     const color = platformHexColors[platform] || "#6b7280";
                     const isSelected = selectedAccountIds.includes(acc.lateAccountId);

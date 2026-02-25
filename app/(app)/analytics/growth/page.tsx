@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import {
   ArrowLeft,
   Loader2,
@@ -146,6 +147,8 @@ function BarChart({
 }
 
 export default function GrowthPage() {
+  const customerCtx = useCustomerSafe();
+  const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
   const [data, setData] = useState<GrowthData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -156,9 +159,29 @@ export default function GrowthPage() {
     setLoading(true);
     setError("");
     try {
-      const params = selectedAccountId
-        ? `?accountId=${selectedAccountId}`
-        : "";
+      // Build params — scope to customer accounts when customer is selected
+      const queryParams = new URLSearchParams();
+      if (selectedAccountId) queryParams.set("accountId", selectedAccountId);
+      if (selectedCustomerId) {
+        try {
+          const acctRes = await fetch(`/api/customer-accounts?customerId=${selectedCustomerId}`);
+          if (acctRes.ok) {
+            const acctData = await acctRes.json();
+            const ids = (acctData.accounts || []).map((a: any) => a.lateAccountId).filter(Boolean);
+            if (ids.length > 0) {
+              queryParams.set("accountIds", ids.join(","));
+            } else {
+              // Customer has no linked accounts — show nothing, not everything
+              setData(null);
+              setLoading(false);
+              return;
+            }
+          }
+        } catch (e) {
+          console.error("Failed to fetch customer accounts:", e);
+        }
+      }
+      const params = queryParams.toString() ? `?${queryParams.toString()}` : "";
       const res = await fetch(`/api/analytics/growth${params}`);
       if (!res.ok) throw new Error("Failed to load data");
       const json = await res.json();
@@ -168,7 +191,7 @@ export default function GrowthPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedAccountId]);
+  }, [selectedAccountId, selectedCustomerId]);
 
   useEffect(() => {
     fetchData();

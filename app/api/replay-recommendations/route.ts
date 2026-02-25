@@ -1,19 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { requireAuth, scopeQueryToClients } from "@/lib/permissions";
 
 // GET /api/replay-recommendations — ranked list of evergreen content suitable for replay
+// Supports: ?customerId=xxx
 export async function GET(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
+
+  const { searchParams } = new URL(req.url);
+  const customerId = searchParams.get("customerId");
+
   try {
     // Fetch published, non-spiked content objects as replay candidates.
     // The existing Supabase content table doesn't have a flag_evergreen column,
     // so we use published + completed content as the candidate pool.
-    const { data: evergreenContent, error: contentErr } = await supabase
+    let query = supabase
       .from("content")
-      .select("id_content, name_content, id_type")
+      .select("id_content, name_content, id_type, id_client")
       .eq("flag_completed", 1)
       .eq("flag_spiked", 0)
       .is("date_deleted", null)
       .not("date_published", "is", null);
+
+    // Scope to customer/client access
+    const scoped = await scopeQueryToClients(query, userId, role, customerId, "id_client");
+    if (scoped.error) return scoped.error;
+    query = scoped.query;
+
+    const { data: evergreenContent, error: contentErr } = await query;
 
     if (contentErr) throw contentErr;
 

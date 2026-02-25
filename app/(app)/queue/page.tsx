@@ -17,8 +17,13 @@ import {
   ChevronDown,
   X,
   Filter,
+  Megaphone,
+  FileText,
+  ExternalLink,
+  Send,
+  Calendar,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -36,6 +41,25 @@ import {
   platformHexColors,
 } from "@/lib/platform-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+
+interface SocialPromo {
+  id: string;
+  contentId: string | null;
+  customerId: string | null;
+  customerName: string | null;
+  contentTitle: string | null;
+  contentType: string | null;
+  name: string;
+  network: string;
+  platform: string;
+  accountName: string | null;
+  distributionId: string | null;
+  type: string;
+  status: string;
+  createdAt: string;
+  scheduledAt: string | null;
+  publishedAt: string | null;
+}
 
 interface Post {
   _id: string;
@@ -83,15 +107,6 @@ function formatDate(dateStr: string) {
   if (diff < 60000) return "Just now";
   if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
   if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  if (diff < 0) {
-    // Future date
-    return date.toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  }
   return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -100,26 +115,88 @@ function formatDate(dateStr: string) {
   });
 }
 
-export default function QueuePage() {
+function formatFullDate(dateStr: string) {
+  return new Date(dateStr).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+export default function SchedulePage() {
   const customerCtx = useCustomerSafe();
   const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
 
+  const [promos, setPromos] = useState<SocialPromo[]>([]);
+  const [promosTotal, setPromosTotal] = useState(0);
+  const [promosLoading, setPromosLoading] = useState(true);
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState("posts");
+  const [activeTab, setActiveTab] = useState("schedule");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [promoStatusFilter, setPromoStatusFilter] = useState("all");
+  const [promoNetworkFilter, setPromoNetworkFilter] = useState("all");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
   const [platformDropdownOpen, setPlatformDropdownOpen] = useState(false);
   const [queueSlots, setQueueSlots] = useState<QueueSlot[]>(defaultSlots);
   const platformDropdownRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
 
+  // ——— Fetch scheduled/published promos from Supabase ———
+  const fetchPromos = useCallback(async () => {
+    setPromosLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", "200");
+      if (selectedCustomerId) params.set("customerId", selectedCustomerId);
+      if (promoStatusFilter !== "all") params.set("status", promoStatusFilter);
+      if (promoNetworkFilter !== "all") params.set("network", promoNetworkFilter);
+
+      const res = await fetch(`/api/social-promos?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPromos(data.promos || []);
+        setPromosTotal(data.total ?? 0);
+      }
+    } catch (err) {
+      console.error("Failed to fetch social promos:", err);
+    } finally {
+      setPromosLoading(false);
+    }
+  }, [selectedCustomerId, promoStatusFilter, promoNetworkFilter]);
+
+  useEffect(() => {
+    fetchPromos();
+  }, [fetchPromos]);
+
+  // ——— Fetch Late API posts ———
   const fetchPosts = useCallback(async () => {
     setLoading(true);
     try {
+      let accountIdsParam = "";
+      if (selectedCustomerId) {
+        try {
+          const acctRes = await fetch(`/api/customer-accounts?customerId=${selectedCustomerId}`);
+          if (acctRes.ok) {
+            const acctData = await acctRes.json();
+            const ids = (acctData.accounts || []).map((a: any) => a.lateAccountId).filter(Boolean);
+            if (ids.length > 0) {
+              accountIdsParam = `&accountIds=${ids.join(",")}`;
+            } else {
+              setPosts([]);
+              setLoading(false);
+              return;
+            }
+          }
+        } catch (e) {
+          console.error("Failed to fetch customer accounts:", e);
+        }
+      }
+
       const statusParam = statusFilter !== "all" ? `&status=${statusFilter}` : "";
-      const custParam = selectedCustomerId ? `&customerId=${selectedCustomerId}` : "";
-      const res = await fetch(`/api/posts?limit=50${statusParam}${custParam}`);
+      const res = await fetch(`/api/posts?limit=50${statusParam}${accountIdsParam}`);
       const data = await res.json();
       setPosts(data.posts || []);
     } catch (err) {
@@ -130,8 +207,8 @@ export default function QueuePage() {
   }, [statusFilter, selectedCustomerId]);
 
   useEffect(() => {
-    fetchPosts();
-  }, [fetchPosts]);
+    if (activeTab === "posts") fetchPosts();
+  }, [fetchPosts, activeTab]);
 
   // Close platform dropdown on outside click
   useEffect(() => {
@@ -147,7 +224,6 @@ export default function QueuePage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Derive the unique platforms that appear in fetched posts
   const availablePlatforms = useMemo(() => {
     const set = new Set<string>();
     for (const post of posts) {
@@ -158,13 +234,18 @@ export default function QueuePage() {
     return Array.from(set).sort();
   }, [posts]);
 
-  // Apply client-side platform filter
+  const availableNetworks = useMemo(() => {
+    const set = new Set<string>();
+    for (const promo of promos) {
+      if (promo.network) set.add(promo.network.toLowerCase());
+    }
+    return Array.from(set).sort();
+  }, [promos]);
+
   const filteredPosts = useMemo(() => {
     if (selectedPlatforms.length === 0) return posts;
     return posts.filter((post) => {
-      const postPlatforms = (post.platforms || []).map((p) =>
-        p.platform?.toLowerCase()
-      );
+      const postPlatforms = (post.platforms || []).map((p) => p.platform?.toLowerCase());
       return selectedPlatforms.some((sp) => postPlatforms.includes(sp));
     });
   }, [posts, selectedPlatforms]);
@@ -209,17 +290,25 @@ export default function QueuePage() {
       .sort((a, b) => a.time.localeCompare(b.time)),
   }));
 
+  // Stats for schedule
+  const promoStats = useMemo(() => {
+    const published = promos.filter((p) => p.status === "published").length;
+    const scheduled = promos.filter((p) => p.status === "scheduled").length;
+    const draft = promos.filter((p) => p.status === "draft").length;
+    return { published, scheduled, draft, total: promos.length };
+  }, [promos]);
+
   return (
     <div className="space-y-6 max-w-5xl">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Queue & Posts</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Social Media Schedule</h1>
           <p className="text-muted-foreground mt-1">
-            Manage your post queue time slots and view all posts
+            Published, scheduled and draft posts for this customer
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={fetchPosts} className="gap-2">
+          <Button variant="outline" size="sm" onClick={() => { fetchPromos(); fetchPosts(); }} className="gap-2">
             <RefreshCw className="h-4 w-4" />
             Refresh
           </Button>
@@ -232,11 +321,46 @@ export default function QueuePage() {
         </div>
       </div>
 
+      {/* Summary stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Card className="border-0 shadow-sm">
+          <CardContent className="py-3 px-4">
+            <p className="text-2xl font-bold">{promosTotal}</p>
+            <p className="text-xs text-muted-foreground">Total</p>
+          </CardContent>
+        </Card>
+        <Card className="border-0 shadow-sm">
+          <CardContent className="py-3 px-4">
+            <p className="text-2xl font-bold text-emerald-600">{promoStats.published}</p>
+            <p className="text-xs text-muted-foreground">Published</p>
+          </CardContent>
+        </Card>
+        <Card className="border-0 shadow-sm">
+          <CardContent className="py-3 px-4">
+            <p className="text-2xl font-bold text-blue-600">{promoStats.scheduled}</p>
+            <p className="text-xs text-muted-foreground">Scheduled</p>
+          </CardContent>
+        </Card>
+        <Card className="border-0 shadow-sm">
+          <CardContent className="py-3 px-4">
+            <p className="text-2xl font-bold text-gray-500">{promoStats.draft}</p>
+            <p className="text-xs text-muted-foreground">Drafts</p>
+          </CardContent>
+        </Card>
+      </div>
+
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="bg-muted/50">
+          <TabsTrigger value="schedule" className="gap-2">
+            <Megaphone className="h-4 w-4" />
+            Schedule
+            {promosTotal > 0 && (
+              <Badge variant="secondary" className="ml-1 h-5 px-1.5 text-[10px]">{promosTotal}</Badge>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="posts" className="gap-2">
-            <ListOrdered className="h-4 w-4" />
-            Posts
+            <Send className="h-4 w-4" />
+            Late Posts
           </TabsTrigger>
           <TabsTrigger value="queue" className="gap-2">
             <Clock className="h-4 w-4" />
@@ -244,11 +368,146 @@ export default function QueuePage() {
           </TabsTrigger>
         </TabsList>
 
-        {/* Posts tab */}
-        <TabsContent value="posts" className="mt-4 space-y-4">
+        {/* ═══════ Schedule (Supabase social promos) ═══════ */}
+        <TabsContent value="schedule" className="mt-4 space-y-4">
           {/* Filters row */}
           <div className="flex flex-wrap items-center gap-2">
-            {/* Status filter pills */}
+            {["all", "draft", "scheduled", "published"].map((s) => (
+              <Button
+                key={s}
+                variant={promoStatusFilter === s ? "default" : "outline"}
+                size="sm"
+                onClick={() => setPromoStatusFilter(s)}
+                className={promoStatusFilter === s ? "bg-blue-500 hover:bg-blue-600 capitalize" : "capitalize"}
+              >
+                {s}
+              </Button>
+            ))}
+
+            <div className="h-6 w-px bg-border mx-1" />
+
+            <select
+              value={promoNetworkFilter}
+              onChange={(e) => setPromoNetworkFilter(e.target.value)}
+              className="h-9 rounded-md border bg-background px-3 text-sm"
+            >
+              <option value="all">All platforms</option>
+              {availableNetworks.map((n) => (
+                <option key={n} value={n}>{platformLabels[n] || n}</option>
+              ))}
+            </select>
+          </div>
+
+          {promosLoading ? (
+            <Card className="border-0 shadow-sm">
+              <CardContent className="flex items-center justify-center py-16">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </CardContent>
+            </Card>
+          ) : promos.length === 0 ? (
+            <Card className="border-dashed border-2 border-muted-foreground/20">
+              <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="h-14 w-14 rounded-full bg-muted flex items-center justify-center mb-4">
+                  <Megaphone className="h-6 w-6 text-muted-foreground" />
+                </div>
+                <h3 className="text-lg font-semibold mb-1">No posts in schedule</h3>
+                <p className="text-sm text-muted-foreground max-w-sm">
+                  {promoStatusFilter === "all" && promoNetworkFilter === "all"
+                    ? "No posts have been scheduled or published for this customer yet."
+                    : "No posts match the current filters."}
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-2">
+              {promos.map((promo) => {
+                const networkLower = promo.network?.toLowerCase();
+                const color = platformHexColors[networkLower] || "#6b7280";
+                return (
+                  <Card key={promo.id} className="border-0 shadow-sm hover:shadow-md transition-shadow">
+                    <CardContent className="flex items-start gap-4 py-4">
+                      <div className="flex flex-col items-center gap-1.5 pt-0.5 shrink-0 min-w-[100px]">
+                        <span
+                          className="inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-medium text-white"
+                          style={{ backgroundColor: color }}
+                        >
+                          {platformLabels[networkLower] || promo.network}
+                        </span>
+                        {promo.accountName && (
+                          <span className="text-[10px] text-muted-foreground text-center truncate max-w-[100px]">
+                            {promo.accountName}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm leading-relaxed line-clamp-2">
+                          {promo.name || "No caption"}
+                        </p>
+                        {promo.contentTitle && (
+                          <div className="flex items-center gap-1.5 mt-1">
+                            <FileText className="h-3 w-3 text-muted-foreground shrink-0" />
+                            <span className="text-xs text-muted-foreground truncate">
+                              {promo.contentTitle}
+                            </span>
+                            {promo.contentType && (
+                              <Badge variant="secondary" className="text-[9px] px-1 py-0 font-normal">
+                                {promo.contentType}
+                              </Badge>
+                            )}
+                          </div>
+                        )}
+                        <div className="flex items-center gap-3 mt-1.5 text-xs text-muted-foreground">
+                          {promo.publishedAt && (
+                            <span className="flex items-center gap-1">
+                              <Send className="h-3 w-3" />
+                              Published {formatFullDate(promo.publishedAt)}
+                            </span>
+                          )}
+                          {!promo.publishedAt && promo.scheduledAt && (
+                            <span className="flex items-center gap-1">
+                              <Calendar className="h-3 w-3" />
+                              Scheduled {formatFullDate(promo.scheduledAt)}
+                            </span>
+                          )}
+                          {!promo.publishedAt && !promo.scheduledAt && promo.createdAt && (
+                            <span className="flex items-center gap-1">
+                              <Clock className="h-3 w-3" />
+                              Created {formatFullDate(promo.createdAt)}
+                            </span>
+                          )}
+                          {promo.customerName && (
+                            <span className="text-muted-foreground/60">{promo.customerName}</span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-3 shrink-0">
+                        <Badge
+                          variant="secondary"
+                          className={`${statusStyles[promo.status] || statusStyles.draft} border-0 font-medium capitalize`}
+                        >
+                          {promo.status}
+                        </Badge>
+                        {promo.contentId && (
+                          <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
+                            <Link href={`/content/${promo.contentId}`}>
+                              <ExternalLink className="h-4 w-4" />
+                            </Link>
+                          </Button>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </TabsContent>
+
+        {/* ═══════ Late API Posts ═══════ */}
+        <TabsContent value="posts" className="mt-4 space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
             {["all", "draft", "scheduled", "published", "failed"].map((s) => (
               <Button
                 key={s}
@@ -260,11 +519,7 @@ export default function QueuePage() {
                 {s}
               </Button>
             ))}
-
-            {/* Separator */}
             <div className="h-6 w-px bg-border mx-1" />
-
-            {/* Platform filter dropdown */}
             <div className="relative" ref={platformDropdownRef}>
               <Button
                 variant="outline"
@@ -281,13 +536,10 @@ export default function QueuePage() {
                 )}
                 <ChevronDown className="h-3 w-3 opacity-50" />
               </Button>
-
               {platformDropdownOpen && (
                 <div className="absolute top-full mt-1 left-0 z-50 bg-background border rounded-lg shadow-lg py-1 min-w-[200px]">
                   {availablePlatforms.length === 0 ? (
-                    <p className="px-3 py-2 text-xs text-muted-foreground">
-                      No platforms found in posts
-                    </p>
+                    <p className="px-3 py-2 text-xs text-muted-foreground">No platforms found</p>
                   ) : (
                     availablePlatforms.map((platform) => {
                       const isSelected = selectedPlatforms.includes(platform);
@@ -297,15 +549,8 @@ export default function QueuePage() {
                           onClick={() => togglePlatform(platform)}
                           className="w-full flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-muted/50 transition-colors"
                         >
-                          <div
-                            className="h-3 w-3 rounded-full shrink-0"
-                            style={{
-                              backgroundColor: platformHexColors[platform] || "#6b7280",
-                            }}
-                          />
-                          <span className="flex-1 text-left">
-                            {platformLabels[platform] || platform}
-                          </span>
+                          <div className="h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: platformHexColors[platform] || "#6b7280" }} />
+                          <span className="flex-1 text-left">{platformLabels[platform] || platform}</span>
                           {isSelected && (
                             <div className="h-4 w-4 rounded bg-blue-500 flex items-center justify-center">
                               <svg className="h-3 w-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
@@ -320,20 +565,14 @@ export default function QueuePage() {
                   {selectedPlatforms.length > 0 && (
                     <>
                       <div className="border-t my-1" />
-                      <button
-                        onClick={() => setSelectedPlatforms([])}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground hover:bg-muted/50 transition-colors"
-                      >
-                        <X className="h-3 w-3" />
-                        Clear filters
+                      <button onClick={() => setSelectedPlatforms([])} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground hover:bg-muted/50">
+                        <X className="h-3 w-3" /> Clear filters
                       </button>
                     </>
                   )}
                 </div>
               )}
             </div>
-
-            {/* Active platform filter badges */}
             {selectedPlatforms.map((platform) => (
               <Badge
                 key={platform}
@@ -363,64 +602,37 @@ export default function QueuePage() {
                 <h3 className="text-lg font-semibold mb-1">No posts found</h3>
                 <p className="text-sm text-muted-foreground max-w-sm">
                   {statusFilter === "all" && selectedPlatforms.length === 0
-                    ? "Create your first post to get started."
-                    : selectedPlatforms.length > 0
-                    ? `No posts found for the selected platform${selectedPlatforms.length > 1 ? "s" : ""}.`
-                    : `No ${statusFilter} posts found.`}
+                    ? "No Late API posts for this customer."
+                    : "No posts match the current filters."}
                 </p>
-                <Button className="mt-4 bg-blue-500 hover:bg-blue-600" asChild>
-                  <Link href="/compose">Create a post</Link>
-                </Button>
               </CardContent>
             </Card>
           ) : (
             <div className="space-y-2">
               {filteredPosts.map((post) => {
-                const postPlatforms = (post.platforms || []).map((p) =>
-                  p.platform?.toLowerCase()
-                );
+                const postPlatforms = (post.platforms || []).map((p) => p.platform?.toLowerCase());
                 return (
                   <Card key={post._id} className="border-0 shadow-sm hover:shadow-md transition-shadow cursor-pointer" onClick={() => router.push(`/posts/${post._id}`)}>
                     <CardContent className="flex items-start gap-4 py-4">
-                      {/* Platform pills */}
                       <div className="flex flex-wrap gap-1 pt-0.5 shrink-0 max-w-[140px]">
                         {postPlatforms.length > 0 ? (
                           postPlatforms.slice(0, 3).map((platform, i) => (
-                            <span
-                              key={i}
-                              className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium text-white"
-                              style={{ backgroundColor: platformHexColors[platform || ""] || "#6b7280" }}
-                            >
+                            <span key={i} className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium text-white" style={{ backgroundColor: platformHexColors[platform || ""] || "#6b7280" }}>
                               {platformLabels[platform || ""] || platform}
                             </span>
                           ))
                         ) : (
-                          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium bg-gray-400 text-white">
-                            No platform
-                          </span>
-                        )}
-                        {postPlatforms.length > 3 && (
-                          <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
-                            +{postPlatforms.length - 3}
-                          </span>
+                          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium bg-gray-400 text-white">No platform</span>
                         )}
                       </div>
-
                       <div className="flex-1 min-w-0">
                         <p className="text-sm leading-relaxed line-clamp-2">{post.content}</p>
                         <p className="text-xs text-muted-foreground mt-1.5">
-                          {post.scheduledFor
-                            ? `Scheduled for ${formatDate(post.scheduledFor)}`
-                            : post.publishedAt
-                            ? `Published ${formatDate(post.publishedAt)}`
-                            : `Created ${formatDate(post.createdAt)}`}
+                          {post.scheduledFor ? `Scheduled for ${formatDate(post.scheduledFor)}` : post.publishedAt ? `Published ${formatDate(post.publishedAt)}` : `Created ${formatDate(post.createdAt)}`}
                         </p>
                       </div>
                       <div className="flex items-center gap-3 shrink-0">
-                        <Badge
-                          variant="secondary"
-                          className={`${statusStyles[post.status] || statusStyles.draft} border-0 font-medium capitalize`}
-                        >
+                        <Badge variant="secondary" className={`${statusStyles[post.status] || statusStyles.draft} border-0 font-medium capitalize`}>
                           {post.status}
                         </Badge>
                         <DropdownMenu>
@@ -433,18 +645,9 @@ export default function QueuePage() {
                             <DropdownMenuItem className="gap-2" onClick={(e) => { e.stopPropagation(); router.push(`/posts/${post._id}`); }}>
                               <Eye className="h-4 w-4" /> View details
                             </DropdownMenuItem>
-                            <DropdownMenuItem className="gap-2">
-                              <Copy className="h-4 w-4" /> Duplicate
-                            </DropdownMenuItem>
-                            {post.status === "failed" && (
-                              <DropdownMenuItem className="gap-2">
-                                <RotateCcw className="h-4 w-4" /> Retry
-                              </DropdownMenuItem>
-                            )}
-                            <DropdownMenuItem
-                              className="gap-2 text-destructive focus:text-destructive"
-                              onClick={(e) => { e.stopPropagation(); handleDelete(post._id); }}
-                            >
+                            <DropdownMenuItem className="gap-2"><Copy className="h-4 w-4" /> Duplicate</DropdownMenuItem>
+                            {post.status === "failed" && <DropdownMenuItem className="gap-2"><RotateCcw className="h-4 w-4" /> Retry</DropdownMenuItem>}
+                            <DropdownMenuItem className="gap-2 text-destructive focus:text-destructive" onClick={(e) => { e.stopPropagation(); handleDelete(post._id); }}>
                               <Trash2 className="h-4 w-4" /> Delete
                             </DropdownMenuItem>
                           </DropdownMenuContent>
@@ -458,7 +661,7 @@ export default function QueuePage() {
           )}
         </TabsContent>
 
-        {/* Queue slots tab */}
+        {/* ═══════ Queue Slots ═══════ */}
         <TabsContent value="queue" className="mt-4">
           <div className="space-y-3">
             <div className="flex items-start gap-3 p-4 rounded-lg bg-blue-500/5 border border-blue-500/10 mb-4">
@@ -494,15 +697,10 @@ export default function QueuePage() {
                   ) : (
                     <div className="flex flex-wrap gap-2">
                       {slots.map((slot) => (
-                        <div
-                          key={slot.index}
-                          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/50 group"
-                        >
+                        <div key={slot.index} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/50 group">
                           <GripVertical className="h-3.5 w-3.5 text-muted-foreground/50" />
                           <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-                          <span className="text-sm font-medium tabular-nums">
-                            {slot.time}
-                          </span>
+                          <span className="text-sm font-medium tabular-nums">{slot.time}</span>
                           <button
                             onClick={() => removeSlot(slot.index)}
                             className="ml-1 h-5 w-5 rounded-full flex items-center justify-center hover:bg-destructive/10 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"

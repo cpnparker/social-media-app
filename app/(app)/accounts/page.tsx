@@ -1,12 +1,15 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import {
   Plus,
   CheckCircle2,
   AlertCircle,
   RefreshCw,
   Loader2,
+  Link2,
+  Unlink,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -47,14 +50,23 @@ const platforms = [
 ];
 
 export default function AccountsPage() {
+  const customerCtx = useCustomerSafe();
+  const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccount[]>([]);
+  const [allLateAccounts, setAllLateAccounts] = useState<ConnectedAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState<string | null>(null);
+  const [linking, setLinking] = useState<string | null>(null);
+
+  // Track account IDs before connecting, so we can detect new ones
+  const preConnectIdsRef = useRef<Set<string>>(new Set());
 
   const fetchAccounts = useCallback(async () => {
     try {
-      const res = await fetch("/api/accounts");
+      // Scope accounts to customer-linked accounts when a customer is selected
+      const custParam = selectedCustomerId ? `?customerId=${selectedCustomerId}` : "";
+      const res = await fetch(`/api/accounts${custParam}`);
       const data = await res.json();
 
       // Set accounts from the /accounts endpoint
@@ -65,30 +77,91 @@ export default function AccountsPage() {
       if (data.profiles) {
         setProfiles(data.profiles);
       }
+
+      // Also fetch ALL Late accounts (unscoped) so we know what's available to link
+      if (selectedCustomerId) {
+        const allRes = await fetch("/api/accounts");
+        const allData = await allRes.json();
+        setAllLateAccounts(allData.accounts || []);
+      }
     } catch (err) {
       console.error("Failed to fetch accounts:", err);
       toast.error("Failed to load accounts");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedCustomerId]);
 
   useEffect(() => {
     fetchAccounts();
   }, [fetchAccounts]);
 
+  // Handle the ?connected=true OAuth callback — auto-link new account to customer
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("connected") === "true") {
-      toast.success("Account connected successfully!");
       window.history.replaceState({}, "", "/accounts");
-      fetchAccounts();
+
+      // Fetch ALL accounts to find the newly connected one
+      (async () => {
+        try {
+          const allRes = await fetch("/api/accounts");
+          const allData = await allRes.json();
+          const allAccounts: ConnectedAccount[] = allData.accounts || [];
+
+          // Find accounts that weren't in pre-connect snapshot
+          const newAccounts = allAccounts.filter(
+            (a) => !preConnectIdsRef.current.has(a._id)
+          );
+
+          if (newAccounts.length > 0 && selectedCustomerId) {
+            // Auto-link new accounts to the current customer
+            for (const acct of newAccounts) {
+              try {
+                await fetch("/api/customer-accounts", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    customerId: selectedCustomerId,
+                    lateAccountId: acct._id,
+                    platform: acct.platform,
+                    displayName: acct.displayName || acct.username || acct.platform,
+                    username: acct.username || null,
+                    avatarUrl: acct.avatarUrl || null,
+                  }),
+                });
+              } catch (e) {
+                console.error("Failed to auto-link account:", e);
+              }
+            }
+            toast.success(
+              `Account connected and linked to this customer!`
+            );
+          } else {
+            toast.success("Account connected successfully!");
+          }
+
+          // Refresh to show updated list
+          fetchAccounts();
+        } catch (err) {
+          console.error("Post-connect error:", err);
+          toast.success("Account connected! Refresh to see updates.");
+          fetchAccounts();
+        }
+      })();
     }
-  }, [fetchAccounts]);
+  }, [fetchAccounts, selectedCustomerId]);
 
   const handleConnect = async (platformSlug: string) => {
     setConnecting(platformSlug);
     try {
+      // Snapshot current account IDs before connecting
+      const preRes = await fetch("/api/accounts");
+      const preData = await preRes.json();
+      preConnectIdsRef.current = new Set(
+        (preData.accounts || []).map((a: any) => a._id)
+      );
+
       // Use the default profile
       const defaultProfile = profiles.find((p) => p.isDefault) || profiles[0];
       const profileId = defaultProfile?._id || "";
@@ -109,8 +182,69 @@ export default function AccountsPage() {
     }
   };
 
+  // Link an existing Late account to the current customer
+  const handleLinkAccount = async (account: ConnectedAccount) => {
+    if (!selectedCustomerId) return;
+    setLinking(account._id);
+    try {
+      const res = await fetch("/api/customer-accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customerId: selectedCustomerId,
+          lateAccountId: account._id,
+          platform: account.platform,
+          displayName: account.displayName || account.username || account.platform,
+          username: account.username || null,
+          avatarUrl: account.avatarUrl || null,
+        }),
+      });
+      if (res.ok) {
+        toast.success(`${account.displayName || account.platform} linked to customer`);
+        fetchAccounts();
+      } else {
+        const err = await res.json();
+        toast.error(err.error || "Failed to link account");
+      }
+    } catch (err) {
+      toast.error("Failed to link account");
+    } finally {
+      setLinking(null);
+    }
+  };
+
+  // Unlink an account from the current customer
+  const handleUnlinkAccount = async (account: ConnectedAccount) => {
+    if (!selectedCustomerId) return;
+    setLinking(account._id);
+    try {
+      const res = await fetch(
+        `/api/customer-accounts?customerId=${selectedCustomerId}&lateAccountId=${account._id}`,
+        { method: "DELETE" }
+      );
+      if (res.ok) {
+        toast.success(`Account unlinked from customer`);
+        fetchAccounts();
+      } else {
+        const err = await res.json();
+        toast.error(err.error || "Failed to unlink account");
+      }
+    } catch (err) {
+      toast.error("Failed to unlink account");
+    } finally {
+      setLinking(null);
+    }
+  };
+
   const connectedPlatforms = new Set(
     connectedAccounts.map((a) => a.platform?.toLowerCase())
+  );
+
+  // Compute unlinked accounts (available in Late but not linked to current customer)
+  const connectedIds = new Set(connectedAccounts.map((a) => a._id));
+  const unlinkableAccounts = useMemo(
+    () => allLateAccounts.filter((a) => !connectedIds.has(a._id)),
+    [allLateAccounts, connectedIds]
   );
 
   const getProfileName = (account: ConnectedAccount) => {
@@ -126,7 +260,9 @@ export default function AccountsPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Connected Accounts</h1>
           <p className="text-muted-foreground mt-1">
-            Connect your social media accounts to start publishing and managing content
+            {selectedCustomerId
+              ? "Social media accounts linked to this customer"
+              : "Connect your social media accounts to start publishing and managing content"}
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={fetchAccounts} className="gap-2">
@@ -135,12 +271,14 @@ export default function AccountsPage() {
         </Button>
       </div>
 
-      {/* Connected accounts */}
+      {/* Connected accounts for this customer */}
       <div>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Your accounts</h2>
+          <h2 className="text-lg font-semibold">
+            {selectedCustomerId ? "Customer\u2019s linked accounts" : "Your accounts"}
+          </h2>
           <Badge variant="secondary" className="font-normal">
-            {connectedAccounts.length} connected
+            {connectedAccounts.length} linked
           </Badge>
         </div>
 
@@ -157,6 +295,7 @@ export default function AccountsPage() {
                 (p) => p.slug === account.platform?.toLowerCase()
               );
               const profileName = getProfileName(account);
+              const isUnlinking = linking === account._id;
               return (
                 <Card key={account._id} className="border-0 shadow-sm">
                   <CardContent className="flex items-center gap-4 py-4">
@@ -182,6 +321,21 @@ export default function AccountsPage() {
                         {profileName && ` · ${profileName}`}
                       </p>
                     </div>
+                    {selectedCustomerId && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-muted-foreground hover:text-red-500 shrink-0"
+                        onClick={() => handleUnlinkAccount(account)}
+                        disabled={isUnlinking}
+                      >
+                        {isUnlinking ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Unlink className="h-4 w-4" />
+                        )}
+                      </Button>
+                    )}
                   </CardContent>
                 </Card>
               );
@@ -193,18 +347,79 @@ export default function AccountsPage() {
               <div className="h-14 w-14 rounded-full bg-muted flex items-center justify-center mb-4">
                 <Plus className="h-6 w-6 text-muted-foreground" />
               </div>
-              <h3 className="text-lg font-semibold mb-1">No accounts connected yet</h3>
+              <h3 className="text-lg font-semibold mb-1">No accounts linked yet</h3>
               <p className="text-sm text-muted-foreground max-w-sm">
-                Connect your first social media account below to start scheduling and publishing content.
+                {selectedCustomerId
+                  ? "Link existing social accounts below, or connect a new platform."
+                  : "Connect your first social media account below to start scheduling and publishing content."}
               </p>
             </CardContent>
           </Card>
         )}
       </div>
 
-      {/* Available platforms */}
+      {/* Available (unlinked) Late accounts for this customer */}
+      {selectedCustomerId && unlinkableAccounts.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold">Available accounts to link</h2>
+            <Badge variant="outline" className="font-normal">
+              {unlinkableAccounts.length} available
+            </Badge>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {unlinkableAccounts.map((account) => {
+              const platformInfo = platforms.find(
+                (p) => p.slug === account.platform?.toLowerCase()
+              );
+              const isLinking = linking === account._id;
+              return (
+                <Card key={account._id} className="border-0 shadow-sm border-dashed">
+                  <CardContent className="flex items-center gap-4 py-4">
+                    <Avatar className="h-11 w-11 opacity-60">
+                      <AvatarImage src={account.avatarUrl} />
+                      <AvatarFallback
+                        className={`${platformInfo?.bgColor || "bg-muted"} text-sm font-bold`}
+                        style={{ color: platformInfo?.color }}
+                      >
+                        {platformInfo?.icon || "?"}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold truncate">
+                        {account.displayName || account.username || "Account"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {platformInfo?.name || account.platform}
+                        {account.username && ` · @${account.username}`}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() => handleLinkAccount(account)}
+                      disabled={isLinking}
+                      className="gap-1.5 bg-blue-500 hover:bg-blue-600 text-white shrink-0"
+                    >
+                      {isLinking ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <>
+                          <Link2 className="h-3.5 w-3.5" />
+                          Link
+                        </>
+                      )}
+                    </Button>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Available platforms — connect new */}
       <div>
-        <h2 className="text-lg font-semibold mb-4">Available platforms</h2>
+        <h2 className="text-lg font-semibold mb-4">Connect a new platform</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {platforms.map((platform) => {
             const isConnected = connectedPlatforms.has(platform.slug);
@@ -233,7 +448,7 @@ export default function AccountsPage() {
                     </div>
                     {isConnected && accountCount > 0 && (
                       <p className="text-xs text-muted-foreground">
-                        {accountCount} {accountCount === 1 ? "account" : "accounts"} connected
+                        {accountCount} {accountCount === 1 ? "account" : "accounts"} linked
                       </p>
                     )}
                   </div>

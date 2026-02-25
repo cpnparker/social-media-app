@@ -301,13 +301,38 @@ export default function DashboardPage() {
   const fetchDashboardData = useCallback(async () => {
     setLoading(true);
     try {
+      // Step 1: If customer selected, get their linked accounts for scoping
+      let accountIdsParam = "";
+      if (selectedCustomerId) {
+        try {
+          const acctRes = await fetch(`/api/customer-accounts?customerId=${selectedCustomerId}`);
+          if (acctRes.ok) {
+            const acctData = await acctRes.json();
+            const ids = (acctData.accounts || []).map((a: any) => a.lateAccountId).filter(Boolean);
+            if (ids.length > 0) {
+              accountIdsParam = `&accountIds=${ids.join(",")}`;
+            } else {
+              // Customer has no linked accounts — show nothing, not everything
+              setAnalytics(null);
+              setAllPosts([]);
+              setRecentPosts([]);
+              setScheduledPosts([]);
+              setLoading(false);
+              return;
+            }
+          }
+        } catch (e) {
+          console.error("Failed to fetch customer accounts:", e);
+        }
+      }
+
       const custParam = selectedCustomerId ? `&customerId=${selectedCustomerId}` : "";
       const [analyticsRes, allPostsRes, recentPostsRes, scheduledRes, contentRes, ideasRes] =
         await Promise.all([
-          fetch("/api/analytics?period=30"),
-          fetch("/api/posts?limit=100"),
-          fetch("/api/posts?limit=5"),
-          fetch("/api/posts?status=scheduled&limit=5"),
+          fetch(`/api/analytics?period=30${accountIdsParam}`),
+          fetch(`/api/posts?limit=100${accountIdsParam}`),
+          fetch(`/api/posts?limit=5${accountIdsParam}`),
+          fetch(`/api/posts?status=scheduled&limit=5${accountIdsParam}`),
           fetch(`/api/content-objects?limit=20${custParam}`),
           fetch(`/api/ideas?limit=10&sortBy=score${custParam}`),
         ]);
