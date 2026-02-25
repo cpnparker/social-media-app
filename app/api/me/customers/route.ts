@@ -1,19 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
-import { auth } from "@/lib/auth";
-import { isTCEStaff, getAllowedClientIds } from "@/lib/permissions";
+import { requireAuth, isTCEStaff, getAllowedClientIds } from "@/lib/permissions";
 
 // GET /api/me/customers — returns customers the authenticated user can access
-// Uses role_user from the session (not workspace_members.role)
+// Uses role_user from the DB (not just JWT) to ensure fresh role data
 export async function GET() {
   try {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const userId = parseInt(session.user.id, 10);
-    const role = session.user.role || "none";
+    const authResult = await requireAuth();
+    if (authResult instanceof NextResponse) return authResult;
+    const { userId, role } = authResult;
     const canViewAll = isTCEStaff(role);
 
     let customerList: any[] = [];

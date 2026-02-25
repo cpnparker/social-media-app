@@ -112,6 +112,23 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       if (user) {
         token.role = (user as any).role || token.role || "none";
       }
+      // Always refresh role from DB to keep JWT in sync with DB changes
+      // (handles stale tokens from before role was added to JWT)
+      if (token.sub && !user) {
+        try {
+          const { data: freshUser } = await supabase
+            .from("users")
+            .select("role_user")
+            .eq("id_user", parseInt(token.sub, 10))
+            .is("date_deleted", null)
+            .single();
+          if (freshUser?.role_user) {
+            token.role = freshUser.role_user;
+          }
+        } catch {
+          // Keep existing role on error
+        }
+      }
       return token;
     },
     async session({ session, token }) {

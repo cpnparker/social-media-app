@@ -16,6 +16,7 @@ export function isClientRole(role: string): boolean {
 
 // ── Core auth check ──
 // Returns the authenticated user's id and role, or a 401 response.
+// Always verifies role from the database to handle stale JWT tokens.
 export async function requireAuth(): Promise<
   { userId: number; role: string } | NextResponse
 > {
@@ -23,10 +24,26 @@ export async function requireAuth(): Promise<
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  return {
-    userId: parseInt(session.user.id, 10),
-    role: (session.user as any).role || "none",
-  };
+
+  const userId = parseInt(session.user.id, 10);
+  let role = (session.user as any).role || "none";
+
+  // Always refresh role from DB to handle stale JWT tokens
+  try {
+    const { data: dbUser } = await supabase
+      .from("users")
+      .select("role_user")
+      .eq("id_user", userId)
+      .is("date_deleted", null)
+      .single();
+    if (dbUser?.role_user) {
+      role = dbUser.role_user;
+    }
+  } catch (err) {
+    // Keep session role on DB error
+  }
+
+  return { userId, role };
 }
 
 // ── Client access check ──
