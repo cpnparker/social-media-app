@@ -3,7 +3,6 @@
 import { useState, Suspense } from "react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopBar } from "@/components/layout/TopBar";
-import { TeamProvider } from "@/lib/contexts/TeamContext";
 import { CustomerProvider } from "@/lib/contexts/CustomerContext";
 import { WorkspaceProvider } from "@/lib/contexts/WorkspaceContext";
 
@@ -13,7 +12,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <WorkspaceProvider>
     <CustomerProvider>
-    <TeamProvider>
     <div className="flex h-screen overflow-hidden">
       {/* Mobile overlay */}
       {sidebarOpen && (
@@ -44,7 +42,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </main>
       </div>
     </div>
-    </TeamProvider>
     </CustomerProvider>
     </WorkspaceProvider>
   );

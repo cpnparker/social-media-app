@@ -31,7 +31,20 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
       }
 
-      // Get distinct distribution IDs for this client from social posts
+      // Collect assigned Late account IDs from BOTH sources:
+      const assignedIds = new Set<string>();
+
+      // Source 1: customer_accounts table (modern direct linkages)
+      const { data: directLinks } = await supabase
+        .from("customer_accounts")
+        .select("late_account_id")
+        .eq("customer_id", clientId);
+
+      for (const link of directLinks || []) {
+        if (link.late_account_id) assignedIds.add(String(link.late_account_id));
+      }
+
+      // Source 2: Legacy social → posting_distributions linkage
       const { data: socialLinks } = await supabase
         .from("social")
         .select("id_distribution")
@@ -47,10 +60,14 @@ export async function GET(req: NextRequest) {
           .select("id_distribution, id_resource")
           .in("id_distribution", distIds);
 
-        const assignedIds = new Set(
-          (dists || []).map((d: any) => String(d.id_resource || d.id_distribution))
-        );
+        for (const d of dists || []) {
+          const id = String(d.id_resource || d.id_distribution);
+          assignedIds.add(id);
+        }
+      }
 
+      // Filter Late API accounts to only those assigned to this customer
+      if (assignedIds.size > 0) {
         accounts = accounts.filter((a: any) => assignedIds.has(a._id || a.id));
       } else {
         accounts = [];

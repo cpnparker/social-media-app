@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   Bell,
@@ -8,12 +9,12 @@ import {
   Moon,
   Monitor,
   Settings,
-  Users,
   LogOut,
   Building2,
   Globe,
   Check,
   ChevronDown,
+  Loader2,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
@@ -34,8 +35,12 @@ interface TopBarProps {
 }
 
 export function TopBar({ onMenuClick }: TopBarProps) {
-  const { setTheme } = useTheme();
+  const { setTheme, resolvedTheme } = useTheme();
   const customerCtx = useCustomerSafe();
+
+  // Prevent hydration mismatch — only render theme-dependent UI after mount
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const customers = customerCtx?.customers ?? [];
   const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
@@ -48,7 +53,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
   const isCustomerMode = selectedCustomerId !== null;
 
   return (
-    <header className="sticky top-0 z-30 h-14 border-b bg-background/80 backdrop-blur-xl flex items-center justify-between px-4 sm:px-6 gap-4">
+    <header className="sticky top-0 z-30 h-14 border-b bg-background/80 backdrop-blur-xl flex items-center px-4 sm:px-6 gap-2">
       {/* Mobile menu button */}
       <Button
         variant="ghost"
@@ -59,16 +64,21 @@ export function TopBar({ onMenuClick }: TopBarProps) {
         <Menu className="h-5 w-5" />
       </Button>
 
-      {/* Spacer */}
-      <div className="flex-1" />
+      {/* Spacer pushes everything to the right */}
+      <div className="flex-1 min-w-0" />
 
-      <div className="flex items-center gap-1.5">
-        {/* Customer Selector */}
-        {!loading && customers.length > 0 && (
+      {/* Right-side items — fixed layout that doesn't shift */}
+      <div className="flex items-center gap-1.5 shrink-0">
+        {/* Customer Selector — reserves space even while loading */}
+        {loading ? (
+          <div className="flex items-center gap-2 px-3 py-1.5 h-9 mr-1">
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          </div>
+        ) : customers.length > 0 ? (
           <>
             {isSingleCustomer ? (
               /* Single customer — static label, no dropdown */
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/50 mr-1">
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/50 h-9 mr-1">
                 <Building2 className="h-4 w-4 text-blue-500 shrink-0" />
                 <span className="text-sm font-medium truncate max-w-[180px]">
                   {displayName}
@@ -133,14 +143,21 @@ export function TopBar({ onMenuClick }: TopBarProps) {
               </DropdownMenu>
             )}
           </>
-        )}
+        ) : null}
 
-        {/* Theme toggle */}
+        {/* Theme toggle — only renders after mount to prevent hydration flash */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="relative h-9 w-9">
-              <Sun className="h-[18px] w-[18px] text-muted-foreground rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
-              <Moon className="absolute h-[18px] w-[18px] text-muted-foreground rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+            <Button variant="ghost" size="icon" className="h-9 w-9">
+              {mounted ? (
+                resolvedTheme === "dark" ? (
+                  <Moon className="h-[18px] w-[18px] text-muted-foreground" />
+                ) : (
+                  <Sun className="h-[18px] w-[18px] text-muted-foreground" />
+                )
+              ) : (
+                <div className="h-[18px] w-[18px]" />
+              )}
               <span className="sr-only">Toggle theme</span>
             </Button>
           </DropdownMenuTrigger>
@@ -170,9 +187,9 @@ export function TopBar({ onMenuClick }: TopBarProps) {
         </DropdownMenu>
 
         {/* Notifications */}
-        <Button variant="ghost" size="icon" className="relative h-9 w-9">
+        <Button variant="ghost" size="icon" className="h-9 w-9">
           <Bell className="h-[18px] w-[18px] text-muted-foreground" />
-          <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-blue-500" />
+          <span className="absolute top-2.5 right-2.5 h-2 w-2 rounded-full bg-blue-500" />
         </Button>
 
         {/* Profile avatar dropdown */}
@@ -181,7 +198,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
             <Button
               variant="ghost"
               size="icon"
-              className="relative h-9 w-9 rounded-full"
+              className="h-9 w-9 rounded-full"
             >
               <Avatar className="h-8 w-8">
                 <AvatarImage src="" />
@@ -203,12 +220,6 @@ export function TopBar({ onMenuClick }: TopBarProps) {
               <Link href="/settings/workspace" className="gap-2">
                 <Settings className="h-4 w-4" />
                 Settings
-              </Link>
-            </DropdownMenuItem>
-            <DropdownMenuItem asChild>
-              <Link href="/settings/team" className="gap-2">
-                <Users className="h-4 w-4" />
-                Team members
               </Link>
             </DropdownMenuItem>
             <DropdownMenuSeparator />

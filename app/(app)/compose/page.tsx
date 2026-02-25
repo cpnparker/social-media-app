@@ -45,6 +45,7 @@ import { toast } from "sonner";
 import { useSearchParams, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import LivePreviewPanel from "@/components/compose/LivePreviewPanel";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 
 interface Account {
   _id: string;
@@ -250,6 +251,8 @@ function PublishingOverlay({
 function ComposePageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const customerCtx = useCustomerSafe();
+  const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
   const [content, setContent] = useState("");
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccounts, setSelectedAccounts] = useState<string[]>([]);
@@ -388,7 +391,9 @@ function ComposePageInner() {
 
   const fetchAccounts = useCallback(async () => {
     try {
-      const res = await fetch("/api/accounts");
+      // Scope accounts to customer-linked accounts when a customer is selected
+      const custParam = selectedCustomerId ? `?customerId=${selectedCustomerId}` : "";
+      const res = await fetch(`/api/accounts${custParam}`);
       const data = await res.json();
       if (data.accounts) {
         setAccounts(
@@ -408,7 +413,7 @@ function ComposePageInner() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedCustomerId]);
 
   useEffect(() => {
     fetchAccounts();

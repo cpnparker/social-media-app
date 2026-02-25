@@ -27,7 +27,32 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Get distinct distribution channels used for this client's social posts
+    // Collect accounts from BOTH sources:
+    const accountsMap = new Map<string, any>(); // key by lateAccountId to deduplicate
+
+    // Source 1: customer_accounts table (modern direct linkages)
+    const { data: directLinks } = await supabase
+      .from("customer_accounts")
+      .select("late_account_id, platform, display_name, username, avatar_url")
+      .eq("customer_id", clientId);
+
+    for (const link of directLinks || []) {
+      if (link.late_account_id) {
+        accountsMap.set(String(link.late_account_id), {
+          id: `ca-${link.late_account_id}`,
+          customerId: clientId,
+          lateAccountId: String(link.late_account_id),
+          platform: link.platform,
+          displayName: link.display_name || link.platform,
+          username: link.username || null,
+          avatarUrl: link.avatar_url || null,
+          type: "direct",
+          isActive: true,
+        });
+      }
+    }
+
+    // Source 2: Legacy social → posting_distributions linkage
     const { data: socialLinks, error: socialErr } = await supabase
       .from("social")
       .select("id_distribution")
@@ -37,32 +62,36 @@ export async function GET(req: NextRequest) {
 
     if (socialErr) throw socialErr;
 
-    // Deduplicate distribution IDs
     const distIds = Array.from(new Set((socialLinks || []).map((r) => r.id_distribution)));
 
-    if (distIds.length === 0) {
-      return NextResponse.json({ accounts: [] });
+    if (distIds.length > 0) {
+      const { data: distributions, error: distErr } = await supabase
+        .from("posting_distributions")
+        .select("id_distribution, network, name_resource, type_distribution, flag_active, id_resource")
+        .in("id_distribution", distIds);
+
+      if (distErr) throw distErr;
+
+      for (const d of distributions || []) {
+        const lateId = d.id_resource ? String(d.id_resource) : String(d.id_distribution);
+        // Only add if not already present from customer_accounts
+        if (!accountsMap.has(lateId)) {
+          accountsMap.set(lateId, {
+            id: String(d.id_distribution),
+            customerId: clientId,
+            lateAccountId: lateId,
+            platform: d.network,
+            displayName: d.name_resource || d.network,
+            username: null,
+            avatarUrl: null,
+            type: d.type_distribution,
+            isActive: d.flag_active === 1,
+          });
+        }
+      }
     }
 
-    // Fetch full distribution details
-    const { data: distributions, error: distErr } = await supabase
-      .from("posting_distributions")
-      .select("id_distribution, network, name_resource, type_distribution, flag_active, id_resource")
-      .in("id_distribution", distIds);
-
-    if (distErr) throw distErr;
-
-    const accounts = (distributions || []).map((d) => ({
-      id: String(d.id_distribution),
-      customerId: clientId,
-      lateAccountId: d.id_resource ? String(d.id_resource) : String(d.id_distribution),
-      platform: d.network,
-      displayName: d.name_resource || d.network,
-      username: null,
-      avatarUrl: null,
-      type: d.type_distribution,
-      isActive: d.flag_active === 1,
-    }));
+    const accounts = Array.from(accountsMap.values());
 
     return NextResponse.json({ accounts });
   } catch (error: any) {

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import {
   CalendarDays,
   Loader2,
@@ -66,6 +67,8 @@ function formatTime(date: Date): string {
 
 export default function EventsPage() {
   const router = useRouter();
+  const customerCtx = useCustomerSafe();
+  const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [range, setRange] = useState(30);
@@ -73,10 +76,28 @@ export default function EventsPage() {
   const fetchEvents = useCallback(async () => {
     setLoading(true);
     try {
+      // If customer selected, get their linked accounts for scoping posts
+      let accountIdsParam = "";
+      const custParam = selectedCustomerId ? `&customerId=${selectedCustomerId}` : "";
+      if (selectedCustomerId) {
+        try {
+          const acctRes = await fetch(`/api/customer-accounts?customerId=${selectedCustomerId}`);
+          if (acctRes.ok) {
+            const acctData = await acctRes.json();
+            const ids = (acctData.accounts || []).map((a: any) => a.lateAccountId).filter(Boolean);
+            if (ids.length > 0) {
+              accountIdsParam = `&accountIds=${ids.join(",")}`;
+            }
+          }
+        } catch (e) {
+          console.error("Failed to fetch customer accounts:", e);
+        }
+      }
+
       const [contentRes, postsRes, tasksRes] = await Promise.all([
-        fetch("/api/content-objects?limit=500"),
-        fetch("/api/posts?limit=500"),
-        fetch("/api/production-tasks?limit=500"),
+        fetch(`/api/content-objects?limit=500${custParam}`),
+        fetch(`/api/posts?limit=500${accountIdsParam}`),
+        fetch(`/api/production-tasks?limit=500${custParam}`),
       ]);
 
       const contentData = await contentRes.json();
@@ -170,7 +191,7 @@ export default function EventsPage() {
     } finally {
       setLoading(false);
     }
-  }, [range]);
+  }, [range, selectedCustomerId]);
 
   useEffect(() => {
     fetchEvents();

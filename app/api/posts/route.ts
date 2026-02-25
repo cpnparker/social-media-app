@@ -12,12 +12,26 @@ export async function GET(req: NextRequest) {
   const status = searchParams.get("status");
   const page = searchParams.get("page") || "1";
   const limit = searchParams.get("limit") || "20";
+  const accountIds = searchParams.get("accountIds"); // comma-separated Late account IDs
 
   try {
     let endpoint = `/posts?page=${page}&limit=${limit}`;
     if (status) endpoint += `&status=${status}`;
 
     const data = await lateApiFetch(endpoint);
+
+    // Filter posts by account IDs if specified (scopes to customer-linked accounts)
+    if (accountIds && data.posts) {
+      const ids = accountIds.split(",").map((id: string) => id.trim());
+      data.posts = data.posts.filter((p: any) => {
+        const raw = p.accountId;
+        const postAccountId = (typeof raw === "object" && raw !== null) ? raw._id : raw;
+        return (postAccountId && ids.includes(postAccountId)) ||
+               (p.account?._id && ids.includes(p.account._id)) ||
+               (p.account?.id && ids.includes(p.account.id));
+      });
+    }
+
     return NextResponse.json(data);
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

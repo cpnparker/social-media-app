@@ -5,17 +5,24 @@ import { lateApiFetch } from "@/lib/late";
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const accountId = searchParams.get("accountId"); // optional: filter to single account
+  const accountIdsFilter = searchParams.get("accountIds"); // optional: comma-separated account IDs for customer scoping
 
   try {
     // Fetch all accounts
     const accountsData = await lateApiFetch("/accounts");
-    const accounts = (accountsData.accounts || []).map((a: any) => ({
+    let accounts = (accountsData.accounts || []).map((a: any) => ({
       _id: a._id,
       platform: a.platform,
       displayName: a.displayName,
       username: a.username,
       avatarUrl: a.avatarUrl,
     }));
+
+    // Filter accounts to customer-linked ones if accountIds specified
+    if (accountIdsFilter) {
+      const allowedIds = accountIdsFilter.split(",").map((id: string) => id.trim());
+      accounts = accounts.filter((a: any) => allowedIds.includes(a._id));
+    }
 
     // Fetch analytics for the maximum available time range (365 days)
     const endDate = new Date().toISOString().split("T")[0];
@@ -29,7 +36,19 @@ export async function GET(req: NextRequest) {
 
     let posts = raw.posts || [];
 
-    // Filter by account if specified
+    // Filter by customer-scoped account IDs if specified
+    if (accountIdsFilter) {
+      const allowedIds = accountIdsFilter.split(",").map((id: string) => id.trim());
+      posts = posts.filter((p: any) => {
+        const rawId = p.accountId;
+        const postAccountId = (typeof rawId === "object" && rawId !== null) ? rawId._id : rawId;
+        return (postAccountId && allowedIds.includes(postAccountId)) ||
+               (p.account?._id && allowedIds.includes(p.account._id)) ||
+               (p.account?.id && allowedIds.includes(p.account.id));
+      });
+    }
+
+    // Filter by single account if specified
     if (accountId) {
       // Resolve the account's platform for fallback matching
       const targetAcct = accounts.find((a: any) => a._id === accountId);

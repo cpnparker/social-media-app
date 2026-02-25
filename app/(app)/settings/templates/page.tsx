@@ -10,96 +10,122 @@ import {
   Pencil,
   Check,
   X,
+  UserCheck,
+  Copy,
+  PlusCircle,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 
-const contentTypes = [
-  "article",
-  "video",
-  "graphic",
-  "thread",
-  "newsletter",
-  "podcast",
-  "other",
-];
-
-const roles = ["writer", "editor", "producer", "designer", "reviewer", "other"];
-
-const roleColors: Record<string, string> = {
-  writer: "bg-blue-500/10 text-blue-500",
-  editor: "bg-amber-500/10 text-amber-500",
-  producer: "bg-green-500/10 text-green-500",
-  designer: "bg-pink-500/10 text-pink-500",
-  reviewer: "bg-violet-500/10 text-violet-500",
-  other: "bg-gray-500/10 text-gray-500",
-};
+interface ContentType {
+  id: number;
+  key: string;
+  name: string;
+  isActive: boolean;
+}
 
 interface Template {
   id: string;
+  typeId: number;
   title: string;
   description: string | null;
-  defaultRole: string;
   sortOrder: number;
-  contentType: string;
+  contentUnits: number;
+  unitsOverride: number;
+  defaultAdded: boolean;
+  canManuallyAdd: boolean;
+  assignedToAccountManager: boolean;
 }
 
 export default function TemplatesSettingsPage() {
-  const [activeType, setActiveType] = useState("article");
+  const [contentTypes, setContentTypes] = useState<ContentType[]>([]);
+  const [activeTypeId, setActiveTypeId] = useState<number | null>(null);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingTemplates, setLoadingTemplates] = useState(false);
 
   // New template form
   const [newTitle, setNewTitle] = useState("");
-  const [newRole, setNewRole] = useState("other");
+  const [newCU, setNewCU] = useState("");
+  const [newDefaultAdded, setNewDefaultAdded] = useState(true);
+  const [newCanAdd, setNewCanAdd] = useState(false);
+  const [newAM, setNewAM] = useState(false);
   const [adding, setAdding] = useState(false);
 
   // Edit state
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
-  const [editRole, setEditRole] = useState("");
+  const [editCU, setEditCU] = useState("");
+  const [editDefaultAdded, setEditDefaultAdded] = useState(false);
+  const [editCanAdd, setEditCanAdd] = useState(false);
+  const [editAM, setEditAM] = useState(false);
 
   // Drag state
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
 
+  // Fetch content types
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/content-types");
+        const data = await res.json();
+        const types: ContentType[] = data.contentTypes || [];
+        setContentTypes(types);
+        const firstActive = types.find((t) => t.isActive);
+        if (firstActive) setActiveTypeId(firstActive.id);
+      } catch (err) {
+        console.error("Failed to fetch content types:", err);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
   const fetchTemplates = useCallback(async () => {
-    setLoading(true);
+    if (activeTypeId === null) return;
+    setLoadingTemplates(true);
     try {
-      const res = await fetch(`/api/task-templates?contentType=${activeType}`);
+      const res = await fetch(`/api/task-templates?typeId=${activeTypeId}`);
       const data = await res.json();
       setTemplates(data.templates || []);
     } catch (err) {
       console.error("Failed to fetch templates:", err);
     } finally {
-      setLoading(false);
+      setLoadingTemplates(false);
     }
-  }, [activeType]);
+  }, [activeTypeId]);
 
   useEffect(() => {
     fetchTemplates();
   }, [fetchTemplates]);
 
   const addTemplate = async () => {
-    if (!newTitle.trim()) return;
+    if (!newTitle.trim() || activeTypeId === null) return;
     setAdding(true);
     try {
       const res = await fetch("/api/task-templates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contentType: activeType,
+          typeId: activeTypeId,
           title: newTitle.trim(),
-          defaultRole: newRole,
+          contentUnits: parseFloat(newCU) || 0,
+          defaultAdded: newDefaultAdded,
+          canManuallyAdd: newCanAdd,
+          assignedToAccountManager: newAM,
         }),
       });
       const data = await res.json();
       if (data.template) {
         setTemplates((prev) => [...prev, data.template]);
         setNewTitle("");
-        setNewRole("other");
+        setNewCU("");
+        setNewDefaultAdded(true);
+        setNewCanAdd(false);
+        setNewAM(false);
       }
     } catch (err) {
       console.error("Failed to add template:", err);
@@ -120,7 +146,10 @@ export default function TemplatesSettingsPage() {
   const startEdit = (template: Template) => {
     setEditingId(template.id);
     setEditTitle(template.title);
-    setEditRole(template.defaultRole);
+    setEditCU(template.contentUnits.toFixed(2));
+    setEditDefaultAdded(template.defaultAdded);
+    setEditCanAdd(template.canManuallyAdd);
+    setEditAM(template.assignedToAccountManager);
   };
 
   const saveEdit = async () => {
@@ -129,7 +158,13 @@ export default function TemplatesSettingsPage() {
       const res = await fetch(`/api/task-templates/${editingId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: editTitle.trim(), defaultRole: editRole }),
+        body: JSON.stringify({
+          title: editTitle.trim(),
+          contentUnits: parseFloat(editCU) || 0,
+          defaultAdded: editDefaultAdded,
+          canManuallyAdd: editCanAdd,
+          assignedToAccountManager: editAM,
+        }),
       });
       const data = await res.json();
       if (data.template) {
@@ -164,7 +199,6 @@ export default function TemplatesSettingsPage() {
     dragItem.current = null;
     dragOverItem.current = null;
 
-    // Save new order
     try {
       await fetch("/api/task-templates/reorder", {
         method: "POST",
@@ -173,35 +207,46 @@ export default function TemplatesSettingsPage() {
       });
     } catch (err) {
       console.error("Failed to reorder:", err);
-      fetchTemplates(); // Revert on failure
+      fetchTemplates();
     }
   };
 
+  const activeTypes = contentTypes.filter((t) => t.isActive);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="space-y-6 max-w-3xl">
       <p className="text-sm text-muted-foreground">
-        Define production steps for each content type. Tasks are auto-created when commissioning ideas.
+        Define production steps for each content type. Tasks are auto-created
+        when commissioning content.
       </p>
 
       {/* Content Type Tabs */}
       <div className="flex gap-1 bg-muted rounded-lg p-1 overflow-x-auto">
-        {contentTypes.map((type) => (
+        {activeTypes.map((type) => (
           <button
-            key={type}
-            onClick={() => setActiveType(type)}
+            key={type.id}
+            onClick={() => setActiveTypeId(type.id)}
             className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap ${
-              activeType === type
+              activeTypeId === type.id
                 ? "bg-background text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            {type.charAt(0).toUpperCase() + type.slice(1)}
+            {type.name}
           </button>
         ))}
       </div>
 
       {/* Templates List */}
-      {loading ? (
+      {loadingTemplates ? (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
@@ -211,9 +256,11 @@ export default function TemplatesSettingsPage() {
             <Card className="border-0 shadow-sm">
               <CardContent className="flex flex-col items-center justify-center py-12 text-center">
                 <ListChecks className="h-10 w-10 text-muted-foreground/40 mb-3" />
-                <p className="text-sm font-medium mb-1">No templates for {activeType}</p>
+                <p className="text-sm font-medium mb-1">
+                  No templates for this content type
+                </p>
                 <p className="text-xs text-muted-foreground">
-                  Add production steps to auto-create tasks when commissioning ideas.
+                  Add production steps to auto-create tasks when commissioning.
                 </p>
               </CardContent>
             </Card>
@@ -230,18 +277,15 @@ export default function TemplatesSettingsPage() {
               onDragOver={(e) => e.preventDefault()}
             >
               <CardContent className="p-3 flex items-center gap-3">
-                {/* Drag handle */}
                 <div className="cursor-grab active:cursor-grabbing text-muted-foreground/50 hover:text-muted-foreground">
                   <GripVertical className="h-4 w-4" />
                 </div>
 
-                {/* Step number */}
                 <div className="flex items-center justify-center h-6 w-6 rounded-full bg-muted text-xs font-medium shrink-0">
                   {index + 1}
                 </div>
 
                 {editingId === template.id ? (
-                  /* Edit mode */
                   <>
                     <Input
                       value={editTitle}
@@ -253,17 +297,42 @@ export default function TemplatesSettingsPage() {
                       }}
                       autoFocus
                     />
-                    <select
-                      value={editRole}
-                      onChange={(e) => setEditRole(e.target.value)}
-                      className="rounded border bg-background px-2 py-1 text-xs w-24"
-                    >
-                      {roles.map((r) => (
-                        <option key={r} value={r}>
-                          {r.charAt(0).toUpperCase() + r.slice(1)}
-                        </option>
-                      ))}
-                    </select>
+                    <Input
+                      type="number"
+                      step="0.05"
+                      min="0"
+                      value={editCU}
+                      onChange={(e) => setEditCU(e.target.value)}
+                      className="w-20 h-8 text-sm text-right"
+                      placeholder="CU"
+                    />
+                    <label className="flex items-center gap-1 text-[11px] text-muted-foreground cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editDefaultAdded}
+                        onChange={(e) => setEditDefaultAdded(e.target.checked)}
+                        className="rounded"
+                      />
+                      Default
+                    </label>
+                    <label className="flex items-center gap-1 text-[11px] text-muted-foreground cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editCanAdd}
+                        onChange={(e) => setEditCanAdd(e.target.checked)}
+                        className="rounded"
+                      />
+                      Manual
+                    </label>
+                    <label className="flex items-center gap-1 text-[11px] text-muted-foreground cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editAM}
+                        onChange={(e) => setEditAM(e.target.checked)}
+                        className="rounded"
+                      />
+                      AM
+                    </label>
                     <button
                       onClick={saveEdit}
                       className="text-green-500 hover:text-green-600"
@@ -278,15 +347,40 @@ export default function TemplatesSettingsPage() {
                     </button>
                   </>
                 ) : (
-                  /* View mode */
                   <>
-                    <span className="text-sm flex-1 truncate">{template.title}</span>
-                    <Badge
-                      variant="secondary"
-                      className={`${roleColors[template.defaultRole] || roleColors.other} border-0 text-[10px] capitalize shrink-0`}
-                    >
-                      {template.defaultRole}
-                    </Badge>
+                    <span className="text-sm flex-1 truncate">
+                      {template.title}
+                    </span>
+                    <span className="text-xs font-mono text-muted-foreground shrink-0">
+                      {template.contentUnits.toFixed(2)} CU
+                    </span>
+                    {template.defaultAdded && (
+                      <Badge
+                        variant="secondary"
+                        className="border-0 bg-green-500/10 text-green-600 text-[10px] gap-0.5 shrink-0"
+                      >
+                        <Copy className="h-3 w-3" />
+                        Default
+                      </Badge>
+                    )}
+                    {template.canManuallyAdd && (
+                      <Badge
+                        variant="secondary"
+                        className="border-0 bg-blue-500/10 text-blue-600 text-[10px] gap-0.5 shrink-0"
+                      >
+                        <PlusCircle className="h-3 w-3" />
+                        Manual
+                      </Badge>
+                    )}
+                    {template.assignedToAccountManager && (
+                      <Badge
+                        variant="secondary"
+                        className="border-0 bg-violet-500/10 text-violet-600 text-[10px] gap-0.5 shrink-0"
+                      >
+                        <UserCheck className="h-3 w-3" />
+                        AM
+                      </Badge>
+                    )}
                     <button
                       onClick={() => startEdit(template)}
                       className="text-muted-foreground hover:text-foreground"
@@ -321,17 +415,42 @@ export default function TemplatesSettingsPage() {
                     if (e.key === "Enter") addTemplate();
                   }}
                 />
-                <select
-                  value={newRole}
-                  onChange={(e) => setNewRole(e.target.value)}
-                  className="rounded border bg-background px-2 py-1 text-xs w-24"
-                >
-                  {roles.map((r) => (
-                    <option key={r} value={r}>
-                      {r.charAt(0).toUpperCase() + r.slice(1)}
-                    </option>
-                  ))}
-                </select>
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  value={newCU}
+                  onChange={(e) => setNewCU(e.target.value)}
+                  placeholder="CU"
+                  className="w-16 h-8 text-sm text-right"
+                />
+                <label className="flex items-center gap-1 text-[11px] text-muted-foreground cursor-pointer whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={newDefaultAdded}
+                    onChange={(e) => setNewDefaultAdded(e.target.checked)}
+                    className="rounded"
+                  />
+                  Default
+                </label>
+                <label className="flex items-center gap-1 text-[11px] text-muted-foreground cursor-pointer whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={newCanAdd}
+                    onChange={(e) => setNewCanAdd(e.target.checked)}
+                    className="rounded"
+                  />
+                  Manual
+                </label>
+                <label className="flex items-center gap-1 text-[11px] text-muted-foreground cursor-pointer whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={newAM}
+                    onChange={(e) => setNewAM(e.target.checked)}
+                    className="rounded"
+                  />
+                  AM
+                </label>
                 <Button
                   size="sm"
                   variant="outline"
