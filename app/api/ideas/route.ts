@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { requireAuth, scopeQueryToClients, canAccessClient } from "@/lib/permissions";
 
 // GET /api/ideas — list ideas
 export async function GET(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
+
   const { searchParams } = new URL(req.url);
   const status = searchParams.get("status");
   const customerId = searchParams.get("customerId");
@@ -10,7 +15,6 @@ export async function GET(req: NextRequest) {
   const offset = parseInt(searchParams.get("offset") || "0");
 
   try {
-    // Use app_ideas view for denormalized read
     let query = supabase
       .from("app_ideas")
       .select("*")
@@ -18,7 +22,11 @@ export async function GET(req: NextRequest) {
       .range(offset, offset + limit - 1);
 
     if (status) query = query.eq("status", status);
-    if (customerId) query = query.eq("id_client", parseInt(customerId, 10));
+
+    // Scope to allowed clients
+    const scoped = await scopeQueryToClients(query, userId, role, customerId, "id_client");
+    if (scoped.error) return scoped.error;
+    query = scoped.query;
 
     const { data: rows, error } = await query;
     if (error) throw error;
@@ -41,7 +49,6 @@ export async function GET(req: NextRequest) {
       createdByName: r.name_user_submitted,
       createdAt: r.date_created,
       commissionedAt: r.date_commissioned,
-      // Linked content/social counts
       contentIds: r.id_content || [],
       socialIds: r.id_social || [],
     }));
@@ -55,12 +62,24 @@ export async function GET(req: NextRequest) {
 
 // POST /api/ideas — create idea
 export async function POST(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
+
   try {
     const body = await req.json();
     const { title, description, customerId: bodyCustomerId } = body;
 
     if (!title) {
       return NextResponse.json({ error: "Title is required" }, { status: 400 });
+    }
+
+    // Validate client access if customerId provided
+    if (bodyCustomerId) {
+      const cid = parseInt(bodyCustomerId, 10);
+      if (!(await canAccessClient(userId, role, cid))) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
     }
 
     const insertData: Record<string, any> = {

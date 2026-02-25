@@ -25,6 +25,7 @@ interface CustomerContextValue {
   canViewAll: boolean;
   isSingleCustomer: boolean;
   loading: boolean;
+  role: string | null;
   setSelectedCustomerId: (id: string | null) => void;
   refreshCustomers: () => Promise<void>;
 }
@@ -52,6 +53,7 @@ export function CustomerProvider({ children }: { children: ReactNode }) {
   const [canViewAll, setCanViewAll] = useState(false);
   const [isSingleCustomer, setIsSingleCustomer] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [role, setRole] = useState<string | null>(null);
 
   const fetchCustomers = useCallback(async () => {
     try {
@@ -63,6 +65,7 @@ export function CustomerProvider({ children }: { children: ReactNode }) {
 
       setCustomers(customerList);
       setCanViewAll(viewAll);
+      setRole(data.role || null);
 
       // Restore from localStorage
       const stored = localStorage.getItem(STORAGE_KEY);
@@ -112,6 +115,7 @@ export function CustomerProvider({ children }: { children: ReactNode }) {
         canViewAll,
         isSingleCustomer,
         loading,
+        role,
         setSelectedCustomerId,
         refreshCustomers: fetchCustomers,
       }}

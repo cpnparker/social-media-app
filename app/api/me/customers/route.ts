@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { auth } from "@/lib/auth";
+import { isTCEStaff, getAllowedClientIds } from "@/lib/permissions";
 
 // GET /api/me/customers — returns customers the authenticated user can access
+// Uses role_user from the session (not workspace_members.role)
 export async function GET() {
   try {
     const session = await auth();
@@ -11,38 +13,13 @@ export async function GET() {
     }
 
     const userId = parseInt(session.user.id, 10);
-
-    // Get the default workspace
-    const { data: ws } = await supabase
-      .from("workspaces")
-      .select("id")
-      .limit(1)
-      .single();
-
-    if (!ws) {
-      return NextResponse.json({ customers: [], role: null, canViewAll: false });
-    }
-
-    // Get the user's workspace role
-    const { data: membership } = await supabase
-      .from("workspace_members")
-      .select("role")
-      .eq("workspace_id", ws.id)
-      .eq("user_id", userId)
-      .limit(1)
-      .single();
-
-    if (!membership) {
-      return NextResponse.json({ customers: [], role: null, canViewAll: false });
-    }
-
-    const workspaceRole = membership.role;
-    const canViewAll = workspaceRole === "owner" || workspaceRole === "admin";
+    const role = session.user.role || "none";
+    const canViewAll = isTCEStaff(role);
 
     let customerList: any[] = [];
 
     if (canViewAll) {
-      // Owner/admin can see all clients
+      // TCE staff (super/tceadmin/tcemanager/tceuser) can see all clients
       const { data: clients } = await supabase
         .from("app_clients")
         .select("id_client, name_client, information_industry, link_website");
@@ -55,21 +32,16 @@ export async function GET() {
         status: "active",
       }));
     } else {
-      // Other roles only see assigned clients
-      const { data: assignments } = await supabase
-        .from("lookup_users_clients")
-        .select("id_client")
-        .eq("id_user", userId);
+      // Client roles see only their assigned clients via lookup_users_clients
+      const allowedIds = await getAllowedClientIds(userId, role);
 
-      const clientIds = (assignments || []).map((a) => a.id_client);
-
-      if (clientIds.length === 0) {
+      if (!allowedIds || allowedIds.length === 0) {
         customerList = [];
       } else {
         const { data: clients } = await supabase
           .from("app_clients")
           .select("id_client, name_client, information_industry, link_website")
-          .in("id_client", clientIds);
+          .in("id_client", allowedIds);
 
         customerList = (clients || []).map((c) => ({
           id: String(c.id_client),
@@ -83,7 +55,7 @@ export async function GET() {
 
     return NextResponse.json({
       customers: customerList,
-      role: workspaceRole,
+      role,
       canViewAll,
     });
   } catch (error: any) {

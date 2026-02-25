@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { requireAuth } from "@/lib/permissions";
 
 // Maps entityType to the correct existing Supabase assets table
-// Existing tables: assets_content (7,459 rows), assets_clients (244), assets_ideas (940)
-// Enriched views: app_assets_content, app_assets_clients, app_assets_ideas
 const ENTITY_TABLE_MAP: Record<string, { table: string; view: string; fk: string }> = {
   content: { table: "assets_content", view: "app_assets_content", fk: "id_content" },
   client: { table: "assets_clients", view: "app_assets_clients", fk: "id_client" },
@@ -22,7 +21,6 @@ function transformAsset(row: any, entityType: string) {
     description: row.information_description || null,
     fileSize: null,
     createdAt: row.date_created,
-    // Extra fields from app_ views
     fileName: row.file_name || null,
     filePath: row.file_path || null,
     fileBucket: row.file_bucket || null,
@@ -31,6 +29,9 @@ function transformAsset(row: any, entityType: string) {
 
 // GET /api/content-assets
 export async function GET(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+
   const { searchParams } = new URL(req.url);
   const entityType = searchParams.get("entityType") || "content";
   const entityId = searchParams.get("entityId");
@@ -44,7 +45,6 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Use the enriched app_ view for reads (includes file_name, file_url, file_path)
     let query = supabase.from(mapping.view).select("*");
 
     if (entityId) {
@@ -64,6 +64,9 @@ export async function GET(req: NextRequest) {
 
 // POST /api/content-assets
 export async function POST(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+
   try {
     const body = await req.json();
     const entityType = body.entityType || "content";
@@ -83,7 +86,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Insert into the correct existing assets table
     const insertData: any = {
       [mapping.fk]: parseInt(body.entityId, 10),
       name_asset: body.name,
@@ -91,7 +93,6 @@ export async function POST(req: NextRequest) {
       information_description: body.description || null,
     };
 
-    // If a file ID is provided, link it; otherwise create file record first
     if (body.fileId) {
       insertData.id_file = parseInt(body.fileId, 10);
     }
@@ -112,6 +113,9 @@ export async function POST(req: NextRequest) {
 
 // DELETE /api/content-assets
 export async function DELETE(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id");
   const entityType = searchParams.get("entityType") || "content";
@@ -129,7 +133,6 @@ export async function DELETE(req: NextRequest) {
   }
 
   try {
-    // Soft delete — set date_deleted (matches existing pattern)
     const { error } = await supabase
       .from(mapping.table)
       .update({ date_deleted: new Date().toISOString() })

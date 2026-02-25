@@ -1,14 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { requireAuth, canAccessClient, isTCEStaff } from "@/lib/permissions";
 
 // GET /api/customers/[id]
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
+
   try {
     const { id } = await params;
     const clientId = parseInt(id, 10);
+
+    // Validate access to this client
+    if (!(await canAccessClient(userId, role, clientId))) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
 
     const { data: client, error } = await supabase
       .from("clients")
@@ -69,9 +79,18 @@ export async function PUT(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
+
   try {
     const { id } = await params;
     const clientId = parseInt(id, 10);
+
+    if (!(await canAccessClient(userId, role, clientId))) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     const body = await req.json();
 
     const updateData: Record<string, any> = {
@@ -113,11 +132,19 @@ export async function PUT(
   }
 }
 
-// DELETE /api/customers/[id] — soft delete
+// DELETE /api/customers/[id] — soft delete (TCE staff only)
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { role } = authResult;
+
+  if (!isTCEStaff(role)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   try {
     const { id } = await params;
     const clientId = parseInt(id, 10);

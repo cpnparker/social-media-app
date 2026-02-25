@@ -1,17 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
-import { auth } from "@/lib/auth";
+import { requireAuth, canAccessClient } from "@/lib/permissions";
 
 // GET /api/customer-accounts?customerId=xxx
 // Derives accounts from the existing social→posting_distributions relationship
-// (which distribution channels have been used for this client's social posts)
 export async function GET(req: NextRequest) {
-  try {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
 
+  try {
     const { searchParams } = new URL(req.url);
     const customerId = searchParams.get("customerId");
 
@@ -23,6 +21,11 @@ export async function GET(req: NextRequest) {
     }
 
     const clientId = parseInt(customerId, 10);
+
+    // Validate client access
+    if (!(await canAccessClient(userId, role, clientId))) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
 
     // Get distinct distribution channels used for this client's social posts
     const { data: socialLinks, error: socialErr } = await supabase
@@ -49,7 +52,6 @@ export async function GET(req: NextRequest) {
 
     if (distErr) throw distErr;
 
-    // Transform to the API shape the frontend expects
     const accounts = (distributions || []).map((d) => ({
       id: String(d.id_distribution),
       customerId: clientId,
@@ -69,15 +71,12 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/customer-accounts
-// Creates an explicit customer↔account link in the customer_accounts table
-// for new assignments not yet represented in social posts
 export async function POST(req: NextRequest) {
-  try {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
 
+  try {
     const { customerId, lateAccountId, platform, displayName, username, avatarUrl } =
       await req.json();
 
@@ -88,10 +87,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const clientId = parseInt(customerId, 10);
+
+    if (!(await canAccessClient(userId, role, clientId))) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     const { data: account, error } = await supabase
       .from("customer_accounts")
       .insert({
-        customer_id: parseInt(customerId, 10),
+        customer_id: clientId,
         late_account_id: lateAccountId,
         platform,
         display_name: displayName,
@@ -111,12 +116,11 @@ export async function POST(req: NextRequest) {
 
 // DELETE /api/customer-accounts?customerId=xxx&lateAccountId=yyy
 export async function DELETE(req: NextRequest) {
-  try {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
 
+  try {
     const { searchParams } = new URL(req.url);
     const customerId = searchParams.get("customerId");
     const lateAccountId = searchParams.get("lateAccountId");
@@ -128,10 +132,16 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
+    const clientId = parseInt(customerId, 10);
+
+    if (!(await canAccessClient(userId, role, clientId))) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     const { error } = await supabase
       .from("customer_accounts")
       .delete()
-      .eq("customer_id", parseInt(customerId, 10))
+      .eq("customer_id", clientId)
       .eq("late_account_id", lateAccountId);
 
     if (error) throw error;

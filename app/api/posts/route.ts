@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lateApiFetch } from "@/lib/late";
 import { supabase } from "@/lib/supabase";
+import { requireAuth } from "@/lib/permissions";
 
 // GET /api/posts — list posts (via Late API)
 export async function GET(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+
   const { searchParams } = new URL(req.url);
   const status = searchParams.get("status");
   const page = searchParams.get("page") || "1";
@@ -22,6 +26,9 @@ export async function GET(req: NextRequest) {
 
 // POST /api/posts — create a new post (via Late API)
 export async function POST(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+
   try {
     const body = await req.json();
 

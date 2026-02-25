@@ -59,7 +59,7 @@ export async function GET() {
     const userIds = (memberRows || []).map((m) => m.user_id);
     const { data: userRows } = await supabase
       .from("users")
-      .select("id_user, name_user, email_user, url_avatar, provider, date_created")
+      .select("id_user, name_user, email_user, role_user, date_created")
       .in("id_user", userIds);
 
     const userMap = new Map((userRows || []).map((u) => [u.id_user, u]));
@@ -70,12 +70,12 @@ export async function GET() {
         id: String(m.user_id),
         name: user?.name_user || null,
         email: user?.email_user || null,
-        avatarUrl: user?.url_avatar || null,
-        provider: user?.provider || null,
+        avatarUrl: null,
+        provider: null,
         createdAt: user?.date_created || null,
         role: m.role,
-        invitedAt: m.invited_at,
-        joinedAt: m.joined_at,
+        supabaseRole: user?.role_user || null,
+        joinedAt: m.joined_at || null,
       };
     });
 
@@ -124,7 +124,6 @@ export async function POST(req: NextRequest) {
         .insert({
           email_user: normalizedEmail,
           name_user: displayName,
-          provider: "email",
           date_created: new Date().toISOString(),
         })
         .select()

@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { requireAuth, canAccessClient } from "@/lib/permissions";
 
 // GET /api/content-objects/[id]
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
+
   try {
     const { id } = await params;
     const contentId = parseInt(id, 10);
@@ -18,6 +23,11 @@ export async function GET(
 
     if (error || !obj) {
       return NextResponse.json({ error: "Content object not found" }, { status: 404 });
+    }
+
+    // Validate client access
+    if (obj.id_client && !(await canAccessClient(userId, role, obj.id_client))) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     // Fetch tasks for this content
@@ -95,9 +105,30 @@ export async function PUT(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
+
   try {
     const { id } = await params;
     const contentId = parseInt(id, 10);
+
+    // Fetch the content object to check client access
+    const { data: existing } = await supabase
+      .from("content")
+      .select("id_client")
+      .eq("id_content", contentId)
+      .is("date_deleted", null)
+      .single();
+
+    if (!existing) {
+      return NextResponse.json({ error: "Content object not found" }, { status: 404 });
+    }
+
+    if (existing.id_client && !(await canAccessClient(userId, role, existing.id_client))) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     const body = await req.json();
 
     const updateData: Record<string, any> = { date_updated: new Date().toISOString() };
@@ -146,9 +177,25 @@ export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
+
   try {
     const { id } = await params;
     const contentId = parseInt(id, 10);
+
+    // Validate access
+    const { data: existing } = await supabase
+      .from("content")
+      .select("id_client")
+      .eq("id_content", contentId)
+      .is("date_deleted", null)
+      .single();
+
+    if (existing?.id_client && !(await canAccessClient(userId, role, existing.id_client))) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
 
     await supabase
       .from("content")

@@ -67,7 +67,7 @@ export async function GET(
       (memberRows || []).map(async (m) => {
         const { data: user } = await supabase
           .from("users")
-          .select("id_user, name_user, email_user, url_avatar")
+          .select("id_user, name_user, email_user")
           .eq("id_user", parseInt(m.user_id, 10))
           .is("date_deleted", null)
           .single();
@@ -79,7 +79,7 @@ export async function GET(
           userId: m.user_id,
           userName: user?.name_user || null,
           userEmail: user?.email_user || null,
-          userAvatar: user?.url_avatar || null,
+          userAvatar: null,
         };
       })
     );

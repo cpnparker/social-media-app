@@ -1,15 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { requireAuth, isTCEStaff, scopeQueryToClients } from "@/lib/permissions";
 
 // GET /api/customers
 export async function GET(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
+
   const { searchParams } = new URL(req.url);
   const search = searchParams.get("search");
   const limit = parseInt(searchParams.get("limit") || "50");
   const offset = parseInt(searchParams.get("offset") || "0");
 
   try {
-    // Use the app_clients view for denormalized read
     let query = supabase
       .from("app_clients")
       .select("*")
@@ -20,17 +24,21 @@ export async function GET(req: NextRequest) {
       query = query.ilike("name_client", `%${search}%`);
     }
 
+    // Scope to allowed clients
+    const scoped = await scopeQueryToClients(query, userId, role, null, "id_client");
+    if (scoped.error) return scoped.error;
+    query = scoped.query;
+
     const { data: rows, error } = await query;
     if (error) throw error;
 
-    // Transform to API shape the frontend expects
     const customers = (rows || []).map((r) => ({
       id: String(r.id_client),
       name: r.name_client,
       website: r.link_website,
       industry: r.information_industry,
       notes: r.information_description,
-      status: "active", // Supabase uses date_deleted for soft delete; if it's in app_clients, it's active
+      status: "active",
       createdAt: r.date_created,
       logoUrl: r.file_logo_bucket && r.file_logo_path
         ? `https://dcwodczzdeltxlyepxmc.supabase.co/storage/v1/object/public/${r.file_logo_bucket}/${r.file_logo_path}`
@@ -48,8 +56,16 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST /api/customers — create a new client
+// POST /api/customers — create a new client (TCE staff only)
 export async function POST(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { role } = authResult;
+
+  if (!isTCEStaff(role)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   try {
     const body = await req.json();
 

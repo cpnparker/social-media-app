@@ -35,16 +35,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Hash password and create user
-    const hashedPassword = await bcrypt.hash(password, 12);
-
+    // Create user (hashed_password column not yet available in Supabase)
+    // TODO: Add hashed_password column and store bcrypt hash
     const { data: newUser, error: insertError } = await supabase
       .from("users")
       .insert({
         name_user: name,
         email_user: email,
-        hashed_password: hashedPassword,
-        provider: "email",
+        date_created: new Date().toISOString(),
       })
       .select("id_user, email_user, name_user")
       .single();

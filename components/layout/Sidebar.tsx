@@ -12,7 +12,6 @@ import {
   BarChart3,
   Link2,
   Settings,
-  Zap,
   ChevronsUpDown,
   Users,
   Check,
@@ -214,8 +213,8 @@ export function Sidebar({ onClose }: SidebarProps) {
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button className="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-white/10 transition-colors text-left">
-                <div className="h-9 w-9 rounded-xl bg-blue-500 flex items-center justify-center shrink-0">
-                  <Zap className="h-4 w-4 text-white" />
+                <div className="h-9 w-9 rounded-lg shrink-0 flex items-center justify-center">
+                  <img src="/assets/favicon.png" alt="" width={36} height={36} className="h-9 w-9 brightness-0 invert" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-[14px] font-bold tracking-tight truncate text-white">
@@ -235,7 +234,7 @@ export function Sidebar({ onClose }: SidebarProps) {
                   onClick={() => wsCtx.setSelectedWorkspace(ws.id)}
                   className="gap-2"
                 >
-                  <Zap className="h-4 w-4 text-blue-500 shrink-0" />
+                  <img src="/assets/favicon.png" alt="" width={20} height={20} className="h-5 w-5 shrink-0" />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{ws.name}</p>
                     <p className="text-[10px] text-muted-foreground capitalize">{ws.plan} &middot; {ws.role}</p>
@@ -255,8 +254,8 @@ export function Sidebar({ onClose }: SidebarProps) {
         ) : (
           /* Single workspace — static header */
           <div className="flex items-center gap-3 px-2 py-1">
-            <div className="h-9 w-9 rounded-xl bg-blue-500 flex items-center justify-center shrink-0">
-              <Zap className="h-4 w-4 text-white" />
+            <div className="h-9 w-9 rounded-lg shrink-0 flex items-center justify-center">
+              <img src="/assets/favicon.png" alt="" width={36} height={36} className="h-9 w-9 brightness-0 invert" />
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-[14px] font-bold tracking-tight truncate text-white">
@@ -275,7 +274,7 @@ export function Sidebar({ onClose }: SidebarProps) {
         <Link
           href="/ideas/new"
           onClick={onClose}
-          className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg bg-blue-500 hover:bg-blue-600 transition-colors text-white text-sm font-semibold"
+          className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg bg-[#023250] hover:bg-[#034170] transition-colors text-white text-sm font-semibold"
         >
           <Plus className="h-4 w-4" />
           Add New Idea

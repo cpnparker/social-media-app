@@ -82,7 +82,6 @@ export async function POST(req: NextRequest) {
         .insert({
           email_user: normalizedEmail,
           name_user: displayName,
-          provider: "email",
           date_created: new Date().toISOString(),
         })
         .select()

@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { requireAuth } from "@/lib/permissions";
 
 // GET /api/production-tasks
 export async function GET(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+
   const { searchParams } = new URL(req.url);
   const contentObjectId = searchParams.get("contentObjectId");
   const limit = parseInt(searchParams.get("limit") || "100");
@@ -45,6 +49,9 @@ export async function GET(req: NextRequest) {
 
 // POST /api/production-tasks
 export async function POST(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+
   try {
     const body = await req.json();
 

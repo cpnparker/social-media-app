@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lateApiFetch } from "@/lib/late";
 import { supabase } from "@/lib/supabase";
+import { requireAuth, canAccessClient } from "@/lib/permissions";
 
 // GET /api/accounts — list connected social accounts and profiles
 export async function GET(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
+
   try {
     const { searchParams } = new URL(req.url);
     const customerId = searchParams.get("customerId");
@@ -18,9 +23,13 @@ export async function GET(req: NextRequest) {
     const profiles = profilesData.profiles || [];
 
     // If customerId is provided, filter to accounts linked to this client
-    // via the social→posting_distributions implicit relationship
     if (customerId) {
       const clientId = parseInt(customerId, 10);
+
+      // Validate client access
+      if (!(await canAccessClient(userId, role, clientId))) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
 
       // Get distinct distribution IDs for this client from social posts
       const { data: socialLinks } = await supabase
@@ -33,7 +42,6 @@ export async function GET(req: NextRequest) {
       const distIds = Array.from(new Set((socialLinks || []).map((r: any) => r.id_distribution)));
 
       if (distIds.length > 0) {
-        // Get the resource IDs from posting_distributions (these map to Late account IDs)
         const { data: dists } = await supabase
           .from("posting_distributions")
           .select("id_distribution, id_resource")

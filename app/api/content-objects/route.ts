@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { requireAuth, scopeQueryToClients, canAccessClient } from "@/lib/permissions";
 
 // GET /api/content-objects
 export async function GET(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
+
   const { searchParams } = new URL(req.url);
   const contentType = searchParams.get("contentType");
   const customerId = searchParams.get("customerId");
@@ -17,7 +22,11 @@ export async function GET(req: NextRequest) {
       .range(offset, offset + limit - 1);
 
     if (contentType) query = query.eq("type_content", contentType);
-    if (customerId) query = query.eq("id_client", parseInt(customerId, 10));
+
+    // Scope to allowed clients
+    const scoped = await scopeQueryToClients(query, userId, role, customerId, "id_client");
+    if (scoped.error) return scoped.error;
+    query = scoped.query;
 
     const { data: rows, error } = await query;
     if (error) throw error;
@@ -47,8 +56,20 @@ export async function GET(req: NextRequest) {
 
 // POST /api/content-objects
 export async function POST(req: NextRequest) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
+
   try {
     const body = await req.json();
+
+    // Validate client access if customerId provided
+    if (body.customerId) {
+      const cid = parseInt(body.customerId, 10);
+      if (!(await canAccessClient(userId, role, cid))) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+    }
 
     const insertData: Record<string, any> = {
       name_content: body.workingTitle || body.title || "Untitled",

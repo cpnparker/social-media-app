@@ -14,6 +14,10 @@ export const metadata: Metadata = {
   title: "The Content Engine — Social Media Management",
   description:
     "Compose, schedule, publish, and analyse content across all your social platforms. Powered by The Content Engine.",
+  icons: {
+    icon: "/assets/favicon.png",
+    apple: "/assets/favicon.png",
+  },
 };
 
 export default function RootLayout({
