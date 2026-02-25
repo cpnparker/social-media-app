@@ -39,7 +39,7 @@ export async function requireAuth(): Promise<
     if (dbUser?.role_user) {
       role = dbUser.role_user;
     }
-  } catch (err) {
+  } catch {
     // Keep session role on DB error
   }
 

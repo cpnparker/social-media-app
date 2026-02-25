@@ -32,22 +32,48 @@ export async function GET(req: NextRequest) {
     const { data: rows, error } = await query;
     if (error) throw error;
 
-    const customers = (rows || []).map((r) => ({
-      id: String(r.id_client),
-      name: r.name_client,
-      website: r.link_website,
-      industry: r.information_industry,
-      notes: r.information_description,
-      status: "active",
-      createdAt: r.date_created,
-      logoUrl: r.file_logo_bucket && r.file_logo_path
-        ? `https://dcwodczzdeltxlyepxmc.supabase.co/storage/v1/object/public/${r.file_logo_bucket}/${r.file_logo_path}`
-        : null,
-      accountManager: r.name_account_manager,
-      featureSocial: r.feature_social,
-      featureAnalytics: r.feature_analytics,
-      featureAutoschedule: r.feature_autoschedule,
-    }));
+    // Fetch contract summaries for all returned clients
+    const clientIds = (rows || []).map((r) => r.id_client);
+    const contractMap: Record<number, { active: number; total: number; used: number }> = {};
+
+    if (clientIds.length > 0) {
+      const { data: contracts } = await supabase
+        .from("app_contracts")
+        .select("id_client, flag_active, units_contract, units_total_completed")
+        .in("id_client", clientIds);
+
+      for (const c of contracts || []) {
+        if (!contractMap[c.id_client]) {
+          contractMap[c.id_client] = { active: 0, total: 0, used: 0 };
+        }
+        if (c.flag_active === 1) contractMap[c.id_client].active++;
+        contractMap[c.id_client].total += Number(c.units_contract) || 0;
+        contractMap[c.id_client].used += Number(c.units_total_completed) || 0;
+      }
+    }
+
+    const customers = (rows || []).map((r) => {
+      const summary = contractMap[r.id_client] || { active: 0, total: 0, used: 0 };
+      return {
+        id: String(r.id_client),
+        name: r.name_client,
+        website: r.link_website,
+        industry: r.information_industry,
+        notes: r.information_description,
+        status: "active",
+        createdAt: r.date_created,
+        logoUrl: r.file_logo_bucket && r.file_logo_path
+          ? `https://dcwodczzdeltxlyepxmc.supabase.co/storage/v1/object/public/${r.file_logo_bucket}/${r.file_logo_path}`
+          : null,
+        accountManager: r.name_account_manager,
+        featureSocial: r.feature_social,
+        featureAnalytics: r.feature_analytics,
+        featureAutoschedule: r.feature_autoschedule,
+        activeContracts: summary.active,
+        totalBudget: summary.total,
+        usedBudget: summary.used,
+      };
+    });
 
     return NextResponse.json({ customers });
   } catch (error: any) {
