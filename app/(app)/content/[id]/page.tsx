@@ -11,17 +11,13 @@ import {
   Send,
   CheckCircle2,
   Circle,
-  Clock,
-  Layout,
   Link2,
   Lightbulb,
   Leaf,
   ChevronDown,
   CalendarDays,
   User,
-  Sparkles,
   StickyNote,
-  Timer,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -45,20 +41,11 @@ const TiptapEditor = dynamic(
   }
 );
 
-const taskStatuses = ["todo", "in_progress", "done"];
-const priorities = ["low", "medium", "high", "urgent"];
+const taskStatuses = ["todo", "done"];
 
 const statusMeta: Record<string, { icon: any; color: string; label: string }> = {
   todo: { icon: Circle, color: "text-gray-300 dark:text-gray-600", label: "To Do" },
-  in_progress: { icon: Clock, color: "text-blue-500", label: "In Progress" },
   done: { icon: CheckCircle2, color: "text-green-500", label: "Done" },
-};
-
-const priorityMeta: Record<string, { color: string }> = {
-  low: { color: "bg-gray-500/10 text-gray-500" },
-  medium: { color: "bg-blue-500/10 text-blue-500" },
-  high: { color: "bg-orange-500/10 text-orange-500" },
-  urgent: { color: "bg-red-500/10 text-red-500" },
 };
 
 export default function ContentDetailPage() {
@@ -148,8 +135,10 @@ export default function ContentDetailPage() {
   };
 
   const cycleTaskStatus = (task: any) => {
-    const cycle: Record<string, string> = { todo: "in_progress", in_progress: "done", done: "todo" };
-    updateTask(task.id, { status: cycle[task.status] || "todo" });
+    // DB is two-state: date_completed null (todo) or set (done)
+    // Icon click toggles directly between todo and done
+    const next = task.status === "done" ? "todo" : "done";
+    updateTask(task.id, { status: next });
   };
 
   const updateTask = async (taskId: string, updates: any) => {
@@ -161,7 +150,8 @@ export default function ContentDetailPage() {
       });
       const data = await res.json();
       if (data.task) {
-        setTasks((prev) => prev.map((t) => (t.id === taskId ? data.task : t)));
+        // Merge API response with existing task to preserve any fields the API doesn't return
+        setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...data.task } : t)));
       }
     } catch (err) {
       console.error("Update task failed:", err);
@@ -336,19 +326,17 @@ export default function ContentDetailPage() {
                     const Icon = meta.icon;
                     const isExpanded = expandedTaskId === task.id;
                     const hasDueDate = !!task.dueDate;
-                    const hasHours = task.hoursPlanned || task.hoursSpent;
                     const hasNotes = !!task.notes;
-                    const hasAi = !!task.aiUsed;
 
                     return (
                       <div key={task.id} className={cn("rounded-lg border transition-all", isExpanded ? "border-border bg-muted/30" : "border-transparent")}>
                         {/* Task row */}
-                        <div className={cn("group flex items-center gap-3 py-2.5 px-3 rounded-lg transition-colors cursor-pointer", !isExpanded && task.status === "in_progress" && "bg-blue-50/50 dark:bg-blue-950/20")}>
-                          {/* Status icon */}
+                        <div className={cn("group flex items-center gap-3 py-2.5 px-3 rounded-lg transition-colors cursor-pointer")}>
+                          {/* Status icon — click to toggle todo/done */}
                           <button
                             onClick={(e) => { e.stopPropagation(); cycleTaskStatus(task); }}
                             className={cn("shrink-0 transition-all hover:scale-110", meta.color)}
-                            title={`${meta.label} — click to advance`}
+                            title={`${meta.label} — click to toggle`}
                           >
                             <Icon className={cn("h-5 w-5", task.status === "done" && "fill-green-500/20")} />
                           </button>
@@ -361,28 +349,21 @@ export default function ContentDetailPage() {
 
                             {/* Inline indicators */}
                             <div className="hidden sm:flex items-center gap-1.5 shrink-0">
+                              {task.assignedToName && (
+                                <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
+                                  <User className="h-3 w-3" />
+                                  {task.assignedToName}
+                                </span>
+                              )}
                               {hasDueDate && (
                                 <span className={cn("text-[10px] flex items-center gap-0.5", new Date(task.dueDate) < new Date() && task.status !== "done" ? "text-red-500" : "text-muted-foreground")}>
                                   <CalendarDays className="h-3 w-3" />
                                   {new Date(task.dueDate).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
                                 </span>
                               )}
-                              {hasHours && (
-                                <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
-                                  <Timer className="h-3 w-3" />
-                                  {task.hoursSpent ?? 0}/{task.hoursPlanned ?? "?"}h
-                                </span>
-                              )}
-                              {hasAi && <span title="AI assisted"><Sparkles className="h-3 w-3 text-violet-400" /></span>}
                               {hasNotes && <span title="Has notes"><StickyNote className="h-3 w-3 text-amber-400" /></span>}
-                              {task.templateId && <span title="From template"><Layout className="h-3 w-3 text-muted-foreground/30" /></span>}
                             </div>
                           </div>
-
-                          {/* Priority badge */}
-                          <Badge variant="secondary" className={cn("text-[10px] capitalize border-0 shrink-0", priorityMeta[task.priority]?.color)}>
-                            {task.priority}
-                          </Badge>
 
                           {/* Expand chevron */}
                           <button onClick={() => setExpandedTaskId(isExpanded ? null : task.id)} className="shrink-0 text-muted-foreground/40 hover:text-foreground transition-colors p-0.5">
@@ -414,20 +395,6 @@ export default function ContentDetailPage() {
                                 </select>
                               </div>
 
-                              {/* Priority */}
-                              <div>
-                                <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Priority</label>
-                                <select
-                                  value={task.priority}
-                                  onChange={(e) => updateTask(task.id, { priority: e.target.value })}
-                                  className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm h-8"
-                                >
-                                  {priorities.map((p) => (
-                                    <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
-                                  ))}
-                                </select>
-                              </div>
-
                               {/* Deadline */}
                               <div>
                                 <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Deadline</label>
@@ -442,41 +409,9 @@ export default function ContentDetailPage() {
                               {/* Assigned To */}
                               <div>
                                 <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Assigned To</label>
-                                <Input
-                                  type="text"
-                                  placeholder="Name or ID..."
-                                  value={task.assignedTo || ""}
-                                  onChange={(e) => updateTask(task.id, { assignedTo: e.target.value || null })}
-                                  className="h-8 text-sm"
-                                />
-                              </div>
-
-                              {/* Hours Planned */}
-                              <div>
-                                <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Hours Planned</label>
-                                <Input
-                                  type="number"
-                                  step="0.5"
-                                  min="0"
-                                  placeholder="0"
-                                  value={task.hoursPlanned ?? ""}
-                                  onChange={(e) => updateTask(task.id, { hoursPlanned: e.target.value ? parseFloat(e.target.value) : null })}
-                                  className="h-8 text-sm"
-                                />
-                              </div>
-
-                              {/* Hours Spent */}
-                              <div>
-                                <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Hours Spent</label>
-                                <Input
-                                  type="number"
-                                  step="0.5"
-                                  min="0"
-                                  placeholder="0"
-                                  value={task.hoursSpent ?? ""}
-                                  onChange={(e) => updateTask(task.id, { hoursSpent: e.target.value ? parseFloat(e.target.value) : null })}
-                                  className="h-8 text-sm"
-                                />
+                                <div className="text-sm text-muted-foreground py-1.5">
+                                  {task.assignedToName || "Unassigned"}
+                                </div>
                               </div>
                             </div>
 
@@ -487,40 +422,8 @@ export default function ContentDetailPage() {
                                   <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
                                   Completed {new Date(task.completedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
                                 </span>
-                                {task.hoursSpent != null && task.hoursPlanned != null && (
-                                  <span className="flex items-center gap-1">
-                                    <Timer className="h-3.5 w-3.5" />
-                                    {task.hoursSpent}h spent / {task.hoursPlanned}h planned
-                                  </span>
-                                )}
                               </div>
                             )}
-
-                            {/* AI Usage */}
-                            <div>
-                              <div className="flex items-center gap-2 mb-2">
-                                <input
-                                  type="checkbox"
-                                  id={`ai-${task.id}`}
-                                  checked={task.aiUsed || false}
-                                  onChange={(e) => updateTask(task.id, { aiUsed: e.target.checked })}
-                                  className="rounded h-3.5 w-3.5"
-                                />
-                                <label htmlFor={`ai-${task.id}`} className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider cursor-pointer flex items-center gap-1">
-                                  <Sparkles className="h-3 w-3 text-violet-400" />
-                                  AI Assisted
-                                </label>
-                              </div>
-                              {task.aiUsed && (
-                                <textarea
-                                  value={task.aiDetails || ""}
-                                  onChange={(e) => updateTask(task.id, { aiDetails: e.target.value })}
-                                  placeholder="How was AI used? (e.g. ChatGPT for first draft, Midjourney for images...)"
-                                  rows={2}
-                                  className="w-full rounded-md border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                                />
-                              )}
-                            </div>
 
                             {/* Notes */}
                             <div>
