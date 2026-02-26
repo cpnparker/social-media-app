@@ -21,14 +21,24 @@ export async function GET(req: NextRequest) {
     const data = await lateApiFetch(endpoint);
 
     // Filter posts by account IDs if specified (scopes to customer-linked accounts)
+    // Late API nests account IDs inside platforms[].accountId (object with _id or string)
     if (accountIds && data.posts) {
-      const ids = accountIds.split(",").map((id: string) => id.trim());
+      const ids = new Set(accountIds.split(",").map((id: string) => id.trim()));
       data.posts = data.posts.filter((p: any) => {
+        // Check platform-level accountIds (the actual location in Late API responses)
+        if (p.platforms && Array.isArray(p.platforms)) {
+          return p.platforms.some((plat: any) => {
+            const raw = plat.accountId;
+            if (!raw) return false;
+            const platAccountId = (typeof raw === "object" && raw !== null) ? raw._id : raw;
+            return platAccountId && ids.has(platAccountId);
+          });
+        }
+        // Fallback: check top-level accountId/account (for older API formats)
         const raw = p.accountId;
         const postAccountId = (typeof raw === "object" && raw !== null) ? raw._id : raw;
-        return (postAccountId && ids.includes(postAccountId)) ||
-               (p.account?._id && ids.includes(p.account._id)) ||
-               (p.account?.id && ids.includes(p.account.id));
+        return (postAccountId && ids.has(postAccountId)) ||
+               (p.account?._id && ids.has(p.account._id));
       });
     }
 

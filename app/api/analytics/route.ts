@@ -36,23 +36,34 @@ export async function GET(req: NextRequest) {
     let posts = raw.posts || [];
 
     // Filter by account IDs if specified
+    // Late API nests account IDs inside platforms[].accountId (object with _id or string)
     if (accountIds) {
-      const ids = accountIds.split(",").map((id) => id.trim());
+      const ids = new Set(accountIds.split(",").map((id) => id.trim()));
       posts = posts.filter((p: any) => {
+        // Check platform-level accountIds (the actual location in Late API responses)
+        if (p.platforms && Array.isArray(p.platforms)) {
+          return p.platforms.some((plat: any) => {
+            const raw = plat.accountId;
+            if (!raw) return false;
+            const platAccountId = (typeof raw === "object" && raw !== null) ? raw._id : raw;
+            return platAccountId && ids.has(platAccountId);
+          });
+        }
+        // Fallback: check top-level accountId/account (for older API formats)
         const raw = p.accountId;
         const postAccountId = (typeof raw === "object" && raw !== null) ? raw._id : raw;
-        return (postAccountId && ids.includes(postAccountId)) ||
-               (p.account?._id && ids.includes(p.account._id)) ||
-               (p.account?.id && ids.includes(p.account.id));
+        return (postAccountId && ids.has(postAccountId)) ||
+               (p.account?._id && ids.has(p.account._id));
       });
     }
 
     // Filter by platforms if specified
     if (platformsFilter) {
-      const plats = platformsFilter.split(",").map((p) => p.trim().toLowerCase());
+      const plats = new Set(platformsFilter.split(",").map((p) => p.trim().toLowerCase()));
       posts = posts.filter((p: any) => {
-        const postPlatform = (p.platform || "").toLowerCase();
-        return plats.includes(postPlatform);
+        // Check top-level platform or nested platforms array
+        const postPlatform = (p.platform || p.platforms?.[0]?.platform || "").toLowerCase();
+        return plats.has(postPlatform);
       });
     }
 

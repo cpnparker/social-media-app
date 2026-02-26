@@ -37,14 +37,24 @@ export async function GET(req: NextRequest) {
     let posts = raw.posts || [];
 
     // Filter by customer-scoped account IDs if specified
+    // Late API nests account IDs inside platforms[].accountId (object with _id or string)
     if (accountIdsFilter) {
-      const allowedIds = accountIdsFilter.split(",").map((id: string) => id.trim());
+      const allowedIds = new Set(accountIdsFilter.split(",").map((id: string) => id.trim()));
       posts = posts.filter((p: any) => {
+        // Check platform-level accountIds (the actual location in Late API responses)
+        if (p.platforms && Array.isArray(p.platforms)) {
+          return p.platforms.some((plat: any) => {
+            const raw = plat.accountId;
+            if (!raw) return false;
+            const platAccountId = (typeof raw === "object" && raw !== null) ? raw._id : raw;
+            return platAccountId && allowedIds.has(platAccountId);
+          });
+        }
+        // Fallback: check top-level accountId/account (for older API formats)
         const rawId = p.accountId;
         const postAccountId = (typeof rawId === "object" && rawId !== null) ? rawId._id : rawId;
-        return (postAccountId && allowedIds.includes(postAccountId)) ||
-               (p.account?._id && allowedIds.includes(p.account._id)) ||
-               (p.account?.id && allowedIds.includes(p.account.id));
+        return (postAccountId && allowedIds.has(postAccountId)) ||
+               (p.account?._id && allowedIds.has(p.account._id));
       });
     }
 
@@ -55,19 +65,19 @@ export async function GET(req: NextRequest) {
       const targetPlatform = targetAcct?.platform?.toLowerCase();
 
       posts = posts.filter((p: any) => {
-        // Check direct accountId matches
-        const raw = p.accountId;
-        const id = (typeof raw === "object" && raw !== null) ? raw._id : raw;
-        if (id === accountId) return true;
-        if (p.account?._id === accountId || p.account?.id === accountId) return true;
-        // Check platform-level accountId
-        if (p.platforms) {
+        // Check platform-level accountId first (primary location in Late API responses)
+        if (p.platforms && Array.isArray(p.platforms)) {
           for (const plat of p.platforms) {
             const platRaw = plat.accountId;
             const platId = (typeof platRaw === "object" && platRaw !== null) ? platRaw._id : platRaw;
             if (platId === accountId) return true;
           }
         }
+        // Fallback: check top-level accountId (for older API formats)
+        const raw = p.accountId;
+        const id = (typeof raw === "object" && raw !== null) ? raw._id : raw;
+        if (id === accountId) return true;
+        if (p.account?._id === accountId) return true;
         // Fallback: match by platform name when analytics API doesn't include accountId
         if (targetPlatform) {
           const postPlatform = (p.platform || p.platforms?.[0]?.platform || "").toLowerCase();
