@@ -710,7 +710,214 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* ────── Row 3: Content Pipeline / Recent Posts / Top Ideas ────── */}
+      {/* ────── Row 3: Social Media Insights ────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Social Performance Overview */}
+        <Card className="lg:col-span-2 border-0 shadow-sm">
+          <CardHeader className="flex flex-row items-center justify-between pb-3">
+            <CardTitle className="text-base font-semibold flex items-center gap-2">
+              <BarChart3 className="h-4 w-4 text-blue-500" />
+              Social Media Insights
+            </CardTitle>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs text-muted-foreground gap-1 h-7"
+              asChild
+            >
+              <Link href="/analytics">
+                View Analytics <ArrowUpRight className="h-3 w-3" />
+              </Link>
+            </Button>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <div key={i} className="rounded-xl bg-muted/50 p-3">
+                      <Skeleton className="h-3 w-16 mb-2" />
+                      <Skeleton className="h-6 w-12" />
+                    </div>
+                  ))}
+                </div>
+                <Skeleton className="h-32 w-full" />
+              </div>
+            ) : !analytics || (!totals?.impressions && !totals?.engagements && platformData.length === 0) ? (
+              <div className="text-center py-10">
+                <BarChart3 className="h-10 w-10 text-muted-foreground/20 mx-auto mb-3" />
+                <p className="text-sm text-muted-foreground font-medium">
+                  No social media data yet
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Publish posts to see performance insights here
+                </p>
+                <Button variant="outline" size="sm" className="mt-4 gap-2" asChild>
+                  <Link href="/compose">
+                    <PenSquare className="h-3.5 w-3.5" />
+                    Create a post
+                  </Link>
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-5">
+                {/* Mini KPIs */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {[
+                    { label: "Impressions", value: totals?.impressions || 0, icon: Eye, color: "text-blue-500", bg: "bg-blue-500/10" },
+                    { label: "Engagements", value: totals?.engagements || 0, icon: Heart, color: "text-rose-500", bg: "bg-rose-500/10" },
+                    { label: "Engagement Rate", value: `${totals?.engagementRate || 0}%`, icon: TrendingUp, color: "text-emerald-500", bg: "bg-emerald-500/10", isString: true },
+                    { label: "Published", value: totals?.publishedPosts || 0, icon: CheckCircle2, color: "text-violet-500", bg: "bg-violet-500/10" },
+                  ].map((kpi) => {
+                    const Icon = kpi.icon;
+                    return (
+                      <div key={kpi.label} className="rounded-xl bg-muted/40 p-3">
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <Icon className={`h-3.5 w-3.5 ${kpi.color}`} />
+                          <span className="text-[11px] text-muted-foreground font-medium">{kpi.label}</span>
+                        </div>
+                        <p className="text-lg font-bold tracking-tight">
+                          {kpi.isString ? kpi.value : formatNumber(kpi.value as number)}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Platform Breakdown Bars */}
+                {platformData.length > 0 && (
+                  <div className="space-y-3">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Platform Breakdown</p>
+                    {platformData.slice(0, 5).map((platform) => {
+                      const barWidth = Math.max((platform.impressions / maxImpressions) * 100, 2);
+                      return (
+                        <div key={platform.platform} className="space-y-1">
+                          <div className="flex items-center justify-between text-sm">
+                            <div className="flex items-center gap-2">
+                              <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: platform.color }} />
+                              <span className="font-medium text-xs">{platform.name}</span>
+                            </div>
+                            <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+                              <span>{formatNumber(platform.impressions)} imp</span>
+                              <span>{platform.posts} posts</span>
+                            </div>
+                          </div>
+                          <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-all duration-500"
+                              style={{ width: `${barWidth}%`, backgroundColor: platform.color }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Top Performing Post */}
+        <Card className="border-0 shadow-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base font-semibold flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-amber-500" />
+              Top Performing
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <ListSkeleton rows={4} />
+            ) : recentPosts.length === 0 ? (
+              <div className="text-center py-8">
+                <Sparkles className="h-8 w-8 text-muted-foreground/20 mx-auto mb-2" />
+                <p className="text-sm text-muted-foreground">No posts to compare yet</p>
+              </div>
+            ) : (() => {
+              // Find the best post by total engagement
+              const postsWithEng = recentPosts.map((post) => {
+                const eng = (post.platforms || []).reduce((acc, p) => {
+                  const a = p.analytics || {};
+                  return acc + (a.likes || 0) + (a.comments || 0) + (a.shares || 0) + (a.saves || 0);
+                }, 0);
+                const imp = (post.platforms || []).reduce((acc, p) => acc + (p.analytics?.impressions || 0), 0);
+                return { ...post, totalEng: eng, totalImp: imp };
+              });
+              const sorted = [...postsWithEng].sort((a, b) => b.totalEng - a.totalEng);
+              const topPost = sorted[0];
+              const topPlatforms = getPostPlatforms(topPost);
+
+              return (
+                <div className="space-y-4">
+                  {/* Best Post */}
+                  <Link
+                    href={`/posts/${topPost._id}`}
+                    className="block rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5 hover:bg-amber-500/10 transition-colors"
+                  >
+                    <div className="flex items-center gap-1.5 mb-2">
+                      {topPlatforms.slice(0, 3).map((platform, i) => (
+                        <span
+                          key={i}
+                          className="inline-flex items-center rounded-full px-1.5 py-px text-[9px] font-medium text-white"
+                          style={{ backgroundColor: platformHexColors[platform] || "#6b7280" }}
+                        >
+                          {platformLabels[platform] || platform}
+                        </span>
+                      ))}
+                      {getStatusBadge(topPost.status)}
+                    </div>
+                    <p className="text-sm font-medium line-clamp-3 mb-3">{topPost.content || "(No content)"}</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="text-center rounded-lg bg-white/60 dark:bg-white/5 py-1.5">
+                        <p className="text-xs text-muted-foreground">Impressions</p>
+                        <p className="text-sm font-bold">{formatNumber(topPost.totalImp)}</p>
+                      </div>
+                      <div className="text-center rounded-lg bg-white/60 dark:bg-white/5 py-1.5">
+                        <p className="text-xs text-muted-foreground">Engagements</p>
+                        <p className="text-sm font-bold">{formatNumber(topPost.totalEng)}</p>
+                      </div>
+                    </div>
+                  </Link>
+
+                  {/* Runner-ups */}
+                  {sorted.slice(1, 4).map((post) => {
+                    const plats = getPostPlatforms(post);
+                    return (
+                      <Link
+                        key={post._id}
+                        href={`/posts/${post._id}`}
+                        className="flex items-start gap-2.5 py-2 px-2 -mx-1 rounded-lg hover:bg-muted/50 transition-colors"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            {plats.slice(0, 2).map((platform, i) => (
+                              <span
+                                key={i}
+                                className="inline-flex items-center rounded-full px-1.5 py-px text-[9px] font-medium text-white"
+                                style={{ backgroundColor: platformHexColors[platform] || "#6b7280" }}
+                              >
+                                {platformLabels[platform] || platform}
+                              </span>
+                            ))}
+                          </div>
+                          <p className="text-xs line-clamp-1 text-muted-foreground">{post.content || "(No content)"}</p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="text-xs font-semibold">{formatNumber(post.totalEng)}</p>
+                          <p className="text-[10px] text-muted-foreground">eng.</p>
+                        </div>
+                      </Link>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ────── Row 4: Content Pipeline / Recent Posts / Top Ideas ────── */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {/* Content Pipeline */}
         <Card className="border-0 shadow-sm">
@@ -986,63 +1193,7 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* ────── Row 4: Platform Performance ────── */}
-      {!loading && platformData.length > 0 && (
-        <Card className="border-0 shadow-sm">
-          <CardHeader className="flex flex-row items-center justify-between pb-3">
-            <CardTitle className="text-base font-semibold flex items-center gap-2">
-              <BarChart3 className="h-4 w-4 text-blue-500" />
-              Platform Performance
-            </CardTitle>
-            <Badge variant="secondary" className="border-0 text-xs font-medium">
-              Last 30 days
-            </Badge>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {platformData.map((platform) => {
-                const barWidth = Math.max(
-                  (platform.impressions / maxImpressions) * 100,
-                  2
-                );
-                return (
-                  <div key={platform.platform} className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div
-                          className="h-3 w-3 rounded-full"
-                          style={{ backgroundColor: platform.color }}
-                        />
-                        <span className="text-sm font-medium">
-                          {platform.name}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                        <span>
-                          {formatNumber(platform.impressions)} impressions
-                        </span>
-                        <span>{platform.posts} posts</span>
-                        <span>
-                          {formatNumber(platform.engagements)} engagements
-                        </span>
-                      </div>
-                    </div>
-                    <div className="h-2 rounded-full bg-muted overflow-hidden">
-                      <div
-                        className="h-full rounded-full transition-all duration-500"
-                        style={{
-                          width: `${barWidth}%`,
-                          backgroundColor: platform.color,
-                        }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* Platform Performance removed — now part of Social Media Insights section above */}
 
       {/* ────── Calendar Event Dialog ────── */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
