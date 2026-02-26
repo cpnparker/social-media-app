@@ -36,11 +36,23 @@ export async function GET(req: NextRequest) {
     let posts = raw.posts || [];
 
     // Filter by account IDs if specified
-    // Late API nests account IDs inside platforms[].accountId (object with _id or string)
+    // The analytics endpoint posts use `profileId` (not accountId).
+    // We resolve account _id → profileId via raw.accounts, then match on post.profileId.
     if (accountIds) {
       const ids = new Set(accountIds.split(",").map((id) => id.trim()));
+
+      // Build set of profileIds that correspond to the requested account _ids
+      const profileIds = new Set<string>();
+      for (const acct of (raw.accounts || [])) {
+        if (ids.has(acct._id) && acct.profileId) {
+          profileIds.add(acct.profileId);
+        }
+      }
+
       posts = posts.filter((p: any) => {
-        // Check platform-level accountIds (the actual location in Late API responses)
+        // Primary: match post.profileId against resolved profileIds
+        if (p.profileId && profileIds.has(p.profileId)) return true;
+        // Fallback: check platforms[].accountId (used by /posts endpoint structure)
         if (p.platforms && Array.isArray(p.platforms)) {
           return p.platforms.some((plat: any) => {
             const raw = plat.accountId;
@@ -49,11 +61,7 @@ export async function GET(req: NextRequest) {
             return platAccountId && ids.has(platAccountId);
           });
         }
-        // Fallback: check top-level accountId/account (for older API formats)
-        const raw = p.accountId;
-        const postAccountId = (typeof raw === "object" && raw !== null) ? raw._id : raw;
-        return (postAccountId && ids.has(postAccountId)) ||
-               (p.account?._id && ids.has(p.account._id));
+        return false;
       });
     }
 
