@@ -58,6 +58,11 @@ import {
   formatFullDate,
 } from "@/lib/platform-utils";
 
+import {
+  typeColors,
+  typeHexColors,
+} from "@/lib/content-type-utils";
+
 // ────────────────────────────────────────────────
 // Calendar localiser (same as calendar page)
 // ────────────────────────────────────────────────
@@ -69,29 +74,6 @@ const localizer = dateFnsLocalizer({
   getDay,
   locales,
 });
-
-// ────────────────────────────────────────────────
-// Content type colour map (from content page)
-// ────────────────────────────────────────────────
-const typeColors: Record<string, string> = {
-  article: "bg-blue-500/10 text-blue-500",
-  video: "bg-red-500/10 text-red-500",
-  graphic: "bg-pink-500/10 text-pink-500",
-  thread: "bg-violet-500/10 text-violet-500",
-  newsletter: "bg-amber-500/10 text-amber-500",
-  podcast: "bg-green-500/10 text-green-500",
-  other: "bg-gray-500/10 text-gray-500",
-};
-
-const typeHexColors: Record<string, string> = {
-  article: "#3b82f6",
-  video: "#ef4444",
-  graphic: "#ec4899",
-  thread: "#8b5cf6",
-  newsletter: "#f59e0b",
-  podcast: "#22c55e",
-  other: "#6b7280",
-};
 
 // ────────────────────────────────────────────────
 // Interfaces

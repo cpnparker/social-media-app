@@ -22,18 +22,7 @@ import { Input } from "@/components/ui/input";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
-
-const typeColors: Record<string, string> = {
-  article: "bg-blue-500/10 text-blue-500",
-  video: "bg-red-500/10 text-red-500",
-  graphic: "bg-pink-500/10 text-pink-500",
-  thread: "bg-violet-500/10 text-violet-500",
-  newsletter: "bg-amber-500/10 text-amber-500",
-  podcast: "bg-green-500/10 text-green-500",
-  blog: "bg-indigo-500/10 text-indigo-500",
-  social: "bg-sky-500/10 text-sky-500",
-  other: "bg-gray-500/10 text-gray-500",
-};
+import { typeColors } from "@/lib/content-type-utils";
 
 function deriveStatus(totalTasks: number, doneTasks: number, itemStatus: string) {
   if (itemStatus === "published") return { label: "Published", color: "bg-emerald-500/10 text-emerald-600" };

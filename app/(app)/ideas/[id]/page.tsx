@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import Link from "next/link";
+import { getTypeIcon } from "@/lib/content-type-utils";
 
 const statusConfig: Record<string, { color: string; bg: string; label: string }> = {
   submitted: { color: "text-blue-600", bg: "bg-blue-500/10", label: "New" },
@@ -37,16 +38,6 @@ const statusConfig: Record<string, { color: string; bg: string; label: string }>
   rejected: { color: "text-red-500", bg: "bg-red-500/10", label: "Spiked" },
   shortlisted: { color: "text-amber-500", bg: "bg-amber-500/10", label: "Pending" },
 };
-
-const contentTypes = [
-  { value: "article", label: "Article", icon: "📝" },
-  { value: "video", label: "Video", icon: "🎬" },
-  { value: "graphic", label: "Graphic", icon: "🎨" },
-  { value: "thread", label: "Thread", icon: "🧵" },
-  { value: "newsletter", label: "Newsletter", icon: "📧" },
-  { value: "podcast", label: "Podcast", icon: "🎙️" },
-  { value: "other", label: "Other", icon: "📋" },
-];
 
 // Auto-linkify URLs in text
 function LinkifiedText({ text }: { text: string }) {
@@ -162,6 +153,9 @@ export default function IdeaDetailPage() {
   const [uploadingImage, setUploadingImage] = useState(false);
   const [generatingImage, setGeneratingImage] = useState(false);
 
+  // Content types (fetched from DB)
+  const [contentTypes, setContentTypes] = useState<{ value: string; label: string; icon: string }[]>([]);
+
   // Customer & Contract state for commission
   const [customers, setCustomers] = useState<any[]>([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
@@ -209,6 +203,27 @@ export default function IdeaDetailPage() {
   useEffect(() => {
     fetchIdea();
   }, [fetchIdea]);
+
+  // Fetch content types from DB
+  useEffect(() => {
+    fetch("/api/content-types")
+      .then((r) => r.json())
+      .then((d) => {
+        const types = (d.contentTypes || [])
+          .filter((t: any) => t.isActive)
+          .map((t: any) => ({
+            value: t.key,
+            label: t.name,
+            icon: getTypeIcon(t.key),
+          }));
+        setContentTypes(types);
+        // Default to first type if current selection isn't in the list
+        if (types.length > 0 && !types.find((t: any) => t.value === commissionContentType)) {
+          setCommissionContentType(types[0].value);
+        }
+      })
+      .catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch customers
   useEffect(() => {

@@ -26,20 +26,10 @@ import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { useRouter } from "next/navigation";
 import "react-big-calendar/lib/css/react-big-calendar.css";
+import { typeCalendarColors as typeColors } from "@/lib/content-type-utils";
 
 const locales = { "en-US": enUS };
 const localizer = dateFnsLocalizer({ format, parse, startOfWeek, getDay, locales });
-
-// Content type colors
-const typeColors: Record<string, { bg: string; border: string; text: string }> = {
-  article: { bg: "#3b82f6", border: "#2563eb", text: "Article" },
-  video: { bg: "#ef4444", border: "#dc2626", text: "Video" },
-  graphic: { bg: "#ec4899", border: "#db2777", text: "Graphic" },
-  thread: { bg: "#8b5cf6", border: "#7c3aed", text: "Thread" },
-  newsletter: { bg: "#f59e0b", border: "#d97706", text: "Newsletter" },
-  podcast: { bg: "#22c55e", border: "#16a34a", text: "Podcast" },
-  other: { bg: "#6b7280", border: "#4b5563", text: "Other" },
-};
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
