@@ -1,33 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 
-// Helper: fetch the full task from the view and return a consistent shape
-async function getFullTask(taskId: number) {
-  const { data: t } = await supabase
-    .from("app_tasks_content")
-    .select("*")
-    .eq("id_task", taskId)
-    .single();
-
-  if (!t) return null;
-
-  return {
-    id: String(t.id_task),
-    contentObjectId: t.id_content ? String(t.id_content) : null,
-    title: t.type_task,
-    status: t.date_completed ? "done" : "todo",
-    assignedTo: t.id_user_assignee ? String(t.id_user_assignee) : null,
-    assignedToName: t.name_user_assignee,
-    sortOrder: t.order_sort,
-    notes: t.information_notes,
-    contentUnits: Number(t.units_content) || 0,
-    createdAt: t.date_created,
-    completedAt: t.date_completed,
-    dueDate: t.date_deadline,
-    isCurrent: t.flag_task_current === "true" || t.flag_task_current === "1",
-  };
-}
-
 // PUT /api/production-tasks/[id]
 export async function PUT(
   req: NextRequest,
@@ -63,24 +36,37 @@ export async function PUT(
       updateData.user_completed = null;
     }
 
-    const { error } = await supabase
+    // Update and return the row from the base table (not the materialized view)
+    const { data: updated, error } = await supabase
       .from("tasks_content")
       .update(updateData)
       .eq("id_task", taskId)
-      .is("date_deleted", null);
+      .is("date_deleted", null)
+      .select("*")
+      .single();
 
-    if (error) {
-      return NextResponse.json({ error: "Task not found" }, { status: 404 });
+    if (error || !updated) {
+      console.error("Task update error:", error?.message, "taskId:", taskId);
+      return NextResponse.json({ error: error?.message || "Task not found" }, { status: 404 });
     }
 
-    // Re-fetch from view for complete response with joined user names etc.
-    const task = await getFullTask(taskId);
-    if (!task) {
-      return NextResponse.json({ error: "Task not found" }, { status: 404 });
-    }
-
-    return NextResponse.json({ task });
+    return NextResponse.json({
+      task: {
+        id: String(updated.id_task),
+        contentObjectId: updated.id_content ? String(updated.id_content) : null,
+        title: updated.type_task,
+        status: updated.date_completed ? "done" : "todo",
+        assignedTo: updated.user_assignee ? String(updated.user_assignee) : null,
+        sortOrder: updated.order_sort,
+        notes: updated.information_notes,
+        contentUnits: Number(updated.units_content) || 0,
+        createdAt: updated.date_created,
+        completedAt: updated.date_completed,
+        dueDate: updated.date_deadline,
+      },
+    });
   } catch (error: any) {
+    console.error("Task PUT exception:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
