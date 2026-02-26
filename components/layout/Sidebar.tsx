@@ -298,7 +298,7 @@ export function Sidebar({ onClose }: SidebarProps) {
       </div>
 
       {/* ──── Navigation Sections ──── */}
-      <nav className="flex-1 overflow-y-auto scrollbar-hide px-3 pb-4 mt-1">
+      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-hide px-3 pb-4 mt-1">
         <div className="space-y-1">
           {navSections.map((section) => {
             const Icon = section.icon;
