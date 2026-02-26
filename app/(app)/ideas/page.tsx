@@ -76,7 +76,8 @@ function IdeasPageContent() {
     setLoading(true);
     try {
       let url = `/api/ideas?sortBy=${sortBy}&limit=100`;
-      if (activeTab !== "all") url += `&status=${activeTab}`;
+      const tabToDbStatus: Record<string, string> = { submitted: "new", commissioned: "commissioned", rejected: "spiked" };
+      if (activeTab !== "all") url += `&status=${tabToDbStatus[activeTab] || activeTab}`;
       // Context customer overrides local filter when set
       const effectiveCustomerId = selectedCustomerId || customerFilter;
       if (effectiveCustomerId) url += `&customerId=${effectiveCustomerId}`;
@@ -167,12 +168,12 @@ function IdeasPageContent() {
             )}
             AI Suggest
           </Button>
-          <Link href="/ideas/new">
-            <Button size="sm" className="gap-2">
+          <Button asChild size="sm" className="gap-2">
+            <Link href="/ideas/new">
               <Plus className="h-4 w-4" />
               New Idea
-            </Button>
-          </Link>
+            </Link>
+          </Button>
         </div>
       </div>
 
@@ -247,12 +248,12 @@ function IdeasPageContent() {
               Start capturing content ideas or let AI suggest some
             </p>
             <div className="flex gap-2">
-              <Link href="/ideas/new">
-                <Button size="sm" className="gap-2">
+              <Button asChild size="sm" className="gap-2">
+                <Link href="/ideas/new">
                   <Plus className="h-4 w-4" />
                   Create Idea
-                </Button>
-              </Link>
+                </Link>
+              </Button>
               <Button
                 variant="outline"
                 size="sm"

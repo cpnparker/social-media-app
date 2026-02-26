@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
     const insertData: Record<string, any> = {
       name_idea: title,
       information_brief: description || null,
-      status: "submitted",
+      status: "new",
       date_created: new Date().toISOString(),
     };
 

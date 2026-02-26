@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -30,12 +30,19 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import Link from "next/link";
-import { getTypeIcon } from "@/lib/content-type-utils";
+import { cn } from "@/lib/utils";
+import {
+  getTypeIcon,
+  categorizeContentType,
+  findDefaultCU,
+  CATEGORY_ORDER,
+  CATEGORY_ICONS,
+} from "@/lib/content-type-utils";
 
 const statusConfig: Record<string, { color: string; bg: string; label: string }> = {
-  submitted: { color: "text-blue-600", bg: "bg-blue-500/10", label: "New" },
+  new: { color: "text-blue-600", bg: "bg-blue-500/10", label: "New" },
   commissioned: { color: "text-green-600", bg: "bg-green-500/10", label: "Commissioned" },
-  rejected: { color: "text-red-500", bg: "bg-red-500/10", label: "Spiked" },
+  spiked: { color: "text-red-500", bg: "bg-red-500/10", label: "Spiked" },
   shortlisted: { color: "text-amber-500", bg: "bg-amber-500/10", label: "Pending" },
 };
 
@@ -150,8 +157,11 @@ export default function IdeaDetailPage() {
   const [autoTagging, setAutoTagging] = useState(false);
   const [commissioning, setCommissioning] = useState(false);
   const [commissionContentType, setCommissionContentType] = useState("article");
+  const [activeCategory, setActiveCategory] = useState("Written");
   const [uploadingImage, setUploadingImage] = useState(false);
   const [generatingImage, setGeneratingImage] = useState(false);
+  const [imageSuggestions, setImageSuggestions] = useState<{ keyword: string; thumbnailUrl: string; searchUrl: string }[]>([]);
+  const [selectingImage, setSelectingImage] = useState<string | null>(null);
 
   // Content types (fetched from DB)
   const [contentTypes, setContentTypes] = useState<{ value: string; label: string; icon: string }[]>([]);
@@ -281,16 +291,35 @@ export default function IdeaDetailPage() {
     }
   }, [selectedContractId, customerContracts]);
 
+  // Group content types by category and compute default CU for each
+  const groupedTypes = useMemo(() => {
+    const groups: Record<string, { value: string; label: string; icon: string; cu: number | null }[]> = {};
+    for (const type of contentTypes) {
+      const cat = categorizeContentType(type.value);
+      if (!groups[cat]) groups[cat] = [];
+      const cu = findDefaultCU(type.value, cuDefinitions);
+      groups[cat].push({ ...type, cu });
+    }
+    return groups;
+  }, [contentTypes, cuDefinitions]);
+
+  const availableCategories = useMemo(() => {
+    return CATEGORY_ORDER.filter(cat => (groupedTypes[cat] || []).length > 0);
+  }, [groupedTypes]);
+
+  // Set default category to the first available when content types load
+  useEffect(() => {
+    if (availableCategories.length > 0 && !availableCategories.includes(activeCategory)) {
+      setActiveCategory(availableCategories[0]);
+    }
+  }, [availableCategories]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Auto-fill CU cost when content type changes
   useEffect(() => {
     if (cuDefinitions.length > 0 && commissionContentType) {
-      // Find a matching definition by category or name
-      const match = cuDefinitions.find((d: any) =>
-        d.formatName?.toLowerCase().includes(commissionContentType) ||
-        d.category === commissionContentType
-      );
-      if (match) {
-        setCuCost(String(match.defaultContentUnits));
+      const cu = findDefaultCU(commissionContentType, cuDefinitions);
+      if (cu !== null) {
+        setCuCost(String(cu));
       }
     }
   }, [commissionContentType, cuDefinitions]);
@@ -385,7 +414,8 @@ export default function IdeaDetailPage() {
         return;
       }
       if (data.contentObject?.id) {
-        router.push(`/content/${data.contentObject.id}`);
+        // Refresh the idea data to show the new content object
+        await fetchIdea();
       }
     } catch (err) {
       console.error("Commission failed:", err);
@@ -427,28 +457,47 @@ export default function IdeaDetailPage() {
 
   const handleGenerateImageSuggestions = async () => {
     setGeneratingImage(true);
+    setImageSuggestions([]);
     try {
-      const res = await fetch("/api/ai", {
+      const res = await fetch("/api/image-suggestions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "generate",
-          topic: `Suggest 3 image search keywords for a content piece titled "${title}". ${description ? `Description: ${description.substring(0, 200)}` : ""}. Return ONLY a comma-separated list of 3 search terms, nothing else.`,
-          platform: "internal",
-        }),
+        body: JSON.stringify({ title, description }),
       });
       const data = await res.json();
-      if (data.content) {
-        const searchQuery = encodeURIComponent(data.content.split(",")[0]?.trim() || title);
-        window.open(`https://unsplash.com/s/photos/${searchQuery}`, "_blank");
+      if (data.suggestions?.length) {
+        setImageSuggestions(data.suggestions);
       }
     } catch (err) {
       console.error("Image suggestion failed:", err);
-      // Fallback: open search with title
-      const searchQuery = encodeURIComponent(title);
-      window.open(`https://unsplash.com/s/photos/${searchQuery}`, "_blank");
     } finally {
       setGeneratingImage(false);
+    }
+  };
+
+  const handleSelectSuggestion = async (suggestion: { keyword: string; thumbnailUrl: string }) => {
+    setSelectingImage(suggestion.keyword);
+    try {
+      // Use server-side proxy to fetch and upload (avoids CORS)
+      const res = await fetch("/api/image-proxy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: suggestion.thumbnailUrl,
+          filename: `cover-${suggestion.keyword.replace(/\s+/g, "-")}`,
+        }),
+      });
+      const data = await res.json();
+
+      if (data.url) {
+        setImageUrl(data.url);
+        setImageSuggestions([]);
+        await saveIdea({ imageUrl: data.url });
+      }
+    } catch (err) {
+      console.error("Failed to select suggestion:", err);
+    } finally {
+      setSelectingImage(null);
     }
   };
 
@@ -461,9 +510,9 @@ export default function IdeaDetailPage() {
     saveIdea({ title, description, topicTags, strategicTags, eventTags, imageUrl });
   };
 
-  const canCommission = idea && idea.status !== "commissioned" && idea.status !== "rejected";
+  const canCommission = idea && idea.status !== "spiked";
   const isCommissioned = idea?.status === "commissioned";
-  const isRejected = idea?.status === "rejected";
+  const isRejected = idea?.status === "spiked";
 
   if (loading) {
     return (
@@ -484,7 +533,7 @@ export default function IdeaDetailPage() {
     );
   }
 
-  const statusInfo = statusConfig[idea.status] || statusConfig.submitted;
+  const statusInfo = statusConfig[idea.status] || statusConfig.new;
   const score = idea.predictedEngagementScore;
   const scoreColor = score >= 70 ? "text-green-500" : score >= 40 ? "text-amber-500" : "text-red-400";
 
@@ -549,6 +598,74 @@ export default function IdeaDetailPage() {
                   </Button>
                 </div>
               </div>
+            ) : imageSuggestions.length > 0 ? (
+              <div className="p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">Pick a cover image</p>
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="gap-1.5 h-7 text-xs"
+                      onClick={handleGenerateImageSuggestions}
+                      disabled={generatingImage}
+                    >
+                      {generatingImage ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wand2 className="h-3 w-3" />}
+                      Regenerate
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs text-muted-foreground"
+                      onClick={() => setImageSuggestions([])}
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {imageSuggestions.map((s) => (
+                    <button
+                      key={s.keyword}
+                      onClick={() => handleSelectSuggestion(s)}
+                      disabled={!!selectingImage}
+                      className={cn(
+                        "relative rounded-lg overflow-hidden aspect-[4/3] bg-muted group transition-all",
+                        selectingImage === s.keyword && "ring-2 ring-violet-500",
+                        selectingImage && selectingImage !== s.keyword && "opacity-50"
+                      )}
+                    >
+                      <img
+                        src={s.thumbnailUrl}
+                        alt={s.keyword}
+                        className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                        loading="lazy"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+                      <span className="absolute bottom-1.5 left-2 right-2 text-[10px] text-white font-medium truncate">
+                        {s.keyword}
+                      </span>
+                      {selectingImage === s.keyword && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+                          <Loader2 className="h-5 w-5 text-white animate-spin" />
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 h-7 text-xs"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploadingImage}
+                  >
+                    {uploadingImage ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+                    Upload instead
+                  </Button>
+                </div>
+              </div>
             ) : (
               <div className="h-44 bg-gradient-to-br from-muted/50 to-muted flex flex-col items-center justify-center gap-3">
                 <div className="h-12 w-12 rounded-xl bg-muted-foreground/10 flex items-center justify-center">
@@ -574,7 +691,7 @@ export default function IdeaDetailPage() {
                     disabled={generatingImage}
                   >
                     {generatingImage ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
-                    AI Search
+                    AI Suggest
                   </Button>
                   <Button
                     size="sm"
@@ -805,29 +922,91 @@ export default function IdeaDetailPage() {
 
           {/* Commission CTA — the primary action */}
           {canCommission && (
-            <Card className="border-0 shadow-sm bg-gradient-to-br from-violet-500/5 via-blue-500/5 to-cyan-500/5 ring-1 ring-violet-500/20">
-              <CardContent className="p-5 space-y-4">
-                <div className="flex items-center gap-2">
-                  <div className="h-8 w-8 rounded-lg bg-violet-500/10 flex items-center justify-center">
-                    <Rocket className="h-4 w-4 text-violet-600" />
+            <Card className="border-0 shadow-sm ring-1 ring-violet-500/20 overflow-hidden">
+              {/* Header */}
+              <div className="px-4 pt-3.5 pb-3 bg-gradient-to-r from-violet-500/8 to-blue-500/5 flex items-center gap-2.5">
+                <div className="h-7 w-7 rounded-md bg-violet-500/15 flex items-center justify-center shrink-0">
+                  <Rocket className="h-3.5 w-3.5 text-violet-600" />
+                </div>
+                <h3 className="text-[13px] font-semibold tracking-tight">Commission Content</h3>
+              </div>
+
+              <CardContent className="p-4 space-y-3">
+                {/* Content Type — category tabs + list */}
+                <div>
+                  <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2 block">Type</label>
+
+                  {/* Category tabs */}
+                  <div className="flex gap-1 mb-2 flex-wrap">
+                    {availableCategories.map((cat) => (
+                      <button
+                        key={cat}
+                        onClick={() => setActiveCategory(cat)}
+                        className={cn(
+                          "inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold rounded-md transition-colors",
+                          activeCategory === cat
+                            ? "bg-violet-600 text-white shadow-sm"
+                            : "bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        )}
+                      >
+                        <span className="leading-none">{CATEGORY_ICONS[cat]}</span>
+                        {cat}
+                      </button>
+                    ))}
                   </div>
-                  <div>
-                    <h3 className="text-sm font-semibold">Commission Content</h3>
-                    <p className="text-[11px] text-muted-foreground">Turn this idea into content</p>
+
+                  {/* Types in selected category */}
+                  <div className="rounded-lg border bg-muted/20 overflow-hidden max-h-[160px] overflow-y-auto">
+                    {(groupedTypes[activeCategory] || []).map((type, idx) => (
+                      <button
+                        key={type.value}
+                        onClick={() => setCommissionContentType(type.value)}
+                        className={cn(
+                          "w-full flex items-center gap-2.5 px-3 py-[7px] text-xs transition-all text-left",
+                          idx > 0 && "border-t border-border/40",
+                          commissionContentType === type.value
+                            ? "bg-violet-500/10"
+                            : "hover:bg-muted/60"
+                        )}
+                      >
+                        <span className={cn(
+                          "h-1.5 w-1.5 rounded-full shrink-0 transition-colors",
+                          commissionContentType === type.value ? "bg-violet-600" : "bg-border"
+                        )} />
+                        <span className={cn(
+                          "flex-1 truncate",
+                          commissionContentType === type.value
+                            ? "text-violet-700 dark:text-violet-400 font-medium"
+                            : "text-foreground"
+                        )}>
+                          {type.label}
+                        </span>
+                        {type.cu !== null && (
+                          <span className={cn(
+                            "text-[10px] font-mono tabular-nums shrink-0",
+                            commissionContentType === type.value
+                              ? "text-violet-500 dark:text-violet-400"
+                              : "text-muted-foreground/70"
+                          )}>
+                            {type.cu.toFixed(2)}
+                          </span>
+                        )}
+                      </button>
+                    ))}
                   </div>
                 </div>
 
                 {/* Customer selector */}
                 {customers.length > 0 && (
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Customer</label>
+                    <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5 block">Customer</label>
                     <select
                       value={selectedCustomerId}
                       onChange={(e) => {
                         setSelectedCustomerId(e.target.value);
                         saveIdea({ customerId: e.target.value || null });
                       }}
-                      className="w-full h-8 rounded-md border bg-background px-2 text-sm"
+                      className="w-full h-8 rounded-md border bg-background px-2.5 text-xs"
                     >
                       <option value="">No customer</option>
                       {customers.map((c: any) => (
@@ -837,118 +1016,108 @@ export default function IdeaDetailPage() {
                   </div>
                 )}
 
-                {/* Contract selector (shown if customer selected) */}
+                {/* Contract + CU row */}
                 {selectedCustomerId && customerContracts.length > 0 && (
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Contract</label>
-                    <select
-                      value={selectedContractId}
-                      onChange={(e) => setSelectedContractId(e.target.value)}
-                      className="w-full h-8 rounded-md border bg-background px-2 text-sm"
-                    >
-                      <option value="">Select contract...</option>
-                      {customerContracts.map((c: any) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name} ({((c.totalContentUnits || 0) + (c.rolloverUnits || 0) - (c.usedContentUnits || 0)).toFixed(1)} CU left)
-                        </option>
-                      ))}
-                    </select>
+                  <div className="space-y-2">
+                    <div className={selectedContractId ? "grid grid-cols-[1fr,4.5rem] gap-2 items-end" : ""}>
+                      <div>
+                        <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5 block">Contract</label>
+                        <select
+                          value={selectedContractId}
+                          onChange={(e) => setSelectedContractId(e.target.value)}
+                          className="w-full h-8 rounded-md border bg-background px-2.5 text-xs"
+                        >
+                          <option value="">Select...</option>
+                          {customerContracts.map((c: any) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name} ({((c.totalContentUnits || 0) + (c.rolloverUnits || 0) - (c.usedContentUnits || 0)).toFixed(1)} CU)
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {selectedContractId && (
+                        <div>
+                          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5 block">CU</label>
+                          <Input
+                            type="number"
+                            step="0.05"
+                            min="0"
+                            value={cuCost}
+                            onChange={(e) => setCuCost(e.target.value)}
+                            placeholder="1.0"
+                            className="h-8 text-xs text-center"
+                          />
+                        </div>
+                      )}
+                    </div>
                     {contractBalance && (
-                      <div className="mt-2 flex items-center gap-2">
-                        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
                           <div
-                            className={`h-full rounded-full transition-all ${
+                            className={cn(
+                              "h-full rounded-full transition-all",
                               contractBalance.remaining < parseFloat(cuCost || "0")
                                 ? "bg-red-500"
-                                : "bg-blue-500"
-                            }`}
+                                : "bg-violet-500"
+                            )}
                             style={{ width: `${contractBalance.total > 0 ? Math.min(100, (contractBalance.used / contractBalance.total) * 100) : 0}%` }}
                           />
                         </div>
-                        <span className="text-[10px] text-muted-foreground whitespace-nowrap">
-                          {contractBalance.remaining.toFixed(1)} CU left
+                        <span className="text-[10px] text-muted-foreground whitespace-nowrap font-medium tabular-nums">
+                          {contractBalance.remaining.toFixed(1)} left
                         </span>
                       </div>
                     )}
-                  </div>
-                )}
-
-                {/* CU cost */}
-                {selectedContractId && (
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Content Units Cost</label>
-                    <Input
-                      type="number"
-                      step="0.05"
-                      min="0"
-                      value={cuCost}
-                      onChange={(e) => setCuCost(e.target.value)}
-                      placeholder="e.g. 1.0"
-                      className="h-8 text-sm"
-                    />
                     {contractBalance && cuCost && parseFloat(cuCost) > contractBalance.remaining && (
-                      <p className="text-[11px] text-red-500 mt-1 font-medium">
-                        ⚠ Insufficient balance ({contractBalance.remaining.toFixed(1)} CU available)
+                      <p className="text-[10px] text-red-500 font-medium">
+                        Insufficient balance ({contractBalance.remaining.toFixed(1)} CU available)
                       </p>
                     )}
                   </div>
                 )}
 
-                <div>
-                  <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Content Type</label>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {contentTypes.map((type) => (
-                      <button
-                        key={type.value}
-                        onClick={() => setCommissionContentType(type.value)}
-                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all ${
-                          commissionContentType === type.value
-                            ? "bg-violet-500/15 text-violet-700 ring-1 ring-violet-500/30"
-                            : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
-                        }`}
-                      >
-                        <span>{type.icon}</span>
-                        {type.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
+                {/* Commission button */}
                 <Button
-                  className="w-full gap-2 bg-violet-600 hover:bg-violet-700 text-white shadow-md"
+                  className="w-full gap-2 bg-violet-600 hover:bg-violet-700 text-white shadow-sm h-9 text-xs font-semibold"
                   onClick={handleCommission}
                   disabled={commissioning || (!!selectedContractId && !!cuCost && contractBalance !== null && parseFloat(cuCost) > contractBalance.remaining)}
                 >
                   {commissioning ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
-                    <Rocket className="h-4 w-4" />
+                    <Rocket className="h-3.5 w-3.5" />
                   )}
-                  Commission {contentTypes.find((t) => t.value === commissionContentType)?.label}
+                  Commission as {contentTypes.find((t) => t.value === commissionContentType)?.label || commissionContentType}
                 </Button>
               </CardContent>
             </Card>
           )}
 
-          {/* Already commissioned message */}
+          {/* Existing commissioned content */}
           {isCommissioned && contentObjects.length > 0 && (
             <Card className="border-0 shadow-sm bg-green-500/5 ring-1 ring-green-500/20">
-              <CardContent className="p-5 text-center space-y-3">
-                <div className="h-10 w-10 rounded-full bg-green-500/10 flex items-center justify-center mx-auto">
-                  <Rocket className="h-5 w-5 text-green-600" />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-green-700">Commissioned</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    This idea is now in production
+              <CardContent className="p-4 space-y-2.5">
+                <div className="flex items-center gap-2">
+                  <div className="h-6 w-6 rounded-md bg-green-500/10 flex items-center justify-center shrink-0">
+                    <Rocket className="h-3.5 w-3.5 text-green-600" />
+                  </div>
+                  <p className="text-xs font-semibold text-green-700">
+                    {contentObjects.length} content item{contentObjects.length > 1 ? "s" : ""} commissioned
                   </p>
                 </div>
-                <Link href={`/content/${contentObjects[0].id}`}>
-                  <Button variant="outline" size="sm" className="gap-1.5 w-full">
-                    <FileText className="h-3.5 w-3.5" />
-                    View Content
+                {contentObjects.slice(0, 3).map((obj: any) => (
+                  <Button key={obj.id} asChild variant="outline" size="sm" className="gap-1.5 w-full justify-start text-xs h-8">
+                    <Link href={`/content/${obj.id}`}>
+                      <FileText className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{obj.workingTitle || obj.finalTitle || obj.contentType}</span>
+                    </Link>
                   </Button>
-                </Link>
+                ))}
+                {contentObjects.length > 3 && (
+                  <p className="text-[10px] text-muted-foreground text-center">
+                    +{contentObjects.length - 3} more — see Commissioned Content below
+                  </p>
+                )}
               </CardContent>
             </Card>
           )}
@@ -1018,7 +1187,7 @@ export default function IdeaDetailPage() {
                   variant="outline"
                   size="sm"
                   className="w-full"
-                  onClick={() => saveIdea({ status: "submitted" })}
+                  onClick={() => saveIdea({ status: "new" })}
                   disabled={saving}
                 >
                   Reopen Idea
@@ -1030,7 +1199,7 @@ export default function IdeaDetailPage() {
                   variant="outline"
                   size="sm"
                   className="w-full text-red-500 hover:text-red-600 hover:bg-red-500/5"
-                  onClick={() => saveIdea({ status: "rejected" })}
+                  onClick={() => saveIdea({ status: "spiked" })}
                   disabled={saving}
                 >
                   Spike Idea

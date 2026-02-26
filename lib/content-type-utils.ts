@@ -103,3 +103,117 @@ export function getTypeCalendarColor(
 export function getTypeIcon(key: string | null | undefined): string {
   return typeIcons[(key || "").toLowerCase()] || typeIcons.other;
 }
+
+// ── Content type categories (for commission picker grouping) ──────────
+
+const CATEGORY_MAP: Record<string, string> = {
+  // Written
+  article: "Written",
+  article_interview: "Written",
+  collection: "Written",
+  // Video
+  video: "Video",
+  animation: "Video",
+  animated_graphic: "Video",
+  hype_video: "Video",
+  templated_video: "Video",
+  audiogram: "Video",
+  sting_quote: "Video",
+  // Visual
+  image: "Visual",
+  infographic: "Visual",
+  poster: "Visual",
+  graphic: "Visual",
+  templated_carousel: "Visual",
+  templated_social_card: "Visual",
+  social_card: "Visual",
+  social_story: "Visual",
+  social_only: "Visual",
+  // Strategy
+  service: "Strategy",
+  service_analytics_report: "Strategy",
+  strategy: "Strategy",
+  strategy_discovery_module: "Strategy",
+  strategy_research_module: "Strategy",
+  strategy_development_module: "Strategy",
+  strategy_monitoring_module: "Strategy",
+  content_audit: "Strategy",
+  competitor_analysis: "Strategy",
+};
+
+/** Categorise a content type key into a group. */
+export function categorizeContentType(key: string): string {
+  if (CATEGORY_MAP[key]) return CATEGORY_MAP[key];
+
+  // Keyword-based fallback for future types
+  const k = key.toLowerCase();
+  if (k.includes("article") || k.includes("blog") || k.includes("newsletter") || k.includes("written") || k.includes("essay")) return "Written";
+  if (k.includes("video") || k.includes("animat") || k.includes("hype") || k.includes("audiogram") || k.includes("sting")) return "Video";
+  if (k.includes("image") || k.includes("graphic") || k.includes("visual") || k.includes("carousel") || k.includes("card") || k.includes("poster") || k.includes("infographic") || k.includes("photo") || k.includes("social")) return "Visual";
+  if (k.includes("service") || k.includes("strategy") || k.includes("audit") || k.includes("analysis") || k.includes("module")) return "Strategy";
+
+  return "Other";
+}
+
+/** Ordered list of categories for display. */
+export const CATEGORY_ORDER: string[] = ["Written", "Video", "Visual", "Strategy", "Other"];
+
+/** Emoji icons per category. */
+export const CATEGORY_ICONS: Record<string, string> = {
+  Written: "✍️",
+  Video: "🎬",
+  Visual: "🎨",
+  Strategy: "⚙️",
+  Other: "📋",
+};
+
+/**
+ * Find the best matching CU value for a content type key
+ * by fuzzy-matching against CU definition format names.
+ */
+export function findDefaultCU(
+  typeKey: string,
+  cuDefinitions: { formatName?: string; category?: string; defaultContentUnits: number }[]
+): number | null {
+  if (!cuDefinitions.length || !typeKey) return null;
+
+  const search = typeKey.replace(/_/g, " ").toLowerCase();
+
+  // 1. formatName contains the full search term
+  let match = cuDefinitions.find((d) =>
+    (d.formatName || "").toLowerCase().includes(search)
+  );
+  if (match) return match.defaultContentUnits;
+
+  // 2. All words (3+ chars) appear in formatName
+  const words = search.split(" ").filter((w) => w.length >= 3);
+  if (words.length > 1) {
+    match = cuDefinitions.find((d) => {
+      const fn = (d.formatName || "").toLowerCase();
+      return words.every((w) => fn.includes(w));
+    });
+    if (match) return match.defaultContentUnits;
+  }
+
+  // 3. First significant word matches
+  if (words.length > 0) {
+    match = cuDefinitions.find((d) =>
+      (d.formatName || "").toLowerCase().includes(words[0])
+    );
+    if (match) return match.defaultContentUnits;
+  }
+
+  // 4. Category-based median
+  const cat = categorizeContentType(typeKey);
+  const catMap: Record<string, string> = { Written: "text", Video: "video", Visual: "visual", Strategy: "text" };
+  const cuCat = catMap[cat];
+  if (cuCat) {
+    const catDefs = cuDefinitions.filter((d) => d.category === cuCat);
+    if (catDefs.length > 0) {
+      const sorted = [...catDefs].sort((a, b) => a.defaultContentUnits - b.defaultContentUnits);
+      return sorted[Math.floor(sorted.length / 2)].defaultContentUnits;
+    }
+  }
+
+  return null;
+}
