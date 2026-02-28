@@ -33,6 +33,7 @@ import {
   Tag,
   Calendar,
   Flag,
+  ClipboardList,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -112,6 +113,14 @@ const navSections: NavSection[] = [
       { label: "Topics", href: "/topics" },
       { label: "Events", href: "/events" },
       { label: "Campaigns", href: "/campaigns" },
+    ],
+  },
+  {
+    label: "Operations",
+    icon: ClipboardList,
+    defaultOpen: false,
+    items: [
+      { label: "Commissioned CUs", href: "/operations/commissioned-cus" },
     ],
   },
   {
