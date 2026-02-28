@@ -121,6 +121,8 @@ const navSections: NavSection[] = [
     defaultOpen: false,
     items: [
       { label: "Commissioned CUs", href: "/operations/commissioned-cus" },
+      { label: "Work in Progress", href: "/operations/work-in-progress" },
+      { label: "Duty Editor", href: "/operations/duty-editor" },
     ],
   },
   {
