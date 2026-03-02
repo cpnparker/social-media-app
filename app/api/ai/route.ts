@@ -32,6 +32,16 @@ export async function POST(req: NextRequest) {
         return handleSuggestIdeas(body);
       case "promo-drafts":
         return handlePromoDrafts(body);
+      case "generate-content":
+        return handleGenerateContent(body);
+      case "research-topics":
+        return handleResearchTopics(body);
+      case "suggest-themes":
+        return handleSuggestThemes(body);
+      case "fact-check":
+        return handleFactCheck(body);
+      case "detect-ai":
+        return handleDetectAi(body);
       default:
         return NextResponse.json(
           { error: "Invalid action" },
@@ -549,5 +559,340 @@ Rules:
     return NextResponse.json({ drafts });
   } catch {
     return NextResponse.json({ drafts: [] });
+  }
+}
+
+// Generate long-form content for the content editor (articles, scripts, etc.)
+async function handleGenerateContent(body: any) {
+  try {
+    const {
+      contentType,
+      contentTypeName,
+      title,
+      brief,
+      topicTags,
+      customerName,
+      ideaTitle,
+      customPrompt,
+      tone,
+      length,
+      additionalInstructions,
+      documentTemplates,
+    } = body;
+
+    const typeName = contentTypeName || contentType || "written";
+
+    // Build system prompt — use custom prompt from settings or smart default
+    const defaultSystemPrompt = `You are an expert editor and subject-matter authority with decades of experience producing exceptional ${typeName} content. You combine deep topic expertise with masterful writing craft.
+
+Your writing demonstrates:
+- Authoritative knowledge that builds reader trust
+- Engaging structure with strong hooks and clear flow
+- Perfect adaptation to the target audience
+- Publication-ready quality requiring minimal editing
+- Rich detail, concrete examples, and actionable insights
+
+Write as the expert you are — not as an AI assistant. Never start with "In today's..." or other cliched openings. Never refer to yourself. Just produce excellent content.`;
+
+    // Interpolate variables in custom prompt if provided
+    let systemPrompt = defaultSystemPrompt;
+    if (customPrompt && customPrompt.trim()) {
+      systemPrompt = customPrompt
+        .replace(/\{content_type\}/gi, typeName)
+        .replace(/\{title\}/gi, title || "")
+        .replace(/\{brief\}/gi, brief || "")
+        .replace(/\{topics\}/gi, (topicTags || []).join(", "))
+        .replace(/\{customer\}/gi, customerName || "");
+    }
+
+    // Build tone guidance
+    const toneGuides: Record<string, string> = {
+      professional: "Use a professional, polished tone. Authoritative and clear.",
+      casual: "Use a casual, friendly, conversational tone. Approachable and warm.",
+      engaging: "Use a highly engaging tone with strong hooks, vivid language, and compelling storytelling.",
+      authoritative: "Use an authoritative, expert tone. Confident, data-driven, thought-leadership style.",
+      conversational: "Use a conversational, relatable tone. Write as if speaking to a knowledgeable peer.",
+    };
+    const toneGuide = toneGuides[tone] || toneGuides.professional;
+
+    // Build length guidance
+    const lengthGuides: Record<string, string> = {
+      brief: "Keep it concise — approximately 300 words. Hit the key points efficiently.",
+      standard: "Write a thorough piece — approximately 600 words. Cover the topic well with good structure.",
+      detailed: "Write a comprehensive, in-depth piece — approximately 1000+ words. Include sections, subheadings, and detailed coverage.",
+    };
+    const lengthGuide = lengthGuides[length] || lengthGuides.standard;
+
+    // Assemble user prompt from all available context
+    const contextParts: string[] = [];
+    contextParts.push(`Content Type: ${typeName}`);
+    if (title) contextParts.push(`Title: ${title}`);
+    if (brief) contextParts.push(`Brief/Description: ${brief}`);
+    if (topicTags?.length > 0) contextParts.push(`Topics: ${topicTags.join(", ")}`);
+    if (customerName) contextParts.push(`Client: ${customerName}`);
+    if (ideaTitle && ideaTitle !== title) contextParts.push(`Original Idea: ${ideaTitle}`);
+
+    // Add document template context if available
+    if (documentTemplates && documentTemplates.length > 0) {
+      const templateInfo = documentTemplates
+        .map((dt: any) => `- ${dt.key} (${dt.documentTarget || "body"})`)
+        .join("\n");
+      contextParts.push(`\nThis content type uses document templates:\n${templateInfo}\nThe output will be pasted into a Google Doc that follows these template structures. Match the expected format and sections of the template.`);
+    }
+
+    const userPrompt = `Write ${typeName} content based on the following:
+
+${contextParts.join("\n")}
+
+Tone: ${toneGuide}
+Length: ${lengthGuide}
+${additionalInstructions ? `\nAdditional instructions: ${additionalInstructions}` : ""}
+
+Rules:
+- Output well-structured HTML suitable for pasting into a Google Doc (use <h2>, <h3>, <p>, <ul>, <li>, <strong>, <em> tags)
+- Start with a compelling opening — no generic introductions
+- Use subheadings to break up the content
+- Include specific examples, data points, or actionable advice where relevant
+- End with a strong conclusion or call to action
+- Do NOT wrap in <html>, <head>, or <body> tags — just the content HTML
+- Do NOT include the title as an <h1> — it's already shown above the editor`;
+
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 4096,
+      messages: [
+        { role: "user", content: `${systemPrompt}\n\n${userPrompt}` },
+      ],
+    });
+
+    const content =
+      message.content[0].type === "text" ? message.content[0].text : "";
+
+    return NextResponse.json({ content: content.trim() });
+  } catch (error: any) {
+    console.error("Generate content error:", error.message || error);
+    return NextResponse.json(
+      { error: error.message || "Failed to generate content" },
+      { status: 500 }
+    );
+  }
+}
+
+// Research topics — gather themes, talking points, data angles for a content piece
+async function handleResearchTopics(body: any) {
+  try {
+    const { title, brief, contentType, topicTags } = body;
+
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 2048,
+      messages: [
+        {
+          role: "user",
+          content: `You are a senior content researcher. Research this content topic and provide structured findings to inform a writer.
+
+Title: ${title || "Untitled"}
+Content Type: ${contentType || "article"}
+Brief: ${brief || "No brief provided"}
+Topics: ${(topicTags || []).join(", ") || "none"}
+
+Return a JSON object with this exact structure:
+{
+  "themes": [
+    { "id": "theme-1", "name": "Theme name", "description": "One sentence description" }
+  ],
+  "talkingPoints": [
+    { "id": "tp-1", "point": "A specific talking point or argument to make", "why": "Brief reason this matters" }
+  ],
+  "dataPoints": [
+    { "id": "dp-1", "stat": "A relevant statistic or data point", "context": "Where this might come from or how to verify" }
+  ],
+  "angles": [
+    { "id": "angle-1", "name": "Angle name", "description": "How to approach the topic from this angle" }
+  ]
+}
+
+Rules:
+- Provide 3-5 items in each category
+- Be specific and actionable — not generic
+- Themes should be distinct content themes within the topic
+- Talking points should be concrete arguments or points to make
+- Data points should be plausible statistics or facts (note they should be verified)
+- Angles should be distinct editorial approaches
+- Return ONLY the JSON object`,
+        },
+      ],
+    });
+
+    const text = message.content[0].type === "text" ? message.content[0].text : "{}";
+    try {
+      const match = text.match(/\{[\s\S]*\}/);
+      return NextResponse.json(match ? JSON.parse(match[0]) : { themes: [], talkingPoints: [], dataPoints: [], angles: [] });
+    } catch {
+      return NextResponse.json({ themes: [], talkingPoints: [], dataPoints: [], angles: [] });
+    }
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message || "Research failed" }, { status: 500 });
+  }
+}
+
+// Suggest themed writing angles based on research
+async function handleSuggestThemes(body: any) {
+  try {
+    const { title, brief, research, contentType } = body;
+
+    const researchContext = research
+      ? `Research findings:\n${JSON.stringify(research, null, 2)}`
+      : "No prior research available.";
+
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1024,
+      messages: [
+        {
+          role: "user",
+          content: `You are a senior content strategist. Suggest 5-6 distinct editorial themes/angles for this content piece.
+
+Title: ${title || "Untitled"}
+Content Type: ${contentType || "article"}
+Brief: ${brief || "No brief provided"}
+${researchContext}
+
+Return a JSON array with this structure:
+[
+  {
+    "id": "theme-1",
+    "name": "Theme Name (3-5 words)",
+    "description": "One sentence describing the angle",
+    "approach": "2-3 sentences on how to execute this approach — what to emphasize, structure suggestions, tone"
+  }
+]
+
+Rules:
+- Suggest 5-6 DISTINCT themes — each must take a genuinely different approach
+- Include a mix: data-driven, narrative, contrarian, practical/how-to, trend-based, opinion
+- Be specific to this topic, not generic
+- Return ONLY the JSON array`,
+        },
+      ],
+    });
+
+    const text = message.content[0].type === "text" ? message.content[0].text : "[]";
+    try {
+      const match = text.match(/\[[\s\S]*\]/);
+      return NextResponse.json({ themes: match ? JSON.parse(match[0]) : [] });
+    } catch {
+      return NextResponse.json({ themes: [] });
+    }
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message || "Theme suggestion failed" }, { status: 500 });
+  }
+}
+
+// Fact-check content — scan for claims and flag unverifiable ones
+async function handleFactCheck(body: any) {
+  try {
+    const { content } = body;
+
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 2048,
+      messages: [
+        {
+          role: "user",
+          content: `You are a rigorous fact-checker and editor. Analyze this content for factual claims and assess their verifiability.
+
+Content:
+${content}
+
+Return a JSON object with this exact structure:
+{
+  "claims": [
+    {
+      "claim": "The specific claim made in the content",
+      "status": "verified" | "likely_accurate" | "unverifiable" | "needs_source" | "potentially_inaccurate",
+      "note": "Brief explanation of why this status was assigned and what to check"
+    }
+  ],
+  "overallScore": 85,
+  "summary": "One paragraph summary of the content's factual reliability"
+}
+
+Rules:
+- Extract ALL factual claims (statistics, dates, named facts, causal claims)
+- Be thorough — check every assertion that presents something as fact
+- overallScore is 0-100 (100 = all claims verified, 0 = all claims problematic)
+- For "verified" claims, note the common knowledge basis
+- For "needs_source" claims, suggest what source could verify it
+- For "potentially_inaccurate" claims, explain what seems wrong
+- Strip HTML tags when quoting claims
+- Return ONLY the JSON object`,
+        },
+      ],
+    });
+
+    const text = message.content[0].type === "text" ? message.content[0].text : "{}";
+    try {
+      const match = text.match(/\{[\s\S]*\}/);
+      return NextResponse.json(match ? JSON.parse(match[0]) : { claims: [], overallScore: 0, summary: "" });
+    } catch {
+      return NextResponse.json({ claims: [], overallScore: 0, summary: "Unable to analyze content." });
+    }
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message || "Fact check failed" }, { status: 500 });
+  }
+}
+
+// Detect AI-written patterns in content
+async function handleDetectAi(body: any) {
+  try {
+    const { content } = body;
+
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1024,
+      messages: [
+        {
+          role: "user",
+          content: `You are an expert in detecting AI-generated writing patterns. Analyze this content for signs of AI authorship and suggest improvements to make it sound more authentically human.
+
+Content:
+${content}
+
+Return a JSON object with this exact structure:
+{
+  "score": 65,
+  "verdict": "likely_ai" | "mixed" | "likely_human",
+  "flags": [
+    {
+      "text": "The specific phrase or pattern flagged",
+      "reason": "Why this feels AI-generated"
+    }
+  ],
+  "suggestions": [
+    "Specific, actionable suggestion to make the content sound more human"
+  ]
+}
+
+Rules:
+- score is 0-100 where 0 = definitely human, 100 = definitely AI
+- Look for: overly perfect structure, formulaic transitions, lack of personal voice, hedging language, "delve/landscape/tapestry/leverage/utilize" words, lists of exactly 3-5 items, generic conclusions
+- flags should quote specific passages (strip HTML tags)
+- suggestions should be concrete and actionable (not generic advice)
+- Provide 3-6 flags and 3-5 suggestions
+- Return ONLY the JSON object`,
+        },
+      ],
+    });
+
+    const text = message.content[0].type === "text" ? message.content[0].text : "{}";
+    try {
+      const match = text.match(/\{[\s\S]*\}/);
+      return NextResponse.json(match ? JSON.parse(match[0]) : { score: 0, verdict: "mixed", flags: [], suggestions: [] });
+    } catch {
+      return NextResponse.json({ score: 0, verdict: "mixed", flags: [], suggestions: [] });
+    }
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message || "AI detection failed" }, { status: 500 });
   }
 }

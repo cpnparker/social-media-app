@@ -41,6 +41,28 @@ export async function GET(
       if (c) customer = { id: String(c.id_client), name: c.name_client };
     }
 
+    // Construct imageUrl: check 'creation' column (new uploads) + files join (legacy)
+    let imageUrl: string | null = null;
+    // Legacy: Supabase storage via files table join
+    if (idea.file_path) {
+      imageUrl = idea.file_path.startsWith("http")
+        ? idea.file_path
+        : idea.file_bucket
+          ? `https://dcwodczzdeltxlyepxmc.supabase.co/storage/v1/object/public/${idea.file_bucket}/${idea.file_path}`
+          : null;
+    }
+    // New: external URL stored in 'id_airtable' column (unused legacy field)
+    if (!imageUrl) {
+      const { data: raw } = await supabase
+        .from("ideas")
+        .select("id_airtable")
+        .eq("id_idea", ideaId)
+        .single();
+      if (raw?.id_airtable?.startsWith("http")) {
+        imageUrl = raw.id_airtable;
+      }
+    }
+
     return NextResponse.json({
       idea: {
         id: String(idea.id_idea),
@@ -53,6 +75,7 @@ export async function GET(
         topicTags: idea.name_topic_array || [],
         strategicTags: idea.name_campaign_array || [],
         eventTags: idea.name_event_array || [],
+        imageUrl,
         linkUrl: idea.link_url,
         createdAt: idea.date_created,
         commissionedAt: idea.date_commissioned,
@@ -86,7 +109,7 @@ export async function PUT(
     // Check access via the idea's client
     const { data: existing } = await supabase
       .from("ideas")
-      .select("id_client")
+      .select("id_client, id_file")
       .eq("id_idea", ideaId)
       .is("date_deleted", null)
       .single();
@@ -118,6 +141,11 @@ export async function PUT(
     if (body.status === "spiked") {
       updateData.flag_spiked = 1;
       updateData.date_spiked = new Date().toISOString();
+    }
+
+    // Handle imageUrl: store in 'id_airtable' column (unused legacy text field)
+    if (body.imageUrl !== undefined) {
+      updateData.id_airtable = body.imageUrl || null;
     }
 
     const { data: updated, error } = await supabase

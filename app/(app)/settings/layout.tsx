@@ -23,15 +23,7 @@ export default function SettingsLayout({
   const pathname = usePathname();
 
   return (
-    <div className="max-w-5xl space-y-6">
-      {/* Page title */}
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Manage your workspace, team, and preferences
-        </p>
-      </div>
-
+    <div className="max-w-5xl space-y-4">
       {/* Sub-navigation tabs */}
       <nav className="flex gap-1 border-b -mb-px overflow-x-auto scrollbar-hide">
         {settingsNav.map(({ label, href, icon: Icon }) => {

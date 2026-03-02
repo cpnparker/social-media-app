@@ -64,6 +64,11 @@ export async function GET(
         workingTitle: obj.name_content,
         body: obj.document_body,
         brief: obj.information_brief,
+        guidelines: obj.information_guidelines,
+        audience: obj.information_audience,
+        targetLength: obj.information_length,
+        platform: obj.information_platform,
+        notes: obj.information_notes,
         status: obj.flag_completed === 1 ? "published" : obj.flag_spiked === 1 ? "spiked" : "draft",
         customerId: obj.id_client ? String(obj.id_client) : null,
         customerName: obj.name_client,
@@ -137,6 +142,11 @@ export async function PUT(
     if (body.body !== undefined) updateData.document_body = body.body;
     if (body.contentType !== undefined) updateData.type_content = body.contentType;
     if (body.brief !== undefined) updateData.information_brief = body.brief;
+    if (body.guidelines !== undefined) updateData.information_guidelines = body.guidelines;
+    if (body.audience !== undefined) updateData.information_audience = body.audience;
+    if (body.targetLength !== undefined) updateData.information_length = body.targetLength;
+    if (body.platform !== undefined) updateData.information_platform = body.platform;
+    if (body.notes !== undefined) updateData.information_notes = body.notes;
     if (body.customerId !== undefined) updateData.id_client = body.customerId ? parseInt(body.customerId, 10) : null;
     if (body.contractId !== undefined) updateData.id_contract = body.contractId ? parseInt(body.contractId, 10) : null;
     if (body.contentUnits !== undefined) updateData.units_override = body.contentUnits;

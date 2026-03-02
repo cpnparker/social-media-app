@@ -31,6 +31,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { useCustomer } from "@/lib/contexts/CustomerContext";
 import {
   getTypeIcon,
   categorizeContentType,
@@ -148,6 +149,7 @@ export default function IdeaDetailPage() {
   const router = useRouter();
   const ideaId = params.id as string;
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { customers: contextCustomers, selectedCustomerId: globalCustomerId, canViewAll, loading: customerLoading } = useCustomer();
 
   const [idea, setIdea] = useState<any>(null);
   const [contentObjects, setContentObjects] = useState<any[]>([]);
@@ -200,7 +202,12 @@ export default function IdeaDetailPage() {
         setTopicTags(data.idea.topicTags || []);
         setStrategicTags(data.idea.strategicTags || []);
         setEventTags(data.idea.eventTags || []);
-        if (data.idea.customerId) setSelectedCustomerId(data.idea.customerId);
+        // Use globally selected customer if set, otherwise use idea's saved customer
+        if (globalCustomerId) {
+          setSelectedCustomerId(globalCustomerId);
+        } else if (data.idea.customerId) {
+          setSelectedCustomerId(data.idea.customerId);
+        }
       }
       setContentObjects(data.contentObjects || []);
     } catch (err) {
@@ -235,13 +242,15 @@ export default function IdeaDetailPage() {
       .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch customers
+  // Populate customers from the global CustomerContext (already permission-scoped)
   useEffect(() => {
-    fetch("/api/customers?status=active&limit=200")
-      .then((r) => r.json())
-      .then((d) => setCustomers(d.customers || []))
-      .catch(() => {});
-  }, []);
+    if (customerLoading) return;
+    setCustomers(contextCustomers);
+    // If a specific customer is selected globally, auto-select it for commission
+    if (globalCustomerId && !selectedCustomerId) {
+      setSelectedCustomerId(globalCustomerId);
+    }
+  }, [contextCustomers, globalCustomerId, customerLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch CU definitions
   useEffect(() => {
@@ -462,7 +471,11 @@ export default function IdeaDetailPage() {
       const res = await fetch("/api/image-suggestions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, description }),
+        body: JSON.stringify({
+          title,
+          description,
+          tags: [...topicTags, ...strategicTags, ...eventTags],
+        }),
       });
       const data = await res.json();
       if (data.suggestions?.length) {
@@ -996,23 +1009,31 @@ export default function IdeaDetailPage() {
                   </div>
                 </div>
 
-                {/* Customer selector */}
+                {/* Customer selector — locked when a specific customer is selected globally */}
                 {customers.length > 0 && (
                   <div>
                     <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5 block">Customer</label>
-                    <select
-                      value={selectedCustomerId}
-                      onChange={(e) => {
-                        setSelectedCustomerId(e.target.value);
-                        saveIdea({ customerId: e.target.value || null });
-                      }}
-                      className="w-full h-8 rounded-md border bg-background px-2.5 text-xs"
-                    >
-                      <option value="">No customer</option>
-                      {customers.map((c: any) => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
-                      ))}
-                    </select>
+                    {globalCustomerId ? (
+                      // Locked to the globally selected customer
+                      <div className="w-full h-8 rounded-md border bg-muted px-2.5 text-xs flex items-center text-muted-foreground">
+                        {customers.find((c: any) => c.id === globalCustomerId)?.name || "Selected customer"}
+                      </div>
+                    ) : (
+                      // "All Customers" mode — allow choosing from permission-scoped list
+                      <select
+                        value={selectedCustomerId}
+                        onChange={(e) => {
+                          setSelectedCustomerId(e.target.value);
+                          saveIdea({ customerId: e.target.value || null });
+                        }}
+                        className="w-full h-8 rounded-md border bg-background px-2.5 text-xs"
+                      >
+                        <option value="">No customer</option>
+                        {customers.map((c: any) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    )}
                   </div>
                 )}
 

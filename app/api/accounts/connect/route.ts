@@ -15,7 +15,8 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const redirectUrl = `${process.env.NEXT_PUBLIC_APP_URL}/accounts?connected=true`;
+    const origin = new URL(req.url).origin;
+    const redirectUrl = `${origin}/accounts?connected=true`;
 
     const data = await lateApiFetch(
       `/connect/${platform}?${profileId ? `profileId=${profileId}&` : ""}redirectUrl=${encodeURIComponent(redirectUrl)}`

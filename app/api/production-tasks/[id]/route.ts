@@ -50,6 +50,17 @@ export async function PUT(
       return NextResponse.json({ error: error?.message || "Task not found" }, { status: 404 });
     }
 
+    // Look up the assigned user's name if there's an assignee
+    let assignedToName: string | null = null;
+    if (updated.user_assignee) {
+      const { data: userRow } = await supabase
+        .from("users")
+        .select("name_user")
+        .eq("id_user", updated.user_assignee)
+        .single();
+      assignedToName = userRow?.name_user || null;
+    }
+
     return NextResponse.json({
       task: {
         id: String(updated.id_task),
@@ -57,6 +68,7 @@ export async function PUT(
         title: updated.type_task,
         status: updated.date_completed ? "done" : "todo",
         assignedTo: updated.user_assignee ? String(updated.user_assignee) : null,
+        assignedToName,
         sortOrder: updated.order_sort,
         notes: updated.information_notes,
         contentUnits: Number(updated.units_content) || 0,

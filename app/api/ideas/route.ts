@@ -31,27 +31,57 @@ export async function GET(req: NextRequest) {
     const { data: rows, error } = await query;
     if (error) throw error;
 
-    const ideas = (rows || []).map((r) => ({
-      id: String(r.id_idea),
-      title: r.name_idea,
-      description: r.information_brief,
-      status: r.status,
-      customerId: r.id_client ? String(r.id_client) : null,
-      customerName: r.name_client,
-      topicTags: r.name_topic_array || [],
-      strategicTags: r.name_campaign_array || [],
-      eventTags: r.name_event_array || [],
-      imageUrl: r.file_bucket && r.file_path
-        ? `https://dcwodczzdeltxlyepxmc.supabase.co/storage/v1/object/public/${r.file_bucket}/${r.file_path}`
-        : null,
-      linkUrl: r.link_url,
-      createdBy: r.id_user_submitted ? String(r.id_user_submitted) : null,
-      createdByName: r.name_user_submitted,
-      createdAt: r.date_created,
-      commissionedAt: r.date_commissioned,
-      contentIds: r.id_content || [],
-      socialIds: r.id_social || [],
-    }));
+    // Fetch 'id_airtable' column (used for new image URLs) from base ideas table
+    const ideaIds = (rows || []).map((r) => r.id_idea).filter(Boolean);
+    const imageUrlMap: Record<number, string> = {};
+    if (ideaIds.length > 0) {
+      const { data: rawIdeas } = await supabase
+        .from("ideas")
+        .select("id_idea, id_airtable")
+        .in("id_idea", ideaIds);
+      if (rawIdeas) {
+        for (const ri of rawIdeas) {
+          if (ri.id_airtable?.startsWith("http")) {
+            imageUrlMap[ri.id_idea] = ri.id_airtable;
+          }
+        }
+      }
+    }
+
+    const ideas = (rows || []).map((r) => {
+      // Legacy: Supabase storage via files join
+      let imgUrl: string | null = r.file_path
+        ? r.file_path.startsWith("http")
+          ? r.file_path
+          : r.file_bucket
+            ? `https://dcwodczzdeltxlyepxmc.supabase.co/storage/v1/object/public/${r.file_bucket}/${r.file_path}`
+            : null
+        : null;
+      // New: external URL from id_airtable column
+      if (!imgUrl && r.id_idea && imageUrlMap[r.id_idea]) {
+        imgUrl = imageUrlMap[r.id_idea];
+      }
+
+      return {
+        id: String(r.id_idea),
+        title: r.name_idea,
+        description: r.information_brief,
+        status: r.status,
+        customerId: r.id_client ? String(r.id_client) : null,
+        customerName: r.name_client,
+        topicTags: r.name_topic_array || [],
+        strategicTags: r.name_campaign_array || [],
+        eventTags: r.name_event_array || [],
+        imageUrl: imgUrl,
+        linkUrl: r.link_url,
+        createdBy: r.id_user_submitted ? String(r.id_user_submitted) : null,
+        createdByName: r.name_user_submitted,
+        createdAt: r.date_created,
+        commissionedAt: r.date_commissioned,
+        contentIds: r.id_content || [],
+        socialIds: r.id_social || [],
+      };
+    });
 
     return NextResponse.json({ ideas });
   } catch (error: any) {

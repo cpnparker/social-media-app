@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
     };
 
     if (body.mediaUrls?.length || body.mediaItems?.length) {
-      const baseUrl = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+      const baseUrl = new URL(req.url).origin;
       const urls: string[] = body.mediaUrls || body.mediaItems?.map((m: any) => m.url) || [];
       postPayload.mediaItems = urls.map((url: string) => {
         const absoluteUrl = url.startsWith("http") ? url : `${baseUrl}${url}`;

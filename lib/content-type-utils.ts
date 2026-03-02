@@ -110,7 +110,6 @@ const CATEGORY_MAP: Record<string, string> = {
   // Written
   article: "Written",
   article_interview: "Written",
-  collection: "Written",
   // Video
   video: "Video",
   animation: "Video",
@@ -120,6 +119,7 @@ const CATEGORY_MAP: Record<string, string> = {
   audiogram: "Video",
   sting_quote: "Video",
   // Visual
+  collection: "Visual",
   image: "Visual",
   infographic: "Visual",
   poster: "Visual",
@@ -143,13 +143,15 @@ const CATEGORY_MAP: Record<string, string> = {
 
 /** Categorise a content type key into a group. */
 export function categorizeContentType(key: string): string {
+  const lowerKey = key.toLowerCase();
+  if (CATEGORY_MAP[lowerKey]) return CATEGORY_MAP[lowerKey];
   if (CATEGORY_MAP[key]) return CATEGORY_MAP[key];
 
   // Keyword-based fallback for future types
-  const k = key.toLowerCase();
+  const k = lowerKey;
   if (k.includes("article") || k.includes("blog") || k.includes("newsletter") || k.includes("written") || k.includes("essay")) return "Written";
   if (k.includes("video") || k.includes("animat") || k.includes("hype") || k.includes("audiogram") || k.includes("sting")) return "Video";
-  if (k.includes("image") || k.includes("graphic") || k.includes("visual") || k.includes("carousel") || k.includes("card") || k.includes("poster") || k.includes("infographic") || k.includes("photo") || k.includes("social")) return "Visual";
+  if (k.includes("image") || k.includes("graphic") || k.includes("visual") || k.includes("carousel") || k.includes("card") || k.includes("poster") || k.includes("infographic") || k.includes("photo") || k.includes("social") || k.includes("collection")) return "Visual";
   if (k.includes("service") || k.includes("strategy") || k.includes("audit") || k.includes("analysis") || k.includes("module")) return "Strategy";
 
   return "Other";
