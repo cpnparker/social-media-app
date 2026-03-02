@@ -103,13 +103,14 @@ function enrichContract(c: ContractRow): EnrichedContract {
 }
 
 /* ─── Sortable header helper ─── */
-function SortHeader({ label, sortKey, currentSort, currentAsc, onSort, align = "left" }: {
+function SortHeader({ label, sortKey, currentSort, currentAsc, onSort, align = "left", title }: {
   label: string;
   sortKey: string;
   currentSort: string;
   currentAsc: boolean;
   onSort: (key: string) => void;
   align?: "left" | "right" | "center";
+  title?: string;
 }) {
   const active = currentSort === sortKey;
   return (
@@ -121,6 +122,7 @@ function SortHeader({ label, sortKey, currentSort, currentAsc, onSort, align = "
         active && "text-foreground"
       )}
       onClick={() => onSort(sortKey)}
+      title={title}
     >
       <span className="inline-flex items-center gap-0.5">
         {label}
@@ -349,19 +351,19 @@ export default function ContractsGridPage() {
                   <table className="w-full text-xs">
                     <thead className="sticky top-0 bg-background z-[1]">
                       <tr className="border-b">
-                        <SortHeader label="Client" sortKey="clientName" {...gridSort} onSort={gridSort.toggle} />
-                        <SortHeader label="Contract" sortKey="contractName" {...gridSort} onSort={gridSort.toggle} />
-                        <SortHeader label="Start" sortKey="dateStart" {...gridSort} onSort={gridSort.toggle} />
-                        <SortHeader label="End" sortKey="dateEnd" {...gridSort} onSort={gridSort.toggle} />
-                        <SortHeader label="CUs Contract" sortKey="cusContract" {...gridSort} onSort={gridSort.toggle} align="right" />
-                        <SortHeader label="CUs Comm." sortKey="cusCommissioned" {...gridSort} onSort={gridSort.toggle} align="right" />
-                        <SortHeader label="CUs Complete" sortKey="cusComplete" {...gridSort} onSort={gridSort.toggle} align="right" />
-                        <SortHeader label="Rem. (Comm.)" sortKey="remainingCommission" {...gridSort} onSort={gridSort.toggle} align="right" />
-                        <SortHeader label="Rem. (Comp.)" sortKey="remainingComplete" {...gridSort} onSort={gridSort.toggle} align="right" />
-                        <SortHeader label="% Duration" sortKey="pctDuration" {...gridSort} onSort={gridSort.toggle} align="right" />
-                        <SortHeader label="% Comm." sortKey="pctCommission" {...gridSort} onSort={gridSort.toggle} align="right" />
-                        <SortHeader label="% Complete" sortKey="pctComplete" {...gridSort} onSort={gridSort.toggle} align="right" />
-                        <SortHeader label="Gap" sortKey="gapCommission" {...gridSort} onSort={gridSort.toggle} align="right" />
+                        <SortHeader label="Client" sortKey="clientName" {...gridSort} onSort={gridSort.toggle} title="Client name" />
+                        <SortHeader label="Contract" sortKey="contractName" {...gridSort} onSort={gridSort.toggle} title="Contract name" />
+                        <SortHeader label="Start" sortKey="dateStart" {...gridSort} onSort={gridSort.toggle} title="Contract start date" />
+                        <SortHeader label="End" sortKey="dateEnd" {...gridSort} onSort={gridSort.toggle} title="Contract end date" />
+                        <SortHeader label="CUs Contract" sortKey="cusContract" {...gridSort} onSort={gridSort.toggle} align="right" title="Total content units in the contract" />
+                        <SortHeader label="CUs Comm." sortKey="cusCommissioned" {...gridSort} onSort={gridSort.toggle} align="right" title="Content units commissioned (all tasks created against this contract)" />
+                        <SortHeader label="CUs Complete" sortKey="cusComplete" {...gridSort} onSort={gridSort.toggle} align="right" title="Content units completed (tasks marked as done)" />
+                        <SortHeader label="Rem. (Comm.)" sortKey="remainingCommission" {...gridSort} onSort={gridSort.toggle} align="right" title="Remaining to commission: contract CUs minus commissioned CUs" />
+                        <SortHeader label="Rem. (Comp.)" sortKey="remainingComplete" {...gridSort} onSort={gridSort.toggle} align="right" title="Remaining to complete: contract CUs minus completed CUs" />
+                        <SortHeader label="% Duration" sortKey="pctDuration" {...gridSort} onSort={gridSort.toggle} align="right" title="Percentage of the contract period that has elapsed" />
+                        <SortHeader label="% Comm." sortKey="pctCommission" {...gridSort} onSort={gridSort.toggle} align="right" title="Percentage of contract CUs that have been commissioned" />
+                        <SortHeader label="% Complete" sortKey="pctComplete" {...gridSort} onSort={gridSort.toggle} align="right" title="Percentage of contract CUs that have been completed" />
+                        <SortHeader label="Gap" sortKey="gapCommission" {...gridSort} onSort={gridSort.toggle} align="right" title="Commission gap: expected CUs based on time elapsed minus actual CUs commissioned. Positive = behind, negative = ahead." />
                       </tr>
                     </thead>
                     <tbody>
