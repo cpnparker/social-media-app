@@ -174,7 +174,7 @@ export default function ContractsGridPage() {
   const [excludeTestClients, setExcludeTestClients] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
 
-  const gridSort = useSort("clientName", true);
+  const gridSort = useSort("gapCommission", false);
 
   /* ─── Fetch ─── */
   const fetchContracts = useCallback(async (endAfterDate: string, excludeClients: boolean) => {

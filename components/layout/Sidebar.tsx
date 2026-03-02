@@ -56,6 +56,7 @@ interface NavSubItem {
   label: string;
   href: string;
   icon?: React.ComponentType<{ className?: string }>;
+  children?: NavSubItem[];
 }
 
 interface NavSection {
@@ -125,7 +126,14 @@ const engineSections: NavSection[] = [
 
 // ── Operations items (flat list) ──
 const operationsItems: NavSubItem[] = [
-  { label: "Commissioned CUs", href: "/operations/commissioned-cus" },
+  {
+    label: "Commissioned CUs",
+    href: "/operations/commissioned-cus",
+    children: [
+      { label: "Delivered", href: "/operations/delivered" },
+      { label: "Spiked", href: "/operations/spiked" },
+    ],
+  },
   { label: "Timeline Resourcing", href: "/operations/timeline-resourcing" },
   { label: "Team Production", href: "/operations/team-production" },
   { label: "Work in Progress", href: "/operations/work-in-progress" },
@@ -723,21 +731,47 @@ function OperationsPanel({
         <div className="space-y-0.5">
           {items.map((item) => {
             const active = checkActive(item.href);
+            const childActive = item.children?.some((c) => checkActive(c.href)) ?? false;
+            const showChildren = active || childActive;
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={onClose}
-                className={cn(
-                  "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
-                  active
-                    ? "bg-white/15 text-white"
-                    : "text-white/70 hover:bg-white/10 hover:text-white"
+              <div key={item.href}>
+                <Link
+                  href={item.href}
+                  onClick={onClose}
+                  className={cn(
+                    "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
+                    active
+                      ? "bg-white/15 text-white"
+                      : "text-white/70 hover:bg-white/10 hover:text-white"
+                  )}
+                >
+                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-white/40" />
+                  <span className="truncate">{item.label}</span>
+                </Link>
+                {item.children && showChildren && (
+                  <div className="ml-5 mt-0.5 space-y-0.5">
+                    {item.children.map((child) => {
+                      const cActive = checkActive(child.href);
+                      return (
+                        <Link
+                          key={child.href}
+                          href={child.href}
+                          onClick={onClose}
+                          className={cn(
+                            "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors",
+                            cActive
+                              ? "bg-white/15 text-white"
+                              : "text-white/50 hover:bg-white/10 hover:text-white/80"
+                          )}
+                        >
+                          <span className="h-1 w-1 rounded-full bg-white/30 shrink-0" />
+                          <span className="truncate">{child.label}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
                 )}
-              >
-                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-white/40" />
-                <span className="truncate">{item.label}</span>
-              </Link>
+              </div>
             );
           })}
         </div>
