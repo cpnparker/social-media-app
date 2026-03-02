@@ -41,7 +41,7 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command";
-import { signOut, useSession } from "next-auth/react";
+import { signOut } from "next-auth/react";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { cn } from "@/lib/utils";
 
@@ -52,15 +52,26 @@ interface TopBarProps {
 export function TopBar({ onMenuClick }: TopBarProps) {
   const { setTheme, resolvedTheme } = useTheme();
   const customerCtx = useCustomerSafe();
-  const { data: session } = useSession();
 
-  // Derive user info from session
-  const userName = session?.user?.name || "";
-  const userEmail = session?.user?.email || "";
+  // Fetch user info from /api/me (same pattern as Sidebar)
+  const [userName, setUserName] = useState("");
+  const [userEmail, setUserEmail] = useState("");
+  useEffect(() => {
+    fetch("/api/me")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.user) {
+          setUserName(d.user.name || "");
+          setUserEmail(d.user.email || "");
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const userInitials = userName
     ? userName
         .split(" ")
-        .map((w) => w[0])
+        .map((w: string) => w[0])
         .join("")
         .toUpperCase()
         .slice(0, 2)
@@ -252,7 +263,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
               className="h-9 w-9 rounded-full"
             >
               <Avatar className="h-8 w-8">
-                <AvatarImage src={session?.user?.image || ""} />
+                <AvatarImage src="" />
                 <AvatarFallback className="bg-blue-500/20 text-blue-600 dark:text-blue-400 text-xs font-semibold">
                   {userInitials}
                 </AvatarFallback>
