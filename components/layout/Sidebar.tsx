@@ -131,6 +131,7 @@ const operationsItems: NavSubItem[] = [
   { label: "Work in Progress", href: "/operations/work-in-progress" },
   { label: "Duty Editor", href: "/operations/duty-editor" },
   { label: "Formats", href: "/operations/formats" },
+  { label: "Contracts Grid", href: "/operations/contracts-grid" },
 ];
 
 // ── Admin items (flat list) ──
