@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import {
   Bell,
@@ -15,6 +15,7 @@ import {
   Check,
   ChevronDown,
   Loader2,
+  Search,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
@@ -26,7 +27,21 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { signOut } from "next-auth/react";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from "@/components/ui/command";
+import { signOut, useSession } from "next-auth/react";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { cn } from "@/lib/utils";
 
@@ -37,10 +52,26 @@ interface TopBarProps {
 export function TopBar({ onMenuClick }: TopBarProps) {
   const { setTheme, resolvedTheme } = useTheme();
   const customerCtx = useCustomerSafe();
+  const { data: session } = useSession();
+
+  // Derive user info from session
+  const userName = session?.user?.name || "";
+  const userEmail = session?.user?.email || "";
+  const userInitials = userName
+    ? userName
+        .split(" ")
+        .map((w) => w[0])
+        .join("")
+        .toUpperCase()
+        .slice(0, 2)
+    : "?";
 
   // Prevent hydration mismatch — only render theme-dependent UI after mount
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+
+  // Customer selector popover state
+  const [customerOpen, setCustomerOpen] = useState(false);
 
   const customers = customerCtx?.customers ?? [];
   const selectedCustomerId = customerCtx?.selectedCustomerId ?? null;
@@ -48,6 +79,12 @@ export function TopBar({ onMenuClick }: TopBarProps) {
   const canViewAll = customerCtx?.canViewAll ?? true;
   const isSingleCustomer = customerCtx?.isSingleCustomer ?? false;
   const loading = customerCtx?.loading ?? true;
+
+  // Sort customers alphabetically
+  const sortedCustomers = useMemo(
+    () => [...customers].sort((a, b) => (a.name || "").localeCompare(b.name || "")),
+    [customers]
+  );
 
   const displayName = selectedCustomer?.name ?? "All Customers";
   const isCustomerMode = selectedCustomerId !== null;
@@ -85,12 +122,14 @@ export function TopBar({ onMenuClick }: TopBarProps) {
                 </span>
               </div>
             ) : (
-              /* Multi-customer / admin — dropdown selector */
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
+              /* Multi-customer / admin — searchable selector */
+              <Popover open={customerOpen} onOpenChange={setCustomerOpen}>
+                <PopoverTrigger asChild>
                   <Button
                     variant="outline"
                     size="sm"
+                    role="combobox"
+                    aria-expanded={customerOpen}
                     className={cn(
                       "gap-2 h-9 px-3 mr-1 max-w-[220px] font-medium",
                       isCustomerMode &&
@@ -105,42 +144,54 @@ export function TopBar({ onMenuClick }: TopBarProps) {
                     <span className="truncate">{displayName}</span>
                     <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-64">
-                  {canViewAll && (
-                    <>
-                      <DropdownMenuItem
-                        onClick={() =>
-                          customerCtx?.setSelectedCustomerId(null)
-                        }
-                        className="gap-2"
-                      >
-                        <Globe className="h-4 w-4 text-muted-foreground" />
-                        <span className="flex-1">All Customers</span>
-                        {!isCustomerMode && (
-                          <Check className="h-4 w-4 text-blue-500" />
-                        )}
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                    </>
-                  )}
-                  {customers.map((customer) => (
-                    <DropdownMenuItem
-                      key={customer.id}
-                      onClick={() =>
-                        customerCtx?.setSelectedCustomerId(customer.id)
-                      }
-                      className="gap-2"
-                    >
-                      <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <span className="flex-1 truncate">{customer.name}</span>
-                      {selectedCustomerId === customer.id && (
-                        <Check className="h-4 w-4 text-blue-500 shrink-0" />
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-64 p-0">
+                  <Command>
+                    <CommandInput placeholder="Search customers..." />
+                    <CommandList>
+                      <CommandEmpty>No customer found.</CommandEmpty>
+                      {canViewAll && (
+                        <CommandGroup>
+                          <CommandItem
+                            value="all-customers"
+                            onSelect={() => {
+                              customerCtx?.setSelectedCustomerId(null);
+                              setCustomerOpen(false);
+                            }}
+                            className="gap-2"
+                          >
+                            <Globe className="h-4 w-4 text-muted-foreground" />
+                            <span className="flex-1">All Customers</span>
+                            {!isCustomerMode && (
+                              <Check className="h-4 w-4 text-blue-500" />
+                            )}
+                          </CommandItem>
+                        </CommandGroup>
                       )}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
+                      {canViewAll && <CommandSeparator />}
+                      <CommandGroup>
+                        {sortedCustomers.map((customer) => (
+                          <CommandItem
+                            key={customer.id}
+                            value={customer.name}
+                            onSelect={() => {
+                              customerCtx?.setSelectedCustomerId(customer.id);
+                              setCustomerOpen(false);
+                            }}
+                            className="gap-2"
+                          >
+                            <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                            <span className="flex-1 truncate">{customer.name}</span>
+                            {selectedCustomerId === customer.id && (
+                              <Check className="h-4 w-4 text-blue-500 shrink-0" />
+                            )}
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             )}
           </>
         ) : null}
@@ -201,18 +252,18 @@ export function TopBar({ onMenuClick }: TopBarProps) {
               className="h-9 w-9 rounded-full"
             >
               <Avatar className="h-8 w-8">
-                <AvatarImage src="" />
+                <AvatarImage src={session?.user?.image || ""} />
                 <AvatarFallback className="bg-blue-500/20 text-blue-600 dark:text-blue-400 text-xs font-semibold">
-                  CP
+                  {userInitials}
                 </AvatarFallback>
               </Avatar>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
             <div className="px-3 py-2">
-              <p className="text-sm font-medium">Chris Parker</p>
+              <p className="text-sm font-medium">{userName || "User"}</p>
               <p className="text-xs text-muted-foreground">
-                chris@contentengine.io
+                {userEmail || ""}
               </p>
             </div>
             <DropdownMenuSeparator />
