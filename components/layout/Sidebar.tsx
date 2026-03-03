@@ -130,6 +130,7 @@ const operationsItems: NavSubItem[] = [
     label: "Commissioned CUs",
     href: "/operations/commissioned-cus",
     children: [
+      { label: "Commissioned", href: "/operations/commissioned-cus" },
       { label: "Delivered", href: "/operations/delivered" },
       { label: "Spiked", href: "/operations/spiked" },
     ],
@@ -750,11 +751,11 @@ function OperationsPanel({
                 </Link>
                 {item.children && showChildren && (
                   <div className="ml-5 mt-0.5 space-y-0.5">
-                    {item.children.map((child) => {
+                    {item.children.map((child, idx) => {
                       const cActive = checkActive(child.href);
                       return (
                         <Link
-                          key={child.href}
+                          key={`${child.href}-${idx}`}
                           href={child.href}
                           onClick={onClose}
                           className={cn(

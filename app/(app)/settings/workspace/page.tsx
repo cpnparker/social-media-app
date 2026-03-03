@@ -5,8 +5,6 @@ import {
   Loader2,
   Check,
   Key,
-  Eye,
-  EyeOff,
   Building2,
   FileText,
   Zap,
@@ -45,7 +43,7 @@ export default function WorkspaceSettingsPage() {
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [showApiKey, setShowApiKey] = useState(false);
+  const [hasExistingKey, setHasExistingKey] = useState(false);
 
   const fetchWorkspace = useCallback(async () => {
     setLoading(true);
@@ -56,7 +54,7 @@ export default function WorkspaceSettingsPage() {
         setWorkspace(data.workspace);
         setName(data.workspace.name || "");
         setSlug(data.workspace.slug || "");
-        setApiKey(data.workspace.lateApiKey || "");
+        setHasExistingKey(!!data.workspace.hasLateApiKey);
       }
     } catch (err) {
       console.error("Failed to load workspace:", err);
@@ -87,14 +85,18 @@ export default function WorkspaceSettingsPage() {
     }
     setSaving(true);
     try {
+      const payload: Record<string, any> = {
+        name: name.trim(),
+        slug: slug.trim(),
+      };
+      // Only send API key if user entered a new one
+      if (apiKey.trim()) {
+        payload.lateApiKey = apiKey.trim();
+      }
       const res = await fetch("/api/workspace", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: name.trim(),
-          slug: slug.trim(),
-          lateApiKey: apiKey.trim() || null,
-        }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const err = await res.json();
@@ -102,6 +104,8 @@ export default function WorkspaceSettingsPage() {
       }
       const data = await res.json();
       setWorkspace(data.workspace);
+      setHasExistingKey(!!data.workspace.hasLateApiKey);
+      setApiKey(""); // Clear the input after save
       toast.success("Workspace updated");
     } catch (err: any) {
       toast.error(err.message || "Failed to save");
@@ -307,26 +311,20 @@ export default function WorkspaceSettingsPage() {
               Connect your Late.com account to sync social profiles and post
               scheduling.
             </p>
-            <div className="flex items-center gap-2 max-w-md">
-              <div className="relative flex-1">
-                <Input
-                  type={showApiKey ? "text" : "password"}
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  className="h-9 pr-9 font-mono text-xs"
-                  placeholder="sk_live_..."
-                />
-                <button
-                  onClick={() => setShowApiKey(!showApiKey)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  {showApiKey ? (
-                    <EyeOff className="h-4 w-4" />
-                  ) : (
-                    <Eye className="h-4 w-4" />
-                  )}
-                </button>
+            {hasExistingKey && (
+              <div className="flex items-center gap-2 mb-2">
+                <Check className="h-3.5 w-3.5 text-green-500" />
+                <span className="text-xs text-green-600 font-medium">API key configured</span>
               </div>
+            )}
+            <div className="flex items-center gap-2 max-w-md">
+              <Input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                className="h-9 font-mono text-xs"
+                placeholder={hasExistingKey ? "Enter new key to replace..." : "sk_live_..."}
+              />
             </div>
           </div>
         </CardContent>

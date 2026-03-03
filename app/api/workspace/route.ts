@@ -19,7 +19,14 @@ export async function GET() {
       );
     }
 
-    return NextResponse.json({ workspace });
+    // Never expose the API key in responses — only indicate if one is set
+    const { late_api_key, ...safeWorkspace } = workspace;
+    return NextResponse.json({
+      workspace: {
+        ...safeWorkspace,
+        hasLateApiKey: !!late_api_key,
+      },
+    });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -51,7 +58,14 @@ export async function PUT(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ workspace: updated });
+    // Never expose the API key in responses
+    const { late_api_key: _key, ...safeUpdated } = updated;
+    return NextResponse.json({
+      workspace: {
+        ...safeUpdated,
+        hasLateApiKey: !!_key,
+      },
+    });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
