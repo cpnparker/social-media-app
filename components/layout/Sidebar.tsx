@@ -124,10 +124,10 @@ const engineSections: NavSection[] = [
   },
 ];
 
-// ── Operations items (flat list) ──
+// ── Operations items (grouped) ──
 const operationsItems: NavSubItem[] = [
   {
-    label: "Commissioned CUs",
+    label: "Content",
     href: "/operations/commissioned-cus",
     children: [
       { label: "Commissioned", href: "/operations/commissioned-cus" },
@@ -135,12 +135,25 @@ const operationsItems: NavSubItem[] = [
       { label: "Spiked", href: "/operations/spiked" },
     ],
   },
-  { label: "Timeline Resourcing", href: "/operations/timeline-resourcing" },
-  { label: "Team Production", href: "/operations/team-production" },
-  { label: "Work in Progress", href: "/operations/work-in-progress" },
+  {
+    label: "Contracts",
+    href: "/operations/contracts",
+    children: [
+      { label: "Contracts", href: "/operations/contracts" },
+      { label: "Contracts Grid", href: "/operations/contracts-grid" },
+      { label: "Formats", href: "/operations/formats" },
+    ],
+  },
+  {
+    label: "Production",
+    href: "/operations/timeline-resourcing",
+    children: [
+      { label: "Timeline Resourcing", href: "/operations/timeline-resourcing" },
+      { label: "Team Production", href: "/operations/team-production" },
+      { label: "Work in Progress", href: "/operations/work-in-progress" },
+    ],
+  },
   { label: "Duty Editor", href: "/operations/duty-editor" },
-  { label: "Formats", href: "/operations/formats" },
-  { label: "Contracts Grid", href: "/operations/contracts-grid" },
 ];
 
 // ── Admin items (flat list) ──
