@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,8 @@ import {
   Globe,
   User,
   MapPin,
+  ChevronDown,
+  Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -82,11 +84,6 @@ interface ContractDetail {
 }
 
 /* ─────────────── Helpers ─────────────── */
-
-const getThisYearRange = () => {
-  const y = new Date().getFullYear();
-  return { from: `${y}-01-01`, to: `${y}-12-31` };
-};
 
 const fmtDate = (d: string | null) => {
   if (!d) return "\u2014";
@@ -161,14 +158,14 @@ function sortRows<T extends Record<string, any>>(rows: T[], key: string, asc: bo
 /* ─────────────── Component ─────────────── */
 
 export default function ContractsPage() {
-  const initRange = getThisYearRange();
-
-  // Filters
-  const [dateFrom, setDateFrom] = useState(initRange.from);
-  const [dateTo, setDateTo] = useState(initRange.to);
+  // Filters — no date filter on initial load to show all contracts
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [statusFilter, setStatusFilter] = useState<"1" | "0" | "all">("1");
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [clientSearch, setClientSearch] = useState("");
+  const [clientDropdownOpen, setClientDropdownOpen] = useState(false);
+  const clientDropdownRef = useRef<HTMLDivElement>(null);
   const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
 
   // Data
@@ -236,6 +233,17 @@ export default function ContractsPage() {
     setSelectedContractId(null);
   }, [selectedClientId]);
 
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (clientDropdownRef.current && !clientDropdownRef.current.contains(e.target as Node)) {
+        setClientDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
   // ── Derived data ──
   const selectedClient = useMemo(
     () => clients.find((c) => c.clientId === selectedClientId) || null,
@@ -297,46 +305,80 @@ export default function ContractsPage() {
         <CardContent className="p-4">
           <div className="flex flex-wrap items-end gap-3">
             {/* Customer dropdown */}
-            <div className="min-w-[220px]">
+            <div className="min-w-[220px] relative" ref={clientDropdownRef}>
               <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">
                 Customer
               </label>
-              <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-                <Input
-                  value={clientSearch}
-                  onChange={(e) => setClientSearch(e.target.value)}
-                  placeholder="Search customers..."
-                  className="h-8 text-xs pl-8"
-                />
-              </div>
-              {clientSearch && filteredClients.length > 0 && (
-                <div className="absolute z-50 mt-1 max-h-48 w-[220px] overflow-auto rounded-md border bg-background shadow-lg">
-                  {filteredClients.slice(0, 20).map((c) => (
+              <button
+                type="button"
+                onClick={() => {
+                  setClientDropdownOpen(!clientDropdownOpen);
+                  setClientSearch("");
+                }}
+                className={cn(
+                  "flex items-center justify-between w-full h-8 rounded-md border bg-background px-2.5 text-xs transition-colors hover:bg-muted/50",
+                  clientDropdownOpen && "ring-2 ring-ring"
+                )}
+              >
+                <span className={cn(!selectedClientId && "text-muted-foreground")}>
+                  {selectedClient?.name || "All customers"}
+                </span>
+                <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", clientDropdownOpen && "rotate-180")} />
+              </button>
+
+              {clientDropdownOpen && (
+                <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-lg">
+                  {/* Search input inside dropdown */}
+                  <div className="p-1.5 border-b">
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
+                      <Input
+                        autoFocus
+                        value={clientSearch}
+                        onChange={(e) => setClientSearch(e.target.value)}
+                        placeholder="Search..."
+                        className="h-7 text-xs pl-7 border-0 shadow-none focus-visible:ring-0"
+                      />
+                    </div>
+                  </div>
+                  {/* Options */}
+                  <div className="max-h-52 overflow-auto py-1">
+                    {/* "All customers" option */}
                     <button
-                      key={c.clientId}
-                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors"
+                      className={cn(
+                        "w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors flex items-center justify-between",
+                        !selectedClientId && "font-medium text-primary"
+                      )}
                       onClick={() => {
-                        setSelectedClientId(c.clientId);
+                        setSelectedClientId(null);
+                        setClientDropdownOpen(false);
                         setClientSearch("");
                       }}
                     >
-                      {c.name}
+                      All customers
+                      {!selectedClientId && <Check className="h-3 w-3" />}
                     </button>
-                  ))}
-                </div>
-              )}
-              {selectedClientId && (
-                <div className="flex items-center gap-1 mt-1.5">
-                  <Badge variant="secondary" className="text-[10px] gap-1">
-                    {selectedClient?.name || "Customer"}
-                    <button
-                      onClick={() => setSelectedClientId(null)}
-                      className="ml-0.5 hover:text-destructive"
-                    >
-                      &times;
-                    </button>
-                  </Badge>
+                    {filteredClients.map((c) => (
+                      <button
+                        key={c.clientId}
+                        className={cn(
+                          "w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors flex items-center justify-between",
+                          selectedClientId === c.clientId && "font-medium text-primary"
+                        )}
+                        onClick={() => {
+                          setSelectedClientId(c.clientId);
+                          setClientDropdownOpen(false);
+                          setClientSearch("");
+                        }}
+                      >
+                        {c.name}
+                        {selectedClientId === c.clientId && <Check className="h-3 w-3" />}
+                      </button>
+                    ))}
+                    {filteredClients.length === 0 && (
+                      <p className="px-3 py-2 text-xs text-muted-foreground">No customers found</p>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
