@@ -43,6 +43,7 @@ export async function PUT(req: NextRequest) {
     if (body.slug !== undefined) updateData.slug = body.slug;
     if (body.plan !== undefined) updateData.plan = body.plan;
     if (body.lateApiKey !== undefined) updateData.late_api_key = body.lateApiKey;
+    if (body.aiModel !== undefined) updateData.ai_model = body.aiModel;
 
     const { data: updated, error } = await supabase
       .from("workspaces")

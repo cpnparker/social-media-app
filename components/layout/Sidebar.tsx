@@ -28,6 +28,7 @@ import {
   CreditCard,
   Boxes,
   Users,
+  Sparkles,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -611,6 +612,23 @@ function EnginePanel({
         >
           <Home className="h-[16px] w-[16px]" />
           Home
+        </Link>
+      </div>
+
+      {/* AI Writer link */}
+      <div className="px-3 pb-1">
+        <Link
+          href="/ai-writer"
+          onClick={onClose}
+          className={cn(
+            "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
+            pathname.startsWith("/ai-writer")
+              ? "bg-white/15 text-white"
+              : "text-white/70 hover:bg-white/10 hover:text-white"
+          )}
+        >
+          <Sparkles className="h-[16px] w-[16px]" />
+          AI Writer
         </Link>
       </div>
 

@@ -667,6 +667,12 @@ export default function ContentDetailPage() {
               </span>
             )}
           </div>
+          <Link href={`/ai-writer?contentObjectId=${contentId}`}>
+            <Button variant="outline" size="sm" className="gap-1.5 h-7 text-xs shrink-0">
+              <Sparkles className="h-3 w-3" />
+              AI Chat
+            </Button>
+          </Link>
           <Button variant="ghost" size="sm" onClick={handleDelete} className="text-muted-foreground hover:text-red-500 h-7 w-7 p-0 shrink-0">
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
