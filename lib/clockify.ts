@@ -129,9 +129,42 @@ export async function getClockifyUsers(): Promise<ClockifyUser[]> {
   return data.map((u: any) => ({ id: u.id, name: u.name, email: u.email }));
 }
 
+/** Small delay helper */
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Fetch a single Clockify API page with retry on 429 (rate limit).
+ * Retries up to 3 times with exponential back-off.
+ */
+async function fetchWithRetry(
+  url: string,
+  opts: RequestInit,
+  label: string,
+  retries = 3
+): Promise<Response> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const res = await fetch(url, opts);
+    if (res.status === 429 && attempt < retries) {
+      // Use Retry-After header if available, else exponential back-off
+      const retryAfter = res.headers.get("Retry-After");
+      const waitMs = retryAfter
+        ? parseInt(retryAfter, 10) * 1000
+        : 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
+      console.warn(
+        `[Clockify] 429 rate limit for ${label}, retrying in ${waitMs}ms (attempt ${attempt + 1}/${retries})`
+      );
+      await sleep(waitMs);
+      continue;
+    }
+    return res;
+  }
+  // Should not reach here, but return the last attempt
+  return fetch(url, opts);
+}
+
 /**
  * Fetch time entries for ALL users in a date range.
- * Iterates through every user and paginates their entries.
+ * Processes users in small batches to avoid Clockify API rate limits.
  */
 export async function getAllTimeEntries(
   from: string,
@@ -140,49 +173,61 @@ export async function getAllTimeEntries(
   const wsId = workspaceId();
   const users = await getClockifyUsers();
   const allEntries: ClockifyTimeEntry[] = [];
+  const BATCH_SIZE = 5; // Process 5 users concurrently
+  const BATCH_DELAY = 500; // 500ms pause between batches
 
-  await Promise.all(
-    users.map(async (user) => {
-      let page = 1;
-      while (true) {
-        const url = new URL(
-          `${BASE_URL}/workspaces/${wsId}/user/${user.id}/time-entries`
-        );
-        url.searchParams.set("start", from);
-        url.searchParams.set("end", to);
-        url.searchParams.set("page", String(page));
-        url.searchParams.set("page-size", String(PAGE_SIZE));
+  for (let i = 0; i < users.length; i += BATCH_SIZE) {
+    const batch = users.slice(i, i + BATCH_SIZE);
 
-        const res = await fetch(url.toString(), {
-          headers: headers(),
-          cache: "no-store",
-        });
-        if (!res.ok) {
-          console.error(
-            `Clockify entries error for ${user.name}: ${res.status}`
+    await Promise.all(
+      batch.map(async (user) => {
+        let page = 1;
+        while (true) {
+          const url = new URL(
+            `${BASE_URL}/workspaces/${wsId}/user/${user.id}/time-entries`
           );
-          break;
+          url.searchParams.set("start", from);
+          url.searchParams.set("end", to);
+          url.searchParams.set("page", String(page));
+          url.searchParams.set("page-size", String(PAGE_SIZE));
+
+          const res = await fetchWithRetry(
+            url.toString(),
+            { headers: headers(), cache: "no-store" },
+            user.name
+          );
+          if (!res.ok) {
+            console.error(
+              `Clockify entries error for ${user.name}: ${res.status}`
+            );
+            break;
+          }
+          const data = await res.json();
+          for (const e of data) {
+            allEntries.push({
+              id: e.id,
+              description: e.description || "",
+              userId: e.userId,
+              projectId: e.projectId,
+              billable: e.billable,
+              timeInterval: {
+                start: e.timeInterval.start,
+                end: e.timeInterval.end,
+                duration: e.timeInterval.duration,
+              },
+            });
+          }
+          if (data.length < PAGE_SIZE) break;
+          page++;
         }
-        const data = await res.json();
-        for (const e of data) {
-          allEntries.push({
-            id: e.id,
-            description: e.description || "",
-            userId: e.userId,
-            projectId: e.projectId,
-            billable: e.billable,
-            timeInterval: {
-              start: e.timeInterval.start,
-              end: e.timeInterval.end,
-              duration: e.timeInterval.duration,
-            },
-          });
-        }
-        if (data.length < PAGE_SIZE) break;
-        page++;
-      }
-    })
-  );
+      })
+    );
+
+    // Pause between batches to stay under rate limits
+    if (i + BATCH_SIZE < users.length) {
+      await sleep(BATCH_DELAY);
+    }
+  }
 
   return allEntries;
 }
