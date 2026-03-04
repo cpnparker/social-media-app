@@ -142,6 +142,7 @@ const operationsItems: NavSubItem[] = [
       { label: "Contracts", href: "/operations/contracts" },
       { label: "Contracts Grid", href: "/operations/contracts-grid" },
       { label: "Formats", href: "/operations/formats" },
+      { label: "Profitability", href: "/operations/profitability" },
     ],
   },
   {
