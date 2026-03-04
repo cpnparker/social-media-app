@@ -50,8 +50,8 @@ interface ClientRow {
   billableHours: number;
   activityBreakdown: Record<string, number>;
   supabaseClientId: string | null;
-  cusDeliveredInPeriod: number;
-  contentItemsInPeriod: number;
+  supabaseClientName: string | null;
+  cusInPeriod: number;
   cusContracted: number;
   hoursPerCU: number | null;
   contracts: ContractInfo[];
@@ -61,7 +61,6 @@ interface Totals {
   totalHours: number;
   totalBillableHours: number;
   totalCUsInPeriod: number;
-  totalContentItems: number;
   overallHoursPerCU: number | null;
   activityTotals: Record<string, number>;
 }
@@ -334,9 +333,6 @@ export default function ProfitabilityPage() {
                   <BarChart3 className="h-3.5 w-3.5" /> CUs Delivered (period)
                 </div>
                 <div className="text-2xl font-bold mt-1">{totals.totalCUsInPeriod}</div>
-                <div className="text-xs text-muted-foreground">
-                  {totals.totalContentItems} content items
-                </div>
               </CardContent>
             </Card>
             <Card>
@@ -471,7 +467,7 @@ export default function ProfitabilityPage() {
                         <SortHeader label="Acct Mgmt" sortKey="acctMgmt" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
                       </th>
                       <th className="text-right p-3">
-                        <SortHeader label="CUs (period)" sortKey="cusDeliveredInPeriod" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
+                        <SortHeader label="CUs (period)" sortKey="cusInPeriod" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
                       </th>
                       <th className="text-right p-3">
                         <SortHeader label="Hours / CU" sortKey="hoursPerCU" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
@@ -515,6 +511,12 @@ export default function ProfitabilityPage() {
                               </div>
                               <div className="p-3 flex-1 font-medium">
                                 {client.clientName}
+                                {client.supabaseClientName &&
+                                  client.supabaseClientName !== client.clientName && (
+                                    <span className="ml-2 text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">
+                                      → {client.supabaseClientName}
+                                    </span>
+                                  )}
                                 {!client.supabaseClientId && (
                                   <span className="ml-2 text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
                                     no contract match
@@ -534,7 +536,7 @@ export default function ProfitabilityPage() {
                                 {enriched.acctMgmt > 0 ? fmtHours(enriched.acctMgmt) : "—"}
                               </div>
                               <div className="p-3 w-28 text-right font-mono text-xs">
-                                {client.cusDeliveredInPeriod > 0 ? client.cusDeliveredInPeriod : "—"}
+                                {client.cusInPeriod > 0 ? client.cusInPeriod : "—"}
                               </div>
                               <div className="p-3 w-28 text-right">
                                 <EfficiencyBadge hoursPerCU={client.hoursPerCU} />

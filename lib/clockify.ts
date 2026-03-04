@@ -75,43 +75,32 @@ export function parseDuration(iso: string): number {
 
 // ── API fetchers ───────────────────────────────────
 
-/**
- * Fetch all Clockify clients in the workspace.
- */
 export async function getClockifyClients(): Promise<ClockifyClient[]> {
   const wsId = workspaceId();
   const allClients: ClockifyClient[] = [];
   let page = 1;
-
   while (true) {
     const res = await fetch(
       `${BASE_URL}/workspaces/${wsId}/clients?page=${page}&page-size=${PAGE_SIZE}`,
-      { headers: headers(), next: { revalidate: 300 } }
+      { headers: headers(), cache: "no-store" }
     );
     if (!res.ok) throw new Error(`Clockify clients error: ${res.status}`);
     const data = await res.json();
-    for (const c of data) {
-      allClients.push({ id: c.id, name: c.name });
-    }
+    for (const c of data) allClients.push({ id: c.id, name: c.name });
     if (data.length < PAGE_SIZE) break;
     page++;
   }
-
   return allClients;
 }
 
-/**
- * Fetch all projects in the workspace.
- */
 export async function getClockifyProjects(): Promise<ClockifyProject[]> {
   const wsId = workspaceId();
   const allProjects: ClockifyProject[] = [];
   let page = 1;
-
   while (true) {
     const res = await fetch(
       `${BASE_URL}/workspaces/${wsId}/projects?page=${page}&page-size=${PAGE_SIZE}`,
-      { headers: headers(), next: { revalidate: 300 } }
+      { headers: headers(), cache: "no-store" }
     );
     if (!res.ok) throw new Error(`Clockify projects error: ${res.status}`);
     const data = await res.json();
@@ -126,18 +115,14 @@ export async function getClockifyProjects(): Promise<ClockifyProject[]> {
     if (data.length < PAGE_SIZE) break;
     page++;
   }
-
   return allProjects;
 }
 
-/**
- * Fetch all workspace users.
- */
 export async function getClockifyUsers(): Promise<ClockifyUser[]> {
   const wsId = workspaceId();
   const res = await fetch(
     `${BASE_URL}/workspaces/${wsId}/users?page-size=${PAGE_SIZE}`,
-    { headers: headers(), next: { revalidate: 300 } }
+    { headers: headers(), cache: "no-store" }
   );
   if (!res.ok) throw new Error(`Clockify users error: ${res.status}`);
   const data = await res.json();
@@ -149,8 +134,8 @@ export async function getClockifyUsers(): Promise<ClockifyUser[]> {
  * Iterates through every user and paginates their entries.
  */
 export async function getAllTimeEntries(
-  from: string, // ISO date e.g. "2025-01-01T00:00:00Z"
-  to: string    // ISO date e.g. "2025-12-31T23:59:59Z"
+  from: string,
+  to: string
 ): Promise<ClockifyTimeEntry[]> {
   const wsId = workspaceId();
   const users = await getClockifyUsers();
@@ -168,9 +153,14 @@ export async function getAllTimeEntries(
         url.searchParams.set("page", String(page));
         url.searchParams.set("page-size", String(PAGE_SIZE));
 
-        const res = await fetch(url.toString(), { headers: headers() });
+        const res = await fetch(url.toString(), {
+          headers: headers(),
+          cache: "no-store",
+        });
         if (!res.ok) {
-          console.error(`Clockify time entries error for user ${user.name}: ${res.status}`);
+          console.error(
+            `Clockify entries error for ${user.name}: ${res.status}`
+          );
           break;
         }
         const data = await res.json();
@@ -220,49 +210,39 @@ const INTERNAL_PROJECTS = new Set([
   "Writing requests",
 ]);
 
-export interface ClientProfitability {
-  clockifyClientId: string;
-  clientName: string;
-  totalHours: number;
-  billableHours: number;
-  activityBreakdown: Record<string, number>; // activity → hours
-  /** Matched Supabase data */
-  supabaseClientId: string | null;
-  cusDelivered: number;
-  cusContracted: number;
-  hoursPerCU: number | null;
-  contracts: {
-    contractId: string;
-    contractName: string;
-    cusDelivered: number;
-    cusContracted: number;
-    dateStart: string | null;
-    dateEnd: string | null;
-    active: boolean;
-  }[];
-}
-
 /**
- * Build per-client profitability data by joining Clockify time entries
- * with project→client mappings.
+ * Build per-client hour aggregation from Clockify time entries.
+ * Keyed by Clockify client ID.
  */
 export function buildClientProfitability(
   timeEntries: ClockifyTimeEntry[],
   projects: ClockifyProject[],
   clockifyClients: ClockifyClient[]
 ): {
-  byClient: Record<string, { totalHours: number; billableHours: number; activityBreakdown: Record<string, number> }>;
+  byClient: Record<
+    string,
+    {
+      totalHours: number;
+      billableHours: number;
+      activityBreakdown: Record<string, number>;
+    }
+  >;
   unmatchedProjects: string[];
 } {
-  // Build project lookup
   const projectMap = new Map<string, ClockifyProject>();
   for (const p of projects) projectMap.set(p.id, p);
 
-  // Build client name lookup
   const clientNameMap = new Map<string, string>();
   for (const c of clockifyClients) clientNameMap.set(c.id, c.name);
 
-  const byClient: Record<string, { totalHours: number; billableHours: number; activityBreakdown: Record<string, number> }> = {};
+  const byClient: Record<
+    string,
+    {
+      totalHours: number;
+      billableHours: number;
+      activityBreakdown: Record<string, number>;
+    }
+  > = {};
   const unmatchedProjectIds = new Set<string>();
 
   for (const entry of timeEntries) {
@@ -271,36 +251,106 @@ export function buildClientProfitability(
       unmatchedProjectIds.add(entry.projectId);
       continue;
     }
-
-    // Skip internal projects
     if (INTERNAL_PROJECTS.has(project.name)) continue;
-
-    // Skip projects without a client
     if (!project.clientId) continue;
 
     const clientName = clientNameMap.get(project.clientId);
     if (!clientName) continue;
-
-    // Skip "The Content Engine" internal client
     if (clientName === "The Content Engine") continue;
 
     const hours = parseDuration(entry.timeInterval.duration);
     const clientId = project.clientId;
 
     if (!byClient[clientId]) {
-      byClient[clientId] = { totalHours: 0, billableHours: 0, activityBreakdown: {} };
+      byClient[clientId] = {
+        totalHours: 0,
+        billableHours: 0,
+        activityBreakdown: {},
+      };
     }
 
     byClient[clientId].totalHours += hours;
     if (entry.billable) byClient[clientId].billableHours += hours;
 
-    // Categorize activity
-    const activity = ACTIVITY_TYPES.has(project.name) ? project.name : "Other";
+    const activity = ACTIVITY_TYPES.has(project.name)
+      ? project.name
+      : "Other";
     byClient[clientId].activityBreakdown[activity] =
       (byClient[clientId].activityBreakdown[activity] || 0) + hours;
   }
 
-  const unmatchedProjects = Array.from(unmatchedProjectIds);
+  return { byClient, unmatchedProjects: Array.from(unmatchedProjectIds) };
+}
 
-  return { byClient, unmatchedProjects };
+// ── Fuzzy client name matching ─────────────────────
+
+/**
+ * Normalize a client name for matching:
+ * lowercase, trim, strip dashes/hyphens/slashes, collapse whitespace.
+ */
+function normalize(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[-–—/\\]/g, " ")     // replace dashes, slashes with space
+    .replace(/[()]/g, "")           // remove parens
+    .replace(/\s+/g, " ")           // collapse whitespace
+    .trim();
+}
+
+/**
+ * Extract a potential acronym from parentheses: "Islamic Development Bank (IsDB)" → "isdb"
+ */
+function extractParenAcronym(name: string): string | null {
+  const m = name.match(/\(([^)]+)\)/);
+  return m ? m[1].trim().toLowerCase() : null;
+}
+
+/**
+ * Match a Clockify client name to a Supabase client using fuzzy matching.
+ * Returns the Supabase client or null.
+ *
+ * Strategy (in priority order):
+ * 1. Exact match (case-insensitive, trimmed)
+ * 2. Clockify name matches acronym in parentheses in Supabase name
+ *    e.g. "IsDB" → "Islamic Development Bank (IsDB)"
+ * 3. One name starts with the other
+ *    e.g. "Bahrain" → "Bahrain EDB", "Holcim" → "Holcim Group"
+ * 4. One name contains the other (minimum 4 chars to avoid false positives)
+ *    e.g. "GAVI" → "GAVI The Vaccine Alliance"
+ */
+export function fuzzyMatchClient(
+  clockifyName: string,
+  supabaseClients: { id: string; name: string }[]
+): { id: string; name: string } | null {
+  const cn = normalize(clockifyName);
+
+  // 1. Exact match
+  for (const sc of supabaseClients) {
+    if (normalize(sc.name) === cn) return sc;
+  }
+
+  // 2. Clockify name matches parenthesised acronym in Supabase
+  //    (use raw name for extraction, compare against raw clockify name lowered)
+  const cnRaw = clockifyName.trim().toLowerCase();
+  for (const sc of supabaseClients) {
+    const acronym = extractParenAcronym(sc.name);
+    if (acronym && acronym === cnRaw) return sc;
+  }
+
+  // 3. One starts with the other
+  for (const sc of supabaseClients) {
+    const sn = normalize(sc.name);
+    if (sn.startsWith(cn) || cn.startsWith(sn)) return sc;
+  }
+
+  // 4. One contains the other (min 4 chars to avoid false positives)
+  if (cn.length >= 4) {
+    for (const sc of supabaseClients) {
+      const sn = normalize(sc.name);
+      if (sn.length >= 4 && (sn.includes(cn) || cn.includes(sn))) return sc;
+    }
+  }
+
+  return null;
 }

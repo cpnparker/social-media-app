@@ -6,6 +6,7 @@ import {
   getClockifyProjects,
   getAllTimeEntries,
   buildClientProfitability,
+  fuzzyMatchClient,
 } from "@/lib/clockify";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -19,7 +20,6 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
 
-  // Date range defaults to last 12 months
   const now = new Date();
   const twelveMonthsAgo = new Date(now);
   twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
   const toISO = `${toDate}T23:59:59Z`;
 
   try {
-    // ── 1. Fetch Clockify data + Supabase data in parallel ──
+    // ── 1. Fetch all data in parallel ──
     const [
       clockifyClients,
       clockifyProjects,
@@ -47,31 +47,25 @@ export async function GET(req: NextRequest) {
       getClockifyClients(),
       getClockifyProjects(),
       getAllTimeEntries(fromISO, toISO),
-      // Supabase clients
       supabase
         .from("app_clients")
         .select("*")
         .order("name_client", { ascending: true }),
-      // Contracts overlapping the date range
-      supabase
-        .from("app_contracts")
-        .select("*"),
-      // Content tasks completed within the date range — this gives us
-      // actual CUs delivered in the period (not all-time)
+      supabase.from("app_contracts").select("*"),
+      // Tasks completed in the period — sum units_content for CUs
       supabase
         .from("app_tasks_content")
-        .select("id_client, id_contract, units_content, date_completed, flag_spiked, id_content")
+        .select("id_client, id_contract, units_content, date_completed, flag_spiked")
         .gte("date_completed", fromISO)
         .lte("date_completed", toISO),
-      // Social tasks completed within the date range
       supabase
         .from("app_tasks_social")
-        .select("id_client, id_contract, units_content, date_completed, flag_spiked, id_content")
+        .select("id_client, id_contract, units_content, date_completed, flag_spiked")
         .gte("date_completed", fromISO)
         .lte("date_completed", toISO),
     ]);
 
-    // ── 2. Build per-client hour aggregation from Clockify ──
+    // ── 2. Build Clockify per-client hour aggregation ──
     const { byClient, unmatchedProjects } = buildClientProfitability(
       timeEntries,
       clockifyProjects,
@@ -83,81 +77,70 @@ export async function GET(req: NextRequest) {
     const contentTasks = contentTasksRes.data || [];
     const socialTasks = socialTasksRes.data || [];
 
-    // ── 3. Calculate actual CUs delivered per client in the period ──
-    // Deduplicate by id_content to avoid counting the same content item twice
-    // (multiple tasks can exist per content item)
-    const periodCUsByClient = new Map<string, { delivered: number; contentCount: number }>();
-
-    // Track seen content IDs to deduplicate
-    const seenContentIds = new Set<string>();
+    // ── 3. Sum CUs per Supabase client for the period ──
+    // No dedup — each task row has its own CU portion that must be summed.
+    const periodCUsBySupabaseClient = new Map<
+      string,
+      { cus: number; taskCount: number }
+    >();
 
     for (const t of contentTasks) {
-      if (t.flag_spiked === 1) continue; // exclude spiked
+      if (t.flag_spiked === 1) continue;
       const clientId = t.id_client ? String(t.id_client) : null;
       if (!clientId) continue;
-
-      // Deduplicate by id_content
-      const contentKey = t.id_content ? `c_${t.id_content}` : `t_${Math.random()}`;
-      if (seenContentIds.has(contentKey)) continue;
-      seenContentIds.add(contentKey);
-
       const cus = Number(t.units_content) || 0;
-      if (!periodCUsByClient.has(clientId)) {
-        periodCUsByClient.set(clientId, { delivered: 0, contentCount: 0 });
-      }
-      const entry = periodCUsByClient.get(clientId)!;
-      entry.delivered += cus;
-      entry.contentCount += 1;
+      const entry = periodCUsBySupabaseClient.get(clientId) || {
+        cus: 0,
+        taskCount: 0,
+      };
+      entry.cus += cus;
+      entry.taskCount += 1;
+      periodCUsBySupabaseClient.set(clientId, entry);
     }
 
     for (const t of socialTasks) {
       if (t.flag_spiked === 1) continue;
       const clientId = t.id_client ? String(t.id_client) : null;
       if (!clientId) continue;
-
-      const contentKey = t.id_content ? `s_${t.id_content}` : `st_${Math.random()}`;
-      if (seenContentIds.has(contentKey)) continue;
-      seenContentIds.add(contentKey);
-
       const cus = Number(t.units_content) || 0;
-      if (!periodCUsByClient.has(clientId)) {
-        periodCUsByClient.set(clientId, { delivered: 0, contentCount: 0 });
-      }
-      const entry = periodCUsByClient.get(clientId)!;
-      entry.delivered += cus;
-      entry.contentCount += 1;
+      const entry = periodCUsBySupabaseClient.get(clientId) || {
+        cus: 0,
+        taskCount: 0,
+      };
+      entry.cus += cus;
+      entry.taskCount += 1;
+      periodCUsBySupabaseClient.set(clientId, entry);
     }
 
     // ── 4. Build lookups ──
-    // Supabase client lookup by normalized name
-    const supabaseClientByName = new Map<string, Record<string, any>>();
-    for (const sc of supabaseClients) {
-      const name = (sc.name_client || "").trim().toLowerCase();
-      supabaseClientByName.set(name, sc);
-    }
+    const clockifyClientNameMap = new Map<string, string>();
+    for (const c of clockifyClients) clockifyClientNameMap.set(c.id, c.name);
 
-    // Group contracts by client id (filter to overlapping ones for display)
+    // Supabase clients for fuzzy matching (simplified list)
+    const supabaseClientList = supabaseClients.map(
+      (sc: Record<string, any>) => ({
+        id: String(sc.id_client),
+        name: (sc.name_client || "").trim(),
+      })
+    );
+
+    // Group contracts by Supabase client id, filtered to period overlap
     const contractsByClientId = new Map<string, Record<string, any>[]>();
     for (const c of supabaseContracts) {
-      // Only include contracts that overlap the selected period
       const cStart = c.date_start || null;
       const cEnd = c.date_end || null;
       const overlaps =
         (!cStart || cStart <= toISO) && (!cEnd || cEnd >= fromISO);
       if (!overlaps) continue;
-
       const cid = String(c.id_client);
       if (!contractsByClientId.has(cid)) contractsByClientId.set(cid, []);
       contractsByClientId.get(cid)!.push(c);
     }
 
-    // Clockify client name lookup
-    const clockifyClientNameMap = new Map<string, string>();
-    for (const c of clockifyClients) {
-      clockifyClientNameMap.set(c.id, c.name);
-    }
+    // ── 5. Join Clockify hours with Supabase CU data ──
+    // Use fuzzy name matching to link Clockify clients → Supabase clients
+    const matchLog: { clockify: string; supabase: string | null }[] = [];
 
-    // ── 5. Join Clockify hours with period-specific CU data ──
     const clients: {
       clockifyClientId: string;
       clientName: string;
@@ -165,8 +148,8 @@ export async function GET(req: NextRequest) {
       billableHours: number;
       activityBreakdown: Record<string, number>;
       supabaseClientId: string | null;
-      cusDeliveredInPeriod: number;
-      contentItemsInPeriod: number;
+      supabaseClientName: string | null;
+      cusInPeriod: number;
       cusContracted: number;
       hoursPerCU: number | null;
       contracts: {
@@ -181,26 +164,28 @@ export async function GET(req: NextRequest) {
     }[] = [];
 
     for (const [clockifyClientId, hours] of Object.entries(byClient)) {
-      const clientName = clockifyClientNameMap.get(clockifyClientId) || "Unknown";
-      const normalizedName = clientName.trim().toLowerCase();
+      const clockifyName =
+        clockifyClientNameMap.get(clockifyClientId) || "Unknown";
 
-      // Match to Supabase client
-      const supabaseClient = supabaseClientByName.get(normalizedName);
-      const supabaseClientId = supabaseClient
-        ? String(supabaseClient.id_client)
-        : null;
+      // Fuzzy match to Supabase
+      const match = fuzzyMatchClient(clockifyName, supabaseClientList);
+      const supabaseClientId = match ? match.id : null;
+      const supabaseClientName = match ? match.name : null;
 
-      // Get period-specific CUs from actual completed tasks
+      matchLog.push({
+        clockify: clockifyName,
+        supabase: supabaseClientName,
+      });
+
+      // Get period CUs (sum of task CUs completed in the date range)
       const periodCUs = supabaseClientId
-        ? periodCUsByClient.get(supabaseClientId)
+        ? periodCUsBySupabaseClient.get(supabaseClientId)
         : null;
-      const cusDeliveredInPeriod = periodCUs ? periodCUs.delivered : 0;
-      const contentItemsInPeriod = periodCUs ? periodCUs.contentCount : 0;
+      const cusInPeriod = periodCUs ? periodCUs.cus : 0;
 
-      // Get overlapping contracts for display
+      // Get overlapping contracts
       let cusContracted = 0;
-      const clientContracts: typeof clients[0]["contracts"] = [];
-
+      const clientContracts: (typeof clients)[0]["contracts"] = [];
       if (supabaseClientId) {
         const contracts = contractsByClientId.get(supabaseClientId) || [];
         for (const c of contracts) {
@@ -225,20 +210,21 @@ export async function GET(req: NextRequest) {
         roundedBreakdown[activity] = r2(h);
       }
 
+      // hours/CU: use raw values for precision, then round
+      const hoursPerCU =
+        cusInPeriod > 0 ? r2(hours.totalHours / cusInPeriod) : null;
+
       clients.push({
         clockifyClientId,
-        clientName,
+        clientName: clockifyName,
         totalHours: r2(hours.totalHours),
         billableHours: r2(hours.billableHours),
         activityBreakdown: roundedBreakdown,
         supabaseClientId,
-        cusDeliveredInPeriod: r2(cusDeliveredInPeriod),
-        contentItemsInPeriod,
+        supabaseClientName,
+        cusInPeriod: r2(cusInPeriod),
         cusContracted: r2(cusContracted),
-        hoursPerCU:
-          cusDeliveredInPeriod > 0
-            ? r2(hours.totalHours / cusDeliveredInPeriod)
-            : null,
+        hoursPerCU,
         contracts: clientContracts,
       });
     }
@@ -250,20 +236,17 @@ export async function GET(req: NextRequest) {
     let totalHours = 0;
     let totalBillableHours = 0;
     let totalCUsInPeriod = 0;
-    let totalContentItems = 0;
     const activityTotals: Record<string, number> = {};
 
     for (const c of clients) {
       totalHours += c.totalHours;
       totalBillableHours += c.billableHours;
-      totalCUsInPeriod += c.cusDeliveredInPeriod;
-      totalContentItems += c.contentItemsInPeriod;
+      totalCUsInPeriod += c.cusInPeriod;
       for (const [activity, h] of Object.entries(c.activityBreakdown)) {
         activityTotals[activity] = (activityTotals[activity] || 0) + h;
       }
     }
 
-    // Round activity totals
     for (const key of Object.keys(activityTotals)) {
       activityTotals[key] = r2(activityTotals[key]);
     }
@@ -272,7 +255,6 @@ export async function GET(req: NextRequest) {
       totalHours: r2(totalHours),
       totalBillableHours: r2(totalBillableHours),
       totalCUsInPeriod: r2(totalCUsInPeriod),
-      totalContentItems,
       overallHoursPerCU:
         totalCUsInPeriod > 0 ? r2(totalHours / totalCUsInPeriod) : null,
       activityTotals,
@@ -282,6 +264,7 @@ export async function GET(req: NextRequest) {
       clients,
       totals,
       unmatchedProjects,
+      matchLog,
       meta: {
         from: fromISO,
         to: toISO,
