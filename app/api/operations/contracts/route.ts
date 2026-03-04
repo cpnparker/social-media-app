@@ -3,6 +3,8 @@ import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
 import { categorizeContentType } from "@/lib/content-type-utils";
 
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
 // GET /api/operations/contracts
 // Progressive loading:
 //   Base: returns clients[] + contracts[]
@@ -140,25 +142,28 @@ export async function GET(req: NextRequest) {
     const socialTasks = socialRes.data || [];
 
     // ── 5. Aggregate CUs ──
-    let commissionedCUs = 0;
-    let spikedCUs = 0;
+    let commissionedCUsRaw = 0;
+    let spikedCUsRaw = 0;
 
     for (const t of contentTasks) {
       const cus = Number(t.units_content) || 0;
       if (t.flag_spiked === 1 && !t.date_completed) {
-        spikedCUs += cus;
+        spikedCUsRaw += cus;
       } else {
-        commissionedCUs += cus;
+        commissionedCUsRaw += cus;
       }
     }
     for (const t of socialTasks) {
       const cus = Number(t.units_content) || 0;
       if (t.flag_spiked === 1 && !t.date_completed) {
-        spikedCUs += cus;
+        spikedCUsRaw += cus;
       } else {
-        commissionedCUs += cus;
+        commissionedCUsRaw += cus;
       }
     }
+
+    const commissionedCUs = r2(commissionedCUsRaw);
+    const spikedCUs = r2(spikedCUsRaw);
 
     // ── 6. Average production time per category ──
     const prodTimeMap: Record<string, { totalDays: number; count: number }> = {};
@@ -198,7 +203,7 @@ export async function GET(req: NextRequest) {
     }
 
     const contentTypes = Object.entries(typeMap)
-      .map(([name, { count, cus }]) => ({ name, count, cus }))
+      .map(([name, { count, cus }]) => ({ name, count, cus: r2(cus) }))
       .sort((a, b) => b.cus - a.cus);
 
     // ── 8. Content formats (by type_content) ──
@@ -219,37 +224,64 @@ export async function GET(req: NextRequest) {
     }
 
     const contentFormats = Object.entries(formatMap)
-      .map(([name, { count, cus }]) => ({ name, count, cus }))
+      .map(([name, { count, cus }]) => ({ name, count, cus: r2(cus) }))
       .sort((a, b) => b.cus - a.cus);
 
-    // ── 9. All content items ──
-    const content = contentTasks
-      .filter((t: Record<string, any>) => !(t.flag_spiked === 1 && !t.date_completed))
-      .map((t: Record<string, any>) => ({
-        taskId: String(t.id_task),
-        contentId: t.id_content ? String(t.id_content) : null,
-        name: t.name_content || "Untitled",
-        type: t.type_content || "unknown",
-        cus: Number(t.units_content) || 0,
-        dateCreated: t.date_created,
-        dateCompleted: t.date_completed,
-        assignee: t.name_user_assignee || null,
-      }));
+    // ── 9. All content items (deduplicated by id_content) ──
+    const contentMap: Record<string, {
+      contentId: string | null;
+      name: string;
+      type: string;
+      cus: number;
+      dateCreated: string | null;
+      dateCompleted: string | null;
+      assignee: string | null;
+    }> = {};
 
-    // Add social tasks to content list
+    for (const t of contentTasks) {
+      if (t.flag_spiked === 1 && !t.date_completed) continue;
+      const key = t.id_content ? String(t.id_content) : `task_${t.id_task}`;
+      if (!contentMap[key]) {
+        contentMap[key] = {
+          contentId: t.id_content ? String(t.id_content) : null,
+          name: (t as Record<string, any>).name_content || "Untitled",
+          type: (t as Record<string, any>).type_content || "unknown",
+          cus: Number(t.units_content) || 0,
+          dateCreated: t.date_created,
+          dateCompleted: t.date_completed,
+          assignee: (t as Record<string, any>).name_user_assignee || null,
+        };
+      } else {
+        // Aggregate CUs, keep earliest created / latest completed
+        contentMap[key].cus += Number(t.units_content) || 0;
+        if (t.date_created && (!contentMap[key].dateCreated || t.date_created < contentMap[key].dateCreated!)) {
+          contentMap[key].dateCreated = t.date_created;
+        }
+        if (t.date_completed && (!contentMap[key].dateCompleted || t.date_completed > contentMap[key].dateCompleted!)) {
+          contentMap[key].dateCompleted = t.date_completed;
+        }
+      }
+    }
+
     for (const t of socialTasks) {
       if (t.flag_spiked === 1 && !t.date_completed) continue;
-      content.push({
-        taskId: String(t.id_task),
-        contentId: t.id_content ? String(t.id_content) : null,
-        name: (t as Record<string, any>).name_social || "Social Promo",
-        type: "social_promo",
-        cus: Number(t.units_content) || 0,
-        dateCreated: t.date_created,
-        dateCompleted: t.date_completed,
-        assignee: (t as Record<string, any>).name_user_assignee || null,
-      });
+      const key = t.id_content ? `social_${t.id_content}` : `stask_${t.id_task}`;
+      if (!contentMap[key]) {
+        contentMap[key] = {
+          contentId: t.id_content ? String(t.id_content) : null,
+          name: (t as Record<string, any>).name_social || "Social Promo",
+          type: "social_promo",
+          cus: Number(t.units_content) || 0,
+          dateCreated: t.date_created,
+          dateCompleted: t.date_completed,
+          assignee: (t as Record<string, any>).name_user_assignee || null,
+        };
+      } else {
+        contentMap[key].cus += Number(t.units_content) || 0;
+      }
     }
+
+    const content = Object.values(contentMap).map((c) => ({ ...c, cus: r2(c.cus) }));
 
     // Sort content by date descending
     content.sort((a, b) => {
