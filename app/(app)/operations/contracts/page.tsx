@@ -174,6 +174,7 @@ export default function ContractsPage() {
   const [contractDetail, setContractDetail] = useState<ContractDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Sort states
   const contractSort = useSort("contractName", true);
@@ -184,6 +185,7 @@ export default function ContractsPage() {
   // ── Fetch base data ──
   const fetchBase = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const params = new URLSearchParams();
       if (selectedClientId) params.set("clientId", selectedClientId);
@@ -193,10 +195,15 @@ export default function ContractsPage() {
 
       const res = await fetch(`/api/operations/contracts?${params}`);
       const data = await res.json();
-      if (data.clients) setClients(data.clients);
-      if (data.contracts) setContracts(data.contracts);
-    } catch (err) {
+      if (!res.ok) {
+        setError(data.error || `API error ${res.status}`);
+        return;
+      }
+      setClients(data.clients || []);
+      setContracts(data.contracts || []);
+    } catch (err: any) {
       console.error("Failed to fetch contracts:", err);
+      setError(err.message || "Failed to fetch contracts");
     } finally {
       setLoading(false);
     }
@@ -299,6 +306,17 @@ export default function ContractsPage() {
           Explore contract details, content types, production times, and commissioned content.
         </p>
       </div>
+
+      {/* Error display */}
+      {error && (
+        <Card className="border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950 shadow-sm">
+          <CardContent className="p-3">
+            <p className="text-xs text-red-600 dark:text-red-400">
+              <strong>Error:</strong> {error}
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── Filter Bar ── */}
       <Card className="border-0 shadow-sm">
