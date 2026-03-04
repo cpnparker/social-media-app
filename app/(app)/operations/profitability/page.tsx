@@ -50,7 +50,8 @@ interface ClientRow {
   billableHours: number;
   activityBreakdown: Record<string, number>;
   supabaseClientId: string | null;
-  cusDelivered: number;
+  cusDeliveredInPeriod: number;
+  contentItemsInPeriod: number;
   cusContracted: number;
   hoursPerCU: number | null;
   contracts: ContractInfo[];
@@ -59,7 +60,8 @@ interface ClientRow {
 interface Totals {
   totalHours: number;
   totalBillableHours: number;
-  totalCUsDelivered: number;
+  totalCUsInPeriod: number;
+  totalContentItems: number;
   overallHoursPerCU: number | null;
   activityTotals: Record<string, number>;
 }
@@ -329,9 +331,12 @@ export default function ProfitabilityPage() {
             <Card>
               <CardContent className="p-4">
                 <div className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                  <BarChart3 className="h-3.5 w-3.5" /> CUs Delivered
+                  <BarChart3 className="h-3.5 w-3.5" /> CUs Delivered (period)
                 </div>
-                <div className="text-2xl font-bold mt-1">{totals.totalCUsDelivered}</div>
+                <div className="text-2xl font-bold mt-1">{totals.totalCUsInPeriod}</div>
+                <div className="text-xs text-muted-foreground">
+                  {totals.totalContentItems} content items
+                </div>
               </CardContent>
             </Card>
             <Card>
@@ -466,7 +471,7 @@ export default function ProfitabilityPage() {
                         <SortHeader label="Acct Mgmt" sortKey="acctMgmt" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
                       </th>
                       <th className="text-right p-3">
-                        <SortHeader label="CUs Delivered" sortKey="cusDelivered" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
+                        <SortHeader label="CUs (period)" sortKey="cusDeliveredInPeriod" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
                       </th>
                       <th className="text-right p-3">
                         <SortHeader label="Hours / CU" sortKey="hoursPerCU" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
@@ -529,7 +534,7 @@ export default function ProfitabilityPage() {
                                 {enriched.acctMgmt > 0 ? fmtHours(enriched.acctMgmt) : "—"}
                               </div>
                               <div className="p-3 w-28 text-right font-mono text-xs">
-                                {client.cusDelivered > 0 ? client.cusDelivered : "—"}
+                                {client.cusDeliveredInPeriod > 0 ? client.cusDeliveredInPeriod : "—"}
                               </div>
                               <div className="p-3 w-28 text-right">
                                 <EfficiencyBadge hoursPerCU={client.hoursPerCU} />
