@@ -6,21 +6,21 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   Loader2,
-  CalendarDays,
   Search,
   ExternalLink,
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
   Building2,
-  FileText,
-  Zap,
   Clock,
   Globe,
   User,
   MapPin,
   ChevronDown,
   Check,
+  X,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -64,7 +64,6 @@ interface Contract {
 }
 
 interface ContentItem {
-  taskId: string;
   contentId: string | null;
   name: string;
   type: string;
@@ -97,6 +96,8 @@ const CATEGORY_HEX: Record<string, string> = {
   Strategy: "#f59e0b",
   Other: "#6b7280",
 };
+
+const PAGE_SIZE = 25;
 
 /* ─── Sortable header helper ─── */
 function SortHeader({ label, sortKey, currentSort, currentAsc, onSort, align = "left" }: {
@@ -182,6 +183,10 @@ export default function ContractsPage() {
   const typeSort = useSort("cus", false);
   const formatSort = useSort("cus", false);
 
+  // Content search + pagination
+  const [contentSearch, setContentSearch] = useState("");
+  const [contentPage, setContentPage] = useState(0);
+
   // ── Fetch base data ──
   const fetchBase = useCallback(async () => {
     setLoading(true);
@@ -229,6 +234,8 @@ export default function ContractsPage() {
 
   useEffect(() => {
     if (selectedContractId) {
+      setContentSearch("");
+      setContentPage(0);
       fetchDetail(selectedContractId);
     } else {
       setContractDetail(null);
@@ -250,6 +257,17 @@ export default function ContractsPage() {
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
+
+  // Close modal on Escape
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && selectedContractId) {
+        setSelectedContractId(null);
+      }
+    }
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [selectedContractId]);
 
   // ── Derived data ──
   const selectedClient = useMemo(
@@ -273,10 +291,34 @@ export default function ContractsPage() {
     [contracts, contractSort.currentSort, contractSort.currentAsc]
   );
 
-  const sortedContent = useMemo(() => {
+  // Content: filter → sort → paginate
+  const filteredContent = useMemo(() => {
     if (!contractDetail) return [];
-    return sortRows(contractDetail.content, contentSort.currentSort, contentSort.currentAsc);
-  }, [contractDetail, contentSort.currentSort, contentSort.currentAsc]);
+    if (!contentSearch.trim()) return contractDetail.content;
+    const q = contentSearch.toLowerCase();
+    return contractDetail.content.filter(
+      (item) =>
+        item.name.toLowerCase().includes(q) ||
+        item.type.toLowerCase().includes(q) ||
+        (item.assignee && item.assignee.toLowerCase().includes(q))
+    );
+  }, [contractDetail, contentSearch]);
+
+  const sortedContent = useMemo(
+    () => sortRows(filteredContent, contentSort.currentSort, contentSort.currentAsc),
+    [filteredContent, contentSort.currentSort, contentSort.currentAsc]
+  );
+
+  const totalContentPages = Math.max(1, Math.ceil(sortedContent.length / PAGE_SIZE));
+  const pagedContent = useMemo(
+    () => sortedContent.slice(contentPage * PAGE_SIZE, (contentPage + 1) * PAGE_SIZE),
+    [sortedContent, contentPage]
+  );
+
+  // Reset page when search or sort changes
+  useEffect(() => {
+    setContentPage(0);
+  }, [contentSearch, contentSort.currentSort, contentSort.currentAsc]);
 
   const sortedTypes = useMemo(() => {
     if (!contractDetail) return [];
@@ -346,7 +388,6 @@ export default function ContractsPage() {
 
               {clientDropdownOpen && (
                 <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-lg">
-                  {/* Search input inside dropdown */}
                   <div className="p-1.5 border-b">
                     <div className="relative">
                       <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
@@ -359,19 +400,13 @@ export default function ContractsPage() {
                       />
                     </div>
                   </div>
-                  {/* Options */}
                   <div className="max-h-52 overflow-auto py-1">
-                    {/* "All customers" option */}
                     <button
                       className={cn(
                         "w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors flex items-center justify-between",
                         !selectedClientId && "font-medium text-primary"
                       )}
-                      onClick={() => {
-                        setSelectedClientId(null);
-                        setClientDropdownOpen(false);
-                        setClientSearch("");
-                      }}
+                      onClick={() => { setSelectedClientId(null); setClientDropdownOpen(false); setClientSearch(""); }}
                     >
                       All customers
                       {!selectedClientId && <Check className="h-3 w-3" />}
@@ -383,11 +418,7 @@ export default function ContractsPage() {
                           "w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors flex items-center justify-between",
                           selectedClientId === c.clientId && "font-medium text-primary"
                         )}
-                        onClick={() => {
-                          setSelectedClientId(c.clientId);
-                          setClientDropdownOpen(false);
-                          setClientSearch("");
-                        }}
+                        onClick={() => { setSelectedClientId(c.clientId); setClientDropdownOpen(false); setClientSearch(""); }}
                       >
                         {c.name}
                         {selectedClientId === c.clientId && <Check className="h-3 w-3" />}
@@ -403,33 +434,17 @@ export default function ContractsPage() {
 
             {/* Date range */}
             <div>
-              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">
-                From
-              </label>
-              <Input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                className="h-8 text-xs w-[140px]"
-              />
+              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">From</label>
+              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="h-8 text-xs w-[140px]" />
             </div>
             <div>
-              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">
-                To
-              </label>
-              <Input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                className="h-8 text-xs w-[140px]"
-              />
+              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">To</label>
+              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="h-8 text-xs w-[140px]" />
             </div>
 
             {/* Status toggle */}
             <div>
-              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">
-                Status
-              </label>
+              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Status</label>
               <div className="flex rounded-md border overflow-hidden">
                 {(["1", "0", "all"] as const).map((v) => (
                   <button
@@ -437,9 +452,7 @@ export default function ContractsPage() {
                     onClick={() => setStatusFilter(v)}
                     className={cn(
                       "px-3 py-1.5 text-[11px] font-medium transition-colors",
-                      statusFilter === v
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-background hover:bg-muted"
+                      statusFilter === v ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"
                     )}
                   >
                     {v === "1" ? "Active" : v === "0" ? "Inactive" : "All"}
@@ -464,38 +477,25 @@ export default function ContractsPage() {
               <div className="min-w-0 flex-1">
                 <h2 className="text-base font-semibold">{selectedClient.name}</h2>
                 <div className="flex flex-wrap gap-2 mt-1.5">
-                  {selectedClient.industry && (
-                    <Badge variant="secondary" className="text-[10px]">{selectedClient.industry}</Badge>
-                  )}
+                  {selectedClient.industry && <Badge variant="secondary" className="text-[10px]">{selectedClient.industry}</Badge>}
                   {selectedClient.size && (
-                    <Badge variant="outline" className="text-[10px] gap-1">
-                      <User className="h-2.5 w-2.5" />
-                      {selectedClient.size}
-                    </Badge>
+                    <Badge variant="outline" className="text-[10px] gap-1"><User className="h-2.5 w-2.5" />{selectedClient.size}</Badge>
                   )}
                   {selectedClient.timezone && (
-                    <Badge variant="outline" className="text-[10px] gap-1">
-                      <MapPin className="h-2.5 w-2.5" />
-                      {selectedClient.timezone}
-                    </Badge>
+                    <Badge variant="outline" className="text-[10px] gap-1"><MapPin className="h-2.5 w-2.5" />{selectedClient.timezone}</Badge>
                   )}
                 </div>
                 {selectedClient.description && (
-                  <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
-                    {selectedClient.description}
-                  </p>
+                  <p className="text-xs text-muted-foreground mt-2 leading-relaxed">{selectedClient.description}</p>
                 )}
                 <div className="flex flex-wrap gap-4 mt-2 text-xs text-muted-foreground">
                   {selectedClient.accountManager && (
-                    <span className="flex items-center gap-1">
-                      <User className="h-3 w-3" /> {selectedClient.accountManager}
-                    </span>
+                    <span className="flex items-center gap-1"><User className="h-3 w-3" /> {selectedClient.accountManager}</span>
                   )}
                   {selectedClient.website && (
                     <a
                       href={selectedClient.website.startsWith("http") ? selectedClient.website : `https://${selectedClient.website}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                      target="_blank" rel="noopener noreferrer"
                       className="flex items-center gap-1 hover:text-foreground transition-colors"
                     >
                       <Globe className="h-3 w-3" /> Website
@@ -539,15 +539,8 @@ export default function ContractsPage() {
                   sortedContracts.map((c) => (
                     <tr
                       key={c.contractId}
-                      onClick={() => setSelectedContractId(
-                        selectedContractId === c.contractId ? null : c.contractId
-                      )}
-                      className={cn(
-                        "border-b cursor-pointer transition-colors",
-                        selectedContractId === c.contractId
-                          ? "bg-primary/5"
-                          : "hover:bg-muted/50"
-                      )}
+                      onClick={() => setSelectedContractId(c.contractId)}
+                      className="border-b cursor-pointer transition-colors hover:bg-muted/50"
                     >
                       <td className="px-3 py-2 font-medium">{c.contractName}</td>
                       <td className="px-3 py-2 text-muted-foreground">{c.clientName}</td>
@@ -564,290 +557,303 @@ export default function ContractsPage() {
         </CardContent>
       </Card>
 
-      {/* ── Contract Detail Section ── */}
+      {/* ── Contract Detail Modal ── */}
       {selectedContractId && (
-        <>
-          {detailLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-8 pb-8">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => setSelectedContractId(null)}
+          />
+
+          {/* Modal content */}
+          <div className="relative z-10 w-full max-w-5xl max-h-[calc(100vh-4rem)] overflow-y-auto rounded-xl border bg-background shadow-2xl mx-4">
+            {/* Modal header */}
+            <div className="sticky top-0 z-20 flex items-center justify-between px-5 py-3 border-b bg-background/95 backdrop-blur-sm rounded-t-xl">
+              <div>
+                <h2 className="text-sm font-semibold">{selectedContract?.contractName || "Contract"}</h2>
+                <p className="text-[11px] text-muted-foreground">{selectedContract?.clientName}</p>
+              </div>
+              <button
+                onClick={() => setSelectedContractId(null)}
+                className="p-1.5 rounded-md hover:bg-muted transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
-          ) : contractDetail && selectedContract ? (
-            <>
-              {/* KPI Cards */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-                {[
-                  { label: "Start", value: fmtDate(selectedContract.dateStart), icon: CalendarDays, color: "blue" },
-                  { label: "End", value: fmtDate(selectedContract.dateEnd), icon: CalendarDays, color: "blue" },
-                  { label: "Contracted CUs", value: String(selectedContract.cusContract), icon: FileText, color: "violet" },
-                  { label: "Delivered CUs", value: String(selectedContract.cusDelivered), icon: Zap, color: "green" },
-                  { label: "Commissioned CUs", value: String(contractDetail.commissionedCUs), icon: Zap, color: "amber" },
-                  { label: "Spiked CUs", value: String(contractDetail.spikedCUs), icon: Zap, color: "red" },
-                ].map((kpi) => (
-                  <Card key={kpi.label} className="border-0 shadow-sm">
-                    <CardContent className="p-3">
-                      <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                        {kpi.label}
-                      </p>
-                      <p className="text-lg font-semibold mt-1">{kpi.value}</p>
+
+            {detailLoading ? (
+              <div className="flex items-center justify-center py-16">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : contractDetail && selectedContract ? (
+              <div className="p-5 space-y-5">
+                {/* KPI Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                  {[
+                    { label: "Start", value: fmtDate(selectedContract.dateStart) },
+                    { label: "End", value: fmtDate(selectedContract.dateEnd) },
+                    { label: "Contracted CUs", value: String(selectedContract.cusContract) },
+                    { label: "Delivered CUs", value: String(selectedContract.cusDelivered) },
+                    { label: "Commissioned CUs", value: String(contractDetail.commissionedCUs) },
+                    { label: "Spiked CUs", value: String(contractDetail.spikedCUs) },
+                  ].map((kpi) => (
+                    <Card key={kpi.label} className="border shadow-none">
+                      <CardContent className="p-3">
+                        <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{kpi.label}</p>
+                        <p className="text-lg font-semibold mt-1">{kpi.value}</p>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+
+                {/* Avg Production Time */}
+                {contractDetail.avgProductionTime.length > 0 && (
+                  <Card className="border shadow-none">
+                    <CardContent className="p-0">
+                      <div className="px-4 pt-4 pb-2">
+                        <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                          <Clock className="h-3.5 w-3.5" /> Average Production Time
+                        </h3>
+                      </div>
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b">
+                            <th className="px-3 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Category</th>
+                            <th className="px-3 py-2 text-right text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Avg Days</th>
+                            <th className="px-3 py-2 text-right text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Sample</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {contractDetail.avgProductionTime.map((row) => (
+                            <tr key={row.category} className="border-b last:border-0">
+                              <td className="px-3 py-2 font-medium">{row.category}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{row.avgDays}</td>
+                              <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{row.sampleCount}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </CardContent>
                   </Card>
-                ))}
-              </div>
+                )}
 
-              {/* Avg Production Time */}
-              {contractDetail.avgProductionTime.length > 0 && (
-                <Card className="border-0 shadow-sm">
+                {/* Content Types + Formats — side by side */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  {/* Content Types */}
+                  {contractDetail.contentTypes.length > 0 && (
+                    <Card className="border shadow-none">
+                      <CardContent className="p-0">
+                        <div className="px-4 pt-4 pb-2">
+                          <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Content Types</h3>
+                        </div>
+                        <div className="flex flex-col items-center">
+                          <ResponsiveContainer width="100%" height={200}>
+                            <PieChart>
+                              <Pie
+                                data={contractDetail.contentTypes}
+                                dataKey="cus" nameKey="name"
+                                cx="50%" cy="50%"
+                                outerRadius={75} innerRadius={35}
+                                paddingAngle={2}
+                                label={({ name, percent }) => `${name as string} ${((percent as number) * 100).toFixed(0)}%`}
+                                labelLine={false}
+                                style={{ fontSize: 9 }}
+                              >
+                                {contractDetail.contentTypes.map((entry) => (
+                                  <Cell key={entry.name} fill={CATEGORY_HEX[entry.name] || "#6b7280"} />
+                                ))}
+                              </Pie>
+                              <Tooltip formatter={(value) => [`${value} CUs`, "Content Units"]} contentStyle={{ fontSize: 11 }} />
+                            </PieChart>
+                          </ResponsiveContainer>
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="border-b">
+                                <SortHeader label="Type" sortKey="name" {...typeSort} onSort={typeSort.toggle} />
+                                <SortHeader label="Count" sortKey="count" align="right" {...typeSort} onSort={typeSort.toggle} />
+                                <SortHeader label="CUs" sortKey="cus" align="right" {...typeSort} onSort={typeSort.toggle} />
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {sortedTypes.map((t) => (
+                                <tr key={t.name} className="border-b last:border-0">
+                                  <td className="px-3 py-2 font-medium">
+                                    <span className="inline-flex items-center gap-1.5">
+                                      <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: CATEGORY_HEX[t.name] || "#6b7280" }} />
+                                      {t.name}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{t.count}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{t.cus}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Content Formats */}
+                  {contractDetail.contentFormats.length > 0 && (
+                    <Card className="border shadow-none">
+                      <CardContent className="p-0">
+                        <div className="px-4 pt-4 pb-2">
+                          <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Content Formats</h3>
+                        </div>
+                        <div className="flex flex-col items-center">
+                          <ResponsiveContainer width="100%" height={200}>
+                            <PieChart>
+                              <Pie
+                                data={contractDetail.contentFormats}
+                                dataKey="cus" nameKey="name"
+                                cx="50%" cy="50%"
+                                outerRadius={75} innerRadius={35}
+                                paddingAngle={2}
+                                label={({ name, percent }) => `${(name as string).replace(/_/g, " ")} ${((percent as number) * 100).toFixed(0)}%`}
+                                labelLine={false}
+                                style={{ fontSize: 9 }}
+                              >
+                                {contractDetail.contentFormats.map((entry) => (
+                                  <Cell key={entry.name} fill={getTypeHex(entry.name)} />
+                                ))}
+                              </Pie>
+                              <Tooltip formatter={(value) => [`${value} CUs`, "Content Units"]} contentStyle={{ fontSize: 11 }} />
+                            </PieChart>
+                          </ResponsiveContainer>
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="border-b">
+                                <SortHeader label="Format" sortKey="name" {...formatSort} onSort={formatSort.toggle} />
+                                <SortHeader label="Count" sortKey="count" align="right" {...formatSort} onSort={formatSort.toggle} />
+                                <SortHeader label="CUs" sortKey="cus" align="right" {...formatSort} onSort={formatSort.toggle} />
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {sortedFormats.map((f) => (
+                                <tr key={f.name} className="border-b last:border-0">
+                                  <td className="px-3 py-2 font-medium">
+                                    <span className="inline-flex items-center gap-1.5">
+                                      <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: getTypeHex(f.name) }} />
+                                      {f.name.replace(/_/g, " ")}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{f.count}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{f.cus}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
+
+                {/* All Content — with search + pagination */}
+                <Card className="border shadow-none">
                   <CardContent className="p-0">
-                    <div className="px-4 pt-4 pb-2">
-                      <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                        <Clock className="h-3.5 w-3.5" />
-                        Average Production Time
+                    <div className="px-4 pt-4 pb-2 flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                        Content ({filteredContent.length})
                       </h3>
+                      <div className="relative">
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
+                        <Input
+                          value={contentSearch}
+                          onChange={(e) => setContentSearch(e.target.value)}
+                          placeholder="Search content..."
+                          className="h-7 text-xs pl-7 w-[200px]"
+                        />
+                      </div>
                     </div>
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="border-b">
-                          <th className="px-3 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Category</th>
-                          <th className="px-3 py-2 text-right text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Avg Days</th>
-                          <th className="px-3 py-2 text-right text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Sample</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {contractDetail.avgProductionTime.map((row) => (
-                          <tr key={row.category} className="border-b last:border-0">
-                            <td className="px-3 py-2 font-medium">{row.category}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{row.avgDays}</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{row.sampleCount}</td>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b">
+                            <SortHeader label="Name" sortKey="name" {...contentSort} onSort={contentSort.toggle} />
+                            <SortHeader label="Type" sortKey="type" {...contentSort} onSort={contentSort.toggle} />
+                            <SortHeader label="CUs" sortKey="cus" align="right" {...contentSort} onSort={contentSort.toggle} />
+                            <SortHeader label="Created" sortKey="dateCreated" {...contentSort} onSort={contentSort.toggle} />
+                            <SortHeader label="Completed" sortKey="dateCompleted" {...contentSort} onSort={contentSort.toggle} />
+                            <SortHeader label="Assignee" sortKey="assignee" {...contentSort} onSort={contentSort.toggle} />
+                            <th className="px-3 py-2 w-8" />
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {pagedContent.length === 0 ? (
+                            <tr>
+                              <td colSpan={7} className="px-3 py-8 text-center text-muted-foreground">
+                                {contentSearch ? "No matching content" : "No content items"}
+                              </td>
+                            </tr>
+                          ) : (
+                            pagedContent.map((item, idx) => (
+                              <tr key={item.contentId || `item-${idx}`} className="border-b last:border-0 hover:bg-muted/30 transition-colors">
+                                <td className="px-3 py-2 font-medium max-w-[250px] truncate">{item.name}</td>
+                                <td className="px-3 py-2">
+                                  <Badge
+                                    variant="secondary"
+                                    className={cn("text-[9px] border-0", typeColors[item.type.toLowerCase()] || typeColors.other)}
+                                  >
+                                    {item.type.replace(/_/g, " ")}
+                                  </Badge>
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums">{item.cus}</td>
+                                <td className="px-3 py-2 text-muted-foreground">{fmtDate(item.dateCreated)}</td>
+                                <td className="px-3 py-2 text-muted-foreground">{fmtDate(item.dateCompleted)}</td>
+                                <td className="px-3 py-2 text-muted-foreground truncate max-w-[120px]">{item.assignee || "\u2014"}</td>
+                                <td className="px-3 py-2">
+                                  {item.contentId && (
+                                    <a
+                                      href={`https://app.thecontentengine.com/content/${item.contentId}`}
+                                      target="_blank" rel="noopener noreferrer"
+                                      className="text-muted-foreground hover:text-foreground transition-colors"
+                                    >
+                                      <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                  )}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    {/* Pagination */}
+                    {totalContentPages > 1 && (
+                      <div className="flex items-center justify-between px-4 py-2 border-t">
+                        <p className="text-[10px] text-muted-foreground">
+                          {contentPage * PAGE_SIZE + 1}\u2013{Math.min((contentPage + 1) * PAGE_SIZE, sortedContent.length)} of {sortedContent.length}
+                        </p>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => setContentPage(Math.max(0, contentPage - 1))}
+                            disabled={contentPage === 0}
+                            className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                          >
+                            <ChevronLeft className="h-3.5 w-3.5" />
+                          </button>
+                          <span className="text-[10px] text-muted-foreground px-1">
+                            {contentPage + 1} / {totalContentPages}
+                          </span>
+                          <button
+                            onClick={() => setContentPage(Math.min(totalContentPages - 1, contentPage + 1))}
+                            disabled={contentPage >= totalContentPages - 1}
+                            className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                          >
+                            <ChevronRight className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
-              )}
-
-              {/* Content Types — table + pie */}
-              {contractDetail.contentTypes.length > 0 && (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                  <Card className="border-0 shadow-sm">
-                    <CardContent className="p-0">
-                      <div className="px-4 pt-4 pb-2">
-                        <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                          Content Types
-                        </h3>
-                      </div>
-                      <table className="w-full text-xs">
-                        <thead>
-                          <tr className="border-b">
-                            <SortHeader label="Type" sortKey="name" {...typeSort} onSort={typeSort.toggle} />
-                            <SortHeader label="Count" sortKey="count" align="right" {...typeSort} onSort={typeSort.toggle} />
-                            <SortHeader label="CUs" sortKey="cus" align="right" {...typeSort} onSort={typeSort.toggle} />
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {sortedTypes.map((t) => (
-                            <tr key={t.name} className="border-b last:border-0">
-                              <td className="px-3 py-2 font-medium">
-                                <span className="inline-flex items-center gap-1.5">
-                                  <span
-                                    className="h-2 w-2 rounded-full shrink-0"
-                                    style={{ backgroundColor: CATEGORY_HEX[t.name] || "#6b7280" }}
-                                  />
-                                  {t.name}
-                                </span>
-                              </td>
-                              <td className="px-3 py-2 text-right tabular-nums">{t.count}</td>
-                              <td className="px-3 py-2 text-right tabular-nums">{t.cus}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </CardContent>
-                  </Card>
-                  <Card className="border-0 shadow-sm">
-                    <CardContent className="p-4 flex items-center justify-center">
-                      <ResponsiveContainer width="100%" height={250}>
-                        <PieChart>
-                          <Pie
-                            data={contractDetail.contentTypes}
-                            dataKey="cus"
-                            nameKey="name"
-                            cx="50%"
-                            cy="50%"
-                            outerRadius={90}
-                            innerRadius={40}
-                            paddingAngle={2}
-                            label={({ name, percent }) =>
-                              `${name as string} ${((percent as number) * 100).toFixed(0)}%`
-                            }
-                            labelLine={false}
-                            style={{ fontSize: 10 }}
-                          >
-                            {contractDetail.contentTypes.map((entry) => (
-                              <Cell
-                                key={entry.name}
-                                fill={CATEGORY_HEX[entry.name] || "#6b7280"}
-                              />
-                            ))}
-                          </Pie>
-                          <Tooltip
-                            formatter={(value) => [`${value} CUs`, "Content Units"]}
-                            contentStyle={{ fontSize: 11 }}
-                          />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </CardContent>
-                  </Card>
-                </div>
-              )}
-
-              {/* Content Formats — table + pie */}
-              {contractDetail.contentFormats.length > 0 && (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                  <Card className="border-0 shadow-sm">
-                    <CardContent className="p-0">
-                      <div className="px-4 pt-4 pb-2">
-                        <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                          Content Formats
-                        </h3>
-                      </div>
-                      <table className="w-full text-xs">
-                        <thead>
-                          <tr className="border-b">
-                            <SortHeader label="Format" sortKey="name" {...formatSort} onSort={formatSort.toggle} />
-                            <SortHeader label="Count" sortKey="count" align="right" {...formatSort} onSort={formatSort.toggle} />
-                            <SortHeader label="CUs" sortKey="cus" align="right" {...formatSort} onSort={formatSort.toggle} />
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {sortedFormats.map((f) => (
-                            <tr key={f.name} className="border-b last:border-0">
-                              <td className="px-3 py-2 font-medium">
-                                <span className="inline-flex items-center gap-1.5">
-                                  <span
-                                    className="h-2 w-2 rounded-full shrink-0"
-                                    style={{ backgroundColor: getTypeHex(f.name) }}
-                                  />
-                                  {f.name.replace(/_/g, " ")}
-                                </span>
-                              </td>
-                              <td className="px-3 py-2 text-right tabular-nums">{f.count}</td>
-                              <td className="px-3 py-2 text-right tabular-nums">{f.cus}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </CardContent>
-                  </Card>
-                  <Card className="border-0 shadow-sm">
-                    <CardContent className="p-4 flex items-center justify-center">
-                      <ResponsiveContainer width="100%" height={250}>
-                        <PieChart>
-                          <Pie
-                            data={contractDetail.contentFormats}
-                            dataKey="cus"
-                            nameKey="name"
-                            cx="50%"
-                            cy="50%"
-                            outerRadius={90}
-                            innerRadius={40}
-                            paddingAngle={2}
-                            label={({ name, percent }) =>
-                              `${(name as string).replace(/_/g, " ")} ${((percent as number) * 100).toFixed(0)}%`
-                            }
-                            labelLine={false}
-                            style={{ fontSize: 10 }}
-                          >
-                            {contractDetail.contentFormats.map((entry) => (
-                              <Cell
-                                key={entry.name}
-                                fill={getTypeHex(entry.name)}
-                              />
-                            ))}
-                          </Pie>
-                          <Tooltip
-                            formatter={(value) => [`${value} CUs`, "Content Units"]}
-                            contentStyle={{ fontSize: 11 }}
-                          />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </CardContent>
-                  </Card>
-                </div>
-              )}
-
-              {/* All Content Commissioned */}
-              <Card className="border-0 shadow-sm">
-                <CardContent className="p-0">
-                  <div className="px-4 pt-4 pb-2">
-                    <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                      All Content Commissioned ({contractDetail.content.length})
-                    </h3>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="border-b">
-                          <SortHeader label="Name" sortKey="name" {...contentSort} onSort={contentSort.toggle} />
-                          <SortHeader label="Type" sortKey="type" {...contentSort} onSort={contentSort.toggle} />
-                          <SortHeader label="CUs" sortKey="cus" align="right" {...contentSort} onSort={contentSort.toggle} />
-                          <SortHeader label="Created" sortKey="dateCreated" {...contentSort} onSort={contentSort.toggle} />
-                          <SortHeader label="Completed" sortKey="dateCompleted" {...contentSort} onSort={contentSort.toggle} />
-                          <SortHeader label="Assignee" sortKey="assignee" {...contentSort} onSort={contentSort.toggle} />
-                          <th className="px-3 py-2 w-8" />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortedContent.length === 0 ? (
-                          <tr>
-                            <td colSpan={7} className="px-3 py-8 text-center text-muted-foreground">
-                              No content items
-                            </td>
-                          </tr>
-                        ) : (
-                          sortedContent.map((item) => (
-                            <tr key={item.taskId} className="border-b last:border-0 hover:bg-muted/30 transition-colors">
-                              <td className="px-3 py-2 font-medium max-w-[250px] truncate">
-                                {item.name}
-                              </td>
-                              <td className="px-3 py-2">
-                                <Badge
-                                  variant="secondary"
-                                  className={cn(
-                                    "text-[9px] border-0",
-                                    typeColors[item.type.toLowerCase()] || typeColors.other
-                                  )}
-                                >
-                                  {item.type.replace(/_/g, " ")}
-                                </Badge>
-                              </td>
-                              <td className="px-3 py-2 text-right tabular-nums">{item.cus}</td>
-                              <td className="px-3 py-2 text-muted-foreground">{fmtDate(item.dateCreated)}</td>
-                              <td className="px-3 py-2 text-muted-foreground">{fmtDate(item.dateCompleted)}</td>
-                              <td className="px-3 py-2 text-muted-foreground truncate max-w-[120px]">{item.assignee || "\u2014"}</td>
-                              <td className="px-3 py-2">
-                                {item.contentId && (
-                                  <a
-                                    href={`https://app.thecontentengine.com/content/${item.contentId}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-muted-foreground hover:text-foreground transition-colors"
-                                  >
-                                    <ExternalLink className="h-3 w-3" />
-                                  </a>
-                                )}
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </CardContent>
-              </Card>
-            </>
-          ) : null}
-        </>
+              </div>
+            ) : null}
+          </div>
+        </div>
       )}
     </div>
   );
