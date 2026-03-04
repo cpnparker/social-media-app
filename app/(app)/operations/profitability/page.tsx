@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -103,7 +103,7 @@ function SortHeader({
   const active = currentKey === sortKey;
   return (
     <button
-      className="flex items-center gap-1 font-medium hover:text-foreground transition-colors"
+      className="inline-flex items-center gap-1 font-medium hover:text-foreground transition-colors"
       onClick={() => onSort(sortKey)}
     >
       {label}
@@ -477,134 +477,132 @@ export default function ProfitabilityPage() {
                   <tbody>
                     {sortedClients.map((client) => {
                       const isExpanded = expandedClient === client.clockifyClientId;
-                      // Add computed sort-friendly fields
-                      const enriched = {
-                        ...client,
-                        contentProd: client.activityBreakdown["Content Production"] || 0,
-                        strategy: client.activityBreakdown["Strategy"] || 0,
-                        acctMgmt: client.activityBreakdown["Account Management"] || 0,
-                      };
+                      const contentProd = client.activityBreakdown["Content Production"] || 0;
+                      const strategy = client.activityBreakdown["Strategy"] || 0;
+                      const acctMgmt = client.activityBreakdown["Account Management"] || 0;
 
                       return (
-                        <tr key={client.clockifyClientId} className="group">
-                          <td colSpan={8} className="p-0">
-                            {/* Main row */}
-                            <button
-                              className={cn(
-                                "w-full flex items-center text-left hover:bg-muted/30 transition-colors",
-                                isExpanded && "bg-muted/20"
-                              )}
-                              onClick={() =>
-                                setExpandedClient(isExpanded ? null : client.clockifyClientId)
-                              }
-                            >
-                              <div className="p-3 w-8 shrink-0">
-                                {client.contracts.length > 0 ? (
-                                  isExpanded ? (
-                                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                                  ) : (
-                                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                                  )
+                        <React.Fragment key={client.clockifyClientId}>
+                          {/* Main row — proper <td> cells for column alignment */}
+                          <tr
+                            className={cn(
+                              "border-b cursor-pointer hover:bg-muted/30 transition-colors",
+                              isExpanded && "bg-muted/20"
+                            )}
+                            onClick={() =>
+                              setExpandedClient(isExpanded ? null : client.clockifyClientId)
+                            }
+                          >
+                            <td className="p-3 w-8">
+                              {client.contracts.length > 0 ? (
+                                isExpanded ? (
+                                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
                                 ) : (
-                                  <span className="h-4 w-4 block" />
-                                )}
-                              </div>
-                              <div className="p-3 flex-1 font-medium">
-                                {client.clientName}
-                                {client.supabaseClientName &&
-                                  client.supabaseClientName !== client.clientName && (
-                                    <span className="ml-2 text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">
-                                      → {client.supabaseClientName}
-                                    </span>
-                                  )}
-                                {!client.supabaseClientId && (
-                                  <span className="ml-2 text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
-                                    no contract match
+                                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                                )
+                              ) : (
+                                <span className="h-4 w-4 block" />
+                              )}
+                            </td>
+                            <td className="p-3 font-medium">
+                              {client.clientName}
+                              {client.supabaseClientName &&
+                                client.supabaseClientName !== client.clientName && (
+                                  <span className="ml-2 text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">
+                                    → {client.supabaseClientName}
                                   </span>
                                 )}
-                              </div>
-                              <div className="p-3 w-28 text-right font-mono text-xs">
-                                {fmtHours(enriched.totalHours)}
-                              </div>
-                              <div className="p-3 w-28 text-right font-mono text-xs">
-                                {enriched.contentProd > 0 ? fmtHours(enriched.contentProd) : "—"}
-                              </div>
-                              <div className="p-3 w-28 text-right font-mono text-xs">
-                                {enriched.strategy > 0 ? fmtHours(enriched.strategy) : "—"}
-                              </div>
-                              <div className="p-3 w-28 text-right font-mono text-xs">
-                                {enriched.acctMgmt > 0 ? fmtHours(enriched.acctMgmt) : "—"}
-                              </div>
-                              <div className="p-3 w-28 text-right font-mono text-xs">
-                                {client.cusInPeriod > 0 ? client.cusInPeriod : "—"}
-                              </div>
-                              <div className="p-3 w-28 text-right">
-                                <EfficiencyBadge hoursPerCU={client.hoursPerCU} />
-                              </div>
-                            </button>
+                              {!client.supabaseClientId && (
+                                <span className="ml-2 text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
+                                  no contract match
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-3 text-right font-mono text-xs whitespace-nowrap">
+                              {fmtHours(client.totalHours)}
+                            </td>
+                            <td className="p-3 text-right font-mono text-xs whitespace-nowrap">
+                              {contentProd > 0 ? fmtHours(contentProd) : "—"}
+                            </td>
+                            <td className="p-3 text-right font-mono text-xs whitespace-nowrap">
+                              {strategy > 0 ? fmtHours(strategy) : "—"}
+                            </td>
+                            <td className="p-3 text-right font-mono text-xs whitespace-nowrap">
+                              {acctMgmt > 0 ? fmtHours(acctMgmt) : "—"}
+                            </td>
+                            <td className="p-3 text-right font-mono text-xs whitespace-nowrap">
+                              {client.cusInPeriod > 0 ? client.cusInPeriod : "—"}
+                            </td>
+                            <td className="p-3 text-right">
+                              <EfficiencyBadge hoursPerCU={client.hoursPerCU} />
+                            </td>
+                          </tr>
 
-                            {/* Expanded contracts detail */}
-                            {isExpanded && client.contracts.length > 0 && (
-                              <div className="bg-muted/10 border-t px-8 py-3">
-                                <table className="w-full text-xs">
-                                  <thead>
-                                    <tr className="text-muted-foreground">
-                                      <th className="text-left py-1.5 font-medium">Contract</th>
-                                      <th className="text-center py-1.5 font-medium">Period</th>
-                                      <th className="text-right py-1.5 font-medium">Contracted</th>
-                                      <th className="text-right py-1.5 font-medium">Delivered</th>
-                                      <th className="text-center py-1.5 font-medium">Status</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {client.contracts.map((contract) => (
-                                      <tr key={contract.contractId} className="border-t border-muted/30">
-                                        <td className="py-1.5 font-medium">{contract.contractName}</td>
-                                        <td className="py-1.5 text-center text-muted-foreground">
-                                          {fmtDate(contract.dateStart)} — {fmtDate(contract.dateEnd)}
-                                        </td>
-                                        <td className="py-1.5 text-right font-mono">{contract.cusContracted}</td>
-                                        <td className="py-1.5 text-right font-mono">{contract.cusDelivered}</td>
-                                        <td className="py-1.5 text-center">
-                                          <Badge
-                                            variant="outline"
-                                            className={cn(
-                                              "text-[10px]",
-                                              contract.active
-                                                ? "bg-green-50 text-green-700 border-green-200"
-                                                : "bg-gray-50 text-gray-500 border-gray-200"
-                                            )}
-                                          >
-                                            {contract.active ? "Active" : "Ended"}
-                                          </Badge>
-                                        </td>
+                          {/* Expanded contracts detail */}
+                          {isExpanded && client.contracts.length > 0 && (
+                            <tr>
+                              <td colSpan={8} className="p-0 bg-muted/10 border-b">
+                                <div className="px-8 py-3">
+                                  <table className="w-full text-xs">
+                                    <thead>
+                                      <tr className="text-muted-foreground">
+                                        <th className="text-left py-1.5 font-medium">Contract</th>
+                                        <th className="text-center py-1.5 font-medium">Period</th>
+                                        <th className="text-right py-1.5 font-medium">Contracted</th>
+                                        <th className="text-right py-1.5 font-medium">Delivered</th>
+                                        <th className="text-center py-1.5 font-medium">Status</th>
                                       </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-
-                                {/* Activity breakdown mini bars */}
-                                <div className="mt-3 pt-3 border-t border-muted/30">
-                                  <p className="text-xs font-medium text-muted-foreground mb-2">Activity hours breakdown</p>
-                                  <div className="flex gap-4 flex-wrap">
-                                    {Object.entries(client.activityBreakdown)
-                                      .sort((a, b) => b[1] - a[1])
-                                      .map(([activity, hours]) => (
-                                        <div key={activity} className="flex items-center gap-2">
-                                          <div
-                                            className="w-2.5 h-2.5 rounded-full"
-                                            style={{ backgroundColor: getActivityColor(activity) }}
-                                          />
-                                          <span className="text-xs text-muted-foreground">{activity}</span>
-                                          <span className="text-xs font-mono font-medium">{fmtHours(hours)}</span>
-                                        </div>
+                                    </thead>
+                                    <tbody>
+                                      {client.contracts.map((contract) => (
+                                        <tr key={contract.contractId} className="border-t border-muted/30">
+                                          <td className="py-1.5 font-medium">{contract.contractName}</td>
+                                          <td className="py-1.5 text-center text-muted-foreground">
+                                            {fmtDate(contract.dateStart)} — {fmtDate(contract.dateEnd)}
+                                          </td>
+                                          <td className="py-1.5 text-right font-mono">{contract.cusContracted}</td>
+                                          <td className="py-1.5 text-right font-mono">{contract.cusDelivered}</td>
+                                          <td className="py-1.5 text-center">
+                                            <Badge
+                                              variant="outline"
+                                              className={cn(
+                                                "text-[10px]",
+                                                contract.active
+                                                  ? "bg-green-50 text-green-700 border-green-200"
+                                                  : "bg-gray-50 text-gray-500 border-gray-200"
+                                              )}
+                                            >
+                                              {contract.active ? "Active" : "Ended"}
+                                            </Badge>
+                                          </td>
+                                        </tr>
                                       ))}
+                                    </tbody>
+                                  </table>
+
+                                  {/* Activity breakdown mini bars */}
+                                  <div className="mt-3 pt-3 border-t border-muted/30">
+                                    <p className="text-xs font-medium text-muted-foreground mb-2">Activity hours breakdown</p>
+                                    <div className="flex gap-4 flex-wrap">
+                                      {Object.entries(client.activityBreakdown)
+                                        .sort((a, b) => b[1] - a[1])
+                                        .map(([activity, hours]) => (
+                                          <div key={activity} className="flex items-center gap-2">
+                                            <div
+                                              className="w-2.5 h-2.5 rounded-full"
+                                              style={{ backgroundColor: getActivityColor(activity) }}
+                                            />
+                                            <span className="text-xs text-muted-foreground">{activity}</span>
+                                            <span className="text-xs font-mono font-medium">{fmtHours(hours)}</span>
+                                          </div>
+                                        ))}
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
-                            )}
-                          </td>
-                        </tr>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       );
                     })}
 
