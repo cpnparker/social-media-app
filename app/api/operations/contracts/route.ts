@@ -22,35 +22,52 @@ export async function GET(req: NextRequest) {
   const active = searchParams.get("active") || "1";
 
   try {
-    // ── 1. Fetch clients ──
-    const { data: clientRows, error: clientErr } = await supabase
-      .from("app_clients")
-      .select("id_client, name_client, information_description, information_industry, name_account_manager, link_website, link_linkedin, information_size, information_timezone")
-      .order("name_client", { ascending: true });
+    // ── 1. Fetch clients (use select("*") to avoid column-name mismatches) ──
+    let clients: {
+      clientId: string;
+      name: string;
+      description: string | null;
+      industry: string | null;
+      accountManager: string | null;
+      website: string | null;
+      linkedin: string | null;
+      size: string | null;
+      timezone: string | null;
+    }[] = [];
 
-    if (clientErr) throw clientErr;
+    try {
+      const { data: clientRows, error: clientErr } = await supabase
+        .from("app_clients")
+        .select("*")
+        .order("name_client", { ascending: true });
 
-    const clients = (clientRows || []).map((c) => ({
-      clientId: String(c.id_client),
-      name: c.name_client || "Unknown",
-      description: c.information_description || null,
-      industry: c.information_industry || null,
-      accountManager: c.name_account_manager || null,
-      website: c.link_website || null,
-      linkedin: c.link_linkedin || null,
-      size: c.information_size || null,
-      timezone: c.information_timezone || null,
-    }));
+      if (clientErr) {
+        console.error("Clients query error:", clientErr.message);
+      } else {
+        clients = (clientRows || []).map((c: Record<string, any>) => ({
+          clientId: String(c.id_client),
+          name: c.name_client || "Unknown",
+          description: c.information_description || null,
+          industry: c.information_industry || null,
+          accountManager: c.name_account_manager || null,
+          website: c.link_website || null,
+          linkedin: c.link_linkedin || null,
+          size: c.information_size || null,
+          timezone: c.information_timezone || null,
+        }));
+      }
+    } catch (e: any) {
+      console.error("Clients fetch failed:", e.message);
+    }
 
-    // ── 2. Fetch contracts ──
+    // ── 2. Fetch contracts (use known-good columns from contracts-grid) ──
     let contractQuery = supabase
       .from("app_contracts")
-      .select("id_contract, id_client, name_contract, name_client, units_contract, units_total_completed, date_start, date_end, flag_active, name_account_manager, information_description")
+      .select("*")
       .order("name_client", { ascending: true });
 
     if (active === "1") contractQuery = contractQuery.eq("flag_active", 1);
     else if (active === "0") contractQuery = contractQuery.eq("flag_active", 0);
-    // active === "all" — no filter
 
     if (clientId) contractQuery = contractQuery.eq("id_client", parseInt(clientId, 10));
 
@@ -61,7 +78,7 @@ export async function GET(req: NextRequest) {
     const { data: contractRows, error: contractErr } = await contractQuery;
     if (contractErr) throw contractErr;
 
-    const contracts = (contractRows || []).map((c) => ({
+    const contracts = (contractRows || []).map((c: Record<string, any>) => ({
       contractId: String(c.id_contract),
       clientId: c.id_client ? String(c.id_client) : null,
       clientName: c.name_client || "Unknown",
@@ -75,6 +92,28 @@ export async function GET(req: NextRequest) {
       description: c.information_description || null,
     }));
 
+    // If no clients came from app_clients view, build list from contracts
+    if (clients.length === 0 && contracts.length > 0) {
+      const seen = new Set<string>();
+      for (const c of contracts) {
+        if (c.clientId && !seen.has(c.clientId)) {
+          seen.add(c.clientId);
+          clients.push({
+            clientId: c.clientId,
+            name: c.clientName,
+            description: null,
+            industry: null,
+            accountManager: c.accountManager,
+            website: null,
+            linkedin: null,
+            size: null,
+            timezone: null,
+          });
+        }
+      }
+      clients.sort((a, b) => a.name.localeCompare(b.name));
+    }
+
     // ── 3. If no contractId requested, return base data ──
     if (!contractId) {
       return NextResponse.json({ clients, contracts });
@@ -86,11 +125,11 @@ export async function GET(req: NextRequest) {
     const [contentRes, socialRes] = await Promise.all([
       supabase
         .from("app_tasks_content")
-        .select("id_task, id_content, id_contract, type_task, type_content, name_content, units_content, date_created, date_completed, flag_spiked, name_user_assignee, name_client")
+        .select("*")
         .eq("id_contract", cid),
       supabase
         .from("app_tasks_social")
-        .select("id_task, id_content, id_contract, type_task, name_social, units_content, date_created, date_completed, flag_spiked, name_user_assignee, name_client")
+        .select("*")
         .eq("id_contract", cid),
     ]);
 
@@ -126,7 +165,6 @@ export async function GET(req: NextRequest) {
 
     for (const t of contentTasks) {
       if (!t.date_completed || !t.date_created) continue;
-      if (t.flag_spiked === 1 && !t.date_completed) continue;
       const cat = categorizeContentType(t.type_content || "other");
       const days = Math.max(0, (new Date(t.date_completed).getTime() - new Date(t.date_created).getTime()) / (1000 * 60 * 60 * 24));
       if (!prodTimeMap[cat]) prodTimeMap[cat] = { totalDays: 0, count: 0 };
@@ -186,8 +224,8 @@ export async function GET(req: NextRequest) {
 
     // ── 9. All content items ──
     const content = contentTasks
-      .filter((t) => !(t.flag_spiked === 1 && !t.date_completed))
-      .map((t) => ({
+      .filter((t: Record<string, any>) => !(t.flag_spiked === 1 && !t.date_completed))
+      .map((t: Record<string, any>) => ({
         taskId: String(t.id_task),
         contentId: t.id_content ? String(t.id_content) : null,
         name: t.name_content || "Untitled",
@@ -204,12 +242,12 @@ export async function GET(req: NextRequest) {
       content.push({
         taskId: String(t.id_task),
         contentId: t.id_content ? String(t.id_content) : null,
-        name: t.name_social || "Social Promo",
+        name: (t as Record<string, any>).name_social || "Social Promo",
         type: "social_promo",
         cus: Number(t.units_content) || 0,
         dateCreated: t.date_created,
         dateCompleted: t.date_completed,
-        assignee: t.name_user_assignee || null,
+        assignee: (t as Record<string, any>).name_user_assignee || null,
       });
     }
 
