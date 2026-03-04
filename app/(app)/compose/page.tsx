@@ -444,7 +444,51 @@ function ComposePageInner() {
 
   // ——— Upload helpers ———
 
-  const uploadFile = (file: File): Promise<MediaItem> => {
+  const uploadFile = async (file: File): Promise<MediaItem> => {
+    // Use Vercel Blob client-side upload for files > 4MB (avoids serverless body limit)
+    const USE_CLIENT_UPLOAD_THRESHOLD = 4 * 1024 * 1024; // 4MB
+
+    if (file.size > USE_CLIENT_UPLOAD_THRESHOLD) {
+      // Dynamic import to avoid bundling @vercel/blob/client when not needed
+      const { upload } = await import("@vercel/blob/client");
+
+      setUploadProgress((prev) => ({ ...prev, [file.name]: 0 }));
+
+      try {
+        const blob = await upload(file.name, file, {
+          access: "public",
+          handleUploadUrl: "/api/media/upload",
+          multipart: true,
+          onUploadProgress: (progress) => {
+            setUploadProgress((prev) => ({
+              ...prev,
+              [file.name]: progress.percentage,
+            }));
+          },
+        });
+
+        setUploadProgress((prev) => {
+          const next = { ...prev };
+          delete next[file.name];
+          return next;
+        });
+
+        return {
+          url: blob.url,
+          contentType: file.type,
+          filename: file.name,
+        };
+      } catch (err: any) {
+        setUploadProgress((prev) => {
+          const next = { ...prev };
+          delete next[file.name];
+          return next;
+        });
+        throw new Error(`Upload failed: ${file.name}`);
+      }
+    }
+
+    // Small files: use direct formData upload (works in dev and prod)
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const formData = new FormData();
