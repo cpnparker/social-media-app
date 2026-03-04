@@ -4,6 +4,9 @@ import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 import crypto from "crypto";
 
+// Route segment config for App Router — extend timeout for large video uploads
+export const maxDuration = 60; // 60 seconds
+
 // POST /api/media/upload — upload file to Vercel Blob (or local fallback)
 export async function POST(req: NextRequest) {
   try {
@@ -59,7 +62,18 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Local fallback: save to public/uploads
+    // Production without BLOB_READ_WRITE_TOKEN — reject with helpful error
+    if (process.env.VERCEL) {
+      return NextResponse.json(
+        {
+          error:
+            "Media uploads require Vercel Blob storage. Please add BLOB_READ_WRITE_TOKEN to your environment variables.",
+        },
+        { status: 500 }
+      );
+    }
+
+    // Local fallback (dev only): save to public/uploads
     const ext = path.extname(file.name) || ".bin";
     const uniqueName = `${crypto.randomUUID()}${ext}`;
     const uploadsDir = path.join(process.cwd(), "public", "uploads");
