@@ -174,7 +174,7 @@ export default function ProfitabilityPage() {
   const [toDate, setToDate] = useState(now.toISOString().slice(0, 10));
 
   // Sort
-  const [sortKey, setSortKey] = useState<SortKey>("totalHours");
+  const [sortKey, setSortKey] = useState<SortKey>("hoursPerCU");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   // Expanded client
