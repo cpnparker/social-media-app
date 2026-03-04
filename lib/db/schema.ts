@@ -130,6 +130,7 @@ export const workspaces = pgTable("workspaces", {
   slug: text("slug").unique().notNull(),
   plan: planEnum("plan").default("free").notNull(),
   lateApiKey: text("late_api_key"),
+  aiModel: text("ai_model").default("claude-sonnet-4-20250514"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -572,4 +573,41 @@ export const promoDrafts = pgTable("promo_drafts", {
   generatedByAi: boolean("generated_by_ai").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// ============================================================
+// AI Conversations & Messages
+// ============================================================
+
+export const aiVisibilityEnum = pgEnum("ai_visibility", ["private", "team"]);
+export const aiMessageRoleEnum = pgEnum("ai_message_role", [
+  "user",
+  "assistant",
+  "system",
+]);
+
+export const aiConversations = pgTable("ai_conversations", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspaces.id, { onDelete: "cascade" })
+    .notNull(),
+  createdBy: integer("created_by").notNull(),
+  title: text("title").default("New Conversation").notNull(),
+  visibility: text("visibility").default("private").notNull(),
+  contentObjectId: integer("content_object_id"),
+  model: text("model").default("claude-sonnet-4-20250514").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const aiMessages = pgTable("ai_messages", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  conversationId: uuid("conversation_id")
+    .references(() => aiConversations.id, { onDelete: "cascade" })
+    .notNull(),
+  role: text("role").notNull(),
+  content: text("content").notNull(),
+  model: text("model"),
+  createdBy: integer("created_by"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });

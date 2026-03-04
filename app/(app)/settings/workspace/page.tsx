@@ -10,6 +10,8 @@ import {
   Zap,
   Users,
   UsersRound,
+  Sparkles,
+  ChevronDown,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -44,6 +46,10 @@ export default function WorkspaceSettingsPage() {
   const [slug, setSlug] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [hasExistingKey, setHasExistingKey] = useState(false);
+  const [aiModel, setAiModel] = useState("claude-sonnet-4-20250514");
+  const [availableModels, setAvailableModels] = useState<
+    { id: string; name: string; provider: string; description: string }[]
+  >([]);
 
   const fetchWorkspace = useCallback(async () => {
     setLoading(true);
@@ -55,11 +61,33 @@ export default function WorkspaceSettingsPage() {
         setName(data.workspace.name || "");
         setSlug(data.workspace.slug || "");
         setHasExistingKey(!!data.workspace.hasLateApiKey);
+        if (data.workspace.aiModel) {
+          setAiModel(data.workspace.aiModel);
+        }
       }
     } catch (err) {
       console.error("Failed to load workspace:", err);
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const fetchAIModels = useCallback(async () => {
+    try {
+      const wsRes = await fetch("/api/workspace");
+      const wsData = await wsRes.json();
+      if (wsData.workspace?.id) {
+        const res = await fetch(`/api/ai/settings?workspaceId=${wsData.workspace.id}`);
+        const data = await res.json();
+        if (data.availableModels) {
+          setAvailableModels(data.availableModels);
+        }
+        if (data.currentModel) {
+          setAiModel(data.currentModel);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load AI models:", err);
     }
   }, []);
 
@@ -76,7 +104,8 @@ export default function WorkspaceSettingsPage() {
   useEffect(() => {
     fetchWorkspace();
     fetchStats();
-  }, [fetchWorkspace, fetchStats]);
+    fetchAIModels();
+  }, [fetchWorkspace, fetchStats, fetchAIModels]);
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -93,6 +122,8 @@ export default function WorkspaceSettingsPage() {
       if (apiKey.trim()) {
         payload.lateApiKey = apiKey.trim();
       }
+      // Always send the AI model selection
+      payload.aiModel = aiModel;
       const res = await fetch("/api/workspace", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -325,6 +356,47 @@ export default function WorkspaceSettingsPage() {
                 className="h-9 font-mono text-xs"
                 placeholder={hasExistingKey ? "Enter new key to replace..." : "sk_live_..."}
               />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* AI Model */}
+      <Card className="border-0 shadow-sm">
+        <CardHeader className="pb-0">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-muted-foreground" />
+            AI Model
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-4 space-y-4">
+          <div>
+            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">
+              Default AI Model
+            </label>
+            <p className="text-xs text-muted-foreground mb-2">
+              Select the default AI model for new conversations in this
+              workspace.
+            </p>
+            <div className="relative max-w-md">
+              <select
+                value={aiModel}
+                onChange={(e) => setAiModel(e.target.value)}
+                className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm appearance-none cursor-pointer pr-8 focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {availableModels.length > 0 ? (
+                  availableModels.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name} — {model.description}
+                    </option>
+                  ))
+                ) : (
+                  <option value="claude-sonnet-4-20250514">
+                    Claude Sonnet 4 — Anthropic
+                  </option>
+                )}
+              </select>
+              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
             </div>
           </div>
         </CardContent>
