@@ -163,14 +163,17 @@ export async function POST(
       }
     } else {
       // Standalone AI Writer — provide workspace-level context (all clients, contracts, content)
-      const { data: dbUser } = await supabase
+      const { data: dbUser, error: userErr } = await supabase
         .from("users")
         .select("role_user")
         .eq("id_user", userId)
         .is("date_deleted", null)
         .single();
       const role = dbUser?.role_user || "none";
+      console.log("[AI Context]", { userId, role, userErr: userErr?.message });
+
       const allowedIds = await getAllowedClientIds(userId, role);
+      console.log("[AI Context] allowedIds:", allowedIds === null ? "null (unrestricted)" : allowedIds);
 
       // Fetch accessible clients
       let clientsQuery = supabase
@@ -182,28 +185,31 @@ export async function POST(
       if (allowedIds !== null) {
         clientsQuery = clientsQuery.in("id_client", allowedIds.length ? allowedIds : [-1]);
       }
-      const { data: clients } = await clientsQuery;
+      const { data: clients, error: clientsErr } = await clientsQuery;
+      console.log("[AI Context] clients:", clients?.length ?? 0, "error:", clientsErr?.message);
 
       if (clients?.length) {
         const clientIds = clients.map((c) => c.id_client);
 
         // Fetch active contracts for these clients
-        const { data: contracts } = await supabase
+        const { data: contracts, error: contractsErr } = await supabase
           .from("app_contracts")
           .select("id_contract, name_contract, id_client, name_client, units_contract, units_total_completed, flag_active, date_start, date_end")
           .in("id_client", clientIds)
           .eq("flag_active", 1)
           .is("date_deleted", null)
           .limit(30);
+        console.log("[AI Context] contracts:", contracts?.length ?? 0, "error:", contractsErr?.message);
 
         // Fetch recent content across all accessible clients
-        const { data: recentContent } = await supabase
+        const { data: recentContent, error: contentErr } = await supabase
           .from("app_content")
           .select("id_content, name_content, type_content, flag_completed, flag_spiked, id_client, name_client, units_content, date_completed")
           .in("id_client", clientIds)
           .is("date_deleted", null)
           .order("date_created", { ascending: false })
           .limit(50);
+        console.log("[AI Context] recentContent:", recentContent?.length ?? 0, "error:", contentErr?.message);
 
         contentContext = {
           workspaceClients: clients.map((c) => ({
@@ -230,8 +236,12 @@ export async function POST(
             units: c.units_content,
           })),
         };
+      } else {
+        console.log("[AI Context] No clients found — contentContext stays undefined");
       }
     }
+
+    console.log("[AI Context] Final context keys:", contentContext ? Object.keys(contentContext) : "undefined");
 
     const systemPrompt = getAIWriterSystemPrompt(contentContext);
     const model = body.model || conversation.model;
