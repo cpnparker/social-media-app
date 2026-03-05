@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { supabase } from "@/lib/supabase";
+import { db } from "@/lib/db";
+import { workspaces } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
 import { getAvailableModels } from "@/lib/ai/providers";
 
 // GET /api/ai/settings — get workspace AI settings
@@ -18,18 +20,14 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const { data: workspace, error } = await supabase
-      .from("workspaces")
-      .select("ai_model")
-      .eq("id", workspaceId)
-      .single();
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+    const [workspace] = await db
+      .select({ aiModel: workspaces.aiModel })
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId))
+      .limit(1);
 
     return NextResponse.json({
-      currentModel: workspace?.ai_model || "claude-sonnet-4-20250514",
+      currentModel: workspace?.aiModel || "claude-sonnet-4-20250514",
       availableModels: getAvailableModels(),
     });
   } catch (error: any) {
@@ -55,14 +53,10 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    const { error } = await supabase
-      .from("workspaces")
-      .update({ ai_model: model, updated_at: new Date().toISOString() })
-      .eq("id", workspaceId);
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+    await db
+      .update(workspaces)
+      .set({ aiModel: model, updatedAt: new Date() })
+      .where(eq(workspaces.id, workspaceId));
 
     return NextResponse.json({ success: true, model });
   } catch (error: any) {

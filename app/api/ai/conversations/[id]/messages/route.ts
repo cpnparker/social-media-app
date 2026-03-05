@@ -1,5 +1,8 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { aiConversations, aiMessages } from "@/lib/db/schema";
+import { eq, asc } from "drizzle-orm";
 import { supabase } from "@/lib/supabase";
 import { createStreamingResponse, type AIMessage } from "@/lib/ai/providers";
 import { getAIWriterSystemPrompt } from "@/lib/ai/system-prompts";
@@ -31,13 +34,13 @@ export async function POST(
     }
 
     // Fetch conversation
-    const { data: conversation, error: convError } = await supabase
-      .from("ai_conversations")
-      .select("*")
-      .eq("id", conversationId)
-      .single();
+    const [conversation] = await db
+      .select()
+      .from(aiConversations)
+      .where(eq(aiConversations.id, conversationId))
+      .limit(1);
 
-    if (convError || !conversation) {
+    if (!conversation) {
       return new Response(JSON.stringify({ error: "Conversation not found" }), {
         status: 404,
         headers: { "Content-Type": "application/json" },
@@ -45,7 +48,7 @@ export async function POST(
     }
 
     // Access check
-    if (conversation.visibility === "private" && conversation.created_by !== userId) {
+    if (conversation.visibility === "private" && conversation.createdBy !== userId) {
       return new Response(JSON.stringify({ error: "Forbidden" }), {
         status: 403,
         headers: { "Content-Type": "application/json" },
@@ -53,41 +56,32 @@ export async function POST(
     }
 
     // Save user message
-    const { error: insertError } = await supabase
-      .from("ai_messages")
-      .insert({
-        conversation_id: conversationId,
-        role: "user",
-        content: userContent.trim(),
-        created_by: userId,
-      });
-
-    if (insertError) {
-      return new Response(JSON.stringify({ error: insertError.message }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
+    await db.insert(aiMessages).values({
+      conversationId,
+      role: "user",
+      content: userContent.trim(),
+      createdBy: userId,
+    });
 
     // Load full conversation history
-    const { data: history } = await supabase
-      .from("ai_messages")
-      .select("role, content")
-      .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: true });
+    const history = await db
+      .select({ role: aiMessages.role, content: aiMessages.content })
+      .from(aiMessages)
+      .where(eq(aiMessages.conversationId, conversationId))
+      .orderBy(asc(aiMessages.createdAt));
 
-    const messages: AIMessage[] = (history || []).map((m: any) => ({
+    const messages: AIMessage[] = history.map((m) => ({
       role: m.role as "user" | "assistant" | "system",
       content: m.content,
     }));
 
-    // Build system prompt with optional content context
+    // Build system prompt with optional content context (app_content is in Supabase)
     let contentContext: { contentTitle?: string; contentType?: string; contentBrief?: string } | undefined;
-    if (conversation.content_object_id) {
+    if (conversation.contentObjectId) {
       const { data: co } = await supabase
         .from("app_content")
         .select("title_content, type_content, description_content")
-        .eq("id_content", conversation.content_object_id)
+        .eq("id_content", conversation.contentObjectId)
         .single();
 
       if (co) {
@@ -109,10 +103,10 @@ export async function POST(
         userContent.trim().length > 60
           ? userContent.trim().slice(0, 57) + "..."
           : userContent.trim();
-      await supabase
-        .from("ai_conversations")
-        .update({ title: autoTitle, updated_at: new Date().toISOString() })
-        .eq("id", conversationId);
+      await db
+        .update(aiConversations)
+        .set({ title: autoTitle, updatedAt: new Date() })
+        .where(eq(aiConversations.id, conversationId));
     }
 
     // Create streaming response
@@ -121,18 +115,18 @@ export async function POST(
       { model, systemPrompt },
       async (fullText: string) => {
         // Save assistant message after stream completes
-        await supabase.from("ai_messages").insert({
-          conversation_id: conversationId,
+        await db.insert(aiMessages).values({
+          conversationId,
           role: "assistant",
           content: fullText,
           model: model,
         });
 
         // Update conversation timestamp
-        await supabase
-          .from("ai_conversations")
-          .update({ updated_at: new Date().toISOString() })
-          .eq("id", conversationId);
+        await db
+          .update(aiConversations)
+          .set({ updatedAt: new Date() })
+          .where(eq(aiConversations.id, conversationId));
       }
     );
 
