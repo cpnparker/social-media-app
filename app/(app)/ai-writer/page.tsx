@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import ConversationList from "@/components/ai-writer/ConversationList";
@@ -12,6 +13,7 @@ import type { AIConversation } from "@/lib/types/ai";
 export default function AIWriterPage() {
   const wsCtx = useWorkspaceSafe();
   const workspaceId = wsCtx?.selectedWorkspace?.id;
+  const customerCtx = useCustomerSafe();
   const searchParams = useSearchParams();
   const router = useRouter();
 
@@ -21,7 +23,8 @@ export default function AIWriterPage() {
   );
   const [loading, setLoading] = useState(true);
 
-  const customerId = searchParams.get("customerId");
+  // Use URL param if provided, otherwise use the selected customer from context
+  const customerId = searchParams.get("customerId") || customerCtx?.selectedCustomerId || null;
 
   // Fetch conversations
   const fetchConversations = useCallback(async () => {
@@ -42,6 +45,7 @@ export default function AIWriterPage() {
   }, [workspaceId, customerId]);
 
   useEffect(() => {
+    setSelectedId(null);
     fetchConversations();
   }, [fetchConversations]);
 
@@ -69,7 +73,6 @@ export default function AIWriterPage() {
     }
     try {
       const contentObjectId = searchParams.get("contentObjectId");
-      const customerId = searchParams.get("customerId");
       const res = await fetch("/api/ai/conversations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
