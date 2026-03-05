@@ -290,6 +290,10 @@ export default function ContentDetailPage() {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
 
+  // AI Writer — combined tab state
+  const [toolsExpanded, setToolsExpanded] = useState(false);
+  const [activeTool, setActiveTool] = useState<"research" | "themes" | "example" | "generate" | null>(null);
+
   // DnD sensors
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -360,7 +364,7 @@ export default function ContentDetailPage() {
   }, [obj?.workspaceId, contentId]);
 
   useEffect(() => {
-    if (activeTab === "ai-chat") fetchContentChats();
+    if (activeTab === "ai-writer") fetchContentChats();
   }, [activeTab, fetchContentChats]);
 
   const handleNewContentChat = async (visibility: "private" | "team") => {
@@ -750,9 +754,6 @@ export default function ContentDetailPage() {
           <TabsTrigger value="ai-writer" className="gap-1.5 text-xs">
             <Sparkles className="h-3.5 w-3.5" /> AI Writer
           </TabsTrigger>
-          <TabsTrigger value="ai-chat" className="gap-1.5 text-xs">
-            <MessageSquare className="h-3.5 w-3.5" /> AI Chat
-          </TabsTrigger>
         </TabsList>
 
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-5">
@@ -885,367 +886,345 @@ export default function ContentDetailPage() {
               </Card>
             </TabsContent>
 
-            {/* ── TAB 3: AI Writer ── */}
-            <TabsContent value="ai-writer" className="mt-0 space-y-4">
+            {/* ── TAB 3: AI Writer (combined tools + chat) ── */}
+            <TabsContent value="ai-writer" className="mt-0">
+              <Card className="border-0 shadow-sm overflow-hidden flex flex-col" style={{ height: "calc(100vh - 200px)", minHeight: "500px" }}>
 
-              {/* A. Research */}
-              <Card className="border-0 shadow-sm">
-                <CardHeader className="px-5 pt-4 pb-0">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Search className="h-4 w-4 text-blue-500" />
-                      <CardTitle className="text-sm font-semibold">Research</CardTitle>
+                {/* ─── Collapsible AI Tools Section ─── */}
+                {!toolsExpanded ? (
+                  <button
+                    onClick={() => { setToolsExpanded(true); if (!activeTool) setActiveTool("research"); }}
+                    className="flex items-center gap-3 px-4 py-2.5 border-b hover:bg-muted/20 transition-colors shrink-0 group"
+                  >
+                    <div className="h-6 w-6 rounded-md bg-violet-500/10 flex items-center justify-center shrink-0">
+                      <Sparkles className="h-3.5 w-3.5 text-violet-500" />
                     </div>
-                    <Button size="sm" variant="outline" onClick={runResearch} disabled={researchLoading} className="gap-1.5 h-7 text-xs">
-                      {researchLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
-                      {researchLoading ? "Researching..." : researchData ? "Re-research" : "Research Topic"}
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">AI-powered research to find talking points, data, and angles for your content.</p>
-                </CardHeader>
-                <CardContent className="px-5 pb-4 pt-3">
-                  {!researchData && !researchLoading && (
-                    <div className="text-center py-6 text-xs text-muted-foreground">
-                      Click &ldquo;Research Topic&rdquo; to generate talking points, data, and angles based on your title and brief.
+                    <span className="text-xs font-semibold">AI Tools</span>
+                    <div className="flex gap-1.5 flex-1 flex-wrap">
+                      {selectedResearch.size > 0 && <Badge variant="secondary" className="text-[10px] h-5">{selectedResearch.size} research</Badge>}
+                      {selectedThemes.size > 0 && <Badge variant="secondary" className="text-[10px] h-5 bg-violet-500/10 text-violet-600">{selectedThemes.size} themes</Badge>}
+                      {exampleContent.trim() && <Badge variant="secondary" className="text-[10px] h-5 bg-amber-500/10 text-amber-600">Example</Badge>}
+                      {aiPreview && <Badge variant="secondary" className="text-[10px] h-5 bg-green-500/10 text-green-600">Draft ready</Badge>}
                     </div>
-                  )}
-                  {researchLoading && (
-                    <div className="flex items-center justify-center py-8 gap-2">
-                      <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
-                      <span className="text-sm text-muted-foreground">Researching your topic...</span>
-                    </div>
-                  )}
-                  {researchData && !researchLoading && (
-                    <div className="space-y-4">
-                      {/* Talking Points */}
-                      {(researchData.talkingPoints || []).length > 0 && (
-                        <div>
-                          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-2">Talking Points</label>
-                          <div className="space-y-1.5">
-                            {researchData.talkingPoints.map((tp: any) => (
-                              <button key={tp.id} onClick={() => toggleResearchItem(tp.id)}
-                                className={cn("w-full text-left rounded-lg border px-3 py-2 text-xs transition-all", selectedResearch.has(tp.id) ? "border-blue-500/40 bg-blue-500/5" : "border-transparent bg-muted/30 hover:bg-muted/50")}>
-                                <div className="flex items-start gap-2">
-                                  <div className={cn("mt-0.5 h-3.5 w-3.5 rounded border flex items-center justify-center shrink-0 transition-colors", selectedResearch.has(tp.id) ? "bg-blue-500 border-blue-500" : "border-muted-foreground/30")}>
-                                    {selectedResearch.has(tp.id) && <Check className="h-2.5 w-2.5 text-white" />}
-                                  </div>
-                                  <div><p className="font-medium">{tp.point}</p><p className="text-muted-foreground mt-0.5">{tp.why}</p></div>
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {/* Data Points */}
-                      {(researchData.dataPoints || []).length > 0 && (
-                        <div>
-                          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-2">Data Points</label>
-                          <div className="space-y-1.5">
-                            {researchData.dataPoints.map((dp: any) => (
-                              <button key={dp.id} onClick={() => toggleResearchItem(dp.id)}
-                                className={cn("w-full text-left rounded-lg border px-3 py-2 text-xs transition-all", selectedResearch.has(dp.id) ? "border-blue-500/40 bg-blue-500/5" : "border-transparent bg-muted/30 hover:bg-muted/50")}>
-                                <div className="flex items-start gap-2">
-                                  <div className={cn("mt-0.5 h-3.5 w-3.5 rounded border flex items-center justify-center shrink-0 transition-colors", selectedResearch.has(dp.id) ? "bg-blue-500 border-blue-500" : "border-muted-foreground/30")}>
-                                    {selectedResearch.has(dp.id) && <Check className="h-2.5 w-2.5 text-white" />}
-                                  </div>
-                                  <div><p className="font-medium">{dp.stat}</p><p className="text-muted-foreground mt-0.5">{dp.context}</p></div>
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {/* Angles */}
-                      {(researchData.angles || []).length > 0 && (
-                        <div>
-                          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-2">Angles</label>
-                          <div className="flex flex-wrap gap-2">
-                            {researchData.angles.map((a: any) => (
-                              <button key={a.id} onClick={() => toggleResearchItem(a.id)}
-                                className={cn("rounded-full border px-3 py-1 text-xs font-medium transition-all", selectedResearch.has(a.id) ? "border-blue-500 bg-blue-500/10 text-blue-600" : "border-border hover:bg-muted")}>
-                                {a.name}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* B. Themes */}
-              <Card className="border-0 shadow-sm">
-                <CardHeader className="px-5 pt-4 pb-0">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Palette className="h-4 w-4 text-violet-500" />
-                      <CardTitle className="text-sm font-semibold">Themes & Angles</CardTitle>
-                    </div>
-                    <Button size="sm" variant="outline" onClick={runSuggestThemes} disabled={themesLoading} className="gap-1.5 h-7 text-xs">
-                      {themesLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Palette className="h-3 w-3" />}
-                      {themesLoading ? "Generating..." : themesData.length > 0 ? "Regenerate" : "Suggest Themes"}
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">Choose an editorial approach for your content.</p>
-                </CardHeader>
-                <CardContent className="px-5 pb-4 pt-3">
-                  {themesData.length === 0 && !themesLoading && (
-                    <div className="text-center py-4 text-xs text-muted-foreground">
-                      Click &ldquo;Suggest Themes&rdquo; to generate editorial approaches. Research first for better results.
-                    </div>
-                  )}
-                  {themesLoading && (
-                    <div className="flex items-center justify-center py-6 gap-2">
-                      <Loader2 className="h-4 w-4 animate-spin text-violet-500" />
-                      <span className="text-sm text-muted-foreground">Generating themes...</span>
-                    </div>
-                  )}
-                  {themesData.length > 0 && !themesLoading && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {themesData.map((theme: any) => (
-                        <button key={theme.id} onClick={() => toggleTheme(theme.id)}
-                          className={cn("text-left rounded-lg border p-3 transition-all", selectedThemes.has(theme.id) ? "border-violet-500/40 bg-violet-500/5 ring-1 ring-violet-500/20" : "border-border hover:bg-muted/50")}>
-                          <div className="flex items-start gap-2">
-                            <div className={cn("mt-0.5 h-4 w-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors", selectedThemes.has(theme.id) ? "border-violet-500 bg-violet-500" : "border-muted-foreground/30")}>
-                              {selectedThemes.has(theme.id) && <Check className="h-2.5 w-2.5 text-white" />}
-                            </div>
-                            <div>
-                              <p className="text-xs font-semibold">{theme.name}</p>
-                              <p className="text-[11px] text-muted-foreground mt-0.5">{theme.description}</p>
-                            </div>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* C. Example Content */}
-              <Card className="border-0 shadow-sm">
-                <CardHeader className="px-5 pt-4 pb-0">
-                  <div className="flex items-center gap-2">
-                    <BookOpen className="h-4 w-4 text-amber-500" />
-                    <CardTitle className="text-sm font-semibold">Example Content</CardTitle>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">Paste content you&apos;d like the AI to emulate in tone and style.</p>
-                </CardHeader>
-                <CardContent className="px-5 pb-4 pt-3">
-                  <textarea
-                    value={exampleContent}
-                    onChange={(e) => setExampleContent(e.target.value)}
-                    placeholder="Paste an example article, blog post, or writing sample that represents the style you want..."
-                    rows={4}
-                    className="w-full rounded-lg border bg-background px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                  />
-                </CardContent>
-              </Card>
-
-              {/* D. Tone & Style + Generate */}
-              <Card className="border-0 shadow-sm">
-                <CardHeader className="px-5 pt-4 pb-0">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="h-4 w-4 text-violet-500" />
-                    <CardTitle className="text-sm font-semibold">Generate Content</CardTitle>
-                  </div>
-                </CardHeader>
-                <CardContent className="px-5 pb-5 pt-3 space-y-4">
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <div>
-                      <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Tone</label>
-                      <select value={aiTone} onChange={(e) => setAiTone(e.target.value)} className="h-8 rounded-md border bg-background px-2.5 text-sm min-w-[140px]">
-                        <option value="professional">Professional</option>
-                        <option value="casual">Casual</option>
-                        <option value="engaging">Engaging</option>
-                        <option value="authoritative">Authoritative</option>
-                        <option value="conversational">Conversational</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Length</label>
-                      <select value={aiLength} onChange={(e) => setAiLength(e.target.value)} className="h-8 rounded-md border bg-background px-2.5 text-sm min-w-[140px]">
-                        <option value="brief">Brief (~300 words)</option>
-                        <option value="standard">Standard (~600 words)</option>
-                        <option value="detailed">Detailed (~1000+ words)</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Additional Instructions</label>
-                    <input
-                      value={aiInstructions}
-                      onChange={(e) => setAiInstructions(e.target.value)}
-                      placeholder="e.g. Focus on sustainability angle, include statistics..."
-                      className="w-full h-8 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                    />
-                  </div>
-
-                  {/* Context summary */}
-                  {(selectedResearch.size > 0 || selectedThemes.size > 0 || exampleContent.trim()) && (
-                    <div className="flex items-center gap-2 flex-wrap text-[11px]">
-                      <span className="text-muted-foreground font-medium">Context:</span>
-                      {selectedResearch.size > 0 && <Badge variant="secondary" className="text-[10px]">{selectedResearch.size} research items</Badge>}
-                      {selectedThemes.size > 0 && <Badge variant="secondary" className="text-[10px] bg-violet-500/10 text-violet-600">{selectedThemes.size} themes</Badge>}
-                      {exampleContent.trim() && <Badge variant="secondary" className="text-[10px] bg-amber-500/10 text-amber-600">Example content</Badge>}
-                    </div>
-                  )}
-
-                  <div className="flex items-center gap-2">
-                    <Button size="sm" onClick={generateWithAI} disabled={aiGenerating} className="gap-1.5 bg-violet-600 hover:bg-violet-700">
-                      {aiGenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                      {aiGenerating ? "Generating..." : aiPreview ? "Regenerate" : "Generate Draft"}
-                    </Button>
-                    {!obj.brief && !obj.workingTitle && (
-                      <span className="text-xs text-amber-500">Tip: Add a title or brief for better results</span>
-                    )}
-                  </div>
-
-                  {aiError && (
-                    <div className="p-3 rounded-lg bg-red-500/10 text-red-600 text-sm">{aiError}</div>
-                  )}
-
-                  {aiGenerating && (
-                    <div className="p-6 rounded-lg border border-dashed flex flex-col items-center gap-3">
-                      <div className="flex items-center gap-1">
-                        <div className="h-2 w-2 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "0ms" }} />
-                        <div className="h-2 w-2 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "150ms" }} />
-                        <div className="h-2 w-2 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "300ms" }} />
+                    <ChevronDown className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
+                  </button>
+                ) : (
+                  <div className="border-b shrink-0">
+                    {/* Tool sub-tabs */}
+                    <div className="flex items-center justify-between px-3 pt-2.5 pb-0">
+                      <div className="flex gap-0.5 p-0.5 bg-muted/50 rounded-lg">
+                        {([
+                          { key: "research" as const, icon: Search, label: "Research" },
+                          { key: "themes" as const, icon: Palette, label: "Themes" },
+                          { key: "example" as const, icon: BookOpen, label: "Example" },
+                          { key: "generate" as const, icon: Sparkles, label: "Generate" },
+                        ]).map((tool) => (
+                          <button
+                            key={tool.key}
+                            onClick={() => setActiveTool(tool.key)}
+                            className={cn(
+                              "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-all",
+                              activeTool === tool.key
+                                ? "bg-background shadow-sm text-foreground"
+                                : "text-muted-foreground hover:text-foreground"
+                            )}
+                          >
+                            <tool.icon className="h-3 w-3" />
+                            {tool.label}
+                          </button>
+                        ))}
                       </div>
-                      <p className="text-sm text-muted-foreground">Writing {obj.contentType || "content"} as an expert editor...</p>
+                      <Button variant="ghost" size="sm" onClick={() => setToolsExpanded(false)} className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground">
+                        <ChevronUp className="h-3.5 w-3.5" />
+                      </Button>
                     </div>
-                  )}
 
-                  {/* Preview */}
-                  {aiPreview && !aiGenerating && (
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Preview</span>
-                        <Separator className="flex-1" />
-                      </div>
-                      <div
-                        className="prose prose-sm dark:prose-invert max-w-none p-4 rounded-lg border bg-muted/20 max-h-[500px] overflow-y-auto"
-                        dangerouslySetInnerHTML={{ __html: aiPreview }}
-                      />
-
-                      {/* Action buttons */}
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {canInsertToDoc && obj.body && (
-                          <>
-                            <Button size="sm" onClick={() => insertIntoDoc("append")} disabled={aiInserting} className="gap-1.5 bg-blue-600 hover:bg-blue-700">
-                              {aiInserting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : aiCopied ? <Check className="h-3.5 w-3.5" /> : <FileText className="h-3.5 w-3.5" />}
-                              {aiInserting ? "Inserting..." : aiCopied ? "Inserted!" : "Append to Doc"}
-                            </Button>
-                            <Button size="sm" variant="outline" onClick={() => insertIntoDoc("replace")} disabled={aiInserting} className="gap-1.5">
-                              <RotateCcw className="h-3.5 w-3.5" /> Replace Doc
-                            </Button>
-                          </>
-                        )}
-                        {!canInsertToDoc && (
-                          <Button size="sm" onClick={copyAiContent} className="gap-1.5">
-                            {aiCopied ? <Check className="h-3.5 w-3.5" /> : <ClipboardCopy className="h-3.5 w-3.5" />}
-                            {aiCopied ? "Copied!" : "Copy to Clipboard"}
-                          </Button>
-                        )}
-                        {canInsertToDoc && (
-                          <Button size="sm" variant="ghost" onClick={copyAiContent} className="gap-1.5 text-muted-foreground">
-                            <ClipboardCopy className="h-3.5 w-3.5" /> Copy
-                          </Button>
-                        )}
-                        <Button size="sm" variant="ghost" onClick={() => { setAiPreview(""); setFactCheckResult(null); setAiDetectResult(null); }} className="gap-1.5 text-muted-foreground">
-                          <X className="h-3.5 w-3.5" /> Discard
-                        </Button>
-                      </div>
-
-                      {/* Content Tools */}
-                      <Separator />
-                      <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Content Tools</span>
-                        <Button size="sm" variant="outline" onClick={runFactCheck} disabled={factCheckLoading} className="gap-1.5 h-7 text-xs">
-                          {factCheckLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <ShieldCheck className="h-3 w-3" />}
-                          Fact Check
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={runAiDetect} disabled={aiDetectLoading} className="gap-1.5 h-7 text-xs">
-                          {aiDetectLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Bot className="h-3 w-3" />}
-                          AI Detection
-                        </Button>
-                      </div>
-
-                      {/* Fact Check Results */}
-                      {factCheckResult && (
-                        <div className="rounded-lg border p-4 space-y-3">
+                    {/* Tool content */}
+                    <div className="px-4 pb-4 pt-3 max-h-[45vh] overflow-y-auto">
+                      {/* Research */}
+                      {activeTool === "research" && (
+                        <div className="space-y-3">
                           <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <ShieldCheck className="h-4 w-4 text-blue-500" />
-                              <span className="text-sm font-semibold">Fact Check</span>
-                            </div>
-                            <Badge variant={factCheckResult.overallScore >= 80 ? "secondary" : "destructive"} className="text-xs">
-                              Score: {factCheckResult.overallScore}/100
-                            </Badge>
+                            <p className="text-xs text-muted-foreground">Find talking points, data, and angles for your content.</p>
+                            <Button size="sm" variant="outline" onClick={runResearch} disabled={researchLoading} className="gap-1.5 h-7 text-xs shrink-0">
+                              {researchLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
+                              {researchLoading ? "Researching..." : researchData ? "Re-research" : "Research Topic"}
+                            </Button>
                           </div>
-                          <p className="text-xs text-muted-foreground">{factCheckResult.summary}</p>
-                          <div className="space-y-2">
-                            {(factCheckResult.claims || []).map((claim: any, i: number) => (
-                              <div key={i} className="flex items-start gap-2 text-xs">
-                                {factStatusIcon(claim.status)}
+                          {!researchData && !researchLoading && (
+                            <div className="text-center py-6 text-xs text-muted-foreground border border-dashed rounded-lg">
+                              Click &ldquo;Research Topic&rdquo; to generate talking points based on your title and brief.
+                            </div>
+                          )}
+                          {researchLoading && (
+                            <div className="flex items-center justify-center py-8 gap-2">
+                              <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                              <span className="text-sm text-muted-foreground">Researching your topic...</span>
+                            </div>
+                          )}
+                          {researchData && !researchLoading && (
+                            <div className="space-y-4">
+                              {(researchData.talkingPoints || []).length > 0 && (
                                 <div>
-                                  <p className="font-medium">{claim.claim}</p>
-                                  <p className="text-muted-foreground">{claim.note}</p>
+                                  <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-2">Talking Points</label>
+                                  <div className="space-y-1.5">
+                                    {researchData.talkingPoints.map((tp: any) => (
+                                      <button key={tp.id} onClick={() => toggleResearchItem(tp.id)}
+                                        className={cn("w-full text-left rounded-lg border px-3 py-2 text-xs transition-all", selectedResearch.has(tp.id) ? "border-blue-500/40 bg-blue-500/5" : "border-transparent bg-muted/30 hover:bg-muted/50")}>
+                                        <div className="flex items-start gap-2">
+                                          <div className={cn("mt-0.5 h-3.5 w-3.5 rounded border flex items-center justify-center shrink-0 transition-colors", selectedResearch.has(tp.id) ? "bg-blue-500 border-blue-500" : "border-muted-foreground/30")}>
+                                            {selectedResearch.has(tp.id) && <Check className="h-2.5 w-2.5 text-white" />}
+                                          </div>
+                                          <div><p className="font-medium">{tp.point}</p><p className="text-muted-foreground mt-0.5">{tp.why}</p></div>
+                                        </div>
+                                      </button>
+                                    ))}
+                                  </div>
                                 </div>
-                              </div>
-                            ))}
-                          </div>
+                              )}
+                              {(researchData.dataPoints || []).length > 0 && (
+                                <div>
+                                  <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-2">Data Points</label>
+                                  <div className="space-y-1.5">
+                                    {researchData.dataPoints.map((dp: any) => (
+                                      <button key={dp.id} onClick={() => toggleResearchItem(dp.id)}
+                                        className={cn("w-full text-left rounded-lg border px-3 py-2 text-xs transition-all", selectedResearch.has(dp.id) ? "border-blue-500/40 bg-blue-500/5" : "border-transparent bg-muted/30 hover:bg-muted/50")}>
+                                        <div className="flex items-start gap-2">
+                                          <div className={cn("mt-0.5 h-3.5 w-3.5 rounded border flex items-center justify-center shrink-0 transition-colors", selectedResearch.has(dp.id) ? "bg-blue-500 border-blue-500" : "border-muted-foreground/30")}>
+                                            {selectedResearch.has(dp.id) && <Check className="h-2.5 w-2.5 text-white" />}
+                                          </div>
+                                          <div><p className="font-medium">{dp.stat}</p><p className="text-muted-foreground mt-0.5">{dp.context}</p></div>
+                                        </div>
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              {(researchData.angles || []).length > 0 && (
+                                <div>
+                                  <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-2">Angles</label>
+                                  <div className="flex flex-wrap gap-2">
+                                    {researchData.angles.map((a: any) => (
+                                      <button key={a.id} onClick={() => toggleResearchItem(a.id)}
+                                        className={cn("rounded-full border px-3 py-1 text-xs font-medium transition-all", selectedResearch.has(a.id) ? "border-blue-500 bg-blue-500/10 text-blue-600" : "border-border hover:bg-muted")}>
+                                        {a.name}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
 
-                      {/* AI Detection Results */}
-                      {aiDetectResult && (
-                        <div className="rounded-lg border p-4 space-y-3">
+                      {/* Themes */}
+                      {activeTool === "themes" && (
+                        <div className="space-y-3">
                           <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <Bot className="h-4 w-4 text-amber-500" />
-                              <span className="text-sm font-semibold">AI Detection</span>
-                            </div>
-                            <Badge variant={aiDetectResult.score <= 30 ? "secondary" : aiDetectResult.score <= 60 ? "outline" : "destructive"} className="text-xs">
-                              {aiDetectResult.score <= 30 ? "Likely Human" : aiDetectResult.score <= 60 ? "Mixed" : "Likely AI"} ({aiDetectResult.score}/100)
-                            </Badge>
+                            <p className="text-xs text-muted-foreground">Choose an editorial approach for your content.</p>
+                            <Button size="sm" variant="outline" onClick={runSuggestThemes} disabled={themesLoading} className="gap-1.5 h-7 text-xs shrink-0">
+                              {themesLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Palette className="h-3 w-3" />}
+                              {themesLoading ? "Generating..." : themesData.length > 0 ? "Regenerate" : "Suggest Themes"}
+                            </Button>
                           </div>
-                          {(aiDetectResult.flags || []).length > 0 && (
-                            <div>
-                              <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Flagged Patterns</label>
-                              <div className="space-y-1.5">
-                                {aiDetectResult.flags.map((flag: any, i: number) => (
-                                  <div key={i} className="text-xs rounded bg-amber-500/5 px-3 py-1.5">
-                                    <span className="font-medium">&ldquo;{flag.text}&rdquo;</span>
-                                    <span className="text-muted-foreground ml-1.5">&mdash; {flag.reason}</span>
-                                  </div>
-                                ))}
-                              </div>
+                          {themesData.length === 0 && !themesLoading && (
+                            <div className="text-center py-4 text-xs text-muted-foreground border border-dashed rounded-lg">
+                              Click &ldquo;Suggest Themes&rdquo; to generate editorial approaches. Research first for better results.
                             </div>
                           )}
-                          {(aiDetectResult.suggestions || []).length > 0 && (
+                          {themesLoading && (
+                            <div className="flex items-center justify-center py-6 gap-2">
+                              <Loader2 className="h-4 w-4 animate-spin text-violet-500" />
+                              <span className="text-sm text-muted-foreground">Generating themes...</span>
+                            </div>
+                          )}
+                          {themesData.length > 0 && !themesLoading && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {themesData.map((theme: any) => (
+                                <button key={theme.id} onClick={() => toggleTheme(theme.id)}
+                                  className={cn("text-left rounded-lg border p-3 transition-all", selectedThemes.has(theme.id) ? "border-violet-500/40 bg-violet-500/5 ring-1 ring-violet-500/20" : "border-border hover:bg-muted/50")}>
+                                  <div className="flex items-start gap-2">
+                                    <div className={cn("mt-0.5 h-4 w-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors", selectedThemes.has(theme.id) ? "border-violet-500 bg-violet-500" : "border-muted-foreground/30")}>
+                                      {selectedThemes.has(theme.id) && <Check className="h-2.5 w-2.5 text-white" />}
+                                    </div>
+                                    <div>
+                                      <p className="text-xs font-semibold">{theme.name}</p>
+                                      <p className="text-[11px] text-muted-foreground mt-0.5">{theme.description}</p>
+                                    </div>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Example */}
+                      {activeTool === "example" && (
+                        <div className="space-y-2">
+                          <p className="text-xs text-muted-foreground">Paste content you&apos;d like the AI to emulate in tone and style.</p>
+                          <textarea
+                            value={exampleContent}
+                            onChange={(e) => setExampleContent(e.target.value)}
+                            placeholder="Paste an example article, blog post, or writing sample..."
+                            rows={5}
+                            className="w-full rounded-lg border bg-background px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                          />
+                        </div>
+                      )}
+
+                      {/* Generate */}
+                      {activeTool === "generate" && (
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-3 flex-wrap">
                             <div>
-                              <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Suggestions</label>
-                              <ul className="space-y-1 text-xs text-muted-foreground">
-                                {aiDetectResult.suggestions.map((s: string, i: number) => (
-                                  <li key={i} className="flex items-start gap-1.5">
-                                    <span className="text-violet-500 mt-0.5">&#x2192;</span> {s}
-                                  </li>
-                                ))}
-                              </ul>
+                              <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Tone</label>
+                              <select value={aiTone} onChange={(e) => setAiTone(e.target.value)} className="h-8 rounded-md border bg-background px-2.5 text-sm min-w-[140px]">
+                                <option value="professional">Professional</option>
+                                <option value="casual">Casual</option>
+                                <option value="engaging">Engaging</option>
+                                <option value="authoritative">Authoritative</option>
+                                <option value="conversational">Conversational</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Length</label>
+                              <select value={aiLength} onChange={(e) => setAiLength(e.target.value)} className="h-8 rounded-md border bg-background px-2.5 text-sm min-w-[140px]">
+                                <option value="brief">Brief (~300 words)</option>
+                                <option value="standard">Standard (~600 words)</option>
+                                <option value="detailed">Detailed (~1000+ words)</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Additional Instructions</label>
+                            <input value={aiInstructions} onChange={(e) => setAiInstructions(e.target.value)} placeholder="e.g. Focus on sustainability angle, include statistics..."
+                              className="w-full h-8 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+                          </div>
+                          {(selectedResearch.size > 0 || selectedThemes.size > 0 || exampleContent.trim()) && (
+                            <div className="flex items-center gap-2 flex-wrap text-[11px]">
+                              <span className="text-muted-foreground font-medium">Context:</span>
+                              {selectedResearch.size > 0 && <Badge variant="secondary" className="text-[10px]">{selectedResearch.size} research items</Badge>}
+                              {selectedThemes.size > 0 && <Badge variant="secondary" className="text-[10px] bg-violet-500/10 text-violet-600">{selectedThemes.size} themes</Badge>}
+                              {exampleContent.trim() && <Badge variant="secondary" className="text-[10px] bg-amber-500/10 text-amber-600">Example content</Badge>}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-2">
+                            <Button size="sm" onClick={generateWithAI} disabled={aiGenerating} className="gap-1.5 bg-violet-600 hover:bg-violet-700">
+                              {aiGenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                              {aiGenerating ? "Generating..." : aiPreview ? "Regenerate" : "Generate Draft"}
+                            </Button>
+                            {!obj.brief && !obj.workingTitle && <span className="text-xs text-amber-500">Tip: Add a title or brief for better results</span>}
+                          </div>
+                          {aiError && <div className="p-3 rounded-lg bg-red-500/10 text-red-600 text-sm">{aiError}</div>}
+                          {aiGenerating && (
+                            <div className="p-6 rounded-lg border border-dashed flex flex-col items-center gap-3">
+                              <div className="flex items-center gap-1">
+                                <div className="h-2 w-2 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "0ms" }} />
+                                <div className="h-2 w-2 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "150ms" }} />
+                                <div className="h-2 w-2 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "300ms" }} />
+                              </div>
+                              <p className="text-sm text-muted-foreground">Writing {obj.contentType || "content"} as an expert editor...</p>
+                            </div>
+                          )}
+                          {aiPreview && !aiGenerating && (
+                            <div className="space-y-3">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Preview</span>
+                                <Separator className="flex-1" />
+                              </div>
+                              <div className="prose prose-sm dark:prose-invert max-w-none p-4 rounded-lg border bg-muted/20 max-h-[300px] overflow-y-auto" dangerouslySetInnerHTML={{ __html: aiPreview }} />
+                              <div className="flex items-center gap-2 flex-wrap">
+                                {canInsertToDoc && obj.body && (
+                                  <>
+                                    <Button size="sm" onClick={() => insertIntoDoc("append")} disabled={aiInserting} className="gap-1.5 bg-blue-600 hover:bg-blue-700">
+                                      {aiInserting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : aiCopied ? <Check className="h-3.5 w-3.5" /> : <FileText className="h-3.5 w-3.5" />}
+                                      {aiInserting ? "Inserting..." : aiCopied ? "Inserted!" : "Append to Doc"}
+                                    </Button>
+                                    <Button size="sm" variant="outline" onClick={() => insertIntoDoc("replace")} disabled={aiInserting} className="gap-1.5">
+                                      <RotateCcw className="h-3.5 w-3.5" /> Replace Doc
+                                    </Button>
+                                  </>
+                                )}
+                                {!canInsertToDoc && (
+                                  <Button size="sm" onClick={copyAiContent} className="gap-1.5">
+                                    {aiCopied ? <Check className="h-3.5 w-3.5" /> : <ClipboardCopy className="h-3.5 w-3.5" />}
+                                    {aiCopied ? "Copied!" : "Copy to Clipboard"}
+                                  </Button>
+                                )}
+                                {canInsertToDoc && (
+                                  <Button size="sm" variant="ghost" onClick={copyAiContent} className="gap-1.5 text-muted-foreground">
+                                    <ClipboardCopy className="h-3.5 w-3.5" /> Copy
+                                  </Button>
+                                )}
+                                <Button size="sm" variant="ghost" onClick={() => { setAiPreview(""); setFactCheckResult(null); setAiDetectResult(null); }} className="gap-1.5 text-muted-foreground">
+                                  <X className="h-3.5 w-3.5" /> Discard
+                                </Button>
+                              </div>
+                              <Separator />
+                              <div className="flex items-center gap-2">
+                                <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Content Tools</span>
+                                <Button size="sm" variant="outline" onClick={runFactCheck} disabled={factCheckLoading} className="gap-1.5 h-7 text-xs">
+                                  {factCheckLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <ShieldCheck className="h-3 w-3" />} Fact Check
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={runAiDetect} disabled={aiDetectLoading} className="gap-1.5 h-7 text-xs">
+                                  {aiDetectLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Bot className="h-3 w-3" />} AI Detection
+                                </Button>
+                              </div>
+                              {factCheckResult && (
+                                <div className="rounded-lg border p-4 space-y-3">
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-blue-500" /><span className="text-sm font-semibold">Fact Check</span></div>
+                                    <Badge variant={factCheckResult.overallScore >= 80 ? "secondary" : "destructive"} className="text-xs">Score: {factCheckResult.overallScore}/100</Badge>
+                                  </div>
+                                  <p className="text-xs text-muted-foreground">{factCheckResult.summary}</p>
+                                  <div className="space-y-2">
+                                    {(factCheckResult.claims || []).map((claim: any, i: number) => (
+                                      <div key={i} className="flex items-start gap-2 text-xs">{factStatusIcon(claim.status)}<div><p className="font-medium">{claim.claim}</p><p className="text-muted-foreground">{claim.note}</p></div></div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              {aiDetectResult && (
+                                <div className="rounded-lg border p-4 space-y-3">
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2"><Bot className="h-4 w-4 text-amber-500" /><span className="text-sm font-semibold">AI Detection</span></div>
+                                    <Badge variant={aiDetectResult.score <= 30 ? "secondary" : aiDetectResult.score <= 60 ? "outline" : "destructive"} className="text-xs">
+                                      {aiDetectResult.score <= 30 ? "Likely Human" : aiDetectResult.score <= 60 ? "Mixed" : "Likely AI"} ({aiDetectResult.score}/100)
+                                    </Badge>
+                                  </div>
+                                  {(aiDetectResult.flags || []).length > 0 && (
+                                    <div>
+                                      <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Flagged Patterns</label>
+                                      <div className="space-y-1.5">
+                                        {aiDetectResult.flags.map((flag: any, i: number) => (
+                                          <div key={i} className="text-xs rounded bg-amber-500/5 px-3 py-1.5"><span className="font-medium">&ldquo;{flag.text}&rdquo;</span><span className="text-muted-foreground ml-1.5">&mdash; {flag.reason}</span></div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {(aiDetectResult.suggestions || []).length > 0 && (
+                                    <div>
+                                      <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Suggestions</label>
+                                      <ul className="space-y-1 text-xs text-muted-foreground">
+                                        {aiDetectResult.suggestions.map((s: string, i: number) => (
+                                          <li key={i} className="flex items-start gap-1.5"><span className="text-violet-500 mt-0.5">&#x2192;</span> {s}</li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
                       )}
                     </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
+                  </div>
+                )}
 
-            {/* ── TAB 4: AI Chat ── */}
-            <TabsContent value="ai-chat" className="mt-0">
-              <Card className="border-0 shadow-sm overflow-hidden">
+                {/* ─── Chat Section ─── */}
                 <ContentChatSelector
                   conversations={chatConversations}
                   selectedId={selectedChatId}
@@ -1253,7 +1232,7 @@ export default function ContentDetailPage() {
                   onNewConversation={handleNewContentChat}
                   loading={chatLoading}
                 />
-                <div className="h-[600px]">
+                <div className="flex-1 min-h-0">
                   {selectedChatId ? (
                     <ChatPanel
                       key={selectedChatId}
@@ -1266,26 +1245,15 @@ export default function ContentDetailPage() {
                       <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
                         <MessageSquare className="h-6 w-6 text-primary" />
                       </div>
-                      <h3 className="text-sm font-semibold mb-1">
-                        AI Chat for this content
-                      </h3>
+                      <h3 className="text-sm font-semibold mb-1">AI Writer for this content</h3>
                       <p className="text-xs text-muted-foreground max-w-sm mb-4">
-                        Start a private or team conversation linked to this content piece. The AI will have context about the title, type, and brief.
+                        Chat with AI about this content piece, or expand the tools above to research, generate, and refine.
                       </p>
                       <div className="flex gap-2">
-                        <Button
-                          size="sm"
-                          onClick={() => handleNewContentChat("private")}
-                          className="gap-1.5 text-xs"
-                        >
+                        <Button size="sm" onClick={() => handleNewContentChat("private")} className="gap-1.5 text-xs">
                           <Plus className="h-3 w-3" /> Private Chat
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleNewContentChat("team")}
-                          className="gap-1.5 text-xs"
-                        >
+                        <Button size="sm" variant="outline" onClick={() => handleNewContentChat("team")} className="gap-1.5 text-xs">
                           <Plus className="h-3 w-3" /> Team Chat
                         </Button>
                       </div>

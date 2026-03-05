@@ -49,7 +49,7 @@ export default function AIWriterPage() {
       // Check if a team conversation already exists for this content
       const existing = conversations.find(
         (c) =>
-          c.content_object_id === parseInt(contentObjectId, 10) &&
+          c.contentObjectId === parseInt(contentObjectId, 10) &&
           c.visibility === "team"
       );
       if (existing) {

@@ -74,7 +74,7 @@ export default function ContentChatSelector({
                   : "text-muted-foreground"
               )}
             >
-              {timeAgo(c.updated_at)}
+              {timeAgo(c.updatedAt)}
             </span>
           </button>
         ))}
@@ -118,7 +118,7 @@ export default function ContentChatSelector({
                   : "text-muted-foreground"
               )}
             >
-              {timeAgo(c.updated_at)}
+              {timeAgo(c.updatedAt)}
             </span>
           </button>
         ))}

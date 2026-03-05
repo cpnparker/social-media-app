@@ -146,7 +146,7 @@ export default function ConversationList({
                       {conv.model.includes("grok") ? "Grok" : "Claude"}
                     </Badge>
                     <span className="text-[10px] text-muted-foreground">
-                      {timeAgo(conv.updated_at)}
+                      {timeAgo(conv.updatedAt)}
                     </span>
                   </div>
                 </div>

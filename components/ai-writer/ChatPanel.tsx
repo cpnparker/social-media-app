@@ -76,12 +76,12 @@ export default function ChatPanel({
     // Optimistically add user message
     const tempUserMsg: AIMessageRow = {
       id: `temp-${Date.now()}`,
-      conversation_id: conversationId,
+      conversationId: conversationId,
       role: "user",
       content,
       model: null,
-      created_by: null,
-      created_at: new Date().toISOString(),
+      createdBy: null,
+      createdAt: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, tempUserMsg]);
     setIsStreaming(true);
@@ -136,12 +136,12 @@ export default function ChatPanel({
       if (fullText) {
         const assistantMsg: AIMessageRow = {
           id: `assistant-${Date.now()}`,
-          conversation_id: conversationId,
+          conversationId: conversationId,
           role: "assistant",
           content: fullText,
           model: conversation.model,
-          created_by: null,
-          created_at: new Date().toISOString(),
+          createdBy: null,
+          createdAt: new Date().toISOString(),
         };
         setMessages((prev) => [...prev, assistantMsg]);
       }
