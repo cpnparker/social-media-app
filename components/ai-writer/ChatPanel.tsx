@@ -21,6 +21,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { getModelLabel } from "@/lib/ai/models";
 import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
 import type { AIConversation, AIMessageRow } from "@/lib/types/ai";
@@ -30,6 +31,7 @@ interface ChatPanelProps {
   onConversationDeleted?: () => void;
   onConversationUpdated?: (conv: AIConversation) => void;
   onBack?: () => void;
+  initialMessage?: string;
 }
 
 export default function ChatPanel({
@@ -37,6 +39,7 @@ export default function ChatPanel({
   onConversationDeleted,
   onConversationUpdated,
   onBack,
+  initialMessage,
 }: ChatPanelProps) {
   const [conversation, setConversation] = useState<AIConversation | null>(null);
   const [messages, setMessages] = useState<AIMessageRow[]>([]);
@@ -46,6 +49,7 @@ export default function ChatPanel({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const initialMessageSent = useRef(false);
 
   // Fetch conversation and messages
   const fetchConversation = useCallback(async () => {
@@ -66,6 +70,15 @@ export default function ChatPanel({
   useEffect(() => {
     fetchConversation();
   }, [fetchConversation]);
+
+  // Auto-send initial message (quick-send from home page)
+  useEffect(() => {
+    if (initialMessage && conversation && !initialMessageSent.current && !loading) {
+      initialMessageSent.current = true;
+      handleSend(initialMessage);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialMessage, conversation, loading]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -229,7 +242,7 @@ export default function ChatPanel({
     );
   }
 
-  const modelLabel = conversation.model.includes("grok") ? "Grok" : "Claude";
+  const modelLabel = getModelLabel(conversation.model);
 
   return (
     <div className="flex flex-col h-full">
@@ -238,7 +251,7 @@ export default function ChatPanel({
         {onBack && (
           <button
             onClick={onBack}
-            className="md:hidden shrink-0 h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors"
+            className="shrink-0 h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors"
           >
             <ArrowLeft className="h-4 w-4" />
           </button>

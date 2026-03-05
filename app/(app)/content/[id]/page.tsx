@@ -293,6 +293,7 @@ export default function ContentDetailPage() {
   const [chatConversations, setChatConversations] = useState<AIConversation[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
+  const [chatModel, setChatModel] = useState("claude-sonnet-4-20250514");
 
   // AI Writer — combined tab state
   const [toolsExpanded, setToolsExpanded] = useState(false);
@@ -371,7 +372,7 @@ export default function ContentDetailPage() {
     if (activeTab === "ai-writer") fetchContentChats();
   }, [activeTab, fetchContentChats]);
 
-  const handleNewContentChat = async (visibility: "private" | "team") => {
+  const handleNewContentChat = async (visibility: "private" | "team", model?: string) => {
     if (!workspaceId) {
       toast.error("No workspace selected");
       return;
@@ -383,6 +384,7 @@ export default function ContentDetailPage() {
         body: JSON.stringify({
           workspaceId,
           visibility,
+          model: model || chatModel,
           contentObjectId: parseInt(contentId, 10),
           customerId: obj?.customerId || undefined,
         }),
@@ -808,7 +810,7 @@ export default function ContentDetailPage() {
             </Card>
             {/* RIGHT: AI Chat */}
             <Card className="border-0 shadow-sm overflow-hidden flex flex-col flex-1 min-w-0 min-h-[300px] md:min-h-0">
-              <ContentChatSelector conversations={chatConversations} selectedId={selectedChatId} onSelect={setSelectedChatId} onNewConversation={handleNewContentChat} loading={chatLoading} />
+              <ContentChatSelector conversations={chatConversations} selectedId={selectedChatId} onSelect={setSelectedChatId} onNewConversation={handleNewContentChat} loading={chatLoading} selectedModel={chatModel} onModelChange={setChatModel} />
               <div className="flex-1 min-h-0">
                 {selectedChatId ? (
                   <ChatPanel key={selectedChatId} conversationId={selectedChatId} onConversationDeleted={handleChatDeleted} onConversationUpdated={handleChatUpdated} />
