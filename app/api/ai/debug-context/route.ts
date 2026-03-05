@@ -28,7 +28,6 @@ export async function GET() {
   let clientsQuery = supabase
     .from("app_clients")
     .select("id_client, name_client, information_industry")
-    .is("date_deleted", null)
     .order("name_client")
     .limit(30);
   if (allowedIds !== null) {

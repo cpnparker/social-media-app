@@ -175,11 +175,10 @@ export async function POST(
       const allowedIds = await getAllowedClientIds(userId, role);
       console.log("[AI Context] allowedIds:", allowedIds === null ? "null (unrestricted)" : allowedIds);
 
-      // Fetch accessible clients
+      // Fetch accessible clients (app_clients view has no date_deleted column)
       let clientsQuery = supabase
         .from("app_clients")
         .select("id_client, name_client, information_industry, information_description")
-        .is("date_deleted", null)
         .order("name_client")
         .limit(30);
       if (allowedIds !== null) {
