@@ -75,21 +75,48 @@ export async function POST(
       content: m.content,
     }));
 
-    // Build system prompt with optional content context (app_content is in Supabase)
-    let contentContext: { contentTitle?: string; contentType?: string; contentBrief?: string } | undefined;
+    // Build system prompt with content + customer context (app_content is in Supabase)
+    let contentContext: Parameters<typeof getAIWriterSystemPrompt>[0];
     if (conversation.contentObjectId) {
       const { data: co } = await supabase
         .from("app_content")
-        .select("title_content, type_content, description_content")
+        .select("name_content, type_content, document_body, information_brief, information_guidelines, information_audience, information_length, information_platform, information_notes, id_client, name_client, name_topic_array, name_campaign_array")
         .eq("id_content", conversation.contentObjectId)
         .single();
 
       if (co) {
         contentContext = {
-          contentTitle: co.title_content,
+          contentTitle: co.name_content,
           contentType: co.type_content,
-          contentBrief: co.description_content,
+          contentBody: co.document_body,
+          contentBrief: co.information_brief,
+          guidelines: co.information_guidelines,
+          audience: co.information_audience,
+          targetLength: co.information_length,
+          platform: co.information_platform,
+          notes: co.information_notes,
+          customerName: co.name_client,
+          topicTags: co.name_topic_array,
+          campaignTags: co.name_campaign_array,
         };
+
+        // Fetch linked social posts for this content
+        if (co.id_client) {
+          const { data: socialPosts } = await supabase
+            .from("social")
+            .select("name_social, network, type_post")
+            .eq("id_content", conversation.contentObjectId)
+            .is("date_deleted", null)
+            .limit(20);
+
+          if (socialPosts?.length) {
+            contentContext.linkedPosts = socialPosts.map((s) => ({
+              content: s.name_social,
+              platform: s.network,
+              type: s.type_post,
+            }));
+          }
+        }
       }
     }
 
