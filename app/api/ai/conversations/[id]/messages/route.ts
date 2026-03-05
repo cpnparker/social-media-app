@@ -5,8 +5,140 @@ import { aiConversations, aiMessages } from "@/lib/db/schema";
 import { eq, asc } from "drizzle-orm";
 import { supabase } from "@/lib/supabase";
 import { createStreamingResponse, type AIMessage } from "@/lib/ai/providers";
-import { getAIWriterSystemPrompt } from "@/lib/ai/system-prompts";
-import { getAllowedClientIds } from "@/lib/permissions";
+import { buildSystemPrompt } from "@/lib/ai/system-prompts";
+
+// ── Helper: fetch workspace-level config (content types + CU definitions) ──
+async function fetchWorkspaceConfig() {
+  const [typesRes, cuRes] = await Promise.all([
+    supabase
+      .from("types_content")
+      .select("id_type, key_type, type_content, flag_active, ai_prompt")
+      .eq("flag_active", 1),
+    supabase
+      .from("calculator_content")
+      .select("name, format, units_content")
+      .order("sort_order"),
+  ]);
+
+  return {
+    contentTypes: (typesRes.data || []).map((t) => ({
+      key: t.key_type,
+      name: t.type_content,
+      aiPrompt: t.ai_prompt,
+    })),
+    cuDefinitions: (cuRes.data || []).map((c) => ({
+      format: c.name,
+      category: c.format,
+      units: c.units_content,
+    })),
+  };
+}
+
+// ── Helper: fetch client context (compact summary) ──
+async function fetchClientContext(clientId: number) {
+  const [clientRes, contractsRes, contentRes, socialRes] = await Promise.all([
+    supabase
+      .from("app_clients")
+      .select("id_client, name_client, information_industry, information_description")
+      .eq("id_client", clientId)
+      .single(),
+    supabase
+      .from("app_contracts")
+      .select("name_contract, units_contract, units_total_completed, flag_active, date_start, date_end, information_notes")
+      .eq("id_client", clientId)
+      .is("date_deleted", null)
+      .order("flag_active", { ascending: false }),
+    supabase
+      .from("app_content")
+      .select("name_content, type_content, flag_completed, flag_spiked, units_content")
+      .eq("id_client", clientId)
+      .is("date_deleted", null)
+      .order("date_created", { ascending: false })
+      .limit(30),
+    supabase
+      .from("social")
+      .select("network")
+      .eq("id_client", clientId)
+      .is("date_deleted", null),
+  ]);
+
+  const client = clientRes.data;
+  if (!client) return null;
+
+  // Summarize content pipeline into counts
+  const content = contentRes.data || [];
+  const published = content.filter((c) => c.flag_completed === 1);
+  const inProduction = content.filter((c) => c.flag_completed !== 1 && c.flag_spiked !== 1);
+
+  // Summarize social platforms used
+  const social = socialRes.data || [];
+  const platformCounts: Record<string, number> = {};
+  social.forEach((s) => {
+    if (s.network) platformCounts[s.network] = (platformCounts[s.network] || 0) + 1;
+  });
+
+  // Content type breakdown
+  const typeBreakdown: Record<string, { total: number; published: number; inProd: number }> = {};
+  content.forEach((c) => {
+    const t = c.type_content || "other";
+    if (!typeBreakdown[t]) typeBreakdown[t] = { total: 0, published: 0, inProd: 0 };
+    typeBreakdown[t].total++;
+    if (c.flag_completed === 1) typeBreakdown[t].published++;
+    else if (c.flag_spiked !== 1) typeBreakdown[t].inProd++;
+  });
+
+  return {
+    name: client.name_client,
+    industry: client.information_industry,
+    description: client.information_description,
+    contracts: (contractsRes.data || []).map((c) => ({
+      name: c.name_contract,
+      totalUnits: c.units_contract,
+      completedUnits: c.units_total_completed,
+      active: c.flag_active === 1,
+      startDate: c.date_start,
+      endDate: c.date_end,
+      notes: c.information_notes,
+    })),
+    contentSummary: {
+      total: content.length,
+      published: published.length,
+      inProduction: inProduction.length,
+      totalCU: content.reduce((sum, c) => sum + (c.units_content || 0), 0),
+      byType: typeBreakdown,
+      recentTitles: inProduction.slice(0, 8).map((c) => `${c.name_content} (${c.type_content})`),
+    },
+    socialPlatforms: platformCounts,
+  };
+}
+
+// ── Helper: fetch content-object level detail ──
+async function fetchContentDetail(contentObjectId: number) {
+  const { data: co } = await supabase
+    .from("app_content")
+    .select("name_content, type_content, document_body, information_brief, information_guidelines, information_audience, information_length, information_platform, information_notes, id_client, name_client, id_contract, name_topic_array, name_campaign_array")
+    .eq("id_content", contentObjectId)
+    .single();
+
+  if (!co) return null;
+
+  return {
+    title: co.name_content,
+    type: co.type_content,
+    body: co.document_body,
+    brief: co.information_brief,
+    guidelines: co.information_guidelines,
+    audience: co.information_audience,
+    targetLength: co.information_length,
+    platform: co.information_platform,
+    notes: co.information_notes,
+    clientId: co.id_client,
+    clientName: co.name_client,
+    contractId: co.id_contract,
+    topicTags: co.name_topic_array,
+    campaignTags: co.name_campaign_array,
+  };
+}
 
 // POST /api/ai/conversations/[id]/messages — send message & stream response
 export async function POST(
@@ -64,249 +196,42 @@ export async function POST(
       createdBy: userId,
     });
 
-    // Load full conversation history
-    const history = await db
-      .select({ role: aiMessages.role, content: aiMessages.content })
-      .from(aiMessages)
-      .where(eq(aiMessages.conversationId, conversationId))
-      .orderBy(asc(aiMessages.createdAt));
+    // Load conversation history + workspace config in parallel
+    const [history, workspaceConfig] = await Promise.all([
+      db
+        .select({ role: aiMessages.role, content: aiMessages.content })
+        .from(aiMessages)
+        .where(eq(aiMessages.conversationId, conversationId))
+        .orderBy(asc(aiMessages.createdAt)),
+      fetchWorkspaceConfig(),
+    ]);
 
     const messages: AIMessage[] = history.map((m) => ({
       role: m.role as "user" | "assistant" | "system",
       content: m.content,
     }));
 
-    // Build system prompt with content + customer context (app_content is in Supabase)
-    let contentContext: Parameters<typeof getAIWriterSystemPrompt>[0];
+    // Build context based on conversation scope
+    let clientContext: Awaited<ReturnType<typeof fetchClientContext>> = null;
+    let contentDetail: Awaited<ReturnType<typeof fetchContentDetail>> = null;
+
     if (conversation.contentObjectId) {
-      const { data: co } = await supabase
-        .from("app_content")
-        .select("name_content, type_content, document_body, information_brief, information_guidelines, information_audience, information_length, information_platform, information_notes, id_client, name_client, id_contract, name_contract, name_topic_array, name_campaign_array")
-        .eq("id_content", conversation.contentObjectId)
-        .single();
-
-      if (co) {
-        contentContext = {
-          contentTitle: co.name_content,
-          contentType: co.type_content,
-          contentBody: co.document_body,
-          contentBrief: co.information_brief,
-          guidelines: co.information_guidelines,
-          audience: co.information_audience,
-          targetLength: co.information_length,
-          platform: co.information_platform,
-          notes: co.information_notes,
-          customerName: co.name_client,
-          topicTags: co.name_topic_array,
-          campaignTags: co.name_campaign_array,
-        };
-
-        // Fetch linked social posts for this content
-        const { data: socialPosts } = await supabase
-          .from("social")
-          .select("name_social, network, type_post")
-          .eq("id_content", conversation.contentObjectId)
-          .is("date_deleted", null)
-          .limit(20);
-
-        if (socialPosts?.length) {
-          contentContext.linkedPosts = socialPosts.map((s) => ({
-            content: s.name_social,
-            platform: s.network,
-            type: s.type_post,
-          }));
-        }
-
-        // Fetch contract details if linked
-        if (co.id_contract) {
-          const { data: contract } = await supabase
-            .from("app_contracts")
-            .select("id_contract, name_contract, units_contract, units_total_completed, flag_active, date_start, date_end, information_notes")
-            .eq("id_contract", co.id_contract)
-            .single();
-
-          if (contract) {
-            contentContext.contract = {
-              name: contract.name_contract,
-              totalUnits: contract.units_contract,
-              completedUnits: contract.units_total_completed,
-              active: contract.flag_active === 1,
-              startDate: contract.date_start,
-              endDate: contract.date_end,
-              notes: contract.information_notes,
-            };
-          }
-        }
-
-        // Fetch all content for this client (pipeline overview)
-        if (co.id_client) {
-          const { data: clientContent } = await supabase
-            .from("app_content")
-            .select("id_content, name_content, type_content, flag_completed, flag_spiked, date_completed, units_content")
-            .eq("id_client", co.id_client)
-            .is("date_deleted", null)
-            .order("date_created", { ascending: false })
-            .limit(50);
-
-          if (clientContent?.length) {
-            contentContext.clientContentPipeline = clientContent.map((c) => ({
-              id: c.id_content,
-              title: c.name_content,
-              type: c.type_content,
-              status: c.flag_completed === 1 ? "published" : c.flag_spiked === 1 ? "spiked" : "in production",
-              completedAt: c.date_completed,
-              units: c.units_content,
-              isCurrent: c.id_content === conversation.contentObjectId,
-            }));
-          }
-        }
+      // Content-specific conversation — fetch content detail + client context
+      contentDetail = await fetchContentDetail(conversation.contentObjectId);
+      if (contentDetail?.clientId) {
+        clientContext = await fetchClientContext(contentDetail.clientId);
       }
     } else if (conversation.customerId) {
-      // Standalone AI Writer scoped to a specific client
-      const { data: client } = await supabase
-        .from("app_clients")
-        .select("id_client, name_client, information_industry, information_description")
-        .eq("id_client", conversation.customerId)
-        .single();
-
-      if (client) {
-        contentContext = {
-          customerName: client.name_client,
-        };
-
-        // Fetch active contracts for this client
-        const { data: contracts } = await supabase
-          .from("app_contracts")
-          .select("id_contract, name_contract, units_contract, units_total_completed, flag_active, date_start, date_end, information_notes")
-          .eq("id_client", client.id_client)
-          .eq("flag_active", 1)
-          .is("date_deleted", null)
-          .limit(10);
-
-        if (contracts?.length) {
-          // Use the first active contract as the primary
-          const c = contracts[0];
-          contentContext.contract = {
-            name: c.name_contract,
-            totalUnits: c.units_contract,
-            completedUnits: c.units_total_completed,
-            active: c.flag_active === 1,
-            startDate: c.date_start,
-            endDate: c.date_end,
-            notes: c.information_notes,
-          };
-        }
-
-        // Fetch all content for this client
-        const { data: clientContent } = await supabase
-          .from("app_content")
-          .select("id_content, name_content, type_content, flag_completed, flag_spiked, date_completed, units_content")
-          .eq("id_client", client.id_client)
-          .is("date_deleted", null)
-          .order("date_created", { ascending: false })
-          .limit(50);
-
-        if (clientContent?.length) {
-          contentContext.clientContentPipeline = clientContent.map((c) => ({
-            id: c.id_content,
-            title: c.name_content,
-            type: c.type_content,
-            status: c.flag_completed === 1 ? "published" : c.flag_spiked === 1 ? "spiked" : "in production",
-            completedAt: c.date_completed,
-            units: c.units_content,
-            isCurrent: false,
-          }));
-        }
-
-        // Fetch social posts for this client
-        const { data: socialPosts } = await supabase
-          .from("social")
-          .select("name_social, network, type_post")
-          .eq("id_client", client.id_client)
-          .is("date_deleted", null)
-          .order("date_created", { ascending: false })
-          .limit(20);
-
-        if (socialPosts?.length) {
-          contentContext.linkedPosts = socialPosts.map((s) => ({
-            content: s.name_social,
-            platform: s.network,
-            type: s.type_post,
-          }));
-        }
-      }
-    } else {
-      // Standalone AI Writer with no client selected — workspace overview
-      const { data: dbUser } = await supabase
-        .from("users")
-        .select("role_user")
-        .eq("id_user", userId)
-        .is("date_deleted", null)
-        .single();
-      const role = dbUser?.role_user || "none";
-      const allowedIds = await getAllowedClientIds(userId, role);
-
-      // Fetch accessible clients (app_clients view has no date_deleted column)
-      let clientsQuery = supabase
-        .from("app_clients")
-        .select("id_client, name_client, information_industry, information_description")
-        .order("name_client")
-        .limit(30);
-      if (allowedIds !== null) {
-        clientsQuery = clientsQuery.in("id_client", allowedIds.length ? allowedIds : [-1]);
-      }
-      const { data: clients } = await clientsQuery;
-
-      if (clients?.length) {
-        const clientIds = clients.map((c) => c.id_client);
-
-        const { data: contracts } = await supabase
-          .from("app_contracts")
-          .select("id_contract, name_contract, id_client, name_client, units_contract, units_total_completed, flag_active, date_start, date_end")
-          .in("id_client", clientIds)
-          .eq("flag_active", 1)
-          .is("date_deleted", null)
-          .limit(30);
-
-        const { data: recentContent } = await supabase
-          .from("app_content")
-          .select("id_content, name_content, type_content, flag_completed, flag_spiked, id_client, name_client, units_content, date_completed")
-          .in("id_client", clientIds)
-          .is("date_deleted", null)
-          .order("date_created", { ascending: false })
-          .limit(50);
-
-        contentContext = {
-          workspaceClients: clients.map((c) => ({
-            id: c.id_client,
-            name: c.name_client,
-            industry: c.information_industry,
-            description: c.information_description,
-          })),
-          workspaceContracts: (contracts || []).map((c) => ({
-            name: c.name_contract,
-            clientName: c.name_client,
-            totalUnits: c.units_contract,
-            completedUnits: c.units_total_completed,
-            active: c.flag_active === 1,
-            startDate: c.date_start,
-            endDate: c.date_end,
-          })),
-          workspaceContentPipeline: (recentContent || []).map((c) => ({
-            title: c.name_content,
-            type: c.type_content,
-            clientName: c.name_client,
-            status: c.flag_completed === 1 ? "published" : c.flag_spiked === 1 ? "spiked" : "in production",
-            completedAt: c.date_completed,
-            units: c.units_content,
-          })),
-        };
-      }
+      // Client-scoped standalone conversation
+      clientContext = await fetchClientContext(conversation.customerId);
     }
 
-    console.log("[AI Context] Final context keys:", contentContext ? Object.keys(contentContext) : "undefined");
+    const systemPrompt = buildSystemPrompt({
+      workspaceConfig,
+      clientContext,
+      contentDetail,
+    });
 
-    const systemPrompt = getAIWriterSystemPrompt(contentContext);
     const model = body.model || conversation.model;
 
     // Auto-title: if this is the first user message, set conversation title
@@ -327,15 +252,12 @@ export async function POST(
       messages,
       { model, systemPrompt },
       async (fullText: string) => {
-        // Save assistant message after stream completes
         await db.insert(aiMessages).values({
           conversationId,
           role: "assistant",
           content: fullText,
           model: model,
         });
-
-        // Update conversation timestamp
         await db
           .update(aiConversations)
           .set({ updatedAt: new Date() })

@@ -142,7 +142,7 @@ export default function AIWriterPage() {
             <div className="h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-6">
               <Sparkles className="h-8 w-8 text-primary" />
             </div>
-            <h2 className="text-xl font-semibold mb-2">AI Writer</h2>
+            <h2 className="text-xl font-semibold mb-2">EngineGPT</h2>
             <p className="text-sm text-muted-foreground max-w-md mb-6">
               Your AI-powered content assistant. Start a conversation to
               brainstorm ideas, draft content, refine messaging, and more.
