@@ -43,10 +43,10 @@ export default function ContentChatSelector({
   }
 
   return (
-    <div className="px-4 py-3 border-b bg-muted/30 space-y-2">
+    <div className="px-3 md:px-4 py-3 border-b bg-muted/30 space-y-2">
       {/* Private chats row */}
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1 shrink-0 w-14">
+        <span className="text-xs md:text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1 shrink-0 w-auto md:w-14">
           <Lock className="h-3 w-3" /> Mine
         </span>
         {privateChats.map((c) => (
@@ -54,7 +54,7 @@ export default function ContentChatSelector({
             key={c.id}
             onClick={() => onSelect(c.id)}
             className={cn(
-              "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs transition-all max-w-[180px]",
+              "flex items-center gap-1.5 px-3 md:px-2.5 py-1.5 md:py-1 rounded-full text-sm md:text-xs transition-all max-w-[200px] md:max-w-[180px]",
               selectedId === c.id
                 ? "bg-primary text-primary-foreground shadow-sm"
                 : "bg-background border hover:bg-muted"
@@ -68,7 +68,7 @@ export default function ContentChatSelector({
             </span>
             <span
               className={cn(
-                "text-[10px] shrink-0",
+                "text-xs md:text-[10px] shrink-0",
                 selectedId === c.id
                   ? "text-primary-foreground/70"
                   : "text-muted-foreground"
@@ -82,15 +82,15 @@ export default function ContentChatSelector({
           variant="ghost"
           size="sm"
           onClick={() => onNewConversation("private")}
-          className="h-6 px-2 text-[10px] gap-1 text-muted-foreground hover:text-foreground"
+          className="h-8 md:h-6 px-3 md:px-2 text-xs md:text-[10px] gap-1 text-muted-foreground hover:text-foreground"
         >
-          <Plus className="h-3 w-3" /> Private
+          <Plus className="h-3.5 md:h-3 w-3.5 md:w-3" /> Private
         </Button>
       </div>
 
       {/* Team chats row */}
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1 shrink-0 w-14">
+        <span className="text-xs md:text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1 shrink-0 w-auto md:w-14">
           <Users className="h-3 w-3" /> Team
         </span>
         {teamChats.map((c) => (
@@ -98,7 +98,7 @@ export default function ContentChatSelector({
             key={c.id}
             onClick={() => onSelect(c.id)}
             className={cn(
-              "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs transition-all max-w-[180px]",
+              "flex items-center gap-1.5 px-3 md:px-2.5 py-1.5 md:py-1 rounded-full text-sm md:text-xs transition-all max-w-[200px] md:max-w-[180px]",
               selectedId === c.id
                 ? "bg-primary text-primary-foreground shadow-sm"
                 : "bg-background border hover:bg-muted"
@@ -112,7 +112,7 @@ export default function ContentChatSelector({
             </span>
             <span
               className={cn(
-                "text-[10px] shrink-0",
+                "text-xs md:text-[10px] shrink-0",
                 selectedId === c.id
                   ? "text-primary-foreground/70"
                   : "text-muted-foreground"
@@ -126,9 +126,9 @@ export default function ContentChatSelector({
           variant="ghost"
           size="sm"
           onClick={() => onNewConversation("team")}
-          className="h-6 px-2 text-[10px] gap-1 text-muted-foreground hover:text-foreground"
+          className="h-8 md:h-6 px-3 md:px-2 text-xs md:text-[10px] gap-1 text-muted-foreground hover:text-foreground"
         >
-          <Plus className="h-3 w-3" /> Team
+          <Plus className="h-3.5 md:h-3 w-3.5 md:w-3" /> Team
         </Button>
       </div>
 

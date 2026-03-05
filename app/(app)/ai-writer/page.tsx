@@ -6,6 +6,7 @@ import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 import ConversationList from "@/components/ai-writer/ConversationList";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
 import type { AIConversation } from "@/lib/types/ai";
@@ -117,8 +118,13 @@ export default function AIWriterPage() {
 
   return (
     <div className="flex h-[calc(100vh-57px)] -m-4 sm:-m-6">
-      {/* Left panel — Conversation list */}
-      <div className="w-80 border-r flex flex-col bg-background shrink-0">
+      {/* Left panel — Conversation list (full-width on mobile, sidebar on desktop) */}
+      <div
+        className={cn(
+          "w-full md:w-80 border-r flex flex-col bg-background md:shrink-0",
+          selectedId ? "hidden md:flex" : "flex"
+        )}
+      >
         <ConversationList
           conversations={conversations}
           selectedId={selectedId}
@@ -128,17 +134,23 @@ export default function AIWriterPage() {
         />
       </div>
 
-      {/* Right panel — Chat or empty state */}
-      <div className="flex-1 flex flex-col min-w-0">
+      {/* Right panel — Chat or empty state (hidden on mobile when no chat selected) */}
+      <div
+        className={cn(
+          "flex-1 flex flex-col min-w-0",
+          selectedId ? "flex" : "hidden md:flex"
+        )}
+      >
         {selectedId ? (
           <ChatPanel
             key={selectedId}
             conversationId={selectedId}
             onConversationDeleted={handleConversationDeleted}
             onConversationUpdated={handleConversationUpdated}
+            onBack={() => setSelectedId(null)}
           />
         ) : (
-          <div className="flex flex-col items-center justify-center h-full px-8 text-center">
+          <div className="flex flex-col items-center justify-center h-full px-4 sm:px-8 text-center">
             <div className="h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-6">
               <Sparkles className="h-8 w-8 text-primary" />
             </div>
@@ -147,7 +159,7 @@ export default function AIWriterPage() {
               Your AI-powered content assistant. Start a conversation to
               brainstorm ideas, draft content, refine messaging, and more.
             </p>
-            <div className="flex gap-3">
+            <div className="flex flex-col sm:flex-row gap-3">
               <button
                 onClick={() => handleNewConversation("private")}
                 className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"

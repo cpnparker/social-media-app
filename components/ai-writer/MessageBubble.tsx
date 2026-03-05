@@ -21,7 +21,7 @@ export default function MessageBubble({
   return (
     <div
       className={cn(
-        "flex gap-3 px-4 py-3",
+        "flex gap-2 md:gap-3 px-3 md:px-4 py-3",
         isUser ? "justify-end" : "justify-start"
       )}
     >
@@ -32,7 +32,7 @@ export default function MessageBubble({
       )}
       <div
         className={cn(
-          "max-w-[80%] rounded-xl px-4 py-2.5 text-sm leading-relaxed",
+          "max-w-[90%] md:max-w-[80%] rounded-xl px-4 py-2.5 text-sm leading-relaxed",
           isUser
             ? "bg-primary text-primary-foreground"
             : "bg-muted"
@@ -52,7 +52,7 @@ export default function MessageBubble({
           <span className="inline-block w-1.5 h-4 bg-foreground/60 animate-pulse ml-0.5 rounded-sm" />
         )}
         {!isUser && model && !isStreaming && (
-          <p className="text-[10px] text-muted-foreground mt-1.5 opacity-60">
+          <p className="text-xs md:text-[10px] text-muted-foreground mt-1.5 opacity-60">
             {model.includes("grok") ? "Grok" : "Claude"}
           </p>
         )}

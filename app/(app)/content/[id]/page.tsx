@@ -771,9 +771,9 @@ export default function ContentDetailPage() {
 
         {/* ── TAB 3: EngineGPT (full-width two-panel layout) ── */}
         <TabsContent value="ai-writer" className="mt-0">
-          <div className="flex gap-4" style={{ height: "calc(100vh - 200px)", minHeight: "600px" }}>
+          <div className="flex flex-col md:flex-row gap-4" style={{ height: "calc(100vh - 200px)", minHeight: "600px" }}>
             {/* LEFT: AI Tools */}
-            <Card className="border-0 shadow-sm overflow-hidden flex flex-col w-[420px] shrink-0">
+            <Card className="border-0 shadow-sm overflow-hidden flex flex-col w-full md:w-[420px] shrink-0 max-h-[50vh] md:max-h-none">
               <div className="border-b bg-muted/30 px-3 py-2">
                 <div className="flex gap-0.5 p-0.5 bg-muted/60 rounded-lg">
                   {([
@@ -783,7 +783,7 @@ export default function ContentDetailPage() {
                     { key: "generate" as const, icon: Sparkles, label: "Generate" },
                   ]).map((tool) => (
                     <button key={tool.key} onClick={() => setActiveTool(tool.key)}
-                      className={cn("flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-medium transition-all",
+                      className={cn("flex-1 flex items-center justify-center gap-1.5 px-2 py-2 md:py-1.5 rounded-md text-xs md:text-[11px] font-medium transition-all",
                         activeTool === tool.key ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground")}>
                       <tool.icon className="h-3 w-3" />{tool.label}
                     </button>
@@ -807,17 +807,17 @@ export default function ContentDetailPage() {
               </div>
             </Card>
             {/* RIGHT: AI Chat */}
-            <Card className="border-0 shadow-sm overflow-hidden flex flex-col flex-1 min-w-0">
+            <Card className="border-0 shadow-sm overflow-hidden flex flex-col flex-1 min-w-0 min-h-[300px] md:min-h-0">
               <ContentChatSelector conversations={chatConversations} selectedId={selectedChatId} onSelect={setSelectedChatId} onNewConversation={handleNewContentChat} loading={chatLoading} />
               <div className="flex-1 min-h-0">
                 {selectedChatId ? (
                   <ChatPanel key={selectedChatId} conversationId={selectedChatId} onConversationDeleted={handleChatDeleted} onConversationUpdated={handleChatUpdated} />
                 ) : (
-                  <div className="flex flex-col items-center justify-center h-full px-8 text-center">
+                  <div className="flex flex-col items-center justify-center h-full px-4 sm:px-8 text-center">
                     <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center mb-4"><MessageSquare className="h-6 w-6 text-primary" /></div>
                     <h3 className="text-sm font-semibold mb-1">Chat with AI</h3>
                     <p className="text-xs text-muted-foreground max-w-sm mb-4">Start a conversation about this content piece. The AI has context about your brief, research, and drafts.</p>
-                    <div className="flex gap-2">
+                    <div className="flex flex-col sm:flex-row gap-2">
                       <Button size="sm" onClick={() => handleNewContentChat("private")} className="gap-1.5 text-xs"><Plus className="h-3 w-3" /> Private Chat</Button>
                       <Button size="sm" variant="outline" onClick={() => handleNewContentChat("team")} className="gap-1.5 text-xs"><Plus className="h-3 w-3" /> Team Chat</Button>
                     </div>

@@ -9,6 +9,7 @@ import {
   Pencil,
   Globe,
   ChevronDown,
+  ArrowLeft,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,12 +29,14 @@ interface ChatPanelProps {
   conversationId: string;
   onConversationDeleted?: () => void;
   onConversationUpdated?: (conv: AIConversation) => void;
+  onBack?: () => void;
 }
 
 export default function ChatPanel({
   conversationId,
   onConversationDeleted,
   onConversationUpdated,
+  onBack,
 }: ChatPanelProps) {
   const [conversation, setConversation] = useState<AIConversation | null>(null);
   const [messages, setMessages] = useState<AIMessageRow[]>([]);
@@ -231,7 +234,15 @@ export default function ChatPanel({
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="border-b px-4 py-2.5 flex items-center gap-3 shrink-0">
+      <div className="border-b px-3 md:px-4 py-2.5 flex items-center gap-2 md:gap-3 shrink-0">
+        {onBack && (
+          <button
+            onClick={onBack}
+            className="md:hidden shrink-0 h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+        )}
         <div className="flex-1 min-w-0">
           {editingTitle ? (
             <input
@@ -259,7 +270,7 @@ export default function ChatPanel({
           <div className="flex items-center gap-2 mt-0.5">
             <Badge
               variant="outline"
-              className="text-[10px] px-1.5 py-0 h-4 gap-1"
+              className="text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4 gap-1"
             >
               {conversation.visibility === "private" ? (
                 <Lock className="h-2.5 w-2.5" />
@@ -270,7 +281,7 @@ export default function ChatPanel({
             </Badge>
             <Badge
               variant="outline"
-              className="text-[10px] px-1.5 py-0 h-4"
+              className="text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4"
             >
               {modelLabel}
             </Badge>
@@ -279,7 +290,7 @@ export default function ChatPanel({
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8">
+            <Button variant="ghost" size="icon" className="h-9 w-9 md:h-8 md:w-8">
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
@@ -321,7 +332,7 @@ export default function ChatPanel({
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
         {messages.length === 0 && !isStreaming ? (
-          <div className="flex flex-col items-center justify-center h-full px-8 text-center">
+          <div className="flex flex-col items-center justify-center h-full px-4 sm:px-8 text-center">
             <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
               <span className="text-2xl">✨</span>
             </div>

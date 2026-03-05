@@ -46,7 +46,7 @@ export default function ChatInput({
   };
 
   return (
-    <div className="border-t bg-background p-3">
+    <div className="border-t bg-background p-2 sm:p-3">
       <div className="flex items-end gap-2 max-w-4xl mx-auto">
         <div className="flex-1 relative">
           <textarea
@@ -58,14 +58,14 @@ export default function ChatInput({
             disabled={disabled}
             rows={1}
             className="w-full resize-none rounded-lg border bg-background px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring placeholder:text-muted-foreground disabled:opacity-50"
-            style={{ minHeight: "42px", maxHeight: "200px" }}
+            style={{ minHeight: "44px", maxHeight: "200px" }}
           />
         </div>
         <Button
           size="icon"
           onClick={handleSubmit}
           disabled={disabled || !value.trim()}
-          className="shrink-0 h-[42px] w-[42px]"
+          className="shrink-0 h-11 w-11"
         >
           {disabled ? (
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -74,7 +74,7 @@ export default function ChatInput({
           )}
         </Button>
       </div>
-      <p className="text-[10px] text-muted-foreground text-center mt-1.5">
+      <p className="text-xs md:text-[10px] text-muted-foreground text-center mt-1.5 hidden sm:block">
         Press Enter to send, Shift+Enter for new line
       </p>
     </div>
