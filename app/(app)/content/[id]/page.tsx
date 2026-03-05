@@ -384,6 +384,7 @@ export default function ContentDetailPage() {
           workspaceId,
           visibility,
           contentObjectId: parseInt(contentId, 10),
+          customerId: obj?.customerId || undefined,
         }),
       });
       if (!res.ok) {

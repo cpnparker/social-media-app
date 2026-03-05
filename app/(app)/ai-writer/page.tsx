@@ -21,14 +21,16 @@ export default function AIWriterPage() {
   );
   const [loading, setLoading] = useState(true);
 
+  const customerId = searchParams.get("customerId");
+
   // Fetch conversations
   const fetchConversations = useCallback(async () => {
     if (!workspaceId) return;
     setLoading(true);
     try {
-      const res = await fetch(
-        `/api/ai/conversations?workspaceId=${workspaceId}`
-      );
+      let url = `/api/ai/conversations?workspaceId=${workspaceId}`;
+      if (customerId) url += `&customerId=${customerId}`;
+      const res = await fetch(url);
       if (!res.ok) return;
       const data = await res.json();
       setConversations(data.conversations || []);
@@ -37,7 +39,7 @@ export default function AIWriterPage() {
     } finally {
       setLoading(false);
     }
-  }, [workspaceId]);
+  }, [workspaceId, customerId]);
 
   useEffect(() => {
     fetchConversations();
@@ -67,6 +69,7 @@ export default function AIWriterPage() {
     }
     try {
       const contentObjectId = searchParams.get("contentObjectId");
+      const customerId = searchParams.get("customerId");
       const res = await fetch("/api/ai/conversations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -74,6 +77,7 @@ export default function AIWriterPage() {
           workspaceId,
           visibility,
           contentObjectId: contentObjectId || undefined,
+          customerId: customerId || undefined,
         }),
       });
       if (!res.ok) {

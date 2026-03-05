@@ -161,19 +161,90 @@ export async function POST(
           }
         }
       }
+    } else if (conversation.customerId) {
+      // Standalone AI Writer scoped to a specific client
+      const { data: client } = await supabase
+        .from("app_clients")
+        .select("id_client, name_client, information_industry, information_description")
+        .eq("id_client", conversation.customerId)
+        .single();
+
+      if (client) {
+        contentContext = {
+          customerName: client.name_client,
+        };
+
+        // Fetch active contracts for this client
+        const { data: contracts } = await supabase
+          .from("app_contracts")
+          .select("id_contract, name_contract, units_contract, units_total_completed, flag_active, date_start, date_end, information_notes")
+          .eq("id_client", client.id_client)
+          .eq("flag_active", 1)
+          .is("date_deleted", null)
+          .limit(10);
+
+        if (contracts?.length) {
+          // Use the first active contract as the primary
+          const c = contracts[0];
+          contentContext.contract = {
+            name: c.name_contract,
+            totalUnits: c.units_contract,
+            completedUnits: c.units_total_completed,
+            active: c.flag_active === 1,
+            startDate: c.date_start,
+            endDate: c.date_end,
+            notes: c.information_notes,
+          };
+        }
+
+        // Fetch all content for this client
+        const { data: clientContent } = await supabase
+          .from("app_content")
+          .select("id_content, name_content, type_content, flag_completed, flag_spiked, date_completed, units_content")
+          .eq("id_client", client.id_client)
+          .is("date_deleted", null)
+          .order("date_created", { ascending: false })
+          .limit(50);
+
+        if (clientContent?.length) {
+          contentContext.clientContentPipeline = clientContent.map((c) => ({
+            id: c.id_content,
+            title: c.name_content,
+            type: c.type_content,
+            status: c.flag_completed === 1 ? "published" : c.flag_spiked === 1 ? "spiked" : "in production",
+            completedAt: c.date_completed,
+            units: c.units_content,
+            isCurrent: false,
+          }));
+        }
+
+        // Fetch social posts for this client
+        const { data: socialPosts } = await supabase
+          .from("social")
+          .select("name_social, network, type_post")
+          .eq("id_client", client.id_client)
+          .is("date_deleted", null)
+          .order("date_created", { ascending: false })
+          .limit(20);
+
+        if (socialPosts?.length) {
+          contentContext.linkedPosts = socialPosts.map((s) => ({
+            content: s.name_social,
+            platform: s.network,
+            type: s.type_post,
+          }));
+        }
+      }
     } else {
-      // Standalone AI Writer — provide workspace-level context (all clients, contracts, content)
-      const { data: dbUser, error: userErr } = await supabase
+      // Standalone AI Writer with no client selected — workspace overview
+      const { data: dbUser } = await supabase
         .from("users")
         .select("role_user")
         .eq("id_user", userId)
         .is("date_deleted", null)
         .single();
       const role = dbUser?.role_user || "none";
-      console.log("[AI Context]", { userId, role, userErr: userErr?.message });
-
       const allowedIds = await getAllowedClientIds(userId, role);
-      console.log("[AI Context] allowedIds:", allowedIds === null ? "null (unrestricted)" : allowedIds);
 
       // Fetch accessible clients (app_clients view has no date_deleted column)
       let clientsQuery = supabase
@@ -184,31 +255,26 @@ export async function POST(
       if (allowedIds !== null) {
         clientsQuery = clientsQuery.in("id_client", allowedIds.length ? allowedIds : [-1]);
       }
-      const { data: clients, error: clientsErr } = await clientsQuery;
-      console.log("[AI Context] clients:", clients?.length ?? 0, "error:", clientsErr?.message);
+      const { data: clients } = await clientsQuery;
 
       if (clients?.length) {
         const clientIds = clients.map((c) => c.id_client);
 
-        // Fetch active contracts for these clients
-        const { data: contracts, error: contractsErr } = await supabase
+        const { data: contracts } = await supabase
           .from("app_contracts")
           .select("id_contract, name_contract, id_client, name_client, units_contract, units_total_completed, flag_active, date_start, date_end")
           .in("id_client", clientIds)
           .eq("flag_active", 1)
           .is("date_deleted", null)
           .limit(30);
-        console.log("[AI Context] contracts:", contracts?.length ?? 0, "error:", contractsErr?.message);
 
-        // Fetch recent content across all accessible clients
-        const { data: recentContent, error: contentErr } = await supabase
+        const { data: recentContent } = await supabase
           .from("app_content")
           .select("id_content, name_content, type_content, flag_completed, flag_spiked, id_client, name_client, units_content, date_completed")
           .in("id_client", clientIds)
           .is("date_deleted", null)
           .order("date_created", { ascending: false })
           .limit(50);
-        console.log("[AI Context] recentContent:", recentContent?.length ?? 0, "error:", contentErr?.message);
 
         contentContext = {
           workspaceClients: clients.map((c) => ({
@@ -235,8 +301,6 @@ export async function POST(
             units: c.units_content,
           })),
         };
-      } else {
-        console.log("[AI Context] No clients found — contentContext stays undefined");
       }
     }
 

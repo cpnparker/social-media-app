@@ -595,6 +595,7 @@ export const aiConversations = pgTable("ai_conversations", {
   title: text("title").default("New Conversation").notNull(),
   visibility: text("visibility").default("private").notNull(),
   contentObjectId: integer("content_object_id"),
+  customerId: integer("customer_id"),
   model: text("model").default("claude-sonnet-4-20250514").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

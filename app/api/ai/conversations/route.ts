@@ -17,6 +17,7 @@ export async function GET(req: NextRequest) {
   const workspaceId = searchParams.get("workspaceId");
   const visibility = searchParams.get("visibility"); // 'private' | 'team' | null
   const contentObjectId = searchParams.get("contentObjectId");
+  const customerId = searchParams.get("customerId");
   const search = searchParams.get("search");
   const limit = parseInt(searchParams.get("limit") || "50", 10);
 
@@ -50,6 +51,10 @@ export async function GET(req: NextRequest) {
       conditions.push(eq(aiConversations.contentObjectId, parseInt(contentObjectId, 10)));
     }
 
+    if (customerId) {
+      conditions.push(eq(aiConversations.customerId, parseInt(customerId, 10)));
+    }
+
     if (search) {
       conditions.push(like(aiConversations.title, `%${search}%`));
     }
@@ -77,7 +82,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workspaceId, title, visibility, contentObjectId, model } = body;
+    const { workspaceId, title, visibility, contentObjectId, customerId, model } = body;
 
     if (!workspaceId) {
       return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
@@ -124,6 +129,9 @@ export async function POST(req: NextRequest) {
         visibility: visibility || "private",
         contentObjectId: contentObjectId
           ? parseInt(String(contentObjectId), 10)
+          : null,
+        customerId: customerId
+          ? parseInt(String(customerId), 10)
           : null,
         model: aiModel,
       })
