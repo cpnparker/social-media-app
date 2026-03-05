@@ -1,4 +1,5 @@
 export function getAIWriterSystemPrompt(context?: {
+  // Content-level context (when inside a specific content piece)
   contentTitle?: string;
   contentType?: string;
   contentBody?: string;
@@ -30,6 +31,30 @@ export function getAIWriterSystemPrompt(context?: {
     units?: number;
     isCurrent: boolean;
   }[];
+  // Workspace-level context (standalone AI Writer — all clients)
+  workspaceClients?: {
+    id: number;
+    name: string;
+    industry?: string;
+    description?: string;
+  }[];
+  workspaceContracts?: {
+    name: string;
+    clientName: string;
+    totalUnits: number;
+    completedUnits: number;
+    active: boolean;
+    startDate: string;
+    endDate: string;
+  }[];
+  workspaceContentPipeline?: {
+    title: string;
+    type: string;
+    clientName: string;
+    status: string;
+    completedAt?: string;
+    units?: number;
+  }[];
 }): string {
   let prompt = `You are an expert content strategist and writer working inside The Content Engine, a content management platform. You help users brainstorm ideas, draft content, refine messaging, and solve content challenges.
 
@@ -47,6 +72,7 @@ Guidelines:
 - Use markdown formatting for readability (headings, lists, bold, code blocks)
 - Keep responses focused and concise unless the user asks for detail`;
 
+  // ── Content-level context (inside a specific content piece) ──
   if (context?.contentTitle || context?.customerName) {
     prompt += `\n\n---\n## Current Context`;
 
@@ -143,6 +169,55 @@ Guidelines:
     }
 
     prompt += `\n\nYou have full context about this client, their contract, and their content pipeline. When the user asks about "this client" or "this content", use all the information above. You can reference what content has been published, what's in production, and how the contract is tracking. Focus your responses on helping with this specific content piece unless the user asks about something else.`;
+  }
+
+  // ── Workspace-level context (standalone AI Writer — all clients overview) ──
+  if (context?.workspaceClients?.length) {
+    prompt += `\n\n---\n## Your Workspace`;
+    prompt += `\nYou have access to the following clients and their data. When the user mentions a client by name, use the relevant information below.`;
+
+    prompt += `\n\n### Clients (${context.workspaceClients.length})`;
+    for (const client of context.workspaceClients) {
+      prompt += `\n- **${client.name}**`;
+      if (client.industry) prompt += ` — ${client.industry}`;
+      if (client.description) prompt += ` — ${client.description.slice(0, 150)}`;
+    }
+
+    if (context.workspaceContracts?.length) {
+      prompt += `\n\n### Active Contracts (${context.workspaceContracts.length})`;
+      for (const c of context.workspaceContracts) {
+        const remaining = (c.totalUnits || 0) - (c.completedUnits || 0);
+        prompt += `\n- **${c.clientName}** — ${c.name}: ${c.completedUnits || 0}/${c.totalUnits || 0} CU delivered (${remaining} remaining)`;
+        if (c.startDate || c.endDate) {
+          prompt += ` | ${c.startDate?.slice(0, 10) || "?"} → ${c.endDate?.slice(0, 10) || "ongoing"}`;
+        }
+      }
+    }
+
+    if (context.workspaceContentPipeline?.length) {
+      const pipeline = context.workspaceContentPipeline;
+      const inProd = pipeline.filter((c) => c.status === "in production");
+      const published = pipeline.filter((c) => c.status === "published");
+
+      prompt += `\n\n### Content Overview`;
+      prompt += `\n**Total:** ${pipeline.length} recent pieces | **In Production:** ${inProd.length} | **Published:** ${published.length}`;
+
+      if (inProd.length > 0) {
+        prompt += `\n\n**Currently In Production (${inProd.length}):**`;
+        for (const c of inProd.slice(0, 20)) {
+          prompt += `\n- [${c.clientName}] ${c.title} (${c.type})${c.units ? ` [${c.units} CU]` : ""}`;
+        }
+      }
+
+      if (published.length > 0) {
+        prompt += `\n\n**Recently Published (${Math.min(published.length, 15)} of ${published.length}):**`;
+        for (const c of published.slice(0, 15)) {
+          prompt += `\n- [${c.clientName}] ${c.title} (${c.type})${c.completedAt ? ` — ${c.completedAt.slice(0, 10)}` : ""}`;
+        }
+      }
+    }
+
+    prompt += `\n\nYou have full context about all clients in this workspace, their active contracts, and their content pipelines. When the user asks about a specific client, contract, or content piece, use the information above. You know what content has been published, what's in production, and how each contract is tracking.`;
   }
 
   return prompt;

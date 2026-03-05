@@ -6,6 +6,7 @@ import { eq, asc } from "drizzle-orm";
 import { supabase } from "@/lib/supabase";
 import { createStreamingResponse, type AIMessage } from "@/lib/ai/providers";
 import { getAIWriterSystemPrompt } from "@/lib/ai/system-prompts";
+import { getAllowedClientIds } from "@/lib/permissions";
 
 // POST /api/ai/conversations/[id]/messages — send message & stream response
 export async function POST(
@@ -159,6 +160,76 @@ export async function POST(
             }));
           }
         }
+      }
+    } else {
+      // Standalone AI Writer — provide workspace-level context (all clients, contracts, content)
+      const { data: dbUser } = await supabase
+        .from("users")
+        .select("role_user")
+        .eq("id_user", userId)
+        .is("date_deleted", null)
+        .single();
+      const role = dbUser?.role_user || "none";
+      const allowedIds = await getAllowedClientIds(userId, role);
+
+      // Fetch accessible clients
+      let clientsQuery = supabase
+        .from("app_clients")
+        .select("id_client, name_client, information_industry, information_description")
+        .is("date_deleted", null)
+        .order("name_client")
+        .limit(30);
+      if (allowedIds !== null) {
+        clientsQuery = clientsQuery.in("id_client", allowedIds.length ? allowedIds : [-1]);
+      }
+      const { data: clients } = await clientsQuery;
+
+      if (clients?.length) {
+        const clientIds = clients.map((c) => c.id_client);
+
+        // Fetch active contracts for these clients
+        const { data: contracts } = await supabase
+          .from("app_contracts")
+          .select("id_contract, name_contract, id_client, name_client, units_contract, units_total_completed, flag_active, date_start, date_end")
+          .in("id_client", clientIds)
+          .eq("flag_active", 1)
+          .is("date_deleted", null)
+          .limit(30);
+
+        // Fetch recent content across all accessible clients
+        const { data: recentContent } = await supabase
+          .from("app_content")
+          .select("id_content, name_content, type_content, flag_completed, flag_spiked, id_client, name_client, units_content, date_completed")
+          .in("id_client", clientIds)
+          .is("date_deleted", null)
+          .order("date_created", { ascending: false })
+          .limit(50);
+
+        contentContext = {
+          workspaceClients: clients.map((c) => ({
+            id: c.id_client,
+            name: c.name_client,
+            industry: c.information_industry,
+            description: c.information_description,
+          })),
+          workspaceContracts: (contracts || []).map((c) => ({
+            name: c.name_contract,
+            clientName: c.name_client,
+            totalUnits: c.units_contract,
+            completedUnits: c.units_total_completed,
+            active: c.flag_active === 1,
+            startDate: c.date_start,
+            endDate: c.date_end,
+          })),
+          workspaceContentPipeline: (recentContent || []).map((c) => ({
+            title: c.name_content,
+            type: c.type_content,
+            clientName: c.name_client,
+            status: c.flag_completed === 1 ? "published" : c.flag_spiked === 1 ? "spiked" : "in production",
+            completedAt: c.date_completed,
+            units: c.units_content,
+          })),
+        };
       }
     }
 
