@@ -34,6 +34,7 @@ import {
   CheckCircle,
   HelpCircle,
   BookOpen,
+  MessageSquare,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 import PromoDraftsSection from "@/components/content/PromoDraftsSection";
+import ChatPanel from "@/components/ai-writer/ChatPanel";
+import ContentChatSelector from "@/components/ai-writer/ContentChatSelector";
+import type { AIConversation } from "@/lib/types/ai";
 import {
   DndContext,
   closestCenter,
@@ -281,6 +285,11 @@ export default function ContentDetailPage() {
   const [aiDetectResult, setAiDetectResult] = useState<any>(null);
   const [aiDetectLoading, setAiDetectLoading] = useState(false);
 
+  // AI Chat — persistent conversations
+  const [chatConversations, setChatConversations] = useState<AIConversation[]>([]);
+  const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
+  const [chatLoading, setChatLoading] = useState(false);
+
   // DnD sensors
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -330,6 +339,62 @@ export default function ContentDetailPage() {
       .then((d) => setCanInsertToDoc(d.canInsert === true))
       .catch(() => setCanInsertToDoc(false));
   }, [obj?.body]);
+
+  // AI Chat — fetch conversations for this content object
+  const fetchContentChats = useCallback(async () => {
+    if (!obj?.workspaceId) return;
+    setChatLoading(true);
+    try {
+      const res = await fetch(
+        `/api/ai/conversations?workspaceId=${obj.workspaceId}&contentObjectId=${contentId}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setChatConversations(data.conversations || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch content chats:", err);
+    } finally {
+      setChatLoading(false);
+    }
+  }, [obj?.workspaceId, contentId]);
+
+  useEffect(() => {
+    if (activeTab === "ai-chat") fetchContentChats();
+  }, [activeTab, fetchContentChats]);
+
+  const handleNewContentChat = async (visibility: "private" | "team") => {
+    if (!obj?.workspaceId) return;
+    try {
+      const res = await fetch("/api/ai/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId: obj.workspaceId,
+          visibility,
+          contentObjectId: parseInt(contentId, 10),
+        }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const newConv = data.conversation;
+      setChatConversations((prev) => [newConv, ...prev]);
+      setSelectedChatId(newConv.id);
+    } catch (err) {
+      console.error("Failed to create chat:", err);
+    }
+  };
+
+  const handleChatUpdated = (updated: AIConversation) => {
+    setChatConversations((prev) =>
+      prev.map((c) => (c.id === updated.id ? updated : c))
+    );
+  };
+
+  const handleChatDeleted = () => {
+    setChatConversations((prev) => prev.filter((c) => c.id !== selectedChatId));
+    setSelectedChatId(null);
+  };
 
   const saveField = async (updates: any) => {
     setSaving(true);
@@ -667,12 +732,6 @@ export default function ContentDetailPage() {
               </span>
             )}
           </div>
-          <Link href={`/ai-writer?contentObjectId=${contentId}`}>
-            <Button variant="outline" size="sm" className="gap-1.5 h-7 text-xs shrink-0">
-              <Sparkles className="h-3 w-3" />
-              AI Chat
-            </Button>
-          </Link>
           <Button variant="ghost" size="sm" onClick={handleDelete} className="text-muted-foreground hover:text-red-500 h-7 w-7 p-0 shrink-0">
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
@@ -690,6 +749,9 @@ export default function ContentDetailPage() {
           </TabsTrigger>
           <TabsTrigger value="ai-writer" className="gap-1.5 text-xs">
             <Sparkles className="h-3.5 w-3.5" /> AI Writer
+          </TabsTrigger>
+          <TabsTrigger value="ai-chat" className="gap-1.5 text-xs">
+            <MessageSquare className="h-3.5 w-3.5" /> AI Chat
           </TabsTrigger>
         </TabsList>
 
@@ -1178,6 +1240,58 @@ export default function ContentDetailPage() {
                     </div>
                   )}
                 </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* ── TAB 4: AI Chat ── */}
+            <TabsContent value="ai-chat" className="mt-0">
+              <Card className="border-0 shadow-sm overflow-hidden">
+                <ContentChatSelector
+                  conversations={chatConversations}
+                  selectedId={selectedChatId}
+                  onSelect={setSelectedChatId}
+                  onNewConversation={handleNewContentChat}
+                  loading={chatLoading}
+                />
+                <div className="h-[600px]">
+                  {selectedChatId ? (
+                    <ChatPanel
+                      key={selectedChatId}
+                      conversationId={selectedChatId}
+                      onConversationDeleted={handleChatDeleted}
+                      onConversationUpdated={handleChatUpdated}
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-full px-8 text-center">
+                      <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
+                        <MessageSquare className="h-6 w-6 text-primary" />
+                      </div>
+                      <h3 className="text-sm font-semibold mb-1">
+                        AI Chat for this content
+                      </h3>
+                      <p className="text-xs text-muted-foreground max-w-sm mb-4">
+                        Start a private or team conversation linked to this content piece. The AI will have context about the title, type, and brief.
+                      </p>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => handleNewContentChat("private")}
+                          className="gap-1.5 text-xs"
+                        >
+                          <Plus className="h-3 w-3" /> Private Chat
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleNewContentChat("team")}
+                          className="gap-1.5 text-xs"
+                        >
+                          <Plus className="h-3 w-3" /> Team Chat
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </Card>
             </TabsContent>
           </div>
