@@ -80,7 +80,7 @@ export async function POST(
     if (conversation.contentObjectId) {
       const { data: co } = await supabase
         .from("app_content")
-        .select("name_content, type_content, document_body, information_brief, information_guidelines, information_audience, information_length, information_platform, information_notes, id_client, name_client, name_topic_array, name_campaign_array")
+        .select("name_content, type_content, document_body, information_brief, information_guidelines, information_audience, information_length, information_platform, information_notes, id_client, name_client, id_contract, name_contract, name_topic_array, name_campaign_array")
         .eq("id_content", conversation.contentObjectId)
         .single();
 
@@ -101,19 +101,61 @@ export async function POST(
         };
 
         // Fetch linked social posts for this content
-        if (co.id_client) {
-          const { data: socialPosts } = await supabase
-            .from("social")
-            .select("name_social, network, type_post")
-            .eq("id_content", conversation.contentObjectId)
-            .is("date_deleted", null)
-            .limit(20);
+        const { data: socialPosts } = await supabase
+          .from("social")
+          .select("name_social, network, type_post")
+          .eq("id_content", conversation.contentObjectId)
+          .is("date_deleted", null)
+          .limit(20);
 
-          if (socialPosts?.length) {
-            contentContext.linkedPosts = socialPosts.map((s) => ({
-              content: s.name_social,
-              platform: s.network,
-              type: s.type_post,
+        if (socialPosts?.length) {
+          contentContext.linkedPosts = socialPosts.map((s) => ({
+            content: s.name_social,
+            platform: s.network,
+            type: s.type_post,
+          }));
+        }
+
+        // Fetch contract details if linked
+        if (co.id_contract) {
+          const { data: contract } = await supabase
+            .from("app_contracts")
+            .select("id_contract, name_contract, units_contract, units_total_completed, flag_active, date_start, date_end, information_notes")
+            .eq("id_contract", co.id_contract)
+            .single();
+
+          if (contract) {
+            contentContext.contract = {
+              name: contract.name_contract,
+              totalUnits: contract.units_contract,
+              completedUnits: contract.units_total_completed,
+              active: contract.flag_active === 1,
+              startDate: contract.date_start,
+              endDate: contract.date_end,
+              notes: contract.information_notes,
+            };
+          }
+        }
+
+        // Fetch all content for this client (pipeline overview)
+        if (co.id_client) {
+          const { data: clientContent } = await supabase
+            .from("app_content")
+            .select("id_content, name_content, type_content, flag_completed, flag_spiked, date_completed, units_content")
+            .eq("id_client", co.id_client)
+            .is("date_deleted", null)
+            .order("date_created", { ascending: false })
+            .limit(50);
+
+          if (clientContent?.length) {
+            contentContext.clientContentPipeline = clientContent.map((c) => ({
+              id: c.id_content,
+              title: c.name_content,
+              type: c.type_content,
+              status: c.flag_completed === 1 ? "published" : c.flag_spiked === 1 ? "spiked" : "in production",
+              completedAt: c.date_completed,
+              units: c.units_content,
+              isCurrent: c.id_content === conversation.contentObjectId,
             }));
           }
         }
