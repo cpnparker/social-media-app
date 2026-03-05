@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { Sparkles } from "lucide-react";
+import { toast } from "sonner";
 import ConversationList from "@/components/ai-writer/ConversationList";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
 import type { AIConversation } from "@/lib/types/ai";
@@ -60,7 +61,10 @@ export default function AIWriterPage() {
 
   // Create new conversation
   const handleNewConversation = async (visibility: "private" | "team") => {
-    if (!workspaceId) return;
+    if (!workspaceId) {
+      toast.error("No workspace selected");
+      return;
+    }
     try {
       const contentObjectId = searchParams.get("contentObjectId");
       const res = await fetch("/api/ai/conversations", {
@@ -72,7 +76,11 @@ export default function AIWriterPage() {
           contentObjectId: contentObjectId || undefined,
         }),
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        toast.error(errData.error || "Failed to create conversation");
+        return;
+      }
       const data = await res.json();
       const newConv = data.conversation;
       setConversations((prev) => [newConv, ...prev]);
@@ -83,6 +91,7 @@ export default function AIWriterPage() {
       }
     } catch (err) {
       console.error("Failed to create conversation:", err);
+      toast.error("Failed to create conversation");
     }
   };
 

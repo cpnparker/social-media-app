@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { toast } from "sonner";
 import {
   ArrowLeft,
   Loader2,
@@ -371,7 +372,10 @@ export default function ContentDetailPage() {
   }, [activeTab, fetchContentChats]);
 
   const handleNewContentChat = async (visibility: "private" | "team") => {
-    if (!workspaceId) return;
+    if (!workspaceId) {
+      toast.error("No workspace selected");
+      return;
+    }
     try {
       const res = await fetch("/api/ai/conversations", {
         method: "POST",
@@ -384,7 +388,7 @@ export default function ContentDetailPage() {
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        console.error("Create chat failed:", errData);
+        toast.error(errData.error || "Failed to create chat");
         return;
       }
       const data = await res.json();
@@ -393,6 +397,7 @@ export default function ContentDetailPage() {
       setSelectedChatId(newConv.id);
     } catch (err) {
       console.error("Failed to create chat:", err);
+      toast.error("Failed to create chat");
     }
   };
 

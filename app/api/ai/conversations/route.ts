@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { aiConversations, workspaces } from "@/lib/db/schema";
 import { eq, and, or, like, desc, sql } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 
 // GET /api/ai/conversations — list conversations
 export async function GET(req: NextRequest) {
@@ -82,15 +83,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
     }
 
+    // Ensure workspace exists in Neon (sync from Supabase if needed)
+    const existingWs = await db
+      .select({ id: workspaces.id, aiModel: workspaces.aiModel })
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId))
+      .limit(1);
+
+    if (existingWs.length === 0) {
+      const { data: supaWs } = await supabase
+        .from("workspaces")
+        .select("id, name, slug, plan")
+        .eq("id", workspaceId)
+        .single();
+
+      if (!supaWs) {
+        return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+      }
+
+      await db.insert(workspaces).values({
+        id: supaWs.id,
+        name: supaWs.name,
+        slug: supaWs.slug,
+        plan: supaWs.plan || "free",
+      }).onConflictDoNothing();
+    }
+
     // Get workspace default model if not specified
     let aiModel = model;
     if (!aiModel) {
-      const ws = await db
-        .select({ aiModel: workspaces.aiModel })
-        .from(workspaces)
-        .where(eq(workspaces.id, workspaceId))
-        .limit(1);
-      aiModel = ws[0]?.aiModel || "claude-sonnet-4-20250514";
+      aiModel = existingWs[0]?.aiModel || "claude-sonnet-4-20250514";
     }
 
     const [conversation] = await db
