@@ -31,10 +31,10 @@ async function extractDocumentText(att: Attachment): Promise<string | undefined>
     const { buffer } = await fetchBlobContent(att.url);
 
     if (att.type === "application/pdf") {
-      const pdfParseModule = await import("pdf-parse");
-      const pdfParse = (pdfParseModule as any).default || pdfParseModule;
-      const data = await pdfParse(buffer);
-      return data.text;
+      const { PDFParse } = await import("pdf-parse");
+      const parser = new PDFParse(new Uint8Array(buffer));
+      const result = await parser.getText();
+      return result.text;
     }
 
     if (att.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
