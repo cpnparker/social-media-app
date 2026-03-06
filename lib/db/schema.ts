@@ -613,3 +613,17 @@ export const aiMessages = pgTable("ai_messages", {
   createdBy: integer("created_by"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+// ── User Area Access ──
+// Stores per-workspace per-user area access flags.
+// Separate from Supabase workspace_members to keep in Drizzle/Neon.
+export const userAccess = pgTable("user_access", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull(),
+  userId: integer("user_id").notNull(),
+  accessEngine: boolean("access_engine").default(true).notNull(),
+  accessEngineGpt: boolean("access_enginegpt").default(true).notNull(),
+  accessOperations: boolean("access_operations").default(false).notNull(),
+  accessAdmin: boolean("access_admin").default(false).notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
