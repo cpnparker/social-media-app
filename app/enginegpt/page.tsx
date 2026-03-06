@@ -10,7 +10,6 @@ import {
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import {
-  Sparkles,
   Send,
   ChevronDown,
   Lock,
@@ -334,7 +333,7 @@ export default function EngineGPTPage() {
       <aside
         className={cn(
           "fixed inset-y-0 left-0 z-50 w-[280px] flex flex-col",
-          "bg-[#2e3440] text-white",
+          "bg-[#023250] text-white",
           "transform transition-transform duration-300 ease-in-out",
           "lg:static lg:z-auto lg:translate-x-0 lg:shrink-0",
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
@@ -345,9 +344,11 @@ export default function EngineGPTPage() {
           {/* Logo + New Chat */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <div className="h-7 w-7 rounded-lg bg-white/10 flex items-center justify-center">
-                <Sparkles className="h-4 w-4 text-white" />
-              </div>
+              <img
+                src="/assets/logo_engine_icon_white.svg"
+                alt="EngineGPT"
+                className="h-7 w-7"
+              />
               <span className="text-sm font-bold tracking-tight">
                 EngineGPT
               </span>
@@ -629,7 +630,11 @@ export default function EngineGPTPage() {
                 <Menu className="h-5 w-5" />
               </button>
               <div className="flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-primary" />
+                <img
+                  src="/assets/logo_engine_icon.svg"
+                  alt="EngineGPT"
+                  className="h-5 w-5"
+                />
                 <span className="text-sm font-bold">EngineGPT</span>
               </div>
             </>
@@ -653,8 +658,12 @@ export default function EngineGPTPage() {
           <div className="flex-1 flex flex-col overflow-y-auto">
             <div className="flex-1 flex flex-col items-center justify-center px-4 pb-24">
               {/* Icon */}
-              <div className="h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-6">
-                <Sparkles className="h-8 w-8 text-primary" />
+              <div className="h-16 w-16 rounded-2xl bg-[#023250]/10 flex items-center justify-center mb-6">
+                <img
+                  src="/assets/logo_engine_icon.svg"
+                  alt="EngineGPT"
+                  className="h-10 w-10"
+                />
               </div>
               <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mb-2">
                 What are you working on?

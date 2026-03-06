@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { WorkspaceProvider, useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { CustomerProvider } from "@/lib/contexts/CustomerContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { Sparkles } from "lucide-react";
+import Image from "next/image";
 import { signOut } from "next-auth/react";
 
 export default function EngineGPTLayout({
@@ -72,7 +72,13 @@ function EngineGPTAccessGuard({ children }: { children: React.ReactNode }) {
       <div className="flex h-screen items-center justify-center bg-background">
         <div className="text-center px-4">
           <div className="h-16 w-16 rounded-2xl bg-destructive/10 flex items-center justify-center mx-auto mb-4">
-            <Sparkles className="h-8 w-8 text-destructive" />
+            <Image
+              src="/assets/logo_engine_icon.svg"
+              alt="EngineGPT"
+              width={32}
+              height={32}
+              className="opacity-50"
+            />
           </div>
           <h1 className="text-xl font-bold mb-2">Access Restricted</h1>
           <p className="text-sm text-muted-foreground max-w-sm">
