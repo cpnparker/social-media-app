@@ -43,16 +43,19 @@ export async function GET() {
 
     const results = (wsRows || []).map((ws) => {
       const access = accessMap.get(ws.id);
+      // If no access row exists yet, default all areas to true
+      // (existing users keep full access until explicitly restricted)
+      const noRow = !access;
       return {
         id: ws.id,
         name: ws.name,
         slug: ws.slug,
         plan: ws.plan,
         role: roleMap.get(ws.id) || "viewer",
-        accessEngine: access?.accessEngine ?? true,
-        accessEngineGpt: access?.accessEngineGpt ?? true,
-        accessOperations: access?.accessOperations ?? false,
-        accessAdmin: access?.accessAdmin ?? false,
+        accessEngine: noRow ? true : access.accessEngine,
+        accessEngineGpt: noRow ? true : access.accessEngineGpt,
+        accessOperations: noRow ? true : access.accessOperations,
+        accessAdmin: noRow ? true : access.accessAdmin,
       };
     });
 

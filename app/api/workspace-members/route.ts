@@ -87,10 +87,11 @@ export async function GET() {
         role: m.role,
         supabaseRole: user?.role_user || null,
         joinedAt: m.joined_at || null,
-        accessEngine: access?.accessEngine ?? true,
-        accessEngineGpt: access?.accessEngineGpt ?? true,
-        accessOperations: access?.accessOperations ?? false,
-        accessAdmin: access?.accessAdmin ?? false,
+        // No access row = existing user, default all to true
+        accessEngine: access ? access.accessEngine : true,
+        accessEngineGpt: access ? access.accessEngineGpt : true,
+        accessOperations: access ? access.accessOperations : true,
+        accessAdmin: access ? access.accessAdmin : true,
       };
     });
 
