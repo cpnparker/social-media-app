@@ -59,6 +59,7 @@ export async function GET(req: NextRequest) {
         aiContextConfig: workspaces.aiContextConfig,
         aiCuDescription: workspaces.aiCuDescription,
         aiMaxTokens: workspaces.aiMaxTokens,
+        aiDebugMode: workspaces.aiDebugMode,
       })
       .from(workspaces)
       .where(eq(workspaces.id, workspaceId))
@@ -80,6 +81,7 @@ export async function GET(req: NextRequest) {
       },
       cuDescription: workspace?.aiCuDescription || "",
       maxTokens: workspace?.aiMaxTokens || 4096,
+      debugMode: workspace?.aiDebugMode || false,
       cuDefinitions: (cuDefs || []).map((c: any) => ({
         format: c.name,
         category: c.cu_category || c.format,
@@ -100,7 +102,7 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workspaceId, model, contextConfig, cuDescription, maxTokens } = body;
+    const { workspaceId, model, contextConfig, cuDescription, maxTokens, debugMode } = body;
 
     if (!workspaceId) {
       return NextResponse.json(
@@ -117,6 +119,7 @@ export async function PATCH(req: NextRequest) {
     if (contextConfig !== undefined) updateData.aiContextConfig = contextConfig;
     if (cuDescription !== undefined) updateData.aiCuDescription = cuDescription;
     if (maxTokens !== undefined) updateData.aiMaxTokens = maxTokens;
+    if (debugMode !== undefined) updateData.aiDebugMode = debugMode;
 
     await db
       .update(workspaces)

@@ -131,6 +131,12 @@ export const workspaces = pgTable("workspaces", {
   plan: planEnum("plan").default("free").notNull(),
   lateApiKey: text("late_api_key"),
   aiModel: text("ai_model").default("claude-sonnet-4-20250514"),
+  aiContextConfig: jsonb("ai_context_config")
+    .default({ contracts: true, contentPipeline: true, socialPresence: true })
+    .$type<{ contracts: boolean; contentPipeline: boolean; socialPresence: boolean }>(),
+  aiCuDescription: text("ai_cu_description"),
+  aiMaxTokens: integer("ai_max_tokens").default(4096),
+  aiDebugMode: boolean("ai_debug_mode").default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -626,4 +632,21 @@ export const userAccess = pgTable("user_access", {
   accessOperations: boolean("access_operations").default(false).notNull(),
   accessAdmin: boolean("access_admin").default(false).notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// ── AI Usage Tracking ──
+// Logs every AI API call with token counts and cost for dashboard analytics.
+export const aiUsage = pgTable("ai_usage", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspaces.id, { onDelete: "cascade" })
+    .notNull(),
+  userId: integer("user_id").notNull(),
+  model: text("model").notNull(),
+  source: text("source").notNull(), // 'enginegpt' | 'engine' | 'api'
+  inputTokens: integer("input_tokens").default(0).notNull(),
+  outputTokens: integer("output_tokens").default(0).notNull(),
+  costTenths: integer("cost_tenths").default(0).notNull(), // cost in tenths of cents
+  conversationId: uuid("conversation_id").references(() => aiConversations.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });

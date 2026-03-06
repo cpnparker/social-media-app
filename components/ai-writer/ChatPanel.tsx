@@ -10,6 +10,9 @@ import {
   Globe,
   ArrowLeft,
   Building2,
+  Link2,
+  Bug,
+  ChevronRight,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,6 +23,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
 import { getModelLabel } from "@/lib/ai/models";
 import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
@@ -32,6 +46,9 @@ interface ChatPanelProps {
   onBack?: () => void;
   initialMessage?: string;
   initialAttachments?: Attachment[];
+  contextConfig?: { contracts: boolean; contentPipeline: boolean; socialPresence: boolean; ideas?: boolean };
+  debugMode?: boolean;
+  onCopyLink?: () => void;
 }
 
 export default function ChatPanel({
@@ -41,14 +58,20 @@ export default function ChatPanel({
   onBack,
   initialMessage,
   initialAttachments,
+  contextConfig,
+  debugMode,
+  onCopyLink,
 }: ChatPanelProps) {
   const [conversation, setConversation] = useState<AIConversation | null>(null);
   const [messages, setMessages] = useState<AIMessageRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
+  const [debugContext, setDebugContext] = useState<string | null>(null);
+  const [debugExpanded, setDebugExpanded] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initialMessageSent = useRef(false);
 
@@ -104,6 +127,8 @@ export default function ChatPanel({
     setMessages((prev) => [...prev, tempUserMsg]);
     setIsStreaming(true);
     setStreamingContent("");
+    setDebugContext(null);
+    setDebugExpanded(false);
 
     try {
       const res = await fetch(
@@ -111,7 +136,7 @@ export default function ChatPanel({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content, attachments }),
+          body: JSON.stringify({ content, attachments, contextConfig, debugMode }),
         }
       );
 
@@ -137,7 +162,9 @@ export default function ChatPanel({
 
           try {
             const parsed = JSON.parse(data);
-            if (parsed.token) {
+            if (parsed.debugContext) {
+              setDebugContext(parsed.debugContext);
+            } else if (parsed.token) {
               fullText += parsed.token;
               setStreamingContent(fullText);
             }
@@ -221,11 +248,18 @@ export default function ChatPanel({
   // Delete conversation
   const handleDelete = async () => {
     try {
-      await fetch(`/api/ai/conversations/${conversationId}`, {
+      const res = await fetch(`/api/ai/conversations/${conversationId}`, {
         method: "DELETE",
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || "Failed to delete conversation");
+        return;
+      }
       onConversationDeleted?.();
-    } catch {}
+    } catch (err) {
+      toast.error("Failed to delete conversation");
+    }
   };
 
   if (loading) {
@@ -328,6 +362,12 @@ export default function ChatPanel({
               <Pencil className="h-3.5 w-3.5 mr-2" />
               Rename
             </DropdownMenuItem>
+            {onCopyLink && (
+              <DropdownMenuItem onClick={onCopyLink}>
+                <Link2 className="h-3.5 w-3.5 mr-2" />
+                Copy link
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onClick={handleToggleVisibility}>
               {conversation.visibility === "private" ? (
                 <>
@@ -343,7 +383,7 @@ export default function ChatPanel({
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              onClick={handleDelete}
+              onClick={() => setDeleteConfirmOpen(true)}
               className="text-destructive"
             >
               <Trash2 className="h-3.5 w-3.5 mr-2" />
@@ -351,6 +391,27 @@ export default function ChatPanel({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* Delete confirmation dialog */}
+        <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete conversation?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete &ldquo;{conversation.title}&rdquo; and all its messages. This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={handleDelete}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                Delete
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
 
       {/* Messages */}
@@ -379,6 +440,29 @@ export default function ChatPanel({
                 attachments={msg.attachments}
               />
             ))}
+            {/* Debug context preview */}
+            {debugContext && (
+              <div className="mx-4 sm:mx-8 my-2">
+                <button
+                  onClick={() => setDebugExpanded(!debugExpanded)}
+                  className="flex items-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 transition-colors"
+                >
+                  <Bug className="h-3.5 w-3.5" />
+                  System Prompt
+                  <span className="text-[10px] text-muted-foreground font-normal">
+                    ({Math.round(debugContext.length / 4).toLocaleString()} est. tokens)
+                  </span>
+                  <ChevronRight
+                    className={`h-3 w-3 transition-transform ${debugExpanded ? "rotate-90" : ""}`}
+                  />
+                </button>
+                {debugExpanded && (
+                  <pre className="mt-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 text-[11px] leading-relaxed text-amber-900 dark:text-amber-100 whitespace-pre-wrap break-words max-h-[400px] overflow-y-auto font-mono">
+                    {debugContext}
+                  </pre>
+                )}
+              </div>
+            )}
             {isStreaming && streamingContent && (
               <MessageBubble
                 role="assistant"

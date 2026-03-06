@@ -9,6 +9,7 @@ import {
   Info,
   ExternalLink,
   Search,
+  Bug,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -128,6 +129,7 @@ export default function AIUsagePage() {
     ideas: true,
   });
   const [maxTokens, setMaxTokens] = useState(4096);
+  const [debugMode, setDebugMode] = useState(false);
   const [cuDescription, setCuDescription] = useState("");
   const [cuDefinitions, setCuDefinitions] = useState<CUDefinition[]>([]);
 
@@ -158,6 +160,7 @@ export default function AIUsagePage() {
       if (data.availableModels) setAvailableModels(data.availableModels);
       if (data.contextConfig) setContextConfig(data.contextConfig);
       if (data.maxTokens) setMaxTokens(data.maxTokens);
+      if (data.debugMode !== undefined) setDebugMode(data.debugMode);
       if (data.cuDescription) setCuDescription(data.cuDescription);
       if (data.cuDefinitions) setCuDefinitions(data.cuDefinitions);
     } catch (err) {
@@ -205,6 +208,7 @@ export default function AIUsagePage() {
           model: aiModel,
           contextConfig,
           maxTokens,
+          debugMode,
           cuDescription: cuDescription || null,
         }),
       });
@@ -509,6 +513,36 @@ export default function AIUsagePage() {
               </div>
             )}
           </div>
+        </CardContent>
+      </Card>
+
+      {/* ─── Developer ─── */}
+      <Card className="border-0 shadow-sm border-l-2 border-l-amber-400">
+        <CardContent className="py-3 px-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <Bug className="h-4 w-4 text-amber-500 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Debug Mode</p>
+              <p className="text-xs text-muted-foreground">
+                Show the system prompt passed to the AI before each response in EngineGPT
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={debugMode}
+            onClick={() => setDebugMode(!debugMode)}
+            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              debugMode ? "bg-amber-500" : "bg-muted"
+            }`}
+          >
+            <span
+              className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm transform transition-transform ${
+                debugMode ? "translate-x-4" : "translate-x-0"
+              }`}
+            />
+          </button>
         </CardContent>
       </Card>
 

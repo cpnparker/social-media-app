@@ -379,6 +379,7 @@ export async function POST(
           aiContextConfig: workspaces.aiContextConfig,
           aiCuDescription: workspaces.aiCuDescription,
           aiMaxTokens: workspaces.aiMaxTokens,
+          aiDebugMode: workspaces.aiDebugMode,
         })
         .from(workspaces)
         .where(eq(workspaces.id, conversation.workspaceId))
@@ -389,6 +390,7 @@ export async function POST(
     const contextConfig = body.contextConfig ?? wsSettings[0]?.aiContextConfig ?? undefined;
     const cuDescription = wsSettings[0]?.aiCuDescription ?? undefined;
     const maxTokens = wsSettings[0]?.aiMaxTokens || 4096;
+    const debugMode = body.debugMode || wsSettings[0]?.aiDebugMode || false;
 
     // Build messages with attachments for AI
     const messages: AIMessage[] = [];
@@ -470,7 +472,7 @@ export async function POST(
     }
 
     // Create streaming response
-    const stream = createStreamingResponse(
+    const aiStream = createStreamingResponse(
       messages,
       { model, systemPrompt, maxTokens },
       async ({ fullText, inputTokens, outputTokens }) => {
@@ -499,6 +501,28 @@ export async function POST(
         });
       }
     );
+
+    // Wrap stream: prepend debug context if debug mode is on
+    const stream = debugMode
+      ? new ReadableStream({
+          async start(controller) {
+            const encoder = new TextEncoder();
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ debugContext: systemPrompt })}\n\n`)
+            );
+            const reader = aiStream.getReader();
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                controller.enqueue(value);
+              }
+            } finally {
+              controller.close();
+            }
+          },
+        })
+      : aiStream;
 
     return new Response(stream, {
       headers: {

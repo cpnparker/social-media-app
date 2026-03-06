@@ -5,8 +5,10 @@ import {
   useEffect,
   useCallback,
   useRef,
+  Suspense,
   type KeyboardEvent,
 } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import {
@@ -26,6 +28,7 @@ import {
   ChevronsUpDown,
   Check,
   ArrowLeft,
+  Link2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -49,12 +52,29 @@ import { signOut } from "next-auth/react";
 import type { AIConversation, Attachment } from "@/lib/types/ai";
 
 export default function EngineGPTPage() {
+  return (
+    <Suspense>
+      <EngineGPTContent />
+    </Suspense>
+  );
+}
+
+function EngineGPTContent() {
   const wsCtx = useWorkspaceSafe();
   const workspaceId = wsCtx?.selectedWorkspace?.id;
   const customerCtx = useCustomerSafe();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // Read initial thread ID from URL (?thread=xxx)
+  const urlThreadRef = useRef<string | null>(
+    searchParams.get("thread")
+  );
 
   const [conversations, setConversations] = useState<AIConversation[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    urlThreadRef.current
+  );
   const [loading, setLoading] = useState(true);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const [tab, setTab] = useState<"private" | "team">("private");
@@ -72,6 +92,13 @@ export default function EngineGPTPage() {
   const [userEmail, setUserEmail] = useState("");
   const [clientSearchQuery, setClientSearchQuery] = useState("");
   const [clientPopoverOpen, setClientPopoverOpen] = useState(false);
+  const [contextConfig, setContextConfig] = useState({
+    contracts: true,
+    contentPipeline: true,
+    socialPresence: true,
+    ideas: true,
+  });
+  const [debugMode, setDebugMode] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -81,11 +108,13 @@ export default function EngineGPTPage() {
   const canViewAll = customerCtx?.canViewAll ?? false;
 
   // Filter clients by search query
-  const filteredClients = clientSearchQuery
-    ? customers.filter((c) =>
-        c.name.toLowerCase().includes(clientSearchQuery.toLowerCase())
-      )
-    : customers;
+  const filteredClients = (
+    clientSearchQuery
+      ? customers.filter((c) =>
+          c.name.toLowerCase().includes(clientSearchQuery.toLowerCase())
+        )
+      : customers
+  ).sort((a, b) => a.name.localeCompare(b.name));
 
   // Fetch user info for sidebar
   useEffect(() => {
@@ -97,6 +126,19 @@ export default function EngineGPTPage() {
       })
       .catch(() => {});
   }, []);
+
+  // Fetch workspace AI settings (default model + context config)
+  useEffect(() => {
+    if (!workspaceId) return;
+    fetch(`/api/ai/settings?workspaceId=${workspaceId}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.currentModel) setSelectedModel(data.currentModel);
+        if (data.contextConfig) setContextConfig(data.contextConfig);
+        if (data.debugMode) setDebugMode(data.debugMode);
+      })
+      .catch(() => {});
+  }, [workspaceId]);
 
   const userInitials = userName
     ? userName
@@ -126,11 +168,27 @@ export default function EngineGPTPage() {
   }, [workspaceId, customerId]);
 
   useEffect(() => {
-    setSelectedId(null);
+    // Don't reset selectedId on initial load if we have a URL thread
+    if (urlThreadRef.current) {
+      urlThreadRef.current = null; // Consumed — future customer changes reset normally
+    } else {
+      setSelectedId(null);
+    }
     setInitialMessage(undefined);
     setInitialAttachments(undefined);
     fetchConversations();
   }, [fetchConversations]);
+
+  // Sync selectedId ↔ URL ?thread= param
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (selectedId) {
+      url.searchParams.set("thread", selectedId);
+    } else {
+      url.searchParams.delete("thread");
+    }
+    window.history.replaceState({}, "", url.toString());
+  }, [selectedId]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -292,11 +350,12 @@ export default function EngineGPTPage() {
   const filtered = conversations.filter((c) => {
     if (tab === "private" && c.visibility !== "private") return false;
     if (tab === "team" && c.visibility !== "team") return false;
-    if (
-      searchQuery &&
-      !c.title.toLowerCase().includes(searchQuery.toLowerCase())
-    )
-      return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      const matchesTitle = c.title.toLowerCase().includes(q);
+      const matchesClient = c.customerName?.toLowerCase().includes(q);
+      if (!matchesTitle && !matchesClient) return false;
+    }
     return true;
   });
 
@@ -343,7 +402,13 @@ export default function EngineGPTPage() {
         <div className="shrink-0 p-3 space-y-3">
           {/* Logo + New Chat */}
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                customerCtx?.setSelectedCustomerId(null);
+                handleNewChat();
+              }}
+              className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+            >
               <img
                 src="/assets/logo_engine_icon_white.svg"
                 alt="EngineGPT"
@@ -352,7 +417,7 @@ export default function EngineGPTPage() {
               <span className="text-sm font-bold tracking-tight">
                 EngineGPT
               </span>
-            </div>
+            </button>
             <button
               onClick={handleNewChat}
               className="h-8 w-8 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
@@ -651,6 +716,14 @@ export default function EngineGPTPage() {
               onConversationUpdated={handleConversationUpdated}
               initialMessage={initialMessage}
               initialAttachments={initialAttachments}
+              contextConfig={contextConfig}
+              debugMode={debugMode}
+              onCopyLink={() => {
+                const url = new URL(window.location.href);
+                url.searchParams.set("thread", selectedId!);
+                navigator.clipboard.writeText(url.toString());
+                toast.success("Thread link copied to clipboard");
+              }}
             />
           </div>
         ) : (
@@ -745,6 +818,30 @@ export default function EngineGPTPage() {
                       className="hidden"
                     />
 
+                    {/* Visibility toggle */}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        setTab((prev) =>
+                          prev === "private" ? "team" : "private"
+                        )
+                      }
+                      className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2.5"
+                      title={
+                        tab === "private"
+                          ? "Private — only you can see this"
+                          : "Team — visible to your workspace"
+                      }
+                    >
+                      {tab === "private" ? (
+                        <Lock className="h-3 w-3" />
+                      ) : (
+                        <Users className="h-3 w-3" />
+                      )}
+                      {tab === "private" ? "Private" : "Team"}
+                    </Button>
+
                     {/* Model picker */}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -801,6 +898,49 @@ export default function EngineGPTPage() {
                 <p className="text-[11px] text-muted-foreground text-center mt-2.5">
                   Press Enter to send, Shift+Enter for new line
                 </p>
+
+                {/* Context controls — always visible for both per-client and All Clients */}
+                <div className="flex items-center justify-center gap-3 mt-3 flex-wrap">
+                  <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
+                    Include:
+                  </span>
+                  {[
+                    { key: "contracts" as const, label: "Contracts" },
+                    { key: "contentPipeline" as const, label: "Content" },
+                    { key: "socialPresence" as const, label: "Social" },
+                    { key: "ideas" as const, label: "Ideas" },
+                  ].map((item) => (
+                    <button
+                      key={item.key}
+                      onClick={() =>
+                        setContextConfig((prev) => ({
+                          ...prev,
+                          [item.key]: !prev[item.key],
+                        }))
+                      }
+                      className={cn(
+                        "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors border",
+                        contextConfig[item.key]
+                          ? "bg-primary text-white border-primary"
+                          : "bg-muted/50 text-muted-foreground border-transparent hover:bg-muted"
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "h-2.5 w-2.5 rounded-sm border flex items-center justify-center transition-colors",
+                          contextConfig[item.key]
+                            ? "bg-primary border-primary"
+                            : "border-muted-foreground/40 bg-transparent"
+                        )}
+                      >
+                        {contextConfig[item.key] && (
+                          <Check className="h-2 w-2 text-primary-foreground" />
+                        )}
+                      </div>
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
