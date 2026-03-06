@@ -608,6 +608,7 @@ export const aiMessages = pgTable("ai_messages", {
     .notNull(),
   role: text("role").notNull(),
   content: text("content").notNull(),
+  attachments: text("attachments"),
   model: text("model"),
   createdBy: integer("created_by"),
   createdAt: timestamp("created_at").defaultNow().notNull(),

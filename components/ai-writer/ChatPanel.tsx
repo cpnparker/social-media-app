@@ -8,7 +8,6 @@ import {
   Trash2,
   Pencil,
   Globe,
-  ChevronDown,
   ArrowLeft,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -20,11 +19,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { cn } from "@/lib/utils";
 import { getModelLabel } from "@/lib/ai/models";
 import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
-import type { AIConversation, AIMessageRow } from "@/lib/types/ai";
+import type { AIConversation, AIMessageRow, Attachment } from "@/lib/types/ai";
 
 interface ChatPanelProps {
   conversationId: string;
@@ -32,6 +30,7 @@ interface ChatPanelProps {
   onConversationUpdated?: (conv: AIConversation) => void;
   onBack?: () => void;
   initialMessage?: string;
+  initialAttachments?: Attachment[];
 }
 
 export default function ChatPanel({
@@ -40,6 +39,7 @@ export default function ChatPanel({
   onConversationUpdated,
   onBack,
   initialMessage,
+  initialAttachments,
 }: ChatPanelProps) {
   const [conversation, setConversation] = useState<AIConversation | null>(null);
   const [messages, setMessages] = useState<AIMessageRow[]>([]);
@@ -73,12 +73,12 @@ export default function ChatPanel({
 
   // Auto-send initial message (quick-send from home page)
   useEffect(() => {
-    if (initialMessage && conversation && !initialMessageSent.current && !loading) {
+    if ((initialMessage || initialAttachments?.length) && conversation && !initialMessageSent.current && !loading) {
       initialMessageSent.current = true;
-      handleSend(initialMessage);
+      handleSend(initialMessage || "", initialAttachments);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialMessage, conversation, loading]);
+  }, [initialMessage, initialAttachments, conversation, loading]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -86,7 +86,7 @@ export default function ChatPanel({
   }, [messages, streamingContent]);
 
   // Send message with streaming
-  const handleSend = async (content: string) => {
+  const handleSend = async (content: string, attachments?: Attachment[]) => {
     if (!conversation) return;
 
     // Optimistically add user message
@@ -95,6 +95,7 @@ export default function ChatPanel({
       conversationId: conversationId,
       role: "user",
       content,
+      attachments: attachments || null,
       model: null,
       createdBy: null,
       createdAt: new Date().toISOString(),
@@ -109,7 +110,7 @@ export default function ChatPanel({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({ content, attachments }),
         }
       );
 
@@ -365,6 +366,7 @@ export default function ChatPanel({
                 role={msg.role}
                 content={msg.content}
                 model={msg.model}
+                attachments={msg.attachments}
               />
             ))}
             {isStreaming && streamingContent && (

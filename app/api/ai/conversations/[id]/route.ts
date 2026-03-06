@@ -32,11 +32,17 @@ export async function GET(
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const messages = await db
+    const rawMessages = await db
       .select()
       .from(aiMessages)
       .where(eq(aiMessages.conversationId, conversationId))
       .orderBy(asc(aiMessages.createdAt));
+
+    // Parse attachments JSON strings for the client
+    const messages = rawMessages.map((m) => ({
+      ...m,
+      attachments: m.attachments ? JSON.parse(m.attachments) : null,
+    }));
 
     return NextResponse.json({ conversation, messages });
   } catch (error: any) {

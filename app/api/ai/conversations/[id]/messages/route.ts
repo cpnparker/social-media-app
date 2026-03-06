@@ -4,8 +4,63 @@ import { db } from "@/lib/db";
 import { aiConversations, aiMessages } from "@/lib/db/schema";
 import { eq, asc } from "drizzle-orm";
 import { supabase } from "@/lib/supabase";
-import { createStreamingResponse, type AIMessage } from "@/lib/ai/providers";
+import { createStreamingResponse, type AIMessage, type AIAttachment } from "@/lib/ai/providers";
 import { buildSystemPrompt } from "@/lib/ai/system-prompts";
+import type { Attachment } from "@/lib/types/ai";
+
+// ── Helper: extract text from a document attachment ──
+async function extractDocumentText(att: Attachment): Promise<string | undefined> {
+  try {
+    const response = await fetch(att.url);
+    if (!response.ok) return undefined;
+
+    if (att.type === "application/pdf") {
+      const pdfParseModule = await import("pdf-parse");
+      const pdfParse = (pdfParseModule as any).default || pdfParseModule;
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const data = await pdfParse(buffer);
+      return data.text;
+    }
+
+    if (att.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+      const mammoth = await import("mammoth");
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const result = await mammoth.extractRawText({ buffer });
+      return result.value;
+    }
+
+    if (att.type.startsWith("text/")) {
+      return await response.text();
+    }
+
+    return undefined;
+  } catch (err) {
+    console.error(`[Messages] Failed to extract text from ${att.name}:`, err);
+    return undefined;
+  }
+}
+
+// ── Helper: convert stored attachments to AIAttachments with extracted text ──
+async function prepareAttachmentsForAI(attachments: Attachment[]): Promise<AIAttachment[]> {
+  const prepared: AIAttachment[] = [];
+
+  for (const att of attachments) {
+    const aiAtt: AIAttachment = {
+      url: att.url,
+      name: att.name,
+      type: att.type,
+    };
+
+    // Extract text for non-image files
+    if (!att.type.startsWith("image/")) {
+      aiAtt.extractedText = await extractDocumentText(att);
+    }
+
+    prepared.push(aiAtt);
+  }
+
+  return prepared;
+}
 
 // ── Helper: fetch workspace-level config (content types + CU definitions) ──
 async function fetchWorkspaceConfig() {
@@ -158,8 +213,9 @@ export async function POST(
   try {
     const body = await req.json();
     const userContent = body.content;
+    const userAttachments: Attachment[] | undefined = body.attachments;
 
-    if (!userContent?.trim()) {
+    if (!userContent?.trim() && (!userAttachments || userAttachments.length === 0)) {
       return new Response(JSON.stringify({ error: "Message content is required" }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
@@ -192,24 +248,47 @@ export async function POST(
     await db.insert(aiMessages).values({
       conversationId,
       role: "user",
-      content: userContent.trim(),
+      content: (userContent || "").trim(),
+      attachments: userAttachments ? JSON.stringify(userAttachments) : null,
       createdBy: userId,
     });
 
     // Load conversation history + workspace config in parallel
     const [history, workspaceConfig] = await Promise.all([
       db
-        .select({ role: aiMessages.role, content: aiMessages.content })
+        .select({
+          role: aiMessages.role,
+          content: aiMessages.content,
+          attachments: aiMessages.attachments,
+        })
         .from(aiMessages)
         .where(eq(aiMessages.conversationId, conversationId))
         .orderBy(asc(aiMessages.createdAt)),
       fetchWorkspaceConfig(),
     ]);
 
-    const messages: AIMessage[] = history.map((m) => ({
-      role: m.role as "user" | "assistant" | "system",
-      content: m.content,
-    }));
+    // Build messages with attachments for AI
+    const messages: AIMessage[] = [];
+    for (const m of history) {
+      const msg: AIMessage = {
+        role: m.role as "user" | "assistant" | "system",
+        content: m.content,
+      };
+
+      // Parse and prepare attachments for user messages
+      if (m.role === "user" && m.attachments) {
+        try {
+          const parsed: Attachment[] = JSON.parse(m.attachments);
+          if (parsed.length > 0) {
+            msg.attachments = await prepareAttachmentsForAI(parsed);
+          }
+        } catch {
+          // Ignore malformed attachments JSON
+        }
+      }
+
+      messages.push(msg);
+    }
 
     // Build context based on conversation scope
     let clientContext: Awaited<ReturnType<typeof fetchClientContext>> = null;
@@ -237,10 +316,11 @@ export async function POST(
     // Auto-title: if this is the first user message, set conversation title
     const userMessages = messages.filter((m) => m.role === "user");
     if (userMessages.length === 1) {
+      const titleSource = (userContent || "").trim() || (userAttachments?.[0]?.name || "File upload");
       const autoTitle =
-        userContent.trim().length > 60
-          ? userContent.trim().slice(0, 57) + "..."
-          : userContent.trim();
+        titleSource.length > 60
+          ? titleSource.slice(0, 57) + "..."
+          : titleSource;
       await db
         .update(aiConversations)
         .set({ title: autoTitle, updatedAt: new Date() })

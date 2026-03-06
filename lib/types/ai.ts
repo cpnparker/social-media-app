@@ -14,11 +14,19 @@ export interface AIConversation {
   updatedAt: string;
 }
 
+export interface Attachment {
+  url: string;
+  name: string;
+  type: string; // MIME type
+  size: number;
+}
+
 export interface AIMessageRow {
   id: string;
   conversationId: string;
   role: "user" | "assistant" | "system";
   content: string;
+  attachments?: Attachment[] | null;
   model: string | null;
   createdBy: number | null;
   createdByName?: string;

@@ -3,9 +3,17 @@ import OpenAI from "openai";
 
 /* ─────────────── Types ─────────────── */
 
+export interface AIAttachment {
+  url: string;
+  name: string;
+  type: string; // MIME type
+  extractedText?: string; // Pre-extracted text for documents
+}
+
 export interface AIMessage {
   role: "user" | "assistant" | "system";
   content: string;
+  attachments?: AIAttachment[];
 }
 
 export interface AIProviderConfig {
@@ -76,6 +84,76 @@ function splitSystemMessages(messages: AIMessage[]) {
   return { systemMessages, conversationMessages };
 }
 
+/** Build Anthropic content blocks from a message with optional attachments */
+function buildAnthropicContent(
+  msg: AIMessage
+): string | Anthropic.MessageCreateParams["messages"][number]["content"] {
+  if (!msg.attachments?.length) return msg.content;
+
+  const blocks: Anthropic.MessageCreateParams["messages"][number]["content"] = [];
+
+  for (const att of msg.attachments) {
+    if (att.type.startsWith("image/")) {
+      // Native image vision block
+      blocks.push({
+        type: "image",
+        source: { type: "url", url: att.url },
+      } as any);
+    } else if (att.type === "application/pdf") {
+      // Native PDF document block for Claude
+      blocks.push({
+        type: "document",
+        source: { type: "url", url: att.url },
+      } as any);
+    } else if (att.extractedText) {
+      // Other docs: include extracted text
+      blocks.push({
+        type: "text",
+        text: `[Document: ${att.name}]\n${att.extractedText}`,
+      });
+    }
+  }
+
+  // Add the user's text message
+  if (msg.content.trim()) {
+    blocks.push({ type: "text", text: msg.content });
+  }
+
+  return blocks;
+}
+
+/** Build OpenAI-format content blocks from a message with optional attachments */
+function buildOpenAIContent(
+  msg: AIMessage
+): string | OpenAI.Chat.ChatCompletionContentPart[] {
+  if (!msg.attachments?.length) return msg.content;
+
+  const parts: OpenAI.Chat.ChatCompletionContentPart[] = [];
+
+  for (const att of msg.attachments) {
+    if (att.type.startsWith("image/")) {
+      // Image vision block
+      parts.push({
+        type: "image_url",
+        image_url: { url: att.url },
+      });
+    } else if (att.extractedText) {
+      // Documents: include extracted text
+      parts.push({
+        type: "text",
+        text: `[Document: ${att.name}]\n${att.extractedText}`,
+      });
+    }
+  }
+
+  // Add the user's text message
+  if (msg.content.trim()) {
+    parts.push({ type: "text", text: msg.content });
+  }
+
+  return parts;
+}
+
 /* ─────────────── Streaming Response (SSE) ─────────────── */
 
 /**
@@ -143,7 +221,7 @@ async function streamAnthropic(
     system: systemText,
     messages: conversationMessages.map((m) => ({
       role: m.role as "user" | "assistant",
-      content: m.content,
+      content: m.role === "user" ? buildAnthropicContent(m) : m.content,
     })),
   });
 
@@ -187,8 +265,8 @@ async function streamXAI(
   for (const m of messages) {
     openaiMessages.push({
       role: m.role as "user" | "assistant" | "system",
-      content: m.content,
-    });
+      content: m.role === "user" ? buildOpenAIContent(m) : m.content,
+    } as any);
   }
 
   const stream = await xai.chat.completions.create({

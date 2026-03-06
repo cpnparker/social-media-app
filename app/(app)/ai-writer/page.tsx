@@ -13,6 +13,9 @@ import {
   MessageSquare,
   Loader2,
   Search,
+  Paperclip,
+  X,
+  FileText,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -26,7 +29,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { AI_MODELS, DEFAULT_MODEL, getModelLabel } from "@/lib/ai/models";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
-import type { AIConversation } from "@/lib/types/ai";
+import type { AIConversation, Attachment } from "@/lib/types/ai";
 
 export default function AIWriterPage() {
   const wsCtx = useWorkspaceSafe();
@@ -45,8 +48,12 @@ export default function AIWriterPage() {
   const [homeInput, setHomeInput] = useState("");
   const [sending, setSending] = useState(false);
   const [initialMessage, setInitialMessage] = useState<string | undefined>();
+  const [initialAttachments, setInitialAttachments] = useState<Attachment[] | undefined>();
   const [searchQuery, setSearchQuery] = useState("");
+  const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const customerId =
     searchParams.get("customerId") || customerCtx?.selectedCustomerId || null;
@@ -72,6 +79,7 @@ export default function AIWriterPage() {
   useEffect(() => {
     setSelectedId(null);
     setInitialMessage(undefined);
+    setInitialAttachments(undefined);
     fetchConversations();
   }, [fetchConversations]);
 
@@ -99,10 +107,64 @@ export default function AIWriterPage() {
     }
   }, [homeInput]);
 
+  // File upload handler for home page
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files?.length) return;
+
+    setUploading(true);
+
+    for (const file of Array.from(files)) {
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const res = await fetch("/api/media/upload", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          toast.error(err.error || `Failed to upload ${file.name}`);
+          continue;
+        }
+
+        const data = await res.json();
+        setPendingAttachments((prev) => [
+          ...prev,
+          {
+            url: data.url,
+            name: file.name,
+            type: file.type,
+            size: file.size,
+          },
+        ]);
+      } catch (err) {
+        toast.error(`Failed to upload ${file.name}`);
+      }
+    }
+
+    setUploading(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  const removeAttachment = (index: number) => {
+    setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes}B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  };
+
   // Quick-send: create conversation + pass initial message to ChatPanel
   const handleQuickSend = async () => {
     const content = homeInput.trim();
-    if (!content || !workspaceId || sending) return;
+    if ((!content && pendingAttachments.length === 0) || !workspaceId || sending) return;
 
     setSending(true);
     try {
@@ -126,9 +188,11 @@ export default function AIWriterPage() {
       const data = await res.json();
       const newConv = data.conversation;
       setConversations((prev) => [newConv, ...prev]);
-      setInitialMessage(content);
+      setInitialMessage(content || undefined);
+      setInitialAttachments(pendingAttachments.length > 0 ? pendingAttachments : undefined);
       setSelectedId(newConv.id);
       setHomeInput("");
+      setPendingAttachments([]);
       if (contentObjectId) {
         router.replace("/ai-writer");
       }
@@ -158,11 +222,13 @@ export default function AIWriterPage() {
     setConversations((prev) => prev.filter((c) => c.id !== selectedId));
     setSelectedId(null);
     setInitialMessage(undefined);
+    setInitialAttachments(undefined);
   };
 
   const handleBack = () => {
     setSelectedId(null);
     setInitialMessage(undefined);
+    setInitialAttachments(undefined);
     fetchConversations();
   };
 
@@ -199,6 +265,7 @@ export default function AIWriterPage() {
           onConversationUpdated={handleConversationUpdated}
           onBack={handleBack}
           initialMessage={initialMessage}
+          initialAttachments={initialAttachments}
         />
       </div>
     );
@@ -223,6 +290,36 @@ export default function AIWriterPage() {
 
           {/* Input area */}
           <div className="w-full max-w-2xl">
+            {/* Attachment preview strip */}
+            {pendingAttachments.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap mb-2 px-1">
+                {pendingAttachments.map((att, i) => (
+                  <div
+                    key={`${att.name}-${i}`}
+                    className="flex items-center gap-1.5 bg-muted rounded-lg px-2.5 py-1.5 text-xs group"
+                  >
+                    {att.type.startsWith("image/") ? (
+                      <img
+                        src={att.url}
+                        alt={att.name}
+                        className="h-8 w-8 rounded object-cover"
+                      />
+                    ) : (
+                      <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                    )}
+                    <span className="truncate max-w-[120px]">{att.name}</span>
+                    <span className="text-muted-foreground">{formatSize(att.size)}</span>
+                    <button
+                      onClick={() => removeAttachment(i)}
+                      className="h-4 w-4 rounded-full hover:bg-background flex items-center justify-center shrink-0 opacity-60 hover:opacity-100 transition-opacity"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="relative rounded-xl border bg-background shadow-sm focus-within:ring-2 focus-within:ring-ring focus-within:border-transparent transition-all">
               <textarea
                 ref={textareaRef}
@@ -232,10 +329,34 @@ export default function AIWriterPage() {
                 placeholder="Ask anything..."
                 disabled={sending}
                 rows={1}
-                className="w-full resize-none bg-transparent pl-4 pr-28 py-3.5 text-sm focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
+                className="w-full resize-none bg-transparent pl-4 pr-36 py-3.5 text-sm focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
                 style={{ minHeight: "48px", maxHeight: "160px" }}
               />
               <div className="absolute right-2 bottom-2 flex items-center gap-1.5">
+                {/* Attach button */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={sending || uploading}
+                  className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                  title="Attach file"
+                >
+                  {uploading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Paperclip className="h-3.5 w-3.5" />
+                  )}
+                </Button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.doc,.txt,.csv,.md"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+
                 {/* Model picker */}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -271,7 +392,7 @@ export default function AIWriterPage() {
                 <Button
                   size="icon"
                   onClick={handleQuickSend}
-                  disabled={sending || !homeInput.trim()}
+                  disabled={sending || uploading || (!homeInput.trim() && pendingAttachments.length === 0)}
                   className="h-8 w-8 shrink-0"
                 >
                   {sending ? (
