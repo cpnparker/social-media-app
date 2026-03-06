@@ -7,6 +7,8 @@ export interface AIConversation {
   visibility: "private" | "team";
   contentObjectId: number | null;
   contentTitle?: string;
+  customerId: number | null;
+  customerName?: string;
   model: string;
   messageCount?: number;
   lastMessagePreview?: string;

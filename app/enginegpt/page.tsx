@@ -15,6 +15,7 @@ import {
   Paperclip,
   X,
   FileText,
+  Building2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -239,6 +240,17 @@ export default function EngineGPTPage() {
       return false;
     return true;
   });
+
+  // Switch customer dropdown when selecting a thread with a customerId
+  const handleSelectThread = (conv: AIConversation) => {
+    if (conv.customerId && customerCtx) {
+      const custId = String(conv.customerId);
+      if (customerCtx.selectedCustomerId !== custId) {
+        customerCtx.setSelectedCustomerId(custId);
+      }
+    }
+    setSelectedId(conv.id);
+  };
 
   // ─── Chat view ───
   if (selectedId) {
@@ -468,7 +480,7 @@ export default function EngineGPTPage() {
               {filtered.map((conv) => (
                 <button
                   key={conv.id}
-                  onClick={() => setSelectedId(conv.id)}
+                  onClick={() => handleSelectThread(conv)}
                   className="w-full text-left rounded-xl border bg-background hover:bg-muted/50 transition-colors p-4 group"
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -477,6 +489,15 @@ export default function EngineGPTPage() {
                         <span className="text-sm font-semibold truncate">
                           {conv.title}
                         </span>
+                        {conv.customerName && (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] px-1.5 py-0 h-4 shrink-0 gap-1 text-muted-foreground"
+                          >
+                            <Building2 className="h-2.5 w-2.5" />
+                            {conv.customerName}
+                          </Badge>
+                        )}
                         <Badge
                           variant="secondary"
                           className="text-[10px] px-1.5 py-0 h-4 shrink-0"

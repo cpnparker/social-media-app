@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { aiConversations, aiMessages } from "@/lib/db/schema";
 import { eq, asc } from "drizzle-orm";
+import { supabase } from "@/lib/supabase";
 
 // GET /api/ai/conversations/[id] — get conversation with messages
 export async function GET(
@@ -44,7 +45,21 @@ export async function GET(
       attachments: m.attachments ? JSON.parse(m.attachments) : null,
     }));
 
-    return NextResponse.json({ conversation, messages });
+    // Resolve customer name if conversation has a customerId
+    let customerName: string | null = null;
+    if (conversation.customerId) {
+      const { data: client } = await supabase
+        .from("app_clients")
+        .select("name_client")
+        .eq("id_client", conversation.customerId)
+        .single();
+      if (client) customerName = client.name_client;
+    }
+
+    return NextResponse.json({
+      conversation: { ...conversation, customerName },
+      messages,
+    });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

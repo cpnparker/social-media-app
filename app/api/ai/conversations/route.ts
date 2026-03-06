@@ -66,7 +66,34 @@ export async function GET(req: NextRequest) {
       .orderBy(desc(aiConversations.updatedAt))
       .limit(limit);
 
-    return NextResponse.json({ conversations });
+    // Resolve customer names from Supabase
+    const customerIds = Array.from(
+      new Set(
+        conversations
+          .map((c) => c.customerId)
+          .filter((id): id is number => id !== null)
+      )
+    );
+
+    let customerNameMap = new Map<number, string>();
+    if (customerIds.length > 0) {
+      const { data: clients } = await supabase
+        .from("app_clients")
+        .select("id_client, name_client")
+        .in("id_client", customerIds);
+      if (clients) {
+        customerNameMap = new Map(
+          clients.map((c: any) => [c.id_client, c.name_client])
+        );
+      }
+    }
+
+    const enriched = conversations.map((c) => ({
+      ...c,
+      customerName: c.customerId ? customerNameMap.get(c.customerId) || null : null,
+    }));
+
+    return NextResponse.json({ conversations: enriched });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
