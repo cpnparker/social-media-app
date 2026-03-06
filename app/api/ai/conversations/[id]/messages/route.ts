@@ -1,36 +1,50 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { aiConversations, aiMessages } from "@/lib/db/schema";
+import { aiConversations, aiMessages, aiUsage, workspaces } from "@/lib/db/schema";
 import { eq, asc } from "drizzle-orm";
 import { supabase } from "@/lib/supabase";
 import { createStreamingResponse, type AIMessage, type AIAttachment } from "@/lib/ai/providers";
 import { buildSystemPrompt } from "@/lib/ai/system-prompts";
+import { fetchBlobContent } from "@/lib/ai/blob-utils";
 import type { Attachment } from "@/lib/types/ai";
 
+// ── Cost calculation for usage tracking ──
+const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> = {
+  "claude-sonnet-4-20250514": { inputPer1M: 300, outputPer1M: 1500 }, // $3/$15 in cents
+  "grok-4-1-fast": { inputPer1M: 20, outputPer1M: 50 },              // $0.20/$0.50
+  "grok-3-mini": { inputPer1M: 30, outputPer1M: 50 },                // $0.30/$0.50
+  "grok-3": { inputPer1M: 300, outputPer1M: 1500 },                  // legacy
+};
+
+function calculateCostTenths(model: string, inputTokens: number, outputTokens: number): number {
+  const rates = MODEL_COSTS[model] || MODEL_COSTS["claude-sonnet-4-20250514"];
+  const inputCost = (inputTokens / 1_000_000) * rates.inputPer1M * 10;
+  const outputCost = (outputTokens / 1_000_000) * rates.outputPer1M * 10;
+  return Math.round(inputCost + outputCost);
+}
+
 // ── Helper: extract text from a document attachment ──
+// Uses fetchBlobContent() which handles both private proxy URLs and legacy public URLs
 async function extractDocumentText(att: Attachment): Promise<string | undefined> {
   try {
-    const response = await fetch(att.url);
-    if (!response.ok) return undefined;
+    const { buffer } = await fetchBlobContent(att.url);
 
     if (att.type === "application/pdf") {
       const pdfParseModule = await import("pdf-parse");
       const pdfParse = (pdfParseModule as any).default || pdfParseModule;
-      const buffer = Buffer.from(await response.arrayBuffer());
       const data = await pdfParse(buffer);
       return data.text;
     }
 
     if (att.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
       const mammoth = await import("mammoth");
-      const buffer = Buffer.from(await response.arrayBuffer());
       const result = await mammoth.extractRawText({ buffer });
       return result.value;
     }
 
     if (att.type.startsWith("text/")) {
-      return await response.text();
+      return buffer.toString("utf-8");
     }
 
     return undefined;
@@ -101,13 +115,11 @@ async function fetchClientContext(clientId: number) {
       .from("app_contracts")
       .select("name_contract, units_contract, units_total_completed, flag_active, date_start, date_end, information_notes")
       .eq("id_client", clientId)
-      .is("date_deleted", null)
       .order("flag_active", { ascending: false }),
     supabase
       .from("app_content")
       .select("name_content, type_content, flag_completed, flag_spiked, units_content")
       .eq("id_client", clientId)
-      .is("date_deleted", null)
       .order("date_created", { ascending: false })
       .limit(30),
     supabase
@@ -164,6 +176,103 @@ async function fetchClientContext(clientId: number) {
       recentTitles: inProduction.slice(0, 8).map((c) => `${c.name_content} (${c.type_content})`),
     },
     socialPlatforms: platformCounts,
+  };
+}
+
+// ── Helper: fetch ideas for a specific client ──
+async function fetchClientIdeas(clientId: number) {
+  const { data: rows } = await supabase
+    .from("app_ideas")
+    .select("name_idea, information_brief, status, name_topic_array, date_created, date_commissioned")
+    .eq("id_client", clientId)
+    .order("date_created", { ascending: false })
+    .limit(20);
+
+  return (rows || []).map((r: any) => ({
+    title: r.name_idea as string,
+    brief: r.information_brief as string | null,
+    status: r.status as string,
+    topicTags: r.name_topic_array as string[] | null,
+    createdAt: r.date_created as string,
+    commissionedAt: r.date_commissioned as string | null,
+  }));
+}
+
+// ── Helper: fetch workspace-level summary for "All Clients" mode ──
+async function fetchWorkspaceSummary() {
+  const [clientsRes, contractsRes, contentRes, ideasRes] = await Promise.all([
+    supabase
+      .from("app_clients")
+      .select("id_client, name_client"),
+    supabase
+      .from("app_contracts")
+      .select("units_contract, units_total_completed, name_client")
+      .eq("flag_active", 1),
+    supabase
+      .from("app_content")
+      .select("name_content, type_content, flag_completed, flag_spiked, units_content, name_client")
+      .order("date_created", { ascending: false })
+      .limit(100),
+    supabase
+      .from("app_ideas")
+      .select("name_idea, information_brief, status, name_client, date_created, date_commissioned")
+      .order("date_created", { ascending: false })
+      .limit(50),
+  ]);
+
+  const clients = clientsRes.data || [];
+  const contracts = contractsRes.data || [];
+  const content = contentRes.data || [];
+  const ideas = ideasRes.data || [];
+
+  // Content summary
+  const published = content.filter((c: any) => c.flag_completed === 1);
+  const inProduction = content.filter((c: any) => c.flag_completed !== 1 && c.flag_spiked !== 1);
+  const totalCU = content.reduce((sum: number, c: any) => sum + (c.units_content || 0), 0);
+
+  // Ideas status breakdown
+  const ideasByStatus: Record<string, number> = {};
+  ideas.forEach((i: any) => {
+    const s = i.status || "unknown";
+    ideasByStatus[s] = (ideasByStatus[s] || 0) + 1;
+  });
+
+  // Ideas this week
+  const weekAgo = new Date();
+  weekAgo.setDate(weekAgo.getDate() - 7);
+  const ideasThisWeek = ideas.filter((i: any) => i.date_created && new Date(i.date_created) >= weekAgo);
+
+  // Contracts summary
+  const totalContractCU = contracts.reduce((sum: number, c: any) => sum + (c.units_contract || 0), 0);
+  const completedContractCU = contracts.reduce((sum: number, c: any) => sum + (c.units_total_completed || 0), 0);
+
+  return {
+    clientCount: clients.length,
+    contracts: {
+      active: contracts.length,
+      totalCU: totalContractCU,
+      completedCU: completedContractCU,
+      remainingCU: totalContractCU - completedContractCU,
+    },
+    content: {
+      total: content.length,
+      published: published.length,
+      inProduction: inProduction.length,
+      totalCU,
+    },
+    ideas: {
+      total: ideas.length,
+      byStatus: ideasByStatus,
+      thisWeek: ideasThisWeek.length,
+      recent: ideas.slice(0, 20).map((i: any) => ({
+        title: i.name_idea as string,
+        brief: i.information_brief as string | null,
+        status: i.status as string,
+        clientName: i.name_client as string | null,
+        createdAt: i.date_created as string,
+        commissionedAt: i.date_commissioned as string | null,
+      })),
+    },
   };
 }
 
@@ -253,8 +362,8 @@ export async function POST(
       createdBy: userId,
     });
 
-    // Load conversation history + workspace config in parallel
-    const [history, workspaceConfig] = await Promise.all([
+    // Load conversation history + workspace config + AI settings in parallel
+    const [history, workspaceConfig, wsSettings] = await Promise.all([
       db
         .select({
           role: aiMessages.role,
@@ -265,7 +374,21 @@ export async function POST(
         .where(eq(aiMessages.conversationId, conversationId))
         .orderBy(asc(aiMessages.createdAt)),
       fetchWorkspaceConfig(),
+      db
+        .select({
+          aiContextConfig: workspaces.aiContextConfig,
+          aiCuDescription: workspaces.aiCuDescription,
+          aiMaxTokens: workspaces.aiMaxTokens,
+        })
+        .from(workspaces)
+        .where(eq(workspaces.id, conversation.workspaceId))
+        .limit(1),
     ]);
+
+    // Allow per-request context config override from the client
+    const contextConfig = body.contextConfig ?? wsSettings[0]?.aiContextConfig ?? undefined;
+    const cuDescription = wsSettings[0]?.aiCuDescription ?? undefined;
+    const maxTokens = wsSettings[0]?.aiMaxTokens || 4096;
 
     // Build messages with attachments for AI
     const messages: AIMessage[] = [];
@@ -293,22 +416,41 @@ export async function POST(
     // Build context based on conversation scope
     let clientContext: Awaited<ReturnType<typeof fetchClientContext>> = null;
     let contentDetail: Awaited<ReturnType<typeof fetchContentDetail>> = null;
+    let clientIdeas: Awaited<ReturnType<typeof fetchClientIdeas>> | null = null;
+    let workspaceSummary: Awaited<ReturnType<typeof fetchWorkspaceSummary>> | null = null;
 
     if (conversation.contentObjectId) {
       // Content-specific conversation — fetch content detail + client context
       contentDetail = await fetchContentDetail(conversation.contentObjectId);
       if (contentDetail?.clientId) {
-        clientContext = await fetchClientContext(contentDetail.clientId);
+        const [cc, ci] = await Promise.all([
+          fetchClientContext(contentDetail.clientId),
+          contextConfig?.ideas !== false ? fetchClientIdeas(contentDetail.clientId) : null,
+        ]);
+        clientContext = cc;
+        clientIdeas = ci;
       }
     } else if (conversation.customerId) {
       // Client-scoped standalone conversation
-      clientContext = await fetchClientContext(conversation.customerId);
+      const [cc, ci] = await Promise.all([
+        fetchClientContext(conversation.customerId),
+        contextConfig?.ideas !== false ? fetchClientIdeas(conversation.customerId) : null,
+      ]);
+      clientContext = cc;
+      clientIdeas = ci;
+    } else {
+      // Workspace-level "All Clients" conversation
+      workspaceSummary = await fetchWorkspaceSummary();
     }
 
     const systemPrompt = buildSystemPrompt({
       workspaceConfig,
       clientContext,
       contentDetail,
+      contextConfig,
+      cuDescription,
+      clientIdeas,
+      workspaceSummary,
     });
 
     const model = body.model || conversation.model;
@@ -330,8 +472,8 @@ export async function POST(
     // Create streaming response
     const stream = createStreamingResponse(
       messages,
-      { model, systemPrompt },
-      async (fullText: string) => {
+      { model, systemPrompt, maxTokens },
+      async ({ fullText, inputTokens, outputTokens }) => {
         await db.insert(aiMessages).values({
           conversationId,
           role: "assistant",
@@ -342,6 +484,19 @@ export async function POST(
           .update(aiConversations)
           .set({ updatedAt: new Date() })
           .where(eq(aiConversations.id, conversationId));
+
+        // Log AI usage for cost tracking
+        const costTenths = calculateCostTenths(model, inputTokens, outputTokens);
+        await db.insert(aiUsage).values({
+          workspaceId: conversation.workspaceId,
+          userId,
+          model,
+          source: conversation.contentObjectId ? "engine" : "enginegpt",
+          inputTokens,
+          outputTokens,
+          costTenths,
+          conversationId,
+        });
       }
     );
 
