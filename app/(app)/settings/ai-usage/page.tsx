@@ -96,6 +96,8 @@ function formatTokens(n: number): string {
 
 const MODEL_LABELS: Record<string, string> = {
   "claude-sonnet-4-20250514": "Claude Sonnet 4",
+  "gpt-4o": "GPT-4o",
+  "gpt-4o-mini": "GPT-4o Mini",
   "grok-4-1-fast": "Grok 4 Fast",
   "grok-3-mini": "Grok 3 Mini",
   "grok-3": "Grok 3 (Legacy)",
@@ -103,6 +105,7 @@ const MODEL_LABELS: Record<string, string> = {
 
 const PROVIDER_LABELS: Record<string, string> = {
   anthropic: "Anthropic",
+  openai: "OpenAI",
   xai: "xAI (Grok)",
 };
 

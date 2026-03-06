@@ -6,12 +6,14 @@
 
 export const AI_MODELS = [
   { id: "claude-sonnet-4-20250514", label: "Claude Sonnet 4", provider: "anthropic" },
-  { id: "grok-3", label: "Grok 3", provider: "xai" },
+  { id: "gpt-4o", label: "GPT-4o", provider: "openai" },
+  { id: "gpt-4o-mini", label: "GPT-4o Mini", provider: "openai" },
+  { id: "grok-4-1-fast", label: "Grok 4 Fast", provider: "xai" },
   { id: "grok-3-mini", label: "Grok 3 Mini", provider: "xai" },
 ] as const;
 
 export type AIModelId = (typeof AI_MODELS)[number]["id"];
-export const DEFAULT_MODEL: AIModelId = "claude-sonnet-4-20250514";
+export const DEFAULT_MODEL: AIModelId = "grok-4-1-fast";
 
 /** Get display label for a model ID */
 export function getModelLabel(modelId: string): string {
