@@ -9,6 +9,7 @@ import {
   Pencil,
   Globe,
   ArrowLeft,
+  Building2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -299,6 +300,15 @@ export default function ChatPanel({
             >
               {modelLabel}
             </Badge>
+            {conversation.customerName && (
+              <Badge
+                variant="outline"
+                className="text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4 gap-1 text-muted-foreground"
+              >
+                <Building2 className="h-2.5 w-2.5" />
+                {conversation.customerName}
+              </Badge>
+            )}
           </div>
         </div>
 

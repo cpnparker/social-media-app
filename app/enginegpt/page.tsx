@@ -26,6 +26,7 @@ import {
   LogOut,
   ChevronsUpDown,
   Check,
+  ArrowLeft,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -37,6 +38,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AI_MODELS, DEFAULT_MODEL, getModelLabel } from "@/lib/ai/models";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
@@ -65,6 +71,8 @@ export default function EngineGPTPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userName, setUserName] = useState("");
   const [userEmail, setUserEmail] = useState("");
+  const [clientSearchQuery, setClientSearchQuery] = useState("");
+  const [clientPopoverOpen, setClientPopoverOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -72,6 +80,13 @@ export default function EngineGPTPage() {
   const customers = customerCtx?.customers || [];
   const selectedCustomer = customerCtx?.selectedCustomer;
   const canViewAll = customerCtx?.canViewAll ?? false;
+
+  // Filter clients by search query
+  const filteredClients = clientSearchQuery
+    ? customers.filter((c) =>
+        c.name.toLowerCase().includes(clientSearchQuery.toLowerCase())
+      )
+    : customers;
 
   // Fetch user info for sidebar
   useEffect(() => {
@@ -254,6 +269,13 @@ export default function EngineGPTPage() {
     setSidebarOpen(false);
   };
 
+  const handleBack = () => {
+    setSelectedId(null);
+    setInitialMessage(undefined);
+    setInitialAttachments(undefined);
+    fetchConversations();
+  };
+
   // Time formatting
   const timeAgo = (dateStr: string) => {
     const diff = Date.now() - new Date(dateStr).getTime();
@@ -292,6 +314,11 @@ export default function EngineGPTPage() {
     setInitialAttachments(undefined);
     setSidebarOpen(false);
   };
+
+  // Get the currently selected conversation object
+  const selectedConversation = selectedId
+    ? conversations.find((c) => c.id === selectedId) ?? null
+    : null;
 
   return (
     <>
@@ -334,7 +361,109 @@ export default function EngineGPTPage() {
             </button>
           </div>
 
-          {/* Search */}
+          {/* Client selector (searchable popover) */}
+          {customers.length > 0 && (
+            <Popover
+              open={clientPopoverOpen}
+              onOpenChange={(open) => {
+                setClientPopoverOpen(open);
+                if (!open) setClientSearchQuery("");
+              }}
+            >
+              <PopoverTrigger asChild>
+                <button className="w-full flex items-center gap-2 rounded-lg bg-white/5 hover:bg-white/10 px-2.5 py-2 text-sm transition-colors text-left">
+                  <Building2 className="h-3.5 w-3.5 text-white/50 shrink-0" />
+                  <span className="flex-1 truncate text-white/80 text-xs font-medium">
+                    {selectedCustomer?.name || "All Clients"}
+                  </span>
+                  <ChevronsUpDown className="h-3 w-3 text-white/40 shrink-0" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="start"
+                side="bottom"
+                className="w-[256px] p-0"
+              >
+                {/* Search input */}
+                <div className="flex items-center border-b px-3">
+                  <Search className="mr-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <input
+                    placeholder="Search clients..."
+                    value={clientSearchQuery}
+                    onChange={(e) => setClientSearchQuery(e.target.value)}
+                    className="flex h-9 w-full bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
+                  />
+                  {clientSearchQuery && (
+                    <button
+                      onClick={() => setClientSearchQuery("")}
+                      className="ml-1 h-4 w-4 shrink-0 text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Client list */}
+                <div className="max-h-[240px] overflow-y-auto p-1">
+                  {canViewAll && !clientSearchQuery && (
+                    <button
+                      onClick={() => {
+                        customerCtx?.setSelectedCustomerId(null);
+                        setClientPopoverOpen(false);
+                        setClientSearchQuery("");
+                      }}
+                      className={cn(
+                        "w-full flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent transition-colors text-left",
+                        !selectedCustomer && "bg-accent"
+                      )}
+                    >
+                      <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <span className="flex-1">All Clients</span>
+                      {!selectedCustomer && (
+                        <Check className="h-4 w-4 text-primary shrink-0" />
+                      )}
+                    </button>
+                  )}
+                  {filteredClients.length === 0 ? (
+                    <p className="py-4 text-center text-sm text-muted-foreground">
+                      No clients found
+                    </p>
+                  ) : (
+                    filteredClients.map((c) => (
+                      <button
+                        key={c.id}
+                        onClick={() => {
+                          customerCtx?.setSelectedCustomerId(c.id);
+                          setClientPopoverOpen(false);
+                          setClientSearchQuery("");
+                        }}
+                        className={cn(
+                          "w-full flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent transition-colors text-left",
+                          selectedCustomer?.id === c.id && "bg-accent"
+                        )}
+                      >
+                        {c.logoUrl ? (
+                          <img
+                            src={c.logoUrl}
+                            alt=""
+                            className="h-4 w-4 rounded object-cover shrink-0"
+                          />
+                        ) : (
+                          <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                        )}
+                        <span className="flex-1 truncate">{c.name}</span>
+                        {selectedCustomer?.id === c.id && (
+                          <Check className="h-4 w-4 text-primary shrink-0" />
+                        )}
+                      </button>
+                    ))
+                  )}
+                </div>
+              </PopoverContent>
+            </Popover>
+          )}
+
+          {/* Search chats */}
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/40" />
             <input
@@ -343,6 +472,14 @@ export default function EngineGPTPage() {
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full h-8 rounded-lg bg-white/10 border-0 pl-8 pr-3 text-sm text-white placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-white/20"
             />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/70"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
           </div>
 
           {/* Private / Team tabs */}
@@ -408,9 +545,12 @@ export default function EngineGPTPage() {
                     </span>
                   </div>
                   {conv.customerName && (
-                    <p className="text-[11px] text-white/40 truncate mt-0.5">
-                      {conv.customerName}
-                    </p>
+                    <div className="flex items-center gap-1 mt-0.5">
+                      <Building2 className="h-2.5 w-2.5 text-white/30 shrink-0" />
+                      <p className="text-[11px] text-white/40 truncate">
+                        {conv.customerName}
+                      </p>
+                    </div>
                   )}
                 </button>
               ))}
@@ -418,66 +558,8 @@ export default function EngineGPTPage() {
           )}
         </div>
 
-        {/* Bottom section */}
-        <div className="shrink-0 border-t border-white/10 p-3 space-y-1">
-          {/* Client dropdown */}
-          {customers.length > 0 && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button className="w-full flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-white/10 transition-colors text-left">
-                  <Building2 className="h-3.5 w-3.5 text-white/50 shrink-0" />
-                  <span className="flex-1 truncate text-white/70 text-xs">
-                    {selectedCustomer?.name || "All Clients"}
-                  </span>
-                  <ChevronsUpDown className="h-3 w-3 text-white/40 shrink-0" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" side="top" className="w-56">
-                {canViewAll && (
-                  <>
-                    <DropdownMenuItem
-                      onClick={() =>
-                        customerCtx?.setSelectedCustomerId(null)
-                      }
-                      className="gap-2"
-                    >
-                      <Building2 className="h-4 w-4 text-muted-foreground" />
-                      <span className="flex-1">All Clients</span>
-                      {!selectedCustomer && (
-                        <Check className="h-4 w-4 text-primary shrink-0" />
-                      )}
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                  </>
-                )}
-                {customers.map((c) => (
-                  <DropdownMenuItem
-                    key={c.id}
-                    onClick={() =>
-                      customerCtx?.setSelectedCustomerId(c.id)
-                    }
-                    className="gap-2"
-                  >
-                    {c.logoUrl ? (
-                      <img
-                        src={c.logoUrl}
-                        alt=""
-                        className="h-4 w-4 rounded object-cover"
-                      />
-                    ) : (
-                      <Building2 className="h-4 w-4 text-muted-foreground" />
-                    )}
-                    <span className="flex-1 truncate">{c.name}</span>
-                    {selectedCustomer?.id === c.id && (
-                      <Check className="h-4 w-4 text-primary shrink-0" />
-                    )}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-
-          {/* User menu */}
+        {/* Bottom section — user only */}
+        <div className="shrink-0 border-t border-white/10 p-3">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-white/10 transition-colors text-left">
@@ -520,16 +602,38 @@ export default function EngineGPTPage() {
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Mobile header with hamburger */}
         <div className="lg:hidden shrink-0 flex items-center gap-2 h-12 px-3 border-b bg-background">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors"
-          >
-            <Menu className="h-5 w-5" />
-          </button>
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-primary" />
-            <span className="text-sm font-bold">EngineGPT</span>
-          </div>
+          {selectedId ? (
+            <>
+              <button
+                onClick={handleBack}
+                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </button>
+              <span className="text-sm font-semibold truncate flex-1">
+                {selectedConversation?.title || "Chat"}
+              </span>
+              {selectedConversation?.customerName && (
+                <span className="text-[11px] text-muted-foreground bg-muted px-2 py-0.5 rounded-full shrink-0 flex items-center gap-1">
+                  <Building2 className="h-2.5 w-2.5" />
+                  {selectedConversation.customerName}
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors"
+              >
+                <Menu className="h-5 w-5" />
+              </button>
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-primary" />
+                <span className="text-sm font-bold">EngineGPT</span>
+              </div>
+            </>
+          )}
         </div>
 
         {selectedId ? (
