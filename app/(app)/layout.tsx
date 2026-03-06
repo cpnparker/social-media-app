@@ -29,17 +29,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       });
   }, [router, pathname]);
 
-  // Operations subdomain redirect
-  useEffect(() => {
-    if (
-      typeof window !== "undefined" &&
-      window.location.hostname === "operations.thecontentengine.com" &&
-      pathname === "/"
-    ) {
-      router.replace("/operations/commissioned-cus");
-    }
-  }, [router, pathname]);
-
   if (!authChecked) {
     return (
       <div className="flex h-screen items-center justify-center">
