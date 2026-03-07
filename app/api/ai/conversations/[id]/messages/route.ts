@@ -5,7 +5,7 @@ import { aiConversations, aiMessages, aiUsage, workspaces } from "@/lib/db/schem
 import { eq, asc } from "drizzle-orm";
 import { supabase } from "@/lib/supabase";
 import { createStreamingResponse, type AIMessage, type AIAttachment } from "@/lib/ai/providers";
-import { buildSystemPrompt } from "@/lib/ai/system-prompts";
+import { buildSystemPrompt, normalizeContextConfig, isFullDetail, type NormalizedContextConfig, type DetailLevel } from "@/lib/ai/system-prompts";
 import { fetchBlobContent } from "@/lib/ai/blob-utils";
 import type { Attachment } from "@/lib/types/ai";
 
@@ -105,8 +105,48 @@ async function fetchWorkspaceConfig() {
   };
 }
 
-// ── Helper: fetch client context (compact summary) ──
-async function fetchClientContext(clientId: number) {
+// ── Helper: get date cutoff and item limit for a detail level ──
+function getDetailParams(level: DetailLevel): { dateCutoff: string | null; limit: number } {
+  const now = new Date();
+  if (level === "full-week") {
+    now.setDate(now.getDate() - 7);
+    return { dateCutoff: now.toISOString(), limit: 30 };
+  }
+  if (level === "full-month") {
+    now.setMonth(now.getMonth() - 1);
+    return { dateCutoff: now.toISOString(), limit: 50 };
+  }
+  if (level === "full-year") {
+    now.setFullYear(now.getFullYear() - 1);
+    return { dateCutoff: now.toISOString(), limit: 100 };
+  }
+  return { dateCutoff: null, limit: 30 };
+}
+
+// ── Helper: fetch client context (with optional full detail) ──
+async function fetchClientContext(clientId: number, detailConfig?: NormalizedContextConfig) {
+  const contractLevel = detailConfig?.contracts || "summary";
+  const contentLevel = detailConfig?.contentPipeline || "summary";
+  const fullContracts = isFullDetail(contractLevel);
+  const fullContent = isFullDetail(contentLevel);
+
+  // Select extra fields for full content mode (briefs, audience, topics, etc.)
+  const contentSelect = fullContent
+    ? "name_content, type_content, flag_completed, flag_spiked, units_content, id_contract, information_brief, information_audience, name_topic_array, name_campaign_array, information_platform"
+    : "name_content, type_content, flag_completed, flag_spiked, units_content, id_contract";
+
+  // Date filter and limits for content based on time window
+  const contentParams = fullContent ? getDetailParams(contentLevel) : { dateCutoff: null, limit: 30 };
+
+  // Build content query with optional date filter
+  let contentQ = supabase
+    .from("app_content")
+    .select(contentSelect)
+    .eq("id_client", clientId);
+  if (contentParams.dateCutoff) {
+    contentQ = contentQ.gte("date_created", contentParams.dateCutoff);
+  }
+
   const [clientRes, contractsRes, contentRes, socialRes] = await Promise.all([
     supabase
       .from("app_clients")
@@ -115,15 +155,12 @@ async function fetchClientContext(clientId: number) {
       .single(),
     supabase
       .from("app_contracts")
-      .select("name_contract, units_contract, units_total_completed, flag_active, date_start, date_end, information_notes")
+      .select("id_contract, name_contract, units_contract, units_total_completed, flag_active, date_start, date_end, information_notes")
       .eq("id_client", clientId)
       .order("flag_active", { ascending: false }),
-    supabase
-      .from("app_content")
-      .select("name_content, type_content, flag_completed, flag_spiked, units_content")
-      .eq("id_client", clientId)
+    contentQ
       .order("date_created", { ascending: false })
-      .limit(30),
+      .limit(contentParams.limit),
     supabase
       .from("social")
       .select("network")
@@ -134,33 +171,47 @@ async function fetchClientContext(clientId: number) {
   const client = clientRes.data;
   if (!client) return null;
 
-  // Summarize content pipeline into counts
+  // Categorize content by status
   const content = contentRes.data || [];
-  const published = content.filter((c) => c.flag_completed === 1);
-  const inProduction = content.filter((c) => c.flag_completed !== 1 && c.flag_spiked !== 1);
+  const commissioned = content.filter((c: any) => c.flag_completed !== 1 && c.flag_spiked !== 1);
+  const completed = content.filter((c: any) => c.flag_completed === 1);
+  const spiked = content.filter((c: any) => c.flag_spiked === 1);
 
   // Summarize social platforms used
   const social = socialRes.data || [];
   const platformCounts: Record<string, number> = {};
-  social.forEach((s) => {
+  social.forEach((s: any) => {
     if (s.network) platformCounts[s.network] = (platformCounts[s.network] || 0) + 1;
   });
 
-  // Content type breakdown
-  const typeBreakdown: Record<string, { total: number; published: number; inProd: number }> = {};
-  content.forEach((c) => {
+  // Content type breakdown by category
+  const typeBreakdown: Record<string, { total: number; commissioned: number; completed: number; spiked: number }> = {};
+  content.forEach((c: any) => {
     const t = c.type_content || "other";
-    if (!typeBreakdown[t]) typeBreakdown[t] = { total: 0, published: 0, inProd: 0 };
+    if (!typeBreakdown[t]) typeBreakdown[t] = { total: 0, commissioned: 0, completed: 0, spiked: 0 };
     typeBreakdown[t].total++;
-    if (c.flag_completed === 1) typeBreakdown[t].published++;
-    else if (c.flag_spiked !== 1) typeBreakdown[t].inProd++;
+    if (c.flag_completed === 1) typeBreakdown[t].completed++;
+    else if (c.flag_spiked === 1) typeBreakdown[t].spiked++;
+    else typeBreakdown[t].commissioned++;
   });
+
+  // For full contracts: build map of content items per contract
+  const contractContentMap: Record<number, any[]> = {};
+  if (fullContracts) {
+    content.forEach((c: any) => {
+      if (c.id_contract) {
+        if (!contractContentMap[c.id_contract]) contractContentMap[c.id_contract] = [];
+        contractContentMap[c.id_contract].push(c);
+      }
+    });
+  }
 
   return {
     name: client.name_client,
     industry: client.information_industry,
     description: client.information_description,
-    contracts: (contractsRes.data || []).map((c) => ({
+    contracts: (contractsRes.data || []).map((c: any) => ({
+      id: c.id_contract,
       name: c.name_contract,
       totalUnits: c.units_contract,
       completedUnits: c.units_total_completed,
@@ -168,27 +219,58 @@ async function fetchClientContext(clientId: number) {
       startDate: c.date_start,
       endDate: c.date_end,
       notes: c.information_notes,
+      ...(fullContracts && contractContentMap[c.id_contract]?.length ? {
+        commissionedContent: contractContentMap[c.id_contract].map((item: any) => ({
+          title: item.name_content,
+          type: item.type_content || "other",
+          cu: item.units_content || 0,
+          status: item.flag_completed === 1 ? "Completed" : item.flag_spiked === 1 ? "Spiked" : "Commissioned",
+        }))
+      } : {}),
     })),
     contentSummary: {
       total: content.length,
-      published: published.length,
-      inProduction: inProduction.length,
-      totalCU: content.reduce((sum, c) => sum + (c.units_content || 0), 0),
+      commissioned: commissioned.length,
+      completed: completed.length,
+      spiked: spiked.length,
+      totalCU: content.reduce((sum: number, c: any) => sum + (c.units_content || 0), 0),
       byType: typeBreakdown,
-      recentTitles: inProduction.slice(0, 8).map((c) => `${c.name_content} (${c.type_content})`),
+      recentCommissioned: commissioned.slice(0, 8).map((c: any) => `${c.name_content} (${c.type_content})`),
+      recentCompleted: completed.slice(0, 8).map((c: any) => `${c.name_content} (${c.type_content})`),
+      recentSpiked: spiked.slice(0, 5).map((c: any) => `${c.name_content} (${c.type_content})`),
     },
+    ...(fullContent ? {
+      contentItems: content.map((c: any) => ({
+        title: c.name_content,
+        type: c.type_content || "other",
+        cu: c.units_content || 0,
+        status: c.flag_completed === 1 ? "Completed" : c.flag_spiked === 1 ? "Spiked" : "Commissioned",
+        brief: c.information_brief || undefined,
+        audience: c.information_audience || undefined,
+        topics: c.name_topic_array || undefined,
+        campaigns: c.name_campaign_array || undefined,
+        platform: c.information_platform || undefined,
+      }))
+    } : {}),
     socialPlatforms: platformCounts,
   };
 }
 
 // ── Helper: fetch ideas for a specific client ──
-async function fetchClientIdeas(clientId: number) {
-  const { data: rows } = await supabase
+async function fetchClientIdeas(clientId: number, detailLevel?: DetailLevel) {
+  const isFull = detailLevel ? isFullDetail(detailLevel) : false;
+  const params = isFull && detailLevel ? getDetailParams(detailLevel) : { dateCutoff: null, limit: 20 };
+
+  let q = supabase
     .from("app_ideas")
     .select("name_idea, information_brief, status, name_topic_array, date_created, date_commissioned")
-    .eq("id_client", clientId)
+    .eq("id_client", clientId);
+  if (params.dateCutoff) {
+    q = q.gte("date_created", params.dateCutoff);
+  }
+  const { data: rows } = await q
     .order("date_created", { ascending: false })
-    .limit(20);
+    .limit(params.limit);
 
   return (rows || []).map((r: any) => ({
     title: r.name_idea as string,
@@ -388,8 +470,8 @@ export async function POST(
         .limit(1),
     ]);
 
-    // Allow per-request context config override from the client
-    const contextConfig = body.contextConfig ?? wsSettings[0]?.aiContextConfig ?? undefined;
+    // Allow per-request context config override from the client (normalize to detail levels)
+    const contextConfig = normalizeContextConfig(body.contextConfig ?? wsSettings[0]?.aiContextConfig ?? undefined);
     const cuDescription = wsSettings[0]?.aiCuDescription ?? undefined;
     const maxTokens = wsSettings[0]?.aiMaxTokens || 4096;
     const debugMode = body.debugMode || wsSettings[0]?.aiDebugMode || false;
@@ -428,8 +510,8 @@ export async function POST(
       contentDetail = await fetchContentDetail(conversation.contentObjectId);
       if (contentDetail?.clientId) {
         const [cc, ci] = await Promise.all([
-          fetchClientContext(contentDetail.clientId),
-          contextConfig?.ideas !== false ? fetchClientIdeas(contentDetail.clientId) : null,
+          fetchClientContext(contentDetail.clientId, contextConfig),
+          contextConfig.ideas !== "off" ? fetchClientIdeas(contentDetail.clientId, contextConfig.ideas) : null,
         ]);
         clientContext = cc;
         clientIdeas = ci;
@@ -437,8 +519,8 @@ export async function POST(
     } else if (conversation.customerId) {
       // Client-scoped standalone conversation
       const [cc, ci] = await Promise.all([
-        fetchClientContext(conversation.customerId),
-        contextConfig?.ideas !== false ? fetchClientIdeas(conversation.customerId) : null,
+        fetchClientContext(conversation.customerId, contextConfig),
+        contextConfig.ideas !== "off" ? fetchClientIdeas(conversation.customerId, contextConfig.ideas) : null,
       ]);
       clientContext = cc;
       clientIdeas = ci;
@@ -476,7 +558,7 @@ export async function POST(
     // Create streaming response
     const aiStream = createStreamingResponse(
       messages,
-      { model, systemPrompt, maxTokens },
+      { model, systemPrompt, maxTokens, webSearch: contextConfig.webSearch === "on" },
       async ({ fullText, inputTokens, outputTokens }) => {
         await db.insert(aiMessages).values({
           conversationId,

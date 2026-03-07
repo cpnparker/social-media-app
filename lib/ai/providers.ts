@@ -21,6 +21,7 @@ export interface AIProviderConfig {
   model: string;
   maxTokens?: number;
   systemPrompt?: string;
+  webSearch?: boolean;
 }
 
 /* ─────────────── Model Registry ─────────────── */
@@ -285,20 +286,35 @@ async function streamAnthropic(
     }))
   );
 
+  // Build optional tools array (web search for Claude)
+  const tools: any[] | undefined = config.webSearch
+    ? [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }]
+    : undefined;
+
   const stream = anthropic.messages.stream({
     model: apiModel,
     max_tokens: config.maxTokens || 4096,
     system: systemText,
     messages: anthropicMessages,
+    ...(tools ? { tools } : {}),
   });
 
   let fullText = "";
   for await (const event of stream) {
+    // Detect when Claude initiates a web search and notify the client
+    if (event.type === "content_block_start") {
+      const block = (event as any).content_block;
+      if (block?.type === "server_tool_use" && block?.name === "web_search") {
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify({ searching: true })}\n\n`)
+        );
+      }
+    }
     if (
       event.type === "content_block_delta" &&
-      event.delta.type === "text_delta"
+      (event.delta as any).type === "text_delta"
     ) {
-      const token = event.delta.text;
+      const token = (event.delta as any).text;
       fullText += token;
       controller.enqueue(
         encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)

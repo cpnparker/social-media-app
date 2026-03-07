@@ -1,4 +1,53 @@
-// ── Types for the new compact context system ──
+// ── Detail level types ──
+
+export type DetailLevel = "off" | "summary" | "full-week" | "full-month" | "full-year";
+
+export interface NormalizedContextConfig {
+  contracts: DetailLevel;
+  contentPipeline: DetailLevel;
+  socialPresence: DetailLevel;
+  ideas: DetailLevel;
+  webSearch: "on" | "off";
+}
+
+/** Check if a detail level is any "full" variant */
+export function isFullDetail(level: DetailLevel | string): boolean {
+  return level === "full-week" || level === "full-month" || level === "full-year";
+}
+
+/** Get a human-readable window label for full detail levels */
+export function getWindowLabel(level: DetailLevel | string): string {
+  if (level === "full-week") return "last 7 days";
+  if (level === "full-month") return "last 30 days";
+  if (level === "full-year") return "last 12 months";
+  return "";
+}
+
+/** Normalize a legacy boolean or string value to a DetailLevel */
+export function normalizeDetailLevel(value: any): DetailLevel {
+  if (value === true) return "summary";
+  if (value === false || value === "off") return "off";
+  if (value === "full") return "full-month"; // migrate old "full" to "full-month"
+  if (value === "full-week") return "full-week";
+  if (value === "full-month") return "full-month";
+  if (value === "full-year") return "full-year";
+  if (value === "summary") return "summary";
+  return "summary";
+}
+
+/** Normalize a full context config (handles both legacy boolean and new string formats) */
+export function normalizeContextConfig(config: any): NormalizedContextConfig {
+  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "summary", webSearch: "off" };
+  return {
+    contracts: normalizeDetailLevel(config.contracts),
+    contentPipeline: normalizeDetailLevel(config.contentPipeline),
+    socialPresence: normalizeDetailLevel(config.socialPresence),
+    ideas: normalizeDetailLevel(config.ideas),
+    webSearch: config.webSearch === "on" ? "on" : "off",
+  };
+}
+
+// ── Types for the context system ──
 
 interface WorkspaceConfig {
   contentTypes: { key: string; name: string; aiPrompt: string | null }[];
@@ -10,6 +59,7 @@ interface ClientContext {
   industry: string | null;
   description: string | null;
   contracts: {
+    id?: number;
     name: string;
     totalUnits: number;
     completedUnits: number;
@@ -17,15 +67,35 @@ interface ClientContext {
     startDate: string;
     endDate: string;
     notes?: string;
+    commissionedContent?: {
+      title: string;
+      type: string;
+      cu: number;
+      status: string;
+    }[];
   }[];
   contentSummary: {
     total: number;
-    published: number;
-    inProduction: number;
+    commissioned: number;
+    completed: number;
+    spiked: number;
     totalCU: number;
-    byType: Record<string, { total: number; published: number; inProd: number }>;
-    recentTitles: string[];
+    byType: Record<string, { total: number; commissioned: number; completed: number; spiked: number }>;
+    recentCommissioned: string[];
+    recentCompleted: string[];
+    recentSpiked: string[];
   };
+  contentItems?: {
+    title: string;
+    type: string;
+    cu: number;
+    status: string;
+    brief?: string;
+    audience?: string;
+    topics?: string[];
+    campaigns?: string[];
+    platform?: string;
+  }[];
   socialPlatforms: Record<string, number>;
 }
 
@@ -46,10 +116,46 @@ interface ContentDetail {
   campaignTags: string[] | null;
 }
 
+interface IdeaItem {
+  title: string;
+  brief: string | null;
+  status: string;
+  topicTags?: string[] | null;
+  clientName?: string | null;
+  createdAt: string;
+  commissionedAt: string | null;
+}
+
+interface WorkspaceSummary {
+  clientCount: number;
+  contracts: {
+    active: number;
+    totalCU: number;
+    completedCU: number;
+    remainingCU: number;
+  };
+  content: {
+    total: number;
+    published: number;
+    inProduction: number;
+    totalCU: number;
+  };
+  ideas: {
+    total: number;
+    byStatus: Record<string, number>;
+    thisWeek: number;
+    recent: IdeaItem[];
+  };
+}
+
 export function buildSystemPrompt(ctx: {
   workspaceConfig: WorkspaceConfig;
   clientContext: ClientContext | null;
   contentDetail: ContentDetail | null;
+  contextConfig?: NormalizedContextConfig;
+  cuDescription?: string | null;
+  clientIdeas?: IdeaItem[] | null;
+  workspaceSummary?: WorkspaceSummary | null;
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
 
@@ -60,6 +166,12 @@ Guidelines:
 - Use the context below to give specific, informed answers
 - When drafting, produce publication-ready work
 - Use markdown formatting for readability`;
+
+  // ── Custom CU system description (if configured) ──
+  if (ctx.cuDescription) {
+    prompt += `\n\n## Content Unit System`;
+    prompt += `\n${ctx.cuDescription}`;
+  }
 
   // ── Workspace content formats & CU definitions (always included, compact) ──
   if (workspaceConfig.contentTypes.length > 0) {
@@ -80,46 +192,216 @@ Guidelines:
     }
   }
 
+  // ── Workspace-level summary for "All Clients" mode ──
+  if (ctx.workspaceSummary) {
+    const ws = ctx.workspaceSummary;
+    prompt += `\n\n---\n## Workspace Overview (All Clients)`;
+    prompt += `\n${ws.clientCount} clients in workspace`;
+
+    // Contracts overview
+    if ((ctx.contextConfig?.contracts || "summary") !== "off" && ws.contracts.active > 0) {
+      prompt += `\n\n### Contracts`;
+      prompt += `\n${ws.contracts.active} active contracts | ${ws.contracts.totalCU} CU total | ${ws.contracts.completedCU} completed | ${ws.contracts.remainingCU} remaining`;
+    }
+
+    // Content overview
+    if ((ctx.contextConfig?.contentPipeline || "summary") !== "off" && ws.content.total > 0) {
+      prompt += `\n\n### Content Pipeline`;
+      prompt += `\n${ws.content.total} pieces total | ${ws.content.published} published | ${ws.content.inProduction} in production | ${ws.content.totalCU} CU`;
+    }
+
+    // Ideas overview
+    if ((ctx.contextConfig?.ideas || "summary") !== "off" && ws.ideas.total > 0) {
+      prompt += `\n\n### Ideas`;
+      prompt += `\n${ws.ideas.total} total ideas | ${ws.ideas.thisWeek} submitted this week`;
+      const statusEntries = Object.entries(ws.ideas.byStatus);
+      if (statusEntries.length > 0) {
+        prompt += `\nBy status: ${statusEntries.map(([s, n]) => `${s}: ${n}`).join(" | ")}`;
+      }
+      if (ws.ideas.recent.length > 0) {
+        prompt += `\n\nRecent ideas:`;
+        for (const idea of ws.ideas.recent.slice(0, 15)) {
+          prompt += `\n- **${idea.title}** [${idea.status}]`;
+          if (idea.clientName) prompt += ` — ${idea.clientName}`;
+          if (idea.createdAt) prompt += ` (${idea.createdAt.slice(0, 10)})`;
+          if (idea.brief) prompt += `: ${idea.brief.slice(0, 150)}`;
+        }
+      }
+    }
+
+    prompt += `\n\n---\nYou have a workspace-wide overview of all clients, contracts, content, and ideas. Use this data to answer questions about the business. When the user asks about "all clients" or aggregate metrics, use the data above.`;
+  }
+
   // ── Client context (compact summary) ──
   if (clientContext) {
     prompt += `\n\n---\n## Client: ${clientContext.name}`;
     if (clientContext.industry) prompt += `\nIndustry: ${clientContext.industry}`;
     if (clientContext.description) prompt += `\n${clientContext.description.slice(0, 300)}`;
 
-    // Contracts
-    if (clientContext.contracts.length > 0) {
+    // Contracts (respects context config and detail level)
+    const contractLevel = ctx.contextConfig?.contracts || "summary";
+    if (clientContext.contracts.length > 0 && contractLevel !== "off") {
       prompt += `\n\n### Contracts`;
-      for (const c of clientContext.contracts) {
-        const remaining = (c.totalUnits || 0) - (c.completedUnits || 0);
-        prompt += `\n- **${c.name}** [${c.active ? "Active" : "Inactive"}]: ${c.completedUnits || 0}/${c.totalUnits || 0} CU (${remaining} remaining)`;
-        if (c.startDate || c.endDate) {
-          prompt += ` | ${c.startDate?.slice(0, 10) || "?"} → ${c.endDate?.slice(0, 10) || "ongoing"}`;
+      if (isFullDetail(contractLevel)) {
+        for (const c of clientContext.contracts) {
+          const remaining = (c.totalUnits || 0) - (c.completedUnits || 0);
+          prompt += `\n\n**${c.name}** [${c.active ? "Active" : "Inactive"}]`;
+          prompt += `\n- CU Budget: ${c.completedUnits || 0}/${c.totalUnits || 0} used (${remaining} remaining)`;
+          if (c.startDate || c.endDate) {
+            prompt += `\n- Period: ${c.startDate?.slice(0, 10) || "?"} → ${c.endDate?.slice(0, 10) || "ongoing"}`;
+          }
+          if (c.notes) prompt += `\n- Notes: ${c.notes.slice(0, 500)}`;
+          if (c.commissionedContent?.length) {
+            prompt += `\n- Commissioned content (${c.commissionedContent.length} items):`;
+            for (const item of c.commissionedContent) {
+              prompt += `\n  - ${item.title} (${item.type}) — ${item.cu} CU [${item.status}]`;
+            }
+          }
         }
-        if (c.notes) prompt += `\n  Notes: ${c.notes.slice(0, 200)}`;
+      } else {
+        for (const c of clientContext.contracts) {
+          const remaining = (c.totalUnits || 0) - (c.completedUnits || 0);
+          prompt += `\n- **${c.name}** [${c.active ? "Active" : "Inactive"}]: ${c.completedUnits || 0}/${c.totalUnits || 0} CU (${remaining} remaining)`;
+          if (c.startDate || c.endDate) {
+            prompt += ` | ${c.startDate?.slice(0, 10) || "?"} → ${c.endDate?.slice(0, 10) || "ongoing"}`;
+          }
+          if (c.notes) prompt += `\n  Notes: ${c.notes.slice(0, 200)}`;
+        }
       }
     }
 
-    // Content pipeline summary
+    // Content pipeline (respects context config and detail level)
+    const contentLevel = ctx.contextConfig?.contentPipeline || "summary";
+    const ideasLevel = ctx.contextConfig?.ideas || "summary";
     const cs = clientContext.contentSummary;
-    if (cs.total > 0) {
-      prompt += `\n\n### Content Pipeline`;
-      prompt += `\n${cs.total} pieces total | ${cs.published} published | ${cs.inProduction} in production | ${cs.totalCU} CU total`;
+    const hasContent = cs.total > 0 && contentLevel !== "off";
+    const hasIdeas = ctx.clientIdeas && ctx.clientIdeas.length > 0 && ideasLevel !== "off";
 
-      // Type breakdown
-      const typeEntries = Object.entries(cs.byType);
-      if (typeEntries.length > 0) {
-        prompt += `\nBreakdown: ${typeEntries.map(([t, v]) => `${t}: ${v.inProd} in prod / ${v.published} published`).join(" | ")}`;
+    if (hasContent || hasIdeas) {
+      prompt += `\n\n### Content Pipeline`;
+      if (hasContent) {
+        prompt += `\n${cs.total} pieces total | ${cs.totalCU} CU total`;
       }
 
-      // Recent in-production titles
-      if (cs.recentTitles.length > 0) {
-        prompt += `\nCurrently in production: ${cs.recentTitles.join(", ")}`;
+      if (hasContent) {
+        if (isFullDetail(contentLevel) && clientContext.contentItems?.length) {
+          // Full detail: group items by status category
+          const windowNote = getWindowLabel(contentLevel);
+          const commissioned = clientContext.contentItems.filter(i => i.status === "Commissioned");
+          const completed = clientContext.contentItems.filter(i => i.status === "Completed");
+          const spiked = clientContext.contentItems.filter(i => i.status === "Spiked");
+
+          if (commissioned.length > 0) {
+            prompt += `\n\n#### Commissioned (In Production) — ${commissioned.length} items`;
+            prompt += `\nContent the client has approved and commissioned for production${windowNote ? ` (${windowNote})` : ""}:`;
+            for (const item of commissioned) {
+              prompt += `\n- **${item.title}** (${item.type}) — ${item.cu} CU`;
+              if (item.brief) prompt += `\n  Brief: ${item.brief.slice(0, 300)}`;
+              if (item.audience) prompt += `\n  Audience: ${item.audience}`;
+              if (item.topics?.length) prompt += `\n  Topics: ${item.topics.join(", ")}`;
+              if (item.platform) prompt += `\n  Platform: ${item.platform}`;
+            }
+          }
+
+          if (completed.length > 0) {
+            prompt += `\n\n#### Completed (Delivered) — ${completed.length} items`;
+            prompt += `\nContent successfully completed and delivered${windowNote ? ` (${windowNote})` : ""}:`;
+            for (const item of completed) {
+              prompt += `\n- **${item.title}** (${item.type}) — ${item.cu} CU`;
+              if (item.brief) prompt += `\n  Brief: ${item.brief.slice(0, 300)}`;
+              if (item.audience) prompt += `\n  Audience: ${item.audience}`;
+              if (item.topics?.length) prompt += `\n  Topics: ${item.topics.join(", ")}`;
+              if (item.platform) prompt += `\n  Platform: ${item.platform}`;
+            }
+          }
+
+          if (spiked.length > 0) {
+            prompt += `\n\n#### Spiked — ${spiked.length} items`;
+            prompt += `\nContent that was rejected or couldn't proceed${windowNote ? ` (${windowNote})` : ""}:`;
+            for (const item of spiked) {
+              prompt += `\n- **${item.title}** (${item.type}) — ${item.cu} CU`;
+              if (item.brief) prompt += `\n  Brief: ${item.brief.slice(0, 300)}`;
+              if (item.topics?.length) prompt += `\n  Topics: ${item.topics.join(", ")}`;
+            }
+          }
+        } else {
+          // Summary mode: show per-category counts, type breakdown, and recent titles
+          if (cs.commissioned > 0) {
+            prompt += `\n\n**Commissioned** (In Production) — ${cs.commissioned} items`;
+            prompt += `\nContent the client has approved and commissioned for production.`;
+            const commTypes = Object.entries(cs.byType).filter(([, v]) => v.commissioned > 0);
+            if (commTypes.length > 0) {
+              prompt += `\nBy type: ${commTypes.map(([t, v]) => `${t}: ${v.commissioned}`).join(", ")}`;
+            }
+            if (cs.recentCommissioned.length > 0) {
+              prompt += `\nIn progress: ${cs.recentCommissioned.join(", ")}`;
+            }
+          }
+
+          if (cs.completed > 0) {
+            prompt += `\n\n**Completed** (Delivered) — ${cs.completed} items`;
+            prompt += `\nSuccessfully delivered content.`;
+            const compTypes = Object.entries(cs.byType).filter(([, v]) => v.completed > 0);
+            if (compTypes.length > 0) {
+              prompt += `\nBy type: ${compTypes.map(([t, v]) => `${t}: ${v.completed}`).join(", ")}`;
+            }
+            if (cs.recentCompleted.length > 0) {
+              prompt += `\nRecent: ${cs.recentCompleted.join(", ")}`;
+            }
+          }
+
+          if (cs.spiked > 0) {
+            prompt += `\n\n**Spiked** — ${cs.spiked} items`;
+            prompt += `\nContent that was rejected or couldn't proceed.`;
+            const spkTypes = Object.entries(cs.byType).filter(([, v]) => v.spiked > 0);
+            if (spkTypes.length > 0) {
+              prompt += `\nBy type: ${spkTypes.map(([t, v]) => `${t}: ${v.spiked}`).join(", ")}`;
+            }
+            if (cs.recentSpiked.length > 0) {
+              prompt += `\nRecent: ${cs.recentSpiked.join(", ")}`;
+            }
+          }
+        }
+      }
+
+      // Ideas submitted (within content pipeline, controlled by ideas config toggle)
+      if (hasIdeas) {
+        const weekAgo = new Date();
+        weekAgo.setDate(weekAgo.getDate() - 7);
+        const thisWeek = ctx.clientIdeas!.filter((i) => i.createdAt && new Date(i.createdAt) >= weekAgo);
+
+        prompt += `\n\n#### Ideas Submitted — ${ctx.clientIdeas!.length} ideas`;
+        prompt += `\nPotential content ideas submitted for consideration | ${thisWeek.length} this week`;
+
+        // Status breakdown
+        const statusCounts: Record<string, number> = {};
+        ctx.clientIdeas!.forEach((i) => {
+          statusCounts[i.status] = (statusCounts[i.status] || 0) + 1;
+        });
+        prompt += `\nBy status: ${Object.entries(statusCounts).map(([s, n]) => `${s}: ${n}`).join(" | ")}`;
+
+        if (isFullDetail(ideasLevel)) {
+          for (const idea of ctx.clientIdeas!) {
+            prompt += `\n- **${idea.title}** [${idea.status}]`;
+            if (idea.createdAt) prompt += ` (${idea.createdAt.slice(0, 10)})`;
+            if (idea.brief) prompt += `\n  ${idea.brief}`;
+            if (idea.topicTags?.length) prompt += `\n  Topics: ${idea.topicTags.join(", ")}`;
+            if (idea.commissionedAt) prompt += `\n  Commissioned: ${idea.commissionedAt.slice(0, 10)}`;
+          }
+        } else {
+          for (const idea of ctx.clientIdeas!.slice(0, 10)) {
+            prompt += `\n- **${idea.title}** [${idea.status}]`;
+            if (idea.createdAt) prompt += ` (${idea.createdAt.slice(0, 10)})`;
+            if (idea.brief) prompt += `: ${idea.brief.slice(0, 150)}`;
+          }
+        }
       }
     }
 
-    // Social presence
+    // Social presence (respects context config and detail level)
+    const socialLevel = ctx.contextConfig?.socialPresence || "summary";
     const platforms = Object.entries(clientContext.socialPlatforms);
-    if (platforms.length > 0) {
+    if (platforms.length > 0 && socialLevel !== "off") {
       prompt += `\n\n### Social Presence`;
       prompt += `\n${platforms.map(([p, n]) => `${p}: ${n} posts`).join(" | ")}`;
     }
@@ -149,7 +431,7 @@ Guidelines:
 
   // ── Closing instruction ──
   if (clientContext || contentDetail) {
-    prompt += `\n\n---\nYou have full context about ${clientContext ? `${clientContext.name}'s contracts, content pipeline, and social presence` : "this content piece"}. When the user refers to "this client" or "this content", use the data above. Never ask for information you already have.`;
+    prompt += `\n\n---\nYou have full context about ${clientContext ? `${clientContext.name}'s contracts, content pipeline, social presence, and ideas` : "this content piece"}. When the user refers to "this client" or "this content", use the data above. Never ask for information you already have.`;
   }
 
   return prompt;

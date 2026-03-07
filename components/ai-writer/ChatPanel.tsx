@@ -13,6 +13,7 @@ import {
   Link2,
   Bug,
   ChevronRight,
+  Upload,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,7 +37,7 @@ import {
 import { toast } from "sonner";
 import { getModelLabel } from "@/lib/ai/models";
 import MessageBubble from "./MessageBubble";
-import ChatInput from "./ChatInput";
+import ChatInput, { type ChatInputHandle } from "./ChatInput";
 import type { AIConversation, AIMessageRow, Attachment } from "@/lib/types/ai";
 
 interface ChatPanelProps {
@@ -46,7 +47,7 @@ interface ChatPanelProps {
   onBack?: () => void;
   initialMessage?: string;
   initialAttachments?: Attachment[];
-  contextConfig?: { contracts: boolean; contentPipeline: boolean; socialPresence: boolean; ideas?: boolean };
+  contextConfig?: { contracts: string; contentPipeline: string; socialPresence: string; ideas: string };
   debugMode?: boolean;
   onCopyLink?: () => void;
 }
@@ -66,6 +67,7 @@ export default function ChatPanel({
   const [messages, setMessages] = useState<AIMessageRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isSearchingWeb, setIsSearchingWeb] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [debugContext, setDebugContext] = useState<string | null>(null);
   const [debugExpanded, setDebugExpanded] = useState(false);
@@ -74,6 +76,9 @@ export default function ChatPanel({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initialMessageSent = useRef(false);
+  const chatInputRef = useRef<ChatInputHandle>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounterRef = useRef(0);
 
   // Fetch conversation and messages
   const fetchConversation = useCallback(async () => {
@@ -164,7 +169,11 @@ export default function ChatPanel({
             const parsed = JSON.parse(data);
             if (parsed.debugContext) {
               setDebugContext(parsed.debugContext);
+            } else if (parsed.searching) {
+              setIsSearchingWeb(true);
             } else if (parsed.token) {
+              // First token means search is done (if it was searching)
+              setIsSearchingWeb(false);
               fullText += parsed.token;
               setStreamingContent(fullText);
             }
@@ -205,6 +214,7 @@ export default function ChatPanel({
       console.error("Send error:", err);
     } finally {
       setIsStreaming(false);
+      setIsSearchingWeb(false);
       setStreamingContent("");
     }
   };
@@ -262,6 +272,41 @@ export default function ChatPanel({
     }
   };
 
+  // Drag & drop handlers for full-panel drop zone
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer.types.includes("Files")) {
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleFileDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      chatInputRef.current?.uploadFiles(files);
+    }
+  }, []);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -281,7 +326,24 @@ export default function ChatPanel({
   const modelLabel = getModelLabel(conversation.model);
 
   return (
-    <div className="flex flex-col h-full">
+    <div
+      className="flex flex-col h-full relative"
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleFileDrop}
+    >
+      {/* Full-panel drop overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 p-8 rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5">
+            <Upload className="h-10 w-10 text-primary" />
+            <p className="text-sm font-semibold text-primary">Drop files to upload</p>
+            <p className="text-xs text-muted-foreground">Images, PDFs, documents, and more</p>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="border-b px-3 md:px-4 py-2.5 flex items-center gap-2 md:gap-3 shrink-0">
         {onBack && (
@@ -463,6 +525,16 @@ export default function ChatPanel({
                 )}
               </div>
             )}
+            {isStreaming && isSearchingWeb && !streamingContent && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0 mt-0.5">
+                  <Globe className="h-3.5 w-3.5 text-emerald-500 animate-pulse" />
+                </div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <span className="animate-pulse">Searching the web…</span>
+                </div>
+              </div>
+            )}
             {isStreaming && streamingContent && (
               <MessageBubble
                 role="assistant"
@@ -478,6 +550,7 @@ export default function ChatPanel({
 
       {/* Input */}
       <ChatInput
+        ref={chatInputRef}
         onSend={handleSend}
         disabled={isStreaming}
         placeholder={

@@ -29,7 +29,13 @@ import {
   Check,
   ArrowLeft,
   Link2,
+  Upload,
+  Sun,
+  Moon,
+  Monitor,
+  Globe,
 } from "lucide-react";
+import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -65,6 +71,8 @@ function EngineGPTContent() {
   const customerCtx = useCustomerSafe();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { setTheme, resolvedTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
 
   // Read initial thread ID from URL (?thread=xxx)
   const urlThreadRef = useRef<string | null>(
@@ -93,14 +101,18 @@ function EngineGPTContent() {
   const [clientSearchQuery, setClientSearchQuery] = useState("");
   const [clientPopoverOpen, setClientPopoverOpen] = useState(false);
   const [contextConfig, setContextConfig] = useState({
-    contracts: true,
-    contentPipeline: true,
-    socialPresence: true,
-    ideas: true,
+    contracts: "summary" as string,
+    contentPipeline: "summary" as string,
+    socialPresence: "summary" as string,
+    ideas: "summary" as string,
+    webSearch: "off" as string,
   });
   const [debugMode, setDebugMode] = useState(false);
+  const [isHomeDragging, setIsHomeDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const pendingThreadRef = useRef<string | null>(null);
+  const homeDragCounterRef = useRef(0);
 
   const customerId = customerCtx?.selectedCustomerId || null;
   const customers = customerCtx?.customers || [];
@@ -115,6 +127,9 @@ function EngineGPTContent() {
         )
       : customers
   ).sort((a, b) => a.name.localeCompare(b.name));
+
+  // Prevent hydration mismatch for theme icon
+  useEffect(() => setMounted(true), []);
 
   // Fetch user info for sidebar
   useEffect(() => {
@@ -171,6 +186,11 @@ function EngineGPTContent() {
     // Don't reset selectedId on initial load if we have a URL thread
     if (urlThreadRef.current) {
       urlThreadRef.current = null; // Consumed — future customer changes reset normally
+    } else if (pendingThreadRef.current) {
+      // Don't reset — we're switching customer context for a thread selection
+      const threadId = pendingThreadRef.current;
+      pendingThreadRef.current = null;
+      setSelectedId(threadId);
     } else {
       setSelectedId(null);
     }
@@ -199,14 +219,12 @@ function EngineGPTContent() {
     }
   }, [homeInput]);
 
-  // File upload handler
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files?.length) return;
-
+  // Shared file upload logic
+  const uploadFiles = useCallback(async (files: File[]) => {
+    if (!files.length) return;
     setUploading(true);
 
-    for (const file of Array.from(files)) {
+    for (const file of files) {
       try {
         const formData = new FormData();
         formData.append("file", file);
@@ -238,10 +256,52 @@ function EngineGPTContent() {
     }
 
     setUploading(false);
+  }, []);
+
+  // File input handler
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files?.length) return;
+    await uploadFiles(Array.from(files));
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
   };
+
+  // Home input drag & drop handlers
+  const handleHomeDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    homeDragCounterRef.current++;
+    if (e.dataTransfer.types.includes("Files")) {
+      setIsHomeDragging(true);
+    }
+  }, []);
+
+  const handleHomeDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    homeDragCounterRef.current--;
+    if (homeDragCounterRef.current === 0) {
+      setIsHomeDragging(false);
+    }
+  }, []);
+
+  const handleHomeDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleHomeDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    homeDragCounterRef.current = 0;
+    setIsHomeDragging(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      await uploadFiles(files);
+    }
+  }, [uploadFiles]);
 
   const removeAttachment = (index: number) => {
     setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
@@ -364,6 +424,8 @@ function EngineGPTContent() {
     if (conv.customerId && customerCtx) {
       const custId = String(conv.customerId);
       if (customerCtx.selectedCustomerId !== custId) {
+        // Store pending thread so useEffect doesn't reset selectedId
+        pendingThreadRef.current = conv.id;
         customerCtx.setSelectedCustomerId(custId);
       }
     }
@@ -624,8 +686,47 @@ function EngineGPTContent() {
           )}
         </div>
 
-        {/* Bottom section — user only */}
-        <div className="shrink-0 border-t border-white/10 p-3">
+        {/* Bottom section — theme toggle + user */}
+        <div className="shrink-0 border-t border-white/10 p-3 space-y-2">
+          {/* Theme toggle */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="w-full flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 hover:bg-white/10 transition-colors text-left text-white/60 hover:text-white/80">
+                {mounted ? (
+                  resolvedTheme === "dark" ? (
+                    <Moon className="h-3.5 w-3.5 shrink-0" />
+                  ) : (
+                    <Sun className="h-3.5 w-3.5 shrink-0" />
+                  )
+                ) : (
+                  <div className="h-3.5 w-3.5 shrink-0" />
+                )}
+                <span className="text-[11px] font-medium">
+                  {mounted
+                    ? resolvedTheme === "dark"
+                      ? "Dark Mode"
+                      : "Light Mode"
+                    : "Theme"}
+                </span>
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" side="top" className="w-36">
+              <DropdownMenuItem onClick={() => setTheme("light")} className="gap-2 text-sm">
+                <Sun className="h-4 w-4" />
+                Light
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setTheme("dark")} className="gap-2 text-sm">
+                <Moon className="h-4 w-4" />
+                Dark
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setTheme("system")} className="gap-2 text-sm">
+                <Monitor className="h-4 w-4" />
+                System
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* User menu */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-white/10 transition-colors text-left">
@@ -672,19 +773,25 @@ function EngineGPTContent() {
             <>
               <button
                 onClick={handleBack}
-                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors"
+                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors shrink-0"
               >
                 <ArrowLeft className="h-4 w-4" />
               </button>
-              <span className="text-sm font-semibold truncate flex-1">
+              <span className="text-sm font-semibold truncate flex-1 min-w-0">
                 {selectedConversation?.title || "Chat"}
               </span>
               {selectedConversation?.customerName && (
-                <span className="text-[11px] text-muted-foreground bg-muted px-2 py-0.5 rounded-full shrink-0 flex items-center gap-1">
-                  <Building2 className="h-2.5 w-2.5" />
-                  {selectedConversation.customerName}
+                <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full shrink-0 flex items-center gap-1 max-w-[90px]">
+                  <Building2 className="h-2.5 w-2.5 shrink-0" />
+                  <span className="truncate">{selectedConversation.customerName}</span>
                 </span>
               )}
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors shrink-0"
+              >
+                <Menu className="h-4 w-4" />
+              </button>
             </>
           ) : (
             <>
@@ -702,6 +809,13 @@ function EngineGPTContent() {
                 />
                 <span className="text-sm font-bold">EngineGPT</span>
               </div>
+              <div className="flex-1" />
+              {selectedCustomer && (
+                <span className="text-[10px] text-muted-foreground bg-muted px-2 py-0.5 rounded-full shrink-0 flex items-center gap-1">
+                  <Building2 className="h-2.5 w-2.5 shrink-0" />
+                  <span className="truncate max-w-[120px]">{selectedCustomer.name}</span>
+                </span>
+              )}
             </>
           )}
         </div>
@@ -746,7 +860,13 @@ function EngineGPTContent() {
               </p>
 
               {/* Input area */}
-              <div className="w-full max-w-2xl">
+              <div
+                className="w-full max-w-2xl"
+                onDragEnter={handleHomeDragEnter}
+                onDragLeave={handleHomeDragLeave}
+                onDragOver={handleHomeDragOver}
+                onDrop={handleHomeDrop}
+              >
                 {/* Attachment preview strip */}
                 {pendingAttachments.length > 0 && (
                   <div className="flex items-center gap-2 flex-wrap mb-2 px-1">
@@ -782,6 +902,16 @@ function EngineGPTContent() {
                 )}
 
                 <div className="relative rounded-2xl border bg-background shadow-md focus-within:ring-2 focus-within:ring-ring focus-within:border-transparent transition-all">
+                  {/* Drag overlay */}
+                  {isHomeDragging && (
+                    <div className="absolute inset-0 z-10 flex items-center justify-center bg-primary/5 border-2 border-dashed border-primary/40 rounded-2xl">
+                      <div className="flex flex-col items-center gap-2 text-primary">
+                        <Upload className="h-8 w-8" />
+                        <span className="text-sm font-medium">Drop files here</span>
+                      </div>
+                    </div>
+                  )}
+
                   <textarea
                     ref={textareaRef}
                     value={homeInput}
@@ -790,11 +920,22 @@ function EngineGPTContent() {
                     placeholder="Ask anything..."
                     disabled={sending}
                     rows={1}
-                    className="w-full resize-none bg-transparent pl-5 pr-40 py-4 text-sm focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
-                    style={{ minHeight: "56px", maxHeight: "160px" }}
+                    className="w-full resize-none bg-transparent px-4 py-3 sm:pl-5 sm:pr-40 sm:py-4 text-sm focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
+                    style={{ minHeight: "48px", maxHeight: "160px" }}
                   />
-                  <div className="absolute right-3 bottom-3 flex items-center gap-1.5">
-                    {/* Attach button */}
+
+                  {/* Hidden file input */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.doc,.txt,.csv,.md"
+                    onChange={handleFileSelect}
+                    className="hidden"
+                  />
+
+                  {/* Desktop: overlaid buttons in bottom-right */}
+                  <div className="hidden sm:flex absolute right-3 bottom-3 items-center gap-1.5">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -809,16 +950,7 @@ function EngineGPTContent() {
                         <Paperclip className="h-3.5 w-3.5" />
                       )}
                     </Button>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      multiple
-                      accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.doc,.txt,.csv,.md"
-                      onChange={handleFileSelect}
-                      className="hidden"
-                    />
 
-                    {/* Visibility toggle */}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -842,7 +974,6 @@ function EngineGPTContent() {
                       {tab === "private" ? "Private" : "Team"}
                     </Button>
 
-                    {/* Model picker */}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button
@@ -875,7 +1006,98 @@ function EngineGPTContent() {
                       </DropdownMenuContent>
                     </DropdownMenu>
 
-                    {/* Send button */}
+                    <Button
+                      size="icon"
+                      onClick={handleQuickSend}
+                      disabled={
+                        sending ||
+                        uploading ||
+                        (!homeInput.trim() && pendingAttachments.length === 0)
+                      }
+                      className="h-9 w-9 shrink-0 rounded-xl"
+                    >
+                      {sending ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </div>
+
+                  {/* Mobile: button bar below textarea */}
+                  <div className="flex sm:hidden items-center gap-1 px-3 pb-3">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={sending || uploading}
+                      className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                      title="Attach file"
+                    >
+                      {uploading ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Paperclip className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        setTab((prev) =>
+                          prev === "private" ? "team" : "private"
+                        )
+                      }
+                      className="h-8 gap-1 text-[11px] text-muted-foreground hover:text-foreground px-2"
+                      title={
+                        tab === "private"
+                          ? "Private — only you can see this"
+                          : "Team — visible to your workspace"
+                      }
+                    >
+                      {tab === "private" ? (
+                        <Lock className="h-3 w-3" />
+                      ) : (
+                        <Users className="h-3 w-3" />
+                      )}
+                      {tab === "private" ? "Private" : "Team"}
+                    </Button>
+
+                    <div className="flex-1" />
+
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 gap-1 text-[11px] text-muted-foreground hover:text-foreground px-2"
+                        >
+                          {getModelLabel(selectedModel)}
+                          <ChevronDown className="h-3 w-3" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-48">
+                        {AI_MODELS.map((m) => (
+                          <DropdownMenuItem
+                            key={m.id}
+                            onClick={() => setSelectedModel(m.id)}
+                            className={cn(
+                              "text-sm",
+                              selectedModel === m.id && "bg-muted font-medium"
+                            )}
+                          >
+                            <span className="flex-1">{m.label}</span>
+                            {selectedModel === m.id && (
+                              <span className="text-primary text-xs">
+                                &#10003;
+                              </span>
+                            )}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+
                     <Button
                       size="icon"
                       onClick={handleQuickSend}
@@ -895,51 +1117,74 @@ function EngineGPTContent() {
                   </div>
                 </div>
 
-                <p className="text-[11px] text-muted-foreground text-center mt-2.5">
+                <p className="text-[11px] text-muted-foreground text-center mt-2.5 hidden sm:block">
                   Press Enter to send, Shift+Enter for new line
                 </p>
 
                 {/* Context controls — always visible for both per-client and All Clients */}
-                <div className="flex items-center justify-center gap-3 mt-3 flex-wrap">
+                <div className="flex items-center justify-center gap-2 mt-3 flex-wrap">
                   <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
-                    Include:
+                    Context:
                   </span>
                   {[
                     { key: "contracts" as const, label: "Contracts" },
                     { key: "contentPipeline" as const, label: "Content" },
                     { key: "socialPresence" as const, label: "Social" },
                     { key: "ideas" as const, label: "Ideas" },
-                  ].map((item) => (
-                    <button
-                      key={item.key}
-                      onClick={() =>
-                        setContextConfig((prev) => ({
-                          ...prev,
-                          [item.key]: !prev[item.key],
-                        }))
-                      }
-                      className={cn(
-                        "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors border",
-                        contextConfig[item.key]
-                          ? "bg-primary text-white border-primary"
-                          : "bg-muted/50 text-muted-foreground border-transparent hover:bg-muted"
-                      )}
-                    >
-                      <div
+                  ].map((item) => {
+                    const level = contextConfig[item.key];
+                    const isFull = level.startsWith("full");
+                    // Cycle: off → summary → full-month → off
+                    const nextLevel = level === "off" ? "summary" : level === "summary" ? "full-month" : "off";
+                    const fullLabel = level === "full-week" ? "7d" : level === "full-month" ? "30d" : level === "full-year" ? "1y" : "";
+                    return (
+                      <button
+                        key={item.key}
+                        onClick={() =>
+                          setContextConfig((prev) => ({
+                            ...prev,
+                            [item.key]: nextLevel,
+                          }))
+                        }
+                        title={`${item.label}: ${level === "off" ? "Off" : level === "summary" ? "Summary" : `Full Detail (${fullLabel})`} — click to change`}
                         className={cn(
-                          "h-2.5 w-2.5 rounded-sm border flex items-center justify-center transition-colors",
-                          contextConfig[item.key]
-                            ? "bg-primary border-primary"
-                            : "border-muted-foreground/40 bg-transparent"
+                          "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors border",
+                          level === "off"
+                            ? "bg-muted/50 text-muted-foreground border-transparent hover:bg-muted"
+                            : isFull
+                            ? "bg-primary text-white border-primary ring-1 ring-primary/30 ring-offset-1"
+                            : "bg-primary text-white border-primary"
                         )}
                       >
-                        {contextConfig[item.key] && (
-                          <Check className="h-2 w-2 text-primary-foreground" />
+                        {level !== "off" && (
+                          <div className="h-1.5 w-1.5 rounded-full bg-white/80" />
                         )}
-                      </div>
-                      {item.label}
-                    </button>
-                  ))}
+                        {item.label}
+                        {isFull && (
+                          <span className="text-[9px] opacity-80 font-normal">{fullLabel}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                  {/* Web search toggle — separate simple on/off */}
+                  <button
+                    onClick={() =>
+                      setContextConfig((prev) => ({
+                        ...prev,
+                        webSearch: prev.webSearch === "on" ? "off" : "on",
+                      }))
+                    }
+                    title={`Web Search: ${contextConfig.webSearch === "on" ? "On — AI can search the web" : "Off"} — click to toggle`}
+                    className={cn(
+                      "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors border",
+                      contextConfig.webSearch === "on"
+                        ? "bg-emerald-600 text-white border-emerald-600"
+                        : "bg-muted/50 text-muted-foreground border-transparent hover:bg-muted"
+                    )}
+                  >
+                    <Globe className="h-3 w-3" />
+                    Web
+                  </button>
                 </div>
               </div>
             </div>
