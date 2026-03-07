@@ -122,6 +122,7 @@ function EngineGPTContent() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingThreadRef = useRef<string | null>(null);
+  const incognitoConvoRef = useRef<string | null>(null);
   const homeDragCounterRef = useRef(0);
 
   const customerId = customerCtx?.selectedCustomerId || null;
@@ -352,6 +353,7 @@ function EngineGPTContent() {
           visibility: tab,
           model: selectedModel,
           customerId: customerId || undefined,
+          isIncognito: incognitoMode,
         }),
       });
       if (!res.ok) {
@@ -361,7 +363,12 @@ function EngineGPTContent() {
       }
       const data = await res.json();
       const newConv = data.conversation;
-      setConversations((prev) => [newConv, ...prev]);
+      // Don't add incognito conversations to sidebar
+      if (incognitoMode) {
+        incognitoConvoRef.current = newConv.id;
+      } else {
+        setConversations((prev) => [newConv, ...prev]);
+      }
       setInitialMessage(content || undefined);
       setInitialAttachments(
         pendingAttachments.length > 0 ? pendingAttachments : undefined
@@ -392,13 +399,23 @@ function EngineGPTContent() {
   };
 
   const handleConversationDeleted = () => {
+    cleanupIncognito(selectedId);
     setConversations((prev) => prev.filter((c) => c.id !== selectedId));
     setSelectedId(null);
     setInitialMessage(undefined);
     setInitialAttachments(undefined);
   };
 
+  // Clean up incognito conversation (fire-and-forget delete)
+  const cleanupIncognito = useCallback((convId: string | null) => {
+    if (convId && incognitoConvoRef.current === convId) {
+      fetch(`/api/ai/conversations/${convId}`, { method: "DELETE" }).catch(() => {});
+      incognitoConvoRef.current = null;
+    }
+  }, []);
+
   const handleNewChat = () => {
+    cleanupIncognito(selectedId);
     setSelectedId(null);
     setInitialMessage(undefined);
     setInitialAttachments(undefined);
@@ -406,6 +423,7 @@ function EngineGPTContent() {
   };
 
   const handleBack = () => {
+    cleanupIncognito(selectedId);
     setSelectedId(null);
     setInitialMessage(undefined);
     setInitialAttachments(undefined);

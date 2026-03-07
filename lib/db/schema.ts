@@ -603,6 +603,7 @@ export const aiConversations = pgTable("ai_conversations", {
   contentObjectId: integer("content_object_id"),
   customerId: integer("customer_id"),
   model: text("model").default("claude-sonnet-4-20250514").notNull(),
+  isIncognito: boolean("is_incognito").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

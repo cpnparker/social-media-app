@@ -26,8 +26,11 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Build conditions
-    const conditions = [eq(aiConversations.workspaceId, workspaceId)];
+    // Build conditions — always exclude incognito conversations
+    const conditions = [
+      eq(aiConversations.workspaceId, workspaceId),
+      eq(aiConversations.isIncognito, false),
+    ];
 
     if (visibility === "private") {
       conditions.push(eq(aiConversations.visibility, "private"));
@@ -60,7 +63,18 @@ export async function GET(req: NextRequest) {
     }
 
     const conversations = await db
-      .select()
+      .select({
+        id: aiConversations.id,
+        workspaceId: aiConversations.workspaceId,
+        createdBy: aiConversations.createdBy,
+        title: aiConversations.title,
+        visibility: aiConversations.visibility,
+        contentObjectId: aiConversations.contentObjectId,
+        customerId: aiConversations.customerId,
+        model: aiConversations.model,
+        createdAt: aiConversations.createdAt,
+        updatedAt: aiConversations.updatedAt,
+      })
       .from(aiConversations)
       .where(and(...conditions))
       .orderBy(desc(aiConversations.updatedAt))
@@ -109,7 +123,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workspaceId, title, visibility, contentObjectId, customerId, model } = body;
+    const { workspaceId, title, visibility, contentObjectId, customerId, model, isIncognito } = body;
 
     if (!workspaceId) {
       return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
@@ -161,6 +175,7 @@ export async function POST(req: NextRequest) {
           ? parseInt(String(customerId), 10)
           : null,
         model: aiModel,
+        isIncognito: isIncognito || false,
       })
       .returning();
 

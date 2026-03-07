@@ -442,14 +442,16 @@ export async function POST(
       });
     }
 
-    // Save user message
-    await db.insert(aiMessages).values({
-      conversationId,
-      role: "user",
-      content: (userContent || "").trim(),
-      attachments: userAttachments ? JSON.stringify(userAttachments) : null,
-      createdBy: userId,
-    });
+    // Save user message (skip in incognito)
+    if (!conversation.isIncognito) {
+      await db.insert(aiMessages).values({
+        conversationId,
+        role: "user",
+        content: (userContent || "").trim(),
+        attachments: userAttachments ? JSON.stringify(userAttachments) : null,
+        createdBy: userId,
+      });
+    }
 
     // Load conversation history + workspace config + AI settings in parallel
     const [history, workspaceConfig, wsSettings] = await Promise.all([
@@ -577,9 +579,9 @@ export async function POST(
 
     const model = body.model || conversation.model;
 
-    // Auto-title: if this is the first user message, set conversation title
+    // Auto-title: if this is the first user message, set conversation title (skip incognito)
     const userMessages = messages.filter((m) => m.role === "user");
-    if (userMessages.length === 1) {
+    if (userMessages.length === 1 && !conversation.isIncognito) {
       const titleSource = (userContent || "").trim() || (userAttachments?.[0]?.name || "File upload");
       const autoTitle =
         titleSource.length > 60
@@ -596,29 +598,32 @@ export async function POST(
       messages,
       { model, systemPrompt, maxTokens, webSearch: contextConfig.webSearch === "on" },
       async ({ fullText, inputTokens, outputTokens }) => {
-        await db.insert(aiMessages).values({
-          conversationId,
-          role: "assistant",
-          content: fullText,
-          model: model,
-        });
-        await db
-          .update(aiConversations)
-          .set({ updatedAt: new Date() })
-          .where(eq(aiConversations.id, conversationId));
+        // Skip all persistence in incognito mode
+        if (!conversation.isIncognito) {
+          await db.insert(aiMessages).values({
+            conversationId,
+            role: "assistant",
+            content: fullText,
+            model: model,
+          });
+          await db
+            .update(aiConversations)
+            .set({ updatedAt: new Date() })
+            .where(eq(aiConversations.id, conversationId));
 
-        // Log AI usage for cost tracking
-        const costTenths = calculateCostTenths(model, inputTokens, outputTokens);
-        await db.insert(aiUsage).values({
-          workspaceId: conversation.workspaceId,
-          userId,
-          model,
-          source: conversation.contentObjectId ? "engine" : "enginegpt",
-          inputTokens,
-          outputTokens,
-          costTenths,
-          conversationId,
-        });
+          // Log AI usage for cost tracking
+          const costTenths = calculateCostTenths(model, inputTokens, outputTokens);
+          await db.insert(aiUsage).values({
+            workspaceId: conversation.workspaceId,
+            userId,
+            model,
+            source: conversation.contentObjectId ? "engine" : "enginegpt",
+            inputTokens,
+            outputTokens,
+            costTenths,
+            conversationId,
+          });
+        }
       }
     );
 
