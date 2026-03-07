@@ -1159,7 +1159,7 @@ function EngineGPTContent() {
                         <item.Icon className={cn(
                           "h-2.5 w-2.5 transition-colors",
                           isOn
-                            ? isFull ? "text-blue-500" : "text-foreground/40"
+                            ? isFull ? "text-blue-500" : "text-blue-400"
                             : "text-muted-foreground/30"
                         )} />
                         {item.label}
