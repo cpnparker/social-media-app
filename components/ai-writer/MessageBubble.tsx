@@ -1,8 +1,11 @@
 "use client";
 
-import { User, Bot, FileText } from "lucide-react";
+import { useState } from "react";
+import { User, Bot, FileText, ExternalLink, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/utils";
+import DOMPurify from "dompurify";
 import type { Attachment } from "@/lib/types/ai";
+import { getModelLabel } from "@/lib/ai/models";
 
 interface MessageBubbleProps {
   role: "user" | "assistant" | "system";
@@ -10,6 +13,14 @@ interface MessageBubbleProps {
   model?: string | null;
   isStreaming?: boolean;
   attachments?: Attachment[] | null;
+}
+
+interface ParsedSource {
+  number: number;
+  url: string;
+  title: string;
+  domain: string;
+  favicon: string;
 }
 
 export default function MessageBubble({
@@ -20,6 +31,8 @@ export default function MessageBubble({
   attachments,
 }: MessageBubbleProps) {
   const isUser = role === "user";
+  const [sourcesExpanded, setSourcesExpanded] = useState(true);
+  const [hoveredSource, setHoveredSource] = useState<number | null>(null);
 
   const formatSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes}B`;
@@ -28,6 +41,11 @@ export default function MessageBubble({
   };
 
   const isImage = (type: string) => type.startsWith("image/");
+
+  // Parse sources from AI content (only for assistant messages)
+  const { cleanContent, sources } = !isUser
+    ? parseSourcesFromContent(content)
+    : { cleanContent: content, sources: [] };
 
   return (
     <div
@@ -109,16 +127,77 @@ export default function MessageBubble({
           <div
             className="prose prose-sm dark:prose-invert max-w-none [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:mb-2 [&_ol]:mb-2 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_pre]:bg-background/50 [&_code]:text-xs"
             dangerouslySetInnerHTML={{
-              __html: formatMarkdown(content),
+              __html: DOMPurify.sanitize(formatMarkdown(cleanContent, sources), {
+                ADD_ATTR: ['target', 'rel', 'data-source-num'],
+              }),
             }}
           />
         )}
         {isStreaming && (
           <span className="inline-block w-1.5 h-4 bg-foreground/60 animate-pulse ml-0.5 rounded-sm" />
         )}
+
+        {/* Sources panel — Perplexity style */}
+        {!isUser && sources.length > 0 && !isStreaming && (
+          <div className="mt-3 pt-3 border-t border-foreground/5">
+            <button
+              onClick={() => setSourcesExpanded(!sourcesExpanded)}
+              className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors mb-2"
+            >
+              <span>{sources.length} source{sources.length !== 1 ? "s" : ""}</span>
+              {sourcesExpanded ? (
+                <ChevronUp className="h-3 w-3" />
+              ) : (
+                <ChevronDown className="h-3 w-3" />
+              )}
+            </button>
+            {sourcesExpanded && (
+              <div className="flex flex-wrap gap-1.5">
+                {sources.map((src) => (
+                  <a
+                    key={src.number}
+                    href={src.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onMouseEnter={() => setHoveredSource(src.number)}
+                    onMouseLeave={() => setHoveredSource(null)}
+                    className="relative group flex items-center gap-1.5 rounded-lg border bg-background/80 hover:bg-background hover:border-primary/30 px-2.5 py-1.5 text-[11px] transition-all hover:shadow-sm max-w-[220px]"
+                  >
+                    <img
+                      src={src.favicon}
+                      alt=""
+                      className="h-3.5 w-3.5 rounded-sm shrink-0"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = "none";
+                      }}
+                    />
+                    <span className="truncate text-muted-foreground group-hover:text-foreground transition-colors">
+                      {src.title || src.domain}
+                    </span>
+                    <span className="shrink-0 text-[9px] font-medium bg-primary/10 text-primary rounded-full h-4 min-w-[16px] flex items-center justify-center px-1">
+                      {src.number}
+                    </span>
+                    <ExternalLink className="h-2.5 w-2.5 shrink-0 text-muted-foreground/40 group-hover:text-primary transition-colors" />
+
+                    {/* Hover tooltip with full URL */}
+                    {hoveredSource === src.number && (
+                      <div className="absolute bottom-full left-0 mb-1.5 z-50 pointer-events-none">
+                        <div className="bg-popover text-popover-foreground border shadow-lg rounded-lg px-3 py-2 text-[10px] max-w-[300px]">
+                          <p className="font-medium truncate">{src.title || src.domain}</p>
+                          <p className="text-muted-foreground truncate mt-0.5">{src.url}</p>
+                        </div>
+                      </div>
+                    )}
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {!isUser && model && !isStreaming && (
           <p className="text-xs md:text-[10px] text-muted-foreground mt-1.5 opacity-60">
-            {model.includes("grok") ? "Grok" : "Claude"}
+            {getModelLabel(model)}
           </p>
         )}
       </div>
@@ -131,11 +210,129 @@ export default function MessageBubble({
   );
 }
 
+/* ─── Source extraction ─── */
+
+function getDomain(url: string): string {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "");
+    return host;
+  } catch {
+    return url;
+  }
+}
+
+function getFavicon(url: string): string {
+  try {
+    const origin = new URL(url).origin;
+    return `${origin}/favicon.ico`;
+  } catch {
+    return "";
+  }
+}
+
+function getTitleFromUrl(url: string): string {
+  const domain = getDomain(url);
+  // Strip TLD for cleaner display
+  const parts = domain.split(".");
+  if (parts.length >= 2) {
+    return parts[parts.length - 2]; // e.g. "reuters" from "reuters.com"
+  }
+  return domain;
+}
+
+/**
+ * Parse web search sources and inline citations from AI response content.
+ * Handles multiple formats:
+ *   - Grok: [[1]](url), [[2]](url) inline + sometimes a Sources section
+ *   - Claude: [Source Title](url) inline + sometimes numbered [1], [2]
+ *   - Plain URLs: https://... in text
+ */
+function parseSourcesFromContent(content: string): {
+  cleanContent: string;
+  sources: ParsedSource[];
+} {
+  if (!content) return { cleanContent: "", sources: [] };
+
+  const sources: ParsedSource[] = [];
+  const urlToNumber = new Map<string, number>();
+  let nextNum = 1;
+
+  function addSource(url: string, title?: string): number {
+    const existing = urlToNumber.get(url);
+    if (existing !== undefined) return existing;
+    const num = nextNum++;
+    urlToNumber.set(url, num);
+    sources.push({
+      number: num,
+      url,
+      title: title || getTitleFromUrl(url),
+      domain: getDomain(url),
+      favicon: getFavicon(url),
+    });
+    return num;
+  }
+
+  let cleaned = content;
+
+  // Remove trailing "Sources:", "References:" section entirely (we build our own)
+  cleaned = cleaned.replace(
+    /\n+(#{1,3}\s*)?(Sources|References|Citations)\s*:?\s*\n([\s\S]*?)$/i,
+    (match) => {
+      // Parse URLs from the sources section to include them
+      const urlPattern = /https?:\/\/[^\s)\]]+/g;
+      let urlMatch;
+      while ((urlMatch = urlPattern.exec(match)) !== null) {
+        addSource(urlMatch[0]);
+      }
+      return ""; // Remove the section from display
+    }
+  );
+
+  // Pattern 1: [[N]](url) — Grok style
+  cleaned = cleaned.replace(
+    /\[\[(\d+)\]\]\((https?:\/\/[^)]+)\)/g,
+    (_match, _num, url) => {
+      const srcNum = addSource(url);
+      return `[__CITE_${srcNum}__]`;
+    }
+  );
+
+  // Pattern 2: [N](url) — numbered link
+  cleaned = cleaned.replace(
+    /\[(\d+)\]\((https?:\/\/[^)]+)\)/g,
+    (_match, _num, url) => {
+      const srcNum = addSource(url);
+      return `[__CITE_${srcNum}__]`;
+    }
+  );
+
+  // Pattern 3: [Title](url) — named markdown links → keep as links but also track as source
+  cleaned = cleaned.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+    (_match, title, url) => {
+      const srcNum = addSource(url, title);
+      return `[${title}](${url})[__CITE_${srcNum}__]`;
+    }
+  );
+
+  // Pattern 4: Standalone [N] references (without URL — already captured above)
+  // Only convert if we have sources with that number
+  cleaned = cleaned.replace(/\[(\d+)\](?!\()/g, (_match, num) => {
+    const n = parseInt(num, 10);
+    if (n > 0 && n < nextNum) {
+      return `[__CITE_${n}__]`;
+    }
+    return _match; // Leave as-is if not a known citation
+  });
+
+  return { cleanContent: cleaned, sources };
+}
+
 /**
  * Simple markdown → HTML conversion for assistant messages.
- * Handles: **bold**, *italic*, `code`, ```code blocks```, headings, lists, links.
+ * Handles: **bold**, *italic*, `code`, ```code blocks```, headings, lists, links, citations.
  */
-function formatMarkdown(text: string): string {
+function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
   if (!text) return "";
 
   let html = text;
@@ -158,10 +355,27 @@ function formatMarkdown(text: string): string {
   html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
 
-  // Links
+  // Links [text](url)
   html = html.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener" class="text-primary underline">$1</a>'
+    /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener" class="text-primary underline hover:text-primary/80 transition-colors">$1</a>'
+  );
+
+  // Plain URLs (not already in an href or anchor)
+  html = html.replace(
+    /(?<!href="|">)(https?:\/\/[^\s<)\]]+)/g,
+    '<a href="$1" target="_blank" rel="noopener" class="text-primary underline hover:text-primary/80 transition-colors break-all">$1</a>'
+  );
+
+  // Citation badges [__CITE_N__]
+  html = html.replace(
+    /\[__CITE_(\d+)__\]/g,
+    (_match, num) => {
+      const n = parseInt(num, 10);
+      const source = sources.find((s) => s.number === n);
+      if (!source) return "";
+      return `<a href="${source.url}" target="_blank" rel="noopener" data-source-num="${n}" class="inline-flex items-center justify-center h-4 min-w-[16px] px-1 text-[9px] font-semibold bg-primary/10 text-primary rounded-full hover:bg-primary/20 transition-colors no-underline align-super ml-0.5 cursor-pointer" title="${source.domain}">${n}</a>`;
+    }
   );
 
   // Unordered lists
