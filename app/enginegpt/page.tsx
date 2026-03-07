@@ -34,6 +34,10 @@ import {
   Moon,
   Monitor,
   Globe,
+  ScrollText,
+  Newspaper,
+  Share2,
+  Lightbulb,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
@@ -1124,10 +1128,10 @@ function EngineGPTContent() {
                 {/* Context & web search controls */}
                 <div className="flex items-center justify-center gap-1.5 mt-3 flex-wrap">
                   {[
-                    { key: "contracts" as const, label: "Contracts" },
-                    { key: "contentPipeline" as const, label: "Content" },
-                    { key: "socialPresence" as const, label: "Social" },
-                    { key: "ideas" as const, label: "Ideas" },
+                    { key: "contracts" as const, label: "Contracts", Icon: ScrollText },
+                    { key: "contentPipeline" as const, label: "Content", Icon: Newspaper },
+                    { key: "socialPresence" as const, label: "Social", Icon: Share2 },
+                    { key: "ideas" as const, label: "Ideas", Icon: Lightbulb },
                   ].map((item) => {
                     const level = contextConfig[item.key];
                     const isOn = level !== "off";
@@ -1152,11 +1156,11 @@ function EngineGPTContent() {
                             : "text-muted-foreground/40 hover:text-muted-foreground/60"
                         )}
                       >
-                        <div className={cn(
-                          "h-1 w-1 rounded-full transition-colors",
+                        <item.Icon className={cn(
+                          "h-2.5 w-2.5 transition-colors",
                           isOn
-                            ? isFull ? "bg-blue-500" : "bg-foreground/40"
-                            : "bg-muted-foreground/20"
+                            ? isFull ? "text-blue-500" : "text-foreground/40"
+                            : "text-muted-foreground/30"
                         )} />
                         {item.label}
                         {isFull && (
