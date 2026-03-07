@@ -934,7 +934,7 @@ function EngineGPTContent() {
                     placeholder="Ask anything..."
                     disabled={sending}
                     rows={1}
-                    className="w-full resize-none bg-transparent px-4 py-3 sm:pl-5 sm:pr-40 sm:py-4 text-sm focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
+                    className="w-full resize-none bg-transparent px-4 py-3 sm:px-5 sm:py-4 text-sm focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
                     style={{ minHeight: "48px", maxHeight: "160px" }}
                   />
 
@@ -948,8 +948,8 @@ function EngineGPTContent() {
                     className="hidden"
                   />
 
-                  {/* Desktop: overlaid buttons in bottom-right */}
-                  <div className="hidden sm:flex absolute right-3 bottom-3 items-center gap-1.5">
+                  {/* Desktop: bottom button bar */}
+                  <div className="hidden sm:flex px-3 pb-3 items-center justify-end gap-1.5">
                     <Button
                       variant="ghost"
                       size="sm"
