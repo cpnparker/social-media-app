@@ -1177,9 +1177,9 @@ function EngineGPTContent() {
                         ...prev,
                         webSearch: turningOn ? "on" : "off",
                       }));
-                      if (turningOn && selectedModel !== "claude-sonnet-4-20250514") {
-                        setSelectedModel("claude-sonnet-4-20250514");
-                        toast.info("Switched to Claude Sonnet 4 — web search requires Claude");
+                      if (turningOn && selectedModel !== "claude-sonnet-4-6") {
+                        setSelectedModel("claude-sonnet-4-6");
+                        toast.info("Switched to Claude Sonnet 4.6 — web search requires Claude");
                       }
                     }}
                     title={`Web Search: ${contextConfig.webSearch === "on" ? "On — AI can search the web" : "Off"} — click to toggle`}

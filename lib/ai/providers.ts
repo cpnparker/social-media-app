@@ -27,17 +27,27 @@ export interface AIProviderConfig {
 /* ─────────────── Model Registry ─────────────── */
 
 interface ModelInfo {
-  provider: "anthropic" | "xai" | "openai";
+  provider: "anthropic" | "xai" | "openai" | "gemini";
   apiModel: string;
   label: string;
   legacy?: boolean;
 }
 
 const MODEL_REGISTRY: Record<string, ModelInfo> = {
-  "claude-sonnet-4-20250514": {
+  "claude-sonnet-4-6": {
     provider: "anthropic",
-    apiModel: "claude-sonnet-4-20250514",
-    label: "Claude Sonnet 4",
+    apiModel: "claude-sonnet-4-6",
+    label: "Claude Sonnet 4.6",
+  },
+  "gemini-2.5-pro": {
+    provider: "gemini",
+    apiModel: "gemini-2.5-pro",
+    label: "Gemini 2.5 Pro",
+  },
+  "gemini-2.5-flash": {
+    provider: "gemini",
+    apiModel: "gemini-2.5-flash",
+    label: "Gemini 2.5 Flash",
   },
   "gpt-4o": {
     provider: "openai",
@@ -59,7 +69,13 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     apiModel: "grok-3-mini",
     label: "Grok 3 Mini",
   },
-  // Legacy: map old grok-3 conversations to grok-4-1-fast
+  // Legacy mappings for old conversations
+  "claude-sonnet-4-20250514": {
+    provider: "anthropic",
+    apiModel: "claude-sonnet-4-6",
+    label: "Claude Sonnet 4.6",
+    legacy: true,
+  },
   "grok-3": {
     provider: "xai",
     apiModel: "grok-4-1-fast",
@@ -102,6 +118,16 @@ function getXAIClient() {
   return new OpenAI({
     apiKey: process.env.XAI_API_KEY,
     baseURL: "https://api.x.ai/v1",
+  });
+}
+
+function getGeminiClient() {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY environment variable is not set. Add it to use Gemini models.");
+  }
+  return new OpenAI({
+    apiKey: process.env.GEMINI_API_KEY,
+    baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
   });
 }
 
@@ -240,6 +266,8 @@ export function createStreamingResponse(
       try {
         if (modelInfo.provider === "anthropic") {
           result = await streamAnthropic(messages, config, modelInfo.apiModel, controller, encoder);
+        } else if (modelInfo.provider === "gemini") {
+          result = await streamGemini(messages, config, modelInfo.apiModel, controller, encoder);
         } else if (modelInfo.provider === "openai") {
           result = await streamOpenAI(messages, config, modelInfo.apiModel, controller, encoder);
         } else {
@@ -378,6 +406,61 @@ async function streamXAI(
       );
     }
     // Capture usage from the final chunk
+    if ((chunk as any).usage) {
+      inputTokens = (chunk as any).usage.prompt_tokens || 0;
+      outputTokens = (chunk as any).usage.completion_tokens || 0;
+    }
+  }
+
+  return { fullText, inputTokens, outputTokens };
+}
+
+/* ─────────────── Gemini Streaming ─────────────── */
+
+async function streamGemini(
+  messages: AIMessage[],
+  config: AIProviderConfig,
+  apiModel: string,
+  controller: ReadableStreamDefaultController,
+  encoder: TextEncoder
+): Promise<StreamResult> {
+  const client = getGeminiClient();
+
+  const geminiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+
+  // Add system prompt
+  const systemText = config.systemPrompt;
+  if (systemText) {
+    geminiMessages.push({ role: "system", content: systemText });
+  }
+
+  // Add conversation messages
+  for (const m of messages) {
+    geminiMessages.push({
+      role: m.role as "user" | "assistant" | "system",
+      content: m.role === "user" ? await buildOpenAIContent(m) : m.content,
+    } as any);
+  }
+
+  const stream = (await client.chat.completions.create({
+    model: apiModel,
+    max_tokens: config.maxTokens || 4096,
+    messages: geminiMessages,
+    stream: true,
+  } as any)) as unknown as AsyncIterable<any>;
+
+  let fullText = "";
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  for await (const chunk of stream) {
+    const token = chunk.choices?.[0]?.delta?.content;
+    if (token) {
+      fullText += token;
+      controller.enqueue(
+        encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)
+      );
+    }
     if ((chunk as any).usage) {
       inputTokens = (chunk as any).usage.prompt_tokens || 0;
       outputTokens = (chunk as any).usage.completion_tokens || 0;

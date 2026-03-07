@@ -11,16 +11,20 @@ import type { Attachment } from "@/lib/types/ai";
 
 // ── Cost calculation for usage tracking ──
 const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> = {
-  "claude-sonnet-4-20250514": { inputPer1M: 300, outputPer1M: 1500 }, // $3/$15 in cents
+  "claude-sonnet-4-6": { inputPer1M: 300, outputPer1M: 1500 },       // $3/$15 in cents
+  "gemini-2.5-pro": { inputPer1M: 125, outputPer1M: 1000 },          // $1.25/$10
+  "gemini-2.5-flash": { inputPer1M: 30, outputPer1M: 250 },          // $0.30/$2.50
   "gpt-4o": { inputPer1M: 250, outputPer1M: 1000 },                  // $2.50/$10
   "gpt-4o-mini": { inputPer1M: 15, outputPer1M: 60 },                // $0.15/$0.60
   "grok-4-1-fast": { inputPer1M: 20, outputPer1M: 50 },              // $0.20/$0.50
   "grok-3-mini": { inputPer1M: 30, outputPer1M: 50 },                // $0.30/$0.50
-  "grok-3": { inputPer1M: 300, outputPer1M: 1500 },                  // legacy
+  // Legacy
+  "claude-sonnet-4-20250514": { inputPer1M: 300, outputPer1M: 1500 },
+  "grok-3": { inputPer1M: 300, outputPer1M: 1500 },
 };
 
 function calculateCostTenths(model: string, inputTokens: number, outputTokens: number): number {
-  const rates = MODEL_COSTS[model] || MODEL_COSTS["claude-sonnet-4-20250514"];
+  const rates = MODEL_COSTS[model] || MODEL_COSTS["claude-sonnet-4-6"];
   const inputCost = (inputTokens / 1_000_000) * rates.inputPer1M * 10;
   const outputCost = (outputTokens / 1_000_000) * rates.outputPer1M * 10;
   return Math.round(inputCost + outputCost);
