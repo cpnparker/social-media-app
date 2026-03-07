@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { auth } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { userAccess } from "@/lib/db/schema";
+import { eq, and } from "drizzle-orm";
 
 // GET /api/workspace-members — list all users in the workspace
 export async function GET() {
@@ -64,8 +67,16 @@ export async function GET() {
 
     const userMap = new Map((userRows || []).map((u) => [u.id_user, u]));
 
+    // Fetch area access flags from Neon
+    const accessRows = await db
+      .select()
+      .from(userAccess)
+      .where(eq(userAccess.workspaceId, ws.id));
+    const accessMap = new Map(accessRows.map((a) => [a.userId, a]));
+
     const members = (memberRows || []).map((m) => {
       const user = userMap.get(m.user_id);
+      const access = accessMap.get(m.user_id);
       return {
         id: String(m.user_id),
         name: user?.name_user || null,
@@ -76,6 +87,11 @@ export async function GET() {
         role: m.role,
         supabaseRole: user?.role_user || null,
         joinedAt: m.joined_at || null,
+        // No access row = existing user, default all to true
+        accessEngine: access ? access.accessEngine : true,
+        accessEngineGpt: access ? access.accessEngineGpt : true,
+        accessOperations: access ? access.accessOperations : true,
+        accessAdmin: access ? access.accessAdmin : true,
       };
     });
 
@@ -155,6 +171,16 @@ export async function POST(req: NextRequest) {
       role: role || "viewer",
     });
 
+    // Create default area access row in Neon
+    await db.insert(userAccess).values({
+      workspaceId: ws.id,
+      userId: existingUser.id_user,
+      accessEngine: true,
+      accessEngineGpt: true,
+      accessOperations: false,
+      accessAdmin: false,
+    });
+
     return NextResponse.json(
       {
         member: {
@@ -162,6 +188,10 @@ export async function POST(req: NextRequest) {
           name: existingUser.name_user,
           email: existingUser.email_user,
           role: role || "viewer",
+          accessEngine: true,
+          accessEngineGpt: true,
+          accessOperations: false,
+          accessAdmin: false,
         },
       },
       { status: 201 }
@@ -171,14 +201,15 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// PATCH /api/workspace-members — update a member's role
+// PATCH /api/workspace-members — update a member's role and/or area access
 export async function PATCH(req: NextRequest) {
   try {
-    const { userId, role } = await req.json();
+    const body = await req.json();
+    const { userId, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin } = body;
 
-    if (!userId || !role) {
+    if (!userId) {
       return NextResponse.json(
-        { error: "userId and role are required" },
+        { error: "userId is required" },
         { status: 400 }
       );
     }
@@ -193,19 +224,68 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "No workspace found" }, { status: 404 });
     }
 
-    const { data: updated, error } = await supabase
-      .from("workspace_members")
-      .update({ role })
-      .eq("workspace_id", ws.id)
-      .eq("user_id", parseInt(userId, 10))
-      .select()
-      .single();
+    const numericUserId = parseInt(userId, 10);
 
-    if (error || !updated) {
-      return NextResponse.json({ error: "Member not found" }, { status: 404 });
+    // Update role in Supabase if provided
+    if (role) {
+      const { data: updated, error } = await supabase
+        .from("workspace_members")
+        .update({ role })
+        .eq("workspace_id", ws.id)
+        .eq("user_id", numericUserId)
+        .select()
+        .single();
+
+      if (error || !updated) {
+        return NextResponse.json({ error: "Member not found" }, { status: 404 });
+      }
     }
 
-    return NextResponse.json({ member: updated });
+    // Update area access in Neon if any access flags provided
+    const hasAccessUpdate =
+      accessEngine !== undefined ||
+      accessEngineGpt !== undefined ||
+      accessOperations !== undefined ||
+      accessAdmin !== undefined;
+
+    if (hasAccessUpdate) {
+      // Check if access row exists
+      const [existing] = await db
+        .select()
+        .from(userAccess)
+        .where(
+          and(
+            eq(userAccess.workspaceId, ws.id),
+            eq(userAccess.userId, numericUserId)
+          )
+        )
+        .limit(1);
+
+      if (existing) {
+        const updates: Record<string, boolean> = {};
+        if (accessEngine !== undefined) updates.accessEngine = accessEngine;
+        if (accessEngineGpt !== undefined) updates.accessEngineGpt = accessEngineGpt;
+        if (accessOperations !== undefined) updates.accessOperations = accessOperations;
+        if (accessAdmin !== undefined) updates.accessAdmin = accessAdmin;
+
+        await db
+          .update(userAccess)
+          .set({ ...updates, updatedAt: new Date() })
+          .where(eq(userAccess.id, existing.id));
+      } else {
+        // Create access row with provided values or defaults
+        await db.insert(userAccess).values({
+          workspaceId: ws.id,
+          userId: numericUserId,
+          accessEngine: accessEngine ?? true,
+          accessEngineGpt: accessEngineGpt ?? true,
+          accessOperations: accessOperations ?? false,
+          accessAdmin: accessAdmin ?? false,
+        });
+      }
+    }
+
+    return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -234,13 +314,25 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "No workspace found" }, { status: 404 });
     }
 
+    const numericUserId = parseInt(userId, 10);
+
     const { error } = await supabase
       .from("workspace_members")
       .delete()
       .eq("workspace_id", ws.id)
-      .eq("user_id", parseInt(userId, 10));
+      .eq("user_id", numericUserId);
 
     if (error) throw error;
+
+    // Clean up area access row in Neon
+    await db
+      .delete(userAccess)
+      .where(
+        and(
+          eq(userAccess.workspaceId, ws.id),
+          eq(userAccess.userId, numericUserId)
+        )
+      );
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

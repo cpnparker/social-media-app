@@ -16,6 +16,11 @@ const ALLOWED_TYPES = [
   "video/mp4",
   "video/quicktime",
   "video/webm",
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "text/plain",
+  "text/csv",
+  "text/markdown",
 ];
 
 // POST /api/media/upload

@@ -36,6 +36,10 @@ interface WorkspaceMember {
   role: string;
   invitedAt: string;
   joinedAt: string | null;
+  accessEngine: boolean;
+  accessEngineGpt: boolean;
+  accessOperations: boolean;
+  accessAdmin: boolean;
 }
 
 interface CustomerAssignment {
@@ -178,6 +182,29 @@ export default function UsersSettingsPage() {
     }
   };
 
+  const handleUpdateAccess = async (
+    userId: string,
+    field: "accessEngine" | "accessEngineGpt" | "accessOperations" | "accessAdmin",
+    value: boolean
+  ) => {
+    try {
+      const res = await fetch("/api/workspace-members", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, [field]: value }),
+      });
+      if (!res.ok) throw new Error("Failed to update access");
+      // Optimistic update
+      setMembers((prev) =>
+        prev.map((m) =>
+          m.id === userId ? { ...m, [field]: value } : m
+        )
+      );
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  };
+
   const handleRemove = async (userId: string, userName: string) => {
     if (!confirm(`Remove ${userName} from the workspace?`)) return;
     try {
@@ -298,24 +325,51 @@ export default function UsersSettingsPage() {
                       )}
                     </div>
 
-                    {/* Role selector */}
-                    <select
-                      value={member.role}
-                      onChange={(e) =>
-                        handleChangeRole(member.id, e.target.value)
-                      }
-                      className={cn(
-                        "rounded-md border-0 text-xs font-medium px-2 py-1 cursor-pointer",
-                        rc.bg,
-                        rc.color
-                      )}
-                    >
-                      {roleOptions.map((r) => (
-                        <option key={r} value={r}>
-                          {roleConfig[r]?.label || r}
-                        </option>
-                      ))}
-                    </select>
+                    {/* Role + Access */}
+                    <div className="flex flex-col items-end gap-1.5 shrink-0">
+                      <select
+                        value={member.role}
+                        onChange={(e) =>
+                          handleChangeRole(member.id, e.target.value)
+                        }
+                        className={cn(
+                          "rounded-md border-0 text-xs font-medium px-2 py-1 cursor-pointer",
+                          rc.bg,
+                          rc.color
+                        )}
+                      >
+                        {roleOptions.map((r) => (
+                          <option key={r} value={r}>
+                            {roleConfig[r]?.label || r}
+                          </option>
+                        ))}
+                      </select>
+
+                      {/* Area access pills */}
+                      <div className="flex flex-wrap gap-1">
+                        {([
+                          { key: "accessEngine" as const, label: "Engine" },
+                          { key: "accessEngineGpt" as const, label: "GPT" },
+                          { key: "accessOperations" as const, label: "Ops" },
+                          { key: "accessAdmin" as const, label: "Admin" },
+                        ]).map(({ key, label }) => (
+                          <button
+                            key={key}
+                            onClick={() =>
+                              handleUpdateAccess(member.id, key, !member[key])
+                            }
+                            className={cn(
+                              "text-[10px] font-medium px-1.5 py-0.5 rounded transition-colors",
+                              member[key]
+                                ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                                : "bg-muted text-muted-foreground/40"
+                            )}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
 
                     {/* Remove button */}
                     <button

@@ -171,6 +171,7 @@ const adminItems: NavSubItem[] = [
   { label: "Billing", href: "/settings/billing", icon: CreditCard },
 ];
 
+// Kept for legacy fallback if workspace access not yet set
 const TCE_STAFF_ROLES = ["super", "tceadmin", "tcemanager", "tceuser"];
 
 // ────────────────────────────────────────────────
@@ -275,7 +276,12 @@ export function Sidebar({ onClose }: SidebarProps) {
       .catch(() => {});
   }, []);
 
-  const showOperations = TCE_STAFF_ROLES.includes(userRole);
+  // Area access: use workspace flags when available, fallback to role-based check
+  const ws = wsCtx?.selectedWorkspace;
+  const showEngine = ws?.accessEngine ?? true;
+  const showEngineGpt = ws?.accessEngineGpt ?? true;
+  const showOperations = ws?.accessOperations ?? TCE_STAFF_ROLES.includes(userRole);
+  const showAdmin = ws?.accessAdmin ?? true;
 
   // ── Inbox count ──
   const fetchInboxCount = useCallback(async () => {
@@ -331,9 +337,9 @@ export function Sidebar({ onClose }: SidebarProps) {
 
   // ── Area rail icons definition ──
   const railIcons: { area: Area; icon: React.ComponentType<{ className?: string }>; label: string; hidden?: boolean }[] = [
-    { area: "engine", icon: Package, label: "The Engine" },
+    { area: "engine", icon: Package, label: "The Engine", hidden: !showEngine },
     { area: "operations", icon: Gauge, label: "Operations", hidden: !showOperations },
-    { area: "admin", icon: Settings, label: "Administration" },
+    { area: "admin", icon: Settings, label: "Administration", hidden: !showAdmin },
   ];
 
   return (
@@ -450,6 +456,7 @@ export function Sidebar({ onClose }: SidebarProps) {
             userName={userName}
             userEmail={userEmail}
             userInitials={userInitials}
+            showEngineGpt={showEngineGpt}
           />
         )}
 
@@ -489,6 +496,7 @@ function EnginePanel({
   userName,
   userEmail,
   userInitials,
+  showEngineGpt,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   wsCtx: any;
@@ -502,6 +510,7 @@ function EnginePanel({
   userName: string;
   userEmail: string;
   userInitials: string;
+  showEngineGpt: boolean;
 }) {
   return (
     <>
@@ -615,22 +624,24 @@ function EnginePanel({
         </Link>
       </div>
 
-      {/* AI Writer link */}
-      <div className="px-3 pb-1">
-        <Link
-          href="/ai-writer"
-          onClick={onClose}
-          className={cn(
-            "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
-            pathname.startsWith("/ai-writer")
-              ? "bg-white/15 text-white"
-              : "text-white/70 hover:bg-white/10 hover:text-white"
-          )}
-        >
-          <Sparkles className="h-[16px] w-[16px]" />
-          AI Writer
-        </Link>
-      </div>
+      {/* EngineGPT link */}
+      {showEngineGpt && (
+        <div className="px-3 pb-1">
+          <Link
+            href="/ai-writer"
+            onClick={onClose}
+            className={cn(
+              "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
+              pathname.startsWith("/ai-writer")
+                ? "bg-white/15 text-white"
+                : "text-white/70 hover:bg-white/10 hover:text-white"
+            )}
+          >
+            <Sparkles className="h-[16px] w-[16px]" />
+            EngineGPT
+          </Link>
+        </div>
+      )}
 
       {/* Navigation sections */}
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-hide px-3 pb-4 mt-1">

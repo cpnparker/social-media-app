@@ -8,7 +8,12 @@ import {
   Trash2,
   Pencil,
   Globe,
-  ChevronDown,
+  ArrowLeft,
+  Building2,
+  Link2,
+  Bug,
+  ChevronRight,
+  Upload,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,30 +24,65 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { cn } from "@/lib/utils";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
+import { getModelLabel } from "@/lib/ai/models";
 import MessageBubble from "./MessageBubble";
-import ChatInput from "./ChatInput";
-import type { AIConversation, AIMessageRow } from "@/lib/types/ai";
+import ChatInput, { type ChatInputHandle } from "./ChatInput";
+import type { AIConversation, AIMessageRow, Attachment, MemorySuggestion } from "@/lib/types/ai";
+import MemorySuggestions from "./MemorySuggestions";
 
 interface ChatPanelProps {
   conversationId: string;
   onConversationDeleted?: () => void;
   onConversationUpdated?: (conv: AIConversation) => void;
+  onBack?: () => void;
+  initialMessage?: string;
+  initialAttachments?: Attachment[];
+  contextConfig?: { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string };
+  debugMode?: boolean;
+  onCopyLink?: () => void;
 }
 
 export default function ChatPanel({
   conversationId,
   onConversationDeleted,
   onConversationUpdated,
+  onBack,
+  initialMessage,
+  initialAttachments,
+  contextConfig,
+  debugMode,
+  onCopyLink,
 }: ChatPanelProps) {
   const [conversation, setConversation] = useState<AIConversation | null>(null);
   const [messages, setMessages] = useState<AIMessageRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isSearchingWeb, setIsSearchingWeb] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
+  const [debugContext, setDebugContext] = useState<string | null>(null);
+  const [debugExpanded, setDebugExpanded] = useState(false);
+  const [memorySuggestions, setMemorySuggestions] = useState<MemorySuggestion[]>([]);
+  const [memoryConversationId, setMemoryConversationId] = useState<string | null>(null);
+  const [memoryVisibility, setMemoryVisibility] = useState<"private" | "team">("private");
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const initialMessageSent = useRef(false);
+  const chatInputRef = useRef<ChatInputHandle>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounterRef = useRef(0);
 
   // Fetch conversation and messages
   const fetchConversation = useCallback(async () => {
@@ -64,28 +104,40 @@ export default function ChatPanel({
     fetchConversation();
   }, [fetchConversation]);
 
+  // Auto-send initial message (quick-send from home page)
+  useEffect(() => {
+    if ((initialMessage || initialAttachments?.length) && conversation && !initialMessageSent.current && !loading) {
+      initialMessageSent.current = true;
+      handleSend(initialMessage || "", initialAttachments);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialMessage, initialAttachments, conversation, loading]);
+
   // Scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingContent]);
 
   // Send message with streaming
-  const handleSend = async (content: string) => {
+  const handleSend = async (content: string, attachments?: Attachment[]) => {
     if (!conversation) return;
 
     // Optimistically add user message
     const tempUserMsg: AIMessageRow = {
       id: `temp-${Date.now()}`,
-      conversation_id: conversationId,
+      conversationId: conversationId,
       role: "user",
       content,
+      attachments: attachments || null,
       model: null,
-      created_by: null,
-      created_at: new Date().toISOString(),
+      createdBy: null,
+      createdAt: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, tempUserMsg]);
     setIsStreaming(true);
     setStreamingContent("");
+    setDebugContext(null);
+    setDebugExpanded(false);
 
     try {
       const res = await fetch(
@@ -93,7 +145,7 @@ export default function ChatPanel({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({ content, attachments, contextConfig, debugMode }),
         }
       );
 
@@ -119,7 +171,17 @@ export default function ChatPanel({
 
           try {
             const parsed = JSON.parse(data);
-            if (parsed.token) {
+            if (parsed.debugContext) {
+              setDebugContext(parsed.debugContext);
+            } else if (parsed.searching) {
+              setIsSearchingWeb(true);
+            } else if (parsed.memorySuggestions) {
+              setMemorySuggestions(parsed.memorySuggestions);
+              setMemoryConversationId(parsed.conversationId || conversationId);
+              setMemoryVisibility(parsed.conversationVisibility || "private");
+            } else if (parsed.token) {
+              // First token means search is done (if it was searching)
+              setIsSearchingWeb(false);
               fullText += parsed.token;
               setStreamingContent(fullText);
             }
@@ -136,12 +198,12 @@ export default function ChatPanel({
       if (fullText) {
         const assistantMsg: AIMessageRow = {
           id: `assistant-${Date.now()}`,
-          conversation_id: conversationId,
+          conversationId: conversationId,
           role: "assistant",
           content: fullText,
           model: conversation.model,
-          created_by: null,
-          created_at: new Date().toISOString(),
+          createdBy: null,
+          createdAt: new Date().toISOString(),
         };
         setMessages((prev) => [...prev, assistantMsg]);
       }
@@ -160,6 +222,7 @@ export default function ChatPanel({
       console.error("Send error:", err);
     } finally {
       setIsStreaming(false);
+      setIsSearchingWeb(false);
       setStreamingContent("");
     }
   };
@@ -203,12 +266,54 @@ export default function ChatPanel({
   // Delete conversation
   const handleDelete = async () => {
     try {
-      await fetch(`/api/ai/conversations/${conversationId}`, {
+      const res = await fetch(`/api/ai/conversations/${conversationId}`, {
         method: "DELETE",
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || "Failed to delete conversation");
+        return;
+      }
       onConversationDeleted?.();
-    } catch {}
+    } catch (err) {
+      toast.error("Failed to delete conversation");
+    }
   };
+
+  // Drag & drop handlers for full-panel drop zone
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer.types.includes("Files")) {
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleFileDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      chatInputRef.current?.uploadFiles(files);
+    }
+  }, []);
 
   if (loading) {
     return (
@@ -226,12 +331,37 @@ export default function ChatPanel({
     );
   }
 
-  const modelLabel = conversation.model.includes("grok") ? "Grok" : "Claude";
+  const modelLabel = getModelLabel(conversation.model);
 
   return (
-    <div className="flex flex-col h-full">
+    <div
+      className="flex flex-col h-full relative"
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleFileDrop}
+    >
+      {/* Full-panel drop overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 p-8 rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5">
+            <Upload className="h-10 w-10 text-primary" />
+            <p className="text-sm font-semibold text-primary">Drop files to upload</p>
+            <p className="text-xs text-muted-foreground">Images, PDFs, documents, and more</p>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
-      <div className="border-b px-4 py-2.5 flex items-center gap-3 shrink-0">
+      <div className="border-b px-3 md:px-4 py-2.5 flex items-center gap-2 md:gap-3 shrink-0">
+        {onBack && (
+          <button
+            onClick={onBack}
+            className="shrink-0 h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+        )}
         <div className="flex-1 min-w-0">
           {editingTitle ? (
             <input
@@ -259,7 +389,7 @@ export default function ChatPanel({
           <div className="flex items-center gap-2 mt-0.5">
             <Badge
               variant="outline"
-              className="text-[10px] px-1.5 py-0 h-4 gap-1"
+              className="text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4 gap-1"
             >
               {conversation.visibility === "private" ? (
                 <Lock className="h-2.5 w-2.5" />
@@ -270,16 +400,25 @@ export default function ChatPanel({
             </Badge>
             <Badge
               variant="outline"
-              className="text-[10px] px-1.5 py-0 h-4"
+              className="text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4"
             >
               {modelLabel}
             </Badge>
+            {conversation.customerName && (
+              <Badge
+                variant="outline"
+                className="text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4 gap-1 text-muted-foreground"
+              >
+                <Building2 className="h-2.5 w-2.5" />
+                {conversation.customerName}
+              </Badge>
+            )}
           </div>
         </div>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8">
+            <Button variant="ghost" size="icon" className="h-9 w-9 md:h-8 md:w-8">
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
@@ -293,6 +432,12 @@ export default function ChatPanel({
               <Pencil className="h-3.5 w-3.5 mr-2" />
               Rename
             </DropdownMenuItem>
+            {onCopyLink && (
+              <DropdownMenuItem onClick={onCopyLink}>
+                <Link2 className="h-3.5 w-3.5 mr-2" />
+                Copy link
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onClick={handleToggleVisibility}>
               {conversation.visibility === "private" ? (
                 <>
@@ -308,7 +453,7 @@ export default function ChatPanel({
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              onClick={handleDelete}
+              onClick={() => setDeleteConfirmOpen(true)}
               className="text-destructive"
             >
               <Trash2 className="h-3.5 w-3.5 mr-2" />
@@ -316,12 +461,33 @@ export default function ChatPanel({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* Delete confirmation dialog */}
+        <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete conversation?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete &ldquo;{conversation.title}&rdquo; and all its messages. This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={handleDelete}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                Delete
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
         {messages.length === 0 && !isStreaming ? (
-          <div className="flex flex-col items-center justify-center h-full px-8 text-center">
+          <div className="flex flex-col items-center justify-center h-full px-4 sm:px-8 text-center">
             <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
               <span className="text-2xl">✨</span>
             </div>
@@ -341,14 +507,59 @@ export default function ChatPanel({
                 role={msg.role}
                 content={msg.content}
                 model={msg.model}
+                attachments={msg.attachments}
               />
             ))}
+            {/* Debug context preview */}
+            {debugContext && (
+              <div className="mx-4 sm:mx-8 my-2">
+                <button
+                  onClick={() => setDebugExpanded(!debugExpanded)}
+                  className="flex items-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 transition-colors"
+                >
+                  <Bug className="h-3.5 w-3.5" />
+                  System Prompt
+                  <span className="text-[10px] text-muted-foreground font-normal">
+                    ({Math.round(debugContext.length / 4).toLocaleString()} est. tokens)
+                  </span>
+                  <ChevronRight
+                    className={`h-3 w-3 transition-transform ${debugExpanded ? "rotate-90" : ""}`}
+                  />
+                </button>
+                {debugExpanded && (
+                  <pre className="mt-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 text-[11px] leading-relaxed text-amber-900 dark:text-amber-100 whitespace-pre-wrap break-words max-h-[400px] overflow-y-auto font-mono">
+                    {debugContext}
+                  </pre>
+                )}
+              </div>
+            )}
+            {isStreaming && isSearchingWeb && !streamingContent && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0 mt-0.5">
+                  <Globe className="h-3.5 w-3.5 text-emerald-500 animate-pulse" />
+                </div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <span className="animate-pulse">Searching the web…</span>
+                </div>
+              </div>
+            )}
             {isStreaming && streamingContent && (
               <MessageBubble
                 role="assistant"
                 content={streamingContent}
                 model={conversation.model}
                 isStreaming
+              />
+            )}
+            {/* Memory suggestions */}
+            {memorySuggestions.length > 0 && !isStreaming && conversation && (
+              <MemorySuggestions
+                suggestions={memorySuggestions}
+                conversationId={memoryConversationId || conversationId}
+                conversationVisibility={memoryVisibility}
+                workspaceId={conversation.workspaceId}
+                onDismiss={() => setMemorySuggestions([])}
+                onSaved={() => setMemorySuggestions([])}
               />
             )}
             <div ref={messagesEndRef} />
@@ -358,6 +569,7 @@ export default function ChatPanel({
 
       {/* Input */}
       <ChatInput
+        ref={chatInputRef}
         onSend={handleSend}
         disabled={isStreaming}
         placeholder={

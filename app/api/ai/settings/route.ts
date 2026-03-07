@@ -1,9 +1,41 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { supabase } from "@/lib/supabase";
+import { db } from "@/lib/db";
+import { workspaces } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
 import { getAvailableModels } from "@/lib/ai/providers";
+import { supabase } from "@/lib/supabase";
 
-// GET /api/ai/settings — get workspace AI settings
+// Ensure workspace row exists in Neon (lazy-create from Supabase)
+async function ensureNeonWorkspace(workspaceId: string) {
+  const existing = await db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+
+  if (existing.length === 0) {
+    const { data: supaWs } = await supabase
+      .from("workspaces")
+      .select("id, name, slug, plan")
+      .eq("id", workspaceId)
+      .single();
+
+    if (supaWs) {
+      await db
+        .insert(workspaces)
+        .values({
+          id: supaWs.id,
+          name: supaWs.name,
+          slug: supaWs.slug,
+          plan: supaWs.plan || "free",
+        })
+        .onConflictDoNothing();
+    }
+  }
+}
+
+// GET /api/ai/settings — get workspace AI settings + context config + CU definitions
 export async function GET(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -18,26 +50,50 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const { data: workspace, error } = await supabase
-      .from("workspaces")
-      .select("ai_model")
-      .eq("id", workspaceId)
-      .single();
+    // Ensure Neon row exists before reading
+    await ensureNeonWorkspace(workspaceId);
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+    const [workspace] = await db
+      .select({
+        aiModel: workspaces.aiModel,
+        aiContextConfig: workspaces.aiContextConfig,
+        aiCuDescription: workspaces.aiCuDescription,
+        aiMaxTokens: workspaces.aiMaxTokens,
+        aiDebugMode: workspaces.aiDebugMode,
+      })
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId))
+      .limit(1);
+
+    // Fetch CU definitions from Supabase
+    const { data: cuDefs } = await supabase
+      .from("calculator_content")
+      .select("name, format, units_content, cu_category")
+      .order("sort_order");
 
     return NextResponse.json({
-      currentModel: workspace?.ai_model || "claude-sonnet-4-20250514",
+      currentModel: workspace?.aiModel || "grok-4-1-fast",
       availableModels: getAvailableModels(),
+      contextConfig: workspace?.aiContextConfig || {
+        contracts: true,
+        contentPipeline: true,
+        socialPresence: true,
+      },
+      cuDescription: workspace?.aiCuDescription || "",
+      maxTokens: workspace?.aiMaxTokens || 4096,
+      debugMode: workspace?.aiDebugMode || false,
+      cuDefinitions: (cuDefs || []).map((c: any) => ({
+        format: c.name,
+        category: c.cu_category || c.format,
+        units: c.units_content,
+      })),
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
-// PATCH /api/ai/settings — update workspace AI model
+// PATCH /api/ai/settings — update workspace AI settings
 export async function PATCH(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -46,25 +102,39 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workspaceId, model } = body;
+    const { workspaceId, model, contextConfig, cuDescription, maxTokens, debugMode } = body;
 
-    if (!workspaceId || !model) {
+    if (!workspaceId) {
       return NextResponse.json(
-        { error: "workspaceId and model are required" },
+        { error: "workspaceId is required" },
         { status: 400 }
       );
     }
 
-    const { error } = await supabase
-      .from("workspaces")
-      .update({ ai_model: model, updated_at: new Date().toISOString() })
-      .eq("id", workspaceId);
+    // Ensure Neon row exists before updating
+    await ensureNeonWorkspace(workspaceId);
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    const updateData: Record<string, any> = { updatedAt: new Date() };
+    if (model !== undefined) updateData.aiModel = model;
+    if (contextConfig !== undefined) updateData.aiContextConfig = contextConfig;
+    if (cuDescription !== undefined) updateData.aiCuDescription = cuDescription;
+    if (maxTokens !== undefined) updateData.aiMaxTokens = maxTokens;
+    if (debugMode !== undefined) updateData.aiDebugMode = debugMode;
+
+    await db
+      .update(workspaces)
+      .set(updateData)
+      .where(eq(workspaces.id, workspaceId));
+
+    // Sync aiModel to Supabase for backward compatibility
+    if (model !== undefined) {
+      await supabase
+        .from("workspaces")
+        .update({ ai_model: model })
+        .eq("id", workspaceId);
     }
 
-    return NextResponse.json({ success: true, model });
+    return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

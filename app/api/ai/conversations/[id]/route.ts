@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { aiConversations, aiMessages } from "@/lib/db/schema";
+import { eq, asc } from "drizzle-orm";
 import { supabase } from "@/lib/supabase";
 
 // GET /api/ai/conversations/[id] — get conversation with messages
@@ -15,36 +18,47 @@ export async function GET(
   const conversationId = params.id;
 
   try {
-    // Fetch conversation
-    const { data: conversation, error: convError } = await supabase
-      .from("ai_conversations")
-      .select("*")
-      .eq("id", conversationId)
-      .single();
+    const [conversation] = await db
+      .select()
+      .from(aiConversations)
+      .where(eq(aiConversations.id, conversationId))
+      .limit(1);
 
-    if (convError || !conversation) {
+    if (!conversation) {
       return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
     }
 
     // Access check: private conversations are only for the creator
-    if (conversation.visibility === "private" && conversation.created_by !== userId) {
+    if (conversation.visibility === "private" && conversation.createdBy !== userId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Fetch messages
-    const { data: messages, error: msgError } = await supabase
-      .from("ai_messages")
-      .select("*")
-      .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: true });
+    const rawMessages = await db
+      .select()
+      .from(aiMessages)
+      .where(eq(aiMessages.conversationId, conversationId))
+      .orderBy(asc(aiMessages.createdAt));
 
-    if (msgError) {
-      return NextResponse.json({ error: msgError.message }, { status: 500 });
+    // Parse attachments JSON strings for the client
+    const messages = rawMessages.map((m) => ({
+      ...m,
+      attachments: m.attachments ? JSON.parse(m.attachments) : null,
+    }));
+
+    // Resolve customer name if conversation has a customerId
+    let customerName: string | null = null;
+    if (conversation.customerId) {
+      const { data: client } = await supabase
+        .from("app_clients")
+        .select("name_client")
+        .eq("id_client", conversation.customerId)
+        .single();
+      if (client) customerName = client.name_client;
     }
 
     return NextResponse.json({
-      conversation,
-      messages: messages || [],
+      conversation: { ...conversation, customerName },
+      messages,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -65,34 +79,29 @@ export async function PATCH(
 
   try {
     // Check ownership
-    const { data: conversation } = await supabase
-      .from("ai_conversations")
-      .select("created_by")
-      .eq("id", conversationId)
-      .single();
+    const [conversation] = await db
+      .select({ createdBy: aiConversations.createdBy })
+      .from(aiConversations)
+      .where(eq(aiConversations.id, conversationId))
+      .limit(1);
 
-    if (!conversation || conversation.created_by !== userId) {
+    if (!conversation || conversation.createdBy !== userId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const body = await req.json();
     const updateData: Record<string, any> = {
-      updated_at: new Date().toISOString(),
+      updatedAt: new Date(),
     };
     if (body.title !== undefined) updateData.title = body.title;
     if (body.visibility !== undefined) updateData.visibility = body.visibility;
     if (body.model !== undefined) updateData.model = body.model;
 
-    const { data: updated, error } = await supabase
-      .from("ai_conversations")
-      .update(updateData)
-      .eq("id", conversationId)
-      .select()
-      .single();
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+    const [updated] = await db
+      .update(aiConversations)
+      .set(updateData)
+      .where(eq(aiConversations.id, conversationId))
+      .returning();
 
     return NextResponse.json({ conversation: updated });
   } catch (error: any) {
@@ -114,25 +123,20 @@ export async function DELETE(
 
   try {
     // Check ownership
-    const { data: conversation } = await supabase
-      .from("ai_conversations")
-      .select("created_by")
-      .eq("id", conversationId)
-      .single();
+    const [conversation] = await db
+      .select({ createdBy: aiConversations.createdBy })
+      .from(aiConversations)
+      .where(eq(aiConversations.id, conversationId))
+      .limit(1);
 
-    if (!conversation || conversation.created_by !== userId) {
+    if (!conversation || conversation.createdBy !== userId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     // Cascade delete handles messages
-    const { error } = await supabase
-      .from("ai_conversations")
-      .delete()
-      .eq("id", conversationId);
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+    await db
+      .delete(aiConversations)
+      .where(eq(aiConversations.id, conversationId));
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
