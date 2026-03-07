@@ -824,6 +824,16 @@ function EngineGPTContent() {
           )}
         </div>
 
+        {/* Desktop client label — top right */}
+        <div className="hidden lg:flex items-center justify-end px-4 pt-2 pb-0 shrink-0">
+          <span className="text-[11px] text-muted-foreground/60 flex items-center gap-1.5">
+            <Building2 className="h-3 w-3" />
+            <span className="truncate max-w-[200px]">
+              {selectedCustomer?.name || "All Clients"}
+            </span>
+          </span>
+        </div>
+
         {selectedId ? (
           /* ─── Chat view ─── */
           <div className="flex-1 flex flex-col overflow-hidden">
