@@ -1121,11 +1121,8 @@ function EngineGPTContent() {
                   Press Enter to send, Shift+Enter for new line
                 </p>
 
-                {/* Context controls — always visible for both per-client and All Clients */}
-                <div className="flex items-center justify-center gap-2 mt-3 flex-wrap">
-                  <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
-                    Context:
-                  </span>
+                {/* Context & web search controls */}
+                <div className="flex items-center justify-center gap-1.5 mt-3 flex-wrap">
                   {[
                     { key: "contracts" as const, label: "Contracts" },
                     { key: "contentPipeline" as const, label: "Content" },
@@ -1133,6 +1130,7 @@ function EngineGPTContent() {
                     { key: "ideas" as const, label: "Ideas" },
                   ].map((item) => {
                     const level = contextConfig[item.key];
+                    const isOn = level !== "off";
                     const isFull = level.startsWith("full");
                     // Cycle: off → summary → full-month → off
                     const nextLevel = level === "off" ? "summary" : level === "summary" ? "full-month" : "off";
@@ -1146,27 +1144,28 @@ function EngineGPTContent() {
                             [item.key]: nextLevel,
                           }))
                         }
-                        title={`${item.label}: ${level === "off" ? "Off" : level === "summary" ? "Summary" : `Full Detail (${fullLabel})`} — click to change`}
+                        title={`${item.label}: ${level === "off" ? "Off" : level === "summary" ? "Summary" : `Full Detail (${fullLabel})`} — click to cycle`}
                         className={cn(
-                          "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors border",
-                          level === "off"
-                            ? "bg-muted/50 text-muted-foreground border-transparent hover:bg-muted"
-                            : isFull
-                            ? "bg-primary text-white border-primary ring-1 ring-primary/30 ring-offset-1"
-                            : "bg-primary text-white border-primary"
+                          "flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] transition-all",
+                          isOn
+                            ? "text-foreground/70 hover:text-foreground"
+                            : "text-muted-foreground/40 hover:text-muted-foreground/60"
                         )}
                       >
-                        {level !== "off" && (
-                          <div className="h-1.5 w-1.5 rounded-full bg-white/80" />
-                        )}
+                        <div className={cn(
+                          "h-1 w-1 rounded-full transition-colors",
+                          isOn
+                            ? isFull ? "bg-blue-500" : "bg-foreground/40"
+                            : "bg-muted-foreground/20"
+                        )} />
                         {item.label}
                         {isFull && (
-                          <span className="text-[9px] opacity-80 font-normal">{fullLabel}</span>
+                          <span className="text-[9px] text-muted-foreground/50">{fullLabel}</span>
                         )}
                       </button>
                     );
                   })}
-                  {/* Web search toggle — separate simple on/off */}
+                  <div className="w-px h-3 bg-border mx-0.5" />
                   <button
                     onClick={() =>
                       setContextConfig((prev) => ({
@@ -1176,13 +1175,16 @@ function EngineGPTContent() {
                     }
                     title={`Web Search: ${contextConfig.webSearch === "on" ? "On — AI can search the web" : "Off"} — click to toggle`}
                     className={cn(
-                      "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors border",
+                      "flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] transition-all",
                       contextConfig.webSearch === "on"
-                        ? "bg-emerald-600 text-white border-emerald-600"
-                        : "bg-muted/50 text-muted-foreground border-transparent hover:bg-muted"
+                        ? "text-foreground/70 hover:text-foreground"
+                        : "text-muted-foreground/40 hover:text-muted-foreground/60"
                     )}
                   >
-                    <Globe className="h-3 w-3" />
+                    <Globe className={cn(
+                      "h-2.5 w-2.5 transition-colors",
+                      contextConfig.webSearch === "on" ? "text-emerald-500" : "text-muted-foreground/30"
+                    )} />
                     Web
                   </button>
                 </div>
