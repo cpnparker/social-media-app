@@ -38,7 +38,8 @@ import { toast } from "sonner";
 import { getModelLabel } from "@/lib/ai/models";
 import MessageBubble from "./MessageBubble";
 import ChatInput, { type ChatInputHandle } from "./ChatInput";
-import type { AIConversation, AIMessageRow, Attachment } from "@/lib/types/ai";
+import type { AIConversation, AIMessageRow, Attachment, MemorySuggestion } from "@/lib/types/ai";
+import MemorySuggestions from "./MemorySuggestions";
 
 interface ChatPanelProps {
   conversationId: string;
@@ -47,7 +48,7 @@ interface ChatPanelProps {
   onBack?: () => void;
   initialMessage?: string;
   initialAttachments?: Attachment[];
-  contextConfig?: { contracts: string; contentPipeline: string; socialPresence: string; ideas: string };
+  contextConfig?: { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string };
   debugMode?: boolean;
   onCopyLink?: () => void;
 }
@@ -71,6 +72,9 @@ export default function ChatPanel({
   const [streamingContent, setStreamingContent] = useState("");
   const [debugContext, setDebugContext] = useState<string | null>(null);
   const [debugExpanded, setDebugExpanded] = useState(false);
+  const [memorySuggestions, setMemorySuggestions] = useState<MemorySuggestion[]>([]);
+  const [memoryConversationId, setMemoryConversationId] = useState<string | null>(null);
+  const [memoryVisibility, setMemoryVisibility] = useState<"private" | "team">("private");
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -171,6 +175,10 @@ export default function ChatPanel({
               setDebugContext(parsed.debugContext);
             } else if (parsed.searching) {
               setIsSearchingWeb(true);
+            } else if (parsed.memorySuggestions) {
+              setMemorySuggestions(parsed.memorySuggestions);
+              setMemoryConversationId(parsed.conversationId || conversationId);
+              setMemoryVisibility(parsed.conversationVisibility || "private");
             } else if (parsed.token) {
               // First token means search is done (if it was searching)
               setIsSearchingWeb(false);
@@ -541,6 +549,17 @@ export default function ChatPanel({
                 content={streamingContent}
                 model={conversation.model}
                 isStreaming
+              />
+            )}
+            {/* Memory suggestions */}
+            {memorySuggestions.length > 0 && !isStreaming && conversation && (
+              <MemorySuggestions
+                suggestions={memorySuggestions}
+                conversationId={memoryConversationId || conversationId}
+                conversationVisibility={memoryVisibility}
+                workspaceId={conversation.workspaceId}
+                onDismiss={() => setMemorySuggestions([])}
+                onSaved={() => setMemorySuggestions([])}
               />
             )}
             <div ref={messagesEndRef} />

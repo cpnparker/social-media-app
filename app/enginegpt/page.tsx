@@ -38,6 +38,8 @@ import {
   Newspaper,
   Share2,
   Lightbulb,
+  Brain,
+  EyeOff,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
@@ -58,6 +60,7 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AI_MODELS, DEFAULT_MODEL, getModelLabel } from "@/lib/ai/models";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
+import MemoryManager from "@/components/ai-writer/MemoryManager";
 import { signOut } from "next-auth/react";
 import type { AIConversation, Attachment } from "@/lib/types/ai";
 
@@ -112,6 +115,9 @@ function EngineGPTContent() {
     webSearch: "off" as string,
   });
   const [debugMode, setDebugMode] = useState(false);
+  const [incognitoMode, setIncognitoMode] = useState(false);
+  const [memoryManagerOpen, setMemoryManagerOpen] = useState(false);
+  const [memoryCount, setMemoryCount] = useState(0);
   const [isHomeDragging, setIsHomeDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -156,6 +162,15 @@ function EngineGPTContent() {
         if (data.contextConfig) setContextConfig(data.contextConfig);
         if (data.debugMode) setDebugMode(data.debugMode);
       })
+      .catch(() => {});
+  }, [workspaceId]);
+
+  // Fetch memory count for sidebar badge
+  useEffect(() => {
+    if (!workspaceId) return;
+    fetch(`/api/ai/memories?workspaceId=${workspaceId}`)
+      .then((r) => r.json())
+      .then((data) => setMemoryCount(data.memories?.length || 0))
       .catch(() => {});
   }, [workspaceId]);
 
@@ -730,6 +745,39 @@ function EngineGPTContent() {
             </DropdownMenuContent>
           </DropdownMenu>
 
+          {/* Memories */}
+          <button
+            onClick={() => setMemoryManagerOpen(true)}
+            className="w-full flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 hover:bg-white/10 transition-colors text-left text-white/60 hover:text-white/80"
+          >
+            <Brain className="h-3.5 w-3.5 shrink-0" />
+            <span className="text-[11px] font-medium flex-1">Memories</span>
+            {memoryCount > 0 && (
+              <span className="text-[9px] text-white/30">{memoryCount}</span>
+            )}
+          </button>
+
+          {/* Incognito mode */}
+          <button
+            onClick={() => {
+              setIncognitoMode((prev) => !prev);
+              toast.info(
+                !incognitoMode
+                  ? "Incognito on — memories won't be extracted or injected"
+                  : "Incognito off — memory is active again"
+              );
+            }}
+            className={cn(
+              "w-full flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 transition-colors text-left",
+              incognitoMode
+                ? "bg-white/15 text-white"
+                : "text-white/60 hover:text-white/80 hover:bg-white/10"
+            )}
+          >
+            <EyeOff className="h-3.5 w-3.5 shrink-0" />
+            <span className="text-[11px] font-medium">Incognito</span>
+          </button>
+
           {/* User menu */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -844,7 +892,7 @@ function EngineGPTContent() {
               onConversationUpdated={handleConversationUpdated}
               initialMessage={initialMessage}
               initialAttachments={initialAttachments}
-              contextConfig={contextConfig}
+              contextConfig={{ ...contextConfig, incognito: incognitoMode ? "on" : "off" }}
               debugMode={debugMode}
               onCopyLink={() => {
                 const url = new URL(window.location.href);
@@ -1214,6 +1262,21 @@ function EngineGPTContent() {
           </div>
         )}
       </div>
+      {/* Memory Manager Sheet */}
+      {workspaceId && (
+        <MemoryManager
+          workspaceId={workspaceId}
+          open={memoryManagerOpen}
+          onClose={() => {
+            setMemoryManagerOpen(false);
+            // Refresh count
+            fetch(`/api/ai/memories?workspaceId=${workspaceId}`)
+              .then((r) => r.json())
+              .then((data) => setMemoryCount(data.memories?.length || 0))
+              .catch(() => {});
+          }}
+        />
+      )}
     </>
   );
 }

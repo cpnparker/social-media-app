@@ -1,12 +1,13 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { aiConversations, aiMessages, aiUsage, workspaces } from "@/lib/db/schema";
-import { eq, asc } from "drizzle-orm";
+import { aiConversations, aiMessages, aiUsage, aiMemories, workspaces } from "@/lib/db/schema";
+import { eq, asc, and, or } from "drizzle-orm";
 import { supabase } from "@/lib/supabase";
 import { createStreamingResponse, type AIMessage, type AIAttachment } from "@/lib/ai/providers";
 import { buildSystemPrompt, normalizeContextConfig, isFullDetail, type NormalizedContextConfig, type DetailLevel } from "@/lib/ai/system-prompts";
 import { fetchBlobContent } from "@/lib/ai/blob-utils";
+import { extractMemories } from "@/lib/ai/memory-extraction";
 import type { Attachment } from "@/lib/types/ai";
 
 // ── Cost calculation for usage tracking ──
@@ -533,6 +534,36 @@ export async function POST(
       workspaceSummary = await fetchWorkspaceSummary();
     }
 
+    // Incognito mode: skip memory fetching and extraction
+    const isIncognito = contextConfig.incognito === "on";
+
+    // Fetch memories (privacy-aware) — skip in incognito
+    let memories: { content: string; category: string }[] = [];
+    if (!isIncognito) {
+      const memoryFilter =
+        conversation.visibility === "private"
+          ? or(
+              // User's private memories + workspace team memories
+              and(eq(aiMemories.scope, "private"), eq(aiMemories.userId, userId)),
+              eq(aiMemories.scope, "team")
+            )
+          : // Team chats: only workspace team memories
+            eq(aiMemories.scope, "team");
+
+      memories = await db
+        .select({ content: aiMemories.content, category: aiMemories.category })
+        .from(aiMemories)
+        .where(
+          and(
+            eq(aiMemories.workspaceId, conversation.workspaceId),
+            eq(aiMemories.isActive, true),
+            memoryFilter
+          )
+        )
+        .orderBy(aiMemories.createdAt)
+        .limit(50);
+    }
+
     const systemPrompt = buildSystemPrompt({
       workspaceConfig,
       clientContext,
@@ -541,6 +572,7 @@ export async function POST(
       cuDescription,
       clientIdeas,
       workspaceSummary,
+      memories: memories.length > 0 ? memories : undefined,
     });
 
     const model = body.model || conversation.model;
@@ -590,27 +622,77 @@ export async function POST(
       }
     );
 
-    // Wrap stream: prepend debug context if debug mode is on
-    const stream = debugMode
-      ? new ReadableStream({
-          async start(controller) {
-            const encoder = new TextEncoder();
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ debugContext: systemPrompt })}\n\n`)
-            );
-            const reader = aiStream.getReader();
-            try {
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                controller.enqueue(value);
+    // Wrap stream: inject debug context + memory extraction after response
+    const stream = new ReadableStream({
+      async start(controller) {
+        const encoder = new TextEncoder();
+        const decoder = new TextDecoder();
+
+        // Send debug context if enabled
+        if (debugMode) {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ debugContext: systemPrompt })}\n\n`)
+          );
+        }
+
+        // Pass through AI stream, intercepting [DONE]
+        const reader = aiStream.getReader();
+        let capturedText = "";
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            // Capture text tokens for memory extraction
+            const chunk = decoder.decode(value, { stream: true });
+            for (const line of chunk.split("\n")) {
+              if (line.startsWith("data: ") && line.slice(6) !== "[DONE]") {
+                try {
+                  const parsed = JSON.parse(line.slice(6));
+                  if (parsed.token) capturedText += parsed.token;
+                } catch {}
               }
-            } finally {
-              controller.close();
             }
-          },
-        })
-      : aiStream;
+
+            // Check if chunk contains [DONE] — buffer it
+            if (chunk.includes("data: [DONE]")) {
+              const withoutDone = chunk.replace(/data: \[DONE\]\n?\n?/g, "");
+              if (withoutDone.trim()) {
+                controller.enqueue(encoder.encode(withoutDone));
+              }
+              // Run memory extraction before [DONE] (skip in incognito)
+              if (!isIncognito) try {
+                const existingContents = memories.map((m) => m.content);
+                const suggestions = await extractMemories(
+                  userContent || "",
+                  capturedText,
+                  existingContents
+                );
+                if (suggestions.length > 0) {
+                  controller.enqueue(
+                    encoder.encode(
+                      `data: ${JSON.stringify({
+                        memorySuggestions: suggestions,
+                        conversationId,
+                        conversationVisibility: conversation.visibility,
+                      })}\n\n`
+                    )
+                  );
+                }
+              } catch (err) {
+                console.error("[Memory] Extraction failed:", err);
+              }
+              // Now send [DONE]
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            } else {
+              controller.enqueue(value);
+            }
+          }
+        } finally {
+          controller.close();
+        }
+      },
+    });
 
     return new Response(stream, {
       headers: {

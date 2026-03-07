@@ -23,6 +23,25 @@ export interface Attachment {
   size: number;
 }
 
+export interface MemorySuggestion {
+  content: string;
+  category: "preference" | "fact" | "instruction" | "style" | "client_insight";
+  confidence: number;
+}
+
+export interface AIMemory {
+  id: string;
+  workspaceId: string;
+  userId: number | null;
+  scope: "private" | "team";
+  category: string;
+  content: string;
+  sourceConversationId: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AIMessageRow {
   id: string;
   conversationId: string;

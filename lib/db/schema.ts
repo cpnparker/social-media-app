@@ -634,6 +634,26 @@ export const userAccess = pgTable("user_access", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// ── AI Memories ──
+// Stores user/team memories extracted from conversations for personalisation.
+// Private memories (userId set) are only injected for that user.
+// Team memories (userId null, scope='team') are shared across the workspace.
+export const aiMemories = pgTable("ai_memories", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspaces.id, { onDelete: "cascade" })
+    .notNull(),
+  userId: integer("user_id"), // null = team memory, set = user-private
+  scope: text("scope").default("private").notNull(), // 'private' | 'team'
+  category: text("category").default("fact").notNull(), // preference | fact | instruction | style | client_insight
+  content: text("content").notNull(),
+  sourceConversationId: uuid("source_conversation_id")
+    .references(() => aiConversations.id, { onDelete: "set null" }),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 // ── AI Usage Tracking ──
 // Logs every AI API call with token counts and cost for dashboard analytics.
 export const aiUsage = pgTable("ai_usage", {

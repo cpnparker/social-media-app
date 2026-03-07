@@ -8,6 +8,7 @@ export interface NormalizedContextConfig {
   socialPresence: DetailLevel;
   ideas: DetailLevel;
   webSearch: "on" | "off";
+  incognito: "on" | "off";
 }
 
 /** Check if a detail level is any "full" variant */
@@ -37,13 +38,14 @@ export function normalizeDetailLevel(value: any): DetailLevel {
 
 /** Normalize a full context config (handles both legacy boolean and new string formats) */
 export function normalizeContextConfig(config: any): NormalizedContextConfig {
-  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "summary", webSearch: "off" };
+  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "summary", webSearch: "off", incognito: "off" };
   return {
     contracts: normalizeDetailLevel(config.contracts),
     contentPipeline: normalizeDetailLevel(config.contentPipeline),
     socialPresence: normalizeDetailLevel(config.socialPresence),
     ideas: normalizeDetailLevel(config.ideas),
     webSearch: config.webSearch === "on" ? "on" : "off",
+    incognito: config.incognito === "on" ? "on" : "off",
   };
 }
 
@@ -156,6 +158,7 @@ export function buildSystemPrompt(ctx: {
   cuDescription?: string | null;
   clientIdeas?: IdeaItem[] | null;
   workspaceSummary?: WorkspaceSummary | null;
+  memories?: { content: string; category: string }[];
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
 
@@ -427,6 +430,28 @@ Guidelines:
         : contentDetail.body;
       prompt += `\n\n### Current Draft\n${body}`;
     }
+  }
+
+  // ── User & Workspace Memories ──
+  if (ctx.memories && ctx.memories.length > 0) {
+    prompt += `\n\n---\n## Memory\nImportant context remembered from previous conversations:`;
+
+    const grouped: Record<string, string[]> = {};
+    for (const mem of ctx.memories) {
+      const cat = mem.category || "fact";
+      if (!grouped[cat]) grouped[cat] = [];
+      grouped[cat].push(mem.content);
+    }
+
+    for (const [category, items] of Object.entries(grouped)) {
+      const label = category.charAt(0).toUpperCase() + category.slice(1).replace("_", " ");
+      prompt += `\n\n### ${label}`;
+      for (const item of items) {
+        prompt += `\n- ${item}`;
+      }
+    }
+
+    prompt += `\n\nUse these memories naturally to personalise your responses. Do not mention that you have a memory system unless the user explicitly asks about it.`;
   }
 
   // ── Closing instruction ──
