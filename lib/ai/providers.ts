@@ -369,6 +369,11 @@ async function streamXAI(
 ): Promise<StreamResult> {
   const xai = getXAIClient();
 
+  // When web search is enabled, use the Responses API
+  if (config.webSearch) {
+    return streamXAIResponses(messages, config, apiModel, controller, encoder, xai);
+  }
+
   const openaiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
   // Add system prompt
@@ -409,6 +414,71 @@ async function streamXAI(
     if ((chunk as any).usage) {
       inputTokens = (chunk as any).usage.prompt_tokens || 0;
       outputTokens = (chunk as any).usage.completion_tokens || 0;
+    }
+  }
+
+  return { fullText, inputTokens, outputTokens };
+}
+
+/** xAI Responses API streaming — used when web search is enabled */
+async function streamXAIResponses(
+  messages: AIMessage[],
+  config: AIProviderConfig,
+  apiModel: string,
+  controller: ReadableStreamDefaultController,
+  encoder: TextEncoder,
+  xai: OpenAI
+): Promise<StreamResult> {
+  // Build input array for Responses API
+  const input: any[] = [];
+  for (const m of messages) {
+    input.push({
+      role: m.role as "user" | "assistant" | "system",
+      content: m.role === "user" ? await buildOpenAIContent(m) : m.content,
+    });
+  }
+
+  const stream = (await xai.responses.create({
+    model: apiModel,
+    instructions: config.systemPrompt || undefined,
+    input,
+    tools: [{ type: "web_search" as any }],
+    stream: true,
+  } as any)) as unknown as AsyncIterable<any>;
+
+  let fullText = "";
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let searchEmitted = false;
+
+  for await (const event of stream) {
+    // Detect web search starting
+    if (!searchEmitted && event.type === "response.output_item.added") {
+      const item = (event as any).item;
+      if (item?.type === "web_search_call") {
+        searchEmitted = true;
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify({ searching: true })}\n\n`)
+        );
+      }
+    }
+    // Stream text deltas
+    if (event.type === "response.output_text.delta") {
+      const token = (event as any).delta;
+      if (token) {
+        fullText += token;
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)
+        );
+      }
+    }
+    // Capture usage from completed event
+    if (event.type === "response.completed") {
+      const usage = (event as any).response?.usage;
+      if (usage) {
+        inputTokens = usage.input_tokens || 0;
+        outputTokens = usage.output_tokens || 0;
+      }
     }
   }
 

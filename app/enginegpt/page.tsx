@@ -1177,9 +1177,11 @@ function EngineGPTContent() {
                         ...prev,
                         webSearch: turningOn ? "on" : "off",
                       }));
-                      if (turningOn && selectedModel !== "claude-sonnet-4-6") {
+                      // Web search works with Claude and Grok — switch if using an unsupported model
+                      const webModels = ["claude-sonnet-4-6", "grok-4-1-fast", "grok-3-mini"];
+                      if (turningOn && !webModels.includes(selectedModel)) {
                         setSelectedModel("claude-sonnet-4-6");
-                        toast.info("Switched to Claude Sonnet 4.6 — web search requires Claude");
+                        toast.info("Switched to Claude Sonnet 4.6 — web search requires Claude or Grok");
                       }
                     }}
                     title={`Web Search: ${contextConfig.webSearch === "on" ? "On — AI can search the web" : "Off"} — click to toggle`}
