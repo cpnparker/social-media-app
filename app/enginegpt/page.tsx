@@ -1171,12 +1171,17 @@ function EngineGPTContent() {
                   })}
                   <div className="w-px h-3 bg-border mx-0.5" />
                   <button
-                    onClick={() =>
+                    onClick={() => {
+                      const turningOn = contextConfig.webSearch !== "on";
                       setContextConfig((prev) => ({
                         ...prev,
-                        webSearch: prev.webSearch === "on" ? "off" : "on",
-                      }))
-                    }
+                        webSearch: turningOn ? "on" : "off",
+                      }));
+                      if (turningOn && selectedModel !== "claude-sonnet-4-20250514") {
+                        setSelectedModel("claude-sonnet-4-20250514");
+                        toast.info("Switched to Claude Sonnet 4 — web search requires Claude");
+                      }
+                    }}
                     title={`Web Search: ${contextConfig.webSearch === "on" ? "On — AI can search the web" : "Off"} — click to toggle`}
                     className={cn(
                       "flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] transition-all",
