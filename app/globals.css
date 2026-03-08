@@ -100,8 +100,8 @@
 
 /* ─── AI Response Formatting ─── */
 .ai-response {
-  font-size: 1.0625rem;
-  line-height: 1.75;
+  font-size: 0.9375rem;
+  line-height: 1.7;
   color: hsl(var(--foreground));
 }
 .ai-response .ai-p {
@@ -113,26 +113,26 @@
 
 /* Headings */
 .ai-response .ai-h1 {
-  font-size: 1.375rem;
+  font-size: 1.25rem;
   font-weight: 700;
   margin: 1.5rem 0 0.5rem;
   color: hsl(var(--foreground));
   letter-spacing: -0.01em;
 }
 .ai-response .ai-h2 {
-  font-size: 1.1875rem;
+  font-size: 1.0625rem;
   font-weight: 600;
   margin: 1.25rem 0 0.4rem;
   color: hsl(var(--foreground));
 }
 .ai-response .ai-h3 {
-  font-size: 1.0625rem;
+  font-size: 0.9375rem;
   font-weight: 600;
   margin: 0.875rem 0 0.35rem;
   color: hsl(var(--foreground)/0.9);
 }
 .ai-response .ai-h4 {
-  font-size: 1rem;
+  font-size: 0.875rem;
   font-weight: 600;
   margin: 0.625rem 0 0.25rem;
   color: hsl(var(--foreground)/0.85);
