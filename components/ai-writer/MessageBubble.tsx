@@ -436,17 +436,17 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
   // Unordered lists
   html = html.replace(/^[*-] (.+)$/gm, '<li class="ai-uli">$1</li>');
 
-  // Collapse blank lines between consecutive list items so the paragraph
-  // splitter doesn't break lists apart (AI often outputs blank lines between bullets)
-  html = html.replace(/(<\/li>)\s*\n\s*\n+\s*(<li )/g, "$1\n$2");
+  // Collapse ALL whitespace between consecutive list items to a single newline.
+  // AI models often output blank lines between bullets which breaks list grouping.
+  html = html.replace(/<\/li>\s+<li /g, "</li>\n<li ");
 
   // Wrap consecutive list items
   html = html.replace(
-    /(<li class="ai-uli">[\s\S]*?<\/li>\s*)+/g,
+    /(<li class="ai-uli">[^]*?<\/li>\n?)+/g,
     '<ul class="ai-ul">$&</ul>'
   );
   html = html.replace(
-    /(<li class="ai-oli"[\s\S]*?<\/li>\s*)+/g,
+    /(<li class="ai-oli"[^]*?<\/li>\n?)+/g,
     '<ol class="ai-ol">$&</ol>'
   );
 
