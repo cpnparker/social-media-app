@@ -233,6 +233,53 @@ async function buildOpenAIContent(
   return parts;
 }
 
+/** Build xAI-compatible message content from a message with optional attachments.
+ *  xAI's Chat Completions API doesn't fully support OpenAI's multi-part content
+ *  array format for documents — inline document text into the message string and
+ *  only use content arrays when there are actual images. */
+async function buildXAIContent(
+  msg: AIMessage
+): Promise<string | OpenAI.Chat.ChatCompletionContentPart[]> {
+  if (!msg.attachments?.length) return msg.content;
+
+  // Separate images from documents
+  const imageParts: OpenAI.Chat.ChatCompletionContentPart[] = [];
+  const docTexts: string[] = [];
+
+  for (const att of msg.attachments) {
+    if (att.type.startsWith("image/")) {
+      try {
+        const { buffer, contentType } = await fetchBlobContent(att.url);
+        const dataUrl = `data:${contentType || att.type};base64,${buffer.toString("base64")}`;
+        imageParts.push({
+          type: "image_url",
+          image_url: { url: dataUrl },
+        });
+      } catch (err) {
+        console.error(`[xAI] Failed to fetch image ${att.name}:`, err);
+      }
+    } else if (att.extractedText) {
+      docTexts.push(`[Document: ${att.name}]\n${att.extractedText}`);
+    }
+  }
+
+  // Build the text part: inline document text + user message
+  const textParts = [...docTexts];
+  if (msg.content.trim()) textParts.push(msg.content);
+  const combinedText = textParts.join("\n\n");
+
+  // If there are images, use content array format (xAI supports vision)
+  if (imageParts.length > 0) {
+    return [
+      ...imageParts,
+      { type: "text" as const, text: combinedText },
+    ];
+  }
+
+  // No images — return plain string (avoids xAI ModelInput deserialization issues)
+  return combinedText;
+}
+
 /* ─────────────── Streaming Result ─────────────── */
 
 export interface StreamResult {
@@ -382,11 +429,12 @@ async function streamXAI(
     openaiMessages.push({ role: "system", content: systemText });
   }
 
-  // Add conversation messages (including any system messages from history)
+  // Add conversation messages — use xAI-specific content builder to avoid
+  // multi-part array format issues with document attachments
   for (const m of messages) {
     openaiMessages.push({
       role: m.role as "user" | "assistant" | "system",
-      content: m.role === "user" ? await buildOpenAIContent(m) : m.content,
+      content: m.role === "user" ? await buildXAIContent(m) : m.content,
     } as any);
   }
 
@@ -435,12 +483,12 @@ async function streamXAIResponses(
   encoder: TextEncoder,
   xai: OpenAI
 ): Promise<StreamResult> {
-  // Build input array for Responses API
+  // Build input array for Responses API — use xAI-compatible content builder
   const input: any[] = [];
   for (const m of messages) {
     input.push({
       role: m.role as "user" | "assistant" | "system",
-      content: m.role === "user" ? await buildOpenAIContent(m) : m.content,
+      content: m.role === "user" ? await buildXAIContent(m) : m.content,
     });
   }
 
