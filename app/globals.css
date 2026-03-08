@@ -105,7 +105,7 @@
   color: hsl(var(--foreground));
 }
 .ai-response .ai-p {
-  margin-bottom: 0.875rem;
+  margin-bottom: 0.75rem;
 }
 .ai-response .ai-p:last-child {
   margin-bottom: 0;
@@ -148,18 +148,25 @@
 .ai-response .ai-ul {
   list-style: disc;
   padding-left: 1.5rem;
-  margin: 0.625rem 0;
+  margin: 0.5rem 0;
 }
 .ai-response .ai-ol {
   list-style: decimal;
   padding-left: 1.5rem;
-  margin: 0.625rem 0;
+  margin: 0.5rem 0;
+}
+/* Collapse margin when consecutive list blocks are adjacent (safety net) */
+.ai-response .ai-ul + .ai-ul,
+.ai-response .ai-ol + .ai-ul,
+.ai-response .ai-ul + .ai-ol,
+.ai-response .ai-ol + .ai-ol {
+  margin-top: 0;
 }
 .ai-response .ai-uli,
 .ai-response .ai-oli {
-  margin: 0.25rem 0;
+  margin: 0.125rem 0;
   padding-left: 0.15rem;
-  line-height: 1.7;
+  line-height: 1.65;
 }
 
 /* Code */

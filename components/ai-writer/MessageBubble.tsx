@@ -442,13 +442,17 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
 
   // Wrap consecutive list items
   html = html.replace(
-    /(<li class="ai-uli">[^]*?<\/li>\n?)+/g,
+    /(<li class="ai-uli">[\s\S]*?<\/li>\n?)+/g,
     '<ul class="ai-ul">$&</ul>'
   );
   html = html.replace(
-    /(<li class="ai-oli"[^]*?<\/li>\n?)+/g,
+    /(<li class="ai-oli"[\s\S]*?<\/li>\n?)+/g,
     '<ol class="ai-ol">$&</ol>'
   );
+
+  // Strip newlines inside wrapped lists so paragraph splitter can never break them
+  html = html.replace(/<ul class="ai-ul">[\s\S]*?<\/ul>/g, (m) => m.replace(/\n+/g, ""));
+  html = html.replace(/<ol class="ai-ol">[\s\S]*?<\/ol>/g, (m) => m.replace(/\n+/g, ""));
 
   // Paragraphs
   html = html
