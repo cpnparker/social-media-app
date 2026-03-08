@@ -61,7 +61,7 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
   },
   "grok-4-1-fast": {
     provider: "xai",
-    apiModel: "grok-4-1-fast",
+    apiModel: "grok-4-1-fast-non-reasoning",
     label: "Grok 4 Fast",
   },
   "grok-3-mini": {
@@ -78,7 +78,7 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
   },
   "grok-3": {
     provider: "xai",
-    apiModel: "grok-4-1-fast",
+    apiModel: "grok-4-1-fast-non-reasoning",
     label: "Grok 4 Fast",
     legacy: true,
   },
