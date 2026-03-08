@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { workspaces } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { getAvailableModels } from "@/lib/ai/providers";
+import { normalizeContextConfig } from "@/lib/ai/system-prompts";
 import { supabase } from "@/lib/supabase";
 
 // Ensure workspace row exists in Neon (lazy-create from Supabase)
@@ -60,32 +61,46 @@ export async function GET(req: NextRequest) {
         aiCuDescription: workspaces.aiCuDescription,
         aiMaxTokens: workspaces.aiMaxTokens,
         aiDebugMode: workspaces.aiDebugMode,
+        aiFormatDescriptions: workspaces.aiFormatDescriptions,
       })
       .from(workspaces)
       .where(eq(workspaces.id, workspaceId))
       .limit(1);
 
-    // Fetch CU definitions from Supabase
-    const { data: cuDefs } = await supabase
-      .from("calculator_content")
-      .select("name, format, units_content, cu_category")
-      .order("sort_order");
+    // Fetch CU definitions and content types from Supabase
+    const [{ data: cuDefs }, { data: contentTypes }] = await Promise.all([
+      supabase
+        .from("calculator_content")
+        .select("id, name, format, units_content, sort_order, id_type")
+        .order("sort_order"),
+      supabase
+        .from("types_content")
+        .select("id_type, key_type, type_content"),
+    ]);
+
+    // Build type lookup map
+    const typeMap: Record<number, { key: string; name: string }> = {};
+    (contentTypes || []).forEach((t: any) => {
+      typeMap[t.id_type] = { key: t.key_type, name: t.type_content };
+    });
+
+    // Format descriptions stored in Neon workspaces table
+    const formatDescriptions: Record<string, string> = workspace?.aiFormatDescriptions || {};
 
     return NextResponse.json({
       currentModel: workspace?.aiModel || "grok-4-1-fast",
       availableModels: getAvailableModels(),
-      contextConfig: workspace?.aiContextConfig || {
-        contracts: true,
-        contentPipeline: true,
-        socialPresence: true,
-      },
+      contextConfig: normalizeContextConfig(workspace?.aiContextConfig),
       cuDescription: workspace?.aiCuDescription || "",
       maxTokens: workspace?.aiMaxTokens || 4096,
       debugMode: workspace?.aiDebugMode || false,
       cuDefinitions: (cuDefs || []).map((c: any) => ({
+        id: c.id,
         format: c.name,
-        category: c.cu_category || c.format,
+        category: typeMap[c.id_type]?.key || c.format || "other",
+        categoryName: typeMap[c.id_type]?.name || "",
         units: c.units_content,
+        description: formatDescriptions[c.id] || "",
       })),
     });
   } catch (error: any) {
@@ -102,7 +117,7 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workspaceId, model, contextConfig, cuDescription, maxTokens, debugMode } = body;
+    const { workspaceId, model, contextConfig, cuDescription, maxTokens, debugMode, formatDescriptions } = body;
 
     if (!workspaceId) {
       return NextResponse.json(
@@ -132,6 +147,22 @@ export async function PATCH(req: NextRequest) {
         .from("workspaces")
         .update({ ai_model: model })
         .eq("id", workspaceId);
+    }
+
+    // Update format descriptions in Neon workspaces table
+    if (formatDescriptions && typeof formatDescriptions === "object") {
+      // Merge with existing descriptions
+      const [current] = await db
+        .select({ aiFormatDescriptions: workspaces.aiFormatDescriptions })
+        .from(workspaces)
+        .where(eq(workspaces.id, workspaceId))
+        .limit(1);
+
+      const merged = { ...(current?.aiFormatDescriptions || {}), ...formatDescriptions };
+      await db
+        .update(workspaces)
+        .set({ aiFormatDescriptions: merged, updatedAt: new Date() })
+        .where(eq(workspaces.id, workspaceId));
     }
 
     return NextResponse.json({ success: true });

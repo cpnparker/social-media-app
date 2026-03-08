@@ -14,6 +14,22 @@ export interface AIConversation {
   lastMessagePreview?: string;
   createdAt: string;
   updatedAt: string;
+  // Share-awareness fields (optional, populated by API)
+  sharedWithMe?: boolean;
+  myPermission?: "owner" | "view" | "collaborate";
+  sharedByName?: string;
+  shareCount?: number;
+}
+
+export interface AIConversationShare {
+  id: string;
+  conversationId: string;
+  userId: number;
+  userName?: string;
+  userEmail?: string;
+  permission: "view" | "collaborate";
+  sharedBy: number;
+  createdAt: string;
 }
 
 export interface Attachment {
@@ -40,6 +56,18 @@ export interface AIMemory {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AIRole {
+  id: string;
+  workspaceId: string;
+  name: string;
+  description: string;
+  instructions: string;
+  icon: string;
+  isDefault: boolean;
+  isActive: boolean;
+  sortOrder: number;
 }
 
 export interface AIMessageRow {

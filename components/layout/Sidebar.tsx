@@ -46,12 +46,13 @@ import {
 import { useState, useEffect, useCallback } from "react";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { signOut } from "next-auth/react";
+import { navigateToSubdomain, getCurrentSubdomain, getSubdomainUrl, isProductionHost } from "@/lib/subdomain";
 
 // ────────────────────────────────────────────────
 // Types & constants
 // ────────────────────────────────────────────────
 
-type Area = "engine" | "operations" | "admin";
+type Area = "engine" | "operations" | "enginegpt" | "admin";
 
 interface NavSubItem {
   label: string;
@@ -167,6 +168,7 @@ const adminItems: NavSubItem[] = [
   { label: "Users", href: "/settings/users", icon: UserPlus },
   { label: "Templates", href: "/settings/templates", icon: ListChecks },
   { label: "Content Units", href: "/settings/content-units", icon: Boxes },
+  { label: "Content Formats", href: "/settings/content-formats", icon: FileText },
   { label: "Links", href: "/settings/links", icon: Link2 },
   { label: "Billing", href: "/settings/billing", icon: CreditCard },
 ];
@@ -204,7 +206,7 @@ function RailIcon({
         >
           {/* Active indicator — left bar */}
           {isActive && (
-            <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-blue-400" />
+            <div className="absolute -left-1 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-blue-400" />
           )}
           <Icon className="h-[18px] w-[18px]" />
         </button>
@@ -339,6 +341,7 @@ export function Sidebar({ onClose }: SidebarProps) {
   const railIcons: { area: Area; icon: React.ComponentType<{ className?: string }>; label: string; hidden?: boolean }[] = [
     { area: "engine", icon: Package, label: "The Engine", hidden: !showEngine },
     { area: "operations", icon: Gauge, label: "Operations", hidden: !showOperations },
+    { area: "enginegpt", icon: Sparkles, label: "EngineGPT", hidden: !showEngineGpt },
     { area: "admin", icon: Settings, label: "Administration", hidden: !showAdmin },
   ];
 
@@ -347,7 +350,7 @@ export function Sidebar({ onClose }: SidebarProps) {
       {/* ═══════ Icon Rail ═══════ */}
       <div className="hidden lg:flex flex-col items-center w-12 bg-[#2e3440] py-3 shrink-0">
         {/* Logo */}
-        <Link href="/dashboard" onClick={onClose} className="mb-4">
+        <a href={getSubdomainUrl("engine", "/dashboard")} onClick={onClose} className="mb-4">
           <div className="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-white/10 transition-colors">
             <img
               src="/assets/logo_engine_icon.svg"
@@ -357,7 +360,7 @@ export function Sidebar({ onClose }: SidebarProps) {
               className="h-6 w-6 brightness-0 invert"
             />
           </div>
-        </Link>
+        </a>
 
         {/* Area icons */}
         <div className="flex flex-col items-center gap-1">
@@ -370,7 +373,26 @@ export function Sidebar({ onClose }: SidebarProps) {
                   icon={item.icon}
                   label={item.label}
                   isActive={activeArea === item.area}
-                  onClick={() => setActiveArea(item.area)}
+                  onClick={() => {
+                    // EngineGPT lives on its own subdomain
+                    if (item.area === "enginegpt") {
+                      navigateToSubdomain("ai");
+                      return;
+                    }
+                    // On production, navigate to the correct subdomain
+                    if (isProductionHost()) {
+                      const currentSub = getCurrentSubdomain();
+                      const targetSub = item.area === "admin" ? "engine" : item.area;
+                      if (currentSub && currentSub !== targetSub) {
+                        navigateToSubdomain(
+                          targetSub,
+                          item.area === "admin" ? "/settings/workspace" : undefined
+                        );
+                        return;
+                      }
+                    }
+                    setActiveArea(item.area);
+                  }}
                 />
               )
           )}
@@ -424,7 +446,24 @@ export function Sidebar({ onClose }: SidebarProps) {
               .map((item) => (
                 <button
                   key={item.area}
-                  onClick={() => setActiveArea(item.area)}
+                  onClick={() => {
+                    if (item.area === "enginegpt") {
+                      navigateToSubdomain("ai");
+                      return;
+                    }
+                    if (isProductionHost()) {
+                      const currentSub = getCurrentSubdomain();
+                      const targetSub = item.area === "admin" ? "engine" : item.area;
+                      if (currentSub && currentSub !== targetSub) {
+                        navigateToSubdomain(
+                          targetSub,
+                          item.area === "admin" ? "/settings/workspace" : undefined
+                        );
+                        return;
+                      }
+                    }
+                    setActiveArea(item.area);
+                  }}
                   className={cn(
                     "flex-1 px-2 py-1.5 rounded-md text-[11px] font-medium transition-colors text-center",
                     activeArea === item.area
@@ -436,6 +475,8 @@ export function Sidebar({ onClose }: SidebarProps) {
                     ? "Engine"
                     : item.area === "operations"
                     ? "Ops"
+                    : item.area === "enginegpt"
+                    ? "GPT"
                     : "Admin"}
                 </button>
               ))}
@@ -619,7 +660,7 @@ function EnginePanel({
               : "text-white/70 hover:bg-white/10 hover:text-white"
           )}
         >
-          <Home className="h-[16px] w-[16px]" />
+          <Home className={cn("h-[16px] w-[16px]", pathname === "/dashboard" && "text-blue-400")} />
           Home
         </Link>
       </div>
@@ -627,19 +668,17 @@ function EnginePanel({
       {/* EngineGPT link */}
       {showEngineGpt && (
         <div className="px-3 pb-1">
-          <Link
-            href="/ai-writer"
+          <a
+            href={getSubdomainUrl("ai")}
             onClick={onClose}
             className={cn(
               "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
-              pathname.startsWith("/ai-writer")
-                ? "bg-white/15 text-white"
-                : "text-white/70 hover:bg-white/10 hover:text-white"
+              "text-white/70 hover:bg-white/10 hover:text-white"
             )}
           >
-            <Sparkles className="h-[16px] w-[16px]" />
+            <Sparkles className="h-[16px] w-[16px] text-violet-400" />
             EngineGPT
-          </Link>
+          </a>
         </div>
       )}
 
@@ -664,7 +703,16 @@ function EnginePanel({
                       : "text-white/80 hover:bg-white/10 hover:text-white"
                   )}
                 >
-                  <Icon className="h-[16px] w-[16px] shrink-0" />
+                  <Icon className={cn(
+                    "h-[16px] w-[16px] shrink-0",
+                    hasActiveChild && (
+                      section.label === "Ideas" ? "text-amber-400" :
+                      section.label === "Content Items" ? "text-blue-400" :
+                      section.label === "Social Media" ? "text-violet-400" :
+                      section.label === "Project Plans" ? "text-emerald-400" :
+                      "text-white"
+                    )
+                  )} />
                   <span className="flex-1 text-left truncate">
                     {section.label}
                   </span>
@@ -762,12 +810,16 @@ function OperationsPanel({
 }) {
   return (
     <>
-      <div className="px-3 pt-4 pb-2 shrink-0">
-        <div className="flex items-center gap-2 px-2.5">
-          <Gauge className="h-4 w-4 text-white/50" />
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-white/40">
-            Operations
-          </p>
+      <div className="px-3 pt-3 pb-2 shrink-0">
+        <div className="flex items-center gap-2.5 px-2 py-1">
+          <div className="flex-1 min-w-0">
+            <p className="text-[13px] font-bold tracking-tight truncate text-white">
+              Operations
+            </p>
+            <p className="text-[10px] text-white/40">
+              Management &amp; Oversight
+            </p>
+          </div>
         </div>
       </div>
 
@@ -789,7 +841,16 @@ function OperationsPanel({
                       : "text-white/70 hover:bg-white/10 hover:text-white"
                   )}
                 >
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-white/40" />
+                  <ChevronRight className={cn(
+                    "h-3.5 w-3.5 shrink-0",
+                    (active || childActive)
+                      ? (item.label === "Content" ? "text-blue-400" :
+                         item.label === "Contracts" ? "text-emerald-400" :
+                         item.label === "Production" ? "text-orange-400" :
+                         item.label === "Duty Editor" ? "text-violet-400" :
+                         "text-white/40")
+                      : "text-white/40"
+                  )} />
                   <span className="truncate">{item.label}</span>
                 </Link>
                 {item.children && showChildren && (
@@ -840,12 +901,16 @@ function AdminPanel({
 }) {
   return (
     <>
-      <div className="px-3 pt-4 pb-2 shrink-0">
-        <div className="flex items-center gap-2 px-2.5">
-          <Settings className="h-4 w-4 text-white/50" />
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-white/40">
-            Administration
-          </p>
+      <div className="px-3 pt-3 pb-2 shrink-0">
+        <div className="flex items-center gap-2.5 px-2 py-1">
+          <div className="flex-1 min-w-0">
+            <p className="text-[13px] font-bold tracking-tight truncate text-white">
+              Administration
+            </p>
+            <p className="text-[10px] text-white/40">
+              Settings &amp; Configuration
+            </p>
+          </div>
         </div>
       </div>
 
@@ -867,9 +932,9 @@ function AdminPanel({
                 )}
               >
                 {Icon ? (
-                  <Icon className="h-4 w-4 shrink-0 text-white/40" />
+                  <Icon className={cn("h-4 w-4 shrink-0", active ? "text-blue-400" : "text-white/40")} />
                 ) : (
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-white/40" />
+                  <ChevronRight className={cn("h-3.5 w-3.5 shrink-0", active ? "text-blue-400" : "text-white/40")} />
                 )}
                 <span className="flex-1 truncate">{item.label}</span>
                 {item.label === "Inbox" && inboxCount > 0 && (

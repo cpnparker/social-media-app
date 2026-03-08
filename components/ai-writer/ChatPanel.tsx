@@ -13,8 +13,23 @@ import {
   Link2,
   Bug,
   ChevronRight,
+  Menu,
   Upload,
+  ScrollText,
+  Newspaper,
+  Share2,
+  Lightbulb,
+  SlidersHorizontal,
+  Check,
+  Brain,
+  UserPlus,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,8 +53,8 @@ import { toast } from "sonner";
 import { getModelLabel } from "@/lib/ai/models";
 import MessageBubble from "./MessageBubble";
 import ChatInput, { type ChatInputHandle } from "./ChatInput";
-import type { AIConversation, AIMessageRow, Attachment, MemorySuggestion } from "@/lib/types/ai";
-import MemorySuggestions from "./MemorySuggestions";
+import ShareDialog from "./ShareDialog";
+import type { AIConversation, AIMessageRow, Attachment } from "@/lib/types/ai";
 
 interface ChatPanelProps {
   conversationId: string;
@@ -48,10 +63,13 @@ interface ChatPanelProps {
   onBack?: () => void;
   initialMessage?: string;
   initialAttachments?: Attachment[];
-  contextConfig?: { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string };
+  contextConfig?: { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch?: string; memory?: string };
   debugMode?: boolean;
   onCopyLink?: () => void;
+  onMenuClick?: () => void;
 }
+
+type ContextConfig = { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch: string; memory: string };
 
 export default function ChatPanel({
   conversationId,
@@ -60,9 +78,10 @@ export default function ChatPanel({
   onBack,
   initialMessage,
   initialAttachments,
-  contextConfig,
+  contextConfig: initialContextConfig,
   debugMode,
   onCopyLink,
+  onMenuClick,
 }: ChatPanelProps) {
   const [conversation, setConversation] = useState<AIConversation | null>(null);
   const [messages, setMessages] = useState<AIMessageRow[]>([]);
@@ -72,12 +91,21 @@ export default function ChatPanel({
   const [streamingContent, setStreamingContent] = useState("");
   const [debugContext, setDebugContext] = useState<string | null>(null);
   const [debugExpanded, setDebugExpanded] = useState(false);
-  const [memorySuggestions, setMemorySuggestions] = useState<MemorySuggestion[]>([]);
-  const [memoryConversationId, setMemoryConversationId] = useState<string | null>(null);
-  const [memoryVisibility, setMemoryVisibility] = useState<"private" | "team">("private");
+  const [localContextConfig, setLocalContextConfig] = useState<ContextConfig>({
+    contracts: initialContextConfig?.contracts || "summary",
+    contentPipeline: initialContextConfig?.contentPipeline || "summary",
+    socialPresence: initialContextConfig?.socialPresence || "summary",
+    ideas: initialContextConfig?.ideas || "summary",
+    incognito: initialContextConfig?.incognito,
+    webSearch: initialContextConfig?.webSearch || "on",
+    memory: initialContextConfig?.memory || "on",
+  });
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [myPermission, setMyPermission] = useState<"owner" | "view" | "collaborate">("owner");
+  const [shares, setShares] = useState<{ userId: number; userName: string | null; permission: string }[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initialMessageSent = useRef(false);
   const chatInputRef = useRef<ChatInputHandle>(null);
@@ -93,6 +121,8 @@ export default function ChatPanel({
       const data = await res.json();
       setConversation(data.conversation);
       setMessages(data.messages || []);
+      if (data.conversation.myPermission) setMyPermission(data.conversation.myPermission);
+      if (data.conversation.shares) setShares(data.conversation.shares);
     } catch (err) {
       console.error("Failed to load conversation:", err);
     } finally {
@@ -145,7 +175,7 @@ export default function ChatPanel({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content, attachments, contextConfig, debugMode }),
+          body: JSON.stringify({ content, attachments, contextConfig: localContextConfig, debugMode }),
         }
       );
 
@@ -175,10 +205,6 @@ export default function ChatPanel({
               setDebugContext(parsed.debugContext);
             } else if (parsed.searching) {
               setIsSearchingWeb(true);
-            } else if (parsed.memorySuggestions) {
-              setMemorySuggestions(parsed.memorySuggestions);
-              setMemoryConversationId(parsed.conversationId || conversationId);
-              setMemoryVisibility(parsed.conversationVisibility || "private");
             } else if (parsed.token) {
               // First token means search is done (if it was searching)
               setIsSearchingWeb(false);
@@ -187,6 +213,7 @@ export default function ChatPanel({
             }
             if (parsed.error) {
               console.error("Stream error:", parsed.error);
+              toast.error(parsed.error);
             }
           } catch {
             // Ignore malformed SSE lines
@@ -220,6 +247,7 @@ export default function ChatPanel({
       }
     } catch (err: any) {
       console.error("Send error:", err);
+      toast.error(err?.message || "Failed to send message");
     } finally {
       setIsStreaming(false);
       setIsSearchingWeb(false);
@@ -344,26 +372,27 @@ export default function ChatPanel({
       {/* Full-panel drop overlay */}
       {isDragging && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-          <div className="flex flex-col items-center gap-3 p-8 rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5">
-            <Upload className="h-10 w-10 text-primary" />
-            <p className="text-sm font-semibold text-primary">Drop files to upload</p>
+          <div className="flex flex-col items-center gap-3 p-8 rounded-2xl border-2 border-dashed border-foreground/20 bg-foreground/[0.03]">
+            <Upload className="h-10 w-10 text-foreground/50" />
+            <p className="text-sm font-semibold text-foreground/70">Drop files to upload</p>
             <p className="text-xs text-muted-foreground">Images, PDFs, documents, and more</p>
           </div>
         </div>
       )}
 
       {/* Header */}
-      <div className="border-b px-3 md:px-4 py-2.5 flex items-center gap-2 md:gap-3 shrink-0">
-        {onBack && (
+      <div className="border-b px-3 md:px-4 py-2 md:py-2.5 flex items-center gap-2 md:gap-3 shrink-0">
+        {/* Mobile sidebar toggle — top left */}
+        {onMenuClick && (
           <button
-            onClick={onBack}
-            className="shrink-0 h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors"
+            onClick={onMenuClick}
+            className="lg:hidden shrink-0 h-10 w-10 -ml-1 flex items-center justify-center rounded-lg hover:bg-muted transition-colors"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <Menu className="h-5 w-5" />
           </button>
         )}
         <div className="flex-1 min-w-0">
-          {editingTitle ? (
+          {editingTitle && myPermission === "owner" ? (
             <input
               autoFocus
               value={titleDraft}
@@ -373,15 +402,19 @@ export default function ChatPanel({
                 if (e.key === "Enter") handleSaveTitle();
                 if (e.key === "Escape") setEditingTitle(false);
               }}
-              className="text-sm font-semibold bg-transparent border-b border-primary outline-none w-full"
+              className="text-sm font-semibold bg-transparent border-b border-foreground/30 outline-none w-full"
             />
           ) : (
             <button
               onClick={() => {
+                if (myPermission !== "owner") return;
                 setTitleDraft(conversation.title);
                 setEditingTitle(true);
               }}
-              className="text-sm font-semibold truncate hover:underline text-left"
+              className={cn(
+                "text-sm font-semibold truncate text-left",
+                myPermission === "owner" && "hover:underline cursor-pointer"
+              )}
             >
               {conversation.title}
             </button>
@@ -398,6 +431,14 @@ export default function ChatPanel({
               )}
               {conversation.visibility === "private" ? "Private" : "Team"}
             </Badge>
+            {myPermission === "view" && (
+              <Badge
+                variant="outline"
+                className="text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4 gap-1 text-muted-foreground"
+              >
+                View only
+              </Badge>
+            )}
             <Badge
               variant="outline"
               className="text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4"
@@ -413,6 +454,31 @@ export default function ChatPanel({
                 {conversation.customerName}
               </Badge>
             )}
+            {/* Avatar stack for shared users */}
+            {shares.length > 0 && (
+              <button
+                onClick={() => myPermission === "owner" && setShareDialogOpen(true)}
+                className={cn(
+                  "flex items-center -space-x-1.5 ml-1",
+                  myPermission === "owner" && "cursor-pointer hover:opacity-80"
+                )}
+                title={`Shared with ${shares.length} ${shares.length === 1 ? "person" : "people"}`}
+              >
+                {shares.slice(0, 3).map((s) => (
+                  <div
+                    key={s.userId}
+                    className="h-5 w-5 rounded-full bg-foreground/[0.08] border-2 border-background flex items-center justify-center text-[8px] font-semibold text-muted-foreground"
+                  >
+                    {s.userName ? s.userName.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2) : "?"}
+                  </div>
+                ))}
+                {shares.length > 3 && (
+                  <div className="h-5 w-5 rounded-full bg-muted border-2 border-background flex items-center justify-center text-[8px] text-muted-foreground font-medium">
+                    +{shares.length - 3}
+                  </div>
+                )}
+              </button>
+            )}
           </div>
         </div>
 
@@ -423,42 +489,56 @@ export default function ChatPanel({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem
-              onClick={() => {
-                setTitleDraft(conversation.title);
-                setEditingTitle(true);
-              }}
-            >
-              <Pencil className="h-3.5 w-3.5 mr-2" />
-              Rename
-            </DropdownMenuItem>
+            {myPermission === "owner" && (
+              <DropdownMenuItem
+                onClick={() => {
+                  setTitleDraft(conversation.title);
+                  setEditingTitle(true);
+                }}
+              >
+                <Pencil className="h-3.5 w-3.5 mr-2" />
+                Rename
+              </DropdownMenuItem>
+            )}
             {onCopyLink && (
               <DropdownMenuItem onClick={onCopyLink}>
                 <Link2 className="h-3.5 w-3.5 mr-2" />
                 Copy link
               </DropdownMenuItem>
             )}
-            <DropdownMenuItem onClick={handleToggleVisibility}>
-              {conversation.visibility === "private" ? (
-                <>
-                  <Globe className="h-3.5 w-3.5 mr-2" />
-                  Make Team
-                </>
-              ) : (
-                <>
-                  <Lock className="h-3.5 w-3.5 mr-2" />
-                  Make Private
-                </>
-              )}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onClick={() => setDeleteConfirmOpen(true)}
-              className="text-destructive"
-            >
-              <Trash2 className="h-3.5 w-3.5 mr-2" />
-              Delete
-            </DropdownMenuItem>
+            {myPermission === "owner" && conversation.visibility === "private" && (
+              <DropdownMenuItem onClick={() => setShareDialogOpen(true)}>
+                <UserPlus className="h-3.5 w-3.5 mr-2" />
+                Share
+              </DropdownMenuItem>
+            )}
+            {myPermission === "owner" && (
+              <DropdownMenuItem onClick={handleToggleVisibility}>
+                {conversation.visibility === "private" ? (
+                  <>
+                    <Globe className="h-3.5 w-3.5 mr-2" />
+                    Make Team
+                  </>
+                ) : (
+                  <>
+                    <Lock className="h-3.5 w-3.5 mr-2" />
+                    Make Private
+                  </>
+                )}
+              </DropdownMenuItem>
+            )}
+            {myPermission === "owner" && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => setDeleteConfirmOpen(true)}
+                  className="text-destructive"
+                >
+                  <Trash2 className="h-3.5 w-3.5 mr-2" />
+                  Delete
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
 
@@ -482,13 +562,25 @@ export default function ChatPanel({
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        {/* Share dialog */}
+        {conversation && (
+          <ShareDialog
+            open={shareDialogOpen}
+            onOpenChange={setShareDialogOpen}
+            conversationId={conversationId}
+            conversationTitle={conversation.title}
+            workspaceId={conversation.workspaceId}
+            onSharesChanged={() => fetchConversation()}
+          />
+        )}
       </div>
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
         {messages.length === 0 && !isStreaming ? (
           <div className="flex flex-col items-center justify-center h-full px-4 sm:px-8 text-center">
-            <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
+            <div className="h-12 w-12 rounded-full bg-foreground/[0.05] flex items-center justify-center mb-4">
               <span className="text-2xl">✨</span>
             </div>
             <h3 className="text-base font-semibold mb-1">
@@ -535,8 +627,8 @@ export default function ChatPanel({
             )}
             {isStreaming && isSearchingWeb && !streamingContent && (
               <div className="flex items-start gap-3 px-4 py-3">
-                <div className="h-7 w-7 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0 mt-0.5">
-                  <Globe className="h-3.5 w-3.5 text-emerald-500 animate-pulse" />
+                <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                  <Globe className="h-3.5 w-3.5 text-muted-foreground animate-pulse" />
                 </div>
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <span className="animate-pulse">Searching the web…</span>
@@ -551,33 +643,131 @@ export default function ChatPanel({
                 isStreaming
               />
             )}
-            {/* Memory suggestions */}
-            {memorySuggestions.length > 0 && !isStreaming && conversation && (
-              <MemorySuggestions
-                suggestions={memorySuggestions}
-                conversationId={memoryConversationId || conversationId}
-                conversationVisibility={memoryVisibility}
-                workspaceId={conversation.workspaceId}
-                onDismiss={() => setMemorySuggestions([])}
-                onSaved={() => setMemorySuggestions([])}
-              />
-            )}
             <div ref={messagesEndRef} />
           </div>
         )}
       </div>
 
       {/* Input */}
-      <ChatInput
-        ref={chatInputRef}
-        onSend={handleSend}
-        disabled={isStreaming}
-        placeholder={
-          messages.length === 0
-            ? "What would you like to work on?"
-            : "Type your message..."
-        }
-      />
+      <div className="border-t bg-background">
+        <ChatInput
+          ref={chatInputRef}
+          onSend={handleSend}
+          disabled={isStreaming || myPermission === "view"}
+          bottomSlot={
+            <Popover>
+              <PopoverTrigger asChild>
+                <button className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-muted-foreground/60 hover:text-muted-foreground/80 hover:bg-muted/50 transition-colors">
+                  <SlidersHorizontal className="h-2.5 w-2.5" />
+                  <span className="hidden sm:inline">Context</span>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="start" side="top" className="w-[200px] p-1.5">
+                <div className="space-y-0.5">
+                  {[
+                    { key: "contracts" as const, label: "Contracts", Icon: ScrollText },
+                    { key: "contentPipeline" as const, label: "Content", Icon: Newspaper },
+                    { key: "socialPresence" as const, label: "Social", Icon: Share2 },
+                    { key: "ideas" as const, label: "Ideas", Icon: Lightbulb },
+                  ].map((item) => {
+                    const level = localContextConfig[item.key];
+                    const isOn = level !== "off";
+                    const isFull = level.startsWith("full");
+                    const nextLevel = level === "off" ? "summary" : level === "summary" ? "full-month" : "off";
+                    const levelLabel = level === "off" ? "Off" : level === "summary" ? "Summary" : "Full";
+                    return (
+                      <button
+                        key={item.key}
+                        onClick={() =>
+                          setLocalContextConfig((prev) => ({
+                            ...prev,
+                            [item.key]: nextLevel,
+                          }))
+                        }
+                        className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/50 transition-colors"
+                      >
+                        <item.Icon className={cn(
+                          "h-3 w-3 shrink-0",
+                          isOn ? "text-foreground/60" : "text-muted-foreground/50"
+                        )} />
+                        <span className={cn(
+                          "flex-1",
+                          isOn ? "text-foreground/80" : "text-muted-foreground/50"
+                        )}>
+                          {item.label}
+                        </span>
+                        <span className={cn(
+                          "text-[9px] font-medium",
+                          isOn ? "text-muted-foreground/60" : "text-muted-foreground/50"
+                        )}>
+                          {levelLabel}
+                        </span>
+                        {isOn && (
+                          <Check className="h-3 w-3 text-foreground/50 shrink-0" />
+                        )}
+                      </button>
+                    );
+                  })}
+                  <div className="h-px bg-border/40 my-1" />
+                  <button
+                    onClick={() =>
+                      setLocalContextConfig((prev) => ({
+                        ...prev,
+                        webSearch: prev.webSearch === "on" ? "off" : "on",
+                      }))
+                    }
+                    className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/50 transition-colors"
+                  >
+                    <Globe className={cn(
+                      "h-3 w-3 shrink-0",
+                      localContextConfig.webSearch === "on" ? "text-foreground/60" : "text-muted-foreground/50"
+                    )} />
+                    <span className={cn(
+                      "flex-1",
+                      localContextConfig.webSearch === "on" ? "text-foreground/80" : "text-muted-foreground/50"
+                    )}>
+                      Web Search
+                    </span>
+                    {localContextConfig.webSearch === "on" && (
+                      <Check className="h-3 w-3 text-foreground/50 shrink-0" />
+                    )}
+                  </button>
+                  <button
+                    onClick={() =>
+                      setLocalContextConfig((prev) => ({
+                        ...prev,
+                        memory: prev.memory === "on" ? "off" : "on",
+                      }))
+                    }
+                    className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/50 transition-colors"
+                  >
+                    <Brain className={cn(
+                      "h-3 w-3 shrink-0",
+                      localContextConfig.memory === "on" ? "text-foreground/60" : "text-muted-foreground/50"
+                    )} />
+                    <span className={cn(
+                      "flex-1",
+                      localContextConfig.memory === "on" ? "text-foreground/80" : "text-muted-foreground/50"
+                    )}>
+                      Memory
+                    </span>
+                    {localContextConfig.memory === "on" && (
+                      <Check className="h-3 w-3 text-foreground/50 shrink-0" />
+                    )}
+                  </button>
+                </div>
+              </PopoverContent>
+            </Popover>
+          }
+          placeholder={
+            myPermission === "view"
+              ? "You have view-only access"
+              : messages.length === 0
+                ? "What would you like to work on?"
+                : "Type your message..."
+          }
+        />
+      </div>
     </div>
   );
 }

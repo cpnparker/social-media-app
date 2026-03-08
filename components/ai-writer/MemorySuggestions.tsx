@@ -1,9 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Brain, X, Check } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Brain, X, Check, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import type { MemorySuggestion } from "@/lib/types/ai";
 
@@ -15,14 +13,6 @@ interface MemorySuggestionsProps {
   onDismiss: () => void;
   onSaved: () => void;
 }
-
-const CATEGORY_LABELS: Record<string, string> = {
-  preference: "Preference",
-  fact: "Fact",
-  instruction: "Instruction",
-  style: "Style",
-  client_insight: "Client Insight",
-};
 
 export default function MemorySuggestions({
   suggestions,
@@ -36,6 +26,7 @@ export default function MemorySuggestions({
     new Set(suggestions.map((_, i) => i))
   );
   const [saving, setSaving] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   const toggle = (i: number) => {
     setChecked((prev) => {
@@ -80,72 +71,87 @@ export default function MemorySuggestions({
   };
 
   return (
-    <div className="mx-3 md:mx-4 mb-2 animate-in slide-in-from-bottom-2 duration-300">
-      <div className="rounded-xl border border-primary/10 bg-primary/[0.02] px-4 py-3">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-2.5">
-          <div className="flex items-center gap-2 text-xs font-medium text-primary/80">
-            <Brain className="h-3.5 w-3.5" />
-            <span>Memories detected</span>
-          </div>
-          <button
-            onClick={onDismiss}
-            className="h-5 w-5 rounded-full hover:bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <X className="h-3 w-3" />
-          </button>
-        </div>
-
-        {/* Suggestions */}
-        <div className="space-y-1.5">
-          {suggestions.map((s, i) => (
+    <div className="flex justify-start px-3 md:px-4 mb-1 animate-in fade-in duration-500">
+      <div className="max-w-[min(520px,85%)]">
+        {/* Collapsed: slim inline bar */}
+        {!expanded ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground/70">
             <button
-              key={i}
-              onClick={() => toggle(i)}
-              className="w-full flex items-start gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-muted/50 transition-colors group"
+              onClick={() => setExpanded(true)}
+              className="flex items-center gap-1.5 rounded-full border border-border/40 bg-muted/30 hover:bg-muted/50 pl-2 pr-2.5 py-1 transition-colors"
             >
-              <div
-                className={`mt-0.5 h-4 w-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
-                  checked.has(i)
-                    ? "bg-primary border-primary text-primary-foreground"
-                    : "border-muted-foreground/30"
-                }`}
-              >
-                {checked.has(i) && <Check className="h-2.5 w-2.5" />}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm leading-snug">{s.content}</p>
-                <Badge
-                  variant="outline"
-                  className="mt-1 text-[9px] px-1.5 py-0 h-4"
-                >
-                  {CATEGORY_LABELS[s.category] || s.category}
-                </Badge>
-              </div>
+              <Brain className="h-3 w-3 text-muted-foreground/50" />
+              <span className="text-muted-foreground/60 font-medium">
+                {suggestions.length} {suggestions.length === 1 ? "memory" : "memories"} found
+              </span>
+              <ChevronDown className="h-2.5 w-2.5 text-muted-foreground/40" />
             </button>
-          ))}
-        </div>
+            <button
+              onClick={onDismiss}
+              className="text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        ) : (
+          /* Expanded: lightweight list */
+          <div className="rounded-lg border border-border/30 bg-muted/20 overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-3 py-2">
+              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60 font-medium">
+                <Brain className="h-3 w-3" />
+                <span>Remember these?</span>
+              </div>
+              <button
+                onClick={onDismiss}
+                className="text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
 
-        {/* Actions */}
-        <div className="flex items-center justify-end gap-2 mt-3 pt-2.5 border-t border-primary/5">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onDismiss}
-            className="h-7 text-xs text-muted-foreground"
-          >
-            Dismiss
-          </Button>
-          <Button
-            size="sm"
-            onClick={handleSave}
-            disabled={saving || checked.size === 0}
-            className="h-7 text-xs gap-1.5"
-          >
-            <Brain className="h-3 w-3" />
-            {saving ? "Saving..." : `Save ${checked.size}`}
-          </Button>
-        </div>
+            {/* Items */}
+            <div className="px-1.5 pb-1.5">
+              {suggestions.map((s, i) => (
+                <button
+                  key={i}
+                  onClick={() => toggle(i)}
+                  className="w-full flex items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted/40 transition-colors"
+                >
+                  <div
+                    className={`mt-[3px] h-3.5 w-3.5 rounded-[3px] border flex items-center justify-center shrink-0 transition-all ${
+                      checked.has(i)
+                        ? "bg-foreground/70 border-foreground/70 text-background"
+                        : "border-muted-foreground/20"
+                    }`}
+                  >
+                    {checked.has(i) && <Check className="h-2 w-2" strokeWidth={3} />}
+                  </div>
+                  <p className="text-[12px] leading-relaxed text-muted-foreground/80 flex-1 min-w-0">
+                    {s.content}
+                  </p>
+                </button>
+              ))}
+            </div>
+
+            {/* Actions — minimal, right-aligned text buttons */}
+            <div className="flex items-center justify-end gap-3 px-3 py-1.5 border-t border-border/20">
+              <button
+                onClick={onDismiss}
+                className="text-[11px] text-muted-foreground/40 hover:text-muted-foreground/70 transition-colors"
+              >
+                Dismiss
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving || checked.size === 0}
+                className="text-[11px] font-medium text-foreground/50 hover:text-foreground/80 disabled:opacity-30 transition-colors"
+              >
+                {saving ? "Saving..." : `Save ${checked.size}`}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

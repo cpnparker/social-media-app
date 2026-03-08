@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { aiConversations, workspaces } from "@/lib/db/schema";
-import { eq, and, or, like, desc, sql } from "drizzle-orm";
+import { aiConversations, aiConversationShares, workspaces } from "@/lib/db/schema";
+import { eq, and, or, like, desc, sql, inArray } from "drizzle-orm";
 import { supabase } from "@/lib/supabase";
 
 // GET /api/ai/conversations — list conversations
@@ -26,6 +26,21 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    // Get conversation IDs shared with this user (for private conversations they don't own)
+    const sharedWithMe = await db
+      .select({
+        conversationId: aiConversationShares.conversationId,
+        sharedBy: aiConversationShares.sharedBy,
+        permission: aiConversationShares.permission,
+      })
+      .from(aiConversationShares)
+      .where(eq(aiConversationShares.userId, userId));
+
+    const sharedConvoIds = sharedWithMe.map((s) => s.conversationId);
+    const sharedByMap = new Map(
+      sharedWithMe.map((s) => [s.conversationId, { sharedBy: s.sharedBy, permission: s.permission }])
+    );
+
     // Build conditions — always exclude incognito conversations
     const conditions = [
       eq(aiConversations.workspaceId, workspaceId),
@@ -33,21 +48,53 @@ export async function GET(req: NextRequest) {
     ];
 
     if (visibility === "private") {
-      conditions.push(eq(aiConversations.visibility, "private"));
-      conditions.push(eq(aiConversations.createdBy, userId));
+      // User's own private conversations + shared-with-me private conversations
+      if (sharedConvoIds.length > 0) {
+        conditions.push(
+          or(
+            and(
+              eq(aiConversations.visibility, "private"),
+              eq(aiConversations.createdBy, userId)
+            ),
+            and(
+              eq(aiConversations.visibility, "private"),
+              inArray(aiConversations.id, sharedConvoIds)
+            )
+          )!
+        );
+      } else {
+        conditions.push(eq(aiConversations.visibility, "private"));
+        conditions.push(eq(aiConversations.createdBy, userId));
+      }
     } else if (visibility === "team") {
       conditions.push(eq(aiConversations.visibility, "team"));
     } else {
-      // Default: user's private + all team conversations
-      conditions.push(
-        or(
-          and(
-            eq(aiConversations.visibility, "private"),
-            eq(aiConversations.createdBy, userId)
-          ),
-          eq(aiConversations.visibility, "team")
-        )!
-      );
+      // Default: user's private + shared-with-me + all team conversations
+      if (sharedConvoIds.length > 0) {
+        conditions.push(
+          or(
+            and(
+              eq(aiConversations.visibility, "private"),
+              eq(aiConversations.createdBy, userId)
+            ),
+            and(
+              eq(aiConversations.visibility, "private"),
+              inArray(aiConversations.id, sharedConvoIds)
+            ),
+            eq(aiConversations.visibility, "team")
+          )!
+        );
+      } else {
+        conditions.push(
+          or(
+            and(
+              eq(aiConversations.visibility, "private"),
+              eq(aiConversations.createdBy, userId)
+            ),
+            eq(aiConversations.visibility, "team")
+          )!
+        );
+      }
     }
 
     if (contentObjectId) {
@@ -102,10 +149,45 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const enriched = conversations.map((c) => ({
-      ...c,
-      customerName: c.customerId ? customerNameMap.get(c.customerId) || null : null,
-    }));
+    // Resolve sharer names for shared-with-me conversations
+    const sharerIds = Array.from(
+      new Set(
+        conversations
+          .filter((c) => c.createdBy !== userId && sharedByMap.has(c.id))
+          .map((c) => sharedByMap.get(c.id)!.sharedBy)
+      )
+    );
+
+    let sharerNameMap = new Map<number, string>();
+    if (sharerIds.length > 0) {
+      const { data: sharers } = await supabase
+        .from("users")
+        .select("id_user, name_user")
+        .in("id_user", sharerIds);
+      if (sharers) {
+        sharerNameMap = new Map(
+          sharers.map((u: any) => [u.id_user, u.name_user])
+        );
+      }
+    }
+
+    const enriched = conversations.map((c) => {
+      const isSharedWithMe = c.createdBy !== userId && sharedByMap.has(c.id);
+      const shareInfo = sharedByMap.get(c.id);
+      return {
+        ...c,
+        customerName: c.customerId ? customerNameMap.get(c.customerId) || null : null,
+        sharedWithMe: isSharedWithMe || undefined,
+        myPermission: c.createdBy === userId
+          ? ("owner" as const)
+          : isSharedWithMe
+          ? (shareInfo!.permission as "view" | "collaborate")
+          : undefined,
+        sharedByName: isSharedWithMe
+          ? sharerNameMap.get(shareInfo!.sharedBy) || null
+          : undefined,
+      };
+    });
 
     return NextResponse.json({ conversations: enriched });
   } catch (error: any) {

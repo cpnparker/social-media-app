@@ -1,14 +1,17 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { aiConversations, aiMessages, aiUsage, aiMemories, workspaces } from "@/lib/db/schema";
-import { eq, asc, and, or } from "drizzle-orm";
+import { aiConversations, aiMessages, aiUsage, aiMemories, workspaces, aiConversationShares, aiRoles } from "@/lib/db/schema";
+import { checkConversationAccess } from "@/lib/ai/access";
+import { eq, asc, and, or, sql } from "drizzle-orm";
 import { supabase } from "@/lib/supabase";
 import { createStreamingResponse, type AIMessage, type AIAttachment } from "@/lib/ai/providers";
 import { buildSystemPrompt, normalizeContextConfig, isFullDetail, type NormalizedContextConfig, type DetailLevel } from "@/lib/ai/system-prompts";
 import { fetchBlobContent } from "@/lib/ai/blob-utils";
 import { extractMemories } from "@/lib/ai/memory-extraction";
 import type { Attachment } from "@/lib/types/ai";
+
+export const maxDuration = 120; // Allow up to 2 minutes for AI streaming responses
 
 // ── Cost calculation for usage tracking ──
 const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> = {
@@ -83,30 +86,60 @@ async function prepareAttachmentsForAI(attachments: Attachment[]): Promise<AIAtt
   return prepared;
 }
 
-// ── Helper: fetch workspace-level config (content types + CU definitions) ──
-async function fetchWorkspaceConfig() {
+// ── Helper: fetch workspace-level config (content types + CU definitions + format descriptions) ──
+async function fetchWorkspaceConfig(workspaceId?: string) {
   const [typesRes, cuRes] = await Promise.all([
     supabase
       .from("types_content")
-      .select("id_type, key_type, type_content, flag_active, ai_prompt")
+      .select("id_type, key_type, type_content, flag_active")
       .eq("flag_active", 1),
     supabase
       .from("calculator_content")
-      .select("name, format, units_content")
+      .select("id, name, format, units_content")
       .order("sort_order"),
   ]);
+
+  // Fetch format descriptions from Neon workspaces table
+  let formatDescriptions: Record<string, string> = {};
+  if (workspaceId) {
+    try {
+      const [wsRow] = await db
+        .select({ aiFormatDescriptions: workspaces.aiFormatDescriptions })
+        .from(workspaces)
+        .where(eq(workspaces.id, workspaceId))
+        .limit(1);
+      formatDescriptions = wsRow?.aiFormatDescriptions || {};
+    } catch {
+      // Ignore — format descriptions are optional
+    }
+  }
+
+  // Build format ID → name map for resolving descriptions
+  const cuData = cuRes.data || [];
+  const idToName: Record<string, string> = {};
+  cuData.forEach((c) => { idToName[c.id] = c.name; });
+
+  // Resolve format descriptions: map IDs to names
+  const resolvedDescriptions: Record<string, string> = {};
+  for (const [id, desc] of Object.entries(formatDescriptions)) {
+    if (desc?.trim()) {
+      const name = idToName[id] || id;
+      resolvedDescriptions[name] = desc;
+    }
+  }
 
   return {
     contentTypes: (typesRes.data || []).map((t) => ({
       key: t.key_type,
       name: t.type_content,
-      aiPrompt: t.ai_prompt,
+      aiPrompt: null,
     })),
-    cuDefinitions: (cuRes.data || []).map((c) => ({
+    cuDefinitions: cuData.map((c) => ({
       format: c.name,
       category: c.format,
       units: c.units_content,
     })),
+    formatDescriptions: resolvedDescriptions,
   };
 }
 
@@ -287,7 +320,7 @@ async function fetchClientIdeas(clientId: number, detailLevel?: DetailLevel) {
   }));
 }
 
-// ── Helper: fetch workspace-level summary for "All Clients" mode ──
+// ── Helper: fetch workspace-level summary for "General" mode ──
 async function fetchWorkspaceSummary() {
   const [clientsRes, contractsRes, contentRes, ideasRes] = await Promise.all([
     supabase
@@ -434,9 +467,16 @@ export async function POST(
       });
     }
 
-    // Access check
-    if (conversation.visibility === "private" && conversation.createdBy !== userId) {
+    // Share-aware access check
+    const access = await checkConversationAccess(conversationId, userId, conversation);
+    if (!access.allowed) {
       return new Response(JSON.stringify({ error: "Forbidden" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (access.permission === "view") {
+      return new Response(JSON.stringify({ error: "Read-only access" }), {
         status: 403,
         headers: { "Content-Type": "application/json" },
       });
@@ -464,7 +504,7 @@ export async function POST(
         .from(aiMessages)
         .where(eq(aiMessages.conversationId, conversationId))
         .orderBy(asc(aiMessages.createdAt)),
-      fetchWorkspaceConfig(),
+      fetchWorkspaceConfig(conversation.workspaceId),
       db
         .select({
           aiContextConfig: workspaces.aiContextConfig,
@@ -532,16 +572,16 @@ export async function POST(
       clientContext = cc;
       clientIdeas = ci;
     } else {
-      // Workspace-level "All Clients" conversation
+      // Workspace-level "General" conversation
       workspaceSummary = await fetchWorkspaceSummary();
     }
 
     // Incognito mode: skip memory fetching and extraction
     const isIncognito = contextConfig.incognito === "on";
 
-    // Fetch memories (privacy-aware) — skip in incognito
+    // Fetch memories (privacy-aware) — skip if memory is off or incognito
     let memories: { content: string; category: string }[] = [];
-    if (!isIncognito) {
+    if (!isIncognito && contextConfig.memory !== "off") {
       const memoryFilter =
         conversation.visibility === "private"
           ? or(
@@ -566,6 +606,19 @@ export async function POST(
         .limit(50);
     }
 
+    // Fetch role if specified
+    let role: { name: string; instructions: string } | null = null;
+    if (body.roleId) {
+      const [roleRow] = await db
+        .select({ name: aiRoles.name, instructions: aiRoles.instructions })
+        .from(aiRoles)
+        .where(eq(aiRoles.id, body.roleId))
+        .limit(1);
+      if (roleRow) {
+        role = roleRow;
+      }
+    }
+
     const systemPrompt = buildSystemPrompt({
       workspaceConfig,
       clientContext,
@@ -575,6 +628,7 @@ export async function POST(
       clientIdeas,
       workspaceSummary,
       memories: memories.length > 0 ? memories : undefined,
+      role,
     });
 
     const model = body.model || conversation.model;
@@ -627,7 +681,10 @@ export async function POST(
       }
     );
 
-    // Wrap stream: inject debug context + memory extraction after response
+    // Determine if memory is enabled for this request
+    const memoryEnabled = !isIncognito && contextConfig.memory !== "off";
+
+    // Wrap stream: inject debug context, capture text, extract & auto-save memories
     const stream = new ReadableStream({
       async start(controller) {
         const encoder = new TextEncoder();
@@ -640,7 +697,7 @@ export async function POST(
           );
         }
 
-        // Pass through AI stream, intercepting [DONE]
+        // Pass through AI stream, intercepting [DONE] for memory extraction
         const reader = aiStream.getReader();
         let capturedText = "";
         try {
@@ -649,52 +706,39 @@ export async function POST(
             if (done) break;
 
             // Capture text tokens for memory extraction
-            const chunk = decoder.decode(value, { stream: true });
-            for (const line of chunk.split("\n")) {
-              if (line.startsWith("data: ") && line.slice(6) !== "[DONE]") {
-                try {
-                  const parsed = JSON.parse(line.slice(6));
-                  if (parsed.token) capturedText += parsed.token;
-                } catch {}
+            if (memoryEnabled) {
+              const chunk = decoder.decode(value, { stream: true });
+              for (const line of chunk.split("\n")) {
+                if (line.startsWith("data: ") && line.slice(6) !== "[DONE]") {
+                  try {
+                    const parsed = JSON.parse(line.slice(6));
+                    if (parsed.token) capturedText += parsed.token;
+                  } catch {}
+                }
               }
             }
 
-            // Check if chunk contains [DONE] — buffer it
-            if (chunk.includes("data: [DONE]")) {
-              const withoutDone = chunk.replace(/data: \[DONE\]\n?\n?/g, "");
-              if (withoutDone.trim()) {
-                controller.enqueue(encoder.encode(withoutDone));
-              }
-              // Run memory extraction before [DONE] (skip in incognito)
-              if (!isIncognito) try {
-                const existingContents = memories.map((m) => m.content);
-                const suggestions = await extractMemories(
-                  userContent || "",
-                  capturedText,
-                  existingContents
-                );
-                if (suggestions.length > 0) {
-                  controller.enqueue(
-                    encoder.encode(
-                      `data: ${JSON.stringify({
-                        memorySuggestions: suggestions,
-                        conversationId,
-                        conversationVisibility: conversation.visibility,
-                      })}\n\n`
-                    )
-                  );
-                }
-              } catch (err) {
-                console.error("[Memory] Extraction failed:", err);
-              }
-              // Now send [DONE]
-              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-            } else {
-              controller.enqueue(value);
-            }
+            // Forward all chunks immediately — no [DONE] interception
+            controller.enqueue(value);
           }
         } finally {
           controller.close();
+        }
+
+        // Fire-and-forget: background memory extraction after stream closes
+        // Client already received [DONE] and can continue interacting
+        if (memoryEnabled && capturedText.length > 50) {
+          runBackgroundMemoryExtraction({
+            userContent: userContent || "",
+            assistantContent: capturedText,
+            existingMemories: memories.map((m) => m.content),
+            workspaceId: conversation.workspaceId,
+            userId,
+            conversationId,
+            conversationVisibility: conversation.visibility,
+          }).catch((err) => {
+            console.error("[Memory] Background extraction failed:", err);
+          });
         }
       },
     });
@@ -712,4 +756,96 @@ export async function POST(
       headers: { "Content-Type": "application/json" },
     });
   }
+}
+
+// ── Background memory extraction + auto-save with de-duplication ──
+async function runBackgroundMemoryExtraction({
+  userContent,
+  assistantContent,
+  existingMemories,
+  workspaceId,
+  userId,
+  conversationId,
+  conversationVisibility,
+}: {
+  userContent: string;
+  assistantContent: string;
+  existingMemories: string[];
+  workspaceId: string;
+  userId: number;
+  conversationId: string;
+  conversationVisibility: string;
+}): Promise<{ id: string; content: string }[]> {
+  const suggestions = await extractMemories(userContent, assistantContent, existingMemories);
+  if (suggestions.length === 0) return [];
+
+  const scope = conversationVisibility === "private" ? "private" : "team";
+  const memUserId = scope === "private" ? userId : null;
+
+  // Enforce 50-memory cap
+  const [countResult] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(aiMemories)
+    .where(
+      and(
+        eq(aiMemories.workspaceId, workspaceId),
+        eq(aiMemories.isActive, true),
+        memUserId !== null
+          ? and(eq(aiMemories.scope, "private"), eq(aiMemories.userId, userId))
+          : eq(aiMemories.scope, "team")
+      )
+    );
+
+  const currentCount = countResult?.count || 0;
+  const slotsAvailable = Math.max(0, 50 - currentCount);
+  if (slotsAvailable === 0) return [];
+
+  // De-duplicate: check for semantically similar existing memories
+  const allExisting = await db
+    .select({ content: aiMemories.content })
+    .from(aiMemories)
+    .where(
+      and(
+        eq(aiMemories.workspaceId, workspaceId),
+        eq(aiMemories.isActive, true)
+      )
+    );
+
+  const existingSet = new Set(allExisting.map((m) => m.content.toLowerCase().trim()));
+
+  const toSave = suggestions
+    .filter((s) => {
+      const normalized = s.content.toLowerCase().trim();
+      // Exact match check
+      if (existingSet.has(normalized)) return false;
+      // Substring overlap check — skip if 80%+ of words overlap with any existing memory
+      const wordsArr = normalized.split(/\s+/).filter((w) => w.length > 3);
+      for (const existing of Array.from(existingSet)) {
+        const existingWords = new Set(existing.split(/\s+/).filter((w) => w.length > 3));
+        if (wordsArr.length === 0 || existingWords.size === 0) continue;
+        const overlap = wordsArr.filter((w) => existingWords.has(w)).length;
+        if (overlap / Math.max(wordsArr.length, 1) >= 0.8) return false;
+      }
+      return true;
+    })
+    .slice(0, slotsAvailable);
+
+  const savedIds: string[] = [];
+  for (const s of toSave) {
+    const [inserted] = await db.insert(aiMemories).values({
+      workspaceId,
+      userId: memUserId,
+      scope,
+      category: s.category,
+      content: s.content.slice(0, 500),
+      sourceConversationId: conversationId,
+    }).returning({ id: aiMemories.id });
+    if (inserted) savedIds.push(inserted.id);
+  }
+
+  if (toSave.length > 0) {
+    console.log(`[Memory] Auto-saved ${toSave.length} memor${toSave.length === 1 ? "y" : "ies"} for conversation ${conversationId}`);
+  }
+
+  return toSave.map((s, i) => ({ id: savedIds[i], content: s.content }));
 }

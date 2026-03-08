@@ -137,6 +137,7 @@ export const workspaces = pgTable("workspaces", {
   aiCuDescription: text("ai_cu_description"),
   aiMaxTokens: integer("ai_max_tokens").default(4096),
   aiDebugMode: boolean("ai_debug_mode").default(false),
+  aiFormatDescriptions: jsonb("ai_format_descriptions").$type<Record<string, string>>(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -619,6 +620,39 @@ export const aiMessages = pgTable("ai_messages", {
   model: text("model"),
   createdBy: integer("created_by"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// ── AI Conversation Shares ──
+// Allows sharing private conversations with specific workspace members.
+// "view" = read-only, "collaborate" = can send messages.
+export const aiConversationShares = pgTable("ai_conversation_shares", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  conversationId: uuid("conversation_id")
+    .references(() => aiConversations.id, { onDelete: "cascade" })
+    .notNull(),
+  userId: integer("user_id").notNull(), // Supabase id_user of recipient
+  permission: text("permission").default("view").notNull(), // 'view' | 'collaborate'
+  sharedBy: integer("shared_by").notNull(), // Supabase id_user of owner who shared
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// ── AI Roles ──
+// Configurable AI personas/roles that modify the system prompt.
+// Auto-seeded with defaults on first access per workspace.
+export const aiRoles = pgTable("ai_roles", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspaces.id, { onDelete: "cascade" })
+    .notNull(),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  instructions: text("instructions").notNull(),
+  icon: text("icon").default("🤖").notNull(),
+  isDefault: boolean("is_default").default(false).notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  sortOrder: integer("sort_order").default(0).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
 // ── User Area Access ──

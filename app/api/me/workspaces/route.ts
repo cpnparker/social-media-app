@@ -43,19 +43,22 @@ export async function GET() {
 
     const results = (wsRows || []).map((ws) => {
       const access = accessMap.get(ws.id);
-      // If no access row exists yet, default all areas to true
-      // (existing users keep full access until explicitly restricted)
+      const role = roleMap.get(ws.id) || "viewer";
       const noRow = !access;
+      // If no access row exists: workspace owners/admins get full access,
+      // everyone else gets no access (secure by default).
+      // Once explicit rows are created (via admin endpoint), those take priority.
+      const isPrivileged = role === "owner" || role === "admin";
       return {
         id: ws.id,
         name: ws.name,
         slug: ws.slug,
         plan: ws.plan,
-        role: roleMap.get(ws.id) || "viewer",
-        accessEngine: noRow ? true : access.accessEngine,
-        accessEngineGpt: noRow ? true : access.accessEngineGpt,
-        accessOperations: noRow ? true : access.accessOperations,
-        accessAdmin: noRow ? true : access.accessAdmin,
+        role,
+        accessEngine: noRow ? isPrivileged : access.accessEngine,
+        accessEngineGpt: noRow ? isPrivileged : access.accessEngineGpt,
+        accessOperations: noRow ? isPrivileged : access.accessOperations,
+        accessAdmin: noRow ? isPrivileged : access.accessAdmin,
       };
     });
 

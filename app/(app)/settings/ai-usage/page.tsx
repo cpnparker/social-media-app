@@ -10,6 +10,7 @@ import {
   ExternalLink,
   Search,
   Bug,
+  Globe,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -40,11 +41,14 @@ interface CUDefinition {
   units: number;
 }
 
+type DetailLevel = "off" | "summary" | "full-week" | "full-month" | "full-year";
+
 interface ContextConfig {
-  contracts: boolean;
-  contentPipeline: boolean;
-  socialPresence: boolean;
-  ideas: boolean;
+  contracts: DetailLevel;
+  contentPipeline: DetailLevel;
+  socialPresence: DetailLevel;
+  ideas: DetailLevel;
+  webSearch?: "on" | "off";
 }
 
 interface UsageSummaryPeriod {
@@ -126,10 +130,11 @@ export default function AIUsagePage() {
   const [aiModel, setAiModel] = useState("grok-4-1-fast");
   const [availableModels, setAvailableModels] = useState<AIModel[]>([]);
   const [contextConfig, setContextConfig] = useState<ContextConfig>({
-    contracts: true,
-    contentPipeline: true,
-    socialPresence: true,
-    ideas: true,
+    contracts: "summary",
+    contentPipeline: "summary",
+    socialPresence: "summary",
+    ideas: "summary",
+    webSearch: "on",
   });
   const [maxTokens, setMaxTokens] = useState(4096);
   const [debugMode, setDebugMode] = useState(false);
@@ -227,9 +232,9 @@ export default function AIUsagePage() {
     }
   };
 
-  // Toggle context config
-  const toggleConfig = (key: keyof ContextConfig) => {
-    setContextConfig((prev) => ({ ...prev, [key]: !prev[key] }));
+  // Update context config detail level
+  const setConfigLevel = (key: keyof ContextConfig, level: DetailLevel) => {
+    setContextConfig((prev) => ({ ...prev, [key]: level }));
   };
 
   if (loading) {
@@ -371,60 +376,105 @@ export default function AIUsagePage() {
             {
               key: "contracts" as const,
               label: "Contracts",
-              description:
-                "Include client contract details, CU budgets, dates, and remaining units",
+              description: "Contract details, CU budgets, and commissioned content under each contract",
             },
             {
               key: "contentPipeline" as const,
               label: "Content Pipeline",
-              description:
-                "Include content production stats, type breakdowns, and recent in-production titles",
+              description: "Content production stats, individual items with briefs, audiences, and topics",
             },
             {
               key: "socialPresence" as const,
               label: "Social Presence",
-              description:
-                "Include social media platform post counts and performance data",
+              description: "Social media platform post counts and performance data",
             },
             {
               key: "ideas" as const,
               label: "Ideas",
-              description:
-                "Include recent ideas, status breakdowns, and weekly submission counts",
+              description: "Ideas with briefs, status breakdowns, topic tags, and commission dates",
             },
-          ].map((item) => (
-            <label
-              key={item.key}
-              className="flex items-start gap-3 py-3 cursor-pointer hover:bg-muted/50 rounded-lg px-2 -mx-2 transition-colors"
-            >
-              <div className="pt-0.5">
-                <button
-                  type="button"
-                  role="checkbox"
-                  aria-checked={contextConfig[item.key]}
-                  onClick={() => toggleConfig(item.key)}
-                  className={cn(
-                    "h-4 w-4 rounded border flex items-center justify-center transition-colors shrink-0",
-                    contextConfig[item.key]
-                      ? "bg-primary border-primary text-primary-foreground"
-                      : "border-input bg-background"
-                  )}
-                >
-                  {contextConfig[item.key] && (
-                    <Check className="h-3 w-3" />
-                  )}
-                </button>
+          ].map((item) => {
+            const level = contextConfig[item.key];
+            const isFull = level.startsWith("full");
+            return (
+              <div
+                key={item.key}
+                className="flex items-start gap-3 py-3 rounded-lg px-2 -mx-2"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-3">
+                    <p className="text-sm font-medium leading-tight">
+                      {item.label}
+                    </p>
+                    <div className="relative">
+                      <select
+                        value={level}
+                        onChange={(e) => setConfigLevel(item.key, e.target.value as DetailLevel)}
+                        className={cn(
+                          "h-7 rounded-md border px-2 pr-7 text-xs font-medium appearance-none cursor-pointer focus:outline-none focus:ring-1 focus:ring-ring",
+                          level === "off"
+                            ? "bg-muted text-muted-foreground border-input"
+                            : isFull
+                            ? "bg-primary/10 text-primary border-primary/30"
+                            : "bg-background text-foreground border-input"
+                        )}
+                      >
+                        <option value="off">Off</option>
+                        <option value="summary">Summary</option>
+                        <option value="full-week">Full: Last Week</option>
+                        <option value="full-month">Full: Last Month</option>
+                        <option value="full-year">Full: Last Year</option>
+                      </select>
+                      <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {level === "off"
+                      ? `${item.label} excluded from AI context`
+                      : level === "summary"
+                      ? `Compact overview — ${item.description.split(",")[0].toLowerCase()}`
+                      : `Full detail (${level === "full-week" ? "7 days" : level === "full-month" ? "30 days" : "12 months"}) — ${item.description.toLowerCase()}`
+                    }
+                  </p>
+                </div>
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium leading-tight">
-                  {item.label}
-                </p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {item.description}
-                </p>
-              </div>
-            </label>
-          ))}
+            );
+          })}
+        </CardContent>
+      </Card>
+
+      {/* ─── Web Search Default ─── */}
+      <Card className="border-0 shadow-sm">
+        <CardContent className="py-3 px-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <Globe className="h-4 w-4 text-emerald-500 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Web Search</p>
+              <p className="text-xs text-muted-foreground">
+                Enable web search by default in new EngineGPT conversations
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={contextConfig.webSearch === "on"}
+            onClick={() =>
+              setContextConfig((prev) => ({
+                ...prev,
+                webSearch: prev.webSearch === "on" ? "off" : "on",
+              }))
+            }
+            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              contextConfig.webSearch === "on" ? "bg-emerald-500" : "bg-muted"
+            }`}
+          >
+            <span
+              className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm transform transition-transform ${
+                contextConfig.webSearch === "on" ? "translate-x-4" : "translate-x-0"
+              }`}
+            />
+          </button>
         </CardContent>
       </Card>
 

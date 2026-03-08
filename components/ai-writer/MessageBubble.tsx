@@ -55,22 +55,21 @@ export default function MessageBubble({
       )}
     >
       {!isUser && (
-        <div className="shrink-0 h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center mt-0.5">
-          <Bot className="h-3.5 w-3.5 text-primary" />
+        <div className="shrink-0 h-7 w-7 rounded-full bg-foreground/[0.06] flex items-center justify-center mt-0.5">
+          <Bot className="h-3.5 w-3.5 text-foreground/50" />
         </div>
       )}
       <div
         className={cn(
-          "max-w-[90%] md:max-w-[80%] rounded-xl px-4 py-2.5 text-sm leading-relaxed",
+          "max-w-[90%] md:max-w-[80%] rounded-xl text-[17px]",
           isUser
-            ? "bg-primary text-primary-foreground"
-            : "bg-muted"
+            ? "bg-[#f0f0f0] dark:bg-[#2a2a2a] text-foreground px-4 py-2.5"
+            : "bg-transparent"
         )}
       >
         {/* Attachments */}
         {attachments && attachments.length > 0 && (
           <div className="mb-2 space-y-2">
-            {/* Image attachments */}
             {attachments.filter((a) => isImage(a.type)).length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {attachments
@@ -92,8 +91,6 @@ export default function MessageBubble({
                   ))}
               </div>
             )}
-
-            {/* Document attachments */}
             {attachments.filter((a) => !isImage(a.type)).length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {attachments
@@ -107,7 +104,7 @@ export default function MessageBubble({
                       className={cn(
                         "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-colors",
                         isUser
-                          ? "bg-primary-foreground/15 hover:bg-primary-foreground/25 text-primary-foreground"
+                          ? "bg-foreground/[0.06] hover:bg-foreground/[0.1] text-foreground"
                           : "bg-background hover:bg-background/80 border"
                       )}
                     >
@@ -122,10 +119,10 @@ export default function MessageBubble({
         )}
 
         {isUser ? (
-          content ? <p className="whitespace-pre-wrap">{content}</p> : null
+          content ? <p className="whitespace-pre-wrap leading-relaxed">{content}</p> : null
         ) : (
           <div
-            className="prose prose-sm dark:prose-invert max-w-none [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:mb-2 [&_ol]:mb-2 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_pre]:bg-background/50 [&_code]:text-xs"
+            className="ai-response"
             dangerouslySetInnerHTML={{
               __html: DOMPurify.sanitize(formatMarkdown(cleanContent, sources), {
                 ADD_ATTR: ['target', 'rel', 'data-source-num'],
@@ -137,9 +134,9 @@ export default function MessageBubble({
           <span className="inline-block w-1.5 h-4 bg-foreground/60 animate-pulse ml-0.5 rounded-sm" />
         )}
 
-        {/* Sources panel — Perplexity style */}
+        {/* Sources panel */}
         {!isUser && sources.length > 0 && !isStreaming && (
-          <div className="mt-3 pt-3 border-t border-foreground/5">
+          <div className="mt-4 pt-3 border-t border-border/40">
             <button
               onClick={() => setSourcesExpanded(!sourcesExpanded)}
               className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors mb-2"
@@ -161,7 +158,7 @@ export default function MessageBubble({
                     rel="noopener noreferrer"
                     onMouseEnter={() => setHoveredSource(src.number)}
                     onMouseLeave={() => setHoveredSource(null)}
-                    className="relative group flex items-center gap-1.5 rounded-lg border bg-background/80 hover:bg-background hover:border-primary/30 px-2.5 py-1.5 text-[11px] transition-all hover:shadow-sm max-w-[220px]"
+                    className="relative group flex items-center gap-1.5 rounded-lg border bg-background/80 hover:bg-background hover:border-foreground/20 px-2.5 py-1.5 text-[11px] transition-all hover:shadow-sm max-w-[220px]"
                   >
                     <img
                       src={src.favicon}
@@ -174,12 +171,10 @@ export default function MessageBubble({
                     <span className="truncate text-muted-foreground group-hover:text-foreground transition-colors">
                       {src.title || src.domain}
                     </span>
-                    <span className="shrink-0 text-[9px] font-medium bg-primary/10 text-primary rounded-full h-4 min-w-[16px] flex items-center justify-center px-1">
+                    <span className="shrink-0 text-[9px] font-medium bg-foreground/[0.07] text-muted-foreground rounded-full h-4 min-w-[16px] flex items-center justify-center px-1">
                       {src.number}
                     </span>
-                    <ExternalLink className="h-2.5 w-2.5 shrink-0 text-muted-foreground/40 group-hover:text-primary transition-colors" />
-
-                    {/* Hover tooltip with full URL */}
+                    <ExternalLink className="h-2.5 w-2.5 shrink-0 text-muted-foreground/40 group-hover:text-foreground transition-colors" />
                     {hoveredSource === src.number && (
                       <div className="absolute bottom-full left-0 mb-1.5 z-50 pointer-events-none">
                         <div className="bg-popover text-popover-foreground border shadow-lg rounded-lg px-3 py-2 text-[10px] max-w-[300px]">
@@ -196,14 +191,14 @@ export default function MessageBubble({
         )}
 
         {!isUser && model && !isStreaming && (
-          <p className="text-xs md:text-[10px] text-muted-foreground mt-1.5 opacity-60">
+          <p className="text-[10px] text-muted-foreground/60 mt-2">
             {getModelLabel(model)}
           </p>
         )}
       </div>
       {isUser && (
-        <div className="shrink-0 h-7 w-7 rounded-full bg-primary flex items-center justify-center mt-0.5">
-          <User className="h-3.5 w-3.5 text-primary-foreground" />
+        <div className="shrink-0 h-7 w-7 rounded-full bg-foreground/[0.08] flex items-center justify-center mt-0.5">
+          <User className="h-3.5 w-3.5 text-muted-foreground" />
         </div>
       )}
     </div>
@@ -232,21 +227,13 @@ function getFavicon(url: string): string {
 
 function getTitleFromUrl(url: string): string {
   const domain = getDomain(url);
-  // Strip TLD for cleaner display
   const parts = domain.split(".");
   if (parts.length >= 2) {
-    return parts[parts.length - 2]; // e.g. "reuters" from "reuters.com"
+    return parts[parts.length - 2];
   }
   return domain;
 }
 
-/**
- * Parse web search sources and inline citations from AI response content.
- * Handles multiple formats:
- *   - Grok: [[1]](url), [[2]](url) inline + sometimes a Sources section
- *   - Claude: [Source Title](url) inline + sometimes numbered [1], [2]
- *   - Plain URLs: https://... in text
- */
 function parseSourcesFromContent(content: string): {
   cleanContent: string;
   sources: ParsedSource[];
@@ -274,21 +261,20 @@ function parseSourcesFromContent(content: string): {
 
   let cleaned = content;
 
-  // Remove trailing "Sources:", "References:" section entirely (we build our own)
+  // Remove trailing sources section
   cleaned = cleaned.replace(
     /\n+(#{1,3}\s*)?(Sources|References|Citations)\s*:?\s*\n([\s\S]*?)$/i,
     (match) => {
-      // Parse URLs from the sources section to include them
       const urlPattern = /https?:\/\/[^\s)\]]+/g;
       let urlMatch;
       while ((urlMatch = urlPattern.exec(match)) !== null) {
         addSource(urlMatch[0]);
       }
-      return ""; // Remove the section from display
+      return "";
     }
   );
 
-  // Pattern 1: [[N]](url) — Grok style
+  // [[N]](url) — Grok
   cleaned = cleaned.replace(
     /\[\[(\d+)\]\]\((https?:\/\/[^)]+)\)/g,
     (_match, _num, url) => {
@@ -297,7 +283,7 @@ function parseSourcesFromContent(content: string): {
     }
   );
 
-  // Pattern 2: [N](url) — numbered link
+  // [N](url)
   cleaned = cleaned.replace(
     /\[(\d+)\]\((https?:\/\/[^)]+)\)/g,
     (_match, _num, url) => {
@@ -306,7 +292,7 @@ function parseSourcesFromContent(content: string): {
     }
   );
 
-  // Pattern 3: [Title](url) — named markdown links → keep as links but also track as source
+  // [Title](url)
   cleaned = cleaned.replace(
     /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
     (_match, title, url) => {
@@ -315,77 +301,152 @@ function parseSourcesFromContent(content: string): {
     }
   );
 
-  // Pattern 4: Standalone [N] references (without URL — already captured above)
-  // Only convert if we have sources with that number
+  // Standalone [N]
   cleaned = cleaned.replace(/\[(\d+)\](?!\()/g, (_match, num) => {
     const n = parseInt(num, 10);
     if (n > 0 && n < nextNum) {
       return `[__CITE_${n}__]`;
     }
-    return _match; // Leave as-is if not a known citation
+    return _match;
   });
 
   return { cleanContent: cleaned, sources };
 }
 
 /**
- * Simple markdown → HTML conversion for assistant messages.
- * Handles: **bold**, *italic*, `code`, ```code blocks```, headings, lists, links, citations.
+ * Line-by-line markdown table detection — more robust than regex.
+ * Finds consecutive lines starting & ending with | and converts to HTML tables.
+ */
+function convertMarkdownTables(html: string, sources: ParsedSource[]): string {
+  const lines = html.split('\n');
+  const result: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+    // Check if line looks like a table row: starts and ends with |
+    if (/^\|.+\|$/.test(trimmed)) {
+      const tableLines: string[] = [trimmed];
+      let j = i + 1;
+      while (j < lines.length && /^\|.+\|$/.test(lines[j].trim())) {
+        tableLines.push(lines[j].trim());
+        j++;
+      }
+
+      if (tableLines.length >= 2) {
+        // Determine if row 2 is a separator (|---|---|)
+        const isSeparator = /^\|[\s\-:|]+\|$/.test(tableLines[1]);
+        const startIdx = isSeparator ? 2 : 1;
+
+        const parseRow = (row: string) =>
+          row.split("|").slice(1, -1).map((cell: string) => cell.trim());
+
+        const headerCells = parseRow(tableLines[0]);
+        let tableHtml = '<div class="ai-table-wrap"><table class="ai-table"><thead><tr>';
+        for (const cell of headerCells) {
+          tableHtml += `<th>${applyInlineFormatting(cell, sources)}</th>`;
+        }
+        tableHtml += "</tr></thead><tbody>";
+
+        for (let k = startIdx; k < tableLines.length; k++) {
+          const cells = parseRow(tableLines[k]);
+          tableHtml += "<tr>";
+          for (const cell of cells) {
+            tableHtml += `<td>${applyInlineFormatting(cell, sources)}</td>`;
+          }
+          tableHtml += "</tr>";
+        }
+        tableHtml += "</tbody></table></div>";
+        result.push(tableHtml);
+        i = j;
+      } else {
+        result.push(lines[i]);
+        i++;
+      }
+    } else {
+      result.push(lines[i]);
+      i++;
+    }
+  }
+
+  return result.join('\n');
+}
+
+/**
+ * Markdown → HTML with proper table support, typography, and structure.
  */
 function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
   if (!text) return "";
 
   let html = text;
 
-  // Code blocks (```...```)
+  // Code blocks
   html = html.replace(
     /```(\w*)\n?([\s\S]*?)```/g,
-    '<pre class="rounded-md p-3 my-2 overflow-x-auto"><code>$2</code></pre>'
+    (_m, lang, code) =>
+      `<pre class="ai-code-block"><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`
   );
 
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code class="bg-muted px-1 py-0.5 rounded text-xs">$1</code>');
+  // Inline code (before other inline formatting)
+  html = html.replace(/`([^`]+)`/g, '<code class="ai-inline-code">$1</code>');
+
+  // Tables — line-by-line detection (handles edge cases the regex misses)
+  html = convertMarkdownTables(html, sources);
 
   // Headings
-  html = html.replace(/^### (.+)$/gm, '<h3 class="font-semibold mt-3 mb-1">$1</h3>');
-  html = html.replace(/^## (.+)$/gm, '<h2 class="font-semibold mt-3 mb-1">$1</h2>');
-  html = html.replace(/^# (.+)$/gm, '<h1 class="font-bold mt-3 mb-1">$1</h1>');
+  html = html.replace(/^#### (.+)$/gm, '<h4 class="ai-h4">$1</h4>');
+  html = html.replace(/^### (.+)$/gm, '<h3 class="ai-h3">$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2 class="ai-h2">$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1 class="ai-h1">$1</h1>');
+
+  // Horizontal rules
+  html = html.replace(/^---+$/gm, '<hr class="ai-hr" />');
 
   // Bold and italic
+  html = html.replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>");
   html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+  html = html.replace(/(?<!\*)\*([^*]+?)\*(?!\*)/g, "<em>$1</em>");
 
   // Links [text](url)
   html = html.replace(
     /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener" class="text-primary underline hover:text-primary/80 transition-colors">$1</a>'
+    '<a href="$2" target="_blank" rel="noopener" class="ai-link">$1</a>'
   );
 
-  // Plain URLs (not already in an href or anchor)
+  // Plain URLs
   html = html.replace(
     /(?<!href="|">)(https?:\/\/[^\s<)\]]+)/g,
-    '<a href="$1" target="_blank" rel="noopener" class="text-primary underline hover:text-primary/80 transition-colors break-all">$1</a>'
+    '<a href="$1" target="_blank" rel="noopener" class="ai-link break-all">$1</a>'
   );
 
-  // Citation badges [__CITE_N__]
+  // Citation badges
   html = html.replace(
     /\[__CITE_(\d+)__\]/g,
     (_match, num) => {
       const n = parseInt(num, 10);
       const source = sources.find((s) => s.number === n);
       if (!source) return "";
-      return `<a href="${source.url}" target="_blank" rel="noopener" data-source-num="${n}" class="inline-flex items-center justify-center h-4 min-w-[16px] px-1 text-[9px] font-semibold bg-primary/10 text-primary rounded-full hover:bg-primary/20 transition-colors no-underline align-super ml-0.5 cursor-pointer" title="${source.domain}">${n}</a>`;
+      return `<a href="${source.url}" target="_blank" rel="noopener" data-source-num="${n}" class="ai-cite" title="${source.domain}">${n}</a>`;
     }
   );
 
+  // Ordered lists (handle nested content)
+  html = html.replace(/^(\d+)\. (.+)$/gm, '<li class="ai-oli" value="$1">$2</li>');
+
   // Unordered lists
-  html = html.replace(/^[*-] (.+)$/gm, "<li>$1</li>");
-  html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul class="list-disc pl-4">$&</ul>');
+  html = html.replace(/^[*-] (.+)$/gm, '<li class="ai-uli">$1</li>');
 
-  // Ordered lists
-  html = html.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
+  // Wrap consecutive list items (handle blank lines between items)
+  html = html.replace(
+    /(<li class="ai-uli">[\s\S]*?<\/li>\s*)+/g,
+    '<ul class="ai-ul">$&</ul>'
+  );
+  html = html.replace(
+    /(<li class="ai-oli"[\s\S]*?<\/li>\s*)+/g,
+    '<ol class="ai-ol">$&</ol>'
+  );
 
-  // Paragraphs (double newlines)
+  // Paragraphs
   html = html
     .split(/\n\n+/)
     .map((block) => {
@@ -396,13 +457,46 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
         trimmed.startsWith("<pre") ||
         trimmed.startsWith("<ul") ||
         trimmed.startsWith("<ol") ||
-        trimmed.startsWith("<li")
+        trimmed.startsWith("<li") ||
+        trimmed.startsWith("<div") ||
+        trimmed.startsWith("<hr") ||
+        trimmed.startsWith("<table")
       ) {
         return trimmed;
       }
-      return `<p>${trimmed.replace(/\n/g, "<br/>")}</p>`;
+      return `<p class="ai-p">${trimmed.replace(/\n/g, "<br/>")}</p>`;
     })
     .join("\n");
 
   return html;
+}
+
+/** Apply inline formatting only (bold, italic, code, links, citations) */
+function applyInlineFormatting(text: string, sources: ParsedSource[] = []): string {
+  let html = text;
+  html = html.replace(/`([^`]+)`/g, '<code class="ai-inline-code">$1</code>');
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/(?<!\*)\*([^*]+?)\*(?!\*)/g, "<em>$1</em>");
+  html = html.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener" class="ai-link">$1</a>'
+  );
+  html = html.replace(
+    /\[__CITE_(\d+)__\]/g,
+    (_match, num) => {
+      const n = parseInt(num, 10);
+      const source = sources.find((s) => s.number === n);
+      if (!source) return "";
+      return `<a href="${source.url}" target="_blank" rel="noopener" data-source-num="${n}" class="ai-cite" title="${source.domain}">${n}</a>`;
+    }
+  );
+  return html;
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }

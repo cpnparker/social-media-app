@@ -40,10 +40,21 @@ import {
   Lightbulb,
   Brain,
   EyeOff,
+  UserPlus,
+  Settings,
+  Gauge,
+  Package,
+  Sparkles,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { navigateToSubdomain, isProductionHost, getSubdomainUrl } from "@/lib/subdomain";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -61,6 +72,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AI_MODELS, DEFAULT_MODEL, getModelLabel } from "@/lib/ai/models";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
 import MemoryManager from "@/components/ai-writer/MemoryManager";
+import AdminDialog from "@/components/ai-writer/AdminDialog";
 import { signOut } from "next-auth/react";
 import type { AIConversation, Attachment } from "@/lib/types/ai";
 
@@ -112,11 +124,13 @@ function EngineGPTContent() {
     contentPipeline: "summary" as string,
     socialPresence: "summary" as string,
     ideas: "summary" as string,
-    webSearch: "off" as string,
+    webSearch: "on" as string,
+    memory: "on" as string,
   });
   const [debugMode, setDebugMode] = useState(false);
   const [incognitoMode, setIncognitoMode] = useState(false);
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false);
+  const [adminDialogOpen, setAdminDialogOpen] = useState(false);
   const [memoryCount, setMemoryCount] = useState(0);
   const [isHomeDragging, setIsHomeDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -124,6 +138,15 @@ function EngineGPTContent() {
   const pendingThreadRef = useRef<string | null>(null);
   const incognitoConvoRef = useRef<string | null>(null);
   const homeDragCounterRef = useRef(0);
+
+  // Area access for icon rail
+  const ws = wsCtx?.selectedWorkspace;
+  const showEngine = ws?.accessEngine ?? true;
+  const showOperations = ws?.accessOperations ?? false;
+  const showAdmin = ws?.accessAdmin ?? true;
+  const showEngineGpt = ws?.accessEngineGpt ?? true;
+  const areaCount = [showEngine, showOperations, showEngineGpt, showAdmin].filter(Boolean).length;
+  const showRail = areaCount > 1;
 
   const customerId = customerCtx?.selectedCustomerId || null;
   const customers = customerCtx?.customers || [];
@@ -487,76 +510,586 @@ function EngineGPTContent() {
         />
       )}
 
-      {/* ─── Sidebar ─── */}
+      {/* ─── Sidebar (rail + panel) ─── */}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-50 w-[280px] flex flex-col",
-          "bg-[#023250] text-white",
+          "fixed inset-y-0 left-0 z-50 w-[280px] flex",
           "transform transition-transform duration-300 ease-in-out",
           "lg:static lg:z-auto lg:translate-x-0 lg:shrink-0",
+          showRail && "lg:w-[308px]",
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
-        {/* Top section */}
-        <div className="shrink-0 p-3 space-y-3">
-          {/* Logo + New Chat */}
-          <div className="flex items-center justify-between">
-            <button
-              onClick={() => {
-                customerCtx?.setSelectedCustomerId(null);
-                handleNewChat();
-              }}
-              className="flex items-center gap-2 hover:opacity-80 transition-opacity"
-            >
-              <img
-                src="/assets/logo_engine_icon_white.svg"
-                alt="EngineGPT"
-                className="h-7 w-7"
+        {/* ═══════ Icon Rail (desktop only) ═══════ */}
+        {showRail && (
+          <div className="hidden lg:flex flex-col items-center w-12 bg-[#2e3440] py-3 shrink-0">
+            {/* Logo */}
+            <a href={getSubdomainUrl("engine", "/dashboard")} className="mb-4">
+              <div className="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-white/10 transition-colors">
+                <img
+                  src="/assets/logo_engine_icon.svg"
+                  alt="Home"
+                  width={24}
+                  height={24}
+                  className="h-6 w-6 brightness-0 invert"
+                />
+              </div>
+            </a>
+
+            {/* Area icons */}
+            <div className="flex flex-col items-center gap-1">
+              {[
+                { area: "engine" as const, icon: Package, label: "The Engine", hidden: !showEngine },
+                { area: "operations" as const, icon: Gauge, label: "Operations", hidden: !showOperations },
+                { area: "enginegpt" as const, icon: Sparkles, label: "EngineGPT", hidden: !showEngineGpt },
+                { area: "admin" as const, icon: Settings, label: "Administration", hidden: !showAdmin },
+              ]
+                .filter((item) => !item.hidden)
+                .map((item) => (
+                  <Tooltip key={item.area} delayDuration={300}>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={() => {
+                          if (item.area === "enginegpt") return;
+                          if (isProductionHost()) {
+                            const targetSub = item.area === "admin" ? "engine" : item.area as "engine" | "operations" | "ai";
+                            navigateToSubdomain(
+                              targetSub,
+                              item.area === "admin" ? "/settings/workspace" : item.area === "operations" ? "/operations/commissioned-cus" : undefined
+                            );
+                          } else {
+                            const paths: Record<string, string> = {
+                              engine: "/dashboard",
+                              operations: "/operations/commissioned-cus",
+                              admin: "/settings/workspace",
+                            };
+                            if (paths[item.area]) window.location.href = paths[item.area];
+                          }
+                        }}
+                        className={cn(
+                          "relative flex items-center justify-center w-10 h-10 rounded-lg transition-all duration-150",
+                          item.area === "enginegpt"
+                            ? "bg-white/15 text-white"
+                            : "text-white/50 hover:bg-white/10 hover:text-white/80"
+                        )}
+                      >
+                        {item.area === "enginegpt" && (
+                          <div className="absolute -left-1 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-blue-400" />
+                        )}
+                        <item.icon className="h-[18px] w-[18px]" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="right" sideOffset={8}>
+                      {item.label}
+                    </TooltipContent>
+                  </Tooltip>
+                ))}
+            </div>
+
+            <div className="flex-1" />
+
+            {/* User avatar at bottom of rail */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="flex items-center justify-center w-10 h-10 rounded-lg hover:bg-white/10 transition-colors">
+                  <Avatar className="h-7 w-7">
+                    <AvatarFallback className="bg-blue-500/30 text-blue-200 text-[10px] font-semibold">
+                      {userInitials}
+                    </AvatarFallback>
+                  </Avatar>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" side="right" className="w-56 ml-1">
+                <div className="px-3 py-2">
+                  <p className="text-sm font-medium">{userName || "User"}</p>
+                  <p className="text-xs text-muted-foreground">{userEmail || ""}</p>
+                </div>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => setMemoryManagerOpen(true)}
+                  className="gap-2"
+                >
+                  <Brain className="h-4 w-4" />
+                  Memories
+                  {memoryCount > 0 && (
+                    <span className="ml-auto text-[10px] text-muted-foreground">{memoryCount}</span>
+                  )}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setAdminDialogOpen(true)}
+                  className="gap-2"
+                >
+                  <Settings className="h-4 w-4" />
+                  Administration
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => signOut({ callbackUrl: "/login" })}
+                  className="text-destructive focus:text-destructive gap-2"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        )}
+
+        {/* ═══════ Sidebar Panel ═══════ */}
+        <div className="flex-1 flex flex-col bg-[#3b4252] text-white border-r border-white/[0.06] overflow-hidden">
+          {/* ── Mobile area switcher ── */}
+          {showRail && (
+            <div className="lg:hidden px-3 pt-3 pb-2">
+              <div className="flex items-center gap-1 bg-white/10 rounded-lg p-0.5">
+                {[
+                  { area: "engine", label: "Engine", hidden: !showEngine },
+                  { area: "operations", label: "Ops", hidden: !showOperations },
+                  { area: "enginegpt", label: "GPT", hidden: !showEngineGpt },
+                  { area: "admin", label: "Admin", hidden: !showAdmin },
+                ]
+                  .filter((i) => !i.hidden)
+                  .map((item) => (
+                    <button
+                      key={item.area}
+                      onClick={() => {
+                        if (item.area === "enginegpt") return;
+                        if (isProductionHost()) {
+                          const targetSub = (item.area === "admin" ? "engine" : item.area) as "engine" | "operations" | "ai";
+                          navigateToSubdomain(
+                            targetSub,
+                            item.area === "admin" ? "/settings/workspace" : item.area === "operations" ? "/operations/commissioned-cus" : undefined
+                          );
+                        } else {
+                          const paths: Record<string, string> = {
+                            engine: "/dashboard",
+                            operations: "/operations/commissioned-cus",
+                            admin: "/settings/workspace",
+                          };
+                          if (paths[item.area]) window.location.href = paths[item.area];
+                        }
+                      }}
+                      className={cn(
+                        "flex-1 px-2 py-1.5 rounded-md text-[11px] font-medium transition-colors text-center",
+                        item.area === "enginegpt"
+                          ? "bg-white/15 text-white shadow-sm"
+                          : "text-white/50 hover:text-white/80"
+                      )}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+              </div>
+            </div>
+          )}
+
+          {/* Top section */}
+          <div className="shrink-0 p-3 space-y-3">
+            {/* Logo + New Chat */}
+            <div className="flex items-center justify-between">
+              <button
+                onClick={() => {
+                  customerCtx?.setSelectedCustomerId(null);
+                  handleNewChat();
+                }}
+                className="flex items-center gap-2 hover:opacity-70 transition-opacity"
+              >
+                {!showRail && (
+                  <img
+                    src="/assets/logo_engine_icon.svg"
+                    alt="EngineGPT"
+                    className="h-7 w-7 brightness-0 invert"
+                  />
+                )}
+                <span className="text-[13px] font-bold tracking-tight text-white">
+                  EngineGPT
+                </span>
+              </button>
+              <button
+                onClick={handleNewChat}
+                className="h-8 w-8 rounded-lg bg-white/10 hover:bg-white/15 flex items-center justify-center transition-colors text-white"
+                title="New chat"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Client selector (searchable popover) */}
+            {customers.length > 0 && (
+              <Popover
+                open={clientPopoverOpen}
+                onOpenChange={(open) => {
+                  setClientPopoverOpen(open);
+                  if (!open) setClientSearchQuery("");
+                }}
+              >
+                <PopoverTrigger asChild>
+                  <button className="w-full flex items-center gap-2 rounded-lg bg-white/[0.06] hover:bg-white/10 px-2.5 py-2 transition-colors text-left">
+                    <Building2 className="h-3.5 w-3.5 text-white/40 shrink-0" />
+                    <span className="flex-1 truncate text-white/80 text-[13px] font-medium">
+                      {selectedCustomer?.name || "General"}
+                    </span>
+                    <ChevronsUpDown className="h-3 w-3 text-white/40 shrink-0" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="start" side="bottom" className="w-[256px] p-0">
+                  <div className="flex items-center border-b px-3">
+                    <Search className="mr-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <input
+                      placeholder="Search clients..."
+                      value={clientSearchQuery}
+                      onChange={(e) => setClientSearchQuery(e.target.value)}
+                      className="flex h-9 w-full bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
+                    />
+                    {clientSearchQuery && (
+                      <button
+                        onClick={() => setClientSearchQuery("")}
+                        className="ml-1 h-4 w-4 shrink-0 text-muted-foreground hover:text-foreground"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-[240px] overflow-y-auto p-1">
+                    {canViewAll && !clientSearchQuery && (
+                      <button
+                        onClick={() => {
+                          customerCtx?.setSelectedCustomerId(null);
+                          setClientPopoverOpen(false);
+                          setClientSearchQuery("");
+                        }}
+                        className={cn(
+                          "w-full flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent transition-colors text-left",
+                          !selectedCustomer && "bg-accent"
+                        )}
+                      >
+                        <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <span className="flex-1">General</span>
+                        {!selectedCustomer && (
+                          <Check className="h-4 w-4 text-primary shrink-0" />
+                        )}
+                      </button>
+                    )}
+                    {filteredClients.length === 0 ? (
+                      <p className="py-4 text-center text-sm text-muted-foreground">
+                        No clients found
+                      </p>
+                    ) : (
+                      filteredClients.map((c) => (
+                        <button
+                          key={c.id}
+                          onClick={() => {
+                            customerCtx?.setSelectedCustomerId(c.id);
+                            setClientPopoverOpen(false);
+                            setClientSearchQuery("");
+                          }}
+                          className={cn(
+                            "w-full flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent transition-colors text-left",
+                            selectedCustomer?.id === c.id && "bg-accent"
+                          )}
+                        >
+                          {c.logoUrl ? (
+                            <img
+                              src={c.logoUrl}
+                              alt=""
+                              className="h-4 w-4 rounded object-cover shrink-0"
+                            />
+                          ) : (
+                            <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                          )}
+                          <span className="flex-1 truncate">{c.name}</span>
+                          {selectedCustomer?.id === c.id && (
+                            <Check className="h-4 w-4 text-primary shrink-0" />
+                          )}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            )}
+
+            {/* Search chats */}
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/40" />
+              <input
+                placeholder="Search chats..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full h-8 rounded-lg bg-white/[0.06] border border-white/[0.08] pl-8 pr-3 text-[13px] text-white placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-white/20"
               />
-              <span className="text-sm font-bold tracking-tight">
-                EngineGPT
-              </span>
-            </button>
-            <button
-              onClick={handleNewChat}
-              className="h-8 w-8 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
-              title="New chat"
-            >
-              <Plus className="h-4 w-4" />
-            </button>
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/60"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+
+            {/* Private / Team tabs */}
+            <div className="flex gap-0.5 bg-white/10 rounded-lg p-0.5">
+              <button
+                onClick={() => setTab("private")}
+                className={cn(
+                  "flex-1 px-2.5 py-1 rounded-md text-[13px] font-medium transition-all",
+                  tab === "private"
+                    ? "bg-white/15 text-white shadow-sm"
+                    : "text-white/50 hover:text-white/80"
+                )}
+              >
+                <Lock className="h-3.5 w-3.5 inline mr-1.5 -mt-0.5" />
+                Private
+              </button>
+              <button
+                onClick={() => setTab("team")}
+                className={cn(
+                  "flex-1 px-2.5 py-1 rounded-md text-[13px] font-medium transition-all",
+                  tab === "team"
+                    ? "bg-white/15 text-white shadow-sm"
+                    : "text-white/50 hover:text-white/80"
+                )}
+              >
+                <Users className="h-3.5 w-3.5 inline mr-1.5 -mt-0.5" />
+                Team
+              </button>
+            </div>
           </div>
 
-          {/* Client selector (searchable popover) */}
-          {customers.length > 0 && (
-            <Popover
-              open={clientPopoverOpen}
-              onOpenChange={(open) => {
-                setClientPopoverOpen(open);
-                if (!open) setClientSearchQuery("");
-              }}
+          {/* Scrollable conversation list */}
+          <div className="flex-1 overflow-y-auto px-2 py-1 scrollbar-hide">
+            {loading ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="h-4 w-4 animate-spin text-white/40" />
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="text-center py-8 px-3">
+                <p className="text-[13px] text-white/50">
+                  {searchQuery
+                    ? "No chats match your search"
+                    : "No conversations yet"}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-0.5">
+                {filtered.map((conv) => (
+                  <button
+                    key={conv.id}
+                    onClick={() => handleSelectThread(conv)}
+                    className={cn(
+                      "w-full text-left rounded-lg px-2.5 py-2 transition-colors group",
+                      selectedId === conv.id
+                        ? "bg-white/15 text-white"
+                        : "text-white/70 hover:bg-white/10 hover:text-white"
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[13px] font-medium truncate flex-1">{conv.title}</p>
+                      <span className="text-[11px] text-white/40 shrink-0">
+                        {timeAgo(conv.updatedAt)}
+                      </span>
+                    </div>
+                    {conv.sharedWithMe && conv.sharedByName && (
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <UserPlus className="h-3 w-3 text-white/30 shrink-0" />
+                        <p className="text-[11px] text-white/40 truncate">
+                          Shared by {conv.sharedByName}
+                        </p>
+                      </div>
+                    )}
+                    {conv.customerName && (
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <Building2 className="h-3 w-3 text-white/30 shrink-0" />
+                        <p className="text-[11px] text-white/40 truncate">
+                          {conv.customerName}
+                        </p>
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Bottom section — user profile (hidden on desktop when rail is showing, since rail has its own avatar) */}
+          <div className={cn("shrink-0 border-t border-white/[0.08] p-3", showRail && "lg:hidden")}>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-white/10 transition-colors text-left">
+                  <Avatar className="h-7 w-7">
+                    <AvatarFallback className="bg-blue-500/30 text-blue-200 text-[10px] font-semibold">
+                      {userInitials}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium text-white truncate">
+                      {userName || "User"}
+                    </p>
+                    {userEmail && (
+                      <p className="text-[10px] text-white/50 truncate">
+                        {userEmail}
+                      </p>
+                    )}
+                  </div>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" side="top" className="w-56">
+                <div className="px-3 py-2">
+                  <p className="text-sm font-medium">{userName || "User"}</p>
+                  <p className="text-xs text-muted-foreground">{userEmail}</p>
+                </div>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => setMemoryManagerOpen(true)}
+                  className="gap-2"
+                >
+                  <Brain className="h-4 w-4" />
+                  Memories
+                  {memoryCount > 0 && (
+                    <span className="ml-auto text-[10px] text-muted-foreground">{memoryCount}</span>
+                  )}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setAdminDialogOpen(true)}
+                  className="gap-2"
+                >
+                  <Settings className="h-4 w-4" />
+                  Administration
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => signOut({ callbackUrl: "/login" })}
+                  className="text-destructive focus:text-destructive gap-2"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </aside>
+
+      {/* ─── Main content area ─── */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* Mobile header — home screen only (chat view uses ChatPanel header) */}
+        {!selectedId && (
+          <div className="lg:hidden shrink-0 flex items-center gap-2 h-12 px-3 border-b bg-background">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="h-10 w-10 -ml-1 flex items-center justify-center rounded-lg hover:bg-muted transition-colors"
             >
+              <Menu className="h-5 w-5" />
+            </button>
+            <div className="flex items-center gap-2">
+              <img
+                src="/assets/logo_engine_icon.svg"
+                alt="EngineGPT"
+                className="h-5 w-5"
+              />
+              <span className="text-sm font-bold">EngineGPT</span>
+            </div>
+            <div className="flex-1" />
+            {customers.length > 0 && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button className="flex items-center gap-1.5 rounded-lg border bg-background hover:bg-muted px-2.5 py-1.5 text-[13px] transition-colors text-left shrink-0">
+                    <Building2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <span className="truncate max-w-[120px]">
+                      {selectedCustomer?.name || "General"}
+                    </span>
+                    <ChevronsUpDown className="h-3 w-3 text-muted-foreground shrink-0" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="end" side="bottom" className="w-[260px] p-0">
+                  <div className="flex items-center border-b px-3">
+                    <Search className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
+                    <input
+                      placeholder="Search clients..."
+                      value={clientSearchQuery}
+                      onChange={(e) => setClientSearchQuery(e.target.value)}
+                      className="flex h-10 w-full bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
+                    />
+                    {clientSearchQuery && (
+                      <button
+                        onClick={() => setClientSearchQuery("")}
+                        className="ml-1 h-4 w-4 shrink-0 text-muted-foreground hover:text-foreground"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-[280px] overflow-y-auto p-1">
+                    {canViewAll && !clientSearchQuery && (
+                      <button
+                        onClick={() => {
+                          customerCtx?.setSelectedCustomerId(null);
+                          setClientSearchQuery("");
+                        }}
+                        className={cn(
+                          "w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm hover:bg-accent transition-colors text-left",
+                          !selectedCustomer && "bg-accent"
+                        )}
+                      >
+                        <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <span className="flex-1">General</span>
+                        {!selectedCustomer && <Check className="h-4 w-4 text-primary shrink-0" />}
+                      </button>
+                    )}
+                    {filteredClients.length === 0 ? (
+                      <p className="py-4 text-center text-sm text-muted-foreground">No clients found</p>
+                    ) : (
+                      filteredClients.map((c) => (
+                        <button
+                          key={c.id}
+                          onClick={() => {
+                            customerCtx?.setSelectedCustomerId(c.id);
+                            setClientSearchQuery("");
+                          }}
+                          className={cn(
+                            "w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm hover:bg-accent transition-colors text-left",
+                            selectedCustomer?.id === c.id && "bg-accent"
+                          )}
+                        >
+                          {c.logoUrl ? (
+                            <img src={c.logoUrl} alt="" className="h-4 w-4 rounded object-cover shrink-0" />
+                          ) : (
+                            <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                          )}
+                          <span className="flex-1 truncate">{c.name}</span>
+                          {selectedCustomer?.id === c.id && <Check className="h-4 w-4 text-primary shrink-0" />}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            )}
+          </div>
+        )}
+
+        {/* Desktop top bar — client picker + theme toggle */}
+        <div className="hidden lg:flex items-center gap-3 px-4 pt-2.5 pb-1 shrink-0">
+          <div className="flex-1" />
+          {customers.length > 0 && (
+            <Popover>
               <PopoverTrigger asChild>
-                <button className="w-full flex items-center gap-2 rounded-lg bg-white/5 hover:bg-white/10 px-2.5 py-2 text-sm transition-colors text-left">
-                  <Building2 className="h-3.5 w-3.5 text-white/50 shrink-0" />
-                  <span className="flex-1 truncate text-white/80 text-xs font-medium">
-                    {selectedCustomer?.name || "All Clients"}
+                <button className="flex items-center gap-2 rounded-lg border bg-background hover:bg-muted px-3 py-1.5 text-[13px] transition-colors text-left">
+                  <Building2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  <span className="truncate max-w-[180px]">
+                    {selectedCustomer?.name || "General"}
                   </span>
-                  <ChevronsUpDown className="h-3 w-3 text-white/40 shrink-0" />
+                  <ChevronsUpDown className="h-3 w-3 text-muted-foreground shrink-0" />
                 </button>
               </PopoverTrigger>
-              <PopoverContent
-                align="start"
-                side="bottom"
-                className="w-[256px] p-0"
-              >
-                {/* Search input */}
+              <PopoverContent align="end" side="bottom" className="w-[280px] p-0">
                 <div className="flex items-center border-b px-3">
-                  <Search className="mr-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <Search className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
                   <input
                     placeholder="Search clients..."
                     value={clientSearchQuery}
                     onChange={(e) => setClientSearchQuery(e.target.value)}
-                    className="flex h-9 w-full bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
+                    className="flex h-10 w-full bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
                   />
                   {clientSearchQuery && (
                     <button
@@ -567,23 +1100,20 @@ function EngineGPTContent() {
                     </button>
                   )}
                 </div>
-
-                {/* Client list */}
-                <div className="max-h-[240px] overflow-y-auto p-1">
+                <div className="max-h-[280px] overflow-y-auto p-1">
                   {canViewAll && !clientSearchQuery && (
                     <button
                       onClick={() => {
                         customerCtx?.setSelectedCustomerId(null);
-                        setClientPopoverOpen(false);
                         setClientSearchQuery("");
                       }}
                       className={cn(
-                        "w-full flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent transition-colors text-left",
+                        "w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm hover:bg-accent transition-colors text-left",
                         !selectedCustomer && "bg-accent"
                       )}
                     >
                       <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <span className="flex-1">All Clients</span>
+                      <span className="flex-1">General</span>
                       {!selectedCustomer && (
                         <Check className="h-4 w-4 text-primary shrink-0" />
                       )}
@@ -599,11 +1129,10 @@ function EngineGPTContent() {
                         key={c.id}
                         onClick={() => {
                           customerCtx?.setSelectedCustomerId(c.id);
-                          setClientPopoverOpen(false);
                           setClientSearchQuery("");
                         }}
                         className={cn(
-                          "w-full flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent transition-colors text-left",
+                          "w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm hover:bg-accent transition-colors text-left",
                           selectedCustomer?.id === c.id && "bg-accent"
                         )}
                       >
@@ -628,126 +1157,21 @@ function EngineGPTContent() {
             </Popover>
           )}
 
-          {/* Search chats */}
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/40" />
-            <input
-              placeholder="Search chats..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full h-8 rounded-lg bg-white/10 border-0 pl-8 pr-3 text-sm text-white placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-white/20"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery("")}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/70"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            )}
-          </div>
-
-          {/* Private / Team tabs */}
-          <div className="flex gap-0.5 bg-white/5 rounded-lg p-0.5">
-            <button
-              onClick={() => setTab("private")}
-              className={cn(
-                "flex-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
-                tab === "private"
-                  ? "bg-white/15 text-white"
-                  : "text-white/50 hover:text-white/70"
-              )}
-            >
-              <Lock className="h-3 w-3 inline mr-1 -mt-0.5" />
-              Private
-            </button>
-            <button
-              onClick={() => setTab("team")}
-              className={cn(
-                "flex-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
-                tab === "team"
-                  ? "bg-white/15 text-white"
-                  : "text-white/50 hover:text-white/70"
-              )}
-            >
-              <Users className="h-3 w-3 inline mr-1 -mt-0.5" />
-              Team
-            </button>
-          </div>
-        </div>
-
-        {/* Scrollable conversation list */}
-        <div className="flex-1 overflow-y-auto px-2 py-1 scrollbar-hide">
-          {loading ? (
-            <div className="flex justify-center py-8">
-              <Loader2 className="h-4 w-4 animate-spin text-white/40" />
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="text-center py-8 px-3">
-              <p className="text-xs text-white/40">
-                {searchQuery
-                  ? "No chats match your search"
-                  : "No conversations yet"}
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-0.5">
-              {filtered.map((conv) => (
-                <button
-                  key={conv.id}
-                  onClick={() => handleSelectThread(conv)}
-                  className={cn(
-                    "w-full text-left rounded-lg px-3 py-2.5 transition-colors group",
-                    selectedId === conv.id
-                      ? "bg-white/15 text-white"
-                      : "text-white/70 hover:bg-white/10 hover:text-white"
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm truncate flex-1">{conv.title}</p>
-                    <span className="text-[10px] text-white/30 shrink-0">
-                      {timeAgo(conv.updatedAt)}
-                    </span>
-                  </div>
-                  {conv.customerName && (
-                    <div className="flex items-center gap-1 mt-0.5">
-                      <Building2 className="h-2.5 w-2.5 text-white/30 shrink-0" />
-                      <p className="text-[11px] text-white/40 truncate">
-                        {conv.customerName}
-                      </p>
-                    </div>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Bottom section — theme toggle + user */}
-        <div className="shrink-0 border-t border-white/10 p-3 space-y-2">
-          {/* Theme toggle */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button className="w-full flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 hover:bg-white/10 transition-colors text-left text-white/60 hover:text-white/80">
+              <button className="h-8 w-8 rounded-full border bg-background hover:bg-muted flex items-center justify-center transition-colors">
                 {mounted ? (
                   resolvedTheme === "dark" ? (
-                    <Moon className="h-3.5 w-3.5 shrink-0" />
+                    <Moon className="h-3.5 w-3.5 text-muted-foreground" />
                   ) : (
-                    <Sun className="h-3.5 w-3.5 shrink-0" />
+                    <Sun className="h-3.5 w-3.5 text-muted-foreground" />
                   )
                 ) : (
-                  <div className="h-3.5 w-3.5 shrink-0" />
+                  <div className="h-3.5 w-3.5" />
                 )}
-                <span className="text-[11px] font-medium">
-                  {mounted
-                    ? resolvedTheme === "dark"
-                      ? "Dark Mode"
-                      : "Light Mode"
-                    : "Theme"}
-                </span>
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" side="top" className="w-36">
+            <DropdownMenuContent align="end" className="w-36">
               <DropdownMenuItem onClick={() => setTheme("light")} className="gap-2 text-sm">
                 <Sun className="h-4 w-4" />
                 Light
@@ -762,142 +1186,6 @@ function EngineGPTContent() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-
-          {/* Memories */}
-          <button
-            onClick={() => setMemoryManagerOpen(true)}
-            className="w-full flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 hover:bg-white/10 transition-colors text-left text-white/60 hover:text-white/80"
-          >
-            <Brain className="h-3.5 w-3.5 shrink-0" />
-            <span className="text-[11px] font-medium flex-1">Memories</span>
-            {memoryCount > 0 && (
-              <span className="text-[9px] text-white/30">{memoryCount}</span>
-            )}
-          </button>
-
-          {/* Incognito mode */}
-          <button
-            onClick={() => {
-              setIncognitoMode((prev) => !prev);
-              toast.info(
-                !incognitoMode
-                  ? "Incognito on — memories won't be extracted or injected"
-                  : "Incognito off — memory is active again"
-              );
-            }}
-            className={cn(
-              "w-full flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 transition-colors text-left",
-              incognitoMode
-                ? "bg-white/15 text-white"
-                : "text-white/60 hover:text-white/80 hover:bg-white/10"
-            )}
-          >
-            <EyeOff className="h-3.5 w-3.5 shrink-0" />
-            <span className="text-[11px] font-medium">Incognito</span>
-          </button>
-
-          {/* User menu */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-white/10 transition-colors text-left">
-                <Avatar className="h-7 w-7">
-                  <AvatarFallback className="bg-blue-500/30 text-blue-200 text-[10px] font-semibold">
-                    {userInitials}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium text-white truncate">
-                    {userName || "User"}
-                  </p>
-                  {userEmail && (
-                    <p className="text-[10px] text-white/40 truncate">
-                      {userEmail}
-                    </p>
-                  )}
-                </div>
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" side="top" className="w-56">
-              <div className="px-3 py-2">
-                <p className="text-sm font-medium">{userName || "User"}</p>
-                <p className="text-xs text-muted-foreground">{userEmail}</p>
-              </div>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onClick={() => signOut({ callbackUrl: "/login" })}
-                className="text-destructive focus:text-destructive gap-2"
-              >
-                <LogOut className="h-4 w-4" />
-                Sign out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </aside>
-
-      {/* ─── Main content area ─── */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Mobile header with hamburger */}
-        <div className="lg:hidden shrink-0 flex items-center gap-2 h-12 px-3 border-b bg-background">
-          {selectedId ? (
-            <>
-              <button
-                onClick={handleBack}
-                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors shrink-0"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-              <span className="text-sm font-semibold truncate flex-1 min-w-0">
-                {selectedConversation?.title || "Chat"}
-              </span>
-              {selectedConversation?.customerName && (
-                <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full shrink-0 flex items-center gap-1 max-w-[90px]">
-                  <Building2 className="h-2.5 w-2.5 shrink-0" />
-                  <span className="truncate">{selectedConversation.customerName}</span>
-                </span>
-              )}
-              <button
-                onClick={() => setSidebarOpen(true)}
-                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors shrink-0"
-              >
-                <Menu className="h-4 w-4" />
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                onClick={() => setSidebarOpen(true)}
-                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors"
-              >
-                <Menu className="h-5 w-5" />
-              </button>
-              <div className="flex items-center gap-2">
-                <img
-                  src="/assets/logo_engine_icon.svg"
-                  alt="EngineGPT"
-                  className="h-5 w-5"
-                />
-                <span className="text-sm font-bold">EngineGPT</span>
-              </div>
-              <div className="flex-1" />
-              {selectedCustomer && (
-                <span className="text-[10px] text-muted-foreground bg-muted px-2 py-0.5 rounded-full shrink-0 flex items-center gap-1">
-                  <Building2 className="h-2.5 w-2.5 shrink-0" />
-                  <span className="truncate max-w-[120px]">{selectedCustomer.name}</span>
-                </span>
-              )}
-            </>
-          )}
-        </div>
-
-        {/* Desktop client label — top right */}
-        <div className="hidden lg:flex items-center justify-end px-4 pt-2 pb-0 shrink-0">
-          <span className="text-[11px] text-muted-foreground/60 flex items-center gap-1.5">
-            <Building2 className="h-3 w-3" />
-            <span className="truncate max-w-[200px]">
-              {selectedCustomer?.name || "All Clients"}
-            </span>
-          </span>
         </div>
 
         {selectedId ? (
@@ -908,6 +1196,8 @@ function EngineGPTContent() {
               conversationId={selectedId}
               onConversationDeleted={handleConversationDeleted}
               onConversationUpdated={handleConversationUpdated}
+              onBack={handleBack}
+              onMenuClick={() => setSidebarOpen(true)}
               initialMessage={initialMessage}
               initialAttachments={initialAttachments}
               contextConfig={{ ...contextConfig, incognito: incognitoMode ? "on" : "off" }}
@@ -925,7 +1215,7 @@ function EngineGPTContent() {
           <div className="flex-1 flex flex-col overflow-y-auto">
             <div className="flex-1 flex flex-col items-center justify-center px-4 pb-24">
               {/* Icon */}
-              <div className="h-16 w-16 rounded-2xl bg-[#023250]/10 flex items-center justify-center mb-6">
+              <div className="h-16 w-16 rounded-2xl bg-foreground/[0.05] flex items-center justify-center mb-6">
                 <img
                   src="/assets/logo_engine_icon.svg"
                   alt="EngineGPT"
@@ -981,11 +1271,11 @@ function EngineGPTContent() {
                   </div>
                 )}
 
-                <div className="relative rounded-2xl border bg-background shadow-md focus-within:ring-2 focus-within:ring-ring focus-within:border-transparent transition-all">
+                <div className="relative rounded-2xl border bg-background shadow-md focus-within:ring-1 focus-within:ring-foreground/15 focus-within:border-foreground/20 transition-all">
                   {/* Drag overlay */}
                   {isHomeDragging && (
-                    <div className="absolute inset-0 z-10 flex items-center justify-center bg-primary/5 border-2 border-dashed border-primary/40 rounded-2xl">
-                      <div className="flex flex-col items-center gap-2 text-primary">
+                    <div className="absolute inset-0 z-10 flex items-center justify-center bg-foreground/[0.03] border-2 border-dashed border-foreground/20 rounded-2xl">
+                      <div className="flex flex-col items-center gap-2 text-foreground/50">
                         <Upload className="h-8 w-8" />
                         <span className="text-sm font-medium">Drop files here</span>
                       </div>
@@ -1000,7 +1290,7 @@ function EngineGPTContent() {
                     placeholder="Ask anything..."
                     disabled={sending}
                     rows={1}
-                    className="w-full resize-none bg-transparent px-4 py-3 sm:px-5 sm:py-4 text-sm focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
+                    className="w-full resize-none bg-transparent px-4 py-3 sm:px-5 sm:py-4 text-base focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
                     style={{ minHeight: "48px", maxHeight: "160px" }}
                   />
 
@@ -1014,44 +1304,21 @@ function EngineGPTContent() {
                     className="hidden"
                   />
 
-                  {/* Desktop: bottom button bar */}
-                  <div className="hidden sm:flex px-3 pb-3 items-center justify-end gap-1.5">
+                  {/* Bottom button bar */}
+                  <div className="flex px-3 pb-3 items-center gap-1 sm:gap-1.5">
                     <Button
                       variant="ghost"
                       size="sm"
                       onClick={() => fileInputRef.current?.click()}
                       disabled={sending || uploading}
-                      className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                      className="h-9 w-9 sm:h-8 sm:w-8 p-0 text-muted-foreground hover:text-foreground"
                       title="Attach file"
                     >
                       {uploading ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        <Loader2 className="h-4 w-4 sm:h-3.5 sm:w-3.5 animate-spin" />
                       ) : (
-                        <Paperclip className="h-3.5 w-3.5" />
+                        <Paperclip className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
                       )}
-                    </Button>
-
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        setTab((prev) =>
-                          prev === "private" ? "team" : "private"
-                        )
-                      }
-                      className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2.5"
-                      title={
-                        tab === "private"
-                          ? "Private — only you can see this"
-                          : "Team — visible to your workspace"
-                      }
-                    >
-                      {tab === "private" ? (
-                        <Lock className="h-3 w-3" />
-                      ) : (
-                        <Users className="h-3 w-3" />
-                      )}
-                      {tab === "private" ? "Private" : "Team"}
                     </Button>
 
                     <DropdownMenu>
@@ -1059,90 +1326,53 @@ function EngineGPTContent() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2.5"
+                          className={cn(
+                            "h-9 sm:h-8 gap-1 sm:gap-1.5 text-[11px] sm:text-xs px-2 sm:px-2.5",
+                            incognitoMode
+                              ? "text-amber-500 hover:text-amber-400"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
                         >
-                          {getModelLabel(selectedModel)}
+                          {incognitoMode ? (
+                            <EyeOff className="h-3 w-3" />
+                          ) : tab === "private" ? (
+                            <Lock className="h-3 w-3" />
+                          ) : (
+                            <Users className="h-3 w-3" />
+                          )}
+                          {incognitoMode ? "Incognito" : tab === "private" ? "Private" : "Team"}
                           <ChevronDown className="h-3 w-3" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-48">
-                        {AI_MODELS.map((m) => (
-                          <DropdownMenuItem
-                            key={m.id}
-                            onClick={() => setSelectedModel(m.id)}
-                            className={cn(
-                              "text-sm",
-                              selectedModel === m.id && "bg-muted font-medium"
-                            )}
-                          >
-                            <span className="flex-1">{m.label}</span>
-                            {selectedModel === m.id && (
-                              <span className="text-primary text-xs">
-                                &#10003;
-                              </span>
-                            )}
-                          </DropdownMenuItem>
-                        ))}
+                      <DropdownMenuContent align="start" className="w-44">
+                        <DropdownMenuItem
+                          onClick={() => { setTab("private"); setIncognitoMode(false); }}
+                          className={cn("gap-2 text-sm", !incognitoMode && tab === "private" && "bg-muted font-medium")}
+                        >
+                          <Lock className="h-3.5 w-3.5" />
+                          Private
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => { setTab("team"); setIncognitoMode(false); }}
+                          className={cn("gap-2 text-sm", !incognitoMode && tab === "team" && "bg-muted font-medium")}
+                        >
+                          <Users className="h-3.5 w-3.5" />
+                          Team
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setIncognitoMode(true);
+                            setTab("private");
+                            toast.info("Incognito — chat won't be saved and memories are disabled");
+                          }}
+                          className={cn("gap-2 text-sm", incognitoMode && "bg-muted font-medium text-amber-500")}
+                        >
+                          <EyeOff className="h-3.5 w-3.5" />
+                          Incognito
+                        </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
-
-                    <Button
-                      size="icon"
-                      onClick={handleQuickSend}
-                      disabled={
-                        sending ||
-                        uploading ||
-                        (!homeInput.trim() && pendingAttachments.length === 0)
-                      }
-                      className="h-9 w-9 shrink-0 rounded-xl"
-                    >
-                      {sending ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Send className="h-4 w-4" />
-                      )}
-                    </Button>
-                  </div>
-
-                  {/* Mobile: button bar below textarea */}
-                  <div className="flex sm:hidden items-center gap-1 px-3 pb-3">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={sending || uploading}
-                      className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
-                      title="Attach file"
-                    >
-                      {uploading ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Paperclip className="h-3.5 w-3.5" />
-                      )}
-                    </Button>
-
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        setTab((prev) =>
-                          prev === "private" ? "team" : "private"
-                        )
-                      }
-                      className="h-8 gap-1 text-[11px] text-muted-foreground hover:text-foreground px-2"
-                      title={
-                        tab === "private"
-                          ? "Private — only you can see this"
-                          : "Team — visible to your workspace"
-                      }
-                    >
-                      {tab === "private" ? (
-                        <Lock className="h-3 w-3" />
-                      ) : (
-                        <Users className="h-3 w-3" />
-                      )}
-                      {tab === "private" ? "Private" : "Team"}
-                    </Button>
 
                     <div className="flex-1" />
 
@@ -1151,7 +1381,7 @@ function EngineGPTContent() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-8 gap-1 text-[11px] text-muted-foreground hover:text-foreground px-2"
+                          className="h-9 sm:h-8 gap-1 sm:gap-1.5 text-[11px] sm:text-xs text-muted-foreground hover:text-foreground px-2 sm:px-2.5"
                         >
                           {getModelLabel(selectedModel)}
                           <ChevronDown className="h-3 w-3" />
@@ -1186,7 +1416,7 @@ function EngineGPTContent() {
                         uploading ||
                         (!homeInput.trim() && pendingAttachments.length === 0)
                       }
-                      className="h-9 w-9 shrink-0 rounded-xl"
+                      className="h-9 w-9 shrink-0 rounded-xl bg-foreground text-background hover:bg-foreground/80"
                     >
                       {sending ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -1195,6 +1425,7 @@ function EngineGPTContent() {
                       )}
                     </Button>
                   </div>
+
                 </div>
 
                 <p className="text-[11px] text-muted-foreground text-center mt-2.5 hidden sm:block">
@@ -1226,16 +1457,16 @@ function EngineGPTContent() {
                         }
                         title={`${item.label}: ${level === "off" ? "Off" : level === "summary" ? "Summary" : `Full Detail (${fullLabel})`} — click to cycle`}
                         className={cn(
-                          "flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] transition-all",
+                          "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
                           isOn
                             ? "text-foreground/70 hover:text-foreground"
                             : "text-muted-foreground/40 hover:text-muted-foreground/60"
                         )}
                       >
                         <item.Icon className={cn(
-                          "h-2.5 w-2.5 transition-colors",
+                          "h-3 w-3 sm:h-2.5 sm:w-2.5 transition-colors",
                           isOn
-                            ? isFull ? "text-blue-500" : "text-blue-400"
+                            ? "text-foreground/60"
                             : "text-muted-foreground/30"
                         )} />
                         {item.label}
@@ -1245,7 +1476,7 @@ function EngineGPTContent() {
                       </button>
                     );
                   })}
-                  <div className="w-px h-3 bg-border mx-0.5" />
+                  <div className="w-px h-4 sm:h-3 bg-border mx-0.5" />
                   <button
                     onClick={() => {
                       const turningOn = contextConfig.webSearch !== "on";
@@ -1262,17 +1493,38 @@ function EngineGPTContent() {
                     }}
                     title={`Web Search: ${contextConfig.webSearch === "on" ? "On — AI can search the web" : "Off"} — click to toggle`}
                     className={cn(
-                      "flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] transition-all",
+                      "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
                       contextConfig.webSearch === "on"
                         ? "text-foreground/70 hover:text-foreground"
                         : "text-muted-foreground/40 hover:text-muted-foreground/60"
                     )}
                   >
                     <Globe className={cn(
-                      "h-2.5 w-2.5 transition-colors",
-                      contextConfig.webSearch === "on" ? "text-emerald-500" : "text-muted-foreground/30"
+                      "h-3 w-3 sm:h-2.5 sm:w-2.5 transition-colors",
+                      contextConfig.webSearch === "on" ? "text-foreground/60" : "text-muted-foreground/30"
                     )} />
                     Web
+                  </button>
+                  <button
+                    onClick={() =>
+                      setContextConfig((prev) => ({
+                        ...prev,
+                        memory: prev.memory === "on" ? "off" : "on",
+                      }))
+                    }
+                    title={`Memory: ${contextConfig.memory === "on" ? "On — AI remembers context" : "Off"} — click to toggle`}
+                    className={cn(
+                      "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
+                      contextConfig.memory === "on"
+                        ? "text-foreground/70 hover:text-foreground"
+                        : "text-muted-foreground/40 hover:text-muted-foreground/60"
+                    )}
+                  >
+                    <Brain className={cn(
+                      "h-3 w-3 sm:h-2.5 sm:w-2.5 transition-colors",
+                      contextConfig.memory === "on" ? "text-foreground/60" : "text-muted-foreground/30"
+                    )} />
+                    Memory
                   </button>
                 </div>
               </div>
@@ -1293,6 +1545,14 @@ function EngineGPTContent() {
               .then((data) => setMemoryCount(data.memories?.length || 0))
               .catch(() => {});
           }}
+        />
+      )}
+      {/* Administration Dialog */}
+      {workspaceId && (
+        <AdminDialog
+          workspaceId={workspaceId}
+          open={adminDialogOpen}
+          onClose={() => setAdminDialogOpen(false)}
         />
       )}
     </>

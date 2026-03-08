@@ -101,7 +101,7 @@ function AreaAccessGuard({ children }: { children: React.ReactNode }) {
 
     let blocked = false;
     if (isOperations && !ws.accessOperations) blocked = true;
-    if (isAdmin && !ws.accessAdmin) blocked = true;
+    if (isAdmin && !ws.accessAdmin && !ws.accessOperations) blocked = true;
     if (isEngineGpt && !ws.accessEngineGpt) blocked = true;
     if (isEngine && !ws.accessEngine) blocked = true;
 

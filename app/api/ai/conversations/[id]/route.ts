@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { aiConversations, aiMessages } from "@/lib/db/schema";
-import { eq, asc } from "drizzle-orm";
+import { aiConversations, aiMessages, aiUsage, aiConversationShares } from "@/lib/db/schema";
+import { eq, asc, count } from "drizzle-orm";
 import { supabase } from "@/lib/supabase";
+import { checkConversationAccess } from "@/lib/ai/access";
 
 // GET /api/ai/conversations/[id] — get conversation with messages
 export async function GET(
@@ -19,7 +20,18 @@ export async function GET(
 
   try {
     const [conversation] = await db
-      .select()
+      .select({
+        id: aiConversations.id,
+        workspaceId: aiConversations.workspaceId,
+        createdBy: aiConversations.createdBy,
+        title: aiConversations.title,
+        visibility: aiConversations.visibility,
+        contentObjectId: aiConversations.contentObjectId,
+        customerId: aiConversations.customerId,
+        model: aiConversations.model,
+        createdAt: aiConversations.createdAt,
+        updatedAt: aiConversations.updatedAt,
+      })
       .from(aiConversations)
       .where(eq(aiConversations.id, conversationId))
       .limit(1);
@@ -28,13 +40,23 @@ export async function GET(
       return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
     }
 
-    // Access check: private conversations are only for the creator
-    if (conversation.visibility === "private" && conversation.createdBy !== userId) {
+    // Share-aware access check
+    const access = await checkConversationAccess(conversationId, userId, conversation);
+    if (!access.allowed) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const rawMessages = await db
-      .select()
+      .select({
+        id: aiMessages.id,
+        conversationId: aiMessages.conversationId,
+        role: aiMessages.role,
+        content: aiMessages.content,
+        attachments: aiMessages.attachments,
+        model: aiMessages.model,
+        createdBy: aiMessages.createdBy,
+        createdAt: aiMessages.createdAt,
+      })
       .from(aiMessages)
       .where(eq(aiMessages.conversationId, conversationId))
       .orderBy(asc(aiMessages.createdAt));
@@ -56,8 +78,47 @@ export async function GET(
       if (client) customerName = client.name_client;
     }
 
+    // Get share count + shared user info for header avatar stack (owner only)
+    let shareCount = 0;
+    let shares: { userId: number; userName: string | null; permission: string }[] = [];
+    if (access.permission === "owner") {
+      const shareRows = await db
+        .select({
+          userId: aiConversationShares.userId,
+          permission: aiConversationShares.permission,
+        })
+        .from(aiConversationShares)
+        .where(eq(aiConversationShares.conversationId, conversationId));
+
+      shareCount = shareRows.length;
+
+      if (shareRows.length > 0) {
+        const userIds = shareRows.map((s) => s.userId);
+        const { data: users } = await supabase
+          .from("users")
+          .select("id_user, name_user")
+          .in("id_user", userIds);
+
+        const nameMap = new Map(
+          (users || []).map((u: any) => [u.id_user, u.name_user])
+        );
+
+        shares = shareRows.map((s) => ({
+          userId: s.userId,
+          userName: nameMap.get(s.userId) || null,
+          permission: s.permission,
+        }));
+      }
+    }
+
     return NextResponse.json({
-      conversation: { ...conversation, customerName },
+      conversation: {
+        ...conversation,
+        customerName,
+        myPermission: access.permission,
+        shareCount,
+        shares,
+      },
       messages,
     });
   } catch (error: any) {
@@ -80,7 +141,10 @@ export async function PATCH(
   try {
     // Check ownership
     const [conversation] = await db
-      .select({ createdBy: aiConversations.createdBy })
+      .select({
+        createdBy: aiConversations.createdBy,
+        visibility: aiConversations.visibility,
+      })
       .from(aiConversations)
       .where(eq(aiConversations.id, conversationId))
       .limit(1);
@@ -102,6 +166,16 @@ export async function PATCH(
       .set(updateData)
       .where(eq(aiConversations.id, conversationId))
       .returning();
+
+    // Clear shares when changing to team (they become redundant)
+    if (
+      body.visibility === "team" &&
+      conversation.visibility === "private"
+    ) {
+      await db
+        .delete(aiConversationShares)
+        .where(eq(aiConversationShares.conversationId, conversationId));
+    }
 
     return NextResponse.json({ conversation: updated });
   } catch (error: any) {
@@ -133,7 +207,13 @@ export async function DELETE(
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Cascade delete handles messages
+    // Nullify usage rows that reference this conversation, then delete.
+    // (ai_messages and ai_conversation_shares cascade-delete automatically via FK constraint.)
+    await db
+      .update(aiUsage)
+      .set({ conversationId: null })
+      .where(eq(aiUsage.conversationId, conversationId));
+
     await db
       .delete(aiConversations)
       .where(eq(aiConversations.id, conversationId));

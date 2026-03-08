@@ -9,6 +9,7 @@ export interface NormalizedContextConfig {
   ideas: DetailLevel;
   webSearch: "on" | "off";
   incognito: "on" | "off";
+  memory: "on" | "off";
 }
 
 /** Check if a detail level is any "full" variant */
@@ -38,14 +39,15 @@ export function normalizeDetailLevel(value: any): DetailLevel {
 
 /** Normalize a full context config (handles both legacy boolean and new string formats) */
 export function normalizeContextConfig(config: any): NormalizedContextConfig {
-  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "summary", webSearch: "off", incognito: "off" };
+  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "summary", webSearch: "on", incognito: "off", memory: "on" };
   return {
     contracts: normalizeDetailLevel(config.contracts),
     contentPipeline: normalizeDetailLevel(config.contentPipeline),
     socialPresence: normalizeDetailLevel(config.socialPresence),
     ideas: normalizeDetailLevel(config.ideas),
-    webSearch: config.webSearch === "on" ? "on" : "off",
+    webSearch: config.webSearch === "off" ? "off" : "on",
     incognito: config.incognito === "on" ? "on" : "off",
+    memory: config.memory === "off" ? "off" : "on",
   };
 }
 
@@ -54,6 +56,7 @@ export function normalizeContextConfig(config: any): NormalizedContextConfig {
 interface WorkspaceConfig {
   contentTypes: { key: string; name: string; aiPrompt: string | null }[];
   cuDefinitions: { format: string; category: string; units: number }[];
+  formatDescriptions: Record<string, string>;
 }
 
 interface ClientContext {
@@ -159,16 +162,28 @@ export function buildSystemPrompt(ctx: {
   clientIdeas?: IdeaItem[] | null;
   workspaceSummary?: WorkspaceSummary | null;
   memories?: { content: string; category: string }[];
+  role?: { name: string; instructions: string } | null;
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
 
-  let prompt = `You are EngineGPT, an expert content strategist and writer built into The Content Engine. You help users brainstorm, draft, refine, and strategise content.
+  let prompt: string;
+  if (ctx.role) {
+    prompt = `You are EngineGPT, acting as ${ctx.role.name}, built into The Content Engine. ${ctx.role.instructions}
 
 Guidelines:
 - Be direct, actionable, and creative — avoid generic advice
 - Use the context below to give specific, informed answers
 - When drafting, produce publication-ready work
 - Use markdown formatting for readability`;
+  } else {
+    prompt = `You are EngineGPT, an expert content strategist and writer built into The Content Engine. You help users brainstorm, draft, refine, and strategise content.
+
+Guidelines:
+- Be direct, actionable, and creative — avoid generic advice
+- Use the context below to give specific, informed answers
+- When drafting, produce publication-ready work
+- Use markdown formatting for readability`;
+  }
 
   // ── Custom CU system description (if configured) ──
   if (ctx.cuDescription) {
@@ -195,10 +210,37 @@ Guidelines:
     }
   }
 
-  // ── Workspace-level summary for "All Clients" mode ──
+  // ── Per-format AI prompts (from admin Content Formats page) ──
+  if (workspaceConfig.formatDescriptions) {
+    const entries = Object.entries(workspaceConfig.formatDescriptions).filter(([, v]) => v?.trim());
+    if (entries.length > 0) {
+      // Map format IDs back to names using CU definitions
+      const formatNames = new Map(
+        workspaceConfig.cuDefinitions.map((d) => [d.format, d.format])
+      );
+      prompt += `\n\n## Content Format Guidelines`;
+      for (const [key, description] of entries) {
+        const name = formatNames.get(key) || key;
+        prompt += `\n\n### ${name}\n${description}`;
+      }
+    }
+  }
+
+  // ── Per-type AI prompts (from admin Content Units page, inject when content selected) ──
+  if (contentDetail && workspaceConfig.contentTypes.length > 0) {
+    const matchingType = workspaceConfig.contentTypes.find(
+      (t) => t.name?.toLowerCase() === contentDetail.type?.toLowerCase() ||
+             t.key?.toLowerCase() === contentDetail.type?.toLowerCase()
+    );
+    if (matchingType?.aiPrompt) {
+      prompt += `\n\n## Writing Guidelines for ${matchingType.name}\n${matchingType.aiPrompt}`;
+    }
+  }
+
+  // ── Workspace-level summary for "General" mode ──
   if (ctx.workspaceSummary) {
     const ws = ctx.workspaceSummary;
-    prompt += `\n\n---\n## Workspace Overview (All Clients)`;
+    prompt += `\n\n---\n## Workspace Overview (General)`;
     prompt += `\n${ws.clientCount} clients in workspace`;
 
     // Contracts overview

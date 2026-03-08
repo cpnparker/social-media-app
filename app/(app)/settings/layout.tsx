@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Settings, UserPlus, ListChecks, Link2, CreditCard, Boxes, Building2 } from "lucide-react";
+import { Settings, UserPlus, ListChecks, Link2, CreditCard, Boxes, Building2, Sparkles, FileText } from "lucide-react";
 
 const settingsNav = [
   { label: "Workspace", href: "/settings/workspace", icon: Settings },
@@ -11,6 +11,8 @@ const settingsNav = [
   { label: "Users", href: "/settings/users", icon: UserPlus },
   { label: "Templates", href: "/settings/templates", icon: ListChecks },
   { label: "Content Units", href: "/settings/content-units", icon: Boxes },
+  { label: "Content Formats", href: "/settings/content-formats", icon: FileText },
+  { label: "AI Usage", href: "/settings/ai-usage", icon: Sparkles },
   { label: "Links", href: "/settings/links", icon: Link2 },
   { label: "Billing", href: "/settings/billing", icon: CreditCard },
 ];

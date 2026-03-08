@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import { Toaster } from "sonner";
 import { ThemeProvider } from "@/components/ThemeProvider";
@@ -10,13 +10,19 @@ const geistSans = localFont({
   weight: "100 900",
 });
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+};
+
 export const metadata: Metadata = {
   title: "The Content Engine — Social Media Management",
   description:
     "Compose, schedule, publish, and analyse content across all your social platforms. Powered by The Content Engine.",
   icons: {
     icon: "/assets/favicon.png",
-    apple: "/assets/favicon.png",
+    apple: "/assets/apple-touch-icon.png",
   },
 };
 

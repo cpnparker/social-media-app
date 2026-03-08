@@ -87,11 +87,11 @@ export async function GET() {
         role: m.role,
         supabaseRole: user?.role_user || null,
         joinedAt: m.joined_at || null,
-        // No access row = existing user, default all to true
-        accessEngine: access ? access.accessEngine : true,
-        accessEngineGpt: access ? access.accessEngineGpt : true,
-        accessOperations: access ? access.accessOperations : true,
-        accessAdmin: access ? access.accessAdmin : true,
+        // No access row = secure default (no access) unless workspace owner/admin
+        accessEngine: access ? access.accessEngine : (m.role === "owner" || m.role === "admin"),
+        accessEngineGpt: access ? access.accessEngineGpt : (m.role === "owner" || m.role === "admin"),
+        accessOperations: access ? access.accessOperations : (m.role === "owner" || m.role === "admin"),
+        accessAdmin: access ? access.accessAdmin : (m.role === "owner" || m.role === "admin"),
       };
     });
 
@@ -171,12 +171,12 @@ export async function POST(req: NextRequest) {
       role: role || "viewer",
     });
 
-    // Create default area access row in Neon
+    // Create default area access row in Neon (secure default: no access)
     await db.insert(userAccess).values({
       workspaceId: ws.id,
       userId: existingUser.id_user,
-      accessEngine: true,
-      accessEngineGpt: true,
+      accessEngine: false,
+      accessEngineGpt: false,
       accessOperations: false,
       accessAdmin: false,
     });
@@ -188,8 +188,8 @@ export async function POST(req: NextRequest) {
           name: existingUser.name_user,
           email: existingUser.email_user,
           role: role || "viewer",
-          accessEngine: true,
-          accessEngineGpt: true,
+          accessEngine: false,
+          accessEngineGpt: false,
           accessOperations: false,
           accessAdmin: false,
         },
@@ -202,14 +202,17 @@ export async function POST(req: NextRequest) {
 }
 
 // PATCH /api/workspace-members — update a member's role and/or area access
+// Supports both single-user (userId) and bulk (userIds[]) updates
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
-    const { userId, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin } = body;
+    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin } = body;
 
-    if (!userId) {
+    // Determine target user IDs — bulk or single
+    const isBulk = Array.isArray(userIds) && userIds.length > 0;
+    if (!userId && !isBulk) {
       return NextResponse.json(
-        { error: "userId is required" },
+        { error: "userId or userIds[] is required" },
         { status: 400 }
       );
     }
@@ -224,15 +227,17 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "No workspace found" }, { status: 404 });
     }
 
-    const numericUserId = parseInt(userId, 10);
+    const targetIds: number[] = isBulk
+      ? userIds.map((id: string) => parseInt(id, 10))
+      : [parseInt(userId, 10)];
 
-    // Update role in Supabase if provided
-    if (role) {
+    // Update role in Supabase if provided (single-user only)
+    if (role && !isBulk) {
       const { data: updated, error } = await supabase
         .from("workspace_members")
         .update({ role })
         .eq("workspace_id", ws.id)
-        .eq("user_id", numericUserId)
+        .eq("user_id", targetIds[0])
         .select()
         .single();
 
@@ -249,43 +254,45 @@ export async function PATCH(req: NextRequest) {
       accessAdmin !== undefined;
 
     if (hasAccessUpdate) {
-      // Check if access row exists
-      const [existing] = await db
-        .select()
-        .from(userAccess)
-        .where(
-          and(
-            eq(userAccess.workspaceId, ws.id),
-            eq(userAccess.userId, numericUserId)
-          )
-        )
-        .limit(1);
+      await Promise.all(
+        targetIds.map(async (numericId) => {
+          const [existing] = await db
+            .select()
+            .from(userAccess)
+            .where(
+              and(
+                eq(userAccess.workspaceId, ws.id),
+                eq(userAccess.userId, numericId)
+              )
+            )
+            .limit(1);
 
-      if (existing) {
-        const updates: Record<string, boolean> = {};
-        if (accessEngine !== undefined) updates.accessEngine = accessEngine;
-        if (accessEngineGpt !== undefined) updates.accessEngineGpt = accessEngineGpt;
-        if (accessOperations !== undefined) updates.accessOperations = accessOperations;
-        if (accessAdmin !== undefined) updates.accessAdmin = accessAdmin;
+          if (existing) {
+            const updates: Record<string, boolean> = {};
+            if (accessEngine !== undefined) updates.accessEngine = accessEngine;
+            if (accessEngineGpt !== undefined) updates.accessEngineGpt = accessEngineGpt;
+            if (accessOperations !== undefined) updates.accessOperations = accessOperations;
+            if (accessAdmin !== undefined) updates.accessAdmin = accessAdmin;
 
-        await db
-          .update(userAccess)
-          .set({ ...updates, updatedAt: new Date() })
-          .where(eq(userAccess.id, existing.id));
-      } else {
-        // Create access row with provided values or defaults
-        await db.insert(userAccess).values({
-          workspaceId: ws.id,
-          userId: numericUserId,
-          accessEngine: accessEngine ?? true,
-          accessEngineGpt: accessEngineGpt ?? true,
-          accessOperations: accessOperations ?? false,
-          accessAdmin: accessAdmin ?? false,
-        });
-      }
+            await db
+              .update(userAccess)
+              .set({ ...updates, updatedAt: new Date() })
+              .where(eq(userAccess.id, existing.id));
+          } else {
+            await db.insert(userAccess).values({
+              workspaceId: ws.id,
+              userId: numericId,
+              accessEngine: accessEngine ?? false,
+              accessEngineGpt: accessEngineGpt ?? false,
+              accessOperations: accessOperations ?? false,
+              accessAdmin: accessAdmin ?? false,
+            });
+          }
+        })
+      );
     }
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, updated: targetIds.length });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

@@ -1,5 +1,4 @@
 import NextAuth from "next-auth";
-import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
 import { supabase } from "./supabase";
 
@@ -49,37 +48,6 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         },
       },
     }),
-    Credentials({
-      name: "Email",
-      credentials: {
-        email: { label: "Email", type: "email" },
-        password: { label: "Password", type: "password" },
-      },
-      async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) return null;
-
-        const { data: user } = await supabase
-          .from("users")
-          .select("id_user, email_user, name_user, role_user")
-          .eq("email_user", credentials.email as string)
-          .is("date_deleted", null)
-          .single();
-
-        if (!user) return null;
-
-        // Note: hashed_password column doesn't exist yet in Supabase.
-        // For now, allow credentials login by matching email only (password check skipped).
-        // TODO: Add hashed_password column to users table and re-enable bcrypt check.
-
-        return {
-          id: String(user.id_user),
-          email: user.email_user,
-          name: user.name_user,
-          image: null,
-          role: user.role_user || "none",
-        };
-      },
-    }),
   ],
   session: { strategy: "jwt" },
   pages: {
@@ -87,6 +55,19 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     newUser: "/register",
   },
   callbacks: {
+    // Ensure post-login redirects stay on the correct subdomain
+    async redirect({ url, baseUrl }) {
+      // Relative URLs — keep as-is (browser resolves against current origin)
+      if (url.startsWith("/")) return `${baseUrl}${url}`;
+      // Allow any *.thecontentengine.com subdomain
+      try {
+        const parsed = new URL(url);
+        if (parsed.hostname.endsWith("thecontentengine.com")) return url;
+      } catch {}
+      // Same-origin fallback
+      if (url.startsWith(baseUrl)) return url;
+      return baseUrl;
+    },
     async signIn({ user, account }) {
       if (account?.provider === "google" && user.email) {
         try {
@@ -143,7 +124,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           console.error("jwt callback error:", err);
         }
       }
-      // For credentials provider, carry role from the user object
+      // Carry role from user object on initial sign-in
       if (user) {
         token.role = (user as any).role || token.role || "none";
       }
