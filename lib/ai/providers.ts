@@ -390,9 +390,15 @@ async function streamXAI(
     } as any);
   }
 
+  // Grok 4 models require max_completion_tokens instead of max_tokens
+  const isGrok4 = apiModel.startsWith("grok-4");
+  const tokenParam = isGrok4
+    ? { max_completion_tokens: config.maxTokens || 4096 }
+    : { max_tokens: config.maxTokens || 4096 };
+
   const stream = (await xai.chat.completions.create({
     model: apiModel,
-    max_tokens: config.maxTokens || 4096,
+    ...tokenParam,
     messages: openaiMessages,
     stream: true,
     stream_options: { include_usage: true },
