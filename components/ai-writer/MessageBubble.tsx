@@ -436,7 +436,11 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
   // Unordered lists
   html = html.replace(/^[*-] (.+)$/gm, '<li class="ai-uli">$1</li>');
 
-  // Wrap consecutive list items (handle blank lines between items)
+  // Collapse blank lines between consecutive list items so the paragraph
+  // splitter doesn't break lists apart (AI often outputs blank lines between bullets)
+  html = html.replace(/(<\/li>)\s*\n\s*\n+\s*(<li )/g, "$1\n$2");
+
+  // Wrap consecutive list items
   html = html.replace(
     /(<li class="ai-uli">[\s\S]*?<\/li>\s*)+/g,
     '<ul class="ai-ul">$&</ul>'
