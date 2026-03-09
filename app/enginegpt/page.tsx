@@ -166,8 +166,12 @@ function EngineGPTContent() {
   useEffect(() => setMounted(true), []);
 
   // Reset to General (no customer) every time EngineGPT opens
+  // — but NOT when arriving via a thread URL (?thread=xxx) since
+  //   that would change customerId → recreate fetchConversations →
+  //   re-fire the conversation effect after urlThreadRef is consumed,
+  //   clearing the selected thread.
   useEffect(() => {
-    if (customerCtx?.setSelectedCustomerId) {
+    if (customerCtx?.setSelectedCustomerId && !urlThreadRef.current) {
       customerCtx.setSelectedCustomerId(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

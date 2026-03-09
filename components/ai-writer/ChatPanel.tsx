@@ -414,7 +414,7 @@ export default function ChatPanel({
       )}
 
       {/* Header */}
-      <div className="border-b px-3 md:px-4 py-2 md:py-2.5 flex items-center gap-2 md:gap-3 shrink-0">
+      <div className="border-b px-3 md:px-4 py-2 md:py-2.5 flex items-center gap-2 md:gap-3 shrink-0 sticky top-0 z-10 bg-background">
         {/* Mobile sidebar toggle — top left */}
         {onMenuClick && (
           <button
