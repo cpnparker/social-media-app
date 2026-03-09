@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
+import { mapConversation } from "@/lib/ai/response-mappers";
 
 // GET /api/ai/conversations — list conversations
 export async function GET(req: NextRequest) {
@@ -135,7 +136,7 @@ export async function GET(req: NextRequest) {
       const isSharedWithMe = c.user_created !== userId && sharedByMap.has(c.id_conversation);
       const shareInfo = sharedByMap.get(c.id_conversation);
       return {
-        ...c,
+        ...mapConversation(c),
         customerName: c.id_client ? customerNameMap.get(c.id_client) || null : null,
         sharedWithMe: isSharedWithMe || undefined,
         myPermission: c.user_created === userId
@@ -214,7 +215,7 @@ export async function POST(req: NextRequest) {
 
     if (error) throw error;
 
-    return NextResponse.json({ conversation });
+    return NextResponse.json({ conversation: mapConversation(conversation) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

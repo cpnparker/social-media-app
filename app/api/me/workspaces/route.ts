@@ -52,10 +52,10 @@ export async function GET() {
         slug: ws.slug,
         plan: ws.plan,
         role,
-        accessEngine: noRow ? isPrivileged : access.flag_access_engine,
-        accessEngineGpt: noRow ? isPrivileged : access.flag_access_enginegpt,
-        accessOperations: noRow ? isPrivileged : access.flag_access_operations,
-        accessAdmin: noRow ? isPrivileged : access.flag_access_admin,
+        accessEngine: noRow ? isPrivileged : !!access.flag_access_engine,
+        accessEngineGpt: noRow ? isPrivileged : !!access.flag_access_enginegpt,
+        accessOperations: noRow ? isPrivileged : !!access.flag_access_operations,
+        accessAdmin: noRow ? isPrivileged : !!access.flag_access_admin,
       };
     });
 

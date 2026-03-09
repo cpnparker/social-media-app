@@ -86,10 +86,10 @@ export async function GET() {
         supabaseRole: user?.role_user || null,
         joinedAt: m.joined_at || null,
         // No access row = secure default (no access) unless workspace owner/admin
-        accessEngine: access ? access.flag_access_engine : (m.role === "owner" || m.role === "admin"),
-        accessEngineGpt: access ? access.flag_access_enginegpt : (m.role === "owner" || m.role === "admin"),
-        accessOperations: access ? access.flag_access_operations : (m.role === "owner" || m.role === "admin"),
-        accessAdmin: access ? access.flag_access_admin : (m.role === "owner" || m.role === "admin"),
+        accessEngine: access ? !!access.flag_access_engine : (m.role === "owner" || m.role === "admin"),
+        accessEngineGpt: access ? !!access.flag_access_enginegpt : (m.role === "owner" || m.role === "admin"),
+        accessOperations: access ? !!access.flag_access_operations : (m.role === "owner" || m.role === "admin"),
+        accessAdmin: access ? !!access.flag_access_admin : (m.role === "owner" || m.role === "admin"),
       };
     });
 

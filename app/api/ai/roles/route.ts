@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { verifyWorkspaceMembership } from "@/lib/permissions";
+import { mapRole } from "@/lib/ai/response-mappers";
 
 const DEFAULT_ROLES = [
   {
@@ -118,7 +119,7 @@ export async function GET(req: NextRequest) {
 
     if (error) throw error;
 
-    return NextResponse.json({ roles: roles || [] });
+    return NextResponse.json({ roles: (roles || []).map(mapRole) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -172,7 +173,7 @@ export async function POST(req: NextRequest) {
 
     if (error) throw error;
 
-    return NextResponse.json({ role });
+    return NextResponse.json({ role: mapRole(role) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -228,7 +229,7 @@ export async function PATCH(req: NextRequest) {
 
     if (error) throw error;
 
-    return NextResponse.json({ role: updated });
+    return NextResponse.json({ role: mapRole(updated) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

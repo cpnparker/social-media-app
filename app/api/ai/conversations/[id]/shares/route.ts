@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
 import { Resend } from "resend";
+import { mapShare } from "@/lib/ai/response-mappers";
 
 // GET /api/ai/conversations/[id]/shares — list shares for a conversation
 export async function GET(
@@ -60,7 +61,7 @@ export async function GET(
     }
 
     const enriched = (shares || []).map((s: any) => ({
-      ...s,
+      ...mapShare(s),
       userName: userNameMap.get(s.user_recipient)?.name || null,
       userEmail: userNameMap.get(s.user_recipient)?.email || null,
     }));
@@ -276,7 +277,7 @@ export async function POST(
 
     return NextResponse.json({
       share: {
-        ...share,
+        ...mapShare(share),
         userName: targetUser?.name_user || null,
         userEmail: targetUser?.email_user || null,
       },
@@ -335,7 +336,7 @@ export async function PATCH(
       return NextResponse.json({ error: "Share not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ share: updated });
+    return NextResponse.json({ share: mapShare(updated) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

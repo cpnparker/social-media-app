@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
 import { checkConversationAccess } from "@/lib/ai/access";
+import { mapConversation, mapMessage } from "@/lib/ai/response-mappers";
 
 // GET /api/ai/conversations/[id] — get conversation with messages
 export async function GET(
@@ -64,9 +65,9 @@ export async function GET(
       );
     }
 
-    // Supabase returns JSONB as parsed objects, no need for JSON.parse
+    // Map DB column names → frontend-friendly camelCase
     const messages = (rawMessages || []).map((m: any) => ({
-      ...m,
+      ...mapMessage(m),
       createdByName: m.user_created ? messageNameMap.get(m.user_created) || null : null,
     }));
 
@@ -113,7 +114,7 @@ export async function GET(
 
     return NextResponse.json({
       conversation: {
-        ...conversation,
+        ...mapConversation(conversation),
         customerName,
         myPermission: access.permission,
         shareCount,
@@ -178,7 +179,7 @@ export async function PATCH(
         .eq("id_conversation", conversationId);
     }
 
-    return NextResponse.json({ conversation: updated });
+    return NextResponse.json({ conversation: mapConversation(updated) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

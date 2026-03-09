@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { mapMemory } from "@/lib/ai/response-mappers";
 
 // GET /api/ai/memories?workspaceId=...
 // Returns active memories: user's private + workspace team
@@ -28,7 +29,7 @@ export async function GET(req: NextRequest) {
 
     if (error) throw error;
 
-    return NextResponse.json({ memories: memories || [] });
+    return NextResponse.json({ memories: (memories || []).map(mapMemory) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -112,7 +113,7 @@ export async function POST(req: NextRequest) {
 
     if (error) throw error;
 
-    return NextResponse.json({ memory });
+    return NextResponse.json({ memory: mapMemory(memory) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
