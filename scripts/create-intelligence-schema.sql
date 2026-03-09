@@ -45,8 +45,8 @@ CREATE TABLE IF NOT EXISTS intelligence.ai_messages (
 CREATE INDEX IF NOT EXISTS idx_ai_messages_conv_date
   ON intelligence.ai_messages(id_conversation, date_created ASC);
 
--- ── 3. ai_conversation_shares ──
-CREATE TABLE IF NOT EXISTS intelligence.ai_conversation_shares (
+-- ── 3. ai_shares ──
+CREATE TABLE IF NOT EXISTS intelligence.ai_shares (
   date_created      timestamptz NOT NULL DEFAULT now(),
   id_conversation   uuid NOT NULL REFERENCES intelligence.ai_conversations(id_conversation) ON DELETE CASCADE,
   id_share          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -56,9 +56,9 @@ CREATE TABLE IF NOT EXISTS intelligence.ai_conversation_shares (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ai_shares_conv_user
-  ON intelligence.ai_conversation_shares(id_conversation, user_recipient);
+  ON intelligence.ai_shares(id_conversation, user_recipient);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_shares_unique
-  ON intelligence.ai_conversation_shares(id_conversation, user_recipient);
+  ON intelligence.ai_shares(id_conversation, user_recipient);
 
 -- ── 4. ai_roles ──
 CREATE TABLE IF NOT EXISTS intelligence.ai_roles (

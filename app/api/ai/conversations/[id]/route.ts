@@ -86,7 +86,7 @@ export async function GET(
     let shares: { userId: number; userName: string | null; permission: string }[] = [];
     if (access.permission === "owner") {
       const { data: shareRows } = await intelligenceDb
-        .from("ai_conversation_shares")
+        .from("ai_shares")
         .select("user_recipient, type_permission")
         .eq("id_conversation", conversationId);
 
@@ -173,7 +173,7 @@ export async function PATCH(
       conversation.type_visibility === "private"
     ) {
       await intelligenceDb
-        .from("ai_conversation_shares")
+        .from("ai_shares")
         .delete()
         .eq("id_conversation", conversationId);
     }

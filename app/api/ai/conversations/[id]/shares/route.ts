@@ -35,7 +35,7 @@ export async function GET(
 
     // Fetch shares
     const { data: shares, error } = await intelligenceDb
-      .from("ai_conversation_shares")
+      .from("ai_shares")
       .select("*")
       .eq("id_conversation", conversationId);
 
@@ -165,7 +165,7 @@ export async function POST(
 
     // Cap at 20 shares per conversation
     const { count: shareCount } = await intelligenceDb
-      .from("ai_conversation_shares")
+      .from("ai_shares")
       .select("*", { count: "exact", head: true })
       .eq("id_conversation", conversationId);
 
@@ -178,7 +178,7 @@ export async function POST(
 
     // Upsert: insert or update if already shared
     const { data: existing } = await intelligenceDb
-      .from("ai_conversation_shares")
+      .from("ai_shares")
       .select("id_share")
       .eq("id_conversation", conversationId)
       .eq("user_recipient", targetUserId)
@@ -187,7 +187,7 @@ export async function POST(
     let share;
     if (existing) {
       const { data: updated, error: updateErr } = await intelligenceDb
-        .from("ai_conversation_shares")
+        .from("ai_shares")
         .update({ type_permission: permission })
         .eq("id_share", existing.id_share)
         .select()
@@ -196,7 +196,7 @@ export async function POST(
       share = updated;
     } else {
       const { data: inserted, error: insertErr } = await intelligenceDb
-        .from("ai_conversation_shares")
+        .from("ai_shares")
         .insert({
           id_conversation: conversationId,
           user_recipient: targetUserId,
@@ -322,7 +322,7 @@ export async function PATCH(
     }
 
     const { data: updated, error } = await intelligenceDb
-      .from("ai_conversation_shares")
+      .from("ai_shares")
       .update({ type_permission: permission })
       .eq("id_share", shareId)
       .eq("id_conversation", conversationId)
@@ -373,7 +373,7 @@ export async function DELETE(
     }
 
     await intelligenceDb
-      .from("ai_conversation_shares")
+      .from("ai_shares")
       .delete()
       .eq("id_share", shareId)
       .eq("id_conversation", conversationId);

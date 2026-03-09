@@ -37,7 +37,7 @@ export async function checkConversationAccess(
 
   // Private conversations — check shares table
   const { data: share } = await intelligenceDb
-    .from("ai_conversation_shares")
+    .from("ai_shares")
     .select("type_permission")
     .eq("id_conversation", conversationId)
     .eq("user_recipient", userId)

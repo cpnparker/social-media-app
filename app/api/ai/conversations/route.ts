@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
   try {
     // Get conversation IDs shared with this user (for private conversations they don't own)
     const { data: sharedWithMe } = await intelligenceDb
-      .from("ai_conversation_shares")
+      .from("ai_shares")
       .select("id_conversation, user_shared, type_permission")
       .eq("user_recipient", userId);
 
