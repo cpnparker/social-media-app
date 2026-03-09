@@ -138,6 +138,7 @@ export const workspaces = pgTable("workspaces", {
   aiMaxTokens: integer("ai_max_tokens").default(4096),
   aiDebugMode: boolean("ai_debug_mode").default(false),
   aiFormatDescriptions: jsonb("ai_format_descriptions").$type<Record<string, string>>(),
+  aiTypeInstructions: jsonb("ai_type_instructions").$type<Record<string, string>>(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

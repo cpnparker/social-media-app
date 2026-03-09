@@ -57,6 +57,7 @@ interface WorkspaceConfig {
   contentTypes: { key: string; name: string; aiPrompt: string | null }[];
   cuDefinitions: { format: string; category: string; units: number }[];
   formatDescriptions: Record<string, string>;
+  typeInstructions: Record<string, string>;
 }
 
 interface ClientContext {
@@ -163,6 +164,7 @@ export function buildSystemPrompt(ctx: {
   workspaceSummary?: WorkspaceSummary | null;
   memories?: { content: string; category: string }[];
   role?: { name: string; instructions: string } | null;
+  latestUserMessage?: string;
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
 
@@ -237,19 +239,41 @@ Guidelines:
     }
   }
 
-  // ── Strategy-specific deep analysis instructions ──
-  if (contentDetail && contentDetail.type?.toLowerCase() === "strategy") {
-    prompt += `\n\n## Strategy Analysis Mode
-When reviewing or improving a strategy document, provide a thorough, comprehensive analysis — not just bullet-point observations. Structure your response to cover:
+  // ── Per-type AI instructions (configurable from admin) ──
+  if (workspaceConfig.typeInstructions && Object.keys(workspaceConfig.typeInstructions).length > 0) {
+    let matchedTypeKey: string | null = null;
+    let matchedTypeName: string | null = null;
 
-1. **Executive Assessment** — Overall quality, completeness, and strategic coherence
-2. **Objectives & Audience** — Are goals explicit, measurable, and audience-specific? If missing, propose them
-3. **Content & Depth** — Evaluate the substance: data usage, insights quality, visual/infographic opportunities, and whether it goes beyond surface-level analysis
-4. **Output Roadmap** — Map findings to concrete content units (e.g., carousels, articles, video scripts) with CU allocations where relevant
-5. **Distribution & Metrics** — Recommend channels, engagement benchmarks, and KPIs tied to the strategy's goals
-6. **Risks & Next Steps** — Flag gaps, assumptions, or risks and provide actionable next steps
+    if (contentDetail) {
+      // When inside a content piece, match by content type
+      const match = workspaceConfig.contentTypes.find(
+        (t) => t.name?.toLowerCase() === contentDetail.type?.toLowerCase() ||
+               t.key?.toLowerCase() === contentDetail.type?.toLowerCase()
+      );
+      if (match && workspaceConfig.typeInstructions[match.key]?.trim()) {
+        matchedTypeKey = match.key;
+        matchedTypeName = match.name;
+      }
+    } else if (ctx.latestUserMessage) {
+      // General chat — scan user message for content type keywords
+      const msgLower = ctx.latestUserMessage.toLowerCase();
+      for (const ct of workspaceConfig.contentTypes) {
+        if (!workspaceConfig.typeInstructions[ct.key]?.trim()) continue;
+        // Match by type name or key (e.g., "strategy", "video", "written")
+        const nameMatch = ct.name && msgLower.includes(ct.name.toLowerCase());
+        const keyMatch = ct.key && msgLower.includes(ct.key.toLowerCase());
+        if (nameMatch || keyMatch) {
+          matchedTypeKey = ct.key;
+          matchedTypeName = ct.name;
+          break;
+        }
+      }
+    }
 
-Be specific and reference the actual content. Give detailed, publication-quality recommendations — not generic advice. If the strategy is thin, don't just point that out — fill in the gaps with substantive suggestions.`;
+    if (matchedTypeKey && matchedTypeName) {
+      const instructions = workspaceConfig.typeInstructions[matchedTypeKey];
+      prompt += `\n\n## ${matchedTypeName} Instructions\n${instructions}`;
+    }
   }
 
   // ── Workspace-level summary for "General" mode ──

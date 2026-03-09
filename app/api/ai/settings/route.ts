@@ -62,6 +62,7 @@ export async function GET(req: NextRequest) {
         aiMaxTokens: workspaces.aiMaxTokens,
         aiDebugMode: workspaces.aiDebugMode,
         aiFormatDescriptions: workspaces.aiFormatDescriptions,
+        aiTypeInstructions: workspaces.aiTypeInstructions,
       })
       .from(workspaces)
       .where(eq(workspaces.id, workspaceId))
@@ -102,6 +103,12 @@ export async function GET(req: NextRequest) {
         units: c.units_content,
         description: formatDescriptions[c.id] || "",
       })),
+      contentTypes: (contentTypes || []).map((t: any) => ({
+        id: t.id_type,
+        key: t.key_type,
+        name: t.type_content,
+      })),
+      typeInstructions: workspace?.aiTypeInstructions || {},
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -117,7 +124,7 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workspaceId, model, contextConfig, cuDescription, maxTokens, debugMode, formatDescriptions } = body;
+    const { workspaceId, model, contextConfig, cuDescription, maxTokens, debugMode, formatDescriptions, typeInstructions } = body;
 
     if (!workspaceId) {
       return NextResponse.json(
@@ -162,6 +169,21 @@ export async function PATCH(req: NextRequest) {
       await db
         .update(workspaces)
         .set({ aiFormatDescriptions: merged, updatedAt: new Date() })
+        .where(eq(workspaces.id, workspaceId));
+    }
+
+    // Update type instructions in Neon workspaces table
+    if (typeInstructions && typeof typeInstructions === "object") {
+      const [current] = await db
+        .select({ aiTypeInstructions: workspaces.aiTypeInstructions })
+        .from(workspaces)
+        .where(eq(workspaces.id, workspaceId))
+        .limit(1);
+
+      const merged = { ...(current?.aiTypeInstructions || {}), ...typeInstructions };
+      await db
+        .update(workspaces)
+        .set({ aiTypeInstructions: merged, updatedAt: new Date() })
         .where(eq(workspaces.id, workspaceId));
     }
 

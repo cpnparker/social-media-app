@@ -797,6 +797,13 @@ function FormatsTab({ workspaceId }: { workspaceId: string }) {
   const [descriptions, setDescriptions] = useState<Record<string, string>>({});
   const [savedDescriptions, setSavedDescriptions] = useState<Record<string, string>>({});
 
+  // Content type instructions
+  const [contentTypes, setContentTypes] = useState<{ id: number; key: string; name: string }[]>([]);
+  const [typeInstructions, setTypeInstructions] = useState<Record<string, string>>({});
+  const [expandedTypeKey, setExpandedTypeKey] = useState<string | null>(null);
+  const [savingTypeKeys, setSavingTypeKeys] = useState<Set<string>>(new Set());
+  const [savedTypeKeys, setSavedTypeKeys] = useState<Set<string>>(new Set());
+
   // Per-format state
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [savingIds, setSavingIds] = useState<Set<string>>(new Set());
@@ -826,6 +833,10 @@ function FormatsTab({ workspaceId }: { workspaceId: string }) {
       defs.forEach((d) => { if (d.description) descs[d.id] = d.description; });
       setDescriptions(descs);
       setSavedDescriptions(descs);
+
+      // Content types + type instructions
+      setContentTypes(data.contentTypes || []);
+      setTypeInstructions(data.typeInstructions || {});
     } catch (err) {
       console.error("Failed to load format data:", err);
     } finally {
@@ -902,6 +913,37 @@ function FormatsTab({ workspaceId }: { workspaceId: string }) {
     }
   }, [workspaceId, debounceTimers]);
 
+  // Auto-save type instructions with debounce
+  const autoSaveType = useCallback(async (key: string, value: string) => {
+    setSavingTypeKeys((prev) => new Set(prev).add(key));
+    try {
+      const res = await fetch("/api/ai/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, typeInstructions: { [key]: value } }),
+      });
+      if (!res.ok) throw new Error("Failed to save");
+      setSavedTypeKeys((prev) => new Set(prev).add(key));
+      setTimeout(() => setSavedTypeKeys((prev) => { const n = new Set(prev); n.delete(key); return n; }), 2000);
+    } catch {
+      toast.error("Failed to save");
+    } finally {
+      setSavingTypeKeys((prev) => { const n = new Set(prev); n.delete(key); return n; });
+    }
+  }, [workspaceId]);
+
+  const handleTypeChange = useCallback((key: string, value: string) => {
+    setTypeInstructions((prev) => ({ ...prev, [key]: value }));
+    const timerId = `type:${key}`;
+    const existing = debounceTimers.get(timerId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      autoSaveType(key, value);
+      debounceTimers.delete(timerId);
+    }, 800);
+    debounceTimers.set(timerId, timer);
+  }, [autoSaveType, debounceTimers]);
+
   // Map definitions to standard categories (Written, Video, Visual, Strategy)
   const getCategory = (def: CUDefinition) => categorizeContentType(def.category || "other");
 
@@ -931,10 +973,81 @@ function FormatsTab({ workspaceId }: { workspaceId: string }) {
   }
 
   return (
-    <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">
-        AI prompts per content format — included as context when EngineGPT works with that format. Changes save automatically.
-      </p>
+    <div className="space-y-6">
+      {/* ── Content Type Instructions ── */}
+      {contentTypes.length > 0 && (
+        <div className="space-y-2">
+          <div>
+            <h3 className="text-sm font-semibold">Content Type Instructions</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Custom AI instructions per content type — applied when working with that type of content, or when detected in general chats.
+            </p>
+          </div>
+          <div className="space-y-1">
+            {contentTypes.map((ct) => {
+              const key = ct.key.toLowerCase();
+              const isExpanded = expandedTypeKey === key;
+              const currentInstr = typeInstructions[key] || "";
+              const hasInstr = !!currentInstr.trim();
+              const isSaving = savingTypeKeys.has(key);
+              const justSaved = savedTypeKeys.has(key);
+              const icon = CATEGORY_ICONS[ct.name] || "📋";
+
+              return (
+                <div key={ct.id} className="border rounded-lg">
+                  <button
+                    onClick={() => setExpandedTypeKey(isExpanded ? null : key)}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-muted/30 transition-colors rounded-lg"
+                  >
+                    {isExpanded ? (
+                      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="text-sm font-medium truncate flex-1">{icon} {ct.name}</span>
+                    {isSaving && (
+                      <Loader2 className="h-3 w-3 animate-spin text-muted-foreground shrink-0" />
+                    )}
+                    {justSaved && !isSaving && (
+                      <Check className="h-3 w-3 text-emerald-500 shrink-0" />
+                    )}
+                    {hasInstr && !isSaving && !justSaved && (
+                      <span className="text-[10px] font-medium text-blue-600 bg-blue-500/10 px-1.5 py-0.5 rounded shrink-0">
+                        Active
+                      </span>
+                    )}
+                  </button>
+                  {isExpanded && (
+                    <div className="px-3 pb-3 border-t">
+                      <div className="pt-2.5">
+                        <textarea
+                          value={currentInstr}
+                          onChange={(e) => handleTypeChange(key, e.target.value)}
+                          placeholder={`Instructions for ${ct.name} content — e.g., analysis depth, structure, tone, specific frameworks to apply...`}
+                          rows={6}
+                          className="w-full rounded-md border bg-background px-3 py-2 text-sm resize-y focus:outline-none focus:ring-2 focus:ring-ring font-mono leading-relaxed"
+                        />
+                        <p className="text-[11px] text-muted-foreground mt-1.5">
+                          Applied when users work with {ct.name} content pieces, or when {ct.name.toLowerCase()}-related queries are detected in general chats.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Format Descriptions ── */}
+      <div className="space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold">Format Descriptions</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            AI prompts per content format — included as context when EngineGPT works with that format.
+          </p>
+        </div>
 
       {/* Content type filter tabs */}
       {availableCategories.length > 1 && (
@@ -1062,6 +1175,7 @@ function FormatsTab({ workspaceId }: { workspaceId: string }) {
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }

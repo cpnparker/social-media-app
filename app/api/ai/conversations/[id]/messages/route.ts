@@ -99,18 +99,23 @@ async function fetchWorkspaceConfig(workspaceId?: string) {
       .order("sort_order"),
   ]);
 
-  // Fetch format descriptions from Neon workspaces table
+  // Fetch format descriptions + type instructions from Neon workspaces table
   let formatDescriptions: Record<string, string> = {};
+  let typeInstructions: Record<string, string> = {};
   if (workspaceId) {
     try {
       const [wsRow] = await db
-        .select({ aiFormatDescriptions: workspaces.aiFormatDescriptions })
+        .select({
+          aiFormatDescriptions: workspaces.aiFormatDescriptions,
+          aiTypeInstructions: workspaces.aiTypeInstructions,
+        })
         .from(workspaces)
         .where(eq(workspaces.id, workspaceId))
         .limit(1);
       formatDescriptions = wsRow?.aiFormatDescriptions || {};
+      typeInstructions = wsRow?.aiTypeInstructions || {};
     } catch {
-      // Ignore — format descriptions are optional
+      // Ignore — optional
     }
   }
 
@@ -140,6 +145,7 @@ async function fetchWorkspaceConfig(workspaceId?: string) {
       units: c.units_content,
     })),
     formatDescriptions: resolvedDescriptions,
+    typeInstructions,
   };
 }
 
@@ -629,6 +635,7 @@ export async function POST(
       workspaceSummary,
       memories: memories.length > 0 ? memories : undefined,
       role,
+      latestUserMessage: userContent || "",
     });
 
     const model = body.model || conversation.model;

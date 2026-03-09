@@ -64,6 +64,13 @@
       "when": 1772957849152,
       "tag": "0008_little_green_goblin",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1773046793049,
+      "tag": "0009_wandering_cable",
+      "breakpoints": true
     }
   ]
 }
