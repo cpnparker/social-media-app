@@ -389,7 +389,7 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
 
   let html = text;
 
-  // Code blocks
+  // Code blocks (extract before escaping & to avoid double-escape)
   html = html.replace(
     /```(\w*)\n?([\s\S]*?)```/g,
     (_m, lang, code) =>
@@ -397,7 +397,13 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
   );
 
   // Inline code (before other inline formatting)
-  html = html.replace(/`([^`]+)`/g, '<code class="ai-inline-code">$1</code>');
+  html = html.replace(/`([^`]+)`/g, (_m, code) =>
+    `<code class="ai-inline-code">${escapeHtml(code)}</code>`
+  );
+
+  // Escape bare & in remaining text (not inside already-processed code blocks)
+  // Avoids browser misinterpreting "e&'s" as a malformed HTML entity
+  html = html.replace(/&(?!amp;|lt;|gt;|quot;|#\d+;|#x[\da-fA-F]+;)/g, "&amp;");
 
   // Tables — line-by-line detection (handles edge cases the regex misses)
   html = convertMarkdownTables(html, sources);
