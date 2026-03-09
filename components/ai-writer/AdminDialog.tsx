@@ -788,6 +788,55 @@ function ContextTab({ workspaceId }: { workspaceId: string }) {
    FORMATS TAB
    ═══════════════════════════════════════════════════ */
 
+// ── Content type instruction categories & defaults ──
+
+const INSTRUCTION_CATEGORIES = [
+  { key: "written", label: "Written", icon: "✍️" },
+  { key: "video", label: "Video", icon: "🎬" },
+  { key: "visual", label: "Visual", icon: "🎨" },
+  { key: "strategy", label: "Strategy", icon: "⚙️" },
+];
+
+const DEFAULT_TYPE_INSTRUCTIONS: Record<string, string> = {
+  written: `When drafting or reviewing written content:
+- Produce publication-ready copy that matches the brief's tone, audience, and word count targets
+- Structure with a compelling headline, strong opening hook, well-organised body sections, and clear conclusion
+- Prioritise clarity, readability, and natural flow — avoid jargon unless the audience expects it
+- Include SEO-friendly headings and subheadings where appropriate
+- Ensure every piece has a clear purpose and call-to-action aligned with the client's objectives
+- Reference the content brief, audience profile, and topic tags to tailor messaging
+- When suggesting improvements, provide specific rewrites rather than generic feedback`,
+
+  video: `When drafting or reviewing video content:
+- Write scripts in a clear format: scene descriptions, spoken dialogue/narration, on-screen text, and visual direction
+- Structure with a strong hook (first 3 seconds), engaging body, and clear call-to-action
+- Include duration guidance aligned with the CU allocation and platform requirements
+- Consider platform-specific best practices (YouTube: longer form with chapters; Instagram/TikTok: vertical, punchy; LinkedIn: professional, insight-driven)
+- Specify B-roll suggestions, graphics overlays, and transition notes where relevant
+- For interview-based content, prepare key questions and suggested talking points
+- Flag any production requirements: locations, talent, equipment, or assets needed`,
+
+  visual: `When drafting or reviewing visual content:
+- Provide clear creative direction: mood, colour palette, composition, and visual hierarchy
+- Specify text overlay copy, font guidance, and content hierarchy for multi-text layouts
+- Include platform-optimised dimensions and format specifications
+- For carousel/collection content, outline the narrative sequence and per-slide messaging
+- Reference brand guidelines and visual identity when available
+- Suggest data visualisation approaches for infographic content — charts, icons, stats callouts
+- Consider accessibility: contrast ratios, text readability, alt-text suggestions`,
+
+  strategy: `When reviewing or developing strategy content, provide thorough, comprehensive analysis — not surface-level observations. Structure responses to cover:
+
+1. **Executive Assessment** — Overall quality, completeness, and strategic coherence
+2. **Objectives & Audience** — Are goals explicit, measurable, and audience-specific? If missing, propose them
+3. **Content & Depth** — Evaluate substance: data usage, insights quality, visual/infographic opportunities, and whether analysis goes beyond surface level
+4. **Output Roadmap** — Map findings to concrete content units (articles, carousels, video scripts) with CU allocations where relevant
+5. **Distribution & Metrics** — Recommend channels, engagement benchmarks, and KPIs tied to strategy goals
+6. **Risks & Next Steps** — Flag gaps, assumptions, or risks and provide actionable next steps
+
+Be specific and reference actual content. Give detailed, publication-quality recommendations — not generic advice. If a strategy is thin, fill in the gaps with substantive suggestions.`,
+};
+
 function FormatsTab({ workspaceId }: { workspaceId: string }) {
   const [loading, setLoading] = useState(true);
   const [definitions, setDefinitions] = useState<CUDefinition[]>([]);
@@ -797,8 +846,7 @@ function FormatsTab({ workspaceId }: { workspaceId: string }) {
   const [descriptions, setDescriptions] = useState<Record<string, string>>({});
   const [savedDescriptions, setSavedDescriptions] = useState<Record<string, string>>({});
 
-  // Content type instructions
-  const [contentTypes, setContentTypes] = useState<{ id: number; key: string; name: string }[]>([]);
+  // Content type instructions (keyed by category: written, video, visual, strategy)
   const [typeInstructions, setTypeInstructions] = useState<Record<string, string>>({});
   const [expandedTypeKey, setExpandedTypeKey] = useState<string | null>(null);
   const [savingTypeKeys, setSavingTypeKeys] = useState<Set<string>>(new Set());
@@ -834,9 +882,22 @@ function FormatsTab({ workspaceId }: { workspaceId: string }) {
       setDescriptions(descs);
       setSavedDescriptions(descs);
 
-      // Content types + type instructions
-      setContentTypes(data.contentTypes || []);
-      setTypeInstructions(data.typeInstructions || {});
+      // Type instructions (keyed by category: written, video, visual, strategy)
+      const existingInstructions: Record<string, string> = data.typeInstructions || {};
+      setTypeInstructions(existingInstructions);
+
+      // Auto-populate defaults if no instructions exist yet
+      const hasAny = Object.values(existingInstructions).some((v) => v?.trim());
+      if (!hasAny) {
+        const defaults = DEFAULT_TYPE_INSTRUCTIONS;
+        setTypeInstructions(defaults);
+        // Save defaults to DB
+        fetch("/api/ai/settings", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceId, typeInstructions: defaults }),
+        }).catch(() => {});
+      }
     } catch (err) {
       console.error("Failed to load format data:", err);
     } finally {
@@ -975,70 +1036,105 @@ function FormatsTab({ workspaceId }: { workspaceId: string }) {
   return (
     <div className="space-y-6">
       {/* ── Content Type Instructions ── */}
-      {contentTypes.length > 0 && (
-        <div className="space-y-2">
-          <div>
-            <h3 className="text-sm font-semibold">Content Type Instructions</h3>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Custom AI instructions per content type — applied when working with that type of content, or when detected in general chats.
-            </p>
-          </div>
-          <div className="space-y-1">
-            {contentTypes.map((ct) => {
-              const key = ct.key.toLowerCase();
-              const isExpanded = expandedTypeKey === key;
-              const currentInstr = typeInstructions[key] || "";
-              const hasInstr = !!currentInstr.trim();
-              const isSaving = savingTypeKeys.has(key);
-              const justSaved = savedTypeKeys.has(key);
-              const icon = CATEGORY_ICONS[ct.name] || "📋";
+      <div className="space-y-2">
+        <div>
+          <h3 className="text-sm font-semibold">Content Type Instructions</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            AI instructions per content category — applied when working with that type of content, or when detected in general chats.
+          </p>
+        </div>
+        <div className="space-y-1">
+          {INSTRUCTION_CATEGORIES.map((cat) => {
+            const key = cat.key;
+            const isExpanded = expandedTypeKey === key;
+            const currentInstr = typeInstructions[key] || "";
+            const hasInstr = !!currentInstr.trim();
+            const isSaving = savingTypeKeys.has(key);
+            const justSaved = savedTypeKeys.has(key);
+            const hasDefault = DEFAULT_TYPE_INSTRUCTIONS[key]?.trim();
+            const isDefault = hasInstr && currentInstr.trim() === DEFAULT_TYPE_INSTRUCTIONS[key]?.trim();
 
-              return (
-                <div key={ct.id} className="border rounded-lg">
-                  <button
-                    onClick={() => setExpandedTypeKey(isExpanded ? null : key)}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-muted/30 transition-colors rounded-lg"
-                  >
-                    {isExpanded ? (
-                      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    ) : (
-                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    )}
-                    <span className="text-sm font-medium truncate flex-1">{icon} {ct.name}</span>
-                    {isSaving && (
-                      <Loader2 className="h-3 w-3 animate-spin text-muted-foreground shrink-0" />
-                    )}
-                    {justSaved && !isSaving && (
-                      <Check className="h-3 w-3 text-emerald-500 shrink-0" />
-                    )}
-                    {hasInstr && !isSaving && !justSaved && (
-                      <span className="text-[10px] font-medium text-blue-600 bg-blue-500/10 px-1.5 py-0.5 rounded shrink-0">
-                        Active
-                      </span>
-                    )}
-                  </button>
-                  {isExpanded && (
-                    <div className="px-3 pb-3 border-t">
-                      <div className="pt-2.5">
-                        <textarea
-                          value={currentInstr}
-                          onChange={(e) => handleTypeChange(key, e.target.value)}
-                          placeholder={`Instructions for ${ct.name} content — e.g., analysis depth, structure, tone, specific frameworks to apply...`}
-                          rows={6}
-                          className="w-full rounded-md border bg-background px-3 py-2 text-sm resize-y focus:outline-none focus:ring-2 focus:ring-ring font-mono leading-relaxed"
-                        />
-                        <p className="text-[11px] text-muted-foreground mt-1.5">
-                          Applied when users work with {ct.name} content pieces, or when {ct.name.toLowerCase()}-related queries are detected in general chats.
+            return (
+              <div key={key} className="border rounded-lg">
+                <button
+                  onClick={() => setExpandedTypeKey(isExpanded ? null : key)}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-muted/30 transition-colors rounded-lg"
+                >
+                  {isExpanded ? (
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="text-base shrink-0">{cat.icon}</span>
+                  <span className="text-sm font-medium truncate flex-1">{cat.label}</span>
+                  {isSaving && (
+                    <Loader2 className="h-3 w-3 animate-spin text-muted-foreground shrink-0" />
+                  )}
+                  {justSaved && !isSaving && (
+                    <Check className="h-3 w-3 text-emerald-500 shrink-0" />
+                  )}
+                  {hasInstr && !isSaving && !justSaved && (
+                    <span className={cn(
+                      "text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0",
+                      isDefault
+                        ? "text-emerald-600 bg-emerald-500/10"
+                        : "text-blue-600 bg-blue-500/10"
+                    )}>
+                      {isDefault ? "Default" : "Custom"}
+                    </span>
+                  )}
+                </button>
+                {isExpanded && (
+                  <div className="px-3 pb-3 border-t">
+                    <div className="pt-2.5">
+                      <textarea
+                        value={currentInstr}
+                        onChange={(e) => handleTypeChange(key, e.target.value)}
+                        placeholder={`Instructions for ${cat.label} content — e.g., analysis depth, structure, tone, specific frameworks to apply...`}
+                        rows={10}
+                        className="w-full rounded-md border bg-background px-3 py-2 text-sm resize-y focus:outline-none focus:ring-2 focus:ring-ring font-mono leading-relaxed"
+                      />
+                      <div className="flex items-center justify-between mt-2">
+                        <p className="text-[11px] text-muted-foreground">
+                          Applied when users work with {cat.label} content, or when &quot;{cat.label.toLowerCase()}&quot; is mentioned in general chats.
                         </p>
+                        <div className="flex items-center gap-1.5">
+                          {hasDefault && !isDefault && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                const defaultVal = DEFAULT_TYPE_INSTRUCTIONS[key];
+                                handleTypeChange(key, defaultVal);
+                              }}
+                              className="gap-1.5 h-7 text-xs text-muted-foreground"
+                            >
+                              <RotateCcw className="h-3 w-3" />
+                              Reset
+                            </Button>
+                          )}
+                          {hasInstr && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleTypeChange(key, "")}
+                              disabled={isSaving}
+                              className="gap-1.5 h-7 text-xs text-muted-foreground hover:text-destructive"
+                            >
+                              <X className="h-3 w-3" />
+                              Clear
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
-      )}
+      </div>
 
       {/* ── Format Descriptions ── */}
       <div className="space-y-3">

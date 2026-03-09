@@ -1,3 +1,5 @@
+import { categorizeContentType } from "@/lib/content-type-utils";
+
 // ── Detail level types ──
 
 export type DetailLevel = "off" | "summary" | "full-week" | "full-month" | "full-year";
@@ -239,40 +241,48 @@ Guidelines:
     }
   }
 
-  // ── Per-type AI instructions (configurable from admin) ──
+  // ── Per-category AI instructions (configurable from admin) ──
+  // Instructions are keyed by category: "written", "video", "visual", "strategy"
   if (workspaceConfig.typeInstructions && Object.keys(workspaceConfig.typeInstructions).length > 0) {
-    let matchedTypeKey: string | null = null;
-    let matchedTypeName: string | null = null;
+    let matchedCategory: string | null = null;
 
     if (contentDetail) {
-      // When inside a content piece, match by content type
+      // When inside a content piece, determine its category
       const match = workspaceConfig.contentTypes.find(
         (t) => t.name?.toLowerCase() === contentDetail.type?.toLowerCase() ||
                t.key?.toLowerCase() === contentDetail.type?.toLowerCase()
       );
-      if (match && workspaceConfig.typeInstructions[match.key]?.trim()) {
-        matchedTypeKey = match.key;
-        matchedTypeName = match.name;
+      const typeKey = match?.key || contentDetail.type || "";
+      const category = categorizeContentType(typeKey).toLowerCase();
+      if (workspaceConfig.typeInstructions[category]?.trim()) {
+        matchedCategory = category;
       }
     } else if (ctx.latestUserMessage) {
-      // General chat — scan user message for content type keywords
+      // General chat — scan user message for category keywords
       const msgLower = ctx.latestUserMessage.toLowerCase();
-      for (const ct of workspaceConfig.contentTypes) {
-        if (!workspaceConfig.typeInstructions[ct.key]?.trim()) continue;
-        // Match by type name or key (e.g., "strategy", "video", "written")
-        const nameMatch = ct.name && msgLower.includes(ct.name.toLowerCase());
-        const keyMatch = ct.key && msgLower.includes(ct.key.toLowerCase());
-        if (nameMatch || keyMatch) {
-          matchedTypeKey = ct.key;
-          matchedTypeName = ct.name;
+      const categoryKeywords: Record<string, string[]> = {
+        strategy: ["strategy", "strategic", "audit", "competitor analysis", "content plan"],
+        written: ["written", "article", "blog", "newsletter", "copy", "copywriting", "writing"],
+        video: ["video", "animation", "script", "filming", "storyboard"],
+        visual: ["visual", "graphic", "infographic", "carousel", "image", "poster", "design"],
+      };
+      for (const [cat, keywords] of Object.entries(categoryKeywords)) {
+        if (!workspaceConfig.typeInstructions[cat]?.trim()) continue;
+        if (keywords.some((kw) => msgLower.includes(kw))) {
+          matchedCategory = cat;
           break;
         }
       }
     }
 
-    if (matchedTypeKey && matchedTypeName) {
-      const instructions = workspaceConfig.typeInstructions[matchedTypeKey];
-      prompt += `\n\n## ${matchedTypeName} Instructions\n${instructions}`;
+    if (matchedCategory) {
+      const categoryLabels: Record<string, string> = {
+        written: "Written Content", video: "Video Content",
+        visual: "Visual Content", strategy: "Strategy",
+      };
+      const label = categoryLabels[matchedCategory] || matchedCategory;
+      const instructions = workspaceConfig.typeInstructions[matchedCategory];
+      prompt += `\n\n## ${label} Instructions\n${instructions}`;
     }
   }
 
