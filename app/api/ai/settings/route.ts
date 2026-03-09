@@ -1,40 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { workspaces } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { getAvailableModels } from "@/lib/ai/providers";
 import { normalizeContextConfig } from "@/lib/ai/system-prompts";
 import { supabase } from "@/lib/supabase";
-
-// Ensure workspace row exists in Neon (lazy-create from Supabase)
-async function ensureNeonWorkspace(workspaceId: string) {
-  const existing = await db
-    .select({ id: workspaces.id })
-    .from(workspaces)
-    .where(eq(workspaces.id, workspaceId))
-    .limit(1);
-
-  if (existing.length === 0) {
-    const { data: supaWs } = await supabase
-      .from("workspaces")
-      .select("id, name, slug, plan")
-      .eq("id", workspaceId)
-      .single();
-
-    if (supaWs) {
-      await db
-        .insert(workspaces)
-        .values({
-          id: supaWs.id,
-          name: supaWs.name,
-          slug: supaWs.slug,
-          plan: supaWs.plan || "free",
-        })
-        .onConflictDoNothing();
-    }
-  }
-}
+import { verifyWorkspaceMembership } from "@/lib/permissions";
 
 // GET /api/ai/settings — get workspace AI settings + context config + CU definitions
 export async function GET(req: NextRequest) {
@@ -50,23 +20,30 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
   }
 
-  try {
-    // Ensure Neon row exists before reading
-    await ensureNeonWorkspace(workspaceId);
+  // Verify user belongs to this workspace
+  const userId = parseInt(session.user.id, 10);
+  const memberRole = await verifyWorkspaceMembership(userId, workspaceId);
+  if (!memberRole) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
-    const [workspace] = await db
-      .select({
-        aiModel: workspaces.aiModel,
-        aiContextConfig: workspaces.aiContextConfig,
-        aiCuDescription: workspaces.aiCuDescription,
-        aiMaxTokens: workspaces.aiMaxTokens,
-        aiDebugMode: workspaces.aiDebugMode,
-        aiFormatDescriptions: workspaces.aiFormatDescriptions,
-        aiTypeInstructions: workspaces.aiTypeInstructions,
-      })
-      .from(workspaces)
-      .where(eq(workspaces.id, workspaceId))
-      .limit(1);
+  try {
+    // Fetch or auto-create settings row
+    let { data: settings } = await intelligenceDb
+      .from("ai_settings")
+      .select("*")
+      .eq("id_workspace", workspaceId)
+      .maybeSingle();
+
+    if (!settings) {
+      // Auto-create default settings on first access
+      const { data: created } = await intelligenceDb
+        .from("ai_settings")
+        .insert({ id_workspace: workspaceId })
+        .select()
+        .single();
+      settings = created;
+    }
 
     // Fetch CU definitions and content types from Supabase
     const [{ data: cuDefs }, { data: contentTypes }] = await Promise.all([
@@ -85,16 +62,16 @@ export async function GET(req: NextRequest) {
       typeMap[t.id_type] = { key: t.key_type, name: t.type_content };
     });
 
-    // Format descriptions stored in Neon workspaces table
-    const formatDescriptions: Record<string, string> = workspace?.aiFormatDescriptions || {};
+    // Format descriptions stored in ai_settings
+    const formatDescriptions: Record<string, string> = settings?.information_format_descriptions || {};
 
     return NextResponse.json({
-      currentModel: workspace?.aiModel || "grok-4-1-fast",
+      currentModel: settings?.name_model || "grok-4-1-fast",
       availableModels: getAvailableModels(),
-      contextConfig: normalizeContextConfig(workspace?.aiContextConfig),
-      cuDescription: workspace?.aiCuDescription || "",
-      maxTokens: workspace?.aiMaxTokens || 4096,
-      debugMode: workspace?.aiDebugMode || false,
+      contextConfig: normalizeContextConfig(settings?.config_context),
+      cuDescription: settings?.information_cu_description || "",
+      maxTokens: settings?.units_max_tokens || 4096,
+      debugMode: settings?.flag_debug || false,
       cuDefinitions: (cuDefs || []).map((c: any) => ({
         id: c.id,
         format: c.name,
@@ -108,7 +85,7 @@ export async function GET(req: NextRequest) {
         key: t.key_type,
         name: t.type_content,
       })),
-      typeInstructions: workspace?.aiTypeInstructions || {},
+      typeInstructions: settings?.information_type_instructions || {},
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -133,59 +110,57 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    // Ensure Neon row exists before updating
-    await ensureNeonWorkspace(workspaceId);
-
-    const updateData: Record<string, any> = { updatedAt: new Date() };
-    if (model !== undefined) updateData.aiModel = model;
-    if (contextConfig !== undefined) updateData.aiContextConfig = contextConfig;
-    if (cuDescription !== undefined) updateData.aiCuDescription = cuDescription;
-    if (maxTokens !== undefined) updateData.aiMaxTokens = maxTokens;
-    if (debugMode !== undefined) updateData.aiDebugMode = debugMode;
-
-    await db
-      .update(workspaces)
-      .set(updateData)
-      .where(eq(workspaces.id, workspaceId));
-
-    // Sync aiModel to Supabase for backward compatibility
-    if (model !== undefined) {
-      await supabase
-        .from("workspaces")
-        .update({ ai_model: model })
-        .eq("id", workspaceId);
+    // Verify user belongs to this workspace and has admin/owner role
+    const userId = parseInt(session.user.id, 10);
+    const memberRole = await verifyWorkspaceMembership(userId, workspaceId);
+    if (!memberRole) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+    if (!["owner", "admin"].includes(memberRole)) {
+      return NextResponse.json({ error: "Admin access required" }, { status: 403 });
     }
 
-    // Update format descriptions in Neon workspaces table
+    // Ensure settings row exists
+    let { data: settings } = await intelligenceDb
+      .from("ai_settings")
+      .select("*")
+      .eq("id_workspace", workspaceId)
+      .maybeSingle();
+
+    if (!settings) {
+      const { data: created } = await intelligenceDb
+        .from("ai_settings")
+        .insert({ id_workspace: workspaceId })
+        .select()
+        .single();
+      settings = created;
+    }
+
+    const updateData: Record<string, any> = {
+      date_updated: new Date().toISOString(),
+    };
+    if (model !== undefined) updateData.name_model = model;
+    if (contextConfig !== undefined) updateData.config_context = contextConfig;
+    if (cuDescription !== undefined) updateData.information_cu_description = cuDescription;
+    if (maxTokens !== undefined) updateData.units_max_tokens = maxTokens;
+    if (debugMode !== undefined) updateData.flag_debug = debugMode ? 1 : 0;
+
+    // Merge format descriptions with existing
     if (formatDescriptions && typeof formatDescriptions === "object") {
-      // Merge with existing descriptions
-      const [current] = await db
-        .select({ aiFormatDescriptions: workspaces.aiFormatDescriptions })
-        .from(workspaces)
-        .where(eq(workspaces.id, workspaceId))
-        .limit(1);
-
-      const merged = { ...(current?.aiFormatDescriptions || {}), ...formatDescriptions };
-      await db
-        .update(workspaces)
-        .set({ aiFormatDescriptions: merged, updatedAt: new Date() })
-        .where(eq(workspaces.id, workspaceId));
+      const merged = { ...(settings?.information_format_descriptions || {}), ...formatDescriptions };
+      updateData.information_format_descriptions = merged;
     }
 
-    // Update type instructions in Neon workspaces table
+    // Merge type instructions with existing
     if (typeInstructions && typeof typeInstructions === "object") {
-      const [current] = await db
-        .select({ aiTypeInstructions: workspaces.aiTypeInstructions })
-        .from(workspaces)
-        .where(eq(workspaces.id, workspaceId))
-        .limit(1);
-
-      const merged = { ...(current?.aiTypeInstructions || {}), ...typeInstructions };
-      await db
-        .update(workspaces)
-        .set({ aiTypeInstructions: merged, updatedAt: new Date() })
-        .where(eq(workspaces.id, workspaceId));
+      const merged = { ...(settings?.information_type_instructions || {}), ...typeInstructions };
+      updateData.information_type_instructions = merged;
     }
+
+    await intelligenceDb
+      .from("ai_settings")
+      .update(updateData)
+      .eq("id_workspace", workspaceId);
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

@@ -1,9 +1,7 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { aiConversations, aiMessages, aiUsage, aiMemories, workspaces, aiConversationShares, aiRoles } from "@/lib/db/schema";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { checkConversationAccess } from "@/lib/ai/access";
-import { eq, asc, and, or, sql } from "drizzle-orm";
 import { supabase } from "@/lib/supabase";
 import { createStreamingResponse, type AIMessage, type AIAttachment } from "@/lib/ai/providers";
 import { buildSystemPrompt, normalizeContextConfig, isFullDetail, type NormalizedContextConfig, type DetailLevel } from "@/lib/ai/system-prompts";
@@ -99,21 +97,18 @@ async function fetchWorkspaceConfig(workspaceId?: string) {
       .order("sort_order"),
   ]);
 
-  // Fetch format descriptions + type instructions from Neon workspaces table
+  // Fetch format descriptions + type instructions from ai_settings
   let formatDescriptions: Record<string, string> = {};
   let typeInstructions: Record<string, string> = {};
   if (workspaceId) {
     try {
-      const [wsRow] = await db
-        .select({
-          aiFormatDescriptions: workspaces.aiFormatDescriptions,
-          aiTypeInstructions: workspaces.aiTypeInstructions,
-        })
-        .from(workspaces)
-        .where(eq(workspaces.id, workspaceId))
-        .limit(1);
-      formatDescriptions = wsRow?.aiFormatDescriptions || {};
-      typeInstructions = wsRow?.aiTypeInstructions || {};
+      const { data: settings } = await intelligenceDb
+        .from("ai_settings")
+        .select("information_format_descriptions, information_type_instructions")
+        .eq("id_workspace", workspaceId)
+        .maybeSingle();
+      formatDescriptions = settings?.information_format_descriptions || {};
+      typeInstructions = settings?.information_type_instructions || {};
     } catch {
       // Ignore — optional
     }
@@ -460,11 +455,11 @@ export async function POST(
     }
 
     // Fetch conversation
-    const [conversation] = await db
-      .select()
-      .from(aiConversations)
-      .where(eq(aiConversations.id, conversationId))
-      .limit(1);
+    const { data: conversation } = await intelligenceDb
+      .from("ai_conversations")
+      .select("*")
+      .eq("id_conversation", conversationId)
+      .maybeSingle();
 
     if (!conversation) {
       return new Response(JSON.stringify({ error: "Conversation not found" }), {
@@ -473,8 +468,12 @@ export async function POST(
       });
     }
 
-    // Share-aware access check
-    const access = await checkConversationAccess(conversationId, userId, conversation);
+    // Share-aware access check (function expects camelCase params)
+    const access = await checkConversationAccess(conversationId, userId, {
+      visibility: conversation.type_visibility,
+      userCreated: conversation.user_created,
+      workspaceId: conversation.id_workspace,
+    });
     if (!access.allowed) {
       return new Response(JSON.stringify({ error: "Forbidden" }), {
         status: 403,
@@ -489,63 +488,61 @@ export async function POST(
     }
 
     // Save user message (skip in incognito)
-    if (!conversation.isIncognito) {
-      await db.insert(aiMessages).values({
-        conversationId,
-        role: "user",
-        content: (userContent || "").trim(),
-        attachments: userAttachments ? JSON.stringify(userAttachments) : null,
-        createdBy: userId,
+    if (!conversation.flag_incognito) {
+      const { error: msgErr } = await intelligenceDb.from("ai_messages").insert({
+        id_conversation: conversationId,
+        role_message: "user",
+        document_message: (userContent || "").trim(),
+        attachments: userAttachments || null,
+        user_created: userId,
       });
+      if (msgErr) console.error("[Messages] Failed to save user message:", msgErr);
     }
 
     // Load conversation history + workspace config + AI settings in parallel
-    const [history, workspaceConfig, wsSettings] = await Promise.all([
-      db
-        .select({
-          role: aiMessages.role,
-          content: aiMessages.content,
-          attachments: aiMessages.attachments,
-        })
-        .from(aiMessages)
-        .where(eq(aiMessages.conversationId, conversationId))
-        .orderBy(asc(aiMessages.createdAt)),
-      fetchWorkspaceConfig(conversation.workspaceId),
-      db
-        .select({
-          aiContextConfig: workspaces.aiContextConfig,
-          aiCuDescription: workspaces.aiCuDescription,
-          aiMaxTokens: workspaces.aiMaxTokens,
-          aiDebugMode: workspaces.aiDebugMode,
-        })
-        .from(workspaces)
-        .where(eq(workspaces.id, conversation.workspaceId))
-        .limit(1),
+    const [historyRes, workspaceConfig, settingsRes] = await Promise.all([
+      intelligenceDb
+        .from("ai_messages")
+        .select("role_message, document_message, attachments")
+        .eq("id_conversation", conversationId)
+        .order("date_created", { ascending: true }),
+      fetchWorkspaceConfig(conversation.id_workspace),
+      intelligenceDb
+        .from("ai_settings")
+        .select("config_context, information_cu_description, units_max_tokens, flag_debug")
+        .eq("id_workspace", conversation.id_workspace)
+        .maybeSingle(),
     ]);
 
+    const history = historyRes.data || [];
+    const wsSettings = settingsRes.data;
+
     // Allow per-request context config override from the client (normalize to detail levels)
-    const contextConfig = normalizeContextConfig(body.contextConfig ?? wsSettings[0]?.aiContextConfig ?? undefined);
-    const cuDescription = wsSettings[0]?.aiCuDescription ?? undefined;
-    const maxTokens = wsSettings[0]?.aiMaxTokens || 4096;
-    const debugMode = body.debugMode || wsSettings[0]?.aiDebugMode || false;
+    const contextConfig = normalizeContextConfig(body.contextConfig ?? wsSettings?.config_context ?? undefined);
+    const cuDescription = wsSettings?.information_cu_description ?? undefined;
+    const maxTokens = wsSettings?.units_max_tokens || 4096;
+    const debugMode = body.debugMode || wsSettings?.flag_debug || false;
 
     // Build messages with attachments for AI
     const messages: AIMessage[] = [];
     for (const m of history) {
       const msg: AIMessage = {
-        role: m.role as "user" | "assistant" | "system",
-        content: m.content,
+        role: m.role_message as "user" | "assistant" | "system",
+        content: m.document_message,
       };
 
       // Parse and prepare attachments for user messages
-      if (m.role === "user" && m.attachments) {
+      // Supabase JSONB returns parsed objects; handle both string and object
+      if (m.role_message === "user" && m.attachments) {
         try {
-          const parsed: Attachment[] = JSON.parse(m.attachments);
+          const parsed: Attachment[] = typeof m.attachments === "string"
+            ? JSON.parse(m.attachments)
+            : m.attachments;
           if (parsed.length > 0) {
             msg.attachments = await prepareAttachmentsForAI(parsed);
           }
         } catch {
-          // Ignore malformed attachments JSON
+          // Ignore malformed attachments
         }
       }
 
@@ -558,9 +555,9 @@ export async function POST(
     let clientIdeas: Awaited<ReturnType<typeof fetchClientIdeas>> | null = null;
     let workspaceSummary: Awaited<ReturnType<typeof fetchWorkspaceSummary>> | null = null;
 
-    if (conversation.contentObjectId) {
+    if (conversation.id_content) {
       // Content-specific conversation — fetch content detail + client context
-      contentDetail = await fetchContentDetail(conversation.contentObjectId);
+      contentDetail = await fetchContentDetail(conversation.id_content);
       if (contentDetail?.clientId) {
         const [cc, ci] = await Promise.all([
           fetchClientContext(contentDetail.clientId, contextConfig),
@@ -569,11 +566,11 @@ export async function POST(
         clientContext = cc;
         clientIdeas = ci;
       }
-    } else if (conversation.customerId) {
+    } else if (conversation.id_client) {
       // Client-scoped standalone conversation
       const [cc, ci] = await Promise.all([
-        fetchClientContext(conversation.customerId, contextConfig),
-        contextConfig.ideas !== "off" ? fetchClientIdeas(conversation.customerId, contextConfig.ideas) : null,
+        fetchClientContext(conversation.id_client, contextConfig),
+        contextConfig.ideas !== "off" ? fetchClientIdeas(conversation.id_client, contextConfig.ideas) : null,
       ]);
       clientContext = cc;
       clientIdeas = ci;
@@ -588,40 +585,42 @@ export async function POST(
     // Fetch memories (privacy-aware) — skip if memory is off or incognito
     let memories: { content: string; category: string }[] = [];
     if (!isIncognito && contextConfig.memory !== "off") {
-      const memoryFilter =
-        conversation.visibility === "private"
-          ? or(
-              // User's private memories + workspace team memories
-              and(eq(aiMemories.scope, "private"), eq(aiMemories.userId, userId)),
-              eq(aiMemories.scope, "team")
-            )
-          : // Team chats: only workspace team memories
-            eq(aiMemories.scope, "team");
+      let memoryQuery = intelligenceDb
+        .from("ai_memories")
+        .select("information_content, type_category")
+        .eq("id_workspace", conversation.id_workspace)
+        .eq("flag_active", 1);
 
-      memories = await db
-        .select({ content: aiMemories.content, category: aiMemories.category })
-        .from(aiMemories)
-        .where(
-          and(
-            eq(aiMemories.workspaceId, conversation.workspaceId),
-            eq(aiMemories.isActive, true),
-            memoryFilter
-          )
-        )
-        .orderBy(aiMemories.createdAt)
+      if (conversation.type_visibility === "private") {
+        // User's private memories + workspace team memories
+        memoryQuery = memoryQuery.or(
+          `and(type_scope.eq.private,user_memory.eq.${userId}),type_scope.eq.team`
+        );
+      } else {
+        // Team chats: only workspace team memories
+        memoryQuery = memoryQuery.eq("type_scope", "team");
+      }
+
+      const { data: memoryRows } = await memoryQuery
+        .order("date_created", { ascending: true })
         .limit(50);
+
+      memories = (memoryRows || []).map((m: any) => ({
+        content: m.information_content,
+        category: m.type_category,
+      }));
     }
 
     // Fetch role if specified
     let role: { name: string; instructions: string } | null = null;
     if (body.roleId) {
-      const [roleRow] = await db
-        .select({ name: aiRoles.name, instructions: aiRoles.instructions })
-        .from(aiRoles)
-        .where(eq(aiRoles.id, body.roleId))
-        .limit(1);
+      const { data: roleRow } = await intelligenceDb
+        .from("ai_roles")
+        .select("name_role, information_instructions")
+        .eq("id_role", body.roleId)
+        .maybeSingle();
       if (roleRow) {
-        role = roleRow;
+        role = { name: roleRow.name_role, instructions: roleRow.information_instructions };
       }
     }
 
@@ -638,20 +637,20 @@ export async function POST(
       latestUserMessage: userContent || "",
     });
 
-    const model = body.model || conversation.model;
+    const model = body.model || conversation.name_model;
 
     // Auto-title: if this is the first user message, set conversation title (skip incognito)
     const userMessages = messages.filter((m) => m.role === "user");
-    if (userMessages.length === 1 && !conversation.isIncognito) {
+    if (userMessages.length === 1 && !conversation.flag_incognito) {
       const titleSource = (userContent || "").trim() || (userAttachments?.[0]?.name || "File upload");
       const autoTitle =
         titleSource.length > 60
           ? titleSource.slice(0, 57) + "..."
           : titleSource;
-      await db
-        .update(aiConversations)
-        .set({ title: autoTitle, updatedAt: new Date() })
-        .where(eq(aiConversations.id, conversationId));
+      await intelligenceDb
+        .from("ai_conversations")
+        .update({ name_conversation: autoTitle, date_updated: new Date().toISOString() })
+        .eq("id_conversation", conversationId);
     }
 
     // Create streaming response
@@ -660,30 +659,38 @@ export async function POST(
       { model, systemPrompt, maxTokens, webSearch: contextConfig.webSearch === "on" },
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
-        if (!conversation.isIncognito) {
-          await db.insert(aiMessages).values({
-            conversationId,
-            role: "assistant",
-            content: fullText,
-            model: model,
-          });
-          await db
-            .update(aiConversations)
-            .set({ updatedAt: new Date() })
-            .where(eq(aiConversations.id, conversationId));
+        if (!conversation.flag_incognito) {
+          const { error: assistantErr } = await intelligenceDb
+            .from("ai_messages")
+            .insert({
+              id_conversation: conversationId,
+              role_message: "assistant",
+              document_message: fullText,
+              name_model: model,
+            });
+          if (assistantErr) console.error("[Messages] Failed to save assistant message:", assistantErr);
+
+          const { error: updateErr } = await intelligenceDb
+            .from("ai_conversations")
+            .update({ date_updated: new Date().toISOString() })
+            .eq("id_conversation", conversationId);
+          if (updateErr) console.error("[Messages] Failed to update conversation:", updateErr);
 
           // Log AI usage for cost tracking
           const costTenths = calculateCostTenths(model, inputTokens, outputTokens);
-          await db.insert(aiUsage).values({
-            workspaceId: conversation.workspaceId,
-            userId,
-            model,
-            source: conversation.contentObjectId ? "engine" : "enginegpt",
-            inputTokens,
-            outputTokens,
-            costTenths,
-            conversationId,
-          });
+          const { error: usageErr } = await intelligenceDb
+            .from("ai_usage")
+            .insert({
+              id_workspace: conversation.id_workspace,
+              user_usage: userId,
+              name_model: model,
+              type_source: conversation.id_content ? "engine" : "enginegpt",
+              units_input: inputTokens,
+              units_output: outputTokens,
+              units_cost_tenths: costTenths,
+              id_conversation: conversationId,
+            });
+          if (usageErr) console.error("[Usage] Failed to log:", usageErr);
         }
       }
     );
@@ -739,10 +746,10 @@ export async function POST(
             userContent: userContent || "",
             assistantContent: capturedText,
             existingMemories: memories.map((m) => m.content),
-            workspaceId: conversation.workspaceId,
+            workspaceId: conversation.id_workspace,
             userId,
             conversationId,
-            conversationVisibility: conversation.visibility,
+            conversationVisibility: conversation.type_visibility,
           }).catch((err) => {
             console.error("[Memory] Background extraction failed:", err);
           });
@@ -790,35 +797,32 @@ async function runBackgroundMemoryExtraction({
   const memUserId = scope === "private" ? userId : null;
 
   // Enforce 50-memory cap
-  const [countResult] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(aiMemories)
-    .where(
-      and(
-        eq(aiMemories.workspaceId, workspaceId),
-        eq(aiMemories.isActive, true),
-        memUserId !== null
-          ? and(eq(aiMemories.scope, "private"), eq(aiMemories.userId, userId))
-          : eq(aiMemories.scope, "team")
-      )
-    );
+  let countQuery = intelligenceDb
+    .from("ai_memories")
+    .select("*", { count: "exact", head: true })
+    .eq("id_workspace", workspaceId)
+    .eq("flag_active", 1);
 
-  const currentCount = countResult?.count || 0;
-  const slotsAvailable = Math.max(0, 50 - currentCount);
+  if (memUserId !== null) {
+    countQuery = countQuery.eq("type_scope", "private").eq("user_memory", userId);
+  } else {
+    countQuery = countQuery.eq("type_scope", "team");
+  }
+
+  const { count: currentCount } = await countQuery;
+  const slotsAvailable = Math.max(0, 50 - (currentCount || 0));
   if (slotsAvailable === 0) return [];
 
   // De-duplicate: check for semantically similar existing memories
-  const allExisting = await db
-    .select({ content: aiMemories.content })
-    .from(aiMemories)
-    .where(
-      and(
-        eq(aiMemories.workspaceId, workspaceId),
-        eq(aiMemories.isActive, true)
-      )
-    );
+  const { data: allExisting } = await intelligenceDb
+    .from("ai_memories")
+    .select("information_content")
+    .eq("id_workspace", workspaceId)
+    .eq("flag_active", 1);
 
-  const existingSet = new Set(allExisting.map((m) => m.content.toLowerCase().trim()));
+  const existingSet = new Set(
+    (allExisting || []).map((m: any) => (m.information_content as string).toLowerCase().trim())
+  );
 
   const toSave = suggestions
     .filter((s) => {
@@ -839,15 +843,19 @@ async function runBackgroundMemoryExtraction({
 
   const savedIds: string[] = [];
   for (const s of toSave) {
-    const [inserted] = await db.insert(aiMemories).values({
-      workspaceId,
-      userId: memUserId,
-      scope,
-      category: s.category,
-      content: s.content.slice(0, 500),
-      sourceConversationId: conversationId,
-    }).returning({ id: aiMemories.id });
-    if (inserted) savedIds.push(inserted.id);
+    const { data: inserted } = await intelligenceDb
+      .from("ai_memories")
+      .insert({
+        id_workspace: workspaceId,
+        user_memory: memUserId,
+        type_scope: scope,
+        type_category: s.category,
+        information_content: s.content.slice(0, 500),
+        id_conversation_source: conversationId,
+      })
+      .select("id_memory")
+      .single();
+    if (inserted) savedIds.push(inserted.id_memory);
   }
 
   if (toSave.length > 0) {

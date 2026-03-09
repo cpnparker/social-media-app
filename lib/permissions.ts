@@ -81,6 +81,27 @@ export async function canAccessClient(
   return allowedIds.includes(clientId);
 }
 
+// ── Workspace membership check ──
+// Verifies the user belongs to the given workspace via Supabase workspace_members.
+// Returns the member role ('owner' | 'admin' | 'editor' | 'viewer') or null if not a member.
+export async function verifyWorkspaceMembership(
+  userId: number,
+  workspaceId: string
+): Promise<string | null> {
+  try {
+    const { data: member } = await supabase
+      .from("workspace_members")
+      .select("role")
+      .eq("workspace_id", workspaceId)
+      .eq("user_id", userId)
+      .limit(1)
+      .single();
+    return member?.role || null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Apply client scoping to a Supabase query builder ──
 // Returns { query } with filters applied, or { query, error } with a 403 response.
 export async function scopeQueryToClients(

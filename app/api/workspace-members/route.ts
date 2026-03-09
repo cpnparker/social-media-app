@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { userAccess } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 
 // GET /api/workspace-members — list all users in the workspace
 export async function GET() {
@@ -67,12 +65,12 @@ export async function GET() {
 
     const userMap = new Map((userRows || []).map((u) => [u.id_user, u]));
 
-    // Fetch area access flags from Neon
-    const accessRows = await db
-      .select()
-      .from(userAccess)
-      .where(eq(userAccess.workspaceId, ws.id));
-    const accessMap = new Map(accessRows.map((a) => [a.userId, a]));
+    // Fetch area access flags from intelligence schema
+    const { data: accessRows } = await intelligenceDb
+      .from("users_access")
+      .select("*")
+      .eq("id_workspace", ws.id);
+    const accessMap = new Map((accessRows || []).map((a: any) => [a.user_target, a]));
 
     const members = (memberRows || []).map((m) => {
       const user = userMap.get(m.user_id);
@@ -88,10 +86,10 @@ export async function GET() {
         supabaseRole: user?.role_user || null,
         joinedAt: m.joined_at || null,
         // No access row = secure default (no access) unless workspace owner/admin
-        accessEngine: access ? access.accessEngine : (m.role === "owner" || m.role === "admin"),
-        accessEngineGpt: access ? access.accessEngineGpt : (m.role === "owner" || m.role === "admin"),
-        accessOperations: access ? access.accessOperations : (m.role === "owner" || m.role === "admin"),
-        accessAdmin: access ? access.accessAdmin : (m.role === "owner" || m.role === "admin"),
+        accessEngine: access ? access.flag_access_engine : (m.role === "owner" || m.role === "admin"),
+        accessEngineGpt: access ? access.flag_access_enginegpt : (m.role === "owner" || m.role === "admin"),
+        accessOperations: access ? access.flag_access_operations : (m.role === "owner" || m.role === "admin"),
+        accessAdmin: access ? access.flag_access_admin : (m.role === "owner" || m.role === "admin"),
       };
     });
 
@@ -171,14 +169,14 @@ export async function POST(req: NextRequest) {
       role: role || "viewer",
     });
 
-    // Create default area access row in Neon (secure default: no access)
-    await db.insert(userAccess).values({
-      workspaceId: ws.id,
-      userId: existingUser.id_user,
-      accessEngine: false,
-      accessEngineGpt: false,
-      accessOperations: false,
-      accessAdmin: false,
+    // Create default area access row in intelligence schema (secure default: no access)
+    await intelligenceDb.from("users_access").insert({
+      id_workspace: ws.id,
+      user_target: existingUser.id_user,
+      flag_access_engine: 0,
+      flag_access_enginegpt: 0,
+      flag_access_operations: 0,
+      flag_access_admin: 0,
     });
 
     return NextResponse.json(
@@ -246,7 +244,7 @@ export async function PATCH(req: NextRequest) {
       }
     }
 
-    // Update area access in Neon if any access flags provided
+    // Update area access in intelligence schema if any access flags provided
     const hasAccessUpdate =
       accessEngine !== undefined ||
       accessEngineGpt !== undefined ||
@@ -256,36 +254,34 @@ export async function PATCH(req: NextRequest) {
     if (hasAccessUpdate) {
       await Promise.all(
         targetIds.map(async (numericId) => {
-          const [existing] = await db
-            .select()
-            .from(userAccess)
-            .where(
-              and(
-                eq(userAccess.workspaceId, ws.id),
-                eq(userAccess.userId, numericId)
-              )
-            )
-            .limit(1);
+          const { data: existing } = await intelligenceDb
+            .from("users_access")
+            .select("*")
+            .eq("id_workspace", ws.id)
+            .eq("user_target", numericId)
+            .maybeSingle();
 
           if (existing) {
-            const updates: Record<string, boolean> = {};
-            if (accessEngine !== undefined) updates.accessEngine = accessEngine;
-            if (accessEngineGpt !== undefined) updates.accessEngineGpt = accessEngineGpt;
-            if (accessOperations !== undefined) updates.accessOperations = accessOperations;
-            if (accessAdmin !== undefined) updates.accessAdmin = accessAdmin;
+            const updates: Record<string, any> = {
+              date_updated: new Date().toISOString(),
+            };
+            if (accessEngine !== undefined) updates.flag_access_engine = accessEngine ? 1 : 0;
+            if (accessEngineGpt !== undefined) updates.flag_access_enginegpt = accessEngineGpt ? 1 : 0;
+            if (accessOperations !== undefined) updates.flag_access_operations = accessOperations ? 1 : 0;
+            if (accessAdmin !== undefined) updates.flag_access_admin = accessAdmin ? 1 : 0;
 
-            await db
-              .update(userAccess)
-              .set({ ...updates, updatedAt: new Date() })
-              .where(eq(userAccess.id, existing.id));
+            await intelligenceDb
+              .from("users_access")
+              .update(updates)
+              .eq("id_access", existing.id_access);
           } else {
-            await db.insert(userAccess).values({
-              workspaceId: ws.id,
-              userId: numericId,
-              accessEngine: accessEngine ?? false,
-              accessEngineGpt: accessEngineGpt ?? false,
-              accessOperations: accessOperations ?? false,
-              accessAdmin: accessAdmin ?? false,
+            await intelligenceDb.from("users_access").insert({
+              id_workspace: ws.id,
+              user_target: numericId,
+              flag_access_engine: accessEngine ? 1 : 0,
+              flag_access_enginegpt: accessEngineGpt ? 1 : 0,
+              flag_access_operations: accessOperations ? 1 : 0,
+              flag_access_admin: accessAdmin ? 1 : 0,
             });
           }
         })
@@ -331,15 +327,12 @@ export async function DELETE(req: NextRequest) {
 
     if (error) throw error;
 
-    // Clean up area access row in Neon
-    await db
-      .delete(userAccess)
-      .where(
-        and(
-          eq(userAccess.workspaceId, ws.id),
-          eq(userAccess.userId, numericUserId)
-        )
-      );
+    // Clean up area access row in intelligence schema
+    await intelligenceDb
+      .from("users_access")
+      .delete()
+      .eq("id_workspace", ws.id)
+      .eq("user_target", numericUserId);
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

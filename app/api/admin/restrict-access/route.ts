@@ -1,16 +1,14 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { userAccess } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 
 /**
  * POST /api/admin/restrict-access
  *
  * Admin-only endpoint that:
- * 1. Sets all existing user_access rows to all-false
- * 2. Creates/updates the requesting user's (owner) row to all-true
+ * 1. Sets all existing users_access rows to all-zero
+ * 2. Creates/updates the requesting user's (owner) row to all-one
  *
  * Only the workspace owner can call this.
  */
@@ -49,59 +47,55 @@ export async function POST() {
       );
     }
 
-    // 1. Set ALL existing user_access rows for this workspace to all-false
-    await db
-      .update(userAccess)
-      .set({
-        accessEngine: false,
-        accessEngineGpt: false,
-        accessOperations: false,
-        accessAdmin: false,
-        updatedAt: new Date(),
+    // 1. Set ALL existing users_access rows for this workspace to all-zero
+    await intelligenceDb
+      .from("users_access")
+      .update({
+        flag_access_engine: 0,
+        flag_access_enginegpt: 0,
+        flag_access_operations: 0,
+        flag_access_admin: 0,
+        date_updated: new Date().toISOString(),
       })
-      .where(eq(userAccess.workspaceId, ws.id));
+      .eq("id_workspace", ws.id);
 
-    // 2. Create or update the owner's row to all-true
-    const [existingOwnerAccess] = await db
-      .select()
-      .from(userAccess)
-      .where(
-        and(
-          eq(userAccess.workspaceId, ws.id),
-          eq(userAccess.userId, userId)
-        )
-      )
-      .limit(1);
+    // 2. Create or update the owner's row to all-one
+    const { data: existingOwnerAccess } = await intelligenceDb
+      .from("users_access")
+      .select("*")
+      .eq("id_workspace", ws.id)
+      .eq("user_target", userId)
+      .maybeSingle();
 
     if (existingOwnerAccess) {
-      await db
-        .update(userAccess)
-        .set({
-          accessEngine: true,
-          accessEngineGpt: true,
-          accessOperations: true,
-          accessAdmin: true,
-          updatedAt: new Date(),
+      await intelligenceDb
+        .from("users_access")
+        .update({
+          flag_access_engine: 1,
+          flag_access_enginegpt: 1,
+          flag_access_operations: 1,
+          flag_access_admin: 1,
+          date_updated: new Date().toISOString(),
         })
-        .where(eq(userAccess.id, existingOwnerAccess.id));
+        .eq("id_access", existingOwnerAccess.id_access);
     } else {
-      await db.insert(userAccess).values({
-        workspaceId: ws.id,
-        userId,
-        accessEngine: true,
-        accessEngineGpt: true,
-        accessOperations: true,
-        accessAdmin: true,
+      await intelligenceDb.from("users_access").insert({
+        id_workspace: ws.id,
+        user_target: userId,
+        flag_access_engine: 1,
+        flag_access_enginegpt: 1,
+        flag_access_operations: 1,
+        flag_access_admin: 1,
       });
     }
 
     // Count how many users were restricted
-    const allRows = await db
-      .select()
-      .from(userAccess)
-      .where(eq(userAccess.workspaceId, ws.id));
+    const { data: allRows } = await intelligenceDb
+      .from("users_access")
+      .select("user_target")
+      .eq("id_workspace", ws.id);
 
-    const restricted = allRows.filter((r) => r.userId !== userId).length;
+    const restricted = (allRows || []).filter((r: any) => r.user_target !== userId).length;
 
     return NextResponse.json({
       success: true,

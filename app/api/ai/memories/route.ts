@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { aiMemories, aiConversations } from "@/lib/db/schema";
-import { eq, and, or, sql } from "drizzle-orm";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 
 // GET /api/ai/memories?workspaceId=...
 // Returns active memories: user's private + workspace team
@@ -20,24 +18,17 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const memories = await db
-      .select()
-      .from(aiMemories)
-      .where(
-        and(
-          eq(aiMemories.workspaceId, workspaceId),
-          eq(aiMemories.isActive, true),
-          or(
-            // User's private memories
-            and(eq(aiMemories.scope, "private"), eq(aiMemories.userId, userId)),
-            // Workspace team memories
-            eq(aiMemories.scope, "team")
-          )
-        )
-      )
-      .orderBy(aiMemories.createdAt);
+    const { data: memories, error } = await intelligenceDb
+      .from("ai_memories")
+      .select("*")
+      .eq("id_workspace", workspaceId)
+      .eq("flag_active", 1)
+      .or(`and(type_scope.eq.private,user_memory.eq.${userId}),type_scope.eq.team`)
+      .order("date_created", { ascending: true });
 
-    return NextResponse.json({ memories });
+    if (error) throw error;
+
+    return NextResponse.json({ memories: memories || [] });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -68,13 +59,13 @@ export async function POST(req: NextRequest) {
     let finalUserId: number | null = userId;
 
     if (sourceConversationId) {
-      const [conv] = await db
-        .select({ visibility: aiConversations.visibility })
-        .from(aiConversations)
-        .where(eq(aiConversations.id, sourceConversationId))
-        .limit(1);
+      const { data: conv } = await intelligenceDb
+        .from("ai_conversations")
+        .select("type_visibility")
+        .eq("id_conversation", sourceConversationId)
+        .maybeSingle();
 
-      if (conv?.visibility === "private") {
+      if (conv?.type_visibility === "private") {
         // Private conversations can ONLY produce private memories
         finalScope = "private";
         finalUserId = userId;
@@ -88,37 +79,38 @@ export async function POST(req: NextRequest) {
     }
 
     // Enforce 50-memory cap per user per workspace
-    const [countResult] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(aiMemories)
-      .where(
-        and(
-          eq(aiMemories.workspaceId, workspaceId),
-          eq(aiMemories.isActive, true),
-          finalUserId !== null
-            ? and(eq(aiMemories.scope, "private"), eq(aiMemories.userId, userId))
-            : eq(aiMemories.scope, "team")
-        )
-      );
+    const countFilter = finalUserId !== null
+      ? `type_scope.eq.private,user_memory.eq.${userId}`
+      : `type_scope.eq.team`;
 
-    if ((countResult?.count || 0) >= 50) {
+    const { count: memoryCount } = await intelligenceDb
+      .from("ai_memories")
+      .select("*", { count: "exact", head: true })
+      .eq("id_workspace", workspaceId)
+      .eq("flag_active", 1)
+      .or(countFilter);
+
+    if ((memoryCount || 0) >= 50) {
       return NextResponse.json(
         { error: "Memory limit reached (50). Archive old memories to save new ones." },
         { status: 400 }
       );
     }
 
-    const [memory] = await db
-      .insert(aiMemories)
-      .values({
-        workspaceId,
-        userId: finalUserId,
-        scope: finalScope,
-        category: category || "fact",
-        content: content.slice(0, 500),
-        sourceConversationId: sourceConversationId || null,
+    const { data: memory, error } = await intelligenceDb
+      .from("ai_memories")
+      .insert({
+        id_workspace: workspaceId,
+        user_memory: finalUserId,
+        type_scope: finalScope,
+        type_category: category || "fact",
+        information_content: content.slice(0, 500),
+        id_conversation_source: sourceConversationId || null,
       })
-      .returning();
+      .select()
+      .single();
+
+    if (error) throw error;
 
     return NextResponse.json({ memory });
   } catch (error: any) {

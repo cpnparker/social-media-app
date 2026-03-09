@@ -1,6 +1,4 @@
-import { db } from "@/lib/db";
-import { aiConversationShares } from "@/lib/db/schema";
-import { and, eq } from "drizzle-orm";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
 
 export type AccessResult =
@@ -14,10 +12,10 @@ export type AccessResult =
 export async function checkConversationAccess(
   conversationId: string,
   userId: number,
-  conversation: { visibility: string; createdBy: number; workspaceId?: string }
+  conversation: { visibility: string; userCreated: number; workspaceId?: string }
 ): Promise<AccessResult> {
   // Owner always has full access
-  if (conversation.createdBy === userId) {
+  if (conversation.userCreated === userId) {
     return { allowed: true, permission: "owner" };
   }
 
@@ -38,21 +36,17 @@ export async function checkConversationAccess(
   }
 
   // Private conversations — check shares table
-  const [share] = await db
-    .select({ permission: aiConversationShares.permission })
-    .from(aiConversationShares)
-    .where(
-      and(
-        eq(aiConversationShares.conversationId, conversationId),
-        eq(aiConversationShares.userId, userId)
-      )
-    )
-    .limit(1);
+  const { data: share } = await intelligenceDb
+    .from("ai_conversation_shares")
+    .select("type_permission")
+    .eq("id_conversation", conversationId)
+    .eq("user_recipient", userId)
+    .maybeSingle();
 
   if (share) {
     return {
       allowed: true,
-      permission: share.permission as "view" | "collaborate",
+      permission: share.type_permission as "view" | "collaborate",
     };
   }
 

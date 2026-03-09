@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { aiConversations, aiConversationShares, workspaces } from "@/lib/db/schema";
-import { eq, and, or, like, desc, sql, inArray } from "drizzle-orm";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
 
 // GET /api/ai/conversations — list conversations
@@ -27,112 +25,74 @@ export async function GET(req: NextRequest) {
 
   try {
     // Get conversation IDs shared with this user (for private conversations they don't own)
-    const sharedWithMe = await db
-      .select({
-        conversationId: aiConversationShares.conversationId,
-        sharedBy: aiConversationShares.sharedBy,
-        permission: aiConversationShares.permission,
-      })
-      .from(aiConversationShares)
-      .where(eq(aiConversationShares.userId, userId));
+    const { data: sharedWithMe } = await intelligenceDb
+      .from("ai_conversation_shares")
+      .select("id_conversation, user_shared, type_permission")
+      .eq("user_recipient", userId);
 
-    const sharedConvoIds = sharedWithMe.map((s) => s.conversationId);
+    const sharedConvoIds = (sharedWithMe || []).map((s: any) => s.id_conversation);
     const sharedByMap = new Map(
-      sharedWithMe.map((s) => [s.conversationId, { sharedBy: s.sharedBy, permission: s.permission }])
+      (sharedWithMe || []).map((s: any) => [
+        s.id_conversation,
+        { sharedBy: s.user_shared, permission: s.type_permission },
+      ])
     );
 
-    // Build conditions — always exclude incognito conversations
-    const conditions = [
-      eq(aiConversations.workspaceId, workspaceId),
-      eq(aiConversations.isIncognito, false),
-    ];
+    // Build query — always exclude incognito conversations
+    let query = intelligenceDb
+      .from("ai_conversations")
+      .select("*")
+      .eq("id_workspace", workspaceId)
+      .eq("flag_incognito", 0);
 
     if (visibility === "private") {
       // User's own private conversations + shared-with-me private conversations
       if (sharedConvoIds.length > 0) {
-        conditions.push(
-          or(
-            and(
-              eq(aiConversations.visibility, "private"),
-              eq(aiConversations.createdBy, userId)
-            ),
-            and(
-              eq(aiConversations.visibility, "private"),
-              inArray(aiConversations.id, sharedConvoIds)
-            )
-          )!
+        query = query.or(
+          `and(type_visibility.eq.private,user_created.eq.${userId}),and(type_visibility.eq.private,id_conversation.in.(${sharedConvoIds.join(",")}))`
         );
       } else {
-        conditions.push(eq(aiConversations.visibility, "private"));
-        conditions.push(eq(aiConversations.createdBy, userId));
+        query = query.eq("type_visibility", "private").eq("user_created", userId);
       }
     } else if (visibility === "team") {
-      conditions.push(eq(aiConversations.visibility, "team"));
+      query = query.eq("type_visibility", "team");
     } else {
       // Default: user's private + shared-with-me + all team conversations
       if (sharedConvoIds.length > 0) {
-        conditions.push(
-          or(
-            and(
-              eq(aiConversations.visibility, "private"),
-              eq(aiConversations.createdBy, userId)
-            ),
-            and(
-              eq(aiConversations.visibility, "private"),
-              inArray(aiConversations.id, sharedConvoIds)
-            ),
-            eq(aiConversations.visibility, "team")
-          )!
+        query = query.or(
+          `and(type_visibility.eq.private,user_created.eq.${userId}),and(type_visibility.eq.private,id_conversation.in.(${sharedConvoIds.join(",")})),type_visibility.eq.team`
         );
       } else {
-        conditions.push(
-          or(
-            and(
-              eq(aiConversations.visibility, "private"),
-              eq(aiConversations.createdBy, userId)
-            ),
-            eq(aiConversations.visibility, "team")
-          )!
+        query = query.or(
+          `and(type_visibility.eq.private,user_created.eq.${userId}),type_visibility.eq.team`
         );
       }
     }
 
     if (contentObjectId) {
-      conditions.push(eq(aiConversations.contentObjectId, parseInt(contentObjectId, 10)));
+      query = query.eq("id_content", parseInt(contentObjectId, 10));
     }
 
     if (customerId) {
-      conditions.push(eq(aiConversations.customerId, parseInt(customerId, 10)));
+      query = query.eq("id_client", parseInt(customerId, 10));
     }
 
     if (search) {
-      conditions.push(like(aiConversations.title, `%${search}%`));
+      query = query.ilike("name_conversation", `%${search}%`);
     }
 
-    const conversations = await db
-      .select({
-        id: aiConversations.id,
-        workspaceId: aiConversations.workspaceId,
-        createdBy: aiConversations.createdBy,
-        title: aiConversations.title,
-        visibility: aiConversations.visibility,
-        contentObjectId: aiConversations.contentObjectId,
-        customerId: aiConversations.customerId,
-        model: aiConversations.model,
-        createdAt: aiConversations.createdAt,
-        updatedAt: aiConversations.updatedAt,
-      })
-      .from(aiConversations)
-      .where(and(...conditions))
-      .orderBy(desc(aiConversations.updatedAt))
+    const { data: conversations, error } = await query
+      .order("date_updated", { ascending: false })
       .limit(limit);
+
+    if (error) throw error;
 
     // Resolve customer names from Supabase
     const customerIds = Array.from(
       new Set(
-        conversations
-          .map((c) => c.customerId)
-          .filter((id): id is number => id !== null)
+        (conversations || [])
+          .map((c: any) => c.id_client)
+          .filter((id: any): id is number => id !== null)
       )
     );
 
@@ -152,9 +112,9 @@ export async function GET(req: NextRequest) {
     // Resolve sharer names for shared-with-me conversations
     const sharerIds = Array.from(
       new Set(
-        conversations
-          .filter((c) => c.createdBy !== userId && sharedByMap.has(c.id))
-          .map((c) => sharedByMap.get(c.id)!.sharedBy)
+        (conversations || [])
+          .filter((c: any) => c.user_created !== userId && sharedByMap.has(c.id_conversation))
+          .map((c: any) => sharedByMap.get(c.id_conversation)!.sharedBy)
       )
     );
 
@@ -171,14 +131,14 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const enriched = conversations.map((c) => {
-      const isSharedWithMe = c.createdBy !== userId && sharedByMap.has(c.id);
-      const shareInfo = sharedByMap.get(c.id);
+    const enriched = (conversations || []).map((c: any) => {
+      const isSharedWithMe = c.user_created !== userId && sharedByMap.has(c.id_conversation);
+      const shareInfo = sharedByMap.get(c.id_conversation);
       return {
         ...c,
-        customerName: c.customerId ? customerNameMap.get(c.customerId) || null : null,
+        customerName: c.id_client ? customerNameMap.get(c.id_client) || null : null,
         sharedWithMe: isSharedWithMe || undefined,
-        myPermission: c.createdBy === userId
+        myPermission: c.user_created === userId
           ? ("owner" as const)
           : isSharedWithMe
           ? (shareInfo!.permission as "view" | "collaborate")
@@ -211,55 +171,48 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
     }
 
-    // Ensure workspace exists in Neon (sync from Supabase if needed)
-    const existingWs = await db
-      .select({ id: workspaces.id, aiModel: workspaces.aiModel })
-      .from(workspaces)
-      .where(eq(workspaces.id, workspaceId))
-      .limit(1);
+    // Verify workspace exists in Supabase
+    const { data: wsExists } = await supabase
+      .from("workspaces")
+      .select("id")
+      .eq("id", workspaceId)
+      .maybeSingle();
 
-    if (existingWs.length === 0) {
-      const { data: supaWs } = await supabase
-        .from("workspaces")
-        .select("id, name, slug, plan")
-        .eq("id", workspaceId)
-        .single();
-
-      if (!supaWs) {
-        return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
-      }
-
-      await db.insert(workspaces).values({
-        id: supaWs.id,
-        name: supaWs.name,
-        slug: supaWs.slug,
-        plan: supaWs.plan || "free",
-      }).onConflictDoNothing();
+    if (!wsExists) {
+      return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
     }
 
-    // Get workspace default model if not specified
+    // Get workspace default model from ai_settings if not specified
     let aiModel = model;
     if (!aiModel) {
-      aiModel = existingWs[0]?.aiModel || "claude-sonnet-4-20250514";
+      const { data: settings } = await intelligenceDb
+        .from("ai_settings")
+        .select("name_model")
+        .eq("id_workspace", workspaceId)
+        .maybeSingle();
+      aiModel = settings?.name_model || "claude-sonnet-4-20250514";
     }
 
-    const [conversation] = await db
-      .insert(aiConversations)
-      .values({
-        workspaceId,
-        createdBy: userId,
-        title: title || "New Conversation",
-        visibility: visibility || "private",
-        contentObjectId: contentObjectId
+    const { data: conversation, error } = await intelligenceDb
+      .from("ai_conversations")
+      .insert({
+        id_workspace: workspaceId,
+        user_created: userId,
+        name_conversation: title || "New Conversation",
+        type_visibility: visibility || "private",
+        id_content: contentObjectId
           ? parseInt(String(contentObjectId), 10)
           : null,
-        customerId: customerId
+        id_client: customerId
           ? parseInt(String(customerId), 10)
           : null,
-        model: aiModel,
-        isIncognito: isIncognito || false,
+        name_model: aiModel,
+        flag_incognito: isIncognito ? 1 : 0,
       })
-      .returning();
+      .select()
+      .single();
+
+    if (error) throw error;
 
     return NextResponse.json({ conversation });
   } catch (error: any) {

@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { userAccess } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 
 // GET /api/me/workspaces — returns workspaces the user belongs to
 export async function GET() {
@@ -34,12 +32,12 @@ export async function GET() {
 
     const roleMap = new Map(memberRows.map((m) => [m.workspace_id, m.role]));
 
-    // Fetch area access flags from Neon for this user
-    const accessRows = await db
-      .select()
-      .from(userAccess)
-      .where(eq(userAccess.userId, userId));
-    const accessMap = new Map(accessRows.map((a) => [a.workspaceId, a]));
+    // Fetch area access flags from intelligence schema for this user
+    const { data: accessRows } = await intelligenceDb
+      .from("users_access")
+      .select("*")
+      .eq("user_target", userId);
+    const accessMap = new Map((accessRows || []).map((a) => [a.id_workspace, a]));
 
     const results = (wsRows || []).map((ws) => {
       const access = accessMap.get(ws.id);
@@ -55,10 +53,10 @@ export async function GET() {
         slug: ws.slug,
         plan: ws.plan,
         role,
-        accessEngine: noRow ? isPrivileged : access.accessEngine,
-        accessEngineGpt: noRow ? isPrivileged : access.accessEngineGpt,
-        accessOperations: noRow ? isPrivileged : access.accessOperations,
-        accessAdmin: noRow ? isPrivileged : access.accessAdmin,
+        accessEngine: noRow ? isPrivileged : access.flag_access_engine,
+        accessEngineGpt: noRow ? isPrivileged : access.flag_access_enginegpt,
+        accessOperations: noRow ? isPrivileged : access.flag_access_operations,
+        accessAdmin: noRow ? isPrivileged : access.flag_access_admin,
       };
     });
 

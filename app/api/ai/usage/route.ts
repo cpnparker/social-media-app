@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { aiUsage } from "@/lib/db/schema";
-import { eq, and, gte } from "drizzle-orm";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
+import { verifyWorkspaceMembership } from "@/lib/permissions";
 
 // GET /api/ai/usage — aggregated AI usage data for dashboard
 export async function GET(req: NextRequest) {
@@ -20,6 +19,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
   }
 
+  // Verify user belongs to this workspace
+  const userId = parseInt(session.user.id, 10);
+  const memberRole = await verifyWorkspaceMembership(userId, workspaceId);
+  if (!memberRole) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   try {
     const now = new Date();
     const startDate = new Date(now);
@@ -31,27 +37,26 @@ export async function GET(req: NextRequest) {
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
     // Fetch all usage rows for the period
-    const rows = await db
-      .select()
-      .from(aiUsage)
-      .where(
-        and(
-          eq(aiUsage.workspaceId, workspaceId),
-          gte(aiUsage.createdAt, startDate)
-        )
-      );
+    const { data: rows, error } = await intelligenceDb
+      .from("ai_usage")
+      .select("*")
+      .eq("id_workspace", workspaceId)
+      .gte("date_created", startDate.toISOString());
+
+    if (error) throw error;
+    const usageRows = rows || [];
 
     // Aggregate helper
-    const aggregate = (filtered: typeof rows) => ({
-      cost: filtered.reduce((s, r) => s + r.costTenths, 0),
+    const aggregate = (filtered: typeof usageRows) => ({
+      cost: filtered.reduce((s, r) => s + r.units_cost_tenths, 0),
       calls: filtered.length,
-      input: filtered.reduce((s, r) => s + r.inputTokens, 0),
-      output: filtered.reduce((s, r) => s + r.outputTokens, 0),
+      input: filtered.reduce((s, r) => s + r.units_input, 0),
+      output: filtered.reduce((s, r) => s + r.units_output, 0),
     });
 
-    const todayRows = rows.filter((r) => r.createdAt >= todayStart);
-    const weekRows = rows.filter((r) => r.createdAt >= weekStart);
-    const monthRows = rows.filter((r) => r.createdAt >= monthStart);
+    const todayRows = usageRows.filter((r) => new Date(r.date_created) >= todayStart);
+    const weekRows = usageRows.filter((r) => new Date(r.date_created) >= weekStart);
+    const monthRows = usageRows.filter((r) => new Date(r.date_created) >= monthStart);
 
     const summary = {
       today: aggregate(todayRows),
@@ -61,10 +66,10 @@ export async function GET(req: NextRequest) {
 
     // Daily breakdown
     const dailyMap: Record<string, { cost: number; calls: number }> = {};
-    for (const r of rows) {
-      const date = r.createdAt.toISOString().split("T")[0];
+    for (const r of usageRows) {
+      const date = r.date_created.split("T")[0];
       if (!dailyMap[date]) dailyMap[date] = { cost: 0, calls: 0 };
-      dailyMap[date].cost += r.costTenths;
+      dailyMap[date].cost += r.units_cost_tenths;
       dailyMap[date].calls += 1;
     }
     const daily = Object.entries(dailyMap)
@@ -76,22 +81,22 @@ export async function GET(req: NextRequest) {
       string,
       { model: string; cost: number; calls: number; inputTokens: number; outputTokens: number }
     > = {};
-    for (const r of rows) {
-      if (!modelMap[r.model])
-        modelMap[r.model] = { model: r.model, cost: 0, calls: 0, inputTokens: 0, outputTokens: 0 };
-      modelMap[r.model].cost += r.costTenths;
-      modelMap[r.model].calls += 1;
-      modelMap[r.model].inputTokens += r.inputTokens;
-      modelMap[r.model].outputTokens += r.outputTokens;
+    for (const r of usageRows) {
+      if (!modelMap[r.name_model])
+        modelMap[r.name_model] = { model: r.name_model, cost: 0, calls: 0, inputTokens: 0, outputTokens: 0 };
+      modelMap[r.name_model].cost += r.units_cost_tenths;
+      modelMap[r.name_model].calls += 1;
+      modelMap[r.name_model].inputTokens += r.units_input;
+      modelMap[r.name_model].outputTokens += r.units_output;
     }
     const byModel = Object.values(modelMap).sort((a, b) => b.cost - a.cost);
 
     // By source
     const sourceMap: Record<string, { source: string; cost: number; calls: number }> = {};
-    for (const r of rows) {
-      if (!sourceMap[r.source]) sourceMap[r.source] = { source: r.source, cost: 0, calls: 0 };
-      sourceMap[r.source].cost += r.costTenths;
-      sourceMap[r.source].calls += 1;
+    for (const r of usageRows) {
+      if (!sourceMap[r.type_source]) sourceMap[r.type_source] = { source: r.type_source, cost: 0, calls: 0 };
+      sourceMap[r.type_source].cost += r.units_cost_tenths;
+      sourceMap[r.type_source].calls += 1;
     }
     const bySource = Object.values(sourceMap).sort((a, b) => b.cost - a.cost);
 
@@ -100,13 +105,13 @@ export async function GET(req: NextRequest) {
       number,
       { userId: number; cost: number; calls: number; inputTokens: number; outputTokens: number }
     > = {};
-    for (const r of rows) {
-      if (!userMap[r.userId])
-        userMap[r.userId] = { userId: r.userId, cost: 0, calls: 0, inputTokens: 0, outputTokens: 0 };
-      userMap[r.userId].cost += r.costTenths;
-      userMap[r.userId].calls += 1;
-      userMap[r.userId].inputTokens += r.inputTokens;
-      userMap[r.userId].outputTokens += r.outputTokens;
+    for (const r of usageRows) {
+      if (!userMap[r.user_usage])
+        userMap[r.user_usage] = { userId: r.user_usage, cost: 0, calls: 0, inputTokens: 0, outputTokens: 0 };
+      userMap[r.user_usage].cost += r.units_cost_tenths;
+      userMap[r.user_usage].calls += 1;
+      userMap[r.user_usage].inputTokens += r.units_input;
+      userMap[r.user_usage].outputTokens += r.units_output;
     }
 
     const userIds = Object.keys(userMap).map(Number);

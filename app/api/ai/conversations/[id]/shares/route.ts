@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { aiConversations, aiConversationShares, userAccess } from "@/lib/db/schema";
-import { eq, and, count } from "drizzle-orm";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
 import { Resend } from "resend";
 
@@ -20,39 +18,31 @@ export async function GET(
 
   try {
     // Fetch conversation and verify ownership
-    const [conversation] = await db
-      .select({
-        createdBy: aiConversations.createdBy,
-        visibility: aiConversations.visibility,
-      })
-      .from(aiConversations)
-      .where(eq(aiConversations.id, conversationId))
-      .limit(1);
+    const { data: conversation } = await intelligenceDb
+      .from("ai_conversations")
+      .select("user_created, type_visibility")
+      .eq("id_conversation", conversationId)
+      .maybeSingle();
 
     if (!conversation) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
     // Only owner can list shares
-    if (conversation.createdBy !== userId) {
+    if (conversation.user_created !== userId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     // Fetch shares
-    const shares = await db
-      .select({
-        id: aiConversationShares.id,
-        conversationId: aiConversationShares.conversationId,
-        userId: aiConversationShares.userId,
-        permission: aiConversationShares.permission,
-        sharedBy: aiConversationShares.sharedBy,
-        createdAt: aiConversationShares.createdAt,
-      })
-      .from(aiConversationShares)
-      .where(eq(aiConversationShares.conversationId, conversationId));
+    const { data: shares, error } = await intelligenceDb
+      .from("ai_conversation_shares")
+      .select("*")
+      .eq("id_conversation", conversationId);
+
+    if (error) throw error;
 
     // Resolve user names from Supabase
-    const userIds = shares.map((s) => s.userId);
+    const userIds = (shares || []).map((s: any) => s.user_recipient);
     let userNameMap = new Map<number, { name: string; email: string }>();
     if (userIds.length > 0) {
       const { data: users } = await supabase
@@ -69,10 +59,10 @@ export async function GET(
       }
     }
 
-    const enriched = shares.map((s) => ({
+    const enriched = (shares || []).map((s: any) => ({
       ...s,
-      userName: userNameMap.get(s.userId)?.name || null,
-      userEmail: userNameMap.get(s.userId)?.email || null,
+      userName: userNameMap.get(s.user_recipient)?.name || null,
+      userEmail: userNameMap.get(s.user_recipient)?.email || null,
     }));
 
     return NextResponse.json({ shares: enriched });
@@ -106,23 +96,18 @@ export async function POST(
     }
 
     // Fetch conversation
-    const [conversation] = await db
-      .select({
-        createdBy: aiConversations.createdBy,
-        visibility: aiConversations.visibility,
-        workspaceId: aiConversations.workspaceId,
-        isIncognito: aiConversations.isIncognito,
-      })
-      .from(aiConversations)
-      .where(eq(aiConversations.id, conversationId))
-      .limit(1);
+    const { data: conversation } = await intelligenceDb
+      .from("ai_conversations")
+      .select("user_created, type_visibility, id_workspace, flag_incognito")
+      .eq("id_conversation", conversationId)
+      .maybeSingle();
 
     if (!conversation) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
     // Only owner can share
-    if (conversation.createdBy !== userId) {
+    if (conversation.user_created !== userId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -132,7 +117,7 @@ export async function POST(
     }
 
     // Cannot share team conversations
-    if (conversation.visibility === "team") {
+    if (conversation.type_visibility === "team") {
       return NextResponse.json(
         { error: "Team conversations are already accessible to all members" },
         { status: 400 }
@@ -140,7 +125,7 @@ export async function POST(
     }
 
     // Cannot share incognito conversations
-    if (conversation.isIncognito) {
+    if (conversation.flag_incognito) {
       return NextResponse.json(
         { error: "Cannot share incognito conversations" },
         { status: 400 }
@@ -151,7 +136,7 @@ export async function POST(
     const { data: membership } = await supabase
       .from("workspace_members")
       .select("id")
-      .eq("workspace_id", conversation.workspaceId)
+      .eq("workspace_id", conversation.id_workspace)
       .eq("user_id", targetUserId)
       .limit(1);
 
@@ -163,19 +148,15 @@ export async function POST(
     }
 
     // Check EngineGPT access
-    const [access] = await db
-      .select({ accessEngineGpt: userAccess.accessEngineGpt })
-      .from(userAccess)
-      .where(
-        and(
-          eq(userAccess.workspaceId, conversation.workspaceId),
-          eq(userAccess.userId, targetUserId)
-        )
-      )
-      .limit(1);
+    const { data: access } = await intelligenceDb
+      .from("users_access")
+      .select("flag_access_enginegpt")
+      .eq("id_workspace", conversation.id_workspace)
+      .eq("user_target", targetUserId)
+      .maybeSingle();
 
     // If no access row, default is true; if row exists, check flag
-    if (access && !access.accessEngineGpt) {
+    if (access && !access.flag_access_enginegpt) {
       return NextResponse.json(
         { error: "User does not have EngineGPT access" },
         { status: 400 }
@@ -183,12 +164,12 @@ export async function POST(
     }
 
     // Cap at 20 shares per conversation
-    const [shareCount] = await db
-      .select({ total: count() })
-      .from(aiConversationShares)
-      .where(eq(aiConversationShares.conversationId, conversationId));
+    const { count: shareCount } = await intelligenceDb
+      .from("ai_conversation_shares")
+      .select("*", { count: "exact", head: true })
+      .eq("id_conversation", conversationId);
 
-    if (shareCount && shareCount.total >= 20) {
+    if ((shareCount || 0) >= 20) {
       return NextResponse.json(
         { error: "Maximum 20 shares per conversation" },
         { status: 400 }
@@ -196,34 +177,36 @@ export async function POST(
     }
 
     // Upsert: insert or update if already shared
-    const existing = await db
-      .select({ id: aiConversationShares.id })
-      .from(aiConversationShares)
-      .where(
-        and(
-          eq(aiConversationShares.conversationId, conversationId),
-          eq(aiConversationShares.userId, targetUserId)
-        )
-      )
-      .limit(1);
+    const { data: existing } = await intelligenceDb
+      .from("ai_conversation_shares")
+      .select("id_share")
+      .eq("id_conversation", conversationId)
+      .eq("user_recipient", targetUserId)
+      .maybeSingle();
 
     let share;
-    if (existing.length > 0) {
-      [share] = await db
-        .update(aiConversationShares)
-        .set({ permission })
-        .where(eq(aiConversationShares.id, existing[0].id))
-        .returning();
+    if (existing) {
+      const { data: updated, error: updateErr } = await intelligenceDb
+        .from("ai_conversation_shares")
+        .update({ type_permission: permission })
+        .eq("id_share", existing.id_share)
+        .select()
+        .single();
+      if (updateErr) throw updateErr;
+      share = updated;
     } else {
-      [share] = await db
-        .insert(aiConversationShares)
-        .values({
-          conversationId,
-          userId: targetUserId,
-          permission,
-          sharedBy: userId,
+      const { data: inserted, error: insertErr } = await intelligenceDb
+        .from("ai_conversation_shares")
+        .insert({
+          id_conversation: conversationId,
+          user_recipient: targetUserId,
+          type_permission: permission,
+          user_shared: userId,
         })
-        .returning();
+        .select()
+        .single();
+      if (insertErr) throw insertErr;
+      share = inserted;
     }
 
     // Resolve user names for response + notification
@@ -248,12 +231,13 @@ export async function POST(
         const sharerName = sharerUser?.name_user || "Someone";
         const recipientName = targetUser.name_user || "there";
         const threadUrl = `${process.env.NEXTAUTH_URL || "https://ai.thecontentengine.com"}/enginegpt?thread=${conversationId}`;
-        const convoTitle = (await db
-          .select({ title: aiConversations.title })
-          .from(aiConversations)
-          .where(eq(aiConversations.id, conversationId))
-          .limit(1)
-        )[0]?.title || "Untitled conversation";
+
+        const { data: convoData } = await intelligenceDb
+          .from("ai_conversations")
+          .select("name_conversation")
+          .eq("id_conversation", conversationId)
+          .maybeSingle();
+        const convoTitle = convoData?.name_conversation || "Untitled conversation";
 
         await resend.emails.send({
           from: "EngineGPT <noreply@tasks.thecontentengine.com>",
@@ -327,26 +311,25 @@ export async function PATCH(
     }
 
     // Verify ownership
-    const [conversation] = await db
-      .select({ createdBy: aiConversations.createdBy })
-      .from(aiConversations)
-      .where(eq(aiConversations.id, conversationId))
-      .limit(1);
+    const { data: conversation } = await intelligenceDb
+      .from("ai_conversations")
+      .select("user_created")
+      .eq("id_conversation", conversationId)
+      .maybeSingle();
 
-    if (!conversation || conversation.createdBy !== userId) {
+    if (!conversation || conversation.user_created !== userId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const [updated] = await db
-      .update(aiConversationShares)
-      .set({ permission })
-      .where(
-        and(
-          eq(aiConversationShares.id, shareId),
-          eq(aiConversationShares.conversationId, conversationId)
-        )
-      )
-      .returning();
+    const { data: updated, error } = await intelligenceDb
+      .from("ai_conversation_shares")
+      .update({ type_permission: permission })
+      .eq("id_share", shareId)
+      .eq("id_conversation", conversationId)
+      .select()
+      .maybeSingle();
+
+    if (error) throw error;
 
     if (!updated) {
       return NextResponse.json({ error: "Share not found" }, { status: 404 });
@@ -379,24 +362,21 @@ export async function DELETE(
 
   try {
     // Verify ownership
-    const [conversation] = await db
-      .select({ createdBy: aiConversations.createdBy })
-      .from(aiConversations)
-      .where(eq(aiConversations.id, conversationId))
-      .limit(1);
+    const { data: conversation } = await intelligenceDb
+      .from("ai_conversations")
+      .select("user_created")
+      .eq("id_conversation", conversationId)
+      .maybeSingle();
 
-    if (!conversation || conversation.createdBy !== userId) {
+    if (!conversation || conversation.user_created !== userId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    await db
-      .delete(aiConversationShares)
-      .where(
-        and(
-          eq(aiConversationShares.id, shareId),
-          eq(aiConversationShares.conversationId, conversationId)
-        )
-      );
+    await intelligenceDb
+      .from("ai_conversation_shares")
+      .delete()
+      .eq("id_share", shareId)
+      .eq("id_conversation", conversationId);
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
