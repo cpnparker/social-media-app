@@ -13,6 +13,7 @@ interface MessageBubbleProps {
   model?: string | null;
   isStreaming?: boolean;
   attachments?: Attachment[] | null;
+  userName?: string | null;
 }
 
 interface ParsedSource {
@@ -29,6 +30,7 @@ export default function MessageBubble({
   model,
   isStreaming,
   attachments,
+  userName,
 }: MessageBubbleProps) {
   const isUser = role === "user";
   const [sourcesExpanded, setSourcesExpanded] = useState(true);
@@ -197,8 +199,15 @@ export default function MessageBubble({
         )}
       </div>
       {isUser && (
-        <div className="shrink-0 h-7 w-7 rounded-full bg-foreground/[0.08] flex items-center justify-center mt-0.5">
-          <User className="h-3.5 w-3.5 text-muted-foreground" />
+        <div className="shrink-0 flex flex-col items-center gap-0.5 mt-0.5">
+          <div className="h-7 w-7 rounded-full bg-foreground/[0.08] flex items-center justify-center">
+            <User className="h-3.5 w-3.5 text-muted-foreground" />
+          </div>
+          {userName && (
+            <span className="text-[9px] text-muted-foreground/50 max-w-[4rem] truncate leading-none">
+              {userName.split(" ")[0]}
+            </span>
+          )}
         </div>
       )}
     </div>

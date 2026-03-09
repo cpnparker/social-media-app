@@ -600,6 +600,7 @@ export default function ChatPanel({
                 content={msg.content}
                 model={msg.model}
                 attachments={msg.attachments}
+                userName={msg.createdByName}
               />
             ))}
             {/* Debug context preview */}

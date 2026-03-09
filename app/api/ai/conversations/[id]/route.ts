@@ -61,10 +61,26 @@ export async function GET(
       .where(eq(aiMessages.conversationId, conversationId))
       .orderBy(asc(aiMessages.createdAt));
 
+    // Resolve user names for messages with createdBy
+    const messageUserIds = Array.from(
+      new Set(rawMessages.filter((m) => m.createdBy).map((m) => m.createdBy!))
+    );
+    let messageNameMap = new Map<number, string>();
+    if (messageUserIds.length > 0) {
+      const { data: msgUsers } = await supabase
+        .from("users")
+        .select("id_user, name_user")
+        .in("id_user", messageUserIds);
+      messageNameMap = new Map(
+        (msgUsers || []).map((u: any) => [u.id_user, u.name_user])
+      );
+    }
+
     // Parse attachments JSON strings for the client
     const messages = rawMessages.map((m) => ({
       ...m,
       attachments: m.attachments ? JSON.parse(m.attachments) : null,
+      createdByName: m.createdBy ? messageNameMap.get(m.createdBy) || null : null,
     }));
 
     // Resolve customer name if conversation has a customerId
