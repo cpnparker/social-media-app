@@ -324,41 +324,68 @@ function parseSourcesFromContent(content: string): {
 
 /**
  * Line-by-line markdown table detection — more robust than regex.
- * Finds consecutive lines starting & ending with | and converts to HTML tables.
+ * Finds lines starting & ending with | and converts to HTML tables.
+ * Tolerates blank lines between table rows (common AI output pattern).
  */
 function convertMarkdownTables(html: string, sources: ParsedSource[]): string {
   const lines = html.split('\n');
   const result: string[] = [];
   let i = 0;
 
+  const isTableRow = (line: string) => /^\|.+\|$/.test(line.trim());
+  const isSepRow = (line: string) => /^\|[\s\-:|]+\|$/.test(line.trim());
+
   while (i < lines.length) {
     const trimmed = lines[i].trim();
-    // Check if line looks like a table row: starts and ends with |
-    if (/^\|.+\|$/.test(trimmed)) {
+    if (isTableRow(trimmed)) {
+      // Collect table rows, skipping blank lines between them
       const tableLines: string[] = [trimmed];
       let j = i + 1;
-      while (j < lines.length && /^\|.+\|$/.test(lines[j].trim())) {
-        tableLines.push(lines[j].trim());
-        j++;
+      while (j < lines.length) {
+        const next = lines[j].trim();
+        if (isTableRow(next)) {
+          tableLines.push(next);
+          j++;
+        } else if (next === "" && j + 1 < lines.length && isTableRow(lines[j + 1].trim())) {
+          // Skip single blank line if next non-blank line is a table row
+          j++;
+        } else {
+          break;
+        }
       }
 
       if (tableLines.length >= 2) {
-        // Determine if row 2 is a separator (|---|---|)
-        const isSeparator = /^\|[\s\-:|]+\|$/.test(tableLines[1]);
-        const startIdx = isSeparator ? 2 : 1;
+        // Filter out separator rows and identify header
+        const sepIdx = tableLines.findIndex((l) => isSepRow(l));
+        let headerLine: string;
+        let dataLines: string[];
+
+        if (sepIdx === 0 && tableLines.length > 1) {
+          // First line is separator — use second line as header, rest as data
+          headerLine = tableLines[1];
+          dataLines = tableLines.slice(2).filter((l) => !isSepRow(l));
+        } else if (sepIdx > 0) {
+          // Normal: header, separator, data
+          headerLine = tableLines[0];
+          dataLines = tableLines.slice(1).filter((l) => !isSepRow(l));
+        } else {
+          // No separator found — first line is header, rest are data
+          headerLine = tableLines[0];
+          dataLines = tableLines.slice(1);
+        }
 
         const parseRow = (row: string) =>
           row.split("|").slice(1, -1).map((cell: string) => cell.trim());
 
-        const headerCells = parseRow(tableLines[0]);
+        const headerCells = parseRow(headerLine);
         let tableHtml = '<div class="ai-table-wrap"><table class="ai-table"><thead><tr>';
         for (const cell of headerCells) {
           tableHtml += `<th>${applyInlineFormatting(cell, sources)}</th>`;
         }
         tableHtml += "</tr></thead><tbody>";
 
-        for (let k = startIdx; k < tableLines.length; k++) {
-          const cells = parseRow(tableLines[k]);
+        for (const row of dataLines) {
+          const cells = parseRow(row);
           tableHtml += "<tr>";
           for (const cell of cells) {
             tableHtml += `<td>${applyInlineFormatting(cell, sources)}</td>`;
