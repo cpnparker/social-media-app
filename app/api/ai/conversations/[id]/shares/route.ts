@@ -133,7 +133,7 @@ export async function POST(
     }
 
     // Verify target user is a workspace member
-    const { data: membership } = await supabase
+    const { data: membership } = await intelligenceDb
       .from("workspace_members")
       .select("id")
       .eq("workspace_id", conversation.id_workspace)

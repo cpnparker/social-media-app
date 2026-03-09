@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { auth } from "@/lib/auth";
 
 // POST /api/workspaces — create a new workspace
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
 
     const baseSlug = name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
 
-    const { data: workspace, error: createErr } = await supabase
+    const { data: workspace, error: createErr } = await intelligenceDb
       .from("workspaces")
       .insert({
         name,
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
     // Update slug with id prefix
     const slug = `${baseSlug}-${workspace.id.slice(0, 8)}`;
 
-    const { data: updatedWorkspace, error: updateErr } = await supabase
+    const { data: updatedWorkspace, error: updateErr } = await intelligenceDb
       .from("workspaces")
       .update({ slug })
       .eq("id", workspace.id)
@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
     if (updateErr) throw updateErr;
 
     // Add the current user as owner
-    await supabase.from("workspace_members").insert({
+    await intelligenceDb.from("workspace_members").insert({
       workspace_id: workspace.id,
       user_id: parseInt(session.user.id, 10),
       role: "owner",

@@ -1,5 +1,4 @@
 import { intelligenceDb } from "@/lib/supabase-intelligence";
-import { supabase } from "@/lib/supabase";
 
 export type AccessResult =
   | { allowed: true; permission: "owner" | "view" | "collaborate" }
@@ -22,7 +21,7 @@ export async function checkConversationAccess(
   // Team conversations are accessible to workspace members only
   if (conversation.visibility === "team") {
     if (conversation.workspaceId) {
-      const { data: membership } = await supabase
+      const { data: membership } = await intelligenceDb
         .from("workspace_members")
         .select("id")
         .eq("workspace_id", conversation.workspaceId)

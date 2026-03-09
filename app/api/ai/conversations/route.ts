@@ -172,7 +172,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Verify workspace exists in Supabase
-    const { data: wsExists } = await supabase
+    const { data: wsExists } = await intelligenceDb
       .from("workspaces")
       .select("id")
       .eq("id", workspaceId)

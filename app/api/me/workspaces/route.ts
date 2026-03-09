@@ -1,5 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 
@@ -13,7 +12,7 @@ export async function GET() {
 
     const userId = parseInt(session.user.id, 10);
 
-    const { data: memberRows, error } = await supabase
+    const { data: memberRows, error } = await intelligenceDb
       .from("workspace_members")
       .select("workspace_id, role")
       .eq("user_id", userId);
@@ -25,7 +24,7 @@ export async function GET() {
     }
 
     const wsIds = memberRows.map((m) => m.workspace_id);
-    const { data: wsRows } = await supabase
+    const { data: wsRows } = await intelligenceDb
       .from("workspaces")
       .select("*")
       .in("id", wsIds);

@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { NextResponse } from "next/server";
 
 // ── Role Categories ──
@@ -89,7 +90,7 @@ export async function verifyWorkspaceMembership(
   workspaceId: string
 ): Promise<string | null> {
   try {
-    const { data: member } = await supabase
+    const { data: member } = await intelligenceDb
       .from("workspace_members")
       .select("role")
       .eq("workspace_id", workspaceId)

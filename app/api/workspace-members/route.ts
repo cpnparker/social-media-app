@@ -7,7 +7,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 export async function GET() {
   try {
     // Get the default workspace
-    const { data: ws } = await supabase
+    const { data: ws } = await intelligenceDb
       .from("workspaces")
       .select("id")
       .limit(1)
@@ -29,7 +29,7 @@ export async function GET() {
         .single();
 
       if (sessionUser) {
-        const { data: existingMember } = await supabase
+        const { data: existingMember } = await intelligenceDb
           .from("workspace_members")
           .select("id")
           .eq("workspace_id", ws.id)
@@ -38,7 +38,7 @@ export async function GET() {
           .single();
 
         if (!existingMember) {
-          await supabase.from("workspace_members").insert({
+          await intelligenceDb.from("workspace_members").insert({
             workspace_id: ws.id,
             user_id: sessionUser.id_user,
             role: "admin",
@@ -49,7 +49,7 @@ export async function GET() {
     }
 
     // Fetch all members with user details
-    const { data: memberRows, error } = await supabase
+    const { data: memberRows, error } = await intelligenceDb
       .from("workspace_members")
       .select("*")
       .eq("workspace_id", ws.id);
@@ -110,7 +110,7 @@ export async function POST(req: NextRequest) {
 
     const normalizedEmail = email.trim().toLowerCase();
 
-    const { data: ws } = await supabase
+    const { data: ws } = await intelligenceDb
       .from("workspaces")
       .select("id")
       .limit(1)
@@ -148,7 +148,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Check if already a workspace member
-    const { data: existingMember } = await supabase
+    const { data: existingMember } = await intelligenceDb
       .from("workspace_members")
       .select("id")
       .eq("workspace_id", ws.id)
@@ -163,7 +163,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    await supabase.from("workspace_members").insert({
+    await intelligenceDb.from("workspace_members").insert({
       workspace_id: ws.id,
       user_id: existingUser.id_user,
       role: role || "viewer",
@@ -215,7 +215,7 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    const { data: ws } = await supabase
+    const { data: ws } = await intelligenceDb
       .from("workspaces")
       .select("id")
       .limit(1)
@@ -231,7 +231,7 @@ export async function PATCH(req: NextRequest) {
 
     // Update role in Supabase if provided (single-user only)
     if (role && !isBulk) {
-      const { data: updated, error } = await supabase
+      const { data: updated, error } = await intelligenceDb
         .from("workspace_members")
         .update({ role })
         .eq("workspace_id", ws.id)
@@ -307,7 +307,7 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    const { data: ws } = await supabase
+    const { data: ws } = await intelligenceDb
       .from("workspaces")
       .select("id")
       .limit(1)
@@ -319,7 +319,7 @@ export async function DELETE(req: NextRequest) {
 
     const numericUserId = parseInt(userId, 10);
 
-    const { error } = await supabase
+    const { error } = await intelligenceDb
       .from("workspace_members")
       .delete()
       .eq("workspace_id", ws.id)

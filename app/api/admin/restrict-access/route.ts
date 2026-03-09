@@ -22,7 +22,7 @@ export async function POST() {
     const userId = parseInt(session.user.id, 10);
 
     // Get the workspace
-    const { data: ws } = await supabase
+    const { data: ws } = await intelligenceDb
       .from("workspaces")
       .select("id")
       .limit(1)
@@ -33,7 +33,7 @@ export async function POST() {
     }
 
     // Verify the caller is the workspace owner or admin
-    const { data: membership } = await supabase
+    const { data: membership } = await intelligenceDb
       .from("workspace_members")
       .select("role")
       .eq("workspace_id", ws.id)
