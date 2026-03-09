@@ -726,44 +726,6 @@ function ContextTab({ workspaceId }: { workspaceId: string }) {
         </CardContent>
       </Card>
 
-      {/* Content Format Descriptions */}
-      {cuDefinitions.length > 0 && (
-        <Card className="border-0 shadow-sm">
-          <CardHeader className="pb-0">
-            <CardTitle className="text-sm">Content Format Descriptions</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-4">
-            <p className="text-xs text-muted-foreground mb-4">
-              Add descriptions to help the AI understand each content format. These are included in the system prompt.
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {cuDefinitions.map((def) => (
-                <div key={def.id} className="border rounded-lg p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium">{def.format}</p>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <span className="text-[10px] text-muted-foreground">{def.category}</span>
-                        <span className="text-[10px] text-muted-foreground">&middot; {def.units} CU</span>
-                      </div>
-                    </div>
-                  </div>
-                  <textarea
-                    value={formatDescriptions[def.id] || ""}
-                    onChange={(e) =>
-                      setFormatDescriptions((prev) => ({ ...prev, [def.id]: e.target.value }))
-                    }
-                    rows={2}
-                    className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring resize-y min-h-[48px] placeholder:text-muted-foreground"
-                    placeholder={`Describe what a "${def.format}" is...`}
-                  />
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       {/* CU System Description */}
       <Card className="border-0 shadow-sm">
         <CardHeader className="pb-0">

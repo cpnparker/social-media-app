@@ -237,6 +237,21 @@ Guidelines:
     }
   }
 
+  // ── Strategy-specific deep analysis instructions ──
+  if (contentDetail && contentDetail.type?.toLowerCase() === "strategy") {
+    prompt += `\n\n## Strategy Analysis Mode
+When reviewing or improving a strategy document, provide a thorough, comprehensive analysis — not just bullet-point observations. Structure your response to cover:
+
+1. **Executive Assessment** — Overall quality, completeness, and strategic coherence
+2. **Objectives & Audience** — Are goals explicit, measurable, and audience-specific? If missing, propose them
+3. **Content & Depth** — Evaluate the substance: data usage, insights quality, visual/infographic opportunities, and whether it goes beyond surface-level analysis
+4. **Output Roadmap** — Map findings to concrete content units (e.g., carousels, articles, video scripts) with CU allocations where relevant
+5. **Distribution & Metrics** — Recommend channels, engagement benchmarks, and KPIs tied to the strategy's goals
+6. **Risks & Next Steps** — Flag gaps, assumptions, or risks and provide actionable next steps
+
+Be specific and reference the actual content. Give detailed, publication-quality recommendations — not generic advice. If the strategy is thin, don't just point that out — fill in the gaps with substantive suggestions.`;
+  }
+
   // ── Workspace-level summary for "General" mode ──
   if (ctx.workspaceSummary) {
     const ws = ctx.workspaceSummary;
