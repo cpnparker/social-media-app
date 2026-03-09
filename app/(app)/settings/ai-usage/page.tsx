@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import {
   BarChart,
   Bar,
@@ -122,6 +123,9 @@ const SOURCE_LABELS: Record<string, string> = {
 /* ─────────────── Component ─────────────── */
 
 export default function AIUsagePage() {
+  const wsCtx = useWorkspaceSafe();
+  const isOwnerOrAdmin = wsCtx?.selectedWorkspace?.role === "owner" || wsCtx?.selectedWorkspace?.role === "admin";
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
@@ -847,8 +851,8 @@ export default function AIUsagePage() {
               </Card>
             )}
 
-            {/* Per-User Cost */}
-            {usageData.byUser.length > 0 && (
+            {/* Per-User Cost — only visible to workspace owners/admins */}
+            {isOwnerOrAdmin && usageData.byUser.length > 0 && (
               <Card className="border-0 shadow-sm">
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">
