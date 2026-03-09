@@ -396,7 +396,7 @@ export default function ChatPanel({
 
   return (
     <div
-      className="flex flex-col h-full relative"
+      className="flex flex-col h-full min-h-0 relative overflow-hidden"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -414,7 +414,7 @@ export default function ChatPanel({
       )}
 
       {/* Header */}
-      <div className="border-b px-3 md:px-4 py-2 md:py-2.5 flex items-center gap-2 md:gap-3 shrink-0 sticky top-0 z-10 bg-background">
+      <div className="border-b px-3 md:px-4 py-2 md:py-2.5 flex items-center gap-2 md:gap-3 shrink-0 bg-background">
         {/* Mobile sidebar toggle — top left */}
         {onMenuClick && (
           <button
@@ -654,7 +654,7 @@ export default function ChatPanel({
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {messages.length === 0 && !isStreaming ? (
           <div className="flex flex-col items-center justify-center h-full px-4 sm:px-8 text-center">
             <div className="h-12 w-12 rounded-full bg-foreground/[0.05] flex items-center justify-center mb-4">

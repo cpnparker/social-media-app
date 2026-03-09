@@ -983,7 +983,7 @@ function EngineGPTContent() {
       </aside>
 
       {/* ─── Main content area ─── */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col min-w-0 overflow-hidden">
         {/* Mobile header — home screen only (chat view uses ChatPanel header) */}
         {!selectedId && (
           <div className="lg:hidden shrink-0 flex items-center gap-2 h-12 px-3 border-b bg-background">
@@ -1202,7 +1202,7 @@ function EngineGPTContent() {
 
         {selectedId ? (
           /* ─── Chat view ─── */
-          <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
             <ChatPanel
               key={selectedId}
               conversationId={selectedId}
