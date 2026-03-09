@@ -56,6 +56,7 @@ export async function GET() {
         accessEngineGpt: noRow ? isPrivileged : !!access.flag_access_enginegpt,
         accessOperations: noRow ? isPrivileged : !!access.flag_access_operations,
         accessAdmin: noRow ? isPrivileged : !!access.flag_access_admin,
+        accessMeetingBrain: noRow ? isPrivileged : !!access.flag_access_meetingbrain,
       };
     });
 

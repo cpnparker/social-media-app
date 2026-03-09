@@ -48,6 +48,7 @@ interface WorkspaceMember {
   accessEngineGpt: boolean;
   accessOperations: boolean;
   accessAdmin: boolean;
+  accessMeetingBrain: boolean;
 }
 
 interface CustomerAssignment {
@@ -60,7 +61,8 @@ type AccessField =
   | "accessEngine"
   | "accessEngineGpt"
   | "accessOperations"
-  | "accessAdmin";
+  | "accessAdmin"
+  | "accessMeetingBrain";
 
 /* ─────────────── Config ─────────────── */
 
@@ -103,6 +105,7 @@ const accessFields: { key: AccessField; label: string }[] = [
   { key: "accessEngineGpt", label: "GPT" },
   { key: "accessOperations", label: "Ops" },
   { key: "accessAdmin", label: "Admin" },
+  { key: "accessMeetingBrain", label: "MB" },
 ];
 
 /* ─────────────── Page ─────────────── */
@@ -352,7 +355,9 @@ export default function UsersSettingsPage() {
             ? "GPT"
             : field === "accessOperations"
               ? "Ops"
-              : "Admin";
+              : field === "accessAdmin"
+                ? "Admin"
+                : "MB";
       toast.success(
         `${value ? "Enabled" : "Disabled"} ${label} access for ${ids.length} user${ids.length !== 1 ? "s" : ""}`
       );

@@ -29,6 +29,7 @@ import {
   Boxes,
   Users,
   Sparkles,
+  Brain,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -52,7 +53,7 @@ import { navigateToSubdomain, getCurrentSubdomain, getSubdomainUrl, isProduction
 // Types & constants
 // ────────────────────────────────────────────────
 
-type Area = "engine" | "operations" | "enginegpt" | "admin";
+type Area = "engine" | "operations" | "enginegpt" | "meetingbrain" | "admin";
 
 interface NavSubItem {
   label: string;
@@ -70,6 +71,7 @@ interface NavSection {
 
 const deriveArea = (pathname: string): Area => {
   if (pathname.startsWith("/operations")) return "operations";
+  if (pathname.startsWith("/meetingbrain")) return "meetingbrain";
   if (
     pathname.startsWith("/settings") ||
     pathname === "/accounts" ||
@@ -284,6 +286,7 @@ export function Sidebar({ onClose }: SidebarProps) {
   const showEngineGpt = ws?.accessEngineGpt ?? true;
   const showOperations = ws?.accessOperations ?? TCE_STAFF_ROLES.includes(userRole);
   const showAdmin = ws?.accessAdmin ?? true;
+  const showMeetingBrain = ws?.accessMeetingBrain ?? false;
 
   // ── Inbox count ──
   const fetchInboxCount = useCallback(async () => {
@@ -342,6 +345,7 @@ export function Sidebar({ onClose }: SidebarProps) {
     { area: "engine", icon: Package, label: "The Engine", hidden: !showEngine },
     { area: "operations", icon: Gauge, label: "Operations", hidden: !showOperations },
     { area: "enginegpt", icon: Sparkles, label: "EngineGPT", hidden: !showEngineGpt },
+    { area: "meetingbrain", icon: Brain, label: "MeetingBrain", hidden: !showMeetingBrain },
     { area: "admin", icon: Settings, label: "Administration", hidden: !showAdmin },
   ];
 
@@ -377,6 +381,11 @@ export function Sidebar({ onClose }: SidebarProps) {
                     // EngineGPT lives on its own subdomain
                     if (item.area === "enginegpt") {
                       navigateToSubdomain("ai");
+                      return;
+                    }
+                    // MeetingBrain — navigate to /meetingbrain route
+                    if (item.area === "meetingbrain") {
+                      window.location.href = "/meetingbrain";
                       return;
                     }
                     // On production, navigate to the correct subdomain
@@ -451,6 +460,10 @@ export function Sidebar({ onClose }: SidebarProps) {
                       navigateToSubdomain("ai");
                       return;
                     }
+                    if (item.area === "meetingbrain") {
+                      window.location.href = "/meetingbrain";
+                      return;
+                    }
                     if (isProductionHost()) {
                       const currentSub = getCurrentSubdomain();
                       const targetSub = item.area === "admin" ? "engine" : item.area;
@@ -477,6 +490,8 @@ export function Sidebar({ onClose }: SidebarProps) {
                     ? "Ops"
                     : item.area === "enginegpt"
                     ? "GPT"
+                    : item.area === "meetingbrain"
+                    ? "MB"
                     : "Admin"}
                 </button>
               ))}

@@ -96,13 +96,15 @@ function AreaAccessGuard({ children }: { children: React.ReactNode }) {
       pathname === "/accounts" ||
       pathname === "/inbox";
     const isEngineGpt = pathname.startsWith("/ai-writer");
+    const isMeetingBrain = pathname.startsWith("/meetingbrain");
     const isEngine =
-      !isOperations && !isAdmin && !isEngineGpt;
+      !isOperations && !isAdmin && !isEngineGpt && !isMeetingBrain;
 
     let blocked = false;
     if (isOperations && !ws.accessOperations) blocked = true;
     if (isAdmin && !ws.accessAdmin && !ws.accessOperations) blocked = true;
     if (isEngineGpt && !ws.accessEngineGpt) blocked = true;
+    if (isMeetingBrain && !ws.accessMeetingBrain) blocked = true;
     if (isEngine && !ws.accessEngine) blocked = true;
 
     if (blocked) {
@@ -111,6 +113,8 @@ function AreaAccessGuard({ children }: { children: React.ReactNode }) {
         router.replace("/dashboard");
       } else if (ws.accessEngineGpt) {
         router.replace("/ai-writer");
+      } else if (ws.accessMeetingBrain) {
+        router.replace("/meetingbrain");
       } else if (ws.accessOperations) {
         router.replace("/operations/commissioned-cus");
       } else if (ws.accessAdmin) {

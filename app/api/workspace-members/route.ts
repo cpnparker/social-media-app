@@ -90,6 +90,7 @@ export async function GET() {
         accessEngineGpt: access ? !!access.flag_access_enginegpt : (m.role === "owner" || m.role === "admin"),
         accessOperations: access ? !!access.flag_access_operations : (m.role === "owner" || m.role === "admin"),
         accessAdmin: access ? !!access.flag_access_admin : (m.role === "owner" || m.role === "admin"),
+        accessMeetingBrain: access ? !!access.flag_access_meetingbrain : (m.role === "owner" || m.role === "admin"),
       };
     });
 
@@ -177,6 +178,7 @@ export async function POST(req: NextRequest) {
       flag_access_enginegpt: 0,
       flag_access_operations: 0,
       flag_access_admin: 0,
+      flag_access_meetingbrain: 0,
     });
 
     return NextResponse.json(
@@ -190,6 +192,7 @@ export async function POST(req: NextRequest) {
           accessEngineGpt: false,
           accessOperations: false,
           accessAdmin: false,
+          accessMeetingBrain: false,
         },
       },
       { status: 201 }
@@ -204,7 +207,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
-    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin } = body;
+    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain } = body;
 
     // Determine target user IDs — bulk or single
     const isBulk = Array.isArray(userIds) && userIds.length > 0;
@@ -249,7 +252,8 @@ export async function PATCH(req: NextRequest) {
       accessEngine !== undefined ||
       accessEngineGpt !== undefined ||
       accessOperations !== undefined ||
-      accessAdmin !== undefined;
+      accessAdmin !== undefined ||
+      accessMeetingBrain !== undefined;
 
     if (hasAccessUpdate) {
       await Promise.all(
@@ -269,6 +273,7 @@ export async function PATCH(req: NextRequest) {
             if (accessEngineGpt !== undefined) updates.flag_access_enginegpt = accessEngineGpt ? 1 : 0;
             if (accessOperations !== undefined) updates.flag_access_operations = accessOperations ? 1 : 0;
             if (accessAdmin !== undefined) updates.flag_access_admin = accessAdmin ? 1 : 0;
+            if (accessMeetingBrain !== undefined) updates.flag_access_meetingbrain = accessMeetingBrain ? 1 : 0;
 
             await intelligenceDb
               .from("users_access")
@@ -282,6 +287,7 @@ export async function PATCH(req: NextRequest) {
               flag_access_enginegpt: accessEngineGpt ? 1 : 0,
               flag_access_operations: accessOperations ? 1 : 0,
               flag_access_admin: accessAdmin ? 1 : 0,
+              flag_access_meetingbrain: accessMeetingBrain ? 1 : 0,
             });
           }
         })

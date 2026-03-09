@@ -55,6 +55,7 @@ export async function POST() {
         flag_access_enginegpt: 0,
         flag_access_operations: 0,
         flag_access_admin: 0,
+        flag_access_meetingbrain: 0,
         date_updated: new Date().toISOString(),
       })
       .eq("id_workspace", ws.id);
@@ -75,6 +76,7 @@ export async function POST() {
           flag_access_enginegpt: 1,
           flag_access_operations: 1,
           flag_access_admin: 1,
+          flag_access_meetingbrain: 1,
           date_updated: new Date().toISOString(),
         })
         .eq("id_access", existingOwnerAccess.id_access);
@@ -86,6 +88,7 @@ export async function POST() {
         flag_access_enginegpt: 1,
         flag_access_operations: 1,
         flag_access_admin: 1,
+        flag_access_meetingbrain: 1,
       });
     }
 
