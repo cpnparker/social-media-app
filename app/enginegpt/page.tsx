@@ -165,6 +165,14 @@ function EngineGPTContent() {
   // Prevent hydration mismatch for theme icon
   useEffect(() => setMounted(true), []);
 
+  // Reset to General (no customer) every time EngineGPT opens
+  useEffect(() => {
+    if (customerCtx?.setSelectedCustomerId) {
+      customerCtx.setSelectedCustomerId(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Fetch user info for sidebar
   useEffect(() => {
     fetch("/api/me")
@@ -1202,6 +1210,9 @@ function EngineGPTContent() {
               initialAttachments={initialAttachments}
               contextConfig={{ ...contextConfig, incognito: incognitoMode ? "on" : "off" }}
               debugMode={debugMode}
+              customers={customers.map((c) => ({ id: String(c.id), name: c.name, logoUrl: c.logoUrl || undefined }))}
+              selectedCustomer={selectedCustomer ? { id: String(selectedCustomer.id), name: selectedCustomer.name } : null}
+              onCustomerChange={(id) => customerCtx?.setSelectedCustomerId(id)}
               onCopyLink={() => {
                 const url = new URL(window.location.href);
                 url.searchParams.set("thread", selectedId!);

@@ -23,6 +23,7 @@ import {
   Check,
   Brain,
   UserPlus,
+  ChevronsUpDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -56,6 +57,12 @@ import ChatInput, { type ChatInputHandle } from "./ChatInput";
 import ShareDialog from "./ShareDialog";
 import type { AIConversation, AIMessageRow, Attachment } from "@/lib/types/ai";
 
+interface CustomerOption {
+  id: string;
+  name: string;
+  logoUrl?: string;
+}
+
 interface ChatPanelProps {
   conversationId: string;
   onConversationDeleted?: () => void;
@@ -67,6 +74,9 @@ interface ChatPanelProps {
   debugMode?: boolean;
   onCopyLink?: () => void;
   onMenuClick?: () => void;
+  customers?: CustomerOption[];
+  selectedCustomer?: { id: string; name: string } | null;
+  onCustomerChange?: (customerId: string | null) => void;
 }
 
 type ContextConfig = { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch: string; memory: string };
@@ -82,6 +92,9 @@ export default function ChatPanel({
   debugMode,
   onCopyLink,
   onMenuClick,
+  customers,
+  selectedCustomer,
+  onCustomerChange,
 }: ChatPanelProps) {
   const [conversation, setConversation] = useState<AIConversation | null>(null);
   const [messages, setMessages] = useState<AIMessageRow[]>([]);
@@ -343,18 +356,38 @@ export default function ChatPanel({
     }
   }, []);
 
-  if (loading) {
+  // Minimal header shown during loading / error — keeps hamburger + back always accessible
+  if (loading || !conversation) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
-      </div>
-    );
-  }
-
-  if (!conversation) {
-    return (
-      <div className="flex items-center justify-center h-full text-muted-foreground">
-        Conversation not found
+      <div className="flex flex-col h-full">
+        <div className="border-b px-3 md:px-4 py-2 md:py-2.5 flex items-center gap-2 md:gap-3 shrink-0">
+          {onMenuClick && (
+            <button
+              onClick={onMenuClick}
+              className="lg:hidden shrink-0 h-10 w-10 -ml-1 flex items-center justify-center rounded-lg hover:bg-muted transition-colors"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+          )}
+          {onBack && (
+            <button
+              onClick={onBack}
+              className="lg:hidden shrink-0 h-8 w-8 flex items-center justify-center rounded-lg hover:bg-muted transition-colors"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+          )}
+          {loading && (
+            <span className="text-sm text-muted-foreground">Loading…</span>
+          )}
+        </div>
+        <div className="flex-1 flex items-center justify-center">
+          {loading ? (
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
+          ) : (
+            <p className="text-muted-foreground">Conversation not found</p>
+          )}
+        </div>
       </div>
     );
   }
@@ -481,6 +514,50 @@ export default function ChatPanel({
             )}
           </div>
         </div>
+
+        {/* Mobile customer dropdown */}
+        {customers && customers.length > 0 && onCustomerChange && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <button className="lg:hidden flex items-center gap-1 rounded-lg border bg-background hover:bg-muted px-2 py-1 text-[12px] transition-colors shrink-0">
+                <Building2 className="h-3 w-3 text-muted-foreground" />
+                <span className="truncate max-w-[80px]">
+                  {selectedCustomer?.name || "General"}
+                </span>
+                <ChevronsUpDown className="h-2.5 w-2.5 text-muted-foreground" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="end" side="bottom" className="w-[240px] p-0">
+              <div className="max-h-[280px] overflow-y-auto py-1">
+                <button
+                  onClick={() => onCustomerChange(null)}
+                  className={cn(
+                    "w-full flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-accent transition-colors text-left",
+                    !selectedCustomer && "bg-accent"
+                  )}
+                >
+                  <Globe className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="flex-1">General</span>
+                  {!selectedCustomer && <Check className="h-4 w-4 text-primary shrink-0" />}
+                </button>
+                {customers.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => onCustomerChange(c.id)}
+                    className={cn(
+                      "w-full flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-accent transition-colors text-left",
+                      selectedCustomer?.id === c.id && "bg-accent"
+                    )}
+                  >
+                    <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <span className="flex-1 truncate">{c.name}</span>
+                    {selectedCustomer?.id === c.id && <Check className="h-4 w-4 text-primary shrink-0" />}
+                  </button>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
+        )}
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
