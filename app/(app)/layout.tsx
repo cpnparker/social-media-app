@@ -119,6 +119,9 @@ function AreaAccessGuard({ children }: { children: React.ReactNode }) {
         router.replace("/operations/commissioned-cus");
       } else if (ws.accessAdmin) {
         router.replace("/settings/workspace");
+      } else {
+        // No access to any area — redirect to login
+        router.replace("/login");
       }
     }
   }, [wsCtx, pathname, router]);

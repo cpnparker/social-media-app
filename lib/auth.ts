@@ -1,6 +1,7 @@
 import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
 import { supabase } from "./supabase";
+import { intelligenceDb } from "./supabase-intelligence";
 
 // Share auth cookies across all *.thecontentengine.com subdomains
 const isProduction = process.env.NODE_ENV === "production";
@@ -84,15 +85,90 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           }
 
           // Auto-create user record if they don't exist yet
+          let userId: number | null = existingUser?.id_user ?? null;
           if (!existingUser && !error) {
-            const { error: insertErr } = await supabase.from("users").insert({
-              email_user: user.email,
-              name_user: user.name || user.email.split("@")[0],
-              date_created: new Date().toISOString(),
-              role_user: "none",
-            });
+            const { data: newUser, error: insertErr } = await supabase
+              .from("users")
+              .insert({
+                email_user: user.email,
+                name_user: user.name || user.email.split("@")[0],
+                date_created: new Date().toISOString(),
+                role_user: "none",
+              })
+              .select("id_user")
+              .single();
             if (insertErr) {
               console.error("signIn auto-create error:", insertErr.message);
+            } else if (newUser) {
+              userId = newUser.id_user;
+            }
+          }
+
+          // Auto-add to workspace if not already a member
+          if (userId) {
+            try {
+              const { data: ws } = await intelligenceDb
+                .from("workspaces")
+                .select("id")
+                .limit(1)
+                .single();
+
+              if (ws) {
+                const { data: existingMember } = await intelligenceDb
+                  .from("workspace_members")
+                  .select("id, role")
+                  .eq("workspace_id", ws.id)
+                  .eq("user_id", userId)
+                  .limit(1)
+                  .single();
+
+                if (!existingMember) {
+                  // New user — add as viewer with no access
+                  await intelligenceDb.from("workspace_members").insert({
+                    workspace_id: ws.id,
+                    user_id: userId,
+                    role: "viewer",
+                    joined_at: new Date().toISOString(),
+                  });
+                  await intelligenceDb.from("users_access").insert({
+                    id_workspace: ws.id,
+                    user_target: userId,
+                    flag_access_engine: 0,
+                    flag_access_enginegpt: 0,
+                    flag_access_operations: 0,
+                    flag_access_admin: 0,
+                    flag_access_meetingbrain: 0,
+                  });
+                } else {
+                  // Existing member — ensure users_access row exists
+                  const { data: existingAccess } = await intelligenceDb
+                    .from("users_access")
+                    .select("id_access")
+                    .eq("id_workspace", ws.id)
+                    .eq("user_target", userId)
+                    .limit(1)
+                    .single();
+
+                  if (!existingAccess) {
+                    // Back-fill: admins/owners get full access, others get none
+                    const isPrivileged =
+                      existingMember.role === "owner" ||
+                      existingMember.role === "admin";
+                    const flag = isPrivileged ? 1 : 0;
+                    await intelligenceDb.from("users_access").insert({
+                      id_workspace: ws.id,
+                      user_target: userId,
+                      flag_access_engine: flag,
+                      flag_access_enginegpt: flag,
+                      flag_access_operations: flag,
+                      flag_access_admin: flag,
+                      flag_access_meetingbrain: flag,
+                    });
+                  }
+                }
+              }
+            } catch (wsErr) {
+              console.error("signIn workspace auto-add error:", wsErr);
             }
           }
         } catch (err) {

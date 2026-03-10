@@ -69,7 +69,7 @@ function EngineGPTAccessGuard({ children }: { children: React.ReactNode }) {
   }
 
   const ws = wsCtx?.selectedWorkspace;
-  if (ws && ws.accessEngineGpt === false) {
+  if (!ws || ws.accessEngineGpt === false) {
     return (
       <div className="flex h-dvh items-center justify-center bg-background">
         <div className="text-center px-4">

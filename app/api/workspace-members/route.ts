@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
-import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 
 // GET /api/workspace-members — list all users in the workspace
@@ -15,37 +14,6 @@ export async function GET() {
 
     if (!ws) {
       return NextResponse.json({ members: [] });
-    }
-
-    // Ensure the logged-in user is a workspace member
-    const session = await auth();
-    if (session?.user?.email) {
-      const { data: sessionUser } = await supabase
-        .from("users")
-        .select("id_user")
-        .eq("email_user", session.user.email)
-        .is("date_deleted", null)
-        .limit(1)
-        .single();
-
-      if (sessionUser) {
-        const { data: existingMember } = await intelligenceDb
-          .from("workspace_members")
-          .select("id")
-          .eq("workspace_id", ws.id)
-          .eq("user_id", sessionUser.id_user)
-          .limit(1)
-          .single();
-
-        if (!existingMember) {
-          await intelligenceDb.from("workspace_members").insert({
-            workspace_id: ws.id,
-            user_id: sessionUser.id_user,
-            role: "admin",
-            joined_at: new Date().toISOString(),
-          });
-        }
-      }
     }
 
     // Fetch all members with user details
@@ -85,12 +53,12 @@ export async function GET() {
         role: m.role,
         supabaseRole: user?.role_user || null,
         joinedAt: m.joined_at || null,
-        // No access row = secure default (no access) unless workspace owner/admin
-        accessEngine: access ? !!access.flag_access_engine : (m.role === "owner" || m.role === "admin"),
-        accessEngineGpt: access ? !!access.flag_access_enginegpt : (m.role === "owner" || m.role === "admin"),
-        accessOperations: access ? !!access.flag_access_operations : (m.role === "owner" || m.role === "admin"),
-        accessAdmin: access ? !!access.flag_access_admin : (m.role === "owner" || m.role === "admin"),
-        accessMeetingBrain: access ? !!access.flag_access_meetingbrain : (m.role === "owner" || m.role === "admin"),
+        // No access row = no access (secure by default)
+        accessEngine: access ? !!access.flag_access_engine : false,
+        accessEngineGpt: access ? !!access.flag_access_enginegpt : false,
+        accessOperations: access ? !!access.flag_access_operations : false,
+        accessAdmin: access ? !!access.flag_access_admin : false,
+        accessMeetingBrain: access ? !!access.flag_access_meetingbrain : false,
       };
     });
 

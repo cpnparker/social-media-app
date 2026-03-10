@@ -116,11 +116,11 @@ export function useRailItems(): { items: RailItem[]; visibleCount: number } {
   const ws = wsCtx?.selectedWorkspace;
 
   const items: RailItem[] = [
-    { area: "engine",       icon: Package,  label: "The Engine",     shortLabel: "Engine", hidden: !(ws?.accessEngine ?? true) },
+    { area: "engine",       icon: Package,  label: "The Engine",     shortLabel: "Engine", hidden: !(ws?.accessEngine ?? false) },
     { area: "operations",   icon: Gauge,    label: "Operations",     shortLabel: "Ops",    hidden: !(ws?.accessOperations ?? false) },
-    { area: "enginegpt",    icon: Sparkles, label: "EngineGPT",      shortLabel: "GPT",    hidden: !(ws?.accessEngineGpt ?? true) },
+    { area: "enginegpt",    icon: Sparkles, label: "EngineGPT",      shortLabel: "GPT",    hidden: !(ws?.accessEngineGpt ?? false) },
     { area: "meetingbrain", icon: Brain,    label: "MeetingBrain",   shortLabel: "MB",     hidden: !(ws?.accessMeetingBrain ?? false) },
-    { area: "admin",        icon: Settings, label: "Administration", shortLabel: "Admin",  hidden: !(ws?.accessAdmin ?? true) },
+    { area: "admin",        icon: Settings, label: "Administration", shortLabel: "Admin",  hidden: !(ws?.accessAdmin ?? false) },
   ];
 
   const visibleCount = items.filter((i) => !i.hidden).length;
