@@ -2,7 +2,7 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "EngineGPT — AI Content Assistant",
+    name: "EngineGPT",
     short_name: "EngineGPT",
     description:
       "Your AI-powered content assistant. Brainstorm ideas, draft content, and manage social media with deep client context.",
