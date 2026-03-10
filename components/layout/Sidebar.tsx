@@ -197,6 +197,8 @@ export function Sidebar({ onClose }: SidebarProps) {
         .slice(0, 2)
     : "?";
 
+  const showAdmin = wsCtx?.selectedWorkspace?.accessAdmin ?? false;
+
   const [activeArea, setActiveArea] = useState<Area>(() => deriveArea(pathname));
 
   // Auto-update area when pathname changes (e.g. direct navigation)
@@ -325,13 +327,33 @@ export function Sidebar({ onClose }: SidebarProps) {
               <p className="text-sm font-medium">{userName || "User"}</p>
               <p className="text-xs text-muted-foreground">{userEmail || ""}</p>
             </div>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem asChild>
-              <Link href="/settings/workspace" className="gap-2">
-                <Settings className="h-4 w-4" />
-                Workspace settings
-              </Link>
-            </DropdownMenuItem>
+            {showAdmin && (
+              <>
+                <DropdownMenuSeparator />
+                <div className="px-2 py-1.5">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Administration</p>
+                </div>
+                {adminItems.map((item) => (
+                  <DropdownMenuItem key={item.href} asChild>
+                    <Link href={item.href} className="gap-2">
+                      {item.icon && <item.icon className="h-4 w-4" />}
+                      {item.label}
+                    </Link>
+                  </DropdownMenuItem>
+                ))}
+              </>
+            )}
+            {!showAdmin && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/workspace" className="gap-2">
+                    <Settings className="h-4 w-4" />
+                    Settings
+                  </Link>
+                </DropdownMenuItem>
+              </>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => signOut({ callbackUrl: "/login" })}
@@ -364,6 +386,7 @@ export function Sidebar({ onClose }: SidebarProps) {
             userEmail={userEmail}
             userInitials={userInitials}
             showEngineGpt={showEngineGpt}
+            showAdmin={showAdmin}
           />
         )}
 
@@ -376,11 +399,20 @@ export function Sidebar({ onClose }: SidebarProps) {
         )}
 
         {activeArea === "admin" && (
-          <AdminPanel
-            items={adminItems}
+          <EnginePanel
+            wsCtx={wsCtx}
+            sections={engineSections}
+            openSections={openSections}
+            toggleSection={toggleSection}
             checkActive={checkActive}
             inboxCount={inboxCount}
             onClose={onClose}
+            pathname={pathname}
+            userName={userName}
+            userEmail={userEmail}
+            userInitials={userInitials}
+            showEngineGpt={showEngineGpt}
+            showAdmin={showAdmin}
           />
         )}
       </div>
@@ -404,6 +436,7 @@ function EnginePanel({
   userEmail,
   userInitials,
   showEngineGpt,
+  showAdmin,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   wsCtx: any;
@@ -418,6 +451,7 @@ function EnginePanel({
   userEmail: string;
   userInitials: string;
   showEngineGpt: boolean;
+  showAdmin: boolean;
 }) {
   return (
     <>
@@ -641,12 +675,29 @@ function EnginePanel({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" side="top" className="w-56 mb-1">
-            <DropdownMenuItem asChild>
-              <Link href="/settings/workspace" className="gap-2">
-                <Settings className="h-4 w-4" />
-                Workspace settings
-              </Link>
-            </DropdownMenuItem>
+            {showAdmin && (
+              <>
+                <div className="px-2 py-1.5">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Administration</p>
+                </div>
+                {adminItems.map((item) => (
+                  <DropdownMenuItem key={item.href} asChild>
+                    <Link href={item.href} className="gap-2" onClick={onClose}>
+                      {item.icon && <item.icon className="h-4 w-4" />}
+                      {item.label}
+                    </Link>
+                  </DropdownMenuItem>
+                ))}
+              </>
+            )}
+            {!showAdmin && (
+              <DropdownMenuItem asChild>
+                <Link href="/settings/workspace" className="gap-2">
+                  <Settings className="h-4 w-4" />
+                  Settings
+                </Link>
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => signOut({ callbackUrl: "/login" })}
@@ -751,68 +802,3 @@ function OperationsPanel({
   );
 }
 
-// ────────────────────────────────────────────────
-// Admin Panel
-// ────────────────────────────────────────────────
-function AdminPanel({
-  items,
-  checkActive,
-  inboxCount,
-  onClose,
-}: {
-  items: NavSubItem[];
-  checkActive: (href: string) => boolean;
-  inboxCount: number;
-  onClose?: () => void;
-}) {
-  return (
-    <>
-      <div className="px-3 pt-3 pb-2 shrink-0">
-        <div className="flex items-center gap-2.5 px-2 py-1">
-          <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-bold tracking-tight truncate text-white">
-              Administration
-            </p>
-            <p className="text-[10px] text-white/40">
-              Settings &amp; Configuration
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-hide px-3 pb-4">
-        <div className="space-y-0.5">
-          {items.map((item) => {
-            const active = checkActive(item.href);
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={onClose}
-                className={cn(
-                  "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
-                  active
-                    ? "bg-white/15 text-white"
-                    : "text-white/70 hover:bg-white/10 hover:text-white"
-                )}
-              >
-                {Icon ? (
-                  <Icon className={cn("h-4 w-4 shrink-0", active ? "text-blue-400" : "text-white/40")} />
-                ) : (
-                  <ChevronRight className={cn("h-3.5 w-3.5 shrink-0", active ? "text-blue-400" : "text-white/40")} />
-                )}
-                <span className="flex-1 truncate">{item.label}</span>
-                {item.label === "Inbox" && inboxCount > 0 && (
-                  <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-500 px-1.5 text-[11px] font-semibold text-white">
-                    {inboxCount}
-                  </span>
-                )}
-              </Link>
-            );
-          })}
-        </div>
-      </nav>
-    </>
-  );
-}

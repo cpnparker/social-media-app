@@ -16,6 +16,13 @@ import {
   ChevronDown,
   Loader2,
   Search,
+  Inbox,
+  UserPlus,
+  ListChecks,
+  Boxes,
+  FileText,
+  Link2,
+  CreditCard,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
@@ -43,6 +50,7 @@ import {
 } from "@/components/ui/command";
 import { signOut } from "next-auth/react";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { cn } from "@/lib/utils";
 
 interface TopBarProps {
@@ -52,6 +60,8 @@ interface TopBarProps {
 export function TopBar({ onMenuClick }: TopBarProps) {
   const { setTheme, resolvedTheme } = useTheme();
   const customerCtx = useCustomerSafe();
+  const wsCtx = useWorkspaceSafe();
+  const showAdmin = wsCtx?.selectedWorkspace?.accessAdmin ?? false;
 
   // Fetch user info from /api/me (same pattern as Sidebar)
   const [userName, setUserName] = useState("");
@@ -277,13 +287,85 @@ export function TopBar({ onMenuClick }: TopBarProps) {
                 {userEmail || ""}
               </p>
             </div>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem asChild>
-              <Link href="/settings/workspace" className="gap-2">
-                <Settings className="h-4 w-4" />
-                Settings
-              </Link>
-            </DropdownMenuItem>
+            {showAdmin && (
+              <>
+                <DropdownMenuSeparator />
+                <div className="px-2 py-1.5">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Administration</p>
+                </div>
+                <DropdownMenuItem asChild>
+                  <Link href="/accounts" className="gap-2">
+                    <Building2 className="h-4 w-4" />
+                    Accounts
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/inbox" className="gap-2">
+                    <Inbox className="h-4 w-4" />
+                    Inbox
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/workspace" className="gap-2">
+                    <Settings className="h-4 w-4" />
+                    Workspace
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/customers" className="gap-2">
+                    <Building2 className="h-4 w-4" />
+                    Customers
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/users" className="gap-2">
+                    <UserPlus className="h-4 w-4" />
+                    Users
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/templates" className="gap-2">
+                    <ListChecks className="h-4 w-4" />
+                    Templates
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/content-units" className="gap-2">
+                    <Boxes className="h-4 w-4" />
+                    Content Units
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/content-formats" className="gap-2">
+                    <FileText className="h-4 w-4" />
+                    Content Formats
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/links" className="gap-2">
+                    <Link2 className="h-4 w-4" />
+                    Links
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/billing" className="gap-2">
+                    <CreditCard className="h-4 w-4" />
+                    Billing
+                  </Link>
+                </DropdownMenuItem>
+              </>
+            )}
+            {!showAdmin && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/workspace" className="gap-2">
+                    <Settings className="h-4 w-4" />
+                    Settings
+                  </Link>
+                </DropdownMenuItem>
+              </>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => signOut({ callbackUrl: "/login" })}

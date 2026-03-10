@@ -7,9 +7,12 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
+import { useRouter } from "next/navigation";
 import {
   RAIL_ITEMS,
   navigateToArea,
+  getAreaUrl,
+  isProductionHost,
   type Area,
   type RailItemConfig,
 } from "@cpnparker/engine-nav";
@@ -62,6 +65,20 @@ interface SectionRailProps {
 
 export function SectionRailDesktop({ currentArea, onLocalSwitch }: SectionRailProps) {
   const { items } = useRailItems();
+  const router = useRouter();
+
+  const handleClick = (area: Area) => {
+    if (area === "admin") {
+      // Admin navigates directly to settings instead of switching sidebar panel
+      if (isProductionHost()) {
+        window.location.href = getAreaUrl("admin");
+      } else {
+        router.push("/settings/workspace");
+      }
+      return;
+    }
+    navigateToArea(area, currentArea, { onLocalSwitch });
+  };
 
   return (
     <div className="flex flex-col items-center gap-1">
@@ -71,7 +88,7 @@ export function SectionRailDesktop({ currentArea, onLocalSwitch }: SectionRailPr
           <Tooltip key={item.area} delayDuration={300}>
             <TooltipTrigger asChild>
               <button
-                onClick={() => navigateToArea(item.area, currentArea, { onLocalSwitch })}
+                onClick={() => handleClick(item.area)}
                 className={cn(
                   "relative flex items-center justify-center w-10 h-10 rounded-lg transition-all duration-150",
                   item.area === currentArea
@@ -100,6 +117,19 @@ export function SectionRailDesktop({ currentArea, onLocalSwitch }: SectionRailPr
 
 export function SectionRailMobile({ currentArea, onLocalSwitch }: SectionRailProps) {
   const { items } = useRailItems();
+  const router = useRouter();
+
+  const handleClick = (area: Area) => {
+    if (area === "admin") {
+      if (isProductionHost()) {
+        window.location.href = getAreaUrl("admin");
+      } else {
+        router.push("/settings/workspace");
+      }
+      return;
+    }
+    navigateToArea(area, currentArea, { onLocalSwitch });
+  };
 
   return (
     <div className="lg:hidden px-3 pt-3 pb-2">
@@ -109,7 +139,7 @@ export function SectionRailMobile({ currentArea, onLocalSwitch }: SectionRailPro
           .map((item) => (
             <button
               key={item.area}
-              onClick={() => navigateToArea(item.area, currentArea, { onLocalSwitch })}
+              onClick={() => handleClick(item.area)}
               className={cn(
                 "flex-1 px-2 py-1.5 rounded-md text-[11px] font-medium transition-colors text-center",
                 item.area === currentArea
