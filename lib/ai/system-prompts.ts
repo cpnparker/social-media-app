@@ -173,23 +173,27 @@ export function buildSystemPrompt(ctx: {
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
 
+  const FORMATTING_GUIDELINES = `
+Guidelines:
+- Be direct, actionable, and creative — avoid generic advice
+- Use the context below to give specific, informed answers
+- When drafting, produce publication-ready work
+
+Response format:
+- Write in a mix of short paragraphs and bullet lists — avoid wall-of-text or bullet-only replies
+- Lead with a brief paragraph that frames the answer, then use lists or tables where they add clarity
+- Use markdown: headings for structure, **bold** for key terms, tables for comparisons or data
+- Keep paragraphs to 2-3 sentences; use them to explain reasoning, nuance, or narrative
+- Use bullet lists for actionable steps, options, or quick-reference items
+- Vary your structure to match the content — don't default to the same layout every time`;
+
   let prompt: string;
   if (ctx.role) {
     prompt = `You are EngineGPT, acting as ${ctx.role.name}, built into The Content Engine. ${ctx.role.instructions}
-
-Guidelines:
-- Be direct, actionable, and creative — avoid generic advice
-- Use the context below to give specific, informed answers
-- When drafting, produce publication-ready work
-- Use markdown formatting for readability`;
+${FORMATTING_GUIDELINES}`;
   } else {
     prompt = `You are EngineGPT, an expert content strategist and writer built into The Content Engine. You help users brainstorm, draft, refine, and strategise content.
-
-Guidelines:
-- Be direct, actionable, and creative — avoid generic advice
-- Use the context below to give specific, informed answers
-- When drafting, produce publication-ready work
-- Use markdown formatting for readability`;
+${FORMATTING_GUIDELINES}`;
   }
 
   // ── Personal context (user-specific) ──
