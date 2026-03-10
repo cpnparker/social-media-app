@@ -77,6 +77,7 @@ interface ChatPanelProps {
   customers?: CustomerOption[];
   selectedCustomer?: { id: string; name: string } | null;
   onCustomerChange?: (customerId: string | null) => void;
+  isAdmin?: boolean;
 }
 
 type ContextConfig = { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch: string; memory: string };
@@ -95,6 +96,7 @@ export default function ChatPanel({
   customers,
   selectedCustomer,
   onCustomerChange,
+  isAdmin,
 }: ChatPanelProps) {
   const [conversation, setConversation] = useState<AIConversation | null>(null);
   const [messages, setMessages] = useState<AIMessageRow[]>([]);
@@ -118,6 +120,7 @@ export default function ChatPanel({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [myPermission, setMyPermission] = useState<"owner" | "view" | "collaborate">("owner");
+  const canManage = myPermission === "owner" || !!isAdmin;
   const [shares, setShares] = useState<{ userId: number; userName: string | null; permission: string }[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initialMessageSent = useRef(false);
@@ -425,7 +428,7 @@ export default function ChatPanel({
           </button>
         )}
         <div className="flex-1 min-w-0">
-          {editingTitle && myPermission === "owner" ? (
+          {editingTitle && canManage ? (
             <input
               autoFocus
               value={titleDraft}
@@ -440,13 +443,13 @@ export default function ChatPanel({
           ) : (
             <button
               onClick={() => {
-                if (myPermission !== "owner") return;
+                if (!canManage) return;
                 setTitleDraft(conversation.title);
                 setEditingTitle(true);
               }}
               className={cn(
                 "text-sm font-semibold truncate text-left",
-                myPermission === "owner" && "hover:underline cursor-pointer"
+                canManage && "hover:underline cursor-pointer"
               )}
             >
               {conversation.title}
@@ -490,10 +493,10 @@ export default function ChatPanel({
             {/* Avatar stack for shared users */}
             {shares.length > 0 && (
               <button
-                onClick={() => myPermission === "owner" && setShareDialogOpen(true)}
+                onClick={() => canManage && setShareDialogOpen(true)}
                 className={cn(
                   "flex items-center -space-x-1.5 ml-1",
-                  myPermission === "owner" && "cursor-pointer hover:opacity-80"
+                  canManage && "cursor-pointer hover:opacity-80"
                 )}
                 title={`Shared with ${shares.length} ${shares.length === 1 ? "person" : "people"}`}
               >
@@ -567,9 +570,9 @@ export default function ChatPanel({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem
-              disabled={myPermission !== "owner"}
+              disabled={!canManage}
               onClick={() => {
-                if (myPermission !== "owner") return;
+                if (!canManage) return;
                 setTitleDraft(conversation.title);
                 setEditingTitle(true);
               }}
@@ -585,9 +588,9 @@ export default function ChatPanel({
             )}
             {conversation.visibility === "private" && (
               <DropdownMenuItem
-                disabled={myPermission !== "owner"}
+                disabled={!canManage}
                 onClick={() => {
-                  if (myPermission !== "owner") return;
+                  if (!canManage) return;
                   setShareDialogOpen(true);
                 }}
               >
@@ -596,9 +599,9 @@ export default function ChatPanel({
               </DropdownMenuItem>
             )}
             <DropdownMenuItem
-              disabled={myPermission !== "owner"}
+              disabled={!canManage}
               onClick={() => {
-                if (myPermission !== "owner") return;
+                if (!canManage) return;
                 handleToggleVisibility();
               }}
             >
@@ -616,17 +619,17 @@ export default function ChatPanel({
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              disabled={myPermission !== "owner"}
+              disabled={!canManage}
               onClick={() => {
-                if (myPermission !== "owner") return;
+                if (!canManage) return;
                 setDeleteConfirmOpen(true);
               }}
-              className={myPermission === "owner" ? "text-destructive" : ""}
+              className={canManage ? "text-destructive" : ""}
             >
               <Trash2 className="h-3.5 w-3.5 mr-2" />
               Delete
             </DropdownMenuItem>
-            {myPermission !== "owner" && (
+            {!canManage && (
               <>
                 <DropdownMenuSeparator />
                 <div className="px-2 py-1.5 text-[11px] text-muted-foreground">

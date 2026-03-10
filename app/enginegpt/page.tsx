@@ -1334,6 +1334,7 @@ function EngineGPTContent() {
                 navigator.clipboard.writeText(url.toString());
                 toast.success("Thread link copied to clipboard");
               }}
+              isAdmin={isAdmin}
             />
           </div>
         ) : (

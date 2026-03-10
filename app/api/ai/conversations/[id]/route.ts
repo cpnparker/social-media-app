@@ -5,6 +5,18 @@ import { supabase } from "@/lib/supabase";
 import { checkConversationAccess } from "@/lib/ai/access";
 import { mapConversation, mapMessage } from "@/lib/ai/response-mappers";
 
+/** Check if a user has workspace admin access */
+async function isWorkspaceAdmin(userId: number): Promise<boolean> {
+  const { data } = await intelligenceDb
+    .from("users_access")
+    .select("flag_access_admin")
+    .eq("user_target", userId)
+    .eq("flag_access_admin", 1)
+    .limit(1)
+    .maybeSingle();
+  return !!data;
+}
+
 // GET /api/ai/conversations/[id] — get conversation with messages
 export async function GET(
   req: NextRequest,
@@ -147,7 +159,10 @@ export async function PATCH(
       .eq("id_conversation", conversationId)
       .maybeSingle();
 
-    if (!conversation || conversation.user_created !== userId) {
+    if (!conversation) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    if (conversation.user_created !== userId && !(await isWorkspaceAdmin(userId))) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -205,7 +220,10 @@ export async function DELETE(
       .eq("id_conversation", conversationId)
       .maybeSingle();
 
-    if (!conversation || conversation.user_created !== userId) {
+    if (!conversation) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    if (conversation.user_created !== userId && !(await isWorkspaceAdmin(userId))) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
