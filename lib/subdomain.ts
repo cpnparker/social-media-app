@@ -5,18 +5,20 @@
  * On localhost / preview URLs, returns relative paths (stays on same host).
  */
 
-type SubdomainArea = "engine" | "operations" | "ai";
+type SubdomainArea = "engine" | "operations" | "ai" | "meetingbrain";
 
 const SUBDOMAIN_MAP: Record<SubdomainArea, string> = {
   engine: "engine.thecontentengine.com",
   operations: "operations.thecontentengine.com",
   ai: "ai.thecontentengine.com",
+  meetingbrain: "meetingbrain.thecontentengine.com",
 };
 
 const DEFAULT_PATHS: Record<SubdomainArea, string> = {
   engine: "/dashboard",
   operations: "/operations/commissioned-cus",
   ai: "/",
+  meetingbrain: "/",
 };
 
 /** Check if the current host is a production subdomain */
@@ -32,6 +34,7 @@ export function getCurrentSubdomain(): SubdomainArea | null {
   if (host === "ai.thecontentengine.com") return "ai";
   if (host === "operations.thecontentengine.com") return "operations";
   if (host === "engine.thecontentengine.com") return "engine";
+  if (host === "meetingbrain.thecontentengine.com") return "meetingbrain";
   return null;
 }
 

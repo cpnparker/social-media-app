@@ -42,14 +42,12 @@ import {
   EyeOff,
   UserPlus,
   Settings,
-  Gauge,
-  Package,
   Sparkles,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { navigateToSubdomain, isProductionHost, getSubdomainUrl } from "@/lib/subdomain";
+import { getSubdomainUrl } from "@/lib/subdomain";
 import {
   Tooltip,
   TooltipTrigger,
@@ -74,6 +72,7 @@ import ChatPanel from "@/components/ai-writer/ChatPanel";
 import MemoryManager from "@/components/ai-writer/MemoryManager";
 import AdminDialog from "@/components/ai-writer/AdminDialog";
 import { signOut } from "next-auth/react";
+import { SectionRailDesktop, SectionRailMobile, useRailItems } from "@/components/layout/SectionRail";
 import type { AIConversation, Attachment } from "@/lib/types/ai";
 
 export default function EngineGPTPage() {
@@ -139,14 +138,9 @@ function EngineGPTContent() {
   const incognitoConvoRef = useRef<string | null>(null);
   const homeDragCounterRef = useRef(0);
 
-  // Area access for icon rail
-  const ws = wsCtx?.selectedWorkspace;
-  const showEngine = ws?.accessEngine ?? true;
-  const showOperations = ws?.accessOperations ?? false;
-  const showAdmin = ws?.accessAdmin ?? true;
-  const showEngineGpt = ws?.accessEngineGpt ?? true;
-  const areaCount = [showEngine, showOperations, showEngineGpt, showAdmin].filter(Boolean).length;
-  const showRail = areaCount > 1;
+  // Area access for icon rail (shared component)
+  const { visibleCount } = useRailItems();
+  const showRail = visibleCount > 1;
 
   const customerId = customerCtx?.selectedCustomerId || null;
   const customers = customerCtx?.customers || [];
@@ -549,54 +543,7 @@ function EngineGPTContent() {
             </a>
 
             {/* Area icons */}
-            <div className="flex flex-col items-center gap-1">
-              {[
-                { area: "engine" as const, icon: Package, label: "The Engine", hidden: !showEngine },
-                { area: "operations" as const, icon: Gauge, label: "Operations", hidden: !showOperations },
-                { area: "enginegpt" as const, icon: Sparkles, label: "EngineGPT", hidden: !showEngineGpt },
-                { area: "admin" as const, icon: Settings, label: "Administration", hidden: !showAdmin },
-              ]
-                .filter((item) => !item.hidden)
-                .map((item) => (
-                  <Tooltip key={item.area} delayDuration={300}>
-                    <TooltipTrigger asChild>
-                      <button
-                        onClick={() => {
-                          if (item.area === "enginegpt") return;
-                          if (isProductionHost()) {
-                            const targetSub = item.area === "admin" ? "engine" : item.area as "engine" | "operations" | "ai";
-                            navigateToSubdomain(
-                              targetSub,
-                              item.area === "admin" ? "/settings/workspace" : item.area === "operations" ? "/operations/commissioned-cus" : undefined
-                            );
-                          } else {
-                            const paths: Record<string, string> = {
-                              engine: "/dashboard",
-                              operations: "/operations/commissioned-cus",
-                              admin: "/settings/workspace",
-                            };
-                            if (paths[item.area]) window.location.href = paths[item.area];
-                          }
-                        }}
-                        className={cn(
-                          "relative flex items-center justify-center w-10 h-10 rounded-lg transition-all duration-150",
-                          item.area === "enginegpt"
-                            ? "bg-white/15 text-white"
-                            : "text-white/50 hover:bg-white/10 hover:text-white/80"
-                        )}
-                      >
-                        {item.area === "enginegpt" && (
-                          <div className="absolute -left-1 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-blue-400" />
-                        )}
-                        <item.icon className="h-[18px] w-[18px]" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={8}>
-                      {item.label}
-                    </TooltipContent>
-                  </Tooltip>
-                ))}
-            </div>
+            <SectionRailDesktop currentArea="enginegpt" />
 
             <div className="flex-1" />
 
@@ -651,47 +598,7 @@ function EngineGPTContent() {
         <div className="flex-1 flex flex-col bg-[#3b4252] text-white border-r border-white/[0.06] overflow-hidden">
           {/* ── Mobile area switcher ── */}
           {showRail && (
-            <div className="lg:hidden px-3 pt-3 pb-2">
-              <div className="flex items-center gap-1 bg-white/10 rounded-lg p-0.5">
-                {[
-                  { area: "engine", label: "Engine", hidden: !showEngine },
-                  { area: "operations", label: "Ops", hidden: !showOperations },
-                  { area: "enginegpt", label: "GPT", hidden: !showEngineGpt },
-                  { area: "admin", label: "Admin", hidden: !showAdmin },
-                ]
-                  .filter((i) => !i.hidden)
-                  .map((item) => (
-                    <button
-                      key={item.area}
-                      onClick={() => {
-                        if (item.area === "enginegpt") return;
-                        if (isProductionHost()) {
-                          const targetSub = (item.area === "admin" ? "engine" : item.area) as "engine" | "operations" | "ai";
-                          navigateToSubdomain(
-                            targetSub,
-                            item.area === "admin" ? "/settings/workspace" : item.area === "operations" ? "/operations/commissioned-cus" : undefined
-                          );
-                        } else {
-                          const paths: Record<string, string> = {
-                            engine: "/dashboard",
-                            operations: "/operations/commissioned-cus",
-                            admin: "/settings/workspace",
-                          };
-                          if (paths[item.area]) window.location.href = paths[item.area];
-                        }
-                      }}
-                      className={cn(
-                        "flex-1 px-2 py-1.5 rounded-md text-[11px] font-medium transition-colors text-center",
-                        item.area === "enginegpt"
-                          ? "bg-white/15 text-white shadow-sm"
-                          : "text-white/50 hover:text-white/80"
-                      )}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-              </div>
-            </div>
+            <SectionRailMobile currentArea="enginegpt" />
           )}
 
           {/* Top section */}

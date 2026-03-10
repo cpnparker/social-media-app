@@ -4,8 +4,6 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
-  Package,
-  Gauge,
   Settings,
   ChevronsUpDown,
   Check,
@@ -29,7 +27,6 @@ import {
   Boxes,
   Users,
   Sparkles,
-  Brain,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -47,13 +44,12 @@ import {
 import { useState, useEffect, useCallback } from "react";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { signOut } from "next-auth/react";
-import { navigateToSubdomain, getCurrentSubdomain, getSubdomainUrl, isProductionHost } from "@/lib/subdomain";
+import { getSubdomainUrl } from "@/lib/subdomain";
+import { SectionRailDesktop, SectionRailMobile, type Area } from "@/components/layout/SectionRail";
 
 // ────────────────────────────────────────────────
 // Types & constants
 // ────────────────────────────────────────────────
-
-type Area = "engine" | "operations" | "enginegpt" | "meetingbrain" | "admin";
 
 interface NavSubItem {
   label: string;
@@ -175,51 +171,6 @@ const adminItems: NavSubItem[] = [
   { label: "Billing", href: "/settings/billing", icon: CreditCard },
 ];
 
-// Kept for legacy fallback if workspace access not yet set
-const TCE_STAFF_ROLES = ["super", "tceadmin", "tcemanager", "tceuser"];
-
-// ────────────────────────────────────────────────
-// Rail Icon Button
-// ────────────────────────────────────────────────
-function RailIcon({
-  area,
-  icon: Icon,
-  label,
-  isActive,
-  onClick,
-}: {
-  area: Area;
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  isActive: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <Tooltip delayDuration={300}>
-      <TooltipTrigger asChild>
-        <button
-          onClick={onClick}
-          className={cn(
-            "relative flex items-center justify-center w-10 h-10 rounded-lg transition-all duration-150",
-            isActive
-              ? "bg-white/15 text-white"
-              : "text-white/50 hover:bg-white/10 hover:text-white/80"
-          )}
-        >
-          {/* Active indicator — left bar */}
-          {isActive && (
-            <div className="absolute -left-1 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-blue-400" />
-          )}
-          <Icon className="h-[18px] w-[18px]" />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="right" sideOffset={8}>
-        {label}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
 // ────────────────────────────────────────────────
 // Component
 // ────────────────────────────────────────────────
@@ -280,13 +231,8 @@ export function Sidebar({ onClose }: SidebarProps) {
       .catch(() => {});
   }, []);
 
-  // Area access: use workspace flags when available, fallback to role-based check
-  const ws = wsCtx?.selectedWorkspace;
-  const showEngine = ws?.accessEngine ?? true;
-  const showEngineGpt = ws?.accessEngineGpt ?? true;
-  const showOperations = ws?.accessOperations ?? TCE_STAFF_ROLES.includes(userRole);
-  const showAdmin = ws?.accessAdmin ?? true;
-  const showMeetingBrain = ws?.accessMeetingBrain ?? false;
+  // EngineGPT visibility (used by EnginePanel for the quick-launch link)
+  const showEngineGpt = wsCtx?.selectedWorkspace?.accessEngineGpt ?? true;
 
   // ── Inbox count ──
   const fetchInboxCount = useCallback(async () => {
@@ -340,15 +286,6 @@ export function Sidebar({ onClose }: SidebarProps) {
     return false;
   };
 
-  // ── Area rail icons definition ──
-  const railIcons: { area: Area; icon: React.ComponentType<{ className?: string }>; label: string; hidden?: boolean }[] = [
-    { area: "engine", icon: Package, label: "The Engine", hidden: !showEngine },
-    { area: "operations", icon: Gauge, label: "Operations", hidden: !showOperations },
-    { area: "enginegpt", icon: Sparkles, label: "EngineGPT", hidden: !showEngineGpt },
-    { area: "meetingbrain", icon: Brain, label: "MeetingBrain", hidden: !showMeetingBrain },
-    { area: "admin", icon: Settings, label: "Administration", hidden: !showAdmin },
-  ];
-
   return (
     <aside className="h-screen sticky top-0 flex w-[260px]">
       {/* ═══════ Icon Rail ═══════ */}
@@ -367,45 +304,7 @@ export function Sidebar({ onClose }: SidebarProps) {
         </a>
 
         {/* Area icons */}
-        <div className="flex flex-col items-center gap-1">
-          {railIcons.map(
-            (item) =>
-              !item.hidden && (
-                <RailIcon
-                  key={item.area}
-                  area={item.area}
-                  icon={item.icon}
-                  label={item.label}
-                  isActive={activeArea === item.area}
-                  onClick={() => {
-                    // EngineGPT lives on its own subdomain
-                    if (item.area === "enginegpt") {
-                      navigateToSubdomain("ai");
-                      return;
-                    }
-                    // MeetingBrain — navigate to /meetingbrain route
-                    if (item.area === "meetingbrain") {
-                      window.location.href = "/meetingbrain";
-                      return;
-                    }
-                    // On production, navigate to the correct subdomain
-                    if (isProductionHost()) {
-                      const currentSub = getCurrentSubdomain();
-                      const targetSub = item.area === "admin" ? "engine" : item.area;
-                      if (currentSub && currentSub !== targetSub) {
-                        navigateToSubdomain(
-                          targetSub,
-                          item.area === "admin" ? "/settings/workspace" : undefined
-                        );
-                        return;
-                      }
-                    }
-                    setActiveArea(item.area);
-                  }}
-                />
-              )
-          )}
-        </div>
+        <SectionRailDesktop currentArea={activeArea} onLocalSwitch={setActiveArea} />
 
         <div className="flex-1" />
 
@@ -448,55 +347,7 @@ export function Sidebar({ onClose }: SidebarProps) {
       {/* ═══════ Sidebar Panel ═══════ */}
       <div className="flex-1 flex flex-col bg-[#3b4252] text-white overflow-hidden">
         {/* ── Mobile area switcher (visible only on mobile) ── */}
-        <div className="lg:hidden px-3 pt-3 pb-2">
-          <div className="flex items-center gap-1 bg-white/10 rounded-lg p-0.5">
-            {railIcons
-              .filter((i) => !i.hidden)
-              .map((item) => (
-                <button
-                  key={item.area}
-                  onClick={() => {
-                    if (item.area === "enginegpt") {
-                      navigateToSubdomain("ai");
-                      return;
-                    }
-                    if (item.area === "meetingbrain") {
-                      window.location.href = "/meetingbrain";
-                      return;
-                    }
-                    if (isProductionHost()) {
-                      const currentSub = getCurrentSubdomain();
-                      const targetSub = item.area === "admin" ? "engine" : item.area;
-                      if (currentSub && currentSub !== targetSub) {
-                        navigateToSubdomain(
-                          targetSub,
-                          item.area === "admin" ? "/settings/workspace" : undefined
-                        );
-                        return;
-                      }
-                    }
-                    setActiveArea(item.area);
-                  }}
-                  className={cn(
-                    "flex-1 px-2 py-1.5 rounded-md text-[11px] font-medium transition-colors text-center",
-                    activeArea === item.area
-                      ? "bg-white/15 text-white shadow-sm"
-                      : "text-white/50 hover:text-white/80"
-                  )}
-                >
-                  {item.area === "engine"
-                    ? "Engine"
-                    : item.area === "operations"
-                    ? "Ops"
-                    : item.area === "enginegpt"
-                    ? "GPT"
-                    : item.area === "meetingbrain"
-                    ? "MB"
-                    : "Admin"}
-                </button>
-              ))}
-          </div>
-        </div>
+        <SectionRailMobile currentArea={activeArea} onLocalSwitch={setActiveArea} />
 
         {/* ── Panel content based on area ── */}
         {activeArea === "engine" && (
