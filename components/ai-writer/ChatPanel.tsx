@@ -566,54 +566,72 @@ export default function ChatPanel({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            {myPermission === "owner" && (
-              <DropdownMenuItem
-                onClick={() => {
-                  setTitleDraft(conversation.title);
-                  setEditingTitle(true);
-                }}
-              >
-                <Pencil className="h-3.5 w-3.5 mr-2" />
-                Rename
-              </DropdownMenuItem>
-            )}
+            <DropdownMenuItem
+              disabled={myPermission !== "owner"}
+              onClick={() => {
+                if (myPermission !== "owner") return;
+                setTitleDraft(conversation.title);
+                setEditingTitle(true);
+              }}
+            >
+              <Pencil className="h-3.5 w-3.5 mr-2" />
+              Rename
+            </DropdownMenuItem>
             {onCopyLink && (
               <DropdownMenuItem onClick={onCopyLink}>
                 <Link2 className="h-3.5 w-3.5 mr-2" />
                 Copy link
               </DropdownMenuItem>
             )}
-            {myPermission === "owner" && conversation.visibility === "private" && (
-              <DropdownMenuItem onClick={() => setShareDialogOpen(true)}>
+            {conversation.visibility === "private" && (
+              <DropdownMenuItem
+                disabled={myPermission !== "owner"}
+                onClick={() => {
+                  if (myPermission !== "owner") return;
+                  setShareDialogOpen(true);
+                }}
+              >
                 <UserPlus className="h-3.5 w-3.5 mr-2" />
                 Share
               </DropdownMenuItem>
             )}
-            {myPermission === "owner" && (
-              <DropdownMenuItem onClick={handleToggleVisibility}>
-                {conversation.visibility === "private" ? (
-                  <>
-                    <Globe className="h-3.5 w-3.5 mr-2" />
-                    Make Team
-                  </>
-                ) : (
-                  <>
-                    <Lock className="h-3.5 w-3.5 mr-2" />
-                    Make Private
-                  </>
-                )}
-              </DropdownMenuItem>
-            )}
-            {myPermission === "owner" && (
+            <DropdownMenuItem
+              disabled={myPermission !== "owner"}
+              onClick={() => {
+                if (myPermission !== "owner") return;
+                handleToggleVisibility();
+              }}
+            >
+              {conversation.visibility === "private" ? (
+                <>
+                  <Globe className="h-3.5 w-3.5 mr-2" />
+                  Make Team
+                </>
+              ) : (
+                <>
+                  <Lock className="h-3.5 w-3.5 mr-2" />
+                  Make Private
+                </>
+              )}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              disabled={myPermission !== "owner"}
+              onClick={() => {
+                if (myPermission !== "owner") return;
+                setDeleteConfirmOpen(true);
+              }}
+              className={myPermission === "owner" ? "text-destructive" : ""}
+            >
+              <Trash2 className="h-3.5 w-3.5 mr-2" />
+              Delete
+            </DropdownMenuItem>
+            {myPermission !== "owner" && (
               <>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() => setDeleteConfirmOpen(true)}
-                  className="text-destructive"
-                >
-                  <Trash2 className="h-3.5 w-3.5 mr-2" />
-                  Delete
-                </DropdownMenuItem>
+                <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
+                  Only the thread owner can manage this conversation
+                </div>
               </>
             )}
           </DropdownMenuContent>
