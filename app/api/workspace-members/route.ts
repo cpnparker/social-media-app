@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 
-// GET /api/workspace-members — list all users in the workspace
+// GET /api/workspace-members — list ALL users from Postgres, enriched with workspace data
 export async function GET() {
   try {
     // Get the default workspace
@@ -16,43 +16,42 @@ export async function GET() {
       return NextResponse.json({ members: [] });
     }
 
-    // Fetch all members with user details
-    const { data: memberRows, error } = await intelligenceDb
+    // Fetch ALL non-deleted users from Postgres (source of truth)
+    const { data: allUsers, error: usersErr } = await supabase
+      .from("users")
+      .select("id_user, name_user, email_user, role_user, date_created")
+      .is("date_deleted", null)
+      .order("name_user", { ascending: true });
+
+    if (usersErr) throw usersErr;
+
+    // Fetch workspace membership data (may not exist for every user)
+    const { data: memberRows } = await intelligenceDb
       .from("workspace_members")
       .select("*")
       .eq("workspace_id", ws.id);
+    const memberMap = new Map((memberRows || []).map((m) => [m.user_id, m]));
 
-    if (error) throw error;
-
-    // Get user details for each member
-    const userIds = (memberRows || []).map((m) => m.user_id);
-    const { data: userRows } = await supabase
-      .from("users")
-      .select("id_user, name_user, email_user, role_user, date_created")
-      .in("id_user", userIds);
-
-    const userMap = new Map((userRows || []).map((u) => [u.id_user, u]));
-
-    // Fetch area access flags from intelligence schema
+    // Fetch area access flags from intelligence schema (may not exist for every user)
     const { data: accessRows } = await intelligenceDb
       .from("users_access")
       .select("*")
       .eq("id_workspace", ws.id);
     const accessMap = new Map((accessRows || []).map((a: any) => [a.user_target, a]));
 
-    const members = (memberRows || []).map((m) => {
-      const user = userMap.get(m.user_id);
-      const access = accessMap.get(m.user_id);
+    const members = (allUsers || []).map((user) => {
+      const member = memberMap.get(user.id_user);
+      const access = accessMap.get(user.id_user);
       return {
-        id: String(m.user_id),
-        name: user?.name_user || null,
-        email: user?.email_user || null,
+        id: String(user.id_user),
+        name: user.name_user || null,
+        email: user.email_user || null,
         avatarUrl: null,
         provider: null,
-        createdAt: user?.date_created || null,
-        role: m.role,
-        appRole: user?.role_user || "none",
-        joinedAt: m.joined_at || null,
+        createdAt: user.date_created || null,
+        role: member?.role || "viewer",
+        appRole: user.role_user || "none",
+        joinedAt: member?.joined_at || null,
         // No access row = no access (secure by default)
         accessEngine: access ? !!access.flag_access_engine : false,
         accessEngineGpt: access ? !!access.flag_access_enginegpt : false,
@@ -200,19 +199,34 @@ export async function PATCH(req: NextRequest) {
       ? userIds.map((id: string) => parseInt(id, 10))
       : [parseInt(userId, 10)];
 
-    // Update role in Supabase if provided (single-user only)
+    // Ensure each target user has a workspace_members row (auto-create if missing)
+    await Promise.all(
+      targetIds.map(async (numericId) => {
+        const { data: existing } = await intelligenceDb
+          .from("workspace_members")
+          .select("id")
+          .eq("workspace_id", ws.id)
+          .eq("user_id", numericId)
+          .maybeSingle();
+
+        if (!existing) {
+          await intelligenceDb.from("workspace_members").insert({
+            workspace_id: ws.id,
+            user_id: numericId,
+            role: role || "viewer",
+            joined_at: new Date().toISOString(),
+          });
+        }
+      })
+    );
+
+    // Update workspace role if provided (single-user only)
     if (role && !isBulk) {
-      const { data: updated, error } = await intelligenceDb
+      await intelligenceDb
         .from("workspace_members")
         .update({ role })
         .eq("workspace_id", ws.id)
-        .eq("user_id", targetIds[0])
-        .select()
-        .single();
-
-      if (error || !updated) {
-        return NextResponse.json({ error: "Member not found" }, { status: 404 });
-      }
+        .eq("user_id", targetIds[0]);
     }
 
     // Update area access in intelligence schema if any access flags provided
