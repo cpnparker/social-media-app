@@ -93,7 +93,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
                 email_user: user.email,
                 name_user: user.name || user.email.split("@")[0],
                 date_created: new Date().toISOString(),
-                role_user: user.email!.endsWith("@thecontentengine.com") ? "tceuser" : "none",
+                role_user: "none",
               })
               .select("id_user")
               .single();

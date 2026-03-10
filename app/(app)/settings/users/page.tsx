@@ -321,23 +321,6 @@ export default function UsersSettingsPage() {
     }
   };
 
-  const handleChangeAppRole = async (userId: string, newAppRole: string) => {
-    try {
-      const res = await fetch("/api/workspace-members", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, appRole: newAppRole }),
-      });
-      if (!res.ok) throw new Error("Failed to update user type");
-      // Optimistic update
-      setMembers((prev) =>
-        prev.map((m) => (m.id === userId ? { ...m, appRole: newAppRole } : m))
-      );
-      toast.success("User type updated");
-    } catch (err: any) {
-      toast.error(err.message);
-    }
-  };
 
   const handleUpdateAccess = async (
     userId: string,
@@ -651,27 +634,20 @@ export default function UsersSettingsPage() {
                             </option>
                           ))}
                         </select>
-                        {/* App role (user type) */}
+                        {/* App role (user type) — read-only, managed externally */}
                         {(() => {
                           const ar = appRoleOptions.find((o) => o.value === member.appRole) || appRoleOptions[appRoleOptions.length - 1];
                           return (
-                            <select
-                              value={member.appRole}
-                              onChange={(e) =>
-                                handleChangeAppRole(member.id, e.target.value)
-                              }
+                            <span
                               className={cn(
-                                "rounded-md border-0 text-xs font-medium px-2 py-1 cursor-pointer",
+                                "rounded-md text-[10px] font-medium px-2 py-1",
                                 ar.bg,
                                 ar.color
                               )}
+                              title="User type (managed in Postgres)"
                             >
-                              {appRoleOptions.map((o) => (
-                                <option key={o.value} value={o.value}>
-                                  {o.label}
-                                </option>
-                              ))}
-                            </select>
+                              {ar.label}
+                            </span>
                           );
                         })()}
                       </div>
