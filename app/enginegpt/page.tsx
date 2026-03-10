@@ -1058,7 +1058,7 @@ function EngineGPTContent() {
               <img
                 src="/assets/logo_engine_icon.svg"
                 alt="EngineGPT"
-                className="h-5 w-5"
+                className="h-5 w-5 dark:brightness-0 dark:invert"
               />
               <span className="text-sm font-bold">EngineGPT</span>
             </div>
@@ -1291,11 +1291,11 @@ function EngineGPTContent() {
           <div className="flex-1 flex flex-col overflow-y-auto">
             <div className="flex-1 flex flex-col items-center justify-center px-4 pb-24">
               {/* Icon */}
-              <div className="h-16 w-16 rounded-2xl bg-foreground/[0.05] flex items-center justify-center mb-6">
+              <div className="h-16 w-16 rounded-2xl bg-[#023250]/10 dark:bg-white/10 flex items-center justify-center mb-6">
                 <img
                   src="/assets/logo_engine_icon.svg"
                   alt="EngineGPT"
-                  className="h-10 w-10"
+                  className="h-10 w-10 dark:brightness-0 dark:invert"
                 />
               </div>
               <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mb-2">
@@ -1511,10 +1511,10 @@ function EngineGPTContent() {
                 {/* Context & web search controls */}
                 <div className="flex items-center justify-center gap-1.5 mt-3 flex-wrap">
                   {[
-                    { key: "contracts" as const, label: "Contracts", Icon: ScrollText },
-                    { key: "contentPipeline" as const, label: "Content", Icon: Newspaper },
-                    { key: "socialPresence" as const, label: "Social", Icon: Share2 },
-                    { key: "ideas" as const, label: "Ideas", Icon: Lightbulb },
+                    { key: "contracts" as const, label: "Contracts", Icon: ScrollText, color: "text-amber-400" },
+                    { key: "contentPipeline" as const, label: "Content", Icon: Newspaper, color: "text-blue-400" },
+                    { key: "socialPresence" as const, label: "Social", Icon: Share2, color: "text-violet-400" },
+                    { key: "ideas" as const, label: "Ideas", Icon: Lightbulb, color: "text-yellow-400" },
                   ].map((item) => {
                     const level = contextConfig[item.key];
                     const isOn = level !== "off";
@@ -1535,14 +1535,14 @@ function EngineGPTContent() {
                         className={cn(
                           "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
                           isOn
-                            ? "text-foreground/70 hover:text-foreground"
+                            ? "text-foreground/80 hover:text-foreground"
                             : "text-muted-foreground/40 hover:text-muted-foreground/60"
                         )}
                       >
                         <item.Icon className={cn(
                           "h-3 w-3 sm:h-2.5 sm:w-2.5 transition-colors",
                           isOn
-                            ? "text-foreground/60"
+                            ? item.color
                             : "text-muted-foreground/30"
                         )} />
                         {item.label}
@@ -1571,13 +1571,13 @@ function EngineGPTContent() {
                     className={cn(
                       "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
                       contextConfig.webSearch === "on"
-                        ? "text-foreground/70 hover:text-foreground"
+                        ? "text-foreground/80 hover:text-foreground"
                         : "text-muted-foreground/40 hover:text-muted-foreground/60"
                     )}
                   >
                     <Globe className={cn(
                       "h-3 w-3 sm:h-2.5 sm:w-2.5 transition-colors",
-                      contextConfig.webSearch === "on" ? "text-foreground/60" : "text-muted-foreground/30"
+                      contextConfig.webSearch === "on" ? "text-emerald-400" : "text-muted-foreground/30"
                     )} />
                     Web
                   </button>
@@ -1592,13 +1592,13 @@ function EngineGPTContent() {
                     className={cn(
                       "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
                       contextConfig.memory === "on"
-                        ? "text-foreground/70 hover:text-foreground"
+                        ? "text-foreground/80 hover:text-foreground"
                         : "text-muted-foreground/40 hover:text-muted-foreground/60"
                     )}
                   >
                     <Brain className={cn(
                       "h-3 w-3 sm:h-2.5 sm:w-2.5 transition-colors",
-                      contextConfig.memory === "on" ? "text-foreground/60" : "text-muted-foreground/30"
+                      contextConfig.memory === "on" ? "text-pink-400" : "text-muted-foreground/30"
                     )} />
                     Memory
                   </button>
