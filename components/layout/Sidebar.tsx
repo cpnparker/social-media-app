@@ -167,6 +167,7 @@ const adminItems: NavSubItem[] = [
   { label: "Templates", href: "/settings/templates", icon: ListChecks },
   { label: "Content Units", href: "/settings/content-units", icon: Boxes },
   { label: "Content Formats", href: "/settings/content-formats", icon: FileText },
+  { label: "AI Usage", href: "/settings/ai-usage", icon: Sparkles },
   { label: "Links", href: "/settings/links", icon: Link2 },
   { label: "Billing", href: "/settings/billing", icon: CreditCard },
 ];

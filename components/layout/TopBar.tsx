@@ -23,6 +23,7 @@ import {
   FileText,
   Link2,
   CreditCard,
+  Sparkles,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
@@ -339,6 +340,12 @@ export function TopBar({ onMenuClick }: TopBarProps) {
                   <Link href="/settings/content-formats" className="gap-2">
                     <FileText className="h-4 w-4" />
                     Content Formats
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/ai-usage" className="gap-2">
+                    <Sparkles className="h-4 w-4" />
+                    AI Usage
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
