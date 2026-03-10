@@ -167,6 +167,8 @@ export function buildSystemPrompt(ctx: {
   memories?: { content: string; category: string }[];
   role?: { name: string; instructions: string } | null;
   latestUserMessage?: string;
+  personalContext?: string | null;
+  region?: string | null;
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
 
@@ -187,6 +189,18 @@ Guidelines:
 - Use the context below to give specific, informed answers
 - When drafting, produce publication-ready work
 - Use markdown formatting for readability`;
+  }
+
+  // ── Personal context (user-specific) ──
+  if (ctx.personalContext) {
+    prompt += `\n\n## About the User`;
+    prompt += `\n${ctx.personalContext}`;
+  }
+
+  // ── Regional context (user-specific) ──
+  if (ctx.region && ctx.region !== "Global") {
+    prompt += `\n\n## Regional Context`;
+    prompt += `\nThe user is based in ${ctx.region}. Adapt spelling, grammar, cultural references, date formats, currency symbols, and idioms to match ${ctx.region} conventions.`;
   }
 
   // ── Custom CU system description (if configured) ──

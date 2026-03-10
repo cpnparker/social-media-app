@@ -624,6 +624,14 @@ export async function POST(
       }
     }
 
+    // Fetch user preferences (personal context + region)
+    const { data: userPrefs } = await intelligenceDb
+      .from("users_access")
+      .select("information_personal_context, name_region")
+      .eq("id_workspace", conversation.id_workspace)
+      .eq("user_target", userId)
+      .maybeSingle();
+
     const systemPrompt = buildSystemPrompt({
       workspaceConfig,
       clientContext,
@@ -635,6 +643,8 @@ export async function POST(
       memories: memories.length > 0 ? memories : undefined,
       role,
       latestUserMessage: userContent || "",
+      personalContext: userPrefs?.information_personal_context || null,
+      region: userPrefs?.name_region || null,
     });
 
     const model = body.model || conversation.name_model;

@@ -43,6 +43,7 @@ import {
   UserPlus,
   Settings,
   Sparkles,
+  Pin,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
@@ -138,6 +139,10 @@ function EngineGPTContent() {
   const incognitoConvoRef = useRef<string | null>(null);
   const homeDragCounterRef = useRef(0);
 
+  // Pinning / favourites state
+  const [pinnedConvIds, setPinnedConvIds] = useState<Set<string>>(new Set());
+  const [pinnedClientIds, setPinnedClientIds] = useState<Set<number>>(new Set());
+
   // Area access for icon rail (shared component)
   const { visibleCount } = useRailItems();
   const showRail = visibleCount > 1;
@@ -178,6 +183,14 @@ function EngineGPTContent() {
       .then((d) => {
         if (d.user?.name) setUserName(d.user.name);
         if (d.user?.email) setUserEmail(d.user.email);
+      })
+      .catch(() => {});
+    // Fetch pin preferences
+    fetch("/api/me/preferences")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.pinnedConversationIds?.length) setPinnedConvIds(new Set(d.pinnedConversationIds));
+        if (d.pinnedClientIds?.length) setPinnedClientIds(new Set(d.pinnedClientIds));
       })
       .catch(() => {});
   }, []);
@@ -485,6 +498,67 @@ function EngineGPTContent() {
     return true;
   });
 
+  // Group conversations by client (only when not searching)
+  const sortedGroups = (() => {
+    if (searchQuery) return null; // flat results when searching
+
+    const clientMap = new Map<string, { clientId: number | null; conversations: AIConversation[] }>();
+    for (const conv of filtered) {
+      const key = conv.customerName || "General";
+      if (!clientMap.has(key)) clientMap.set(key, { clientId: conv.customerId, conversations: [] });
+      clientMap.get(key)!.conversations.push(conv);
+    }
+
+    const groups = Array.from(clientMap.entries())
+      .map(([name, data]) => ({ key: name, clientId: data.clientId, clientName: name, conversations: data.conversations }))
+      .sort((a, b) => {
+        const aPinned = a.clientId !== null && pinnedClientIds.has(a.clientId);
+        const bPinned = b.clientId !== null && pinnedClientIds.has(b.clientId);
+        if (aPinned !== bPinned) return aPinned ? -1 : 1;
+        if (a.key === "General") return -1;
+        if (b.key === "General") return 1;
+        return a.key.localeCompare(b.key);
+      });
+
+    // Within each group, pinned conversations first, then by date
+    for (const group of groups) {
+      group.conversations.sort((a, b) => {
+        const aPinned = pinnedConvIds.has(a.id);
+        const bPinned = pinnedConvIds.has(b.id);
+        if (aPinned !== bPinned) return aPinned ? -1 : 1;
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+      });
+    }
+
+    return groups;
+  })();
+
+  // Pin/unpin handlers
+  const togglePinConversation = async (e: React.MouseEvent, convId: string) => {
+    e.stopPropagation();
+    const next = new Set(pinnedConvIds);
+    if (next.has(convId)) next.delete(convId); else next.add(convId);
+    setPinnedConvIds(next);
+    fetch("/api/me/preferences", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinnedConversationIds: Array.from(next) }),
+    }).catch(() => {});
+  };
+
+  const togglePinClient = async (e: React.MouseEvent, clientId: number | null) => {
+    e.stopPropagation();
+    if (clientId === null) return; // Can't pin "General"
+    const next = new Set(pinnedClientIds);
+    if (next.has(clientId)) next.delete(clientId); else next.add(clientId);
+    setPinnedClientIds(next);
+    fetch("/api/me/preferences", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinnedClientIds: Array.from(next) }),
+    }).catch(() => {});
+  };
+
   // Select thread + switch customer dropdown + close mobile sidebar
   const handleSelectThread = (conv: AIConversation) => {
     if (conv.customerId && customerCtx) {
@@ -791,41 +865,121 @@ function EngineGPTContent() {
               </div>
             ) : (
               <div className="space-y-0.5">
-                {filtered.map((conv) => (
-                  <button
-                    key={conv.id}
-                    onClick={() => handleSelectThread(conv)}
-                    className={cn(
-                      "w-full text-left rounded-lg px-2.5 py-2 transition-colors group",
-                      selectedId === conv.id
-                        ? "bg-white/15 text-white"
-                        : "text-white/70 hover:bg-white/10 hover:text-white"
-                    )}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-[13px] font-medium truncate flex-1">{conv.title}</p>
-                      <span className="text-[11px] text-white/40 shrink-0">
-                        {timeAgo(conv.updatedAt)}
-                      </span>
+                {sortedGroups ? (
+                  /* ─── Grouped by client ─── */
+                  sortedGroups.map((group) => (
+                    <div key={group.key}>
+                      {/* Group heading */}
+                      <div className="flex items-center justify-between px-2.5 pt-3 pb-1">
+                        <p className="text-[11px] font-semibold text-white/40 uppercase tracking-wider truncate">
+                          {group.clientName}
+                        </p>
+                        {group.clientId !== null && (
+                          <button
+                            onClick={(e) => togglePinClient(e, group.clientId)}
+                            className="opacity-0 group-hover:opacity-100 hover:!opacity-100 focus:opacity-100 p-0.5 rounded transition-opacity"
+                            title={pinnedClientIds.has(group.clientId!) ? "Unpin group" : "Pin group"}
+                          >
+                            <Pin
+                              className={cn(
+                                "h-3 w-3 transition-colors",
+                                pinnedClientIds.has(group.clientId!)
+                                  ? "text-yellow-400 fill-yellow-400"
+                                  : "text-white/30 hover:text-white/60"
+                              )}
+                            />
+                          </button>
+                        )}
+                      </div>
+                      {/* Conversations in this group */}
+                      {group.conversations.map((conv) => (
+                        <button
+                          key={conv.id}
+                          onClick={() => handleSelectThread(conv)}
+                          className={cn(
+                            "w-full text-left rounded-lg px-2.5 py-2 transition-colors group/conv",
+                            selectedId === conv.id
+                              ? "bg-white/15 text-white"
+                              : "text-white/70 hover:bg-white/10 hover:text-white"
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[13px] font-medium truncate flex-1">{conv.title}</p>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                onClick={(e) => togglePinConversation(e, conv.id)}
+                                className={cn(
+                                  "p-0.5 rounded transition-opacity",
+                                  pinnedConvIds.has(conv.id)
+                                    ? "opacity-100"
+                                    : "opacity-0 group-hover/conv:opacity-100"
+                                )}
+                                title={pinnedConvIds.has(conv.id) ? "Unpin" : "Pin"}
+                              >
+                                <Pin
+                                  className={cn(
+                                    "h-3 w-3 transition-colors",
+                                    pinnedConvIds.has(conv.id)
+                                      ? "text-yellow-400 fill-yellow-400"
+                                      : "text-white/30 hover:text-white/60"
+                                  )}
+                                />
+                              </button>
+                              <span className="text-[11px] text-white/40">
+                                {timeAgo(conv.updatedAt)}
+                              </span>
+                            </div>
+                          </div>
+                          {conv.sharedWithMe && conv.sharedByName && (
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <UserPlus className="h-3 w-3 text-white/30 shrink-0" />
+                              <p className="text-[11px] text-white/40 truncate">
+                                Shared by {conv.sharedByName}
+                              </p>
+                            </div>
+                          )}
+                        </button>
+                      ))}
                     </div>
-                    {conv.sharedWithMe && conv.sharedByName && (
-                      <div className="flex items-center gap-1 mt-0.5">
-                        <UserPlus className="h-3 w-3 text-white/30 shrink-0" />
-                        <p className="text-[11px] text-white/40 truncate">
-                          Shared by {conv.sharedByName}
-                        </p>
+                  ))
+                ) : (
+                  /* ─── Flat list (search results) ─── */
+                  filtered.map((conv) => (
+                    <button
+                      key={conv.id}
+                      onClick={() => handleSelectThread(conv)}
+                      className={cn(
+                        "w-full text-left rounded-lg px-2.5 py-2 transition-colors group",
+                        selectedId === conv.id
+                          ? "bg-white/15 text-white"
+                          : "text-white/70 hover:bg-white/10 hover:text-white"
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[13px] font-medium truncate flex-1">{conv.title}</p>
+                        <span className="text-[11px] text-white/40 shrink-0">
+                          {timeAgo(conv.updatedAt)}
+                        </span>
                       </div>
-                    )}
-                    {conv.customerName && (
-                      <div className="flex items-center gap-1 mt-0.5">
-                        <Building2 className="h-3 w-3 text-white/30 shrink-0" />
-                        <p className="text-[11px] text-white/40 truncate">
-                          {conv.customerName}
-                        </p>
-                      </div>
-                    )}
-                  </button>
-                ))}
+                      {conv.sharedWithMe && conv.sharedByName && (
+                        <div className="flex items-center gap-1 mt-0.5">
+                          <UserPlus className="h-3 w-3 text-white/30 shrink-0" />
+                          <p className="text-[11px] text-white/40 truncate">
+                            Shared by {conv.sharedByName}
+                          </p>
+                        </div>
+                      )}
+                      {conv.customerName && (
+                        <div className="flex items-center gap-1 mt-0.5">
+                          <Building2 className="h-3 w-3 text-white/30 shrink-0" />
+                          <p className="text-[11px] text-white/40 truncate">
+                            {conv.customerName}
+                          </p>
+                        </div>
+                      )}
+                    </button>
+                  ))
+                )}
               </div>
             )}
           </div>

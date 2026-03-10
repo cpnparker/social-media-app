@@ -11,6 +11,7 @@ import {
   Search,
   Bug,
   Globe,
+  User,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -145,6 +146,11 @@ export default function AIUsagePage() {
   const [cuDescription, setCuDescription] = useState("");
   const [cuDefinitions, setCuDefinitions] = useState<CUDefinition[]>([]);
 
+  // Personal preferences state (per-user, not workspace)
+  const [personalContext, setPersonalContext] = useState("");
+  const [region, setRegion] = useState("Global");
+  const [prefsSaving, setPrefsSaving] = useState(false);
+
   // Usage state
   const [usageData, setUsageData] = useState<UsageData | null>(null);
   const [usageDays, setUsageDays] = useState(30);
@@ -199,9 +205,22 @@ export default function AIUsagePage() {
     }
   }, [workspaceId, usageDays]);
 
+  // Fetch personal preferences
+  const fetchPreferences = useCallback(async () => {
+    try {
+      const res = await fetch("/api/me/preferences");
+      const data = await res.json();
+      if (data.personalContext) setPersonalContext(data.personalContext);
+      if (data.region) setRegion(data.region);
+    } catch (err) {
+      console.error("Failed to load preferences:", err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchSettings();
-  }, [fetchSettings]);
+    fetchPreferences();
+  }, [fetchSettings, fetchPreferences]);
 
   useEffect(() => {
     fetchUsage();
@@ -233,6 +252,24 @@ export default function AIUsagePage() {
       toast.error(err.message || "Failed to save");
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Save personal preferences
+  const handleSavePreferences = async () => {
+    setPrefsSaving(true);
+    try {
+      const res = await fetch("/api/me/preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ personalContext: personalContext || null, region }),
+      });
+      if (!res.ok) throw new Error("Save failed");
+      toast.success("Personal context updated");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to save");
+    } finally {
+      setPrefsSaving(false);
     }
   };
 
@@ -301,8 +338,90 @@ export default function AIUsagePage() {
       : true
   );
 
+  const REGION_OPTIONS = [
+    "Global",
+    "United Kingdom",
+    "United States",
+    "Australia",
+    "Canada",
+    "New Zealand",
+    "Europe",
+    "Asia Pacific",
+    "Middle East & Africa",
+  ];
+
   return (
     <div className="space-y-6 max-w-3xl">
+      {/* ─── Your Personal Context (per-user, not workspace) ─── */}
+      <Card className="border-0 shadow-sm bg-primary/[0.02]">
+        <CardHeader className="pb-0">
+          <CardTitle className="text-base flex items-center gap-2">
+            <User className="h-4 w-4 text-muted-foreground" />
+            Your Personal Context
+          </CardTitle>
+          <p className="text-xs text-muted-foreground mt-1">
+            This is your personal context — it&apos;s included in every AI conversation to personalise responses to you.
+            Other workspace members have their own personal context.
+          </p>
+        </CardHeader>
+        <CardContent className="pt-4 space-y-4">
+          <div>
+            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">
+              About You
+            </label>
+            <textarea
+              value={personalContext}
+              onChange={(e) => setPersonalContext(e.target.value)}
+              placeholder="e.g. I'm a senior content strategist specialising in B2B technology. I prefer concise, data-driven writing with a professional tone..."
+              rows={3}
+              maxLength={2000}
+              className="w-full rounded-lg border px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <p className="text-[11px] text-muted-foreground mt-1 text-right">
+              {personalContext.length}/2000
+            </p>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">
+              Region
+            </label>
+            <p className="text-xs text-muted-foreground mb-2">
+              Adapts AI spelling, grammar, cultural references, date formats, and conventions.
+            </p>
+            <div className="relative">
+              <select
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
+                className="w-full sm:w-64 appearance-none rounded-lg border px-3 py-2 pr-8 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                {REGION_OPTIONS.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              onClick={handleSavePreferences}
+              disabled={prefsSaving}
+            >
+              {prefsSaving ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
+              ) : (
+                <Check className="h-4 w-4 mr-1.5" />
+              )}
+              Save Personal Context
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* ─── Section A: Default AI Model ─── */}
       <Card className="border-0 shadow-sm">
         <CardHeader className="pb-0">
