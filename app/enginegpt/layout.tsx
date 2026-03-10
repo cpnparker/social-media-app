@@ -6,8 +6,8 @@ export const metadata: Metadata = {
   description:
     "Your AI-powered content assistant. Brainstorm ideas, draft content, refine messaging, and manage social media — all with deep context about your clients and workflows.",
   icons: {
-    icon: "/favicon.png",
-    apple: "/favicon.png",
+    icon: "/assets/favicon.png",
+    apple: "/assets/apple-touch-icon.png",
   },
   openGraph: {
     title: "EngineGPT — AI Content Assistant",

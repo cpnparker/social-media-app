@@ -396,7 +396,7 @@ export default function ChatPanel({
 
   return (
     <div
-      className="flex flex-col h-full min-h-0 relative overflow-hidden"
+      className="flex flex-col flex-1 min-h-0 relative overflow-hidden"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -452,7 +452,7 @@ export default function ChatPanel({
               {conversation.title}
             </button>
           )}
-          <div className="flex items-center gap-2 mt-0.5">
+          <div className="flex items-center gap-2 mt-0.5 overflow-hidden max-h-5">
             <Badge
               variant="outline"
               className="text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4 gap-1"
@@ -481,7 +481,7 @@ export default function ChatPanel({
             {conversation.customerName && (
               <Badge
                 variant="outline"
-                className="text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4 gap-1 text-muted-foreground"
+                className="hidden md:inline-flex text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4 gap-1 text-muted-foreground"
               >
                 <Building2 className="h-2.5 w-2.5" />
                 {conversation.customerName}
