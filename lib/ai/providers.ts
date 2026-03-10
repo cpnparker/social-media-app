@@ -39,15 +39,15 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     apiModel: "claude-sonnet-4-6",
     label: "Claude Sonnet 4.6",
   },
-  "gemini-2.5-pro": {
+  "gemini-3-flash": {
     provider: "gemini",
-    apiModel: "gemini-2.5-pro",
-    label: "Gemini 2.5 Pro",
+    apiModel: "gemini-3-flash",
+    label: "Gemini 3 Flash",
   },
-  "gemini-2.5-flash": {
+  "gemini-3.1-flash-lite": {
     provider: "gemini",
-    apiModel: "gemini-2.5-flash",
-    label: "Gemini 2.5 Flash",
+    apiModel: "gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash-Lite",
   },
   "gpt-4o": {
     provider: "openai",
@@ -70,6 +70,18 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "Grok 3 Mini",
   },
   // Legacy mappings for old conversations
+  "gemini-2.5-pro": {
+    provider: "gemini",
+    apiModel: "gemini-3-flash",
+    label: "Gemini 3 Flash",
+    legacy: true,
+  },
+  "gemini-2.5-flash": {
+    provider: "gemini",
+    apiModel: "gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash-Lite",
+    legacy: true,
+  },
   "claude-sonnet-4-20250514": {
     provider: "anthropic",
     apiModel: "claude-sonnet-4-6",

@@ -14,8 +14,8 @@ export const maxDuration = 120; // Allow up to 2 minutes for AI streaming respon
 // ── Cost calculation for usage tracking ──
 const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> = {
   "claude-sonnet-4-6": { inputPer1M: 300, outputPer1M: 1500 },       // $3/$15 in cents
-  "gemini-2.5-pro": { inputPer1M: 125, outputPer1M: 1000 },          // $1.25/$10
-  "gemini-2.5-flash": { inputPer1M: 30, outputPer1M: 250 },          // $0.30/$2.50
+  "gemini-3-flash": { inputPer1M: 50, outputPer1M: 300 },             // $0.50/$3.00
+  "gemini-3.1-flash-lite": { inputPer1M: 25, outputPer1M: 150 },     // $0.25/$1.50
   "gpt-4o": { inputPer1M: 250, outputPer1M: 1000 },                  // $2.50/$10
   "gpt-4o-mini": { inputPer1M: 15, outputPer1M: 60 },                // $0.15/$0.60
   "grok-4-1-fast": { inputPer1M: 20, outputPer1M: 50 },              // $0.20/$0.50
