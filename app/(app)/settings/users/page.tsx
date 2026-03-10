@@ -42,6 +42,7 @@ interface WorkspaceMember {
   provider: string;
   createdAt: string;
   role: string;
+  appRole: string;
   invitedAt: string;
   joinedAt: string | null;
   accessEngine: boolean;
@@ -106,6 +107,16 @@ const accessFields: { key: AccessField; label: string }[] = [
   { key: "accessOperations", label: "Ops" },
   { key: "accessAdmin", label: "Admin" },
   { key: "accessMeetingBrain", label: "MB" },
+];
+
+const appRoleOptions: { value: string; label: string; color: string; bg: string }[] = [
+  { value: "tceadmin", label: "TCE Admin", color: "text-violet-500", bg: "bg-violet-500/10" },
+  { value: "tcemanager", label: "TCE Manager", color: "text-blue-500", bg: "bg-blue-500/10" },
+  { value: "tceuser", label: "TCE Staff", color: "text-emerald-500", bg: "bg-emerald-500/10" },
+  { value: "clientadmin", label: "Client Admin", color: "text-orange-500", bg: "bg-orange-500/10" },
+  { value: "clientuser", label: "Client User", color: "text-amber-500", bg: "bg-amber-500/10" },
+  { value: "freelancer", label: "Freelancer", color: "text-cyan-500", bg: "bg-cyan-500/10" },
+  { value: "none", label: "No Access", color: "text-gray-400", bg: "bg-gray-500/10" },
 ];
 
 /* ─────────────── Page ─────────────── */
@@ -305,6 +316,24 @@ export default function UsersSettingsPage() {
       if (!res.ok) throw new Error("Failed to update role");
       toast.success("Role updated");
       await fetchMembers();
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  };
+
+  const handleChangeAppRole = async (userId: string, newAppRole: string) => {
+    try {
+      const res = await fetch("/api/workspace-members", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, appRole: newAppRole }),
+      });
+      if (!res.ok) throw new Error("Failed to update user type");
+      // Optimistic update
+      setMembers((prev) =>
+        prev.map((m) => (m.id === userId ? { ...m, appRole: newAppRole } : m))
+      );
+      toast.success("User type updated");
     } catch (err: any) {
       toast.error(err.message);
     }
@@ -601,25 +630,51 @@ export default function UsersSettingsPage() {
                       )}
                     </div>
 
-                    {/* Role + Access */}
+                    {/* Role + User Type + Access */}
                     <div className="flex flex-col items-end gap-1.5 shrink-0">
-                      <select
-                        value={member.role}
-                        onChange={(e) =>
-                          handleChangeRole(member.id, e.target.value)
-                        }
-                        className={cn(
-                          "rounded-md border-0 text-xs font-medium px-2 py-1 cursor-pointer",
-                          rc.bg,
-                          rc.color
-                        )}
-                      >
-                        {roleOptions.map((r) => (
-                          <option key={r} value={r}>
-                            {roleConfig[r]?.label || r}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="flex items-center gap-1.5">
+                        {/* Workspace role */}
+                        <select
+                          value={member.role}
+                          onChange={(e) =>
+                            handleChangeRole(member.id, e.target.value)
+                          }
+                          className={cn(
+                            "rounded-md border-0 text-xs font-medium px-2 py-1 cursor-pointer",
+                            rc.bg,
+                            rc.color
+                          )}
+                        >
+                          {roleOptions.map((r) => (
+                            <option key={r} value={r}>
+                              {roleConfig[r]?.label || r}
+                            </option>
+                          ))}
+                        </select>
+                        {/* App role (user type) */}
+                        {(() => {
+                          const ar = appRoleOptions.find((o) => o.value === member.appRole) || appRoleOptions[appRoleOptions.length - 1];
+                          return (
+                            <select
+                              value={member.appRole}
+                              onChange={(e) =>
+                                handleChangeAppRole(member.id, e.target.value)
+                              }
+                              className={cn(
+                                "rounded-md border-0 text-xs font-medium px-2 py-1 cursor-pointer",
+                                ar.bg,
+                                ar.color
+                              )}
+                            >
+                              {appRoleOptions.map((o) => (
+                                <option key={o.value} value={o.value}>
+                                  {o.label}
+                                </option>
+                              ))}
+                            </select>
+                          );
+                        })()}
+                      </div>
 
                       {/* Area access pills */}
                       <div className="flex flex-wrap gap-1">

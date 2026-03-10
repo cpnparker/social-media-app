@@ -51,7 +51,7 @@ export async function GET() {
         provider: null,
         createdAt: user?.date_created || null,
         role: m.role,
-        supabaseRole: user?.role_user || null,
+        appRole: user?.role_user || "none",
         joinedAt: m.joined_at || null,
         // No access row = no access (secure by default)
         accessEngine: access ? !!access.flag_access_engine : false,
@@ -108,6 +108,7 @@ export async function POST(req: NextRequest) {
           email_user: normalizedEmail,
           name_user: displayName,
           date_created: new Date().toISOString(),
+          role_user: normalizedEmail.endsWith("@thecontentengine.com") ? "tceuser" : "none",
         })
         .select()
         .single();
@@ -175,7 +176,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
-    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain } = body;
+    const { userId, userIds, role, appRole, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain } = body;
 
     // Determine target user IDs — bulk or single
     const isBulk = Array.isArray(userIds) && userIds.length > 0;
@@ -213,6 +214,14 @@ export async function PATCH(req: NextRequest) {
       if (error || !updated) {
         return NextResponse.json({ error: "Member not found" }, { status: 404 });
       }
+    }
+
+    // Update app role (user type) in the main users table if provided (single-user only)
+    if (appRole && !isBulk) {
+      await supabase
+        .from("users")
+        .update({ role_user: appRole })
+        .eq("id_user", targetIds[0]);
     }
 
     // Update area access in intelligence schema if any access flags provided
