@@ -498,6 +498,9 @@ function EngineGPTContent() {
     return true;
   });
 
+  // How many conversations to show per client group before "more"
+  const GROUP_PREVIEW_LIMIT = 5;
+
   // Group conversations by client (only when not searching)
   const sortedGroups = (() => {
     if (searchQuery) return null; // flat results when searching
@@ -510,7 +513,7 @@ function EngineGPTContent() {
     }
 
     const groups = Array.from(clientMap.entries())
-      .map(([name, data]) => ({ key: name, clientId: data.clientId, clientName: name, conversations: data.conversations }))
+      .map(([name, data]) => ({ key: name, clientId: data.clientId, clientName: name, conversations: data.conversations, totalCount: data.conversations.length }))
       .sort((a, b) => {
         const aPinned = a.clientId !== null && pinnedClientIds.has(a.clientId);
         const bPinned = b.clientId !== null && pinnedClientIds.has(b.clientId);
@@ -528,6 +531,16 @@ function EngineGPTContent() {
         if (aPinned !== bPinned) return aPinned ? -1 : 1;
         return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
       });
+    }
+
+    // When showing all clients (no filter), limit each group to preview count
+    const isUnfiltered = !customerId;
+    if (isUnfiltered) {
+      for (const group of groups) {
+        if (group.conversations.length > GROUP_PREVIEW_LIMIT) {
+          group.conversations = group.conversations.slice(0, GROUP_PREVIEW_LIMIT);
+        }
+      }
     }
 
     return groups;
@@ -940,6 +953,22 @@ function EngineGPTContent() {
                           )}
                         </button>
                       ))}
+                      {/* "more" link when group has been truncated */}
+                      {!customerId && group.totalCount > GROUP_PREVIEW_LIMIT && (
+                        <button
+                          onClick={() => {
+                            if (group.clientId !== null) {
+                              customerCtx?.setSelectedCustomerId(String(group.clientId));
+                            } else {
+                              // "General" — use special sentinel so API filters to id_client IS NULL
+                              customerCtx?.setSelectedCustomerId("general");
+                            }
+                          }}
+                          className="w-full text-left px-2.5 py-1.5 text-[12px] text-white/40 hover:text-white/60 transition-colors"
+                        >
+                          {group.totalCount - GROUP_PREVIEW_LIMIT} more...
+                        </button>
+                      )}
                     </div>
                   ))
                 ) : (

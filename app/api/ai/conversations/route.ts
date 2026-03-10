@@ -74,7 +74,10 @@ export async function GET(req: NextRequest) {
       query = query.eq("id_content", parseInt(contentObjectId, 10));
     }
 
-    if (customerId) {
+    if (customerId === "general") {
+      // Special value: only conversations with no client (General)
+      query = query.is("id_client", null);
+    } else if (customerId) {
       query = query.eq("id_client", parseInt(customerId, 10));
     }
 
