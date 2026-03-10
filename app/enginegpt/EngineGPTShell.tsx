@@ -35,7 +35,7 @@ export default function EngineGPTShell({
 
   if (!authChecked) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background">
+      <div className="flex h-dvh items-center justify-center bg-background">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" />
       </div>
     );
@@ -46,7 +46,7 @@ export default function EngineGPTShell({
       <CustomerProvider>
         <TooltipProvider>
           <EngineGPTAccessGuard>
-            <div className="flex h-screen bg-background overflow-hidden">
+            <div className="flex h-dvh bg-background overflow-hidden">
               {children}
             </div>
           </EngineGPTAccessGuard>
@@ -62,7 +62,7 @@ function EngineGPTAccessGuard({ children }: { children: React.ReactNode }) {
 
   if (wsCtx?.loading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background">
+      <div className="flex h-dvh items-center justify-center bg-background">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" />
       </div>
     );
@@ -71,7 +71,7 @@ function EngineGPTAccessGuard({ children }: { children: React.ReactNode }) {
   const ws = wsCtx?.selectedWorkspace;
   if (ws && ws.accessEngineGpt === false) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background">
+      <div className="flex h-dvh items-center justify-center bg-background">
         <div className="text-center px-4">
           <div className="h-16 w-16 rounded-2xl bg-destructive/10 flex items-center justify-center mx-auto mb-4">
             <Image
