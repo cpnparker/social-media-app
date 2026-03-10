@@ -627,10 +627,25 @@ export async function POST(
     // Fetch user preferences (personal context + region)
     const { data: userPrefs } = await intelligenceDb
       .from("users_access")
-      .select("information_personal_context, name_region")
+      .select("information_personal_context, name_region, data_selected_roles")
       .eq("id_workspace", conversation.id_workspace)
       .eq("user_target", userId)
       .maybeSingle();
+
+    // Resolve selected role IDs to role objects (always-on background expertise)
+    let selectedRoles: { name: string; instructions: string }[] = [];
+    const selectedRoleIds: string[] = userPrefs?.data_selected_roles || [];
+    if (selectedRoleIds.length > 0) {
+      const { data: roleRows } = await intelligenceDb
+        .from("ai_roles")
+        .select("name_role, information_instructions")
+        .in("id_role", selectedRoleIds)
+        .eq("flag_active", 1);
+      selectedRoles = (roleRows || []).map((r: any) => ({
+        name: r.name_role,
+        instructions: r.information_instructions,
+      }));
+    }
 
     const systemPrompt = buildSystemPrompt({
       workspaceConfig,
@@ -642,6 +657,7 @@ export async function POST(
       workspaceSummary,
       memories: memories.length > 0 ? memories : undefined,
       role,
+      selectedRoles: selectedRoles.length > 0 ? selectedRoles : undefined,
       latestUserMessage: userContent || "",
       personalContext: userPrefs?.information_personal_context || null,
       region: userPrefs?.name_region || null,

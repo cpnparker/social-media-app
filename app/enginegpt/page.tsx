@@ -72,6 +72,7 @@ import { AI_MODELS, DEFAULT_MODEL, getModelLabel } from "@/lib/ai/models";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
 import MemoryManager from "@/components/ai-writer/MemoryManager";
 import AdminDialog from "@/components/ai-writer/AdminDialog";
+import PersonaliseDialog from "@/components/ai-writer/PersonaliseDialog";
 import { signOut } from "next-auth/react";
 import { SectionRailDesktop, SectionRailMobile, useRailItems } from "@/components/layout/SectionRail";
 import type { AIConversation, Attachment } from "@/lib/types/ai";
@@ -87,6 +88,7 @@ export default function EngineGPTPage() {
 function EngineGPTContent() {
   const wsCtx = useWorkspaceSafe();
   const workspaceId = wsCtx?.selectedWorkspace?.id;
+  const isAdmin = wsCtx?.selectedWorkspace?.accessAdmin ?? false;
   const customerCtx = useCustomerSafe();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -131,6 +133,7 @@ function EngineGPTContent() {
   const [incognitoMode, setIncognitoMode] = useState(false);
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false);
   const [adminDialogOpen, setAdminDialogOpen] = useState(false);
+  const [personaliseDialogOpen, setPersonaliseDialogOpen] = useState(false);
   const [memoryCount, setMemoryCount] = useState(0);
   const [isHomeDragging, setIsHomeDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -652,6 +655,13 @@ function EngineGPTContent() {
                 </div>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
+                  onClick={() => setPersonaliseDialogOpen(true)}
+                  className="gap-2"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  Personalise
+                </DropdownMenuItem>
+                <DropdownMenuItem
                   onClick={() => setMemoryManagerOpen(true)}
                   className="gap-2"
                 >
@@ -661,13 +671,15 @@ function EngineGPTContent() {
                     <span className="ml-auto text-[10px] text-muted-foreground">{memoryCount}</span>
                   )}
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setAdminDialogOpen(true)}
-                  className="gap-2"
-                >
-                  <Settings className="h-4 w-4" />
-                  Administration
-                </DropdownMenuItem>
+                {isAdmin && (
+                  <DropdownMenuItem
+                    onClick={() => setAdminDialogOpen(true)}
+                    className="gap-2"
+                  >
+                    <Settings className="h-4 w-4" />
+                    Administration
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={() => signOut({ callbackUrl: "/login" })}
@@ -1042,6 +1054,13 @@ function EngineGPTContent() {
                 </div>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
+                  onClick={() => setPersonaliseDialogOpen(true)}
+                  className="gap-2"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  Personalise
+                </DropdownMenuItem>
+                <DropdownMenuItem
                   onClick={() => setMemoryManagerOpen(true)}
                   className="gap-2"
                 >
@@ -1051,13 +1070,15 @@ function EngineGPTContent() {
                     <span className="ml-auto text-[10px] text-muted-foreground">{memoryCount}</span>
                   )}
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setAdminDialogOpen(true)}
-                  className="gap-2"
-                >
-                  <Settings className="h-4 w-4" />
-                  Administration
-                </DropdownMenuItem>
+                {isAdmin && (
+                  <DropdownMenuItem
+                    onClick={() => setAdminDialogOpen(true)}
+                    className="gap-2"
+                  >
+                    <Settings className="h-4 w-4" />
+                    Administration
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={() => signOut({ callbackUrl: "/login" })}
@@ -1650,6 +1671,14 @@ function EngineGPTContent() {
               .then((data) => setMemoryCount(data.memories?.length || 0))
               .catch(() => {});
           }}
+        />
+      )}
+      {/* Personalise Dialog */}
+      {workspaceId && (
+        <PersonaliseDialog
+          workspaceId={workspaceId}
+          open={personaliseDialogOpen}
+          onClose={() => setPersonaliseDialogOpen(false)}
         />
       )}
       {/* Administration Dialog */}

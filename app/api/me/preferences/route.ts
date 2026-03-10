@@ -33,7 +33,7 @@ export async function GET() {
     const { data: row } = await intelligenceDb
       .from("users_access")
       .select(
-        "information_personal_context, name_region, data_pinned_conversations, data_pinned_clients"
+        "information_personal_context, name_region, data_pinned_conversations, data_pinned_clients, data_selected_roles"
       )
       .eq("id_workspace", ws.id)
       .eq("user_target", userId)
@@ -44,6 +44,7 @@ export async function GET() {
       region: row?.name_region || "Global",
       pinnedConversationIds: row?.data_pinned_conversations || [],
       pinnedClientIds: row?.data_pinned_clients || [],
+      selectedRoleIds: row?.data_selected_roles || [],
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -88,6 +89,9 @@ export async function PATCH(req: NextRequest) {
     }
     if (body.pinnedClientIds !== undefined) {
       updates.data_pinned_clients = body.pinnedClientIds;
+    }
+    if (body.selectedRoleIds !== undefined) {
+      updates.data_selected_roles = body.selectedRoleIds;
     }
 
     // Check if row exists

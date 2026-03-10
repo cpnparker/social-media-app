@@ -166,6 +166,7 @@ export function buildSystemPrompt(ctx: {
   workspaceSummary?: WorkspaceSummary | null;
   memories?: { content: string; category: string }[];
   role?: { name: string; instructions: string } | null;
+  selectedRoles?: { name: string; instructions: string }[];
   latestUserMessage?: string;
   personalContext?: string | null;
   region?: string | null;
@@ -195,6 +196,16 @@ Guidelines:
   if (ctx.personalContext) {
     prompt += `\n\n## About the User`;
     prompt += `\n${ctx.personalContext}`;
+  }
+
+  // ── Selected roles (always-on background expertise) ──
+  if (ctx.selectedRoles && ctx.selectedRoles.length > 0) {
+    prompt += `\n\n## Your Active Roles`;
+    prompt += `\nThe user has selected the following expertise areas to always inform your responses:`;
+    for (const sr of ctx.selectedRoles) {
+      prompt += `\n\n### ${sr.name}`;
+      prompt += `\n${sr.instructions}`;
+    }
   }
 
   // ── Regional context (user-specific) ──
