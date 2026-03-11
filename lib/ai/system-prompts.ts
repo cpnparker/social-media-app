@@ -169,6 +169,7 @@ export function buildSystemPrompt(ctx: {
   selectedRoles?: { name: string; instructions: string }[];
   latestUserMessage?: string;
   personalContext?: string | null;
+  meetingBrainContext?: string | null;
   region?: string | null;
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
@@ -196,10 +197,17 @@ ${FORMATTING_GUIDELINES}`;
 ${FORMATTING_GUIDELINES}`;
   }
 
-  // ── Personal context (user-specific) ──
+  // ── Personal context (user-specific, private/shared threads only) ──
   if (ctx.personalContext) {
     prompt += `\n\n## About the User`;
     prompt += `\n${ctx.personalContext}`;
+  }
+
+  // ── MeetingBrain context (tasks + meetings, private/shared threads only) ──
+  if (ctx.meetingBrainContext) {
+    prompt += `\n\n## Your Tasks & Recent Meetings`;
+    prompt += `\nContext from MeetingBrain — the user's active tasks and recent meeting summaries:`;
+    prompt += `\n${ctx.meetingBrainContext}`;
   }
 
   // ── Selected roles (always-on background expertise) ──

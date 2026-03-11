@@ -657,12 +657,25 @@ export async function POST(
       return { clientContext, contentDetail, clientIdeas, workspaceSummary };
     })();
 
-    // Run all four in parallel
-    const [memories, role, userPrefs, ctx] = await Promise.all([
+    // MeetingBrain / external app context (skip in incognito)
+    const appContextPromise = !isIncognito
+      ? (async () => {
+          const { data } = await intelligenceDb
+            .from("user_app_context")
+            .select("type_context, information_content")
+            .eq("user_target", userId)
+            .eq("name_source", "meetingbrain");
+          return data || [];
+        })()
+      : Promise.resolve([]);
+
+    // Run all five in parallel
+    const [memories, role, userPrefs, ctx, appContextRows] = await Promise.all([
       memoryPromise,
       rolePromise,
       userPrefsPromise,
       contextPromise,
+      appContextPromise,
     ]);
 
     const { clientContext, contentDetail, clientIdeas, workspaceSummary } = ctx;
@@ -682,6 +695,15 @@ export async function POST(
       }));
     }
 
+    // Privacy: exclude personal/sensitive data from team threads
+    const isTeamThread = conversation.type_visibility === "team";
+
+    // MeetingBrain context: only for private/shared threads (never team threads)
+    const meetingBrainContext = isTeamThread ? null
+      : appContextRows.length > 0
+        ? appContextRows.map((r: any) => r.information_content).join("\n\n")
+        : null;
+
     const systemPrompt = buildSystemPrompt({
       workspaceConfig,
       clientContext,
@@ -694,7 +716,8 @@ export async function POST(
       role,
       selectedRoles: selectedRoles.length > 0 ? selectedRoles : undefined,
       latestUserMessage: userContent || "",
-      personalContext: userPrefs?.information_personal_context || null,
+      personalContext: isTeamThread ? null : (userPrefs?.information_personal_context || null),
+      meetingBrainContext,
       region: userPrefs?.name_region || null,
     });
 
