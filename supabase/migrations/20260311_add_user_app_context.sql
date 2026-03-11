@@ -17,3 +17,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_user_app_context_unique
 
 CREATE INDEX IF NOT EXISTS idx_user_app_context_user
   ON intelligence.user_app_context(user_target, name_source);
+
+-- Enable RLS to block anon/public access.
+-- Both apps use the service role key which bypasses RLS.
+ALTER TABLE intelligence.user_app_context ENABLE ROW LEVEL SECURITY;
