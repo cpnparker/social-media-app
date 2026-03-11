@@ -22,6 +22,7 @@ import {
   SlidersHorizontal,
   Check,
   Brain,
+  ListChecks,
   UserPlus,
   ChevronsUpDown,
 } from "lucide-react";
@@ -70,7 +71,7 @@ interface ChatPanelProps {
   onBack?: () => void;
   initialMessage?: string;
   initialAttachments?: Attachment[];
-  contextConfig?: { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch?: string; memory?: string };
+  contextConfig?: { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch?: string; memory?: string; meetingBrain?: string };
   debugMode?: boolean;
   onCopyLink?: () => void;
   onMenuClick?: () => void;
@@ -80,7 +81,7 @@ interface ChatPanelProps {
   isAdmin?: boolean;
 }
 
-type ContextConfig = { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch: string; memory: string };
+type ContextConfig = { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch: string; memory: string; meetingBrain: string };
 
 export default function ChatPanel({
   conversationId,
@@ -114,6 +115,7 @@ export default function ChatPanel({
     incognito: initialContextConfig?.incognito,
     webSearch: initialContextConfig?.webSearch || "on",
     memory: initialContextConfig?.memory || "on",
+    meetingBrain: initialContextConfig?.meetingBrain || "on",
   });
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -854,6 +856,31 @@ export default function ChatPanel({
                       <Check className="h-3 w-3 text-foreground/50 shrink-0" />
                     )}
                   </button>
+                  {conversation?.visibility !== "team" && (
+                    <button
+                      onClick={() =>
+                        setLocalContextConfig((prev) => ({
+                          ...prev,
+                          meetingBrain: prev.meetingBrain === "on" ? "off" : "on",
+                        }))
+                      }
+                      className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/50 transition-colors"
+                    >
+                      <ListChecks className={cn(
+                        "h-3 w-3 shrink-0",
+                        localContextConfig.meetingBrain === "on" ? "text-foreground/60" : "text-muted-foreground/50"
+                      )} />
+                      <span className={cn(
+                        "flex-1",
+                        localContextConfig.meetingBrain === "on" ? "text-foreground/80" : "text-muted-foreground/50"
+                      )}>
+                        MeetingBrain
+                      </span>
+                      {localContextConfig.meetingBrain === "on" && (
+                        <Check className="h-3 w-3 text-foreground/50 shrink-0" />
+                      )}
+                    </button>
+                  )}
                 </div>
               </PopoverContent>
             </Popover>

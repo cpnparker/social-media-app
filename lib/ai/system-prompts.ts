@@ -12,6 +12,7 @@ export interface NormalizedContextConfig {
   webSearch: "on" | "off";
   incognito: "on" | "off";
   memory: "on" | "off";
+  meetingBrain: "on" | "off";
 }
 
 /** Check if a detail level is any "full" variant */
@@ -41,7 +42,7 @@ export function normalizeDetailLevel(value: any): DetailLevel {
 
 /** Normalize a full context config (handles both legacy boolean and new string formats) */
 export function normalizeContextConfig(config: any): NormalizedContextConfig {
-  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "summary", webSearch: "on", incognito: "off", memory: "on" };
+  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "summary", webSearch: "on", incognito: "off", memory: "on", meetingBrain: "on" };
   return {
     contracts: normalizeDetailLevel(config.contracts),
     contentPipeline: normalizeDetailLevel(config.contentPipeline),
@@ -50,6 +51,7 @@ export function normalizeContextConfig(config: any): NormalizedContextConfig {
     webSearch: config.webSearch === "off" ? "off" : "on",
     incognito: config.incognito === "on" ? "on" : "off",
     memory: config.memory === "off" ? "off" : "on",
+    meetingBrain: config.meetingBrain === "off" ? "off" : "on",
   };
 }
 

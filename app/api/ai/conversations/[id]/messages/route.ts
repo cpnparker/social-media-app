@@ -657,8 +657,9 @@ export async function POST(
       return { clientContext, contentDetail, clientIdeas, workspaceSummary };
     })();
 
-    // MeetingBrain / external app context (skip in incognito)
-    const appContextPromise = !isIncognito
+    // MeetingBrain / external app context (skip in incognito or when toggled off)
+    const meetingBrainEnabled = contextConfig.meetingBrain !== "off";
+    const appContextPromise = !isIncognito && meetingBrainEnabled
       ? (async () => {
           const { data } = await intelligenceDb
             .from("user_app_context")
