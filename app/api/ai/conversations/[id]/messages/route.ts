@@ -704,6 +704,10 @@ export async function POST(
         ? appContextRows.map((r: any) => r.information_content).join("\n\n")
         : null;
 
+    if (appContextRows.length > 0) {
+      console.log(`[Messages] MeetingBrain context: ${appContextRows.length} rows, ${meetingBrainContext?.length || 0} chars${isTeamThread ? " (excluded — team thread)" : ""}`);
+    }
+
     const systemPrompt = buildSystemPrompt({
       workspaceConfig,
       clientContext,
