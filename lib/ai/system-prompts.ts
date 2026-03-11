@@ -206,7 +206,11 @@ ${FORMATTING_GUIDELINES}`;
   // ── MeetingBrain context (tasks + meetings, private/shared threads only) ──
   if (ctx.meetingBrainContext) {
     prompt += `\n\n## Your Tasks & Recent Meetings`;
-    prompt += `\nContext from MeetingBrain — the user's active tasks and recent meeting summaries:`;
+    prompt += `\nBelow is context from MeetingBrain — the user's active tasks and recent meeting summaries. Use this to give informed, context-aware answers:`;
+    prompt += `\n- When the user asks about their tasks or workload, explain each task clearly with full context — what it is, why it matters, and where it sits in their priorities. Don't just list bullet points.`;
+    prompt += `\n- Reference relevant meetings naturally — mention what was discussed, key decisions made, and any follow-ups that relate to the conversation.`;
+    prompt += `\n- Provide thoughtful observations: highlight connections between tasks, flag upcoming deadlines, suggest priorities, and note how meetings relate to their work.`;
+    prompt += `\n- Write in full, conversational sentences. Avoid abbreviations, shorthand, or echoing the raw data format below.`;
     prompt += `\n${ctx.meetingBrainContext}`;
   }
 
