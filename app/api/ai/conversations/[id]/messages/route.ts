@@ -20,9 +20,11 @@ const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> =
   "gpt-4o-mini": { inputPer1M: 15, outputPer1M: 60 },                // $0.15/$0.60
   "grok-4-1-fast": { inputPer1M: 20, outputPer1M: 50 },              // $0.20/$0.50
   "grok-3-mini": { inputPer1M: 30, outputPer1M: 50 },                // $0.30/$0.50
-  // Legacy
+  // Legacy — costs reflect the ACTUAL model they route to in providers.ts
   "claude-sonnet-4-20250514": { inputPer1M: 300, outputPer1M: 1500 },
-  "grok-3": { inputPer1M: 300, outputPer1M: 1500 },
+  "grok-3": { inputPer1M: 20, outputPer1M: 50 },                     // routes to grok-4-1-fast
+  "gemini-2.5-pro": { inputPer1M: 50, outputPer1M: 300 },             // routes to gemini-3-flash
+  "gemini-2.5-flash": { inputPer1M: 25, outputPer1M: 150 },           // routes to gemini-3.1-flash-lite
 };
 
 function calculateCostTenths(model: string, inputTokens: number, outputTokens: number): number {
