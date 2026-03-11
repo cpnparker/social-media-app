@@ -65,6 +65,7 @@ async function extractDocumentText(att: Attachment): Promise<string | undefined>
 }
 
 // ── Helper: convert stored attachments to AIAttachments with extracted text ──
+// If `extractedText` is already cached on the attachment, skip re-extraction.
 async function prepareAttachmentsForAI(attachments: Attachment[]): Promise<AIAttachment[]> {
   const prepared: AIAttachment[] = [];
 
@@ -75,9 +76,13 @@ async function prepareAttachmentsForAI(attachments: Attachment[]): Promise<AIAtt
       type: att.type,
     };
 
-    // Extract text for non-image files
+    // Use cached extracted text if available; otherwise extract fresh
     if (!att.type.startsWith("image/")) {
-      aiAtt.extractedText = await extractDocumentText(att);
+      if ((att as any).extractedText) {
+        aiAtt.extractedText = (att as any).extractedText;
+      } else {
+        aiAtt.extractedText = await extractDocumentText(att);
+      }
     }
 
     prepared.push(aiAtt);
@@ -489,13 +494,28 @@ export async function POST(
       });
     }
 
-    // Save user message (skip in incognito)
+    // Pre-extract text from document attachments so we can cache it in the DB
+    // This avoids re-downloading and re-parsing on every subsequent message
+    let enrichedAttachments: Attachment[] | null = null;
+    if (userAttachments?.length) {
+      enrichedAttachments = await Promise.all(
+        userAttachments.map(async (att) => {
+          if (!att.type.startsWith("image/") && !(att as any).extractedText) {
+            const extracted = await extractDocumentText(att);
+            if (extracted) return { ...att, extractedText: extracted } as any;
+          }
+          return att;
+        })
+      );
+    }
+
+    // Save user message with cached extracted text (skip in incognito)
     if (!conversation.flag_incognito) {
       const { error: msgErr } = await intelligenceDb.from("ai_messages").insert({
         id_conversation: conversationId,
         role_message: "user",
         document_message: (userContent || "").trim(),
-        attachments: userAttachments || null,
+        attachments: enrichedAttachments || null,
         user_created: userId,
       });
       if (msgErr) console.error("[Messages] Failed to save user message:", msgErr);
@@ -551,90 +571,103 @@ export async function POST(
       messages.push(msg);
     }
 
-    // Build context based on conversation scope
-    let clientContext: Awaited<ReturnType<typeof fetchClientContext>> = null;
-    let contentDetail: Awaited<ReturnType<typeof fetchContentDetail>> = null;
-    let clientIdeas: Awaited<ReturnType<typeof fetchClientIdeas>> | null = null;
-    let workspaceSummary: Awaited<ReturnType<typeof fetchWorkspaceSummary>> | null = null;
+    // ── Parallel fetch: context, memories, role, user prefs ──
+    // These are all independent and can run concurrently
+    const isIncognito = contextConfig.incognito === "on";
 
-    if (conversation.id_content) {
-      // Content-specific conversation — fetch content detail + client context
-      contentDetail = await fetchContentDetail(conversation.id_content);
-      if (contentDetail?.clientId) {
+    // Build memory query (but don't await yet)
+    const memoryPromise = (!isIncognito && contextConfig.memory !== "off")
+      ? (async (): Promise<{ content: string; category: string }[]> => {
+          let memoryQuery = intelligenceDb
+            .from("ai_memories")
+            .select("information_content, type_category")
+            .eq("id_workspace", conversation.id_workspace)
+            .eq("flag_active", 1);
+
+          if (conversation.type_visibility === "private") {
+            memoryQuery = memoryQuery.or(
+              `and(type_scope.eq.private,user_memory.eq.${userId}),type_scope.eq.team`
+            );
+          } else {
+            memoryQuery = memoryQuery.eq("type_scope", "team");
+          }
+
+          const { data } = await memoryQuery
+            .order("date_created", { ascending: true })
+            .limit(50);
+
+          return (data || []).map((m: any) => ({
+            content: m.information_content,
+            category: m.type_category,
+          }));
+        })()
+      : Promise.resolve([]);
+
+    // Role fetch (if specified)
+    const rolePromise = body.roleId
+      ? (async () => {
+          const { data } = await intelligenceDb
+            .from("ai_roles")
+            .select("name_role, information_instructions")
+            .eq("id_role", body.roleId)
+            .maybeSingle();
+          return data ? { name: data.name_role, instructions: data.information_instructions } : null;
+        })()
+      : Promise.resolve(null);
+
+    // User preferences fetch
+    const userPrefsPromise = (async () => {
+      const { data } = await intelligenceDb
+        .from("users_access")
+        .select("information_personal_context, name_region, data_selected_roles")
+        .eq("id_workspace", conversation.id_workspace)
+        .eq("user_target", userId)
+        .maybeSingle();
+      return data;
+    })();
+
+    // Context fetch (client / content / workspace)
+    const contextPromise = (async () => {
+      let clientContext: Awaited<ReturnType<typeof fetchClientContext>> = null;
+      let contentDetail: Awaited<ReturnType<typeof fetchContentDetail>> = null;
+      let clientIdeas: Awaited<ReturnType<typeof fetchClientIdeas>> | null = null;
+      let workspaceSummary: Awaited<ReturnType<typeof fetchWorkspaceSummary>> | null = null;
+
+      if (conversation.id_content) {
+        contentDetail = await fetchContentDetail(conversation.id_content);
+        if (contentDetail?.clientId) {
+          const [cc, ci] = await Promise.all([
+            fetchClientContext(contentDetail.clientId, contextConfig),
+            contextConfig.ideas !== "off" ? fetchClientIdeas(contentDetail.clientId, contextConfig.ideas) : null,
+          ]);
+          clientContext = cc;
+          clientIdeas = ci;
+        }
+      } else if (conversation.id_client) {
         const [cc, ci] = await Promise.all([
-          fetchClientContext(contentDetail.clientId, contextConfig),
-          contextConfig.ideas !== "off" ? fetchClientIdeas(contentDetail.clientId, contextConfig.ideas) : null,
+          fetchClientContext(conversation.id_client, contextConfig),
+          contextConfig.ideas !== "off" ? fetchClientIdeas(conversation.id_client, contextConfig.ideas) : null,
         ]);
         clientContext = cc;
         clientIdeas = ci;
-      }
-    } else if (conversation.id_client) {
-      // Client-scoped standalone conversation
-      const [cc, ci] = await Promise.all([
-        fetchClientContext(conversation.id_client, contextConfig),
-        contextConfig.ideas !== "off" ? fetchClientIdeas(conversation.id_client, contextConfig.ideas) : null,
-      ]);
-      clientContext = cc;
-      clientIdeas = ci;
-    } else {
-      // Workspace-level "General" conversation
-      workspaceSummary = await fetchWorkspaceSummary();
-    }
-
-    // Incognito mode: skip memory fetching and extraction
-    const isIncognito = contextConfig.incognito === "on";
-
-    // Fetch memories (privacy-aware) — skip if memory is off or incognito
-    let memories: { content: string; category: string }[] = [];
-    if (!isIncognito && contextConfig.memory !== "off") {
-      let memoryQuery = intelligenceDb
-        .from("ai_memories")
-        .select("information_content, type_category")
-        .eq("id_workspace", conversation.id_workspace)
-        .eq("flag_active", 1);
-
-      if (conversation.type_visibility === "private") {
-        // User's private memories + workspace team memories
-        memoryQuery = memoryQuery.or(
-          `and(type_scope.eq.private,user_memory.eq.${userId}),type_scope.eq.team`
-        );
       } else {
-        // Team chats: only workspace team memories
-        memoryQuery = memoryQuery.eq("type_scope", "team");
+        workspaceSummary = await fetchWorkspaceSummary();
       }
 
-      const { data: memoryRows } = await memoryQuery
-        .order("date_created", { ascending: true })
-        .limit(50);
+      return { clientContext, contentDetail, clientIdeas, workspaceSummary };
+    })();
 
-      memories = (memoryRows || []).map((m: any) => ({
-        content: m.information_content,
-        category: m.type_category,
-      }));
-    }
+    // Run all four in parallel
+    const [memories, role, userPrefs, ctx] = await Promise.all([
+      memoryPromise,
+      rolePromise,
+      userPrefsPromise,
+      contextPromise,
+    ]);
 
-    // Fetch role if specified
-    let role: { name: string; instructions: string } | null = null;
-    if (body.roleId) {
-      const { data: roleRow } = await intelligenceDb
-        .from("ai_roles")
-        .select("name_role, information_instructions")
-        .eq("id_role", body.roleId)
-        .maybeSingle();
-      if (roleRow) {
-        role = { name: roleRow.name_role, instructions: roleRow.information_instructions };
-      }
-    }
+    const { clientContext, contentDetail, clientIdeas, workspaceSummary } = ctx;
 
-    // Fetch user preferences (personal context + region)
-    const { data: userPrefs } = await intelligenceDb
-      .from("users_access")
-      .select("information_personal_context, name_region, data_selected_roles")
-      .eq("id_workspace", conversation.id_workspace)
-      .eq("user_target", userId)
-      .maybeSingle();
-
-    // Resolve selected role IDs to role objects (always-on background expertise)
+    // Resolve selected role IDs to role objects (depends on userPrefs)
     let selectedRoles: { name: string; instructions: string }[] = [];
     const selectedRoleIds: string[] = userPrefs?.data_selected_roles || [];
     if (selectedRoleIds.length > 0) {
