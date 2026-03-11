@@ -99,7 +99,7 @@ export function SectionRailDesktop({ currentArea, onLocalSwitch }: SectionRailPr
                 {item.area === currentArea && (
                   <div className="absolute -left-1 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-blue-400" />
                 )}
-                <item.icon className="h-[18px] w-[18px]" />
+                {(() => { const Icon = item.icon as any; return <Icon className="h-[18px] w-[18px]" />; })()}
               </button>
             </TooltipTrigger>
             <TooltipContent side="right" sideOffset={8}>
