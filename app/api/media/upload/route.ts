@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
           // Validate and configure the upload
           return {
             allowedContentTypes: ALLOWED_TYPES,
-            maximumSizeInBytes: 200 * 1024 * 1024, // 200MB
+            maximumSizeInBytes: 20 * 1024 * 1024, // 20MB for docs, images; videos handled separately
             addRandomSuffix: true,
           };
         },

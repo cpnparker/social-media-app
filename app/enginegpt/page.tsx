@@ -75,7 +75,10 @@ import AdminDialog from "@/components/ai-writer/AdminDialog";
 import PersonaliseDialog from "@/components/ai-writer/PersonaliseDialog";
 import { signOut } from "next-auth/react";
 import { SectionRailDesktop, SectionRailMobile, useRailItems } from "@/components/layout/SectionRail";
+import { upload as blobUpload } from "@vercel/blob/client";
 import type { AIConversation, Attachment } from "@/lib/types/ai";
+
+const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 
 export default function EngineGPTPage() {
   return (
@@ -284,32 +287,27 @@ function EngineGPTContent() {
     }
   }, [homeInput]);
 
-  // Shared file upload logic
+  // Shared file upload logic — uses client-side Vercel Blob upload
+  // to bypass serverless function body size limits
   const uploadFiles = useCallback(async (files: File[]) => {
     if (!files.length) return;
     setUploading(true);
 
     for (const file of files) {
+      if (file.size > MAX_FILE_SIZE) {
+        toast.error(`${file.name} is too large. Maximum size is 20MB.`);
+        continue;
+      }
       try {
-        const formData = new FormData();
-        formData.append("file", file);
-
-        const res = await fetch("/api/media/upload", {
-          method: "POST",
-          body: formData,
+        const blob = await blobUpload(file.name, file, {
+          access: "public",
+          handleUploadUrl: "/api/media/upload",
         });
 
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          toast.error(err.error || `Failed to upload ${file.name}`);
-          continue;
-        }
-
-        const data = await res.json();
         setPendingAttachments((prev) => [
           ...prev,
           {
-            url: data.url,
+            url: blob.url,
             name: file.name,
             type: file.type,
             size: file.size,
