@@ -39,6 +39,7 @@ import {
   Share2,
   Lightbulb,
   Brain,
+  ListChecks,
   EyeOff,
   UserPlus,
   Settings,
@@ -131,6 +132,7 @@ function EngineGPTContent() {
     ideas: "summary" as string,
     webSearch: "on" as string,
     memory: "on" as string,
+    meetingBrain: "on" as string,
   });
   const [debugMode, setDebugMode] = useState(false);
   const [incognitoMode, setIncognitoMode] = useState(false);
@@ -1650,6 +1652,27 @@ function EngineGPTContent() {
                       contextConfig.memory === "on" ? "text-pink-400" : "text-muted-foreground/30"
                     )} />
                     Memory
+                  </button>
+                  <button
+                    onClick={() =>
+                      setContextConfig((prev) => ({
+                        ...prev,
+                        meetingBrain: prev.meetingBrain === "on" ? "off" : "on",
+                      }))
+                    }
+                    title={`MeetingBrain: ${contextConfig.meetingBrain === "on" ? "On — includes your tasks & meetings" : "Off"} — click to toggle`}
+                    className={cn(
+                      "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
+                      contextConfig.meetingBrain === "on"
+                        ? "text-foreground/80 hover:text-foreground"
+                        : "text-muted-foreground/40 hover:text-muted-foreground/60"
+                    )}
+                  >
+                    <ListChecks className={cn(
+                      "h-3 w-3 sm:h-2.5 sm:w-2.5 transition-colors",
+                      contextConfig.meetingBrain === "on" ? "text-teal-400" : "text-muted-foreground/30"
+                    )} />
+                    MeetingBrain
                   </button>
                 </div>
               </div>
