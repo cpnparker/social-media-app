@@ -506,6 +506,8 @@ async function streamAnthropic(
     tools.push(IMAGE_GEN_TOOL);
   }
 
+  console.log(`[Anthropic] Streaming with tools: [${tools.map(t => (t as any).name || (t as any).type).join(', ') || 'none'}], imageGeneration=${config.imageGeneration}`);
+
   let fullText = "";
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
@@ -589,6 +591,8 @@ async function streamAnthropic(
     totalInputTokens += finalMessage.usage?.input_tokens || 0;
     totalOutputTokens += finalMessage.usage?.output_tokens || 0;
 
+    console.log(`[Anthropic] Round ${round}: stop_reason=${finalMessage.stop_reason}, toolUseBlocks=${toolUseBlocks.length}, textLength=${fullText.length}`);
+
     // If no tool calls were made, we're done
     if (finalMessage.stop_reason !== "tool_use" || toolUseBlocks.length === 0) {
       break;
@@ -668,8 +672,12 @@ async function streamXAI(
 ): Promise<StreamResult> {
   const xai = getXAIClient();
 
-  // When web search is enabled, use the Responses API
-  if (config.webSearch) {
+  // When web search is enabled AND image generation is NOT, use the Responses API.
+  // The Responses API supports built-in web search but doesn't support function
+  // calling tools (like generate_image). When image generation is on, we must use
+  // the Chat Completions API with function calling instead — web search won't be
+  // available in that mode, but image generation will work.
+  if (config.webSearch && !config.imageGeneration) {
     return streamXAIResponses(messages, config, apiModel, controller, encoder, xai);
   }
 
@@ -701,6 +709,8 @@ async function streamXAI(
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_OPENAI_TOOL);
   }
+
+  console.log(`[xAI] Streaming model=${apiModel}, webSearch=${config.webSearch}, imageGen=${config.imageGeneration}, tools=[${tools.map(t => (t as any).function?.name || t.type).join(', ') || 'none'}]`);
 
   let fullText = "";
   let totalInputTokens = 0;
@@ -771,6 +781,8 @@ async function streamXAI(
         totalOutputTokens += (chunk as any).usage.completion_tokens || 0;
       }
     }
+
+    console.log(`[xAI] Round ${round}: finishReason=${finishReason}, toolCalls=${toolCalls.size}`);
 
     // If no tool calls, we're done
     if (finishReason !== "tool_calls" || toolCalls.size === 0) {
