@@ -906,6 +906,29 @@ export default function ChatPanel({
                       )}
                     </button>
                   )}
+                  <button
+                    onClick={() =>
+                      setLocalContextConfig((prev) => ({
+                        ...prev,
+                        imageGeneration: prev.imageGeneration === "on" ? "off" : "on",
+                      }))
+                    }
+                    className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/50 transition-colors"
+                  >
+                    <ImageIcon className={cn(
+                      "h-3 w-3 shrink-0",
+                      localContextConfig.imageGeneration === "on" ? "text-violet-400" : "text-muted-foreground/50"
+                    )} />
+                    <span className={cn(
+                      "flex-1",
+                      localContextConfig.imageGeneration === "on" ? "text-foreground/80" : "text-muted-foreground/50"
+                    )}>
+                      Image
+                    </span>
+                    {localContextConfig.imageGeneration === "on" && (
+                      <Check className="h-3 w-3 text-foreground/50 shrink-0" />
+                    )}
+                  </button>
                 </div>
               </PopoverContent>
             </Popover>
