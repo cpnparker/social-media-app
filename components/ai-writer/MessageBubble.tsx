@@ -463,9 +463,9 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
     '<a href="$2" target="_blank" rel="noopener" class="ai-link">$1</a>'
   );
 
-  // Plain URLs
+  // Plain URLs (skip URLs already inside href="", src="", or ">...)
   html = html.replace(
-    /(?<!href="|">)(https?:\/\/[^\s<)\]]+)/g,
+    /(?<!href="|src="|">)(https?:\/\/[^\s<)\]"]+)/g,
     '<a href="$1" target="_blank" rel="noopener" class="ai-link break-all">$1</a>'
   );
 
