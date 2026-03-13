@@ -277,6 +277,21 @@
   color: hsl(var(--foreground));
 }
 
+/* AI-generated images */
+.ai-response .ai-generated-image-wrap {
+  margin: 0.75rem 0;
+}
+.ai-response .ai-generated-image {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.ai-response .ai-generated-image:hover {
+  opacity: 0.92;
+}
+
 /* Safe area insets for modern phones */
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
   .safe-bottom {

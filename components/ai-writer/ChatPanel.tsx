@@ -25,6 +25,7 @@ import {
   ListChecks,
   UserPlus,
   ChevronsUpDown,
+  ImageIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -71,7 +72,7 @@ interface ChatPanelProps {
   onBack?: () => void;
   initialMessage?: string;
   initialAttachments?: Attachment[];
-  contextConfig?: { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch?: string; memory?: string; meetingBrain?: string };
+  contextConfig?: { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch?: string; memory?: string; meetingBrain?: string; imageGeneration?: string };
   debugMode?: boolean;
   onCopyLink?: () => void;
   onMenuClick?: () => void;
@@ -81,7 +82,7 @@ interface ChatPanelProps {
   isAdmin?: boolean;
 }
 
-type ContextConfig = { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch: string; memory: string; meetingBrain: string };
+type ContextConfig = { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch: string; memory: string; meetingBrain: string; imageGeneration: string };
 
 export default function ChatPanel({
   conversationId,
@@ -104,6 +105,7 @@ export default function ChatPanel({
   const [loading, setLoading] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isSearchingWeb, setIsSearchingWeb] = useState(false);
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [debugContext, setDebugContext] = useState<string | null>(null);
   const [debugExpanded, setDebugExpanded] = useState(false);
@@ -116,6 +118,7 @@ export default function ChatPanel({
     webSearch: initialContextConfig?.webSearch || "on",
     memory: initialContextConfig?.memory || "on",
     meetingBrain: initialContextConfig?.meetingBrain || "on",
+    imageGeneration: initialContextConfig?.imageGeneration || "on",
   });
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -223,9 +226,20 @@ export default function ChatPanel({
               setDebugContext(parsed.debugContext);
             } else if (parsed.searching) {
               setIsSearchingWeb(true);
+            } else if (parsed.generating_image) {
+              setIsGeneratingImage(true);
+            } else if (parsed.image_ready) {
+              setIsGeneratingImage(false);
+              // Embed image markdown into the streamed content
+              fullText += `\n\n![${parsed.image_ready.prompt}](${parsed.image_ready.url})\n\n`;
+              setStreamingContent(fullText);
+            } else if (parsed.image_error) {
+              setIsGeneratingImage(false);
+              toast.error(`Image generation failed: ${parsed.image_error}`);
             } else if (parsed.token) {
-              // First token means search is done (if it was searching)
+              // First token means search/image gen is done (if it was active)
               setIsSearchingWeb(false);
+              setIsGeneratingImage(false);
               fullText += parsed.token;
               setStreamingContent(fullText);
             }
@@ -269,6 +283,7 @@ export default function ChatPanel({
     } finally {
       setIsStreaming(false);
       setIsSearchingWeb(false);
+      setIsGeneratingImage(false);
       setStreamingContent("");
     }
   };
@@ -733,6 +748,16 @@ export default function ChatPanel({
                 </div>
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <span className="animate-pulse">Searching the web…</span>
+                </div>
+              </div>
+            )}
+            {isStreaming && isGeneratingImage && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                  <ImageIcon className="h-3.5 w-3.5 text-muted-foreground animate-pulse" />
+                </div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <span className="animate-pulse">Generating image…</span>
                 </div>
               </div>
             )}

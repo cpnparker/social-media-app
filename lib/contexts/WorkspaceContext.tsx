@@ -20,6 +20,7 @@ export interface Workspace {
   accessOperations: boolean;
   accessAdmin: boolean;
   accessMeetingBrain: boolean;
+  accessRfpTool: boolean;
 }
 
 interface WorkspaceContextValue {

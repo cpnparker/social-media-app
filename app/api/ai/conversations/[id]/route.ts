@@ -5,12 +5,13 @@ import { supabase } from "@/lib/supabase";
 import { checkConversationAccess } from "@/lib/ai/access";
 import { mapConversation, mapMessage } from "@/lib/ai/response-mappers";
 
-/** Check if a user has workspace admin access */
-async function isWorkspaceAdmin(userId: number): Promise<boolean> {
+/** Check if a user has workspace admin access for a specific workspace */
+async function isWorkspaceAdmin(userId: number, workspaceId: string): Promise<boolean> {
   const { data } = await intelligenceDb
     .from("users_access")
     .select("flag_access_admin")
     .eq("user_target", userId)
+    .eq("id_workspace", workspaceId)
     .eq("flag_access_admin", 1)
     .limit(1)
     .maybeSingle();
@@ -155,14 +156,14 @@ export async function PATCH(
     // Check ownership
     const { data: conversation } = await intelligenceDb
       .from("ai_conversations")
-      .select("user_created, type_visibility")
+      .select("user_created, type_visibility, id_workspace")
       .eq("id_conversation", conversationId)
       .maybeSingle();
 
     if (!conversation) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
-    if (conversation.user_created !== userId && !(await isWorkspaceAdmin(userId))) {
+    if (conversation.user_created !== userId && !(await isWorkspaceAdmin(userId, conversation.id_workspace))) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -216,14 +217,14 @@ export async function DELETE(
     // Check ownership
     const { data: conversation } = await intelligenceDb
       .from("ai_conversations")
-      .select("user_created")
+      .select("user_created, id_workspace")
       .eq("id_conversation", conversationId)
       .maybeSingle();
 
     if (!conversation) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
-    if (conversation.user_created !== userId && !(await isWorkspaceAdmin(userId))) {
+    if (conversation.user_created !== userId && !(await isWorkspaceAdmin(userId, conversation.id_workspace))) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

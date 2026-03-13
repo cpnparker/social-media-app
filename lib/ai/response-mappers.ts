@@ -23,6 +23,7 @@ export function mapConversation(row: any) {
     customerId: row.id_client,
     model: row.name_model,
     isIncognito: !!row.flag_incognito,
+    summary: row.document_summary ?? null,
     createdAt: row.date_created,
     updatedAt: row.date_updated,
   };
@@ -59,6 +60,11 @@ export function mapMemory(row: any) {
     isActive: row.flag_active === 1,
     createdAt: row.date_created,
     updatedAt: row.date_updated,
+    // V2
+    strength: row.score_strength ?? 1.0,
+    reinforcedCount: row.count_reinforced ?? 0,
+    lastAccessedAt: row.date_last_accessed ?? row.date_created,
+    source: row.type_source ?? "inferred",
   };
 }
 

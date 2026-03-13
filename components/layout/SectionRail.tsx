@@ -11,18 +11,21 @@ import { useRouter } from "next/navigation";
 import {
   RAIL_ITEMS,
   navigateToArea,
-  getAreaUrl,
   isProductionHost,
+  DEFAULT_HOST_CONFIG,
   type Area,
-  type RailItemConfig,
 } from "@cpnparker/engine-nav";
+import { FileSearch } from "lucide-react";
 
 // Re-export Area so existing consumers don't need to change their imports
 export type { Area } from "@cpnparker/engine-nav";
+export type { ExtendedArea };
 
 // ────────────────────────────────────────────────
 // Access-flag mapping (Content-Engine-specific)
 // ────────────────────────────────────────────────
+
+type ExtendedArea = Area | "rfp-tool";
 
 const ACCESS_FLAG_KEYS: Record<Area, "accessEngine" | "accessOperations" | "accessEngineGpt" | "accessMeetingBrain" | "accessAdmin"> = {
   engine: "accessEngine",
@@ -32,9 +35,24 @@ const ACCESS_FLAG_KEYS: Record<Area, "accessEngine" | "accessOperations" | "acce
   admin: "accessAdmin",
 };
 
-interface RailItem extends RailItemConfig {
+interface ExtendedRailItemConfig {
+  area: ExtendedArea;
+  icon: any;
+  label: string;
+  shortLabel: string;
+}
+
+interface RailItem extends ExtendedRailItemConfig {
   hidden: boolean;
 }
+
+// Custom rail item for RFP Tool (inserted between MeetingBrain and Admin)
+const RFP_TOOL_ITEM: ExtendedRailItemConfig = {
+  area: "rfp-tool",
+  icon: FileSearch,
+  label: "RFP Tool",
+  shortLabel: "RFP",
+};
 
 // ────────────────────────────────────────────────
 // Hook: useRailItems
@@ -44,10 +62,23 @@ export function useRailItems(): { items: RailItem[]; visibleCount: number } {
   const wsCtx = useWorkspaceSafe();
   const ws = wsCtx?.selectedWorkspace;
 
-  const items: RailItem[] = RAIL_ITEMS.map((item) => ({
-    ...item,
-    hidden: !(ws?.[ACCESS_FLAG_KEYS[item.area]] ?? false),
-  }));
+  // Build items from package, injecting RFP Tool after MeetingBrain
+  // Admin is excluded from the rail — it lives in the user profile dropdown instead
+  const items: RailItem[] = [];
+  for (const item of RAIL_ITEMS) {
+    if (item.area === "admin") continue; // Admin accessed via profile dropdown
+    items.push({
+      ...item,
+      hidden: !(ws?.[ACCESS_FLAG_KEYS[item.area]] ?? false),
+    });
+    // Insert RFP Tool after MeetingBrain
+    if (item.area === "meetingbrain") {
+      items.push({
+        ...RFP_TOOL_ITEM,
+        hidden: !(ws?.accessRfpTool ?? false),
+      });
+    }
+  }
 
   const visibleCount = items.filter((i) => !i.hidden).length;
   return { items, visibleCount };
@@ -58,26 +89,25 @@ export function useRailItems(): { items: RailItem[]; visibleCount: number } {
 // ────────────────────────────────────────────────
 
 interface SectionRailProps {
-  currentArea: Area;
+  currentArea: ExtendedArea;
   /** Called instead of navigating when the target is on the same host/subdomain */
-  onLocalSwitch?: (area: Area) => void;
+  onLocalSwitch?: (area: ExtendedArea) => void;
 }
 
 export function SectionRailDesktop({ currentArea, onLocalSwitch }: SectionRailProps) {
   const { items } = useRailItems();
   const router = useRouter();
 
-  const handleClick = (area: Area) => {
-    if (area === "admin") {
-      // Admin navigates directly to settings instead of switching sidebar panel
+  const handleClick = (area: ExtendedArea) => {
+    if (area === "rfp-tool") {
       if (isProductionHost()) {
-        window.location.href = getAreaUrl("admin");
+        window.location.href = `https://${DEFAULT_HOST_CONFIG.hosts.engine}/rfp-tool`;
       } else {
-        router.push("/settings/workspace");
+        router.push("/rfp-tool");
       }
       return;
     }
-    navigateToArea(area, currentArea, { onLocalSwitch });
+    navigateToArea(area as Area, currentArea as Area, { onLocalSwitch: onLocalSwitch as ((area: Area) => void) | undefined });
   };
 
   return (
@@ -119,16 +149,16 @@ export function SectionRailMobile({ currentArea, onLocalSwitch }: SectionRailPro
   const { items } = useRailItems();
   const router = useRouter();
 
-  const handleClick = (area: Area) => {
-    if (area === "admin") {
+  const handleClick = (area: ExtendedArea) => {
+    if (area === "rfp-tool") {
       if (isProductionHost()) {
-        window.location.href = getAreaUrl("admin");
+        window.location.href = `https://${DEFAULT_HOST_CONFIG.hosts.engine}/rfp-tool`;
       } else {
-        router.push("/settings/workspace");
+        router.push("/rfp-tool");
       }
       return;
     }
-    navigateToArea(area, currentArea, { onLocalSwitch });
+    navigateToArea(area as Area, currentArea as Area, { onLocalSwitch: onLocalSwitch as ((area: Area) => void) | undefined });
   };
 
   return (

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { mapMemory } from "@/lib/ai/response-mappers";
+import { verifyWorkspaceMembership } from "@/lib/permissions";
 
 // GET /api/ai/memories?workspaceId=...
 // Returns active memories: user's private + workspace team
@@ -16,6 +17,12 @@ export async function GET(req: NextRequest) {
   const workspaceId = searchParams.get("workspaceId");
   if (!workspaceId) {
     return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
+  }
+
+  // Verify user belongs to this workspace
+  const memberRole = await verifyWorkspaceMembership(userId, workspaceId);
+  if (!memberRole) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -53,6 +60,12 @@ export async function POST(req: NextRequest) {
         { error: "workspaceId and content are required" },
         { status: 400 }
       );
+    }
+
+    // Verify user belongs to this workspace
+    const memberRole = await verifyWorkspaceMembership(userId, workspaceId);
+    if (!memberRole) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     // Privacy enforcement: check source conversation visibility
@@ -107,6 +120,7 @@ export async function POST(req: NextRequest) {
         type_category: category || "fact",
         information_content: content.slice(0, 500),
         id_conversation_source: sourceConversationId || null,
+        type_source: "explicit", // User-created memories get highest trust
       })
       .select()
       .single();

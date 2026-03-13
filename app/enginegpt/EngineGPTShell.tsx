@@ -73,15 +73,13 @@ function EngineGPTAccessGuard({ children }: { children: React.ReactNode }) {
     return (
       <div className="flex h-dvh items-center justify-center bg-background">
         <div className="text-center px-4">
-          <div className="h-16 w-16 rounded-2xl bg-destructive/10 flex items-center justify-center mx-auto mb-4">
-            <Image
-              src="/assets/logo_engine_icon.svg"
-              alt="EngineGPT"
-              width={32}
-              height={32}
-              className="opacity-50"
-            />
-          </div>
+          <Image
+            src="/assets/logo_engine_icon.svg"
+            alt="EngineGPT"
+            width={48}
+            height={48}
+            className="mx-auto mb-4 opacity-50 dark:brightness-0 dark:invert"
+          />
           <h1 className="text-xl font-bold mb-2">Access Restricted</h1>
           <p className="text-sm text-muted-foreground max-w-sm">
             You don&apos;t have access to EngineGPT. Contact your workspace admin to

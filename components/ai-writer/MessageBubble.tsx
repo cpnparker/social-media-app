@@ -127,7 +127,7 @@ export default function MessageBubble({
             className="ai-response"
             dangerouslySetInnerHTML={{
               __html: DOMPurify.sanitize(formatMarkdown(cleanContent, sources), {
-                ADD_ATTR: ['target', 'rel', 'data-source-num'],
+                ADD_ATTR: ['target', 'rel', 'data-source-num', 'loading'],
               }),
             }}
           />
@@ -301,9 +301,9 @@ function parseSourcesFromContent(content: string): {
     }
   );
 
-  // [Title](url)
+  // [Title](url) — skip image markdown (![alt](url))
   cleaned = cleaned.replace(
-    /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+    /(?<!!)\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
     (_match, title, url) => {
       const srcNum = addSource(url, title);
       return `[${title}](${url})[__CITE_${srcNum}__]`;
@@ -449,6 +449,12 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
   html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/(?<!\*)\*([^*]+?)\*(?!\*)/g, "<em>$1</em>");
 
+  // Images ![alt](url) — render as full-width inline images
+  html = html.replace(
+    /!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g,
+    '<div class="ai-generated-image-wrap my-3"><a href="$2" target="_blank" rel="noopener"><img src="$2" alt="$1" class="ai-generated-image rounded-lg max-w-full" loading="lazy" /></a></div>'
+  );
+
   // Links [text](url)
   html = html.replace(
     /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
@@ -510,7 +516,8 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
         trimmed.startsWith("<li") ||
         trimmed.startsWith("<div") ||
         trimmed.startsWith("<hr") ||
-        trimmed.startsWith("<table")
+        trimmed.startsWith("<table") ||
+        trimmed.startsWith("<img")
       ) {
         return trimmed;
       }

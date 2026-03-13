@@ -50,6 +50,7 @@ interface WorkspaceMember {
   accessOperations: boolean;
   accessAdmin: boolean;
   accessMeetingBrain: boolean;
+  accessRfpTool: boolean;
 }
 
 interface CustomerAssignment {
@@ -63,7 +64,8 @@ type AccessField =
   | "accessEngineGpt"
   | "accessOperations"
   | "accessAdmin"
-  | "accessMeetingBrain";
+  | "accessMeetingBrain"
+  | "accessRfpTool";
 
 /* ─────────────── Config ─────────────── */
 
@@ -107,6 +109,7 @@ const accessFields: { key: AccessField; label: string }[] = [
   { key: "accessOperations", label: "Ops" },
   { key: "accessAdmin", label: "Admin" },
   { key: "accessMeetingBrain", label: "MB" },
+  { key: "accessRfpTool", label: "RFP" },
 ];
 
 const appRoleOptions: { value: string; label: string; color: string; bg: string }[] = [

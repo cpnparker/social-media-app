@@ -54,6 +54,7 @@ export async function GET() {
         accessOperations: access ? !!access.flag_access_operations : false,
         accessAdmin: access ? !!access.flag_access_admin : false,
         accessMeetingBrain: access ? !!access.flag_access_meetingbrain : false,
+        accessRfpTool: access ? !!access.flag_access_rfptool : false,
       };
     });
 

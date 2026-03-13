@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
           // Validate and configure the upload
           return {
             allowedContentTypes: ALLOWED_TYPES,
-            maximumSizeInBytes: 20 * 1024 * 1024, // 20MB for docs, images; videos handled separately
+            maximumSizeInBytes: 50 * 1024 * 1024, // 50MB for docs, images; videos handled separately
             addRandomSuffix: true,
           };
         },
@@ -80,8 +80,8 @@ export async function POST(req: NextRequest) {
     }
 
     const isVideo = file.type.startsWith("video/");
-    const maxSize = isVideo ? 200 * 1024 * 1024 : 20 * 1024 * 1024;
-    const maxLabel = isVideo ? "200MB" : "20MB";
+    const maxSize = isVideo ? 200 * 1024 * 1024 : 50 * 1024 * 1024;
+    const maxLabel = isVideo ? "200MB" : "50MB";
     if (file.size > maxSize) {
       return NextResponse.json(
         {

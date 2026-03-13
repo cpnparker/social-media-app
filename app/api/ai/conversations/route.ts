@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
 import { mapConversation } from "@/lib/ai/response-mappers";
+import { verifyWorkspaceMembership } from "@/lib/permissions";
 
 // GET /api/ai/conversations — list conversations
 export async function GET(req: NextRequest) {
@@ -22,6 +23,12 @@ export async function GET(req: NextRequest) {
 
   if (!workspaceId) {
     return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
+  }
+
+  // Verify user belongs to this workspace
+  const memberRole = await verifyWorkspaceMembership(userId, workspaceId);
+  if (!memberRole) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -173,6 +180,12 @@ export async function POST(req: NextRequest) {
 
     if (!workspaceId) {
       return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
+    }
+
+    // Verify user belongs to this workspace
+    const memberRole = await verifyWorkspaceMembership(userId, workspaceId);
+    if (!memberRole) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     // Verify workspace exists in Supabase

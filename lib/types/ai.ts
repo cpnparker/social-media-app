@@ -19,6 +19,8 @@ export interface AIConversation {
   myPermission?: "owner" | "view" | "collaborate";
   sharedByName?: string;
   shareCount?: number;
+  // Conversation summary (thread memory)
+  summary?: string | null;
 }
 
 export interface AIConversationShare {
@@ -56,6 +58,11 @@ export interface AIMemory {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+  // V2: reinforcement, decay & source tracking
+  strength: number; // 0.0-1.0, base strength (boosted on reinforcement)
+  reinforcedCount: number; // times confirmed by similar new info
+  lastAccessedAt: string; // last retrieval or reinforcement (drives decay)
+  source: "explicit" | "inferred" | "meeting"; // user-created vs AI-extracted vs meeting-sourced
 }
 
 export interface AIRole {

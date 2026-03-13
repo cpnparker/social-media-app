@@ -27,6 +27,9 @@ import {
   Boxes,
   Users,
   Sparkles,
+  FileSearch,
+  Globe,
+  PenTool,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -45,7 +48,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { signOut } from "next-auth/react";
 import { getSubdomainUrl } from "@/lib/subdomain";
-import { SectionRailDesktop, SectionRailMobile, type Area } from "@/components/layout/SectionRail";
+import { SectionRailDesktop, SectionRailMobile, type Area, type ExtendedArea } from "@/components/layout/SectionRail";
 
 // ────────────────────────────────────────────────
 // Types & constants
@@ -65,7 +68,8 @@ interface NavSection {
   defaultOpen?: boolean;
 }
 
-const deriveArea = (pathname: string): Area => {
+const deriveArea = (pathname: string): ExtendedArea => {
+  if (pathname.startsWith("/rfp-tool")) return "rfp-tool";
   if (pathname.startsWith("/operations")) return "operations";
   if (pathname.startsWith("/meetingbrain")) return "meetingbrain";
   if (
@@ -76,6 +80,7 @@ const deriveArea = (pathname: string): Area => {
     return "admin";
   return "engine";
 };
+
 
 // ── Engine sections (collapsible) ──
 const engineSections: NavSection[] = [
@@ -172,6 +177,13 @@ const adminItems: NavSubItem[] = [
   { label: "Billing", href: "/settings/billing", icon: CreditCard },
 ];
 
+// ── RFP Tool items (flat list) ──
+const rfpToolItems: NavSubItem[] = [
+  { label: "Discover RFPs", href: "/rfp-tool?tab=discover", icon: Globe },
+  { label: "Document Library", href: "/rfp-tool?tab=library", icon: FileText },
+  { label: "Pipeline", href: "/rfp-tool?tab=pipeline", icon: FolderKanban },
+];
+
 // ────────────────────────────────────────────────
 // Component
 // ────────────────────────────────────────────────
@@ -200,7 +212,7 @@ export function Sidebar({ onClose }: SidebarProps) {
 
   const showAdmin = wsCtx?.selectedWorkspace?.accessAdmin ?? false;
 
-  const [activeArea, setActiveArea] = useState<Area>(() => deriveArea(pathname));
+  const [activeArea, setActiveArea] = useState<ExtendedArea>(() => deriveArea(pathname));
 
   // Auto-update area when pathname changes (e.g. direct navigation)
   useEffect(() => {
@@ -373,7 +385,7 @@ export function Sidebar({ onClose }: SidebarProps) {
         <SectionRailMobile currentArea={activeArea} onLocalSwitch={setActiveArea} />
 
         {/* ── Panel content based on area ── */}
-        {activeArea === "engine" && (
+        {(activeArea === "engine" || activeArea === "admin") && (
           <EnginePanel
             wsCtx={wsCtx}
             sections={engineSections}
@@ -383,11 +395,7 @@ export function Sidebar({ onClose }: SidebarProps) {
             inboxCount={inboxCount}
             onClose={onClose}
             pathname={pathname}
-            userName={userName}
-            userEmail={userEmail}
-            userInitials={userInitials}
             showEngineGpt={showEngineGpt}
-            showAdmin={showAdmin}
           />
         )}
 
@@ -399,23 +407,71 @@ export function Sidebar({ onClose }: SidebarProps) {
           />
         )}
 
-        {activeArea === "admin" && (
-          <EnginePanel
-            wsCtx={wsCtx}
-            sections={engineSections}
-            openSections={openSections}
-            toggleSection={toggleSection}
+        {activeArea === "rfp-tool" && (
+          <RfpToolPanel
+            items={rfpToolItems}
             checkActive={checkActive}
-            inboxCount={inboxCount}
             onClose={onClose}
-            pathname={pathname}
-            userName={userName}
-            userEmail={userEmail}
-            userInitials={userInitials}
-            showEngineGpt={showEngineGpt}
-            showAdmin={showAdmin}
           />
         )}
+
+        {/* User profile — mobile only (desktop uses rail avatar) */}
+        <div className="lg:hidden border-t border-white/10 px-3 py-3 shrink-0">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-white/10 transition-colors text-left">
+                <Avatar className="h-8 w-8 shrink-0">
+                  <AvatarImage src="" />
+                  <AvatarFallback className="bg-blue-500/30 text-blue-200 text-xs font-semibold">
+                    {userInitials}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-medium truncate text-white">
+                    {userName || "User"}
+                  </p>
+                  <p className="text-[10px] text-white/50 truncate">
+                    {userEmail || ""}
+                  </p>
+                </div>
+                <ChevronsUpDown className="h-3 w-3 text-white/40 shrink-0" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" side="top" className="w-56 mb-1">
+              {showAdmin && (
+                <>
+                  <div className="px-2 py-1.5">
+                    <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Administration</p>
+                  </div>
+                  {adminItems.map((item) => (
+                    <DropdownMenuItem key={item.href} asChild>
+                      <Link href={item.href} className="gap-2" onClick={onClose}>
+                        {item.icon && <item.icon className="h-4 w-4" />}
+                        {item.label}
+                      </Link>
+                    </DropdownMenuItem>
+                  ))}
+                </>
+              )}
+              {!showAdmin && (
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/workspace" className="gap-2">
+                    <Settings className="h-4 w-4" />
+                    Settings
+                  </Link>
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => signOut({ callbackUrl: "/login" })}
+                className="text-destructive focus:text-destructive gap-2"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
     </aside>
   );
@@ -433,11 +489,7 @@ function EnginePanel({
   inboxCount,
   onClose,
   pathname,
-  userName,
-  userEmail,
-  userInitials,
   showEngineGpt,
-  showAdmin,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   wsCtx: any;
@@ -448,11 +500,7 @@ function EnginePanel({
   inboxCount: number;
   onClose?: () => void;
   pathname: string;
-  userName: string;
-  userEmail: string;
-  userInitials: string;
   showEngineGpt: boolean;
-  showAdmin: boolean;
 }) {
   return (
     <>
@@ -494,7 +542,7 @@ function EnginePanel({
                     alt=""
                     width={20}
                     height={20}
-                    className="h-5 w-5 shrink-0"
+                    className="h-5 w-5 shrink-0 dark:brightness-0 dark:invert"
                   />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{ws.name}</p>
@@ -651,65 +699,8 @@ function EnginePanel({
             );
           })}
         </div>
-      </nav>
 
-      {/* User profile — mobile only (desktop uses rail avatar) */}
-      <div className="lg:hidden border-t border-white/10 px-3 py-3 shrink-0">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-white/10 transition-colors text-left">
-              <Avatar className="h-8 w-8 shrink-0">
-                <AvatarImage src="" />
-                <AvatarFallback className="bg-blue-500/30 text-blue-200 text-xs font-semibold">
-                  {userInitials}
-                </AvatarFallback>
-              </Avatar>
-              <div className="flex-1 min-w-0">
-                <p className="text-[13px] font-medium truncate text-white">
-                  {userName || "User"}
-                </p>
-                <p className="text-[10px] text-white/50 truncate">
-                  {userEmail || ""}
-                </p>
-              </div>
-              <ChevronsUpDown className="h-3 w-3 text-white/40 shrink-0" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" side="top" className="w-56 mb-1">
-            {showAdmin && (
-              <>
-                <div className="px-2 py-1.5">
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Administration</p>
-                </div>
-                {adminItems.map((item) => (
-                  <DropdownMenuItem key={item.href} asChild>
-                    <Link href={item.href} className="gap-2" onClick={onClose}>
-                      {item.icon && <item.icon className="h-4 w-4" />}
-                      {item.label}
-                    </Link>
-                  </DropdownMenuItem>
-                ))}
-              </>
-            )}
-            {!showAdmin && (
-              <DropdownMenuItem asChild>
-                <Link href="/settings/workspace" className="gap-2">
-                  <Settings className="h-4 w-4" />
-                  Settings
-                </Link>
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onClick={() => signOut({ callbackUrl: "/login" })}
-              className="text-destructive focus:text-destructive gap-2"
-            >
-              <LogOut className="h-4 w-4" />
-              Sign out
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
+      </nav>
     </>
   );
 }
@@ -795,6 +786,62 @@ function OperationsPanel({
                   </div>
                 )}
               </div>
+            );
+          })}
+        </div>
+      </nav>
+    </>
+  );
+}
+
+// ────────────────────────────────────────────────
+// RFP Tool Panel
+// ────────────────────────────────────────────────
+function RfpToolPanel({
+  items,
+  checkActive,
+  onClose,
+}: {
+  items: NavSubItem[];
+  checkActive: (href: string) => boolean;
+  onClose?: () => void;
+}) {
+  return (
+    <>
+      <div className="px-3 pt-3 pb-2 shrink-0">
+        <div className="flex items-center gap-2.5 px-2 py-1">
+          <FileSearch className="h-4 w-4 text-cyan-400 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[13px] font-bold tracking-tight truncate text-white">
+              RFP Tool
+            </p>
+            <p className="text-[10px] text-white/40">
+              Find &amp; Respond to RFPs
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-hide px-3 pb-4">
+        <div className="space-y-0.5">
+          {items.map((item) => {
+            const active = checkActive(item.href);
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={onClose}
+                className={cn(
+                  "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
+                  active
+                    ? "bg-white/15 text-white"
+                    : "text-white/70 hover:bg-white/10 hover:text-white"
+                )}
+              >
+                {Icon && <Icon className="h-4 w-4 shrink-0 text-white/50" />}
+                <span className="truncate">{item.label}</span>
+              </Link>
             );
           })}
         </div>

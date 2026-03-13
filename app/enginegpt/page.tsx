@@ -45,6 +45,7 @@ import {
   Settings,
   Sparkles,
   Pin,
+  ImageIcon,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
@@ -133,6 +134,7 @@ function EngineGPTContent() {
     webSearch: "on" as string,
     memory: "on" as string,
     meetingBrain: "on" as string,
+    imageGeneration: "on" as string,
   });
   const [debugMode, setDebugMode] = useState(false);
   const [incognitoMode, setIncognitoMode] = useState(false);
@@ -209,8 +211,14 @@ function EngineGPTContent() {
     fetch(`/api/ai/settings?workspaceId=${workspaceId}`)
       .then((r) => r.json())
       .then((data) => {
-        if (data.currentModel) setSelectedModel(data.currentModel);
-        if (data.contextConfig) setContextConfig(data.contextConfig);
+        if (data.currentModel) {
+          setSelectedModel(data.currentModel);
+          if (data.contextConfig) {
+            setContextConfig(data.contextConfig);
+          }
+        } else if (data.contextConfig) {
+          setContextConfig(data.contextConfig);
+        }
         if (data.debugMode) setDebugMode(data.debugMode);
       })
       .catch(() => {});
@@ -1342,13 +1350,11 @@ function EngineGPTContent() {
           <div className="flex-1 flex flex-col overflow-y-auto">
             <div className="flex-1 flex flex-col items-center justify-center px-4 pb-24">
               {/* Icon */}
-              <div className="h-16 w-16 rounded-2xl bg-[#023250]/10 dark:bg-white/10 flex items-center justify-center mb-6">
-                <img
-                  src="/assets/logo_engine_icon.svg"
-                  alt="EngineGPT"
-                  className="h-10 w-10 dark:brightness-0 dark:invert"
-                />
-              </div>
+              <img
+                src="/assets/logo_engine_icon.svg"
+                alt="EngineGPT"
+                className="h-14 w-14 mb-6 dark:brightness-0 dark:invert"
+              />
               <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mb-2">
                 What are you working on?
               </h1>
@@ -1518,7 +1524,9 @@ function EngineGPTContent() {
                         {AI_MODELS.map((m) => (
                           <DropdownMenuItem
                             key={m.id}
-                            onClick={() => setSelectedModel(m.id)}
+                            onClick={() => {
+                              setSelectedModel(m.id);
+                            }}
                             className={cn(
                               "text-sm",
                               selectedModel === m.id && "bg-muted font-medium"
@@ -1676,6 +1684,28 @@ function EngineGPTContent() {
                       MeetingBrain
                     </button>
                   )}
+                  <button
+                    onClick={() => {
+                      const turningOn = contextConfig.imageGeneration !== "on";
+                      setContextConfig((prev) => ({
+                        ...prev,
+                        imageGeneration: turningOn ? "on" : "off",
+                      }));
+                    }}
+                    title={`Image Generation: ${contextConfig.imageGeneration === "on" ? "On — AI can create images" : "Off"} — click to toggle`}
+                    className={cn(
+                      "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
+                      contextConfig.imageGeneration === "on"
+                        ? "text-foreground/80 hover:text-foreground"
+                        : "text-muted-foreground/40 hover:text-muted-foreground/60"
+                    )}
+                  >
+                    <ImageIcon className={cn(
+                      "h-3 w-3 sm:h-2.5 sm:w-2.5 transition-colors",
+                      contextConfig.imageGeneration === "on" ? "text-violet-400" : "text-muted-foreground/30"
+                    )} />
+                    Image
+                  </button>
                 </div>
               </div>
             </div>

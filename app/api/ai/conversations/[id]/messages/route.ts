@@ -7,6 +7,14 @@ import { createStreamingResponse, type AIMessage, type AIAttachment } from "@/li
 import { buildSystemPrompt, normalizeContextConfig, isFullDetail, type NormalizedContextConfig, type DetailLevel } from "@/lib/ai/system-prompts";
 import { fetchBlobContent } from "@/lib/ai/blob-utils";
 import { extractMemories } from "@/lib/ai/memory-extraction";
+import {
+  computeImportance,
+  runConsolidationPipeline,
+} from "@/lib/ai/memory-consolidation";
+import {
+  shouldUpdateSummary,
+  runBackgroundSummaryUpdate,
+} from "@/lib/ai/conversation-summary";
 import type { Attachment } from "@/lib/types/ai";
 
 export const maxDuration = 120; // Allow up to 2 minutes for AI streaming responses
@@ -545,9 +553,35 @@ export async function POST(
     const maxTokens = wsSettings?.units_max_tokens || 4096;
     const debugMode = body.debugMode || wsSettings?.flag_debug || false;
 
+    // Determine if memory/summary features are enabled for this request
+    // (used by truncation, memory extraction, and summary generation)
+    const isIncognito = contextConfig.incognito === "on";
+    const memoryEnabled = !isIncognito && contextConfig.memory !== "off";
+
     // Build messages with attachments for AI
+    // Context window truncation: for long conversations with a summary,
+    // use summary + last 10 messages instead of all messages to save tokens.
+    // Only truncate when memory is enabled (private/shared threads + memory toggle on)
+    // — team threads always get full history.
+    const hasSummary = !!conversation.document_summary;
+    const shouldTruncate = memoryEnabled && history.length > 20 && hasSummary;
+    const effectiveHistory = shouldTruncate ? history.slice(-10) : history;
+
+    if (shouldTruncate) {
+      console.log(`[Messages] Truncating context: ${history.length} messages → summary + last 10`);
+    }
+
     const messages: AIMessage[] = [];
-    for (const m of history) {
+
+    // Inject summary as context if truncating
+    if (shouldTruncate) {
+      messages.push({
+        role: "system" as const,
+        content: `[Earlier conversation context]\n${conversation.document_summary}`,
+      });
+    }
+
+    for (const m of effectiveHistory) {
       const msg: AIMessage = {
         role: m.role_message as "user" | "assistant" | "system",
         content: m.document_message,
@@ -573,14 +607,13 @@ export async function POST(
 
     // ── Parallel fetch: context, memories, role, user prefs ──
     // These are all independent and can run concurrently
-    const isIncognito = contextConfig.incognito === "on";
 
-    // Build memory query (but don't await yet)
+    // Build memory query with V2 scored retrieval
     const memoryPromise = (!isIncognito && contextConfig.memory !== "off")
-      ? (async (): Promise<{ content: string; category: string }[]> => {
+      ? (async (): Promise<{ content: string; category: string; strength: number }[]> => {
           let memoryQuery = intelligenceDb
             .from("ai_memories")
-            .select("information_content, type_category")
+            .select("id_memory, information_content, type_category, score_strength, count_reinforced, date_last_accessed, type_source")
             .eq("id_workspace", conversation.id_workspace)
             .eq("flag_active", 1);
 
@@ -592,13 +625,46 @@ export async function POST(
             memoryQuery = memoryQuery.eq("type_scope", "team");
           }
 
-          const { data } = await memoryQuery
-            .order("date_created", { ascending: true })
-            .limit(50);
+          const { data } = await memoryQuery;
+          if (!data || data.length === 0) return [];
 
-          return (data || []).map((m: any) => ({
-            content: m.information_content,
-            category: m.type_category,
+          // Score each memory using importance formula (decay + reinforcement + recency)
+          const scored = data.map((m: any) => {
+            const { decayedStrength, importance } = computeImportance({
+              score_strength: m.score_strength ?? 1.0,
+              count_reinforced: m.count_reinforced ?? 0,
+              date_last_accessed: m.date_last_accessed ?? m.date_created,
+              type_category: m.type_category,
+              type_source: m.type_source ?? "inferred",
+            });
+            return {
+              id: m.id_memory,
+              content: m.information_content,
+              category: m.type_category,
+              strength: Math.round(decayedStrength * 100) / 100,
+              importance,
+            };
+          });
+
+          // Sort by importance descending, take top 25
+          scored.sort((a: any, b: any) => b.importance - a.importance);
+          const selected = scored.slice(0, 25);
+
+          // Fire-and-forget: update date_last_accessed for selected memories
+          const selectedIds = selected.map((m: any) => m.id);
+          if (selectedIds.length > 0) {
+            Promise.resolve(
+              intelligenceDb
+                .from("ai_memories")
+                .update({ date_last_accessed: new Date().toISOString() })
+                .in("id_memory", selectedIds)
+            ).catch((err: any) => console.error("[Memory] Failed to update access times:", err));
+          }
+
+          return selected.map((m: any) => ({
+            content: m.content,
+            category: m.category,
+            strength: m.strength,
           }));
         })()
       : Promise.resolve([]);
@@ -709,6 +775,8 @@ export async function POST(
       console.log(`[Messages] MeetingBrain context: ${appContextRows.length} rows, ${meetingBrainContext?.length || 0} chars${isTeamThread ? " (excluded — team thread)" : ""}`);
     }
 
+    const model = body.model || conversation.name_model;
+
     const systemPrompt = buildSystemPrompt({
       workspaceConfig,
       clientContext,
@@ -725,8 +793,6 @@ export async function POST(
       meetingBrainContext,
       region: userPrefs?.name_region || null,
     });
-
-    const model = body.model || conversation.name_model;
 
     // Auto-title: if this is the first user message, set conversation title (skip incognito)
     const userMessages = messages.filter((m) => m.role === "user");
@@ -745,7 +811,7 @@ export async function POST(
     // Create streaming response
     const aiStream = createStreamingResponse(
       messages,
-      { model, systemPrompt, maxTokens, webSearch: contextConfig.webSearch === "on" },
+      { model, systemPrompt, maxTokens, webSearch: contextConfig.webSearch === "on", imageGeneration: contextConfig.imageGeneration === "on" },
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
@@ -783,9 +849,6 @@ export async function POST(
         }
       }
     );
-
-    // Determine if memory is enabled for this request
-    const memoryEnabled = !isIncognito && contextConfig.memory !== "off";
 
     // Wrap stream: inject debug context, capture text, extract & auto-save memories
     const stream = new ReadableStream({
@@ -843,6 +906,25 @@ export async function POST(
             console.error("[Memory] Background extraction failed:", err);
           });
         }
+
+        // Fire-and-forget: background conversation summary update
+        // Gated by memoryEnabled — follows same rules as memory extraction:
+        // only for private/shared threads with memory toggle on, never team threads
+        if (memoryEnabled) {
+          const currentMsgCount = (history?.length || 0) + 2; // +2 for user + assistant just added
+          const lastSummaryCount = conversation.units_summary_message_count || 0;
+
+          if (shouldUpdateSummary(currentMsgCount, lastSummaryCount)) {
+            runBackgroundSummaryUpdate({
+              conversationId,
+              currentMessageCount: currentMsgCount,
+              lastSummaryMessageCount: lastSummaryCount,
+              existingSummary: conversation.document_summary || null,
+            }).catch((err) => {
+              console.error("[Summary] Background update failed:", err);
+            });
+          }
+        }
       },
     });
 
@@ -861,7 +943,9 @@ export async function POST(
   }
 }
 
-// ── Background memory extraction + auto-save with de-duplication ──
+// ── Background memory extraction + consolidation (V2) ──
+// Extracts candidates from the conversation exchange, then runs them through
+// the shared consolidation pipeline (findSimilar → classify → apply).
 async function runBackgroundMemoryExtraction({
   userContent,
   assistantContent,
@@ -885,71 +969,14 @@ async function runBackgroundMemoryExtraction({
   const scope = conversationVisibility === "private" ? "private" : "team";
   const memUserId = scope === "private" ? userId : null;
 
-  // Enforce 50-memory cap
-  let countQuery = intelligenceDb
-    .from("ai_memories")
-    .select("*", { count: "exact", head: true })
-    .eq("id_workspace", workspaceId)
-    .eq("flag_active", 1);
-
-  if (memUserId !== null) {
-    countQuery = countQuery.eq("type_scope", "private").eq("user_memory", userId);
-  } else {
-    countQuery = countQuery.eq("type_scope", "team");
-  }
-
-  const { count: currentCount } = await countQuery;
-  const slotsAvailable = Math.max(0, 50 - (currentCount || 0));
-  if (slotsAvailable === 0) return [];
-
-  // De-duplicate: check for semantically similar existing memories
-  const { data: allExisting } = await intelligenceDb
-    .from("ai_memories")
-    .select("information_content")
-    .eq("id_workspace", workspaceId)
-    .eq("flag_active", 1);
-
-  const existingSet = new Set(
-    (allExisting || []).map((m: any) => (m.information_content as string).toLowerCase().trim())
+  const result = await runConsolidationPipeline(
+    suggestions,
+    workspaceId,
+    memUserId,
+    scope,
+    conversationId,
+    "inferred"
   );
 
-  const toSave = suggestions
-    .filter((s) => {
-      const normalized = s.content.toLowerCase().trim();
-      // Exact match check
-      if (existingSet.has(normalized)) return false;
-      // Substring overlap check — skip if 80%+ of words overlap with any existing memory
-      const wordsArr = normalized.split(/\s+/).filter((w) => w.length > 3);
-      for (const existing of Array.from(existingSet)) {
-        const existingWords = new Set(existing.split(/\s+/).filter((w) => w.length > 3));
-        if (wordsArr.length === 0 || existingWords.size === 0) continue;
-        const overlap = wordsArr.filter((w) => existingWords.has(w)).length;
-        if (overlap / Math.max(wordsArr.length, 1) >= 0.8) return false;
-      }
-      return true;
-    })
-    .slice(0, slotsAvailable);
-
-  const savedIds: string[] = [];
-  for (const s of toSave) {
-    const { data: inserted } = await intelligenceDb
-      .from("ai_memories")
-      .insert({
-        id_workspace: workspaceId,
-        user_memory: memUserId,
-        type_scope: scope,
-        type_category: s.category,
-        information_content: s.content.slice(0, 500),
-        id_conversation_source: conversationId,
-      })
-      .select("id_memory")
-      .single();
-    if (inserted) savedIds.push(inserted.id_memory);
-  }
-
-  if (toSave.length > 0) {
-    console.log(`[Memory] Auto-saved ${toSave.length} memor${toSave.length === 1 ? "y" : "ies"} for conversation ${conversationId}`);
-  }
-
-  return toSave.map((s, i) => ({ id: savedIds[i], content: s.content }));
+  return result.memories.map((m) => ({ id: m.id, content: m.content }));
 }

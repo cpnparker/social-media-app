@@ -43,7 +43,10 @@ export async function PATCH(
     const body = await req.json();
     const updateData: Record<string, any> = { date_updated: new Date().toISOString() };
 
-    if (body.content !== undefined) updateData.information_content = body.content.slice(0, 500);
+    if (body.content !== undefined) {
+      updateData.information_content = body.content.slice(0, 500);
+      updateData.type_source = "explicit"; // User edited = user validated
+    }
     if (body.category !== undefined) updateData.type_category = body.category;
     if (body.isActive !== undefined) updateData.flag_active = body.isActive ? 1 : 0;
 

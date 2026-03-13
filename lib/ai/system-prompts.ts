@@ -10,6 +10,7 @@ export interface NormalizedContextConfig {
   socialPresence: DetailLevel;
   ideas: DetailLevel;
   webSearch: "on" | "off";
+  imageGeneration: "on" | "off";
   incognito: "on" | "off";
   memory: "on" | "off";
   meetingBrain: "on" | "off";
@@ -42,13 +43,14 @@ export function normalizeDetailLevel(value: any): DetailLevel {
 
 /** Normalize a full context config (handles both legacy boolean and new string formats) */
 export function normalizeContextConfig(config: any): NormalizedContextConfig {
-  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "summary", webSearch: "on", incognito: "off", memory: "on", meetingBrain: "on" };
+  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "summary", webSearch: "on", imageGeneration: "on", incognito: "off", memory: "on", meetingBrain: "on" };
   return {
     contracts: normalizeDetailLevel(config.contracts),
     contentPipeline: normalizeDetailLevel(config.contentPipeline),
     socialPresence: normalizeDetailLevel(config.socialPresence),
     ideas: normalizeDetailLevel(config.ideas),
     webSearch: config.webSearch === "off" ? "off" : "on",
+    imageGeneration: config.imageGeneration === "off" ? "off" : "on",
     incognito: config.incognito === "on" ? "on" : "off",
     memory: config.memory === "off" ? "off" : "on",
     meetingBrain: config.meetingBrain === "off" ? "off" : "on",
@@ -166,7 +168,7 @@ export function buildSystemPrompt(ctx: {
   cuDescription?: string | null;
   clientIdeas?: IdeaItem[] | null;
   workspaceSummary?: WorkspaceSummary | null;
-  memories?: { content: string; category: string }[];
+  memories?: { content: string; category: string; strength?: number }[];
   role?: { name: string; instructions: string } | null;
   selectedRoles?: { name: string; instructions: string }[];
   latestUserMessage?: string;
@@ -199,6 +201,12 @@ ${FORMATTING_GUIDELINES}`;
 ${FORMATTING_GUIDELINES}`;
   }
 
+  // ── Image generation capability ──
+  if (ctx.contextConfig?.imageGeneration === "on") {
+    prompt += `\n\n## Image Generation
+You have a generate_image tool. When users ask you to create, design, produce, or mockup visual content (social media graphics, carousels, infographics, illustrations, mockups, etc.), use the generate_image tool to create actual images. Do NOT describe what an image would look like — generate it instead. You can call the tool multiple times for multi-panel content (e.g. carousels). After generating, reference the image naturally in your response.`;
+  }
+
   // ── Personal context (user-specific, private/shared threads only) ──
   if (ctx.personalContext) {
     prompt += `\n\n## About the User`;
@@ -207,10 +215,12 @@ ${FORMATTING_GUIDELINES}`;
 
   // ── MeetingBrain context (tasks + meetings, private/shared threads only) ──
   if (ctx.meetingBrainContext) {
-    prompt += `\n\n## Your Tasks & Recent Meetings`;
-    prompt += `\nBelow is context from MeetingBrain — the user's active tasks and recent meeting summaries. Use this to give informed, context-aware answers:`;
+    prompt += `\n\n## Your Tasks & Meetings`;
+    prompt += `\nBelow is context from MeetingBrain — the user's active tasks, recent meeting summaries, and upcoming scheduled meetings. Use this to give informed, context-aware answers:`;
     prompt += `\n- When the user asks about their tasks or workload, explain each task clearly with full context — what it is, why it matters, and where it sits in their priorities. Don't just list bullet points.`;
-    prompt += `\n- Reference relevant meetings naturally — mention what was discussed, key decisions made, and any follow-ups that relate to the conversation.`;
+    prompt += `\n- Reference relevant past meetings naturally — mention what was discussed, key decisions made, and any follow-ups that relate to the conversation.`;
+    prompt += `\n- Use upcoming meetings to help the user prepare: identify who's attending, what topics might be relevant based on recent tasks and past meetings, and suggest talking points or prep actions.`;
+    prompt += `\n- When the user asks "who is attending" a meeting, use the attendee list. If attendee names or email domains suggest a specific company, mention that context.`;
     prompt += `\n- Provide thoughtful observations: highlight connections between tasks, flag upcoming deadlines, suggest priorities, and note how meetings relate to their work.`;
     prompt += `\n- Write in full, conversational sentences. Avoid abbreviations, shorthand, or echoing the raw data format below.`;
     prompt += `\n${ctx.meetingBrainContext}`;
@@ -566,26 +576,51 @@ ${FORMATTING_GUIDELINES}`;
     }
   }
 
-  // ── User & Workspace Memories ──
+  // ── User & Workspace Memories (V2: tiered by strength) ──
   if (ctx.memories && ctx.memories.length > 0) {
-    prompt += `\n\n---\n## Memory\nImportant context remembered from previous conversations:`;
+    prompt += `\n\n---\n## Memory\nContext from previous conversations, ranked by confidence. Higher tiers reflect well-established patterns.`;
 
-    const grouped: Record<string, string[]> = {};
-    for (const mem of ctx.memories) {
-      const cat = mem.category || "fact";
-      if (!grouped[cat]) grouped[cat] = [];
-      grouped[cat].push(mem.content);
-    }
+    // Split into tiers by decayed strength
+    const strong = ctx.memories.filter((m) => (m.strength ?? 1.0) >= 0.7);
+    const moderate = ctx.memories.filter((m) => (m.strength ?? 1.0) >= 0.35 && (m.strength ?? 1.0) < 0.7);
+    const weak = ctx.memories.filter((m) => (m.strength ?? 1.0) < 0.35);
 
-    for (const [category, items] of Object.entries(grouped)) {
-      const label = category.charAt(0).toUpperCase() + category.slice(1).replace("_", " ");
-      prompt += `\n\n### ${label}`;
-      for (const item of items) {
-        prompt += `\n- ${item}`;
+    const categoryLabels: Record<string, string> = {
+      instruction: "Standing guidance",
+      preference: "Preferences",
+      fact: "Background context",
+      style: "Style",
+      client_insight: "Client context",
+    };
+
+    const renderTier = (memories: typeof ctx.memories, tierLabel: string) => {
+      if (!memories || memories.length === 0) return;
+      const tierGrouped: Record<string, string[]> = {};
+      for (const mem of memories!) {
+        const cat = mem.category || "fact";
+        if (!tierGrouped[cat]) tierGrouped[cat] = [];
+        tierGrouped[cat].push(mem.content);
       }
-    }
+      prompt += `\n\n### ${tierLabel}`;
+      for (const [category, items] of Object.entries(tierGrouped)) {
+        const label = categoryLabels[category] || category;
+        prompt += `\n**${label}:**`;
+        for (const item of items) {
+          prompt += `\n- ${item}`;
+        }
+      }
+    };
 
-    prompt += `\n\nUse these memories naturally to personalise your responses. Do not mention that you have a memory system unless the user explicitly asks about it.`;
+    if (strong.length > 0) renderTier(strong, "Established");
+    if (moderate.length > 0) renderTier(moderate, "Developing");
+    if (weak.length > 0) renderTier(weak, "Fading");
+
+    prompt += `\n\n**How to use memories:**`;
+    prompt += `\n- "Established" memories are well-confirmed patterns — lean on these confidently.`;
+    prompt += `\n- "Developing" memories are emerging signals — use when relevant but don't over-anchor on them.`;
+    prompt += `\n- "Fading" memories may be outdated — reference only if clearly relevant to the current topic.`;
+    prompt += `\n- If any memory conflicts with what the user is saying right now, follow the current conversation.`;
+    prompt += `\n- Never mention the memory system or that you "remember" something unless the user explicitly asks.`;
   }
 
   // ── Closing instruction ──
