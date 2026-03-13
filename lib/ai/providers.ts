@@ -365,10 +365,10 @@ async function generateImage(
   let imageBuffer: Buffer;
 
   if (provider === "xai") {
-    // xAI: use grok-2-image via the xAI OpenAI-compatible client
+    // xAI: use grok-imagine-image via the xAI OpenAI-compatible client
     const xai = getXAIClient();
     const response = await xai.images.generate({
-      model: "grok-2-image",
+      model: "grok-imagine-image",
       prompt,
       n: 1,
     } as any);
