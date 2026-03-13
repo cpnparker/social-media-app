@@ -231,7 +231,9 @@ export default function ChatPanel({
             } else if (parsed.image_ready) {
               setIsGeneratingImage(false);
               // Embed image markdown into the streamed content
-              fullText += `\n\n![${parsed.image_ready.prompt}](${parsed.image_ready.url})\n\n`;
+              // Use safe alt text — the raw prompt can contain quotes/parens
+              // that break markdown and HTML attribute parsing
+              fullText += `\n\n![Generated image](${parsed.image_ready.url})\n\n`;
               setStreamingContent(fullText);
             } else if (parsed.image_error) {
               setIsGeneratingImage(false);

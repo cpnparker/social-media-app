@@ -450,9 +450,11 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
   html = html.replace(/(?<!\*)\*([^*]+?)\*(?!\*)/g, "<em>$1</em>");
 
   // Images ![alt](url) — render as full-width inline images
+  // Use a replacer function to HTML-escape the alt text (prompts can contain quotes)
   html = html.replace(
     /!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g,
-    '<div class="ai-generated-image-wrap my-3"><a href="$2" target="_blank" rel="noopener"><img src="$2" alt="$1" class="ai-generated-image rounded-lg max-w-full" loading="lazy" /></a></div>'
+    (_m, alt, url) =>
+      `<div class="ai-generated-image-wrap my-3"><a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${escapeHtml(alt)}" class="ai-generated-image rounded-lg max-w-full" loading="lazy" /></a></div>`
   );
 
   // Links [text](url)
