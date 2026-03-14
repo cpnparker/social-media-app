@@ -133,7 +133,7 @@ Instructions:
 2. ${portalList ? `Search across these portals: ${portalList}, and general web searches` : defaultSources}
 3. Focus on content production, communications, sustainability, climate, thought leadership, ESG reporting, digital content, campaign development, video/multimedia production, and related services
 4. CRITICAL: Only include RFPs where the deadline (or first deadline to register interest / submit expression of interest) is AFTER ${today}. Do NOT include any RFPs whose deadlines have already passed.
-5. Only include RFPs with deadlines at least 2 weeks from now
+5. Only include RFPs whose deadlines have not yet passed. Include RFPs with upcoming deadlines — the user will decide which to pursue
 6. Score each opportunity 0-100 based on relevance to our profile
 7. Cast a WIDE net — search multiple portals and combine results. Aim for at least 8-12 opportunities across different source types (UN, government, NGO, corporate, etc.)
 8. Include opportunities from BOTH the international development sector AND the private/corporate sector
@@ -248,6 +248,45 @@ function matchRealUrl(
   return { url: opp.sourceUrl, crossReferenced: false };
 }
 
+/**
+ * Parse dates flexibly — handles YYYY-MM-DD, "April 15, 2026",
+ * "15/04/2026" (DD/MM/YYYY), "15 April 2026", "Q2 2026", etc.
+ */
+function parseFlexibleDate(dateStr: string | null): Date | null {
+  if (!dateStr) return null;
+  const trimmed = dateStr.trim();
+
+  // Try native parsing first (handles ISO, "Month DD, YYYY", etc.)
+  const native = new Date(trimmed);
+  if (!isNaN(native.getTime())) return native;
+
+  // DD/MM/YYYY or DD-MM-YYYY (common non-US format)
+  const ddmmyyyy = trimmed.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (ddmmyyyy) {
+    const d = new Date(parseInt(ddmmyyyy[3]), parseInt(ddmmyyyy[2]) - 1, parseInt(ddmmyyyy[1]));
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  // "15 Apr 2026" or "15 April 2026"
+  const dayMonthYear = trimmed.match(/^(\d{1,2})\s+(\w+)\s+(\d{4})$/);
+  if (dayMonthYear) {
+    const d = new Date(`${dayMonthYear[2]} ${dayMonthYear[1]}, ${dayMonthYear[3]}`);
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  // Quarter: "Q2 2026" → last day of quarter
+  const quarter = trimmed.match(/^Q(\d)\s*(\d{4})$/i);
+  if (quarter) {
+    const quarterEndMonth = [2, 5, 8, 11]; // Mar, Jun, Sep, Dec (0-indexed)
+    const mIdx = quarterEndMonth[parseInt(quarter[1]) - 1];
+    if (mIdx !== undefined) {
+      return new Date(parseInt(quarter[2]), mIdx + 1, 0); // last day of month
+    }
+  }
+
+  return null;
+}
+
 function parseOpportunities(
   textContent: string,
   realUrls: SearchSourceUrl[] = [],
@@ -321,27 +360,31 @@ function parseOpportunities(
         };
       });
 
-      // Filter out expired and near-expired opportunities.
-      // Enforce a 2-week minimum buffer — if an RFP closes in less than
-      // 14 days there isn't enough time to prepare a quality response.
-      const twoWeeksFromNow = new Date(today);
-      twoWeeksFromNow.setDate(twoWeeksFromNow.getDate() + 14);
+      console.log(`[RFP Search] Parsed ${allOpps.length} opportunities from AI response`);
 
+      // Filter out already-expired opportunities only.
+      // Keep opportunities with unparseable dates rather than dropping them.
       const opportunities = allOpps
         .filter((opp: DiscoveredRfp) => {
-          if (!opp.deadline) return true; // Keep if no deadline specified
-          const deadlineDate = new Date(opp.deadline);
-          if (isNaN(deadlineDate.getTime())) return false; // Invalid date → drop
-          return deadlineDate >= twoWeeksFromNow;
+          if (!opp.deadline) return true;
+          const deadlineDate = parseFlexibleDate(opp.deadline);
+          if (!deadlineDate) return true; // Unparseable date → keep
+          return deadlineDate >= today;
         })
         .map((opp: DiscoveredRfp) => ({
           ...opp,
           // Strip expired milestones so the UI only shows future ones
           milestones: opp.milestones.filter((m) => {
-            const mDate = new Date(m.date);
-            return !isNaN(mDate.getTime()) && mDate >= today;
+            const mDate = parseFlexibleDate(m.date);
+            return !mDate || mDate >= today;
           }),
         }));
+
+      const dropped = allOpps.length - opportunities.length;
+      if (dropped > 0) {
+        console.log(`[RFP Search] Dropped ${dropped} expired opportunities`);
+      }
+      console.log(`[RFP Search] Returning ${opportunities.length} opportunities`);
 
       return {
         opportunities,

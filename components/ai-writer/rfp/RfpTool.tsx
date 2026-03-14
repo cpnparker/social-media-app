@@ -227,6 +227,13 @@ function getResponseStage(status: string) {
   return RESPONSE_STAGES.find((s) => s.id === status) || RESPONSE_STAGES[0];
 }
 
+function formatDeadline(dateStr: string | null): string {
+  if (!dateStr) return "No deadline";
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
 function extractDomain(url: string | null): string | null {
   if (!url) return null;
   try {
@@ -2348,6 +2355,46 @@ function DiscoverPanel({
     resultCount: number;
     query: string | null;
   } | null>(null);
+  const [searchStep, setSearchStep] = useState(0);
+  const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Progress steps for search animation
+  const SEARCH_STEPS = useMemo(() => [
+    { label: "Connecting", detail: "Initializing search...", durationMs: 4000 },
+    { label: "Searching portals", detail: "UN, government & NGO procurement portals", durationMs: 20000 },
+    { label: "Expanding search", detail: "Development banks, aggregators & corporate RFPs", durationMs: 20000 },
+    { label: "Analyzing results", detail: "Filtering and scoring opportunities", durationMs: 15000 },
+    { label: "Verifying links", detail: "Checking source URLs and portal availability", durationMs: 15000 },
+    { label: "Finishing up", detail: "Preparing results...", durationMs: 30000 },
+  ], []);
+
+  // Animate progress steps during search
+  useEffect(() => {
+    if (searching) {
+      setSearchStep(0);
+      let elapsed = 0;
+      searchTimerRef.current = setInterval(() => {
+        elapsed += 1000;
+        let cumulative = 0;
+        for (let i = 0; i < SEARCH_STEPS.length; i++) {
+          cumulative += SEARCH_STEPS[i].durationMs;
+          if (elapsed < cumulative) {
+            setSearchStep(i);
+            return;
+          }
+        }
+        setSearchStep(SEARCH_STEPS.length - 1);
+      }, 1000);
+    } else {
+      if (searchTimerRef.current) {
+        clearInterval(searchTimerRef.current);
+        searchTimerRef.current = null;
+      }
+    }
+    return () => {
+      if (searchTimerRef.current) clearInterval(searchTimerRef.current);
+    };
+  }, [searching, SEARCH_STEPS]);
 
   // Fetch pipeline data + load latest saved search on mount
   useEffect(() => {
@@ -2934,36 +2981,59 @@ function DiscoverPanel({
         />
       </div>
 
-      {/* Search status */}
+      {/* Search progress */}
       {searching && (
-        <div className="flex flex-col items-center py-16 gap-3">
-          <Loader2 className="h-8 w-8 animate-spin text-cyan-500" />
-          <p className="text-sm text-muted-foreground">
-            Searching procurement portals with {provider === "anthropic" ? "Claude" : "Grok"}...
-          </p>
-          <p className="text-xs text-muted-foreground">This may take up to 2 minutes</p>
+        <div className="flex flex-col items-center py-12 max-w-sm mx-auto">
+          <div className="w-full h-1 bg-muted rounded-full mb-8 overflow-hidden">
+            <div
+              className="h-full bg-cyan-500 rounded-full transition-all duration-1000 ease-out"
+              style={{ width: `${Math.min(((searchStep + 1) / SEARCH_STEPS.length) * 100, 95)}%` }}
+            />
+          </div>
+          <div className="space-y-3 w-full">
+            {SEARCH_STEPS.map((step, i) => (
+              <div key={i} className="flex items-center gap-3">
+                {i < searchStep ? (
+                  <CheckCircle2 className="h-4 w-4 text-cyan-500 shrink-0" />
+                ) : i === searchStep ? (
+                  <Loader2 className="h-4 w-4 text-cyan-500 animate-spin shrink-0" />
+                ) : (
+                  <div className="h-4 w-4 rounded-full border border-muted-foreground/20 shrink-0" />
+                )}
+                <div className={cn(
+                  "text-sm",
+                  i < searchStep ? "text-muted-foreground" :
+                  i === searchStep ? "text-foreground font-medium" :
+                  "text-muted-foreground/40"
+                )}>
+                  {step.label}
+                  {i === searchStep && (
+                    <span className="block text-xs text-muted-foreground font-normal mt-0.5">
+                      {step.detail}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground mt-8">Typically takes 1–2 minutes</p>
         </div>
       )}
 
       {/* Results */}
       {!searching && hasSearched && (
         <>
-          {/* Search metadata bar */}
+          {/* Compact metadata line */}
           {searchMeta && (
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-muted/40 border rounded-lg px-3 py-2.5 sm:px-4 mb-4 max-w-3xl mx-auto">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Clock className="h-3.5 w-3.5 shrink-0" />
-                <span>
-                  Searched by <span className="font-medium text-foreground">{searchMeta.userName}</span>
-                  {" "}{formatRelativeTime(searchMeta.date)}
-                  {" "}using {searchMeta.provider === "anthropic" ? "Claude" : "Grok"}
-                  {" · "}{searchMeta.resultCount} result{searchMeta.resultCount !== 1 ? "s" : ""}
-                </span>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-xs h-7 gap-1.5 text-muted-foreground hover:text-foreground"
+            <div className="flex items-center justify-between text-xs text-muted-foreground mb-4 max-w-3xl mx-auto px-1">
+              <span>
+                {searchMeta.resultCount} result{searchMeta.resultCount !== 1 ? "s" : ""}
+                {" · "}
+                {searchMeta.provider === "anthropic" ? "Claude" : "Grok"}
+                {" · "}
+                {formatRelativeTime(searchMeta.date)}
+              </span>
+              <button
                 onClick={() => {
                   setResults([]);
                   setSearchSummary("");
@@ -2971,67 +3041,19 @@ function DiscoverPanel({
                   setSearchMeta(null);
                   setQuery("");
                 }}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
               >
-                <Search className="h-3 w-3" />
-                New Search
-              </Button>
+                New search
+              </button>
             </div>
           )}
-
-          {searchSummary && (
-            <div className="bg-muted/50 rounded-lg p-3 mb-4 text-sm text-muted-foreground max-w-2xl mx-auto">
-              {searchSummary}
-            </div>
-          )}
-
-          {results.length > 0 && (() => {
-            const verified = results.filter(r => r.urlConfidence === "verified" || r.urlConfidence === "trusted_domain").length;
-            const unverified = results.filter(r => r.urlConfidence === "unverified").length;
-            const noLink = results.filter(r => !r.sourceUrl || r.urlConfidence === "failed" || r.urlConfidence === "none").length;
-            const hasConfidenceData = results.some(r => r.urlConfidence);
-
-            if (!hasConfidenceData) {
-              // Legacy fallback — no confidence data yet
-              return (
-                <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2 mb-4 max-w-3xl mx-auto">
-                  <Shield className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-                  <p className="text-xs text-amber-700 dark:text-amber-300">
-                    Links are AI-generated and may be inaccurate — verify before trusting.
-                  </p>
-                </div>
-              );
-            }
-
-            return (
-              <div className="flex items-center gap-3 flex-wrap bg-muted/50 border rounded-lg px-3 py-2 mb-4 max-w-3xl mx-auto">
-                {verified > 0 && (
-                  <span className="inline-flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
-                    <CheckCircle2 className="h-3 w-3" />
-                    {verified} verified
-                  </span>
-                )}
-                {unverified > 0 && (
-                  <span className="inline-flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">
-                    <AlertCircle className="h-3 w-3" />
-                    {unverified} unverified
-                  </span>
-                )}
-                {noLink > 0 && (
-                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                    <Search className="h-3 w-3" />
-                    {noLink} portal search only
-                  </span>
-                )}
-              </div>
-            );
-          })()}
 
           {results.length === 0 ? (
             <div className="text-center py-12 text-sm text-muted-foreground">
               No matching RFPs found. Try different search terms or the other search provider.
             </div>
           ) : (
-            <div className="space-y-3 max-w-3xl mx-auto">
+            <div className="space-y-2 max-w-3xl mx-auto">
               {results.map((rfp, i) => {
                 const matched = getMatchedOpp(rfp);
                 const isIgnored = matched?.status === "ignored";
@@ -3039,130 +3061,131 @@ function DiscoverPanel({
                 <div
                   key={i}
                   className={cn(
-                    "border rounded-xl p-4 sm:p-5 transition-colors",
-                    isIgnored ? "opacity-50" : "hover:border-cyan-300"
+                    "border rounded-lg p-4 transition-colors",
+                    isIgnored ? "opacity-40" : "hover:border-foreground/20"
                   )}
                 >
-                  <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
+                  {/* Title + Score */}
+                  <div className="flex items-start justify-between gap-3 mb-1">
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <h3 className="font-semibold text-sm">{rfp.title}</h3>
-                        <span
-                          className={cn(
-                            "text-xs font-bold px-2 py-0.5 rounded-full",
-                            scoreColor(rfp.relevanceScore)
-                          )}
-                        >
-                          {rfp.relevanceScore}%
-                        </span>
-                      </div>
-                      <p className="text-xs text-muted-foreground mb-2">{rfp.organisation}</p>
-                      <p className="text-sm text-muted-foreground mb-3">{rfp.scope}</p>
-
-                      <div className="flex flex-wrap items-center gap-2 mb-3">
-                        {rfp.deadline && (
-                          <Badge variant="outline" className="text-xs gap-1">
-                            <Calendar className="h-3 w-3" />
-                            {rfp.deadline}
-                          </Badge>
-                        )}
-                        {rfp.region && (
-                          <Badge variant="outline" className="text-xs gap-1">
-                            <MapPin className="h-3 w-3" />
-                            {rfp.region}
-                          </Badge>
-                        )}
-                        {rfp.estimatedValue && (
-                          <Badge variant="outline" className="text-xs">
-                            {rfp.estimatedValue}
-                          </Badge>
-                        )}
-                        {rfp.sectors.slice(0, 3).map((s) => (
-                          <Badge key={s} variant="secondary" className="text-xs">
-                            {s}
-                          </Badge>
-                        ))}
-                      </div>
-
-                      <p className="text-xs text-muted-foreground italic">{rfp.reasoning}</p>
+                      <h3 className="font-medium text-sm leading-snug">{rfp.title}</h3>
+                      <span className="text-xs text-muted-foreground">{rfp.organisation}</span>
                     </div>
+                    <div className={cn(
+                      "h-8 w-8 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0",
+                      scoreColor(rfp.relevanceScore)
+                    )}>
+                      {rfp.relevanceScore}
+                    </div>
+                  </div>
 
-                    <div className="flex flex-row sm:flex-col gap-2 shrink-0">
+                  {/* Compact info line */}
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground mt-2 mb-2">
+                    {rfp.deadline && (
+                      <span className="inline-flex items-center gap-1">
+                        <Calendar className="h-3 w-3" />
+                        {formatDeadline(rfp.deadline)}
+                        {(() => {
+                          const urgency = getDeadlineUrgency(rfp.deadline);
+                          if (!urgency) return null;
+                          const colorClass = urgency.label === "Overdue" || urgency.label.includes("d left") && parseInt(urgency.label) < 14
+                            ? "text-red-600 dark:text-red-400"
+                            : urgency.label.includes("d left") && parseInt(urgency.label) < 28
+                            ? "text-amber-600 dark:text-amber-400"
+                            : "";
+                          return colorClass ? (
+                            <span className={cn("text-[10px] font-medium", colorClass)}>
+                              ({urgency.label})
+                            </span>
+                          ) : null;
+                        })()}
+                      </span>
+                    )}
+                    {rfp.region && (
+                      <span className="inline-flex items-center gap-1">
+                        <MapPin className="h-3 w-3" />
+                        {rfp.region}
+                      </span>
+                    )}
+                    {rfp.estimatedValue && (
+                      <span>{rfp.estimatedValue}</span>
+                    )}
+                  </div>
+
+                  {/* Scope (truncated) */}
+                  <p className="text-sm text-muted-foreground line-clamp-2 mb-3">
+                    {rfp.scope}
+                  </p>
+
+                  {/* Bottom row: source + sectors | actions */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
                       {rfp.sourceUrl ? (
                         <a
                           href={rfp.sourceUrl}
                           target="_blank"
                           rel="noopener noreferrer"
                           className={cn(
-                            "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border transition-colors max-w-[200px]",
+                            "inline-flex items-center gap-1 text-xs transition-colors",
                             rfp.urlConfidence === "verified"
-                              ? "border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-700 dark:text-emerald-400 dark:hover:bg-emerald-900/20"
+                              ? "text-emerald-600 dark:text-emerald-400 hover:text-emerald-700"
                               : rfp.urlConfidence === "trusted_domain"
-                              ? "border-cyan-300 text-cyan-700 hover:bg-cyan-50 dark:border-cyan-700 dark:text-cyan-400 dark:hover:bg-cyan-900/20"
-                              : "border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-900/20"
+                              ? "text-cyan-600 dark:text-cyan-400 hover:text-cyan-700"
+                              : "text-muted-foreground hover:text-foreground"
                           )}
                           title={
-                            rfp.urlConfidence === "verified" ? "Verified link — found in search results"
-                            : rfp.urlConfidence === "trusted_domain" ? "Trusted procurement portal"
-                            : "Unverified — check link manually"
+                            rfp.urlConfidence === "verified" ? "Verified link"
+                            : rfp.urlConfidence === "trusted_domain" ? "Trusted portal"
+                            : "Unverified link"
                           }
                         >
-                          {rfp.urlConfidence === "verified" ? (
-                            <CheckCircle2 className="h-3 w-3 shrink-0" />
-                          ) : rfp.urlConfidence === "trusted_domain" ? (
-                            <Shield className="h-3 w-3 shrink-0" />
-                          ) : (
-                            <AlertCircle className="h-3 w-3 shrink-0" />
-                          )}
-                          <span className="truncate">{rfp.portalName || extractDomain(rfp.sourceUrl) || "View"}</span>
-                          <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-50" />
+                          <ExternalLink className="h-3 w-3" />
+                          {rfp.portalName || extractDomain(rfp.sourceUrl) || "Source"}
                         </a>
                       ) : rfp.portalSearchUrl ? (
                         <a
                           href={rfp.portalSearchUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border border-slate-300 dark:border-slate-600 hover:bg-muted transition-colors max-w-[200px]"
-                          title={`Search for this RFP on ${rfp.portalName || "procurement portal"}`}
+                          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
                         >
-                          <Search className="h-3 w-3 shrink-0" />
-                          <span className="truncate">Search {rfp.portalName || "portal"}</span>
+                          <Search className="h-3 w-3" />
+                          Search {rfp.portalName || "portal"}
                         </a>
                       ) : null}
+                      {rfp.sectors.length > 0 && (
+                        <span className="text-[11px] text-muted-foreground/60">
+                          {rfp.sectors.slice(0, 2).join(" · ")}
+                        </span>
+                      )}
+                    </div>
 
-                      {/* Status-aware action buttons */}
+                    <div className="flex items-center gap-1.5">
                       {isIgnored ? (
                         <Button
                           size="sm"
                           variant="ghost"
                           onClick={() => handleUndoIgnore(rfp)}
-                          className="gap-1.5 text-xs text-muted-foreground"
+                          className="h-7 gap-1 text-xs text-muted-foreground"
                         >
                           <Undo2 className="h-3 w-3" />
                           Undo
                         </Button>
-                      ) : matched?.responseStatus ? (
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-muted">
-                          <div className={cn("h-1.5 w-1.5 rounded-full", getResponseStage(matched.responseStatus).dotColor)} />
-                          {getResponseStage(matched.responseStatus).label}
-                        </span>
-                      ) : matched?.status === "submitted" ? (
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
-                          <CheckCircle2 className="h-3 w-3" />
-                          Submitted
-                        </span>
                       ) : matched ? (
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-muted text-muted-foreground">
+                        <span className="text-xs text-muted-foreground flex items-center gap-1.5">
                           <FolderKanban className="h-3 w-3" />
-                          In Pipeline
+                          {matched.status === "submitted" ? "Submitted" :
+                           matched.responseStatus ? getResponseStage(matched.responseStatus).label :
+                           "In Pipeline"}
                         </span>
                       ) : (
                         <>
                           <Button
                             size="sm"
+                            variant="outline"
                             disabled={saving === rfp.title}
                             onClick={() => handleSave(rfp)}
-                            className="gap-1.5 text-xs"
+                            className="h-7 gap-1 text-xs"
                           >
                             {saving === rfp.title ? (
                               <Loader2 className="h-3 w-3 animate-spin" />
@@ -3176,10 +3199,9 @@ function DiscoverPanel({
                             variant="ghost"
                             disabled={saving === rfp.title}
                             onClick={() => handleIgnore(rfp)}
-                            className="gap-1.5 text-xs text-muted-foreground"
+                            className="h-7 text-xs text-muted-foreground px-2"
                           >
                             <EyeOff className="h-3 w-3" />
-                            Ignore
                           </Button>
                         </>
                       )}
@@ -3195,18 +3217,10 @@ function DiscoverPanel({
 
       {/* Initial empty state */}
       {!searching && !hasSearched && (
-        <div className="flex flex-col items-center py-16">
-          <div className="h-16 w-16 rounded-2xl bg-cyan-500/10 flex items-center justify-center mb-4">
-            <Globe className="h-8 w-8 text-cyan-600" />
-          </div>
-          <h2 className="text-lg font-semibold mb-2">Discover RFPs</h2>
-          <p className="text-sm text-muted-foreground text-center max-w-md mb-6">
-            AI will search procurement portals for open RFPs matching
-            The Content Engine&apos;s profile. Configure sources and filters
-            using Search Settings.
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Click Search to find current opportunities
+        <div className="flex flex-col items-center py-20">
+          <Search className="h-6 w-6 text-muted-foreground/40 mb-3" />
+          <p className="text-sm text-muted-foreground">
+            Search for open procurement opportunities
           </p>
         </div>
       )}
