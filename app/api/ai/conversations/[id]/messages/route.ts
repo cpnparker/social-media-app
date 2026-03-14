@@ -652,16 +652,11 @@ export async function POST(
           scored.sort((a: any, b: any) => b.importance - a.importance);
           const selected = scored.slice(0, 25);
 
-          // Fire-and-forget: update date_last_accessed for selected memories
-          const selectedIds = selected.map((m: any) => m.id);
-          if (selectedIds.length > 0) {
-            Promise.resolve(
-              intelligenceDb
-                .from("ai_memories")
-                .update({ date_last_accessed: new Date().toISOString() })
-                .in("id_memory", selectedIds)
-            ).catch((err: any) => console.error("[Memory] Failed to update access times:", err));
-          }
+          // NOTE: We intentionally do NOT update date_last_accessed here.
+          // Passive retrieval (loading memories into system prompt) should not
+          // reset the decay clock. Only active reinforcement/update/contradiction
+          // (in applyConsolidationAction) should refresh access time.
+          // Without this, memories never decay because they're "accessed" on every message.
 
           return selected.map((m: any) => ({
             content: m.content,

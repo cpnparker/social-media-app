@@ -219,6 +219,13 @@ export async function applyConsolidationAction(
 
   switch (action.action) {
     case "ADD": {
+      // Tiered initial strength: inferred memories start lower and need
+      // reinforcement to reach full strength. Explicit and meeting memories
+      // have stronger provenance so start higher.
+      const initialStrength = typeSource === "explicit" ? 1.0
+                            : typeSource === "meeting" ? 0.85
+                            : 0.7;
+
       const { data: inserted } = await intelligenceDb
         .from("ai_memories")
         .insert({
@@ -229,13 +236,13 @@ export async function applyConsolidationAction(
           information_content: candidate.content.slice(0, 500),
           id_conversation_source: conversationId,
           type_source: typeSource,
-          score_strength: 1.0,
+          score_strength: initialStrength,
           count_reinforced: 0,
         })
         .select("id_memory")
         .single();
       if (!inserted) return null;
-      console.log(`[Memory] ADD: "${candidate.content.slice(0, 60)}..."`);
+      console.log(`[Memory] ADD (${typeSource}, strength=${initialStrength}): "${candidate.content.slice(0, 60)}..."`);
       return { id: inserted.id_memory, content: candidate.content, action: "ADD" };
     }
 
@@ -248,10 +255,14 @@ export async function applyConsolidationAction(
         .single();
 
       if (existing) {
+        // Diminishing boost: bigger when weak, smaller when already strong.
+        // A memory at 0.7 gets +0.045, at 0.9 gets +0.03 (floor).
+        // This means 100% actually requires many confirmations.
+        const boost = Math.max(0.03, 0.15 * (1.0 - existing.score_strength));
         await intelligenceDb
           .from("ai_memories")
           .update({
-            score_strength: Math.min(1.0, existing.score_strength + 0.15),
+            score_strength: Math.min(1.0, existing.score_strength + boost),
             count_reinforced: existing.count_reinforced + 1,
             date_last_accessed: now,
             date_updated: now,
@@ -270,11 +281,13 @@ export async function applyConsolidationAction(
         .single();
 
       if (existing) {
+        // Diminishing boost for updates too (slightly stronger than reinforce)
+        const boost = Math.max(0.04, 0.2 * (1.0 - existing.score_strength));
         await intelligenceDb
           .from("ai_memories")
           .update({
             information_content: action.newContent.slice(0, 500),
-            score_strength: Math.min(1.0, existing.score_strength + 0.2),
+            score_strength: Math.min(1.0, existing.score_strength + boost),
             count_reinforced: existing.count_reinforced + 1,
             date_last_accessed: now,
             date_updated: now,
@@ -510,6 +523,37 @@ export async function runConsolidationPipeline(
   const total = result.added + result.reinforced + result.updated + result.contradicted;
   if (total > 0) {
     console.log(`[Memory] Pipeline: ${candidates.length} candidate(s) → ${total} action(s) [+${result.added} ↑${result.reinforced} ✎${result.updated} ✗${result.contradicted} ○${result.skipped}]`);
+  }
+
+  // ── Auto-archive stale memories ──
+  // Memories whose decayed strength has dropped below 0.10 are no longer
+  // useful and should be archived to free up slots for new, relevant ones.
+  // This runs after every consolidation pass as a lightweight cleanup.
+  try {
+    const staleIds: string[] = [];
+    for (const mem of allExisting) {
+      const decayed = computeDecayedStrength({
+        score_strength: mem.strength,
+        date_last_accessed: mem.dateLastAccessed,
+        type_category: mem.category,
+        type_source: mem.source,
+        count_reinforced: mem.reinforcedCount,
+      });
+      if (decayed < 0.10) {
+        staleIds.push(mem.id);
+      }
+    }
+
+    if (staleIds.length > 0) {
+      await intelligenceDb
+        .from("ai_memories")
+        .update({ flag_active: 0 })
+        .in("id_memory", staleIds);
+      console.log(`[Memory] Auto-archived ${staleIds.length} stale memories (decayed strength < 10%)`);
+    }
+  } catch (err) {
+    // Non-critical — don't let cleanup errors break the pipeline
+    console.error("[Memory] Auto-archive failed:", err);
   }
 
   return result;
