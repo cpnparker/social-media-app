@@ -2348,6 +2348,7 @@ function DiscoverPanel({
   );
   const [newSource, setNewSource] = useState("");
   const [newKeyword, setNewKeyword] = useState("");
+  const [selectedRfp, setSelectedRfp] = useState<DiscoveredRfp | null>(null);
   const [searchMeta, setSearchMeta] = useState<{
     userName: string;
     date: string;
@@ -2464,7 +2465,20 @@ function DiscoverPanel({
       if (urlMatch) return urlMatch;
     }
     // Fall back to title match
-    return savedOpps.get(rfp.title.toLowerCase().trim());
+    const titleMatch = savedOpps.get(rfp.title.toLowerCase().trim());
+    if (titleMatch) return titleMatch;
+    // Try partial title match (AI may slightly rephrase titles across sessions)
+    const rfpTitleLower = rfp.title.toLowerCase().trim();
+    const entries = Array.from(savedOpps.entries());
+    for (let ei = 0; ei < entries.length; ei++) {
+      const [key, val] = entries[ei];
+      if (key.length > 10 && !key.startsWith("http") && (
+        rfpTitleLower.includes(key) || key.includes(rfpTitleLower)
+      )) {
+        return val;
+      }
+    }
+    return undefined;
   }, [savedOpps]);
 
   useEffect(() => {
@@ -3061,16 +3075,18 @@ function DiscoverPanel({
               {results.map((rfp, i) => {
                 const matched = getMatchedOpp(rfp);
                 const isIgnored = matched?.status === "ignored";
+                const urgency = getDeadlineUrgency(rfp.deadline);
                 return (
-                <div
+                <button
                   key={i}
+                  onClick={() => setSelectedRfp(rfp)}
                   className={cn(
-                    "border rounded-lg p-4 transition-colors",
-                    isIgnored ? "opacity-40" : "hover:border-foreground/20"
+                    "border rounded-lg p-4 transition-colors w-full text-left",
+                    isIgnored ? "opacity-40" : "hover:border-foreground/20 hover:bg-muted/30"
                   )}
                 >
-                  {/* Title + Score */}
-                  <div className="flex items-start justify-between gap-3 mb-1">
+                  {/* Row 1: Title + Score */}
+                  <div className="flex items-start justify-between gap-3 mb-2">
                     <div className="flex-1 min-w-0">
                       <h3 className="font-medium text-sm leading-snug">{rfp.title}</h3>
                       <span className="text-xs text-muted-foreground">{rfp.organisation}</span>
@@ -3083,26 +3099,31 @@ function DiscoverPanel({
                     </div>
                   </div>
 
-                  {/* Compact info line */}
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground mt-2 mb-2">
+                  {/* Row 2: Key details */}
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground mb-2">
                     {rfp.deadline && (
                       <span className="inline-flex items-center gap-1">
                         <Calendar className="h-3 w-3" />
                         {formatDeadline(rfp.deadline)}
-                        {(() => {
-                          const urgency = getDeadlineUrgency(rfp.deadline);
-                          if (!urgency) return null;
-                          const colorClass = urgency.label === "Overdue" || urgency.label.includes("d left") && parseInt(urgency.label) < 14
-                            ? "text-red-600 dark:text-red-400"
-                            : urgency.label.includes("d left") && parseInt(urgency.label) < 28
-                            ? "text-amber-600 dark:text-amber-400"
-                            : "";
-                          return colorClass ? (
-                            <span className={cn("text-[10px] font-medium", colorClass)}>
-                              ({urgency.label})
-                            </span>
-                          ) : null;
-                        })()}
+                        {urgency && (
+                          <span className={cn(
+                            "text-[10px] font-medium ml-0.5",
+                            urgency.className.split(" ")[0]
+                          )}>
+                            ({urgency.label})
+                          </span>
+                        )}
+                      </span>
+                    )}
+                    {rfp.milestones.length > 0 && !rfp.deadline && (
+                      <span className="inline-flex items-center gap-1">
+                        <Calendar className="h-3 w-3" />
+                        {rfp.milestones[0].label}: {formatDeadline(rfp.milestones[0].date)}
+                      </span>
+                    )}
+                    {rfp.estimatedValue && (
+                      <span className="inline-flex items-center gap-1 font-medium text-foreground/70">
+                        {rfp.estimatedValue}
                       </span>
                     )}
                     {rfp.region && (
@@ -3111,51 +3132,33 @@ function DiscoverPanel({
                         {rfp.region}
                       </span>
                     )}
-                    {rfp.estimatedValue && (
-                      <span>{rfp.estimatedValue}</span>
-                    )}
                   </div>
 
-                  {/* Scope (truncated) */}
+                  {/* Row 3: Scope (truncated) */}
                   <p className="text-sm text-muted-foreground line-clamp-2 mb-3">
                     {rfp.scope}
                   </p>
 
-                  {/* Bottom row: source + sectors | actions */}
+                  {/* Row 4: Source + status */}
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       {rfp.sourceUrl ? (
-                        <a
-                          href={rfp.sourceUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={cn(
-                            "inline-flex items-center gap-1 text-xs transition-colors",
-                            rfp.urlConfidence === "verified"
-                              ? "text-emerald-600 dark:text-emerald-400 hover:text-emerald-700"
-                              : rfp.urlConfidence === "trusted_domain"
-                              ? "text-cyan-600 dark:text-cyan-400 hover:text-cyan-700"
-                              : "text-muted-foreground hover:text-foreground"
-                          )}
-                          title={
-                            rfp.urlConfidence === "verified" ? "Verified link"
-                            : rfp.urlConfidence === "trusted_domain" ? "Trusted portal"
-                            : "Unverified link"
-                          }
-                        >
+                        <span className={cn(
+                          "inline-flex items-center gap-1 text-xs",
+                          rfp.urlConfidence === "verified"
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : rfp.urlConfidence === "trusted_domain"
+                            ? "text-cyan-600 dark:text-cyan-400"
+                            : "text-muted-foreground"
+                        )}>
                           <ExternalLink className="h-3 w-3" />
                           {rfp.portalName || extractDomain(rfp.sourceUrl) || "Source"}
-                        </a>
+                        </span>
                       ) : rfp.portalSearchUrl ? (
-                        <a
-                          href={rfp.portalSearchUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                        >
+                        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                           <Search className="h-3 w-3" />
-                          Search {rfp.portalName || "portal"}
-                        </a>
+                          {rfp.portalName || "Portal"}
+                        </span>
                       ) : null}
                       {rfp.sectors.length > 0 && (
                         <span className="text-[11px] text-muted-foreground/60">
@@ -3163,59 +3166,210 @@ function DiscoverPanel({
                         </span>
                       )}
                     </div>
-
-                    <div className="flex items-center gap-1.5">
-                      {isIgnored ? (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => handleUndoIgnore(rfp)}
-                          className="h-7 gap-1 text-xs text-muted-foreground"
-                        >
-                          <Undo2 className="h-3 w-3" />
-                          Undo
-                        </Button>
-                      ) : matched ? (
-                        <span className="text-xs text-muted-foreground flex items-center gap-1.5">
-                          <FolderKanban className="h-3 w-3" />
-                          {matched.status === "submitted" ? "Submitted" :
-                           matched.responseStatus ? getResponseStage(matched.responseStatus).label :
-                           "In Pipeline"}
-                        </span>
-                      ) : (
-                        <>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={saving === rfp.title}
-                            onClick={() => handleSave(rfp)}
-                            className="h-7 gap-1 text-xs"
-                          >
-                            {saving === rfp.title ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                            ) : (
-                              <Bookmark className="h-3 w-3" />
-                            )}
-                            Save
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            disabled={saving === rfp.title}
-                            onClick={() => handleIgnore(rfp)}
-                            className="h-7 text-xs text-muted-foreground px-2"
-                          >
-                            <EyeOff className="h-3 w-3" />
-                          </Button>
-                        </>
-                      )}
-                    </div>
+                    {matched && (
+                      <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                        <FolderKanban className="h-3 w-3" />
+                        {matched.status === "submitted" ? "Submitted" :
+                         matched.responseStatus ? getResponseStage(matched.responseStatus).label :
+                         "In Pipeline"}
+                      </span>
+                    )}
                   </div>
-                </div>
+                </button>
                 );
               })}
             </div>
           )}
+
+          {/* RFP Detail Modal */}
+          <Dialog open={!!selectedRfp} onOpenChange={(open) => !open && setSelectedRfp(null)}>
+            <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+              {selectedRfp && (() => {
+                const rfp = selectedRfp;
+                const matched = getMatchedOpp(rfp);
+                const isIgnored = matched?.status === "ignored";
+                const urgency = getDeadlineUrgency(rfp.deadline);
+                return (
+                  <>
+                    <DialogHeader>
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <DialogTitle className="text-base leading-snug mb-1">{rfp.title}</DialogTitle>
+                          <p className="text-sm text-muted-foreground">{rfp.organisation}</p>
+                        </div>
+                        <div className={cn(
+                          "h-10 w-10 rounded-full flex items-center justify-center text-sm font-bold shrink-0",
+                          scoreColor(rfp.relevanceScore)
+                        )}>
+                          {rfp.relevanceScore}
+                        </div>
+                      </div>
+                    </DialogHeader>
+
+                    <div className="space-y-5 mt-2">
+                      {/* Key details grid */}
+                      <div className="grid grid-cols-2 gap-3">
+                        {rfp.deadline && (
+                          <div className="space-y-0.5">
+                            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Deadline</p>
+                            <p className="text-sm font-medium flex items-center gap-1.5">
+                              {formatDeadline(rfp.deadline)}
+                              {urgency && (
+                                <span className={cn(
+                                  "text-[10px] font-medium px-1.5 py-0.5 rounded-full",
+                                  urgency.className
+                                )}>
+                                  {urgency.label}
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                        )}
+                        {rfp.estimatedValue && (
+                          <div className="space-y-0.5">
+                            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Estimated Budget</p>
+                            <p className="text-sm font-medium">{rfp.estimatedValue}</p>
+                          </div>
+                        )}
+                        {rfp.region && (
+                          <div className="space-y-0.5">
+                            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Region</p>
+                            <p className="text-sm">{rfp.region}</p>
+                          </div>
+                        )}
+                        {rfp.sectors.length > 0 && (
+                          <div className="space-y-0.5">
+                            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Sectors</p>
+                            <p className="text-sm">{rfp.sectors.join(", ")}</p>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Milestones */}
+                      {rfp.milestones.length > 0 && (
+                        <div>
+                          <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2">Key Dates</p>
+                          <div className="space-y-1.5">
+                            {rfp.milestones.map((m, mi) => {
+                              const mUrgency = getDeadlineUrgency(m.date);
+                              return (
+                                <div key={mi} className="flex items-center justify-between text-sm">
+                                  <span className="text-muted-foreground">{m.label}</span>
+                                  <span className="font-medium flex items-center gap-1.5">
+                                    {formatDeadline(m.date)}
+                                    {mUrgency && (
+                                      <span className={cn("text-[10px]", mUrgency.className.split(" ")[0])}>
+                                        ({mUrgency.label})
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Scope */}
+                      <div>
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5">Scope</p>
+                        <p className="text-sm text-muted-foreground leading-relaxed">{rfp.scope}</p>
+                      </div>
+
+                      {/* AI Reasoning */}
+                      {rfp.reasoning && (
+                        <div>
+                          <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5">Why This Matches</p>
+                          <p className="text-sm text-muted-foreground leading-relaxed italic">{rfp.reasoning}</p>
+                        </div>
+                      )}
+
+                      {/* Source link */}
+                      {rfp.sourceUrl ? (
+                        <a
+                          href={rfp.sourceUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className={cn(
+                            "inline-flex items-center gap-1.5 text-sm transition-colors",
+                            rfp.urlConfidence === "verified"
+                              ? "text-emerald-600 dark:text-emerald-400 hover:text-emerald-700"
+                              : rfp.urlConfidence === "trusted_domain"
+                              ? "text-cyan-600 dark:text-cyan-400 hover:text-cyan-700"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          {rfp.urlConfidence === "verified" ? "View RFP (verified)" :
+                           rfp.urlConfidence === "trusted_domain" ? `View on ${rfp.portalName || "portal"}` :
+                           "View source (unverified)"}
+                        </a>
+                      ) : rfp.portalSearchUrl ? (
+                        <a
+                          href={rfp.portalSearchUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          <Search className="h-3.5 w-3.5" />
+                          Search on {rfp.portalName || "portal"}
+                        </a>
+                      ) : null}
+
+                      {/* Action buttons */}
+                      <div className="flex items-center gap-2 pt-2 border-t">
+                        {isIgnored ? (
+                          <Button
+                            variant="outline"
+                            onClick={() => { handleUndoIgnore(rfp); setSelectedRfp(null); }}
+                            className="gap-1.5"
+                          >
+                            <Undo2 className="h-3.5 w-3.5" />
+                            Undo Ignore
+                          </Button>
+                        ) : matched ? (
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                              <FolderKanban className="h-4 w-4" />
+                              {matched.status === "submitted" ? "Submitted" :
+                               matched.responseStatus ? getResponseStage(matched.responseStatus).label :
+                               "In Pipeline"}
+                            </span>
+                          </div>
+                        ) : (
+                          <>
+                            <Button
+                              disabled={saving === rfp.title}
+                              onClick={() => { handleSave(rfp); setSelectedRfp(null); }}
+                              className="gap-1.5"
+                            >
+                              {saving === rfp.title ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Bookmark className="h-3.5 w-3.5" />
+                              )}
+                              Save to Pipeline
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              disabled={saving === rfp.title}
+                              onClick={() => { handleIgnore(rfp); setSelectedRfp(null); }}
+                              className="gap-1.5 text-muted-foreground"
+                            >
+                              <EyeOff className="h-3.5 w-3.5" />
+                              Ignore
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </DialogContent>
+          </Dialog>
         </>
       )}
 
