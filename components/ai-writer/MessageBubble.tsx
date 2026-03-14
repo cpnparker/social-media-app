@@ -416,11 +416,22 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
 
   let html = text;
 
-  // Code blocks (extract before escaping & to avoid double-escape)
+  // Code blocks — two modes:
+  // 1. With a language tag (```python, ```js, etc.) → actual code, escape HTML
+  // 2. Without a language tag (```) → draft content (social post, caption, email)
+  //    Render as a styled content card with formatting preserved.
   html = html.replace(
     /```(\w*)\n?([\s\S]*?)```/g,
-    (_m, lang, code) =>
-      `<pre class="ai-code-block"><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`
+    (_m, lang, code) => {
+      const trimmed = code.replace(/\n$/, "");
+      if (lang) {
+        // Real code block — escape and render as <pre>
+        return `<pre class="ai-code-block"><code>${escapeHtml(trimmed)}</code></pre>`;
+      }
+      // Draft content card — preserve formatting so hashtags, [Embed], etc. get styled.
+      // We use a sentinel class and process inline formatting later (after the main pipeline).
+      return `<div class="ai-content-card">${trimmed}</div>`;
+    }
   );
 
   // Inline code (before other inline formatting)
@@ -529,6 +540,16 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
   // Strip newlines inside wrapped lists so paragraph splitter can never break them
   html = html.replace(/<ul class="ai-ul">[\s\S]*?<\/ul>/g, (m) => m.replace(/\n+/g, ""));
   html = html.replace(/<ol class="ai-ol">[\s\S]*?<\/ol>/g, (m) => m.replace(/\n+/g, ""));
+
+  // Content cards: convert internal newlines to <br/> so the card stays as one block.
+  // Double newlines become a spacer; single newlines become line breaks.
+  html = html.replace(
+    /<div class="ai-content-card">([\s\S]*?)<\/div>/g,
+    (_m, inner) => {
+      const formatted = inner.trim().replace(/\n\n+/g, '<div class="ai-card-spacer"></div>').replace(/\n/g, "<br/>");
+      return `<div class="ai-content-card">${formatted}</div>`;
+    }
+  );
 
   // Paragraphs
   html = html

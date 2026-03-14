@@ -193,6 +193,21 @@
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
 
+/* Content cards — draft posts, captions, emails rendered from language-less code fences */
+.ai-response .ai-content-card {
+  background: hsl(var(--muted)/0.4);
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.75rem;
+  padding: 1.25rem 1.5rem;
+  margin: 0.875rem 0;
+  line-height: 1.7;
+  font-size: 0.9375rem;
+}
+.ai-response .ai-content-card .ai-card-spacer {
+  display: block;
+  height: 0.75rem;
+}
+
 /* Tables */
 .ai-response .ai-table-wrap {
   margin: 0.75rem 0;
