@@ -4,6 +4,7 @@ import { put } from "@vercel/blob";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 import crypto from "crypto";
+import { auth } from "@/lib/auth";
 
 // Route segment config
 export const maxDuration = 60;
@@ -16,6 +17,11 @@ const ALLOWED_TYPES = [
   "video/mp4",
   "video/quicktime",
   "video/webm",
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "text/plain",
+  "text/csv",
+  "text/markdown",
 ];
 
 // POST /api/media/upload
@@ -23,6 +29,11 @@ const ALLOWED_TYPES = [
 // 1. Client-side Vercel Blob upload (handleUpload token generation) — for production
 // 2. Direct formData upload — for local dev fallback
 export async function POST(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const contentType = req.headers.get("content-type") || "";
 
@@ -37,7 +48,7 @@ export async function POST(req: NextRequest) {
           // Validate and configure the upload
           return {
             allowedContentTypes: ALLOWED_TYPES,
-            maximumSizeInBytes: 200 * 1024 * 1024, // 200MB
+            maximumSizeInBytes: 50 * 1024 * 1024, // 50MB for docs, images; videos handled separately
             addRandomSuffix: true,
           };
         },
@@ -69,8 +80,8 @@ export async function POST(req: NextRequest) {
     }
 
     const isVideo = file.type.startsWith("video/");
-    const maxSize = isVideo ? 200 * 1024 * 1024 : 20 * 1024 * 1024;
-    const maxLabel = isVideo ? "200MB" : "20MB";
+    const maxSize = isVideo ? 200 * 1024 * 1024 : 50 * 1024 * 1024;
+    const maxLabel = isVideo ? "200MB" : "50MB";
     if (file.size > maxSize) {
       return NextResponse.json(
         {
@@ -80,15 +91,37 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Use Vercel Blob server-side for small files
+    // Use Vercel Blob server-side
     if (process.env.BLOB_READ_WRITE_TOKEN) {
-      const blob = await put(file.name, file, {
-        access: "public",
-        addRandomSuffix: true,
-      });
+      // Try private access first (requires a private blob store).
+      // Falls back to public if the store doesn't support private yet.
+      let blob;
+      let isPrivate = false;
+      try {
+        blob = await put(file.name, file, {
+          access: "private",
+          addRandomSuffix: true,
+        });
+        isPrivate = true;
+      } catch (privateErr: any) {
+        console.warn(
+          "[Media Upload] Private blob upload failed, falling back to public. " +
+          "Configure a private blob store in Vercel dashboard to enable private uploads. " +
+          "Error:", privateErr?.message
+        );
+        blob = await put(file.name, file, {
+          access: "public",
+          addRandomSuffix: true,
+        });
+      }
+
+      // Private: return proxy URL (auth-gated). Public: return direct URL.
+      const url = isPrivate
+        ? `/api/media/file?path=${encodeURIComponent(blob.pathname)}`
+        : blob.url;
 
       return NextResponse.json({
-        url: blob.url,
+        url,
         pathname: blob.pathname,
         contentType: file.type,
         size: file.size,

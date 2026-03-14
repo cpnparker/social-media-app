@@ -1,7 +1,7 @@
 import NextAuth from "next-auth";
-import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
 import { supabase } from "./supabase";
+import { intelligenceDb } from "./supabase-intelligence";
 
 // Share auth cookies across all *.thecontentengine.com subdomains
 const isProduction = process.env.NODE_ENV === "production";
@@ -49,37 +49,6 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         },
       },
     }),
-    Credentials({
-      name: "Email",
-      credentials: {
-        email: { label: "Email", type: "email" },
-        password: { label: "Password", type: "password" },
-      },
-      async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) return null;
-
-        const { data: user } = await supabase
-          .from("users")
-          .select("id_user, email_user, name_user, role_user")
-          .eq("email_user", credentials.email as string)
-          .is("date_deleted", null)
-          .single();
-
-        if (!user) return null;
-
-        // Note: hashed_password column doesn't exist yet in Supabase.
-        // For now, allow credentials login by matching email only (password check skipped).
-        // TODO: Add hashed_password column to users table and re-enable bcrypt check.
-
-        return {
-          id: String(user.id_user),
-          email: user.email_user,
-          name: user.name_user,
-          image: null,
-          role: user.role_user || "none",
-        };
-      },
-    }),
   ],
   session: { strategy: "jwt" },
   pages: {
@@ -87,6 +56,19 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     newUser: "/register",
   },
   callbacks: {
+    // Ensure post-login redirects stay on the correct subdomain
+    async redirect({ url, baseUrl }) {
+      // Relative URLs — keep as-is (browser resolves against current origin)
+      if (url.startsWith("/")) return `${baseUrl}${url}`;
+      // Allow any *.thecontentengine.com subdomain
+      try {
+        const parsed = new URL(url);
+        if (parsed.hostname.endsWith("thecontentengine.com")) return url;
+      } catch {}
+      // Same-origin fallback
+      if (url.startsWith(baseUrl)) return url;
+      return baseUrl;
+    },
     async signIn({ user, account }) {
       if (account?.provider === "google" && user.email) {
         try {
@@ -103,15 +85,90 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           }
 
           // Auto-create user record if they don't exist yet
+          let userId: number | null = existingUser?.id_user ?? null;
           if (!existingUser && !error) {
-            const { error: insertErr } = await supabase.from("users").insert({
-              email_user: user.email,
-              name_user: user.name || user.email.split("@")[0],
-              date_created: new Date().toISOString(),
-              role_user: "none",
-            });
+            const { data: newUser, error: insertErr } = await supabase
+              .from("users")
+              .insert({
+                email_user: user.email,
+                name_user: user.name || user.email.split("@")[0],
+                date_created: new Date().toISOString(),
+                role_user: "none",
+              })
+              .select("id_user")
+              .single();
             if (insertErr) {
               console.error("signIn auto-create error:", insertErr.message);
+            } else if (newUser) {
+              userId = newUser.id_user;
+            }
+          }
+
+          // Auto-add to workspace if not already a member
+          if (userId) {
+            try {
+              const { data: ws } = await intelligenceDb
+                .from("workspaces")
+                .select("id")
+                .limit(1)
+                .single();
+
+              if (ws) {
+                const { data: existingMember } = await intelligenceDb
+                  .from("workspace_members")
+                  .select("id, role")
+                  .eq("workspace_id", ws.id)
+                  .eq("user_id", userId)
+                  .limit(1)
+                  .single();
+
+                if (!existingMember) {
+                  // New user — add as viewer with no access
+                  await intelligenceDb.from("workspace_members").insert({
+                    workspace_id: ws.id,
+                    user_id: userId,
+                    role: "viewer",
+                    joined_at: new Date().toISOString(),
+                  });
+                  await intelligenceDb.from("users_access").insert({
+                    id_workspace: ws.id,
+                    user_target: userId,
+                    flag_access_engine: 0,
+                    flag_access_enginegpt: 0,
+                    flag_access_operations: 0,
+                    flag_access_admin: 0,
+                    flag_access_meetingbrain: 0,
+                  });
+                } else {
+                  // Existing member — ensure users_access row exists
+                  const { data: existingAccess } = await intelligenceDb
+                    .from("users_access")
+                    .select("id_access")
+                    .eq("id_workspace", ws.id)
+                    .eq("user_target", userId)
+                    .limit(1)
+                    .single();
+
+                  if (!existingAccess) {
+                    // Back-fill: admins/owners get full access, others get none
+                    const isPrivileged =
+                      existingMember.role === "owner" ||
+                      existingMember.role === "admin";
+                    const flag = isPrivileged ? 1 : 0;
+                    await intelligenceDb.from("users_access").insert({
+                      id_workspace: ws.id,
+                      user_target: userId,
+                      flag_access_engine: flag,
+                      flag_access_enginegpt: flag,
+                      flag_access_operations: flag,
+                      flag_access_admin: flag,
+                      flag_access_meetingbrain: flag,
+                    });
+                  }
+                }
+              }
+            } catch (wsErr) {
+              console.error("signIn workspace auto-add error:", wsErr);
             }
           }
         } catch (err) {
@@ -143,7 +200,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           console.error("jwt callback error:", err);
         }
       }
-      // For credentials provider, carry role from the user object
+      // Carry role from user object on initial sign-in
       if (user) {
         token.role = (user as any).role || token.role || "none";
       }
