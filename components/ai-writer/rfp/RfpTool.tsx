@@ -193,9 +193,31 @@ interface SavedOppInfo {
    Helpers
    ──────────────────────────────────────────────── */
 
+/** Parse dates flexibly — handles YYYY-MM-DD, "April 15, 2026", DD/MM/YYYY, etc. */
+function parseDate(dateStr: string | null): Date | null {
+  if (!dateStr) return null;
+  // Try native Date first (handles ISO and most English formats)
+  let d = new Date(dateStr);
+  if (!isNaN(d.getTime())) return d;
+  // DD/MM/YYYY or DD-MM-YYYY
+  const dmy = dateStr.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (dmy) {
+    d = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));
+    if (!isNaN(d.getTime())) return d;
+  }
+  // Quarter format: Q1 2026 → Jan 1
+  const q = dateStr.match(/Q(\d)\s+(\d{4})/i);
+  if (q) {
+    const month = (Number(q[1]) - 1) * 3;
+    return new Date(Number(q[2]), month, 1);
+  }
+  return null;
+}
+
 function getDeadlineUrgency(deadline: string | null) {
   if (!deadline) return null;
-  const deadlineDate = new Date(deadline);
+  const deadlineDate = parseDate(deadline);
+  if (!deadlineDate) return null;
   const now = new Date();
   const diffDays = Math.ceil((deadlineDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
   if (diffDays < 0) return { label: "Overdue", className: "text-red-700 bg-red-100 dark:bg-red-900/30 dark:text-red-400" };
@@ -229,9 +251,17 @@ function getResponseStage(status: string) {
 
 function formatDeadline(dateStr: string | null): string {
   if (!dateStr) return "No deadline";
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return dateStr;
+  const d = parseDate(dateStr);
+  if (!d) return dateStr; // Return raw string if unparseable
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+/** Normalise a date string to ISO format for the API, or return null */
+function toISODate(dateStr: string | null): string | null {
+  if (!dateStr) return null;
+  const d = parseDate(dateStr);
+  if (!d) return null;
+  return d.toISOString();
 }
 
 function extractDomain(url: string | null): string | null {
@@ -2568,11 +2598,17 @@ function DiscoverPanel({
     }
   };
 
-  const handleSave = async (rfp: DiscoveredRfp) => {
-    if (!workspaceId) return;
+  const handleSave = async (rfp: DiscoveredRfp): Promise<boolean> => {
+    if (!workspaceId) return false;
     setSaving(rfp.title);
 
     try {
+      // Normalise milestone dates to ISO for the DB
+      const normMilestones = (rfp.milestones || []).map((m) => ({
+        ...m,
+        date: toISODate(m.date) || m.date,
+      }));
+
       const res = await fetch("/api/rfp/opportunities", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2580,8 +2616,8 @@ function DiscoverPanel({
           workspaceId,
           title: rfp.title,
           organisationName: rfp.organisation,
-          deadline: rfp.deadline,
-          milestones: rfp.milestones || [],
+          deadline: toISODate(rfp.deadline),
+          milestones: normMilestones,
           scope: rfp.scope,
           sectors: rfp.sectors,
           region: rfp.region,
@@ -2611,10 +2647,17 @@ function DiscoverPanel({
             onClick: () => onSaved?.(),
           },
         });
+        return true;
+      } else {
+        const errData = await res.json().catch(() => ({ error: "Unknown error" }));
+        console.error("Save failed:", res.status, errData);
+        toast.error(`Failed to save: ${errData.error || res.statusText}`);
+        return false;
       }
     } catch (err) {
       console.error("Save failed:", err);
       toast.error("Failed to save RFP");
+      return false;
     } finally {
       setSaving(null);
     }
@@ -3101,23 +3144,32 @@ function DiscoverPanel({
 
                   {/* Row 2: Key details */}
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground mb-2">
-                    {rfp.deadline && (
-                      <span className="inline-flex items-center gap-1">
-                        <Calendar className="h-3 w-3" />
-                        {formatDeadline(rfp.deadline)}
-                        {urgency && (
-                          <span className={cn(
-                            "text-[10px] font-medium ml-0.5",
-                            urgency.className.split(" ")[0]
-                          )}>
-                            ({urgency.label})
-                          </span>
-                        )}
-                      </span>
-                    )}
-                    {rfp.milestones.length > 0 && !rfp.deadline && (
-                      <span className="inline-flex items-center gap-1">
-                        <Calendar className="h-3 w-3" />
+                    {/* Deadline */}
+                    <span className="inline-flex items-center gap-1">
+                      <Calendar className="h-3 w-3" />
+                      {rfp.deadline ? (
+                        <>
+                          {formatDeadline(rfp.deadline)}
+                          {urgency && (
+                            <span className={cn(
+                              "text-[10px] font-medium ml-0.5",
+                              urgency.className.split(" ")[0]
+                            )}>
+                              ({urgency.label})
+                            </span>
+                          )}
+                        </>
+                      ) : rfp.milestones.length > 0 ? (
+                        <>
+                          {rfp.milestones[0].label}: {formatDeadline(rfp.milestones[0].date)}
+                        </>
+                      ) : (
+                        <span className="italic">Deadline TBD</span>
+                      )}
+                    </span>
+                    {/* Show first milestone alongside deadline if both exist */}
+                    {rfp.deadline && rfp.milestones.length > 0 && (
+                      <span className="inline-flex items-center gap-1 text-muted-foreground/70">
                         {rfp.milestones[0].label}: {formatDeadline(rfp.milestones[0].date)}
                       </span>
                     )}
@@ -3143,21 +3195,33 @@ function DiscoverPanel({
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       {rfp.sourceUrl ? (
-                        <span className={cn(
-                          "inline-flex items-center gap-1 text-xs",
-                          rfp.urlConfidence === "verified"
-                            ? "text-emerald-600 dark:text-emerald-400"
-                            : rfp.urlConfidence === "trusted_domain"
-                            ? "text-cyan-600 dark:text-cyan-400"
-                            : "text-muted-foreground"
-                        )}>
+                        <span
+                          role="link"
+                          tabIndex={0}
+                          onClick={(e) => { e.stopPropagation(); window.open(rfp.sourceUrl!, "_blank", "noopener"); }}
+                          onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); window.open(rfp.sourceUrl!, "_blank", "noopener"); } }}
+                          className={cn(
+                            "inline-flex items-center gap-1 text-xs cursor-pointer hover:underline",
+                            rfp.urlConfidence === "verified"
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : rfp.urlConfidence === "trusted_domain"
+                              ? "text-cyan-600 dark:text-cyan-400"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
+                        >
                           <ExternalLink className="h-3 w-3" />
-                          {rfp.portalName || extractDomain(rfp.sourceUrl) || "Source"}
+                          {rfp.portalName || extractDomain(rfp.sourceUrl) || "View Source"}
                         </span>
                       ) : rfp.portalSearchUrl ? (
-                        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                        <span
+                          role="link"
+                          tabIndex={0}
+                          onClick={(e) => { e.stopPropagation(); window.open(rfp.portalSearchUrl!, "_blank", "noopener"); }}
+                          onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); window.open(rfp.portalSearchUrl!, "_blank", "noopener"); } }}
+                          className="inline-flex items-center gap-1 text-xs text-muted-foreground cursor-pointer hover:underline hover:text-foreground"
+                        >
                           <Search className="h-3 w-3" />
-                          {rfp.portalName || "Portal"}
+                          {rfp.portalName || "Search Portal"}
                         </span>
                       ) : null}
                       {rfp.sectors.length > 0 && (
@@ -3209,22 +3273,26 @@ function DiscoverPanel({
                     <div className="space-y-5 mt-2">
                       {/* Key details grid */}
                       <div className="grid grid-cols-2 gap-3">
-                        {rfp.deadline && (
-                          <div className="space-y-0.5">
-                            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Deadline</p>
-                            <p className="text-sm font-medium flex items-center gap-1.5">
-                              {formatDeadline(rfp.deadline)}
-                              {urgency && (
-                                <span className={cn(
-                                  "text-[10px] font-medium px-1.5 py-0.5 rounded-full",
-                                  urgency.className
-                                )}>
-                                  {urgency.label}
-                                </span>
-                              )}
-                            </p>
-                          </div>
-                        )}
+                        <div className="space-y-0.5">
+                          <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Deadline</p>
+                          <p className="text-sm font-medium flex items-center gap-1.5">
+                            {rfp.deadline ? (
+                              <>
+                                {formatDeadline(rfp.deadline)}
+                                {urgency && (
+                                  <span className={cn(
+                                    "text-[10px] font-medium px-1.5 py-0.5 rounded-full",
+                                    urgency.className
+                                  )}>
+                                    {urgency.label}
+                                  </span>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-muted-foreground italic font-normal">TBD</span>
+                            )}
+                          </p>
+                        </div>
                         {rfp.estimatedValue && (
                           <div className="space-y-0.5">
                             <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Estimated Budget</p>
@@ -3323,7 +3391,7 @@ function DiscoverPanel({
                         {isIgnored ? (
                           <Button
                             variant="outline"
-                            onClick={() => { handleUndoIgnore(rfp); setSelectedRfp(null); }}
+                            onClick={async () => { await handleUndoIgnore(rfp); setSelectedRfp(null); }}
                             className="gap-1.5"
                           >
                             <Undo2 className="h-3.5 w-3.5" />
@@ -3342,7 +3410,10 @@ function DiscoverPanel({
                           <>
                             <Button
                               disabled={saving === rfp.title}
-                              onClick={() => { handleSave(rfp); setSelectedRfp(null); }}
+                              onClick={async () => {
+                                const ok = await handleSave(rfp);
+                                if (ok) setSelectedRfp(null);
+                              }}
                               className="gap-1.5"
                             >
                               {saving === rfp.title ? (
@@ -3350,12 +3421,15 @@ function DiscoverPanel({
                               ) : (
                                 <Bookmark className="h-3.5 w-3.5" />
                               )}
-                              Save to Pipeline
+                              {saving === rfp.title ? "Saving…" : "Save to Pipeline"}
                             </Button>
                             <Button
                               variant="ghost"
                               disabled={saving === rfp.title}
-                              onClick={() => { handleIgnore(rfp); setSelectedRfp(null); }}
+                              onClick={async () => {
+                                await handleIgnore(rfp);
+                                setSelectedRfp(null);
+                              }}
                               className="gap-1.5 text-muted-foreground"
                             >
                               <EyeOff className="h-3.5 w-3.5" />
