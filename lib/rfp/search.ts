@@ -295,10 +295,80 @@ function parseOpportunities(
   opportunities: DiscoveredRfp[];
   searchSummary: string;
 } {
+  console.log(`[RFP Search] parseOpportunities called, textContent length: ${textContent.length}, realUrls: ${realUrls.length}, provider: ${provider}`);
+
+  if (!textContent || textContent.length < 10) {
+    console.error("[RFP Search] textContent is empty or too short");
+    return {
+      opportunities: [],
+      searchSummary: "Search completed but no response was received from the AI.",
+    };
+  }
+
   try {
-    const jsonMatch = textContent.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
+    // Try to extract JSON — handle markdown code fences
+    let jsonStr: string | null = null;
+
+    // First try: look for ```json ... ``` blocks
+    const codeBlockMatch = textContent.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+    if (codeBlockMatch) {
+      jsonStr = codeBlockMatch[1];
+    }
+
+    // Second try: plain JSON object
+    if (!jsonStr) {
+      const jsonMatch = textContent.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        jsonStr = jsonMatch[0];
+      }
+    }
+
+    if (!jsonStr) {
+      console.error("[RFP Search] No JSON found in AI response. First 500 chars:", textContent.substring(0, 500));
+      return {
+        opportunities: [],
+        searchSummary: "Search completed but no structured results could be extracted.",
+      };
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch (jsonErr) {
+      console.warn("[RFP Search] JSON parse failed, attempting repair...");
+      // Try to repair truncated JSON by closing open arrays/objects
+      try {
+        // Find the last complete opportunity object
+        const lastCompleteObj = jsonStr.lastIndexOf("},");
+        if (lastCompleteObj > 0) {
+          const repaired = jsonStr.substring(0, lastCompleteObj + 1) + ']}';
+          parsed = JSON.parse(repaired);
+          console.log("[RFP Search] JSON repair succeeded — recovered partial results");
+        } else {
+          throw jsonErr;
+        }
+      } catch {
+        console.error("[RFP Search] JSON repair also failed:", jsonErr);
+        console.error("[RFP Search] JSON string (first 500 chars):", jsonStr.substring(0, 500));
+        console.error("[RFP Search] JSON string (last 200 chars):", jsonStr.substring(jsonStr.length - 200));
+        return {
+          opportunities: [],
+          searchSummary: "Search completed but the response format was invalid.",
+        };
+      }
+    }
+
+    if (!parsed.opportunities || !Array.isArray(parsed.opportunities)) {
+      console.error("[RFP Search] Parsed JSON has no 'opportunities' array. Keys:", Object.keys(parsed));
+      return {
+        opportunities: [],
+        searchSummary: parsed.searchSummary || parsed.search_summary || "Search completed but no opportunities were found.",
+      };
+    }
+
+    console.log(`[RFP Search] Found ${parsed.opportunities.length} raw opportunities in JSON`);
+
+    if (true) { // scoped block replaces old `if (jsonMatch)`
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
@@ -393,14 +463,12 @@ function parseOpportunities(
       };
     }
   } catch (err) {
-    console.error("[RFP Search] Failed to parse response:", err);
+    console.error("[RFP Search] Unexpected error in parseOpportunities:", err);
+    return {
+      opportunities: [],
+      searchSummary: "Search completed but an error occurred while processing results.",
+    };
   }
-
-  return {
-    opportunities: [],
-    searchSummary:
-      "Search completed but no structured results could be extracted.",
-  };
 }
 
 async function searchWithAnthropic(params: {
@@ -414,7 +482,7 @@ async function searchWithAnthropic(params: {
 
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 4096,
+    max_tokens: 16000,
     system: systemPrompt,
     messages: [
       {
@@ -450,6 +518,17 @@ async function searchWithAnthropic(params: {
         }
       }
     }
+  }
+
+  console.log(`[RFP Search] Anthropic response: ${response.content.length} blocks, textContent: ${textContent.length} chars, ${realUrls.length} real URLs, stop_reason: ${response.stop_reason}`);
+  console.log(`[RFP Search] Anthropic response block types: ${response.content.map((b: any) => b.type).join(", ")}`);
+
+  if (response.stop_reason === "max_tokens") {
+    console.warn("[RFP Search] Response was truncated by max_tokens! JSON may be incomplete.");
+  }
+
+  if (!textContent) {
+    console.error("[RFP Search] No text content from Anthropic. Full response content types:", JSON.stringify(response.content.map((b: any) => ({ type: b.type })), null, 2));
   }
 
   const parsed = parseOpportunities(textContent, realUrls, "anthropic");
@@ -520,6 +599,14 @@ async function searchWithGrok(params: {
       if (citation.url) {
         realUrls.push({ url: citation.url, title: citation.title || "" });
       }
+    }
+  }
+
+  console.log(`[RFP Search] Grok response: textContent ${textContent.length} chars, ${realUrls.length} citations`);
+  if (!textContent) {
+    console.error("[RFP Search] No text content from Grok. data keys:", Object.keys(data));
+    if (data.output) {
+      console.error("[RFP Search] Grok output types:", JSON.stringify(data.output.map((o: any) => ({ type: o.type, contentTypes: o.content?.map((c: any) => c.type) })), null, 2));
     }
   }
 

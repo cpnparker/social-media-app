@@ -2500,8 +2500,10 @@ function DiscoverPanel({
           regions: searchConfig.regions.length > 0 ? searchConfig.regions : undefined,
         }),
       });
-      if (!res.ok) throw new Error("Search failed");
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Search failed (${res.status})`);
+      }
       const opps = data.opportunities || [];
       const summary = data.searchSummary || "";
       setResults(opps);
@@ -2541,10 +2543,12 @@ function DiscoverPanel({
       } catch (saveErr) {
         console.error("Failed to save search results:", saveErr);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Discovery search failed:", err);
-      setSearchSummary("Search failed. Please try again.");
+      const msg = err?.message || "Unknown error";
+      setSearchSummary(`Search failed: ${msg}`);
       setHasSearched(true);
+      toast.error(`Search failed: ${msg}`);
     } finally {
       setSearching(false);
     }
