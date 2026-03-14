@@ -8,6 +8,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { TCE_COMPANY_PROFILE } from "./company-profile";
+import { verifyOpportunityUrls, type UrlConfidence } from "./url-verification";
 
 function getAnthropicClient() {
   return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
@@ -33,6 +34,11 @@ export interface DiscoveredRfp {
   region: string | null;
   estimatedValue: string | null;
   milestones: DeadlineMilestone[];
+  // URL verification metadata (optional — populated after verification)
+  urlConfidence?: UrlConfidence;
+  portalName?: string | null;
+  portalSearchUrl?: string | null;
+  crossReferenced?: boolean;
 }
 
 export interface SearchResult {
@@ -180,15 +186,22 @@ interface SearchSourceUrl {
   title: string;
 }
 
+interface MatchResult {
+  url: string | null;
+  /** True if the URL was found in or matched against actual search API results */
+  crossReferenced: boolean;
+}
+
 /**
  * Try to find the best real URL for an opportunity by matching against
- * actual search result URLs. Falls back to the AI-provided URL if valid.
+ * actual search result URLs. Falls back to the AI-provided URL if valid,
+ * but flags it as not cross-referenced.
  */
 function matchRealUrl(
   opp: { title: string; organisation: string; sourceUrl: string | null },
   realUrls: SearchSourceUrl[]
-): string | null {
-  if (realUrls.length === 0) return opp.sourceUrl;
+): MatchResult {
+  if (realUrls.length === 0) return { url: opp.sourceUrl, crossReferenced: false };
 
   const oppTitleLower = opp.title.toLowerCase();
   const oppOrgLower = opp.organisation.toLowerCase();
@@ -198,7 +211,7 @@ function matchRealUrl(
     try {
       const aiDomain = new URL(opp.sourceUrl).hostname;
       const exactMatch = realUrls.find((r) => r.url === opp.sourceUrl);
-      if (exactMatch) return opp.sourceUrl; // AI URL is a real result — keep it
+      if (exactMatch) return { url: opp.sourceUrl, crossReferenced: true };
 
       // Same domain match (AI may have the wrong path but right domain)
       const domainMatch = realUrls.find((r) => {
@@ -208,7 +221,7 @@ function matchRealUrl(
           return false;
         }
       });
-      if (domainMatch) return domainMatch.url; // Use the real URL from same domain
+      if (domainMatch) return { url: domainMatch.url, crossReferenced: true };
     } catch {
       // AI URL was invalid, fall through to title matching
     }
@@ -220,25 +233,25 @@ function matchRealUrl(
     return (
       resultTitle.includes(oppTitleLower) ||
       oppTitleLower.includes(resultTitle) ||
-      // Check if significant words overlap
       oppTitleLower.split(/\s+/).filter((w) => w.length > 4 && resultTitle.includes(w)).length >= 3
     );
   });
-  if (titleMatch) return titleMatch.url;
+  if (titleMatch) return { url: titleMatch.url, crossReferenced: true };
 
   // 3. Organisation-based matching
   if (oppOrgLower.length > 3) {
     const orgMatch = realUrls.find((r) => r.title.toLowerCase().includes(oppOrgLower));
-    if (orgMatch) return orgMatch.url;
+    if (orgMatch) return { url: orgMatch.url, crossReferenced: true };
   }
 
-  // 4. Fall back to AI URL if it passed validation
-  return opp.sourceUrl;
+  // 4. Fall back to AI URL — NOT cross-referenced
+  return { url: opp.sourceUrl, crossReferenced: false };
 }
 
 function parseOpportunities(
   textContent: string,
-  realUrls: SearchSourceUrl[] = []
+  realUrls: SearchSourceUrl[] = [],
+  provider: SearchProvider = "anthropic"
 ): {
   opportunities: DiscoveredRfp[];
   searchSummary: string;
@@ -270,10 +283,18 @@ function parseOpportunities(
         const organisation = opp.organisation || opp.organization || "Unknown";
 
         // Cross-reference against real search result URLs
-        const resolvedUrl = matchRealUrl(
+        const matchResult = matchRealUrl(
           { title, organisation, sourceUrl: validatedUrl },
           realUrls
         );
+
+        // Grok-specific: if URL was NOT cross-referenced against real citation
+        // URLs, null it out entirely. Grok fabricates URLs at a much higher rate
+        // than Anthropic — better to show a portal fallback than a dead link.
+        let finalUrl = matchResult.url;
+        if (provider === "grok" && !matchResult.crossReferenced) {
+          finalUrl = null;
+        }
 
         // Extract milestones
         const milestones: DeadlineMilestone[] = (opp.milestones || [])
@@ -290,12 +311,13 @@ function parseOpportunities(
           deadline: opp.deadline || null,
           scope: opp.scope || "",
           relevanceScore: opp.relevanceScore || 0,
-          sourceUrl: resolvedUrl,
+          sourceUrl: finalUrl,
           reasoning: opp.reasoning || "",
           sectors: opp.sectors || [],
           region: opp.region || null,
           estimatedValue: opp.estimatedValue || opp.estimated_value || null,
           milestones,
+          crossReferenced: matchResult.crossReferenced,
         };
       });
 
@@ -387,7 +409,13 @@ async function searchWithAnthropic(params: {
     }
   }
 
-  return { ...parseOpportunities(textContent, realUrls), provider: "anthropic" };
+  const parsed = parseOpportunities(textContent, realUrls, "anthropic");
+
+  // Verify URLs: HEAD-check + trusted portal matching + confidence scoring
+  console.log(`[RFP Search] Verifying ${parsed.opportunities.length} URLs (Anthropic)...`);
+  const verified = await verifyOpportunityUrls(parsed.opportunities);
+
+  return { opportunities: verified, searchSummary: parsed.searchSummary, provider: "anthropic" as SearchProvider };
 }
 
 async function searchWithGrok(params: {
@@ -452,7 +480,13 @@ async function searchWithGrok(params: {
     }
   }
 
-  return { ...parseOpportunities(textContent, realUrls), provider: "grok" };
+  const parsed = parseOpportunities(textContent, realUrls, "grok");
+
+  // Verify URLs: HEAD-check + trusted portal matching + confidence scoring
+  console.log(`[RFP Search] Verifying ${parsed.opportunities.length} URLs (Grok)...`);
+  const verified = await verifyOpportunityUrls(parsed.opportunities);
+
+  return { opportunities: verified, searchSummary: parsed.searchSummary, provider: "grok" as SearchProvider };
 }
 
 /**

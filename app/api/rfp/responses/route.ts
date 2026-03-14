@@ -62,6 +62,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
+    // Prevent duplicate responses for the same opportunity
+    if (opportunityId) {
+      const { data: existing } = await intelligenceDb
+        .from("rfp_responses")
+        .select("id_response")
+        .eq("id_opportunity", opportunityId)
+        .eq("id_workspace", workspaceId)
+        .maybeSingle();
+
+      if (existing) {
+        return NextResponse.json(
+          { error: "Response already exists for this opportunity", existingResponseId: existing.id_response },
+          { status: 409 }
+        );
+      }
+    }
+
     // If linked to an opportunity, generate tailored sections based on RFP
     let sections;
     if (opportunityId) {

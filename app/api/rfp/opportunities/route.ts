@@ -107,6 +107,10 @@ export async function POST(req: NextRequest) {
         config_deadlines: milestones || [],
         type_status: status || "shortlisted",
         user_created: userId,
+        // URL verification metadata
+        type_url_confidence: body.urlConfidence || null,
+        name_portal: body.portalName || null,
+        url_portal_search: body.portalSearchUrl || null,
       })
       .select()
       .single();

@@ -48,7 +48,12 @@ import {
   UserPlus,
   Copy,
   Shield,
+  EyeOff,
+  Undo2,
+  Bell,
 } from "lucide-react";
+import { SavedSearchesPanel } from "./SavedSearches";
+import { NotificationSettingsDialog } from "./NotificationSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -112,6 +117,10 @@ interface RfpOpportunity {
   document_notes: string | null;
   date_created: string;
   date_updated: string | null;
+  // URL verification metadata
+  type_url_confidence?: UrlConfidence | null;
+  name_portal?: string | null;
+  url_portal_search?: string | null;
 }
 
 interface RfpResponse {
@@ -133,7 +142,7 @@ interface WorkspaceMember {
   email: string;
 }
 
-type PipelineStatus = "discovered" | "shortlisted" | "in_progress" | "submitted" | "archived";
+type PipelineStatus = "discovered" | "shortlisted" | "in_progress" | "submitted" | "archived" | "ignored";
 
 const PIPELINE_COLUMNS: { id: PipelineStatus; label: string; dotColor: string }[] = [
   { id: "discovered", label: "Discovered", dotColor: "bg-slate-400" },
@@ -152,6 +161,8 @@ const RESPONSE_STAGES: { id: ResponseStageStatus; label: string; dotColor: strin
   { id: "ready_to_submit", label: "Ready to Submit", dotColor: "bg-emerald-500" },
 ];
 
+type UrlConfidence = "verified" | "trusted_domain" | "unverified" | "failed" | "none";
+
 interface DiscoveredRfp {
   title: string;
   organisation: string;
@@ -164,9 +175,19 @@ interface DiscoveredRfp {
   sectors: string[];
   region: string | null;
   estimatedValue: string | null;
+  // URL verification metadata
+  urlConfidence?: UrlConfidence;
+  portalName?: string | null;
+  portalSearchUrl?: string | null;
 }
 
 type SearchProvider = "anthropic" | "grok";
+
+interface SavedOppInfo {
+  oppId: string;
+  status: PipelineStatus;
+  responseStatus?: string;
+}
 
 /* ────────────────────────────────────────────────
    Helpers
@@ -224,6 +245,21 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
+function formatRelativeTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return "just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHrs = Math.floor(diffMins / 60);
+  if (diffHrs < 24) return `${diffHrs}h ago`;
+  const diffDays = Math.floor(diffHrs / 24);
+  if (diffDays === 1) return "yesterday";
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 /* ────────────────────────────────────────────────
    Search Config (localStorage persistence)
    ──────────────────────────────────────────────── */
@@ -279,7 +315,10 @@ export function RfpTool() {
   const [discoverSummary, setDiscoverSummary] = useState("");
   const [discoverQuery, setDiscoverQuery] = useState("");
   const [discoverHasSearched, setDiscoverHasSearched] = useState(false);
-  const [discoverSavedTitles, setDiscoverSavedTitles] = useState<Set<string>>(new Set());
+  const [discoverSavedOpps, setDiscoverSavedOpps] = useState<Map<string, SavedOppInfo>>(new Map());
+
+  // Notification settings dialog
+  const [showNotifications, setShowNotifications] = useState(false);
 
   // Response editor state — when set, shows editor instead of tabs
   const [editorResponseId, setEditorResponseId] = useState<string | null>(null);
@@ -330,18 +369,32 @@ export function RfpTool() {
     <div className="flex flex-col h-full bg-background">
       {/* Header — hidden when in editor */}
       {!editorResponseId && (
-        <div className="border-b px-6 py-4 shrink-0">
+        <div className="border-b px-4 py-3 sm:px-6 sm:py-4 shrink-0">
           <div className="flex items-center gap-3 mb-4">
             <div className="h-9 w-9 rounded-lg bg-cyan-500/10 flex items-center justify-center">
               <FileSearch className="h-5 w-5 text-cyan-600" />
             </div>
-            <div>
+            <div className="flex-1">
               <h1 className="text-lg font-semibold">RFP Tool</h1>
               <p className="text-xs text-muted-foreground">
                 Find, manage, and respond to RFPs
               </p>
             </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0 shrink-0"
+              onClick={() => setShowNotifications(true)}
+            >
+              <Bell className="h-4 w-4" />
+            </Button>
           </div>
+
+          <NotificationSettingsDialog
+            open={showNotifications}
+            onOpenChange={setShowNotifications}
+            workspaceId={workspaceId}
+          />
 
           {/* Tab bar */}
           <div className="flex gap-1 bg-muted/50 rounded-lg p-1">
@@ -352,14 +405,15 @@ export function RfpTool() {
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
                   className={cn(
-                    "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors flex-1 justify-center",
+                    "flex items-center gap-1.5 px-2 py-2 sm:px-4 sm:gap-2 rounded-md text-xs sm:text-sm font-medium transition-colors flex-1 justify-center",
                     activeTab === tab.id
                       ? "bg-background text-foreground shadow-sm"
                       : "text-muted-foreground hover:text-foreground"
                   )}
                 >
                   <Icon className="h-4 w-4" />
-                  {tab.label}
+                  <span className="hidden sm:inline">{tab.label}</span>
+                  <span className="sm:hidden">{tab.id === "discover" ? "Discover" : tab.id === "library" ? "Library" : "Pipeline"}</span>
                 </button>
               );
             })}
@@ -390,8 +444,8 @@ export function RfpTool() {
                 setQuery={setDiscoverQuery}
                 hasSearched={discoverHasSearched}
                 setHasSearched={setDiscoverHasSearched}
-                savedTitles={discoverSavedTitles}
-                setSavedTitles={setDiscoverSavedTitles}
+                savedOpps={discoverSavedOpps}
+                setSavedOpps={setDiscoverSavedOpps}
               />
             )}
             {activeTab === "library" && <DocumentLibrary workspaceId={workspaceId} />}
@@ -424,6 +478,7 @@ function PipelineView({
   const [loading, setLoading] = useState(true);
   const [selectedOpp, setSelectedOpp] = useState<RfpOpportunity | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [showIgnored, setShowIgnored] = useState(false);
 
   const fetchPipelineData = useCallback(async () => {
     if (!workspaceId) return;
@@ -478,6 +533,15 @@ function PipelineView({
 
   const handleStartResponse = async (opp: RfpOpportunity) => {
     if (!workspaceId) return;
+
+    // Prevent duplicate responses
+    const existingResponse = responseByOppId.get(opp.id_opportunity);
+    if (existingResponse) {
+      toast.info("A response already exists for this opportunity");
+      onOpenEditor(existingResponse.id_response, opp);
+      return;
+    }
+
     try {
       // 1. Create linked response
       const res = await fetch("/api/rfp/responses", {
@@ -557,16 +621,18 @@ function PipelineView({
     );
   }
 
-  const visibleColumns = PIPELINE_COLUMNS.filter(
-    (c) => showArchived || c.id !== "archived"
-  );
+  // Build visible columns based on toggles
+  const allColumns = [
+    ...PIPELINE_COLUMNS,
+    ...(showIgnored ? [{ id: "ignored" as PipelineStatus, label: "Ignored", dotColor: "bg-gray-400" }] : []),
+    ...(showArchived ? [{ id: "archived" as PipelineStatus, label: "Archived", dotColor: "bg-gray-400" }] : []),
+  ];
 
-  // Include archived column when toggled
-  const allColumns = showArchived
-    ? [...PIPELINE_COLUMNS, { id: "archived" as PipelineStatus, label: "Archived", dotColor: "bg-gray-400" }]
-    : PIPELINE_COLUMNS;
+  const ignoredCount = opportunities.filter((o) => o.type_status === "ignored").length;
+  const archivedCount = opportunities.filter((o) => o.type_status === "archived").length;
 
-  if (opportunities.length === 0) {
+  const activeOpps = opportunities.filter((o) => o.type_status !== "ignored");
+  if (activeOpps.length === 0 && ignoredCount === 0) {
     return (
       <div className="flex flex-col items-center py-16">
         <div className="h-16 w-16 rounded-2xl bg-cyan-500/10 flex items-center justify-center mb-4">
@@ -581,27 +647,41 @@ function PipelineView({
   }
 
   return (
-    <div className="p-6">
+    <div className="p-4 sm:p-6">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-base font-semibold">Pipeline</h2>
-        <button
-          onClick={() => setShowArchived(!showArchived)}
-          className={cn(
-            "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors",
-            showArchived ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted"
+        <div className="flex items-center gap-2">
+          {ignoredCount > 0 && (
+            <button
+              onClick={() => setShowIgnored(!showIgnored)}
+              className={cn(
+                "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors",
+                showIgnored ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted"
+              )}
+            >
+              <EyeOff className="h-3 w-3" />
+              {showIgnored ? "Hide Ignored" : `Ignored (${ignoredCount})`}
+            </button>
           )}
-        >
-          <Archive className="h-3 w-3" />
-          {showArchived ? "Hide Archived" : "Show Archived"}
-        </button>
+          <button
+            onClick={() => setShowArchived(!showArchived)}
+            className={cn(
+              "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors",
+              showArchived ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted"
+            )}
+          >
+            <Archive className="h-3 w-3" />
+            {showArchived ? "Hide Archived" : archivedCount > 0 ? `Archived (${archivedCount})` : "Show Archived"}
+          </button>
+        </div>
       </div>
 
       {/* Kanban columns */}
-      <div className="flex gap-4 overflow-x-auto pb-4">
+      <div className="flex flex-col gap-6 lg:flex-row lg:gap-4 lg:overflow-x-auto pb-4">
         {allColumns.map((col) => {
           const columnOpps = opportunities.filter((o) => o.type_status === col.id);
           return (
-            <div key={col.id} className="flex-1 min-w-[260px] max-w-[340px]">
+            <div key={col.id} className="flex-1 lg:min-w-[260px] lg:max-w-[340px]">
               <div className="flex items-center gap-2 mb-3 px-1">
                 <div className={cn("h-2 w-2 rounded-full", col.dotColor)} />
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -701,7 +781,7 @@ function PipelineView({
 
       {/* Opportunity detail dialog */}
       <Dialog open={!!selectedOpp} onOpenChange={(open) => !open && setSelectedOpp(null)}>
-        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto p-4 sm:p-6">
           <DialogHeader>
             <DialogTitle className="text-base pr-6">{selectedOpp?.title}</DialogTitle>
           </DialogHeader>
@@ -765,7 +845,7 @@ function OpportunityDetail({
   return (
     <div className="space-y-4">
       {/* Metadata */}
-      <div className="grid grid-cols-2 gap-3 text-sm">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
         <div>
           <p className="text-xs text-muted-foreground mb-0.5">Organisation</p>
           <p className="font-medium">{opportunity.organisation_name}</p>
@@ -853,8 +933,8 @@ function OpportunityDetail({
         </div>
       )}
 
-      {/* Source URL with safety notice */}
-      {opportunity.url_source && (
+      {/* Source URL with confidence-aware display */}
+      {opportunity.url_source ? (
         <div className="space-y-1.5">
           <a
             href={opportunity.url_source}
@@ -865,12 +945,41 @@ function OpportunityDetail({
             <ExternalLink className="h-3 w-3" />
             View Source ({extractDomain(opportunity.url_source)})
           </a>
-          <p className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
-            <Shield className="h-2.5 w-2.5" />
-            AI-generated link — verify before trusting
-          </p>
+          {opportunity.type_url_confidence === "verified" ? (
+            <p className="text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+              <CheckCircle2 className="h-2.5 w-2.5" />
+              Verified link
+            </p>
+          ) : opportunity.type_url_confidence === "trusted_domain" ? (
+            <p className="text-[10px] text-cyan-600 dark:text-cyan-400 flex items-center gap-1">
+              <Shield className="h-2.5 w-2.5" />
+              Trusted portal{opportunity.name_portal ? ` — ${opportunity.name_portal}` : ""}
+            </p>
+          ) : opportunity.type_url_confidence === "unverified" ? (
+            <p className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
+              <AlertCircle className="h-2.5 w-2.5" />
+              Unverified — check manually
+            </p>
+          ) : (
+            <p className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
+              <Shield className="h-2.5 w-2.5" />
+              AI-generated link — verify before trusting
+            </p>
+          )}
         </div>
-      )}
+      ) : opportunity.url_portal_search ? (
+        <div>
+          <a
+            href={opportunity.url_portal_search}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-cyan-600 hover:underline"
+          >
+            <Search className="h-3 w-3" />
+            Search {opportunity.name_portal || "portal"}
+          </a>
+        </div>
+      ) : null}
 
       {/* Notes */}
       <div>
@@ -937,7 +1046,7 @@ function OpportunityDetail({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
-            {[...PIPELINE_COLUMNS, { id: "archived" as PipelineStatus, label: "Archived", dotColor: "bg-gray-400" }].map(
+            {[...PIPELINE_COLUMNS, { id: "ignored" as PipelineStatus, label: "Ignored", dotColor: "bg-gray-400" }, { id: "archived" as PipelineStatus, label: "Archived", dotColor: "bg-gray-400" }].map(
               (col) => (
                 <DropdownMenuItem
                   key={col.id}
@@ -989,6 +1098,7 @@ function ResponseEditor({
   const [suggestingThemes, setSuggestingThemes] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showBrief, setShowBrief] = useState(false);
+  const [showMobileSections, setShowMobileSections] = useState(false);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
 
   // Fetch workspace members for assignment
@@ -1219,13 +1329,13 @@ function ResponseEditor({
 
         return (
           <div className="border-b px-4 py-3 bg-cyan-50/50 dark:bg-cyan-900/10 shrink-0">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex-1 min-w-0">
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">
                   Responding to opportunity
                 </p>
                 <p className="text-sm font-medium truncate">{opportunity.title}</p>
-                <div className="flex items-center gap-3 mt-0.5">
+                <div className="flex items-center gap-2 sm:gap-3 mt-0.5 flex-wrap">
                   <span className="text-xs text-muted-foreground">{opportunity.organisation_name}</span>
                   {opportunity.date_deadline && (
                     <span className={cn("text-xs", urgency?.className || "text-muted-foreground")}>
@@ -1234,7 +1344,7 @@ function ResponseEditor({
                   )}
                 </div>
               </div>
-              <div className="flex items-center gap-3 shrink-0 ml-4">
+              <div className="flex items-center gap-2 sm:gap-3 shrink-0 sm:ml-4">
                 {/* Progress summary */}
                 <div className="flex items-center gap-3 text-xs text-muted-foreground">
                   <div className="flex items-center gap-1.5">
@@ -1262,8 +1372,17 @@ function ResponseEditor({
 
       {/* Response stage stepper */}
       {response && (
-        <div className="border-b px-4 py-2 shrink-0 flex items-center justify-between bg-background">
-          <div className="flex items-center gap-1">
+        <div className="border-b px-3 py-2 sm:px-4 shrink-0 flex items-center justify-between bg-background gap-2">
+          {/* Mobile: current stage only */}
+          <div className="flex items-center gap-1.5 lg:hidden">
+            <div className={cn("h-2 w-2 rounded-full", getResponseStage(response.type_status).dotColor)} />
+            <span className="text-xs font-medium">{getResponseStage(response.type_status).label}</span>
+            <span className="text-xs text-muted-foreground">
+              ({RESPONSE_STAGES.findIndex(s => s.id === response.type_status) + 1}/{RESPONSE_STAGES.length})
+            </span>
+          </div>
+          {/* Desktop: full stepper */}
+          <div className="hidden lg:flex items-center gap-1">
             {RESPONSE_STAGES.map((stage, i) => {
               const currentStage = getResponseStage(response.type_status);
               const currentIndex = RESPONSE_STAGES.findIndex((s) => s.id === currentStage.id);
@@ -1303,7 +1422,7 @@ function ResponseEditor({
               );
             })}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 sm:gap-2">
             {/* User assignment */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1313,12 +1432,12 @@ function ResponseEditor({
                       <div className="h-4 w-4 rounded-full bg-foreground/10 flex items-center justify-center text-[8px] font-bold">
                         {getInitials(response.name_user_assigned)}
                       </div>
-                      {response.name_user_assigned}
+                      <span className="hidden sm:inline">{response.name_user_assigned}</span>
                     </>
                   ) : (
                     <>
                       <UserPlus className="h-3 w-3" />
-                      Assign
+                      <span className="hidden sm:inline">Assign</span>
                     </>
                   )}
                 </Button>
@@ -1365,7 +1484,7 @@ function ResponseEditor({
               }}
             >
               <Copy className="h-3 w-3" />
-              Copy Link
+              <span className="hidden sm:inline">Copy Link</span>
             </Button>
 
             {/* Stage dropdown */}
@@ -1396,16 +1515,36 @@ function ResponseEditor({
         </div>
       )}
 
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 relative">
+        {/* Mobile backdrop for section sidebar */}
+        {showMobileSections && (
+          <div
+            className="fixed inset-0 z-30 bg-black/40 lg:hidden"
+            onClick={() => setShowMobileSections(false)}
+          />
+        )}
+
         {/* Section sidebar */}
-        <div className="w-64 border-r shrink-0 flex flex-col">
+        <div className={cn(
+          "w-64 border-r shrink-0 flex flex-col bg-background",
+          "fixed inset-y-0 left-0 z-40 transition-transform duration-200 lg:static lg:translate-x-0",
+          showMobileSections ? "translate-x-0" : "-translate-x-full"
+        )}>
           <div className="p-3 border-b">
-            <button
-              onClick={onBack}
-              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 mb-2"
-            >
-              &larr; Back to Pipeline
-            </button>
+            <div className="flex items-center justify-between">
+              <button
+                onClick={onBack}
+                className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 py-1"
+              >
+                &larr; Back to Pipeline
+              </button>
+              <button
+                onClick={() => setShowMobileSections(false)}
+                className="lg:hidden p-1 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
             <h3 className="text-sm font-semibold truncate">{response.title}</h3>
           </div>
 
@@ -1437,9 +1576,9 @@ function ResponseEditor({
             {response.document_sections.map((section: any) => (
               <button
                 key={section.id}
-                onClick={() => setActiveSection(section.id)}
+                onClick={() => { setActiveSection(section.id); setShowMobileSections(false); }}
                 className={cn(
-                  "w-full text-left flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs transition-colors mb-0.5",
+                  "w-full text-left flex items-center gap-2 px-2.5 py-2.5 sm:py-2 rounded-lg text-xs transition-colors mb-0.5",
                   activeSection === section.id
                     ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300 font-medium"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground",
@@ -1503,6 +1642,14 @@ function ResponseEditor({
 
         {/* Section editor */}
         <div className="flex-1 min-w-0 flex flex-col">
+          {/* Mobile sections toggle */}
+          <button
+            onClick={() => setShowMobileSections(true)}
+            className="lg:hidden flex items-center gap-1.5 px-3 py-2.5 mx-4 mt-3 mb-1 rounded-lg border text-xs font-medium text-muted-foreground hover:bg-muted"
+          >
+            <FileText className="h-3.5 w-3.5" />
+            Sections ({response.document_sections.length})
+          </button>
           {currentSection ? (
             <>
               <div className="p-4 border-b shrink-0 flex items-center justify-between">
@@ -1578,7 +1725,10 @@ function ResponseEditor({
 
         {/* RFP Brief panel — right sidebar */}
         {showBrief && opportunity && (
-          <div className="w-80 border-l shrink-0 flex flex-col bg-muted/20 overflow-y-auto">
+          <div className={cn(
+            "border-l shrink-0 flex flex-col overflow-y-auto",
+            "fixed inset-0 z-40 w-full bg-background lg:static lg:w-80 lg:z-auto lg:bg-muted/20"
+          )}>
             <div className="p-4 border-b sticky top-0 bg-muted/20 backdrop-blur-sm z-10">
               <div className="flex items-center justify-between mb-1">
                 <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
@@ -1753,8 +1903,8 @@ function ResponseEditor({
                 </div>
               )}
 
-              {/* Source URL with safety notice */}
-              {opportunity.url_source && (
+              {/* Source URL with confidence-aware display */}
+              {opportunity.url_source ? (
                 <div>
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">
                     Original RFP
@@ -1769,12 +1919,45 @@ function ResponseEditor({
                     {extractDomain(opportunity.url_source) || "View Source"}
                     <ExternalLink className="h-3 w-3" />
                   </a>
-                  <p className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1 mt-1">
-                    <Shield className="h-2.5 w-2.5" />
-                    AI-generated link — verify before trusting
-                  </p>
+                  {opportunity.type_url_confidence === "verified" ? (
+                    <p className="text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1 mt-1">
+                      <CheckCircle2 className="h-2.5 w-2.5" />
+                      Verified link
+                    </p>
+                  ) : opportunity.type_url_confidence === "trusted_domain" ? (
+                    <p className="text-[10px] text-cyan-600 dark:text-cyan-400 flex items-center gap-1 mt-1">
+                      <Shield className="h-2.5 w-2.5" />
+                      Trusted portal{opportunity.name_portal ? ` — ${opportunity.name_portal}` : ""}
+                    </p>
+                  ) : opportunity.type_url_confidence === "unverified" ? (
+                    <p className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1 mt-1">
+                      <AlertCircle className="h-2.5 w-2.5" />
+                      Unverified — check manually
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1 mt-1">
+                      <Shield className="h-2.5 w-2.5" />
+                      AI-generated link — verify before trusting
+                    </p>
+                  )}
                 </div>
-              )}
+              ) : opportunity.url_portal_search ? (
+                <div>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">
+                    Original RFP
+                  </p>
+                  <a
+                    href={opportunity.url_portal_search}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-cyan-600 hover:underline"
+                  >
+                    <Search className="h-3.5 w-3.5" />
+                    Search {opportunity.name_portal || "portal"}
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
+              ) : null}
             </div>
           </div>
         )}
@@ -1922,14 +2105,14 @@ function DocumentLibrary({ workspaceId }: { workspaceId?: string }) {
   }
 
   return (
-    <div className="p-6">
+    <div className="p-4 sm:p-6">
       {/* Upload zone */}
       <div
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
         className={cn(
-          "border-2 border-dashed rounded-xl p-8 text-center transition-colors mb-6",
+          "border-2 border-dashed rounded-xl p-5 sm:p-8 text-center transition-colors mb-4 sm:mb-6",
           dragOver
             ? "border-violet-500 bg-violet-500/5"
             : "border-muted-foreground/20 hover:border-muted-foreground/40"
@@ -1971,7 +2154,7 @@ function DocumentLibrary({ workspaceId }: { workspaceId?: string }) {
       </div>
 
       {/* Filter tabs */}
-      <div className="flex items-center gap-2 mb-4">
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
         {["all", "previous_response", "target_rfp", "supporting"].map((type) => (
           <button
             key={type}
@@ -2034,7 +2217,7 @@ function DocumentLibrary({ workspaceId }: { workspaceId?: string }) {
                     e.stopPropagation();
                     handleDelete(doc.id_document);
                   }}
-                  className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-900/20 text-muted-foreground hover:text-red-500 transition-all"
+                  className="opacity-100 lg:opacity-0 lg:group-hover:opacity-100 p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-900/20 text-muted-foreground hover:text-red-500 transition-all"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
@@ -2051,7 +2234,7 @@ function DocumentLibrary({ workspaceId }: { workspaceId?: string }) {
 
       {/* Document detail modal */}
       <Dialog open={!!selectedDoc} onOpenChange={(open) => !open && setSelectedDoc(null)}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-lg p-4 sm:p-6">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-base">
               <File className="h-4 w-4 text-violet-500" />
@@ -2060,7 +2243,7 @@ function DocumentLibrary({ workspaceId }: { workspaceId?: string }) {
           </DialogHeader>
           {selectedDoc && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-3 text-sm">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                 <div>
                   <p className="text-xs text-muted-foreground mb-0.5">Type</p>
                   <p className="font-medium">{docTypeLabel(selectedDoc.type_document)}</p>
@@ -2131,8 +2314,8 @@ function DiscoverPanel({
   setQuery,
   hasSearched,
   setHasSearched,
-  savedTitles,
-  setSavedTitles,
+  savedOpps,
+  setSavedOpps,
 }: {
   workspaceId?: string;
   onSaved?: () => void;
@@ -2144,10 +2327,10 @@ function DiscoverPanel({
   setQuery: (q: string) => void;
   hasSearched: boolean;
   setHasSearched: (h: boolean) => void;
-  savedTitles: Set<string>;
-  setSavedTitles: React.Dispatch<React.SetStateAction<Set<string>>>;
+  savedOpps: Map<string, SavedOppInfo>;
+  setSavedOpps: React.Dispatch<React.SetStateAction<Map<string, SavedOppInfo>>>;
 }) {
-  const [provider, setProvider] = useState<SearchProvider>("grok");
+  const [provider, setProvider] = useState<SearchProvider>("anthropic");
   const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -2158,6 +2341,84 @@ function DiscoverPanel({
   );
   const [newSource, setNewSource] = useState("");
   const [newKeyword, setNewKeyword] = useState("");
+  const [searchMeta, setSearchMeta] = useState<{
+    userName: string;
+    date: string;
+    provider: string;
+    resultCount: number;
+    query: string | null;
+  } | null>(null);
+
+  // Fetch pipeline data + load latest saved search on mount
+  useEffect(() => {
+    if (!workspaceId) return;
+    (async () => {
+      try {
+        const [oppRes, respRes, searchRes] = await Promise.all([
+          fetch(`/api/rfp/opportunities?workspaceId=${workspaceId}`),
+          fetch(`/api/rfp/responses?workspaceId=${workspaceId}`),
+          fetch(`/api/rfp/searches?workspaceId=${workspaceId}&limit=1`),
+        ]);
+        const oppData = await oppRes.json();
+        const respData = await respRes.json();
+        const searchData = await searchRes.json();
+
+        const responseByOpp = new Map<string, string>();
+        for (const r of respData.responses || []) {
+          if (r.id_opportunity) responseByOpp.set(r.id_opportunity, r.type_status);
+        }
+
+        const map = new Map<string, SavedOppInfo>();
+        for (const opp of oppData.opportunities || []) {
+          const key = opp.title.toLowerCase().trim();
+          map.set(key, {
+            oppId: opp.id_opportunity,
+            status: opp.type_status,
+            responseStatus: responseByOpp.get(opp.id_opportunity),
+          });
+          // Also index by source URL for more reliable matching
+          if (opp.url_source) {
+            map.set(opp.url_source, {
+              oppId: opp.id_opportunity,
+              status: opp.type_status,
+              responseStatus: responseByOpp.get(opp.id_opportunity),
+            });
+          }
+        }
+        setSavedOpps(map);
+
+        // Load the latest saved search if we haven't searched yet
+        const savedSearches = searchData.searches || [];
+        if (savedSearches.length > 0 && !hasSearched) {
+          const latest = savedSearches[0];
+          setResults(latest.results || []);
+          setSearchSummary(latest.document_summary || "");
+          setQuery(latest.query || "");
+          setHasSearched(true);
+          setSearchMeta({
+            userName: latest.name_user_created || "Unknown",
+            date: latest.date_created,
+            provider: latest.type_provider || "anthropic",
+            resultCount: latest.units_result_count || (latest.results?.length ?? 0),
+            query: latest.query || null,
+          });
+        }
+      } catch (err) {
+        console.error("Failed to fetch pipeline data for discover:", err);
+      }
+    })();
+  }, [workspaceId, setSavedOpps]);
+
+  // Helper to find matching saved opp for a discovery result
+  const getMatchedOpp = useCallback((rfp: DiscoveredRfp): SavedOppInfo | undefined => {
+    // Try URL match first (more reliable)
+    if (rfp.sourceUrl) {
+      const urlMatch = savedOpps.get(rfp.sourceUrl);
+      if (urlMatch) return urlMatch;
+    }
+    // Fall back to title match
+    return savedOpps.get(rfp.title.toLowerCase().trim());
+  }, [savedOpps]);
 
   useEffect(() => {
     if (workspaceId) {
@@ -2194,9 +2455,45 @@ function DiscoverPanel({
       });
       if (!res.ok) throw new Error("Search failed");
       const data = await res.json();
-      setResults(data.opportunities || []);
-      setSearchSummary(data.searchSummary || "");
+      const opps = data.opportunities || [];
+      const summary = data.searchSummary || "";
+      setResults(opps);
+      setSearchSummary(summary);
       setHasSearched(true);
+
+      // Save search results to database for sharing across users
+      try {
+        const saveRes = await fetch("/api/rfp/searches", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            workspaceId,
+            query: combinedQuery || null,
+            config: {
+              sources: searchConfig.sources,
+              sectors: searchConfig.sectors,
+              regions: searchConfig.regions,
+              keywords: searchConfig.keywords,
+            },
+            provider,
+            results: opps,
+            summary,
+          }),
+        });
+        if (saveRes.ok) {
+          const saved = await saveRes.json();
+          setSearchMeta({
+            userName: saved.search?.name_user_created || "You",
+            date: saved.search?.date_created || new Date().toISOString(),
+            provider,
+            resultCount: opps.length,
+            query: combinedQuery || null,
+          });
+          toast.success("Search results saved");
+        }
+      } catch (saveErr) {
+        console.error("Failed to save search results:", saveErr);
+      }
     } catch (err) {
       console.error("Discovery search failed:", err);
       setSearchSummary("Search failed. Please try again.");
@@ -2227,12 +2524,22 @@ function DiscoverPanel({
           sourceUrl: rfp.sourceUrl,
           relevanceScore: rfp.relevanceScore,
           aiReasoning: rfp.reasoning,
+          urlConfidence: rfp.urlConfidence || null,
+          portalName: rfp.portalName || null,
+          portalSearchUrl: rfp.portalSearchUrl || null,
           status: "shortlisted",
         }),
       });
 
       if (res.ok) {
-        setSavedTitles((prev) => new Set(prev).add(rfp.title));
+        const data = await res.json();
+        const oppId = data.opportunity?.id_opportunity;
+        setSavedOpps((prev) => {
+          const next = new Map(prev);
+          next.set(rfp.title.toLowerCase().trim(), { oppId, status: "shortlisted" });
+          if (rfp.sourceUrl) next.set(rfp.sourceUrl, { oppId, status: "shortlisted" });
+          return next;
+        });
         toast.success("RFP saved to Pipeline", {
           action: {
             label: "View Pipeline",
@@ -2248,6 +2555,71 @@ function DiscoverPanel({
     }
   };
 
+  const handleIgnore = async (rfp: DiscoveredRfp) => {
+    if (!workspaceId) return;
+    setSaving(rfp.title);
+
+    try {
+      const res = await fetch("/api/rfp/opportunities", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          title: rfp.title,
+          organisationName: rfp.organisation,
+          deadline: rfp.deadline,
+          milestones: rfp.milestones || [],
+          scope: rfp.scope,
+          sectors: rfp.sectors,
+          region: rfp.region,
+          estimatedValue: rfp.estimatedValue,
+          sourceUrl: rfp.sourceUrl,
+          relevanceScore: rfp.relevanceScore,
+          aiReasoning: rfp.reasoning,
+          urlConfidence: rfp.urlConfidence || null,
+          portalName: rfp.portalName || null,
+          portalSearchUrl: rfp.portalSearchUrl || null,
+          status: "ignored",
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const oppId = data.opportunity?.id_opportunity;
+        setSavedOpps((prev) => {
+          const next = new Map(prev);
+          next.set(rfp.title.toLowerCase().trim(), { oppId, status: "ignored" });
+          if (rfp.sourceUrl) next.set(rfp.sourceUrl, { oppId, status: "ignored" });
+          return next;
+        });
+        toast("RFP ignored");
+      }
+    } catch (err) {
+      console.error("Ignore failed:", err);
+      toast.error("Failed to ignore RFP");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const handleUndoIgnore = async (rfp: DiscoveredRfp) => {
+    const matched = getMatchedOpp(rfp);
+    if (!matched) return;
+
+    try {
+      await fetch(`/api/rfp/opportunities/${matched.oppId}`, { method: "DELETE" });
+      setSavedOpps((prev) => {
+        const next = new Map(prev);
+        next.delete(rfp.title.toLowerCase().trim());
+        if (rfp.sourceUrl) next.delete(rfp.sourceUrl);
+        return next;
+      });
+      toast("RFP unignored");
+    } catch (err) {
+      console.error("Undo ignore failed:", err);
+    }
+  };
+
   if (!workspaceId) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
@@ -2257,7 +2629,7 @@ function DiscoverPanel({
   }
 
   return (
-    <div className="p-6">
+    <div className="p-4 sm:p-6">
       {/* Search controls */}
       <div className="max-w-2xl mx-auto mb-6">
         <div className="flex gap-2 mb-3">
@@ -2540,6 +2912,28 @@ function DiscoverPanel({
         </div>
       </div>
 
+      {/* Saved Searches */}
+      <div className="max-w-2xl mx-auto mb-4">
+        <SavedSearchesPanel
+          workspaceId={workspaceId!}
+          currentConfig={searchConfig}
+          currentQuery={query}
+          currentProvider={provider}
+          onLoadSearch={(config, q, p) => {
+            setSearchConfig(config);
+            if (workspaceId) saveSearchConfig(workspaceId, config);
+            setQuery(q);
+            setProvider(p);
+          }}
+          onRunResult={(opps, summary) => {
+            setResults(opps);
+            setSearchSummary(summary);
+            setHasSearched(true);
+            setSearchMeta(null);
+          }}
+        />
+      </div>
+
       {/* Search status */}
       {searching && (
         <div className="flex flex-col items-center py-16 gap-3">
@@ -2554,20 +2948,83 @@ function DiscoverPanel({
       {/* Results */}
       {!searching && hasSearched && (
         <>
+          {/* Search metadata bar */}
+          {searchMeta && (
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-muted/40 border rounded-lg px-3 py-2.5 sm:px-4 mb-4 max-w-3xl mx-auto">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Clock className="h-3.5 w-3.5 shrink-0" />
+                <span>
+                  Searched by <span className="font-medium text-foreground">{searchMeta.userName}</span>
+                  {" "}{formatRelativeTime(searchMeta.date)}
+                  {" "}using {searchMeta.provider === "anthropic" ? "Claude" : "Grok"}
+                  {" · "}{searchMeta.resultCount} result{searchMeta.resultCount !== 1 ? "s" : ""}
+                </span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs h-7 gap-1.5 text-muted-foreground hover:text-foreground"
+                onClick={() => {
+                  setResults([]);
+                  setSearchSummary("");
+                  setHasSearched(false);
+                  setSearchMeta(null);
+                  setQuery("");
+                }}
+              >
+                <Search className="h-3 w-3" />
+                New Search
+              </Button>
+            </div>
+          )}
+
           {searchSummary && (
             <div className="bg-muted/50 rounded-lg p-3 mb-4 text-sm text-muted-foreground max-w-2xl mx-auto">
               {searchSummary}
             </div>
           )}
 
-          {results.length > 0 && (
-            <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2 mb-4 max-w-3xl mx-auto">
-              <Shield className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-              <p className="text-xs text-amber-700 dark:text-amber-300">
-                Links are AI-generated and may be inaccurate — verify before trusting.
-              </p>
-            </div>
-          )}
+          {results.length > 0 && (() => {
+            const verified = results.filter(r => r.urlConfidence === "verified" || r.urlConfidence === "trusted_domain").length;
+            const unverified = results.filter(r => r.urlConfidence === "unverified").length;
+            const noLink = results.filter(r => !r.sourceUrl || r.urlConfidence === "failed" || r.urlConfidence === "none").length;
+            const hasConfidenceData = results.some(r => r.urlConfidence);
+
+            if (!hasConfidenceData) {
+              // Legacy fallback — no confidence data yet
+              return (
+                <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2 mb-4 max-w-3xl mx-auto">
+                  <Shield className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <p className="text-xs text-amber-700 dark:text-amber-300">
+                    Links are AI-generated and may be inaccurate — verify before trusting.
+                  </p>
+                </div>
+              );
+            }
+
+            return (
+              <div className="flex items-center gap-3 flex-wrap bg-muted/50 border rounded-lg px-3 py-2 mb-4 max-w-3xl mx-auto">
+                {verified > 0 && (
+                  <span className="inline-flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
+                    <CheckCircle2 className="h-3 w-3" />
+                    {verified} verified
+                  </span>
+                )}
+                {unverified > 0 && (
+                  <span className="inline-flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">
+                    <AlertCircle className="h-3 w-3" />
+                    {unverified} unverified
+                  </span>
+                )}
+                {noLink > 0 && (
+                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                    <Search className="h-3 w-3" />
+                    {noLink} portal search only
+                  </span>
+                )}
+              </div>
+            );
+          })()}
 
           {results.length === 0 ? (
             <div className="text-center py-12 text-sm text-muted-foreground">
@@ -2575,12 +3032,18 @@ function DiscoverPanel({
             </div>
           ) : (
             <div className="space-y-3 max-w-3xl mx-auto">
-              {results.map((rfp, i) => (
+              {results.map((rfp, i) => {
+                const matched = getMatchedOpp(rfp);
+                const isIgnored = matched?.status === "ignored";
+                return (
                 <div
                   key={i}
-                  className="border rounded-xl p-5 hover:border-cyan-300 transition-colors"
+                  className={cn(
+                    "border rounded-xl p-4 sm:p-5 transition-colors",
+                    isIgnored ? "opacity-50" : "hover:border-cyan-300"
+                  )}
                 >
-                  <div className="flex items-start justify-between gap-4">
+                  <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <h3 className="font-semibold text-sm">{rfp.title}</h3>
@@ -2624,38 +3087,107 @@ function DiscoverPanel({
                       <p className="text-xs text-muted-foreground italic">{rfp.reasoning}</p>
                     </div>
 
-                    <div className="flex flex-col gap-2 shrink-0">
-                      {rfp.sourceUrl && (
+                    <div className="flex flex-row sm:flex-col gap-2 shrink-0">
+                      {rfp.sourceUrl ? (
                         <a
                           href={rfp.sourceUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border hover:bg-muted transition-colors max-w-[180px]"
+                          className={cn(
+                            "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border transition-colors max-w-[200px]",
+                            rfp.urlConfidence === "verified"
+                              ? "border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-700 dark:text-emerald-400 dark:hover:bg-emerald-900/20"
+                              : rfp.urlConfidence === "trusted_domain"
+                              ? "border-cyan-300 text-cyan-700 hover:bg-cyan-50 dark:border-cyan-700 dark:text-cyan-400 dark:hover:bg-cyan-900/20"
+                              : "border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-900/20"
+                          )}
+                          title={
+                            rfp.urlConfidence === "verified" ? "Verified link — found in search results"
+                            : rfp.urlConfidence === "trusted_domain" ? "Trusted procurement portal"
+                            : "Unverified — check link manually"
+                          }
                         >
-                          <ExternalLink className="h-3 w-3 shrink-0" />
-                          <span className="truncate">{extractDomain(rfp.sourceUrl) || "View"}</span>
+                          {rfp.urlConfidence === "verified" ? (
+                            <CheckCircle2 className="h-3 w-3 shrink-0" />
+                          ) : rfp.urlConfidence === "trusted_domain" ? (
+                            <Shield className="h-3 w-3 shrink-0" />
+                          ) : (
+                            <AlertCircle className="h-3 w-3 shrink-0" />
+                          )}
+                          <span className="truncate">{rfp.portalName || extractDomain(rfp.sourceUrl) || "View"}</span>
+                          <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-50" />
                         </a>
-                      )}
-                      <Button
-                        size="sm"
-                        variant={savedTitles.has(rfp.title) ? "secondary" : "default"}
-                        disabled={saving === rfp.title || savedTitles.has(rfp.title)}
-                        onClick={() => handleSave(rfp)}
-                        className="gap-1.5 text-xs"
-                      >
-                        {saving === rfp.title ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : savedTitles.has(rfp.title) ? (
+                      ) : rfp.portalSearchUrl ? (
+                        <a
+                          href={rfp.portalSearchUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border border-slate-300 dark:border-slate-600 hover:bg-muted transition-colors max-w-[200px]"
+                          title={`Search for this RFP on ${rfp.portalName || "procurement portal"}`}
+                        >
+                          <Search className="h-3 w-3 shrink-0" />
+                          <span className="truncate">Search {rfp.portalName || "portal"}</span>
+                        </a>
+                      ) : null}
+
+                      {/* Status-aware action buttons */}
+                      {isIgnored ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handleUndoIgnore(rfp)}
+                          className="gap-1.5 text-xs text-muted-foreground"
+                        >
+                          <Undo2 className="h-3 w-3" />
+                          Undo
+                        </Button>
+                      ) : matched?.responseStatus ? (
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-muted">
+                          <div className={cn("h-1.5 w-1.5 rounded-full", getResponseStage(matched.responseStatus).dotColor)} />
+                          {getResponseStage(matched.responseStatus).label}
+                        </span>
+                      ) : matched?.status === "submitted" ? (
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
                           <CheckCircle2 className="h-3 w-3" />
-                        ) : (
-                          <Bookmark className="h-3 w-3" />
-                        )}
-                        {savedTitles.has(rfp.title) ? "Saved" : "Save"}
-                      </Button>
+                          Submitted
+                        </span>
+                      ) : matched ? (
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-muted text-muted-foreground">
+                          <FolderKanban className="h-3 w-3" />
+                          In Pipeline
+                        </span>
+                      ) : (
+                        <>
+                          <Button
+                            size="sm"
+                            disabled={saving === rfp.title}
+                            onClick={() => handleSave(rfp)}
+                            className="gap-1.5 text-xs"
+                          >
+                            {saving === rfp.title ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <Bookmark className="h-3 w-3" />
+                            )}
+                            Save
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={saving === rfp.title}
+                            onClick={() => handleIgnore(rfp)}
+                            className="gap-1.5 text-xs text-muted-foreground"
+                          >
+                            <EyeOff className="h-3 w-3" />
+                            Ignore
+                          </Button>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </>
