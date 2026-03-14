@@ -64,9 +64,56 @@ function buildSearchPrompt({
 
   const portalList = sources?.length
     ? sources.join(", ")
-    : "UNGM, TED (EU tenders), DevBusiness, SAM.gov, major UN agency procurement sites, World Bank procurement";
+    : null; // Use the comprehensive default list below
 
   const today = new Date().toISOString().split("T")[0];
+
+  const defaultSources = `Search across ALL of these source categories:
+
+**UN & Multilateral Procurement:**
+- UNGM (ungm.org) — the central UN procurement portal for all agencies
+- UNDP Procurement Notices (procurement-notices.undp.org)
+- UNICEF Supply Division service contracts
+- WHO, UNEP, UNESCO, FAO, WFP, UNFPA, UNHCR procurement pages
+- World Bank procurement (projects & operations)
+- UNOPS procurement opportunities
+
+**Development Banks:**
+- African Development Bank (afdb.org/procurement)
+- Asian Development Bank (adb.org tenders)
+- Inter-American Development Bank (iadb.org procurement notices)
+- European Bank for Reconstruction and Development (EBRD)
+
+**EU & European Institutions:**
+- TED / Tenders Electronic Daily (ted.europa.eu) — search CPV codes 79340000 (advertising/marketing), 79800000 (printing/publishing), 92111000 (audiovisual)
+- EU institutions eTendering portal
+- EuropeAid / DG INTPA procurement
+
+**Government Portals:**
+- SAM.gov (US federal)
+- UK Find a Tender (find-tender.service.gov.uk)
+- Canada BuyAndSell (buyandsell.gc.ca)
+- Australian Government AusTender
+
+**NGO & Humanitarian:**
+- Save the Children (savethechildren.net/tenders)
+- IFRC / Red Cross (procurement.ifrc.org)
+- Danish Refugee Council (pro.drc.ngo/resources/tenders)
+- Oxfam, CARE International, IRC, WWF procurement pages
+- Welthungerhilfe (welthungerhilfe.org/tenders)
+
+**Aggregators & Industry:**
+- Devex Funding (devex.com/funding/tenders-grants)
+- DevelopmentAid (developmentaid.org/tenders)
+- DevBusiness / dgMarket (dgmarket.com)
+- GlobalTenders (globaltenders.com)
+- RFPMart (rfpmart.com) — marketing, social media, content categories
+- TendersOnTime (tendersontime.com)
+- ReliefWeb consultancy listings (reliefweb.int/jobs — type: Consultancy)
+
+**Corporate & Private Sector:**
+- Search for corporate RFPs from Fortune 500 companies, large brands, and agencies seeking content, communications, sustainability reporting, ESG communications, and digital marketing services
+- Industry-specific searches: "content agency RFP", "communications services tender", "sustainability report content", "ESG communications RFP"`;
 
   return `You are an RFP discovery assistant for The Content Engine. Your job is to find current, open RFPs and procurement opportunities that match our company profile.
 
@@ -77,11 +124,13 @@ Today's date is ${today}.
 
 Instructions:
 1. Search for current, open RFPs and tenders that The Content Engine could respond to
-2. Search across procurement portals: ${portalList}, and general web searches
-3. Focus on content production, communications, sustainability, climate, thought leadership, and related services
+2. ${portalList ? `Search across these portals: ${portalList}, and general web searches` : defaultSources}
+3. Focus on content production, communications, sustainability, climate, thought leadership, ESG reporting, digital content, campaign development, video/multimedia production, and related services
 4. CRITICAL: Only include RFPs where the deadline (or first deadline to register interest / submit expression of interest) is AFTER ${today}. Do NOT include any RFPs whose deadlines have already passed.
 5. Only include RFPs with deadlines at least 2 weeks from now
 6. Score each opportunity 0-100 based on relevance to our profile
+7. Cast a WIDE net — search multiple portals and combine results. Aim for at least 8-12 opportunities across different source types (UN, government, NGO, corporate, etc.)
+8. Include opportunities from BOTH the international development sector AND the private/corporate sector
 
 ${sectorFilter}
 ${regionFilter}
