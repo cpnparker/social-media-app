@@ -560,15 +560,17 @@ export async function POST(
 
     // Build messages with attachments for AI
     // Context window truncation: for long conversations with a summary,
-    // use summary + last 10 messages instead of all messages to save tokens.
+    // use summary + recent messages instead of all messages to save tokens.
     // Only truncate when memory is enabled (private/shared threads + memory toggle on)
     // — team threads always get full history.
+    // Wider window (30/20) gives creative/iterative workflows enough context to
+    // reference earlier outputs (images, drafts) before truncation kicks in.
     const hasSummary = !!conversation.document_summary;
-    const shouldTruncate = memoryEnabled && history.length > 20 && hasSummary;
-    const effectiveHistory = shouldTruncate ? history.slice(-10) : history;
+    const shouldTruncate = memoryEnabled && history.length > 30 && hasSummary;
+    const effectiveHistory = shouldTruncate ? history.slice(-20) : history;
 
     if (shouldTruncate) {
-      console.log(`[Messages] Truncating context: ${history.length} messages → summary + last 10`);
+      console.log(`[Messages] Truncating context: ${history.length} messages → summary + last 20`);
     }
 
     const messages: AIMessage[] = [];

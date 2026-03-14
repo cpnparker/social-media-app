@@ -201,6 +201,14 @@ ${FORMATTING_GUIDELINES}`;
 ${FORMATTING_GUIDELINES}`;
   }
 
+  // ── Conversation continuity ──
+  prompt += `\n\n## Conversation Continuity
+- You are in a multi-turn conversation. Always maintain awareness of what you have already produced — text, images, drafts, and ideas.
+- When the user asks to refine, redo, or improve something, reference your previous output and explain what you're changing rather than starting from scratch.
+- If you generated images earlier in the conversation, they appear as ![Generated image](url) in the message history. Reference them specifically when the user asks about "the first one", "the top one", "the one you did", etc.
+- Treat follow-up requests as iterative refinements. Carry forward the context, style decisions, and constraints from earlier in the conversation.
+- Never re-ask for information the user has already provided in this conversation.`;
+
   // ── Image generation capability ──
   if (ctx.contextConfig?.imageGeneration === "on") {
     prompt += `\n\n## Image Generation

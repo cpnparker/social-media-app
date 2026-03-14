@@ -621,6 +621,10 @@ async function streamAnthropic(
             )
           );
 
+          // Persist image in fullText so it's saved to document_message in the DB.
+          // Without this, subsequent messages can't see what images were generated.
+          fullText += `\n\n![Generated image](${imageUrl})\n\n`;
+
           toolResults.push({
             type: "tool_result",
             tool_use_id: tool.id,
@@ -816,6 +820,9 @@ async function streamXAI(
               `data: ${JSON.stringify({ image_ready: { url: imageUrl, prompt } })}\n\n`
             )
           );
+
+          // Persist image in fullText so it's saved to document_message
+          fullText += `\n\n![Generated image](${imageUrl})\n\n`;
 
           openaiMessages.push({
             role: "tool",
@@ -1049,6 +1056,9 @@ async function streamGemini(
             )
           );
 
+          // Persist image in fullText so it's saved to document_message
+          fullText += `\n\n![Generated image](${imageUrl})\n\n`;
+
           geminiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
@@ -1213,6 +1223,9 @@ async function streamOpenAI(
               `data: ${JSON.stringify({ image_ready: { url: imageUrl, prompt } })}\n\n`
             )
           );
+
+          // Persist image in fullText so it's saved to document_message
+          fullText += `\n\n![Generated image](${imageUrl})\n\n`;
 
           openaiMessages.push({
             role: "tool",

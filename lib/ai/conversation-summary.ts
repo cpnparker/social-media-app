@@ -56,13 +56,16 @@ const GENERATE_PROMPT = `You are a conversation summariser for an AI content ass
 4. **Outstanding questions** or unresolved items
 5. **Action items** or next steps mentioned
 6. **Important context** that would help understand this conversation if returning to it later
+7. **Content produced** — any images generated (describe what they showed), drafts written, or creative outputs, and how the user reacted to them (approved, requested changes, rejected)
+8. **Iterative refinements** — what changed between versions and the current state of any ongoing creative work
 
 Rules:
 - Write in past tense, third-person perspective ("The user discussed...", "They decided...")
 - Be concise but comprehensive — capture the narrative arc, not just topics
 - Focus on WHAT was decided and WHY, not the back-and-forth process
 - Include any specific names, numbers, or details that are important
-- Keep to 300-500 tokens
+- When images were generated, describe their content briefly (e.g. "an infographic showing top 10 superfoods with teal/blue styling")
+- Keep to 400-600 tokens
 - Return plain text only, no markdown headers or formatting`;
 
 const UPDATE_PROMPT = `You are a conversation summariser for an AI content assistant. Below is the existing summary of a conversation, followed by new messages that have been added since the summary was last generated.
@@ -74,12 +77,14 @@ Update the summary to incorporate the new information. The updated summary shoul
 3. Update any items that were "outstanding" if they've been resolved
 4. Add new action items or next steps
 5. Maintain a coherent narrative flow
+6. Track any new content produced (images, drafts) and user feedback on them
 
 Rules:
 - Write in past tense, third-person perspective
-- Be concise but comprehensive — 300-500 tokens
+- Be concise but comprehensive — 400-600 tokens
 - Don't just append — weave new information into the existing narrative
 - If earlier conclusions were revised, reflect the final state
+- When images were generated, briefly describe what they showed and how the user responded
 - Return plain text only, no markdown headers or formatting
 
 Existing summary:
@@ -114,7 +119,7 @@ export async function generateConversationSummary(
         { role: "system", content: GENERATE_PROMPT },
         { role: "user", content: conversationText },
       ],
-      max_tokens: 600,
+      max_tokens: 800,
       temperature: 0.3,
     });
 
@@ -153,7 +158,7 @@ export async function updateConversationSummary(
         { role: "system", content: systemPrompt },
         { role: "user", content: `New messages:\n\n${newConversationText}` },
       ],
-      max_tokens: 600,
+      max_tokens: 800,
       temperature: 0.3,
     });
 
