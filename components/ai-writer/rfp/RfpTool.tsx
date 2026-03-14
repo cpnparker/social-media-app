@@ -51,6 +51,11 @@ import {
   EyeOff,
   Undo2,
   Bell,
+  LayoutDashboard,
+  TrendingUp,
+  Activity,
+  CircleDot,
+  History,
 } from "lucide-react";
 import { SavedSearchesPanel } from "./SavedSearches";
 import { NotificationSettingsDialog } from "./NotificationSettings";
@@ -74,12 +79,13 @@ import {
    Types & Constants
    ──────────────────────────────────────────────── */
 
-type Tab = "discover" | "library" | "pipeline";
+type Tab = "overview" | "discover" | "library" | "pipeline";
 
-const tabs: { id: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: "discover", label: "Discover RFPs", icon: Globe },
-  { id: "library", label: "Document Library", icon: FileText },
-  { id: "pipeline", label: "Pipeline", icon: FolderKanban },
+const tabs: { id: Tab; label: string; shortLabel: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  { id: "overview", label: "Overview", shortLabel: "Overview", icon: LayoutDashboard },
+  { id: "discover", label: "Discover RFPs", shortLabel: "Discover", icon: Globe },
+  { id: "library", label: "Document Library", shortLabel: "Library", icon: FileText },
+  { id: "pipeline", label: "Pipeline", shortLabel: "Pipeline", icon: FolderKanban },
 ];
 
 interface RfpDocument {
@@ -334,15 +340,16 @@ function saveSearchConfig(workspaceId: string, config: SearchConfig) {
 export function RfpTool() {
   const searchParams = useSearchParams();
   const tabParam = searchParams.get("tab") as Tab | null;
+  const allTabIds = tabs.map((t) => t.id);
   const [activeTab, setActiveTab] = useState<Tab>(
-    tabParam && ["discover", "library", "pipeline"].includes(tabParam) ? tabParam : "discover"
+    tabParam && allTabIds.includes(tabParam) ? tabParam : "overview"
   );
   const wsCtx = useWorkspaceSafe();
   const workspaceId = wsCtx?.selectedWorkspace?.id;
 
   // Sync tab with URL param changes
   useEffect(() => {
-    if (tabParam && ["discover", "library", "pipeline"].includes(tabParam)) {
+    if (tabParam && allTabIds.includes(tabParam)) {
       setActiveTab(tabParam);
     }
   }, [tabParam]);
@@ -450,7 +457,7 @@ export function RfpTool() {
                 >
                   <Icon className="h-4 w-4" />
                   <span className="hidden sm:inline">{tab.label}</span>
-                  <span className="sm:hidden">{tab.id === "discover" ? "Discover" : tab.id === "library" ? "Library" : "Pipeline"}</span>
+                  <span className="sm:hidden">{tab.shortLabel}</span>
                 </button>
               );
             })}
@@ -469,6 +476,13 @@ export function RfpTool() {
           />
         ) : (
           <>
+            {activeTab === "overview" && (
+              <OverviewDashboard
+                workspaceId={workspaceId}
+                onNavigate={(tab: Tab) => setActiveTab(tab)}
+                onOpenEditor={handleOpenEditor}
+              />
+            )}
             {activeTab === "discover" && (
               <DiscoverPanel
                 workspaceId={workspaceId}
@@ -495,6 +509,433 @@ export function RfpTool() {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────
+   Overview Dashboard
+   ──────────────────────────────────────────────── */
+
+interface DashboardStats {
+  pipeline: {
+    counts: Record<string, number>;
+    totalActive: number;
+    totalAll: number;
+    estimatedValue: number;
+  };
+  upcomingDeadlines: {
+    id: string;
+    title: string;
+    organisation: string;
+    deadline: string;
+    status: string;
+    value: string | null;
+  }[];
+  recentOpportunities: {
+    id: string;
+    title: string;
+    organisation: string;
+    deadline: string | null;
+    status: string;
+    value: string | null;
+    score: number | null;
+    dateAdded: string;
+    sourceUrl: string | null;
+  }[];
+  responses: {
+    active: { id: string; title: string; status: string; assignedTo: string | null; totalSections: number; completedSections: number; lastUpdated: string }[];
+    total: number;
+    items: { id: string; title: string; status: string; opportunityId: string | null; assignedTo: string | null; totalSections: number; completedSections: number; lastUpdated: string }[];
+  };
+  searches: {
+    recent: { id_search: string; query: string; type_provider: string; units_result_count: number; name_user_created: string; date_created: string }[];
+    totalCount: number;
+    savedSearches: { id: string; name: string; scheduled: boolean; schedule: string | null; lastRun: string | null; nextRun: string | null }[];
+  };
+}
+
+const PIPELINE_LABELS: Record<string, { label: string; color: string }> = {
+  discovered: { label: "Discovered", color: "bg-blue-500" },
+  shortlisted: { label: "Shortlisted", color: "bg-cyan-500" },
+  in_progress: { label: "In Progress", color: "bg-amber-500" },
+  submitted: { label: "Submitted", color: "bg-emerald-500" },
+  won: { label: "Won", color: "bg-green-600" },
+  archived: { label: "Archived", color: "bg-muted-foreground/30" },
+  ignored: { label: "Ignored", color: "bg-muted-foreground/20" },
+};
+
+const RESPONSE_STAGE_LABELS: Record<string, string> = {
+  drafting: "Drafting",
+  internal_review: "Internal Review",
+  revision: "Revision",
+  final_review: "Final Review",
+  ready_to_submit: "Ready to Submit",
+};
+
+function OverviewDashboard({
+  workspaceId,
+  onNavigate,
+  onOpenEditor,
+}: {
+  workspaceId?: string;
+  onNavigate: (tab: Tab) => void;
+  onOpenEditor: (responseId: string, opportunity: RfpOpportunity | null) => void;
+}) {
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!workspaceId) return;
+    setLoading(true);
+    fetch(`/api/rfp/stats?workspaceId=${workspaceId}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data) setStats(data);
+      })
+      .catch((err) => console.error("Failed to load stats:", err))
+      .finally(() => setLoading(false));
+  }, [workspaceId]);
+
+  if (!workspaceId) {
+    return (
+      <div className="flex items-center justify-center h-full text-muted-foreground text-sm py-20">
+        Select a workspace to view your RFP dashboard
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!stats) {
+    return (
+      <div className="flex items-center justify-center py-20 text-sm text-muted-foreground">
+        Failed to load dashboard data
+      </div>
+    );
+  }
+
+  const { pipeline, upcomingDeadlines, recentOpportunities, responses, searches } = stats;
+  const activeStages = ["discovered", "shortlisted", "in_progress", "submitted"];
+  const totalFunnel = activeStages.reduce((s, k) => s + (pipeline.counts[k] || 0), 0);
+
+  return (
+    <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-6">
+      {/* Pipeline Summary Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {activeStages.map((stage) => {
+          const info = PIPELINE_LABELS[stage];
+          const count = pipeline.counts[stage] || 0;
+          return (
+            <button
+              key={stage}
+              onClick={() => onNavigate("pipeline")}
+              className="border rounded-lg p-3 sm:p-4 text-left hover:border-foreground/20 hover:bg-muted/30 transition-colors"
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <div className={cn("h-2 w-2 rounded-full", info.color)} />
+                <span className="text-[11px] text-muted-foreground uppercase tracking-wider">{info.label}</span>
+              </div>
+              <p className="text-2xl font-bold">{count}</p>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Metrics Bar */}
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+        <div className="flex items-center gap-2">
+          <TrendingUp className="h-4 w-4 text-cyan-500" />
+          <span className="text-muted-foreground">Active pipeline:</span>
+          <span className="font-semibold">{pipeline.totalActive} opportunities</span>
+        </div>
+        {pipeline.estimatedValue > 0 && (
+          <div className="flex items-center gap-2">
+            <BarChart3 className="h-4 w-4 text-emerald-500" />
+            <span className="text-muted-foreground">Est. value:</span>
+            <span className="font-semibold">
+              {pipeline.estimatedValue >= 1000000
+                ? `$${(pipeline.estimatedValue / 1000000).toFixed(1)}M`
+                : pipeline.estimatedValue >= 1000
+                ? `$${(pipeline.estimatedValue / 1000).toFixed(0)}K`
+                : `$${pipeline.estimatedValue.toLocaleString()}`}
+            </span>
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <Activity className="h-4 w-4 text-amber-500" />
+          <span className="text-muted-foreground">Responses:</span>
+          <span className="font-semibold">{responses.total} total</span>
+        </div>
+      </div>
+
+      {/* Pipeline Funnel Bar */}
+      {totalFunnel > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>Pipeline Funnel</span>
+            <button onClick={() => onNavigate("pipeline")} className="hover:text-foreground transition-colors">
+              View Pipeline →
+            </button>
+          </div>
+          <div className="flex h-3 rounded-full overflow-hidden bg-muted">
+            {activeStages.map((stage) => {
+              const count = pipeline.counts[stage] || 0;
+              if (count === 0) return null;
+              const pct = (count / totalFunnel) * 100;
+              return (
+                <div
+                  key={stage}
+                  className={cn("transition-all", PIPELINE_LABELS[stage].color)}
+                  style={{ width: `${pct}%` }}
+                  title={`${PIPELINE_LABELS[stage].label}: ${count}`}
+                />
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-4 text-[10px] text-muted-foreground">
+            {activeStages.map((stage) => {
+              const count = pipeline.counts[stage] || 0;
+              if (count === 0) return null;
+              return (
+                <div key={stage} className="flex items-center gap-1">
+                  <div className={cn("h-1.5 w-1.5 rounded-full", PIPELINE_LABELS[stage].color)} />
+                  <span>{PIPELINE_LABELS[stage].label} ({count})</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Upcoming Deadlines */}
+        <div className="border rounded-lg">
+          <div className="flex items-center justify-between px-4 py-3 border-b">
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <Calendar className="h-4 w-4 text-red-500" />
+              Upcoming Deadlines
+            </h3>
+            <button onClick={() => onNavigate("pipeline")} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+              View all →
+            </button>
+          </div>
+          <div className="divide-y">
+            {upcomingDeadlines.length === 0 ? (
+              <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                No upcoming deadlines in the next 30 days
+              </div>
+            ) : (
+              upcomingDeadlines.map((opp) => {
+                const urgency = getDeadlineUrgency(opp.deadline);
+                return (
+                  <div key={opp.id} className="px-4 py-2.5 flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium truncate">{opp.title}</p>
+                      <p className="text-[11px] text-muted-foreground truncate">{opp.organisation}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-xs font-medium">{formatDeadline(opp.deadline)}</p>
+                      {urgency && (
+                        <span className={cn("text-[10px] font-medium", urgency.className.split(" ")[0])}>
+                          {urgency.label}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        {/* Active Responses */}
+        <div className="border rounded-lg">
+          <div className="flex items-center justify-between px-4 py-3 border-b">
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <PenTool className="h-4 w-4 text-cyan-500" />
+              Active Responses
+            </h3>
+            <button onClick={() => onNavigate("pipeline")} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+              View all →
+            </button>
+          </div>
+          <div className="divide-y">
+            {responses.items.length === 0 ? (
+              <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                No responses started yet.{" "}
+                <button onClick={() => onNavigate("discover")} className="text-cyan-500 hover:underline">
+                  Discover RFPs
+                </button>{" "}
+                to begin.
+              </div>
+            ) : (
+              responses.items.map((r) => {
+                const pct = r.totalSections > 0 ? Math.round((r.completedSections / r.totalSections) * 100) : 0;
+                return (
+                  <button
+                    key={r.id}
+                    onClick={() => onOpenEditor(r.id, null)}
+                    className="px-4 py-2.5 flex items-center gap-3 w-full text-left hover:bg-muted/30 transition-colors"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium truncate">{r.title}</p>
+                      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                        <span>{RESPONSE_STAGE_LABELS[r.status] || r.status}</span>
+                        {r.assignedTo && (
+                          <>
+                            <span>·</span>
+                            <span>{r.assignedTo}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-cyan-500 rounded-full"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      <span className="text-[10px] text-muted-foreground w-7 text-right">{pct}%</span>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        {/* Recent Opportunities */}
+        <div className="border rounded-lg">
+          <div className="flex items-center justify-between px-4 py-3 border-b">
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <Target className="h-4 w-4 text-blue-500" />
+              Recently Added
+            </h3>
+            <button onClick={() => onNavigate("pipeline")} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+              View all →
+            </button>
+          </div>
+          <div className="divide-y">
+            {recentOpportunities.length === 0 ? (
+              <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                No opportunities yet.{" "}
+                <button onClick={() => onNavigate("discover")} className="text-cyan-500 hover:underline">
+                  Run a search
+                </button>{" "}
+                to discover RFPs.
+              </div>
+            ) : (
+              recentOpportunities.map((opp) => (
+                <div key={opp.id} className="px-4 py-2.5 flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium truncate">{opp.title}</p>
+                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      <span>{opp.organisation}</span>
+                      {opp.value && (
+                        <>
+                          <span>·</span>
+                          <span className="font-medium text-foreground/70">{opp.value}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {opp.score && (
+                      <div className={cn(
+                        "h-6 w-6 rounded-full flex items-center justify-center text-[9px] font-bold",
+                        scoreColor(opp.score)
+                      )}>
+                        {opp.score}
+                      </div>
+                    )}
+                    <Badge variant="outline" className="text-[10px] h-5 px-1.5">
+                      {PIPELINE_LABELS[opp.status]?.label || opp.status}
+                    </Badge>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Search Activity */}
+        <div className="border rounded-lg">
+          <div className="flex items-center justify-between px-4 py-3 border-b">
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <History className="h-4 w-4 text-purple-500" />
+              Recent Searches
+            </h3>
+            <button onClick={() => onNavigate("discover")} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+              New search →
+            </button>
+          </div>
+          <div className="divide-y">
+            {searches.recent.length === 0 ? (
+              <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                No searches yet.{" "}
+                <button onClick={() => onNavigate("discover")} className="text-cyan-500 hover:underline">
+                  Discover RFPs
+                </button>
+              </div>
+            ) : (
+              searches.recent.slice(0, 5).map((s) => (
+                <div key={s.id_search} className="px-4 py-2.5 flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm truncate">
+                      {s.query || <span className="italic text-muted-foreground">Default search</span>}
+                    </p>
+                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      <span>{s.name_user_created || "Unknown"}</span>
+                      <span>·</span>
+                      <span>{formatRelativeTime(s.date_created)}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Badge variant="outline" className="text-[10px] h-5 px-1.5 gap-1">
+                      {s.type_provider === "grok" ? <Cpu className="h-2.5 w-2.5" /> : <Sparkles className="h-2.5 w-2.5" />}
+                      {s.units_result_count} results
+                    </Badge>
+                  </div>
+                </div>
+              ))
+            )}
+            {/* Saved searches summary */}
+            {searches.savedSearches.length > 0 && (
+              <div className="px-4 py-2.5 bg-muted/30">
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <CircleDot className="h-3 w-3" />
+                  <span>
+                    {searches.savedSearches.filter((s) => s.scheduled).length} scheduled search{searches.savedSearches.filter((s) => s.scheduled).length !== 1 ? "es" : ""} active
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Quick empty state — if nothing at all */}
+      {pipeline.totalAll === 0 && searches.recent.length === 0 && (
+        <div className="border border-dashed rounded-lg p-8 text-center">
+          <Globe className="h-8 w-8 text-muted-foreground/30 mx-auto mb-3" />
+          <h3 className="font-medium mb-1">Get Started</h3>
+          <p className="text-sm text-muted-foreground mb-4 max-w-md mx-auto">
+            Run your first RFP search to discover procurement opportunities that match your profile.
+          </p>
+          <Button onClick={() => onNavigate("discover")} className="gap-2">
+            <Search className="h-4 w-4" />
+            Discover RFPs
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2388,6 +2829,15 @@ function DiscoverPanel({
   } | null>(null);
   const [searchStep, setSearchStep] = useState(0);
   const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [searchHistory, setSearchHistory] = useState<{
+    id_search: string;
+    query: string | null;
+    type_provider: string;
+    units_result_count: number;
+    name_user_created: string | null;
+    date_created: string;
+    results?: DiscoveredRfp[];
+  }[]>([]);
 
   // Progress steps for search animation
   const SEARCH_STEPS = useMemo(() => [
@@ -2435,7 +2885,7 @@ function DiscoverPanel({
         const [oppRes, respRes, searchRes] = await Promise.all([
           fetch(`/api/rfp/opportunities?workspaceId=${workspaceId}`),
           fetch(`/api/rfp/responses?workspaceId=${workspaceId}`),
-          fetch(`/api/rfp/searches?workspaceId=${workspaceId}&limit=1`),
+          fetch(`/api/rfp/searches?workspaceId=${workspaceId}&limit=10`),
         ]);
         const oppData = await oppRes.json();
         const respData = await respRes.json();
@@ -2465,8 +2915,11 @@ function DiscoverPanel({
         }
         setSavedOpps(map);
 
-        // Load the latest saved search if we haven't searched yet
+        // Store search history for display
         const savedSearches = searchData.searches || [];
+        setSearchHistory(savedSearches);
+
+        // Load the latest saved search if we haven't searched yet
         if (savedSearches.length > 0 && !hasSearched) {
           const latest = savedSearches[0];
           setResults(latest.results || []);
@@ -2583,6 +3036,10 @@ function DiscoverPanel({
             query: combinedQuery || null,
           });
           toast.success("Search results saved");
+          // Refresh search history
+          if (saved.search) {
+            setSearchHistory((prev) => [saved.search, ...prev].slice(0, 10));
+          }
         }
       } catch (saveErr) {
         console.error("Failed to save search results:", saveErr);
@@ -3449,11 +3906,77 @@ function DiscoverPanel({
 
       {/* Initial empty state */}
       {!searching && !hasSearched && (
-        <div className="flex flex-col items-center py-20">
+        <div className="flex flex-col items-center py-12">
           <Search className="h-6 w-6 text-muted-foreground/40 mb-3" />
           <p className="text-sm text-muted-foreground">
             Search for open procurement opportunities
           </p>
+        </div>
+      )}
+
+      {/* Search History */}
+      {!searching && searchHistory.length > 0 && (
+        <div className="max-w-3xl mx-auto mt-6 border rounded-lg">
+          <div className="px-4 py-3 border-b flex items-center gap-2">
+            <History className="h-4 w-4 text-muted-foreground" />
+            <h3 className="text-sm font-medium">Search History</h3>
+          </div>
+          <div className="divide-y">
+            {searchHistory.map((s, i) => {
+              const isActive = hasSearched && searchMeta?.date === s.date_created;
+              return (
+                <button
+                  key={s.id_search || i}
+                  onClick={() => {
+                    if (s.results && s.results.length > 0) {
+                      setResults(s.results);
+                      setSearchSummary("");
+                      setHasSearched(true);
+                      setQuery(s.query || "");
+                      setSearchMeta({
+                        userName: s.name_user_created || "Unknown",
+                        date: s.date_created,
+                        provider: s.type_provider || "anthropic",
+                        resultCount: s.units_result_count || s.results.length,
+                        query: s.query || null,
+                      });
+                    }
+                  }}
+                  className={cn(
+                    "px-4 py-2.5 flex items-center gap-3 w-full text-left transition-colors",
+                    isActive
+                      ? "bg-cyan-500/5 border-l-2 border-l-cyan-500"
+                      : "hover:bg-muted/30",
+                    (!s.results || s.results.length === 0) && "opacity-50 cursor-default"
+                  )}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm truncate">
+                      {s.query || <span className="italic text-muted-foreground">Default search</span>}
+                    </p>
+                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      <span>{s.name_user_created || "Unknown"}</span>
+                      <span>·</span>
+                      <span>{formatRelativeTime(s.date_created)}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {s.type_provider === "grok" ? (
+                      <Cpu className="h-3 w-3 text-muted-foreground" />
+                    ) : (
+                      <Sparkles className="h-3 w-3 text-muted-foreground" />
+                    )}
+                    <Badge variant="outline" className="text-[10px] h-5 px-1.5">
+                      {s.units_result_count || 0} results
+                    </Badge>
+                    {isActive && (
+                      <div className="h-1.5 w-1.5 rounded-full bg-cyan-500" />
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

@@ -561,8 +561,14 @@ async function searchWithGrok(params: {
     },
     body: JSON.stringify({
       model: "grok-3",
-      instructions: systemPrompt,
-      input: "Search for current open RFPs and procurement opportunities that The Content Engine should consider responding to. Be thorough in your search across multiple procurement portals.",
+      input: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content:
+            "Search for current open RFPs and procurement opportunities that The Content Engine should consider responding to. Be thorough in your search across multiple procurement portals.",
+        },
+      ],
       tools: [{ type: "web_search" }],
       temperature: 0.3,
     }),
