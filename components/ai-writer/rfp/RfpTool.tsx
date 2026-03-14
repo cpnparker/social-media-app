@@ -279,6 +279,19 @@ function extractDomain(url: string | null): string | null {
   }
 }
 
+/** Shorten a URL for display: "ungm.org/Public/Notice/123456" */
+function truncateUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    const path = u.pathname.replace(/\/$/, "");
+    const full = host + path;
+    return full.length > 60 ? full.slice(0, 57) + "…" : full;
+  } catch {
+    return url.length > 60 ? url.slice(0, 57) + "…" : url;
+  }
+}
+
 function getInitials(name: string): string {
   return name
     .split(" ")
@@ -3648,9 +3661,9 @@ function DiscoverPanel({
                     {rfp.scope}
                   </p>
 
-                  {/* Row 4: Source + status */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
+                  {/* Row 4: Source URL + status */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
                       {rfp.sourceUrl ? (
                         <span
                           role="link"
@@ -3658,16 +3671,16 @@ function DiscoverPanel({
                           onClick={(e) => { e.stopPropagation(); window.open(rfp.sourceUrl!, "_blank", "noopener"); }}
                           onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); window.open(rfp.sourceUrl!, "_blank", "noopener"); } }}
                           className={cn(
-                            "inline-flex items-center gap-1 text-xs cursor-pointer hover:underline",
+                            "inline-flex items-center gap-1.5 text-xs cursor-pointer hover:underline min-w-0",
                             rfp.urlConfidence === "verified"
                               ? "text-emerald-600 dark:text-emerald-400"
                               : rfp.urlConfidence === "trusted_domain"
                               ? "text-cyan-600 dark:text-cyan-400"
-                              : "text-muted-foreground hover:text-foreground"
+                              : "text-blue-600 dark:text-blue-400 hover:text-blue-700"
                           )}
                         >
-                          <ExternalLink className="h-3 w-3" />
-                          {rfp.portalName || extractDomain(rfp.sourceUrl) || "View Source"}
+                          <ExternalLink className="h-3 w-3 shrink-0" />
+                          <span className="truncate">{truncateUrl(rfp.sourceUrl)}</span>
                         </span>
                       ) : rfp.portalSearchUrl ? (
                         <span
@@ -3675,26 +3688,30 @@ function DiscoverPanel({
                           tabIndex={0}
                           onClick={(e) => { e.stopPropagation(); window.open(rfp.portalSearchUrl!, "_blank", "noopener"); }}
                           onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); window.open(rfp.portalSearchUrl!, "_blank", "noopener"); } }}
-                          className="inline-flex items-center gap-1 text-xs text-muted-foreground cursor-pointer hover:underline hover:text-foreground"
+                          className="inline-flex items-center gap-1.5 text-xs text-blue-600 dark:text-blue-400 cursor-pointer hover:underline min-w-0"
                         >
-                          <Search className="h-3 w-3" />
-                          {rfp.portalName || "Search Portal"}
+                          <Search className="h-3 w-3 shrink-0" />
+                          <span className="truncate">{truncateUrl(rfp.portalSearchUrl)}</span>
                         </span>
-                      ) : null}
+                      ) : (
+                        <span className="text-[11px] text-muted-foreground/50 italic">No source URL</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
                       {rfp.sectors.length > 0 && (
-                        <span className="text-[11px] text-muted-foreground/60">
+                        <span className="text-[11px] text-muted-foreground/60 hidden sm:inline">
                           {rfp.sectors.slice(0, 2).join(" · ")}
                         </span>
                       )}
+                      {matched && (
+                        <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                          <FolderKanban className="h-3 w-3" />
+                          {matched.status === "submitted" ? "Submitted" :
+                           matched.responseStatus ? getResponseStage(matched.responseStatus).label :
+                           "In Pipeline"}
+                        </span>
+                      )}
                     </div>
-                    {matched && (
-                      <span className="text-xs text-muted-foreground flex items-center gap-1.5">
-                        <FolderKanban className="h-3 w-3" />
-                        {matched.status === "submitted" ? "Submitted" :
-                         matched.responseStatus ? getResponseStage(matched.responseStatus).label :
-                         "In Pipeline"}
-                      </span>
-                    )}
                   </div>
                 </button>
                 );
@@ -3810,38 +3827,54 @@ function DiscoverPanel({
                       )}
 
                       {/* Source link */}
-                      {rfp.sourceUrl ? (
-                        <a
-                          href={rfp.sourceUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className={cn(
-                            "inline-flex items-center gap-1.5 text-sm transition-colors",
-                            rfp.urlConfidence === "verified"
-                              ? "text-emerald-600 dark:text-emerald-400 hover:text-emerald-700"
-                              : rfp.urlConfidence === "trusted_domain"
-                              ? "text-cyan-600 dark:text-cyan-400 hover:text-cyan-700"
-                              : "text-muted-foreground hover:text-foreground"
-                          )}
-                        >
-                          <ExternalLink className="h-3.5 w-3.5" />
-                          {rfp.urlConfidence === "verified" ? "View RFP (verified)" :
-                           rfp.urlConfidence === "trusted_domain" ? `View on ${rfp.portalName || "portal"}` :
-                           "View source (unverified)"}
-                        </a>
-                      ) : rfp.portalSearchUrl ? (
-                        <a
-                          href={rfp.portalSearchUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                        >
-                          <Search className="h-3.5 w-3.5" />
-                          Search on {rfp.portalName || "portal"}
-                        </a>
-                      ) : null}
+                      <div className="space-y-2">
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Source</p>
+                        {rfp.sourceUrl ? (
+                          <a
+                            href={rfp.sourceUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="group block p-3 rounded-md border hover:border-foreground/20 hover:bg-muted/30 transition-colors"
+                          >
+                            <div className="flex items-center gap-2 mb-1">
+                              <ExternalLink className={cn(
+                                "h-3.5 w-3.5 shrink-0",
+                                rfp.urlConfidence === "verified"
+                                  ? "text-emerald-600 dark:text-emerald-400"
+                                  : rfp.urlConfidence === "trusted_domain"
+                                  ? "text-cyan-600 dark:text-cyan-400"
+                                  : "text-blue-600 dark:text-blue-400"
+                              )} />
+                              <span className="text-sm font-medium group-hover:underline">
+                                {rfp.urlConfidence === "verified" ? "View RFP" :
+                                 rfp.urlConfidence === "trusted_domain" ? `View on ${rfp.portalName || "portal"}` :
+                                 "View source"}
+                              </span>
+                              {rfp.urlConfidence === "verified" && (
+                                <Badge variant="outline" className="text-[9px] h-4 px-1 text-emerald-600 border-emerald-200 dark:border-emerald-800">Verified</Badge>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground break-all pl-5.5">{rfp.sourceUrl}</p>
+                          </a>
+                        ) : rfp.portalSearchUrl ? (
+                          <a
+                            href={rfp.portalSearchUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="group block p-3 rounded-md border hover:border-foreground/20 hover:bg-muted/30 transition-colors"
+                          >
+                            <div className="flex items-center gap-2 mb-1">
+                              <Search className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                              <span className="text-sm font-medium group-hover:underline">Search on {rfp.portalName || "portal"}</span>
+                            </div>
+                            <p className="text-xs text-muted-foreground break-all pl-5.5">{rfp.portalSearchUrl}</p>
+                          </a>
+                        ) : (
+                          <p className="text-sm text-muted-foreground italic">No source URL available</p>
+                        )}
+                      </div>
 
                       {/* Action buttons */}
                       <div className="flex items-center gap-2 pt-2 border-t">
