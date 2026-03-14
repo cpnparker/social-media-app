@@ -7,21 +7,10 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import OpenAI from "openai";
 import { TCE_COMPANY_PROFILE } from "./company-profile";
 
 function getAnthropicClient() {
   return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
-}
-
-function getXAIClient() {
-  if (!process.env.XAI_API_KEY) {
-    throw new Error("XAI_API_KEY is not set");
-  }
-  return new OpenAI({
-    apiKey: process.env.XAI_API_KEY,
-    baseURL: "https://api.x.ai/v1",
-  });
 }
 
 export type SearchProvider = "anthropic" | "grok";
@@ -112,7 +101,7 @@ After searching, return your findings as a JSON object with this exact structure
       ],
       "scope": "Brief description of what they're looking for (2-3 sentences)",
       "relevanceScore": 85,
-      "sourceUrl": "URL where the RFP can be found, or null",
+      "sourceUrl": "The EXACT URL from your search results where the RFP listing was found. Copy the URL directly from the search result — do NOT reconstruct or guess URLs. Use null if unsure.",
       "reasoning": "Why this is relevant to The Content Engine",
       "sectors": ["sustainability", "content production"],
       "region": "Region or null",
@@ -128,11 +117,80 @@ IMPORTANT about deadlines:
 - Common milestone types: "register_interest", "expression_of_interest", "questions", "briefing", "draft_submission", "submission"
 - If only one deadline is known, put it in "deadline" and leave "milestones" as an empty array
 
+IMPORTANT about source URLs:
+- The "sourceUrl" MUST be an exact URL copied from your search results — never fabricate, reconstruct, or guess a URL
+- If you cannot find the direct procurement page URL, use the URL of the search result page where you found the listing
+- If no URL is available at all, use null — a null URL is better than a wrong URL
+
 Sort by relevanceScore descending. Return only genuine, currently open opportunities.
 Return ONLY the JSON object, no other text.`;
 }
 
-function parseOpportunities(textContent: string): {
+interface SearchSourceUrl {
+  url: string;
+  title: string;
+}
+
+/**
+ * Try to find the best real URL for an opportunity by matching against
+ * actual search result URLs. Falls back to the AI-provided URL if valid.
+ */
+function matchRealUrl(
+  opp: { title: string; organisation: string; sourceUrl: string | null },
+  realUrls: SearchSourceUrl[]
+): string | null {
+  if (realUrls.length === 0) return opp.sourceUrl;
+
+  const oppTitleLower = opp.title.toLowerCase();
+  const oppOrgLower = opp.organisation.toLowerCase();
+
+  // 1. If AI provided a URL, check if it matches a real search result
+  if (opp.sourceUrl) {
+    try {
+      const aiDomain = new URL(opp.sourceUrl).hostname;
+      const exactMatch = realUrls.find((r) => r.url === opp.sourceUrl);
+      if (exactMatch) return opp.sourceUrl; // AI URL is a real result — keep it
+
+      // Same domain match (AI may have the wrong path but right domain)
+      const domainMatch = realUrls.find((r) => {
+        try {
+          return new URL(r.url).hostname === aiDomain;
+        } catch {
+          return false;
+        }
+      });
+      if (domainMatch) return domainMatch.url; // Use the real URL from same domain
+    } catch {
+      // AI URL was invalid, fall through to title matching
+    }
+  }
+
+  // 2. Title-based matching against search result titles
+  const titleMatch = realUrls.find((r) => {
+    const resultTitle = r.title.toLowerCase();
+    return (
+      resultTitle.includes(oppTitleLower) ||
+      oppTitleLower.includes(resultTitle) ||
+      // Check if significant words overlap
+      oppTitleLower.split(/\s+/).filter((w) => w.length > 4 && resultTitle.includes(w)).length >= 3
+    );
+  });
+  if (titleMatch) return titleMatch.url;
+
+  // 3. Organisation-based matching
+  if (oppOrgLower.length > 3) {
+    const orgMatch = realUrls.find((r) => r.title.toLowerCase().includes(oppOrgLower));
+    if (orgMatch) return orgMatch.url;
+  }
+
+  // 4. Fall back to AI URL if it passed validation
+  return opp.sourceUrl;
+}
+
+function parseOpportunities(
+  textContent: string,
+  realUrls: SearchSourceUrl[] = []
+): {
   opportunities: DiscoveredRfp[];
   searchSummary: string;
 } {
@@ -146,7 +204,7 @@ function parseOpportunities(textContent: string): {
       const SUSPICIOUS_TLDS = [".xyz", ".top", ".buzz", ".click", ".link", ".surf", ".win", ".bid"];
 
       const allOpps = (parsed.opportunities || []).map((opp: any) => {
-        // Validate and sanitise sourceUrl
+        // Validate and sanitise the AI-provided sourceUrl
         let validatedUrl = opp.sourceUrl || opp.source_url || null;
         if (validatedUrl) {
           try {
@@ -159,6 +217,15 @@ function parseOpportunities(textContent: string): {
           }
         }
 
+        const title = opp.title || "Untitled";
+        const organisation = opp.organisation || opp.organization || "Unknown";
+
+        // Cross-reference against real search result URLs
+        const resolvedUrl = matchRealUrl(
+          { title, organisation, sourceUrl: validatedUrl },
+          realUrls
+        );
+
         // Extract milestones
         const milestones: DeadlineMilestone[] = (opp.milestones || [])
           .map((m: any) => ({
@@ -169,12 +236,12 @@ function parseOpportunities(textContent: string): {
           .filter((m: DeadlineMilestone) => m.date);
 
         return {
-          title: opp.title || "Untitled",
-          organisation: opp.organisation || opp.organization || "Unknown",
+          title,
+          organisation,
           deadline: opp.deadline || null,
           scope: opp.scope || "",
           relevanceScore: opp.relevanceScore || 0,
-          sourceUrl: validatedUrl,
+          sourceUrl: resolvedUrl,
           reasoning: opp.reasoning || "",
           sectors: opp.sectors || [],
           region: opp.region || null,
@@ -183,12 +250,27 @@ function parseOpportunities(textContent: string): {
         };
       });
 
-      // Filter out any opportunities whose deadline has already passed
-      const opportunities = allOpps.filter((opp: DiscoveredRfp) => {
-        if (!opp.deadline) return true; // Keep if no deadline specified
-        const deadlineDate = new Date(opp.deadline);
-        return deadlineDate >= today;
-      });
+      // Filter out expired and near-expired opportunities.
+      // Enforce a 2-week minimum buffer — if an RFP closes in less than
+      // 14 days there isn't enough time to prepare a quality response.
+      const twoWeeksFromNow = new Date(today);
+      twoWeeksFromNow.setDate(twoWeeksFromNow.getDate() + 14);
+
+      const opportunities = allOpps
+        .filter((opp: DiscoveredRfp) => {
+          if (!opp.deadline) return true; // Keep if no deadline specified
+          const deadlineDate = new Date(opp.deadline);
+          if (isNaN(deadlineDate.getTime())) return false; // Invalid date → drop
+          return deadlineDate >= twoWeeksFromNow;
+        })
+        .map((opp: DiscoveredRfp) => ({
+          ...opp,
+          // Strip expired milestones so the UI only shows future ones
+          milestones: opp.milestones.filter((m) => {
+            const mDate = new Date(m.date);
+            return !isNaN(mDate.getTime()) && mDate >= today;
+          }),
+        }));
 
       return {
         opportunities,
@@ -237,13 +319,26 @@ async function searchWithAnthropic(params: {
   });
 
   let textContent = "";
+  const realUrls: SearchSourceUrl[] = [];
+
   for (const block of response.content) {
     if (block.type === "text") {
       textContent += block.text;
     }
+    // Extract real URLs from web search result blocks
+    if ((block as any).type === "web_search_tool_result") {
+      const resultBlock = block as any;
+      if (Array.isArray(resultBlock.content)) {
+        for (const result of resultBlock.content) {
+          if (result.type === "web_search_result" && result.url) {
+            realUrls.push({ url: result.url, title: result.title || "" });
+          }
+        }
+      }
+    }
   }
 
-  return { ...parseOpportunities(textContent), provider: "anthropic" };
+  return { ...parseOpportunities(textContent, realUrls), provider: "anthropic" };
 }
 
 async function searchWithGrok(params: {
@@ -252,25 +347,63 @@ async function searchWithGrok(params: {
   regions?: string[];
   sources?: string[];
 }): Promise<SearchResult> {
-  const xai = getXAIClient();
+  if (!process.env.XAI_API_KEY) {
+    throw new Error("XAI_API_KEY is not set");
+  }
+
   const systemPrompt = buildSearchPrompt(params);
 
-  const response = await xai.chat.completions.create({
-    model: "grok-3",
-    messages: [
-      { role: "system", content: systemPrompt },
-      {
-        role: "user",
-        content:
-          "Search for current open RFPs and procurement opportunities that The Content Engine should consider responding to. Be thorough in your search across multiple procurement portals.",
-      },
-    ],
-    max_tokens: 4096,
-    temperature: 0.3,
+  // Use xAI Responses API with web_search tool for real citation URLs
+  const response = await fetch("https://api.x.ai/v1/responses", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.XAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "grok-3",
+      instructions: systemPrompt,
+      input: "Search for current open RFPs and procurement opportunities that The Content Engine should consider responding to. Be thorough in your search across multiple procurement portals.",
+      tools: [{ type: "web_search" }],
+      temperature: 0.3,
+    }),
   });
 
-  const textContent = response.choices?.[0]?.message?.content || "";
-  return { ...parseOpportunities(textContent), provider: "grok" };
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error("[RFP Search] Grok responses API error:", errText);
+    throw new Error(`Grok search failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+
+  // Extract text output and citation URLs from the responses API format
+  let textContent = "";
+  const realUrls: SearchSourceUrl[] = [];
+
+  // The responses API returns output as an array of items
+  if (Array.isArray(data.output)) {
+    for (const item of data.output) {
+      if (item.type === "message" && Array.isArray(item.content)) {
+        for (const block of item.content) {
+          if (block.type === "output_text") {
+            textContent += block.text || "";
+          }
+        }
+      }
+    }
+  }
+
+  // Extract citation URLs
+  if (Array.isArray(data.citations)) {
+    for (const citation of data.citations) {
+      if (citation.url) {
+        realUrls.push({ url: citation.url, title: citation.title || "" });
+      }
+    }
+  }
+
+  return { ...parseOpportunities(textContent, realUrls), provider: "grok" };
 }
 
 /**

@@ -25,6 +25,8 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    const includeExpired = searchParams.get("includeExpired") === "true";
+
     let query = intelligenceDb
       .from("rfp_opportunities")
       .select("*")
@@ -33,6 +35,15 @@ export async function GET(req: NextRequest) {
 
     if (status) {
       query = query.eq("type_status", status);
+    }
+
+    // By default, exclude opportunities whose deadline has passed.
+    // Opportunities without a deadline are always included.
+    // "won" and "submitted" statuses are kept regardless of deadline
+    // (they're historical records, not active pursuits).
+    if (!includeExpired) {
+      const today = new Date().toISOString().split("T")[0];
+      query = query.or(`date_deadline.is.null,date_deadline.gte.${today},type_status.in.(won,submitted)`);
     }
 
     const { data, error } = await query;
