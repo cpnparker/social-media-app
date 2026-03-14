@@ -400,6 +400,14 @@ export function RfpTool() {
     window.history.replaceState({}, "", url.toString());
   };
 
+  // Auto-open search from URL param (for shareable links)
+  const searchIdParam = searchParams.get("search");
+  useEffect(() => {
+    if (searchIdParam) {
+      setActiveTab("discover");
+    }
+  }, [searchIdParam]);
+
   // Auto-open response from URL param (for shareable links)
   const responseParam = searchParams.get("response");
   useEffect(() => {
@@ -510,6 +518,7 @@ export function RfpTool() {
                 setHasSearched={setDiscoverHasSearched}
                 savedOpps={discoverSavedOpps}
                 setSavedOpps={setDiscoverSavedOpps}
+                initialSearchId={searchIdParam}
               />
             )}
             {activeTab === "library" && <DocumentLibrary workspaceId={workspaceId} />}
@@ -2794,6 +2803,17 @@ function DocumentLibrary({ workspaceId }: { workspaceId?: string }) {
    Discover Panel
    ──────────────────────────────────────────────── */
 
+/** Update a URL search param without a full page navigation */
+function setUrlParam(key: string, value: string | null) {
+  const url = new URL(window.location.href);
+  if (value) {
+    url.searchParams.set(key, value);
+  } else {
+    url.searchParams.delete(key);
+  }
+  window.history.replaceState({}, "", url.toString());
+}
+
 function DiscoverPanel({
   workspaceId,
   onSaved,
@@ -2807,6 +2827,7 @@ function DiscoverPanel({
   setHasSearched,
   savedOpps,
   setSavedOpps,
+  initialSearchId,
 }: {
   workspaceId?: string;
   onSaved?: () => void;
@@ -2820,6 +2841,7 @@ function DiscoverPanel({
   setHasSearched: (h: boolean) => void;
   savedOpps: Map<string, SavedOppInfo>;
   setSavedOpps: React.Dispatch<React.SetStateAction<Map<string, SavedOppInfo>>>;
+  initialSearchId?: string | null;
 }) {
   const [provider, setProvider] = useState<SearchProvider>("anthropic");
   const [searching, setSearching] = useState(false);
@@ -2851,6 +2873,54 @@ function DiscoverPanel({
     date_created: string;
     results?: DiscoveredRfp[];
   }[]>([]);
+  const [activeSearchId, setActiveSearchId] = useState<string | null>(initialSearchId || null);
+
+  /** Load a specific search by ID (from history click or URL param) */
+  const loadSearch = useCallback((search: {
+    id_search: string;
+    query?: string | null;
+    type_provider?: string;
+    units_result_count?: number;
+    name_user_created?: string | null;
+    date_created: string;
+    results?: DiscoveredRfp[];
+    document_summary?: string;
+  }) => {
+    setResults(search.results || []);
+    setSearchSummary(search.document_summary || "");
+    setHasSearched(true);
+    setQuery(search.query || "");
+    setActiveSearchId(search.id_search);
+    setSearchMeta({
+      userName: search.name_user_created || "Unknown",
+      date: search.date_created,
+      provider: search.type_provider || "anthropic",
+      resultCount: search.units_result_count || (search.results?.length ?? 0),
+      query: search.query || null,
+    });
+    setUrlParam("search", search.id_search);
+    setUrlParam("tab", "discover");
+  }, [setResults, setSearchSummary, setHasSearched, setQuery]);
+
+  // Load search from URL param on mount
+  useEffect(() => {
+    if (!initialSearchId || !workspaceId) return;
+    // If we already have it in history, use it
+    const cached = searchHistory.find((s) => s.id_search === initialSearchId);
+    if (cached && cached.results) {
+      loadSearch(cached);
+      return;
+    }
+    // Otherwise fetch from API
+    fetch(`/api/rfp/searches/${initialSearchId}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.search) {
+          loadSearch(data.search);
+        }
+      })
+      .catch((err) => console.error("Failed to load search:", err));
+  }, [initialSearchId, workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Progress steps for search animation
   const SEARCH_STEPS = useMemo(() => [
@@ -2933,19 +3003,10 @@ function DiscoverPanel({
         setSearchHistory(savedSearches);
 
         // Load the latest saved search if we haven't searched yet
-        if (savedSearches.length > 0 && !hasSearched) {
+        // (and no specific search ID was requested via URL)
+        if (savedSearches.length > 0 && !hasSearched && !initialSearchId) {
           const latest = savedSearches[0];
-          setResults(latest.results || []);
-          setSearchSummary(latest.document_summary || "");
-          setQuery(latest.query || "");
-          setHasSearched(true);
-          setSearchMeta({
-            userName: latest.name_user_created || "Unknown",
-            date: latest.date_created,
-            provider: latest.type_provider || "anthropic",
-            resultCount: latest.units_result_count || (latest.results?.length ?? 0),
-            query: latest.query || null,
-          });
+          loadSearch(latest);
         }
       } catch (err) {
         console.error("Failed to fetch pipeline data for discover:", err);
@@ -3049,9 +3110,11 @@ function DiscoverPanel({
             query: combinedQuery || null,
           });
           toast.success("Search results saved");
-          // Refresh search history
+          // Refresh search history and update URL
           if (saved.search) {
             setSearchHistory((prev) => [saved.search, ...prev].slice(0, 10));
+            setActiveSearchId(saved.search.id_search);
+            setUrlParam("search", saved.search.id_search);
           }
         }
       } catch (saveErr) {
@@ -3571,6 +3634,8 @@ function DiscoverPanel({
                   setHasSearched(false);
                   setSearchMeta(null);
                   setQuery("");
+                  setActiveSearchId(null);
+                  setUrlParam("search", null);
                 }}
                 className="text-xs text-muted-foreground hover:text-foreground transition-colors"
               >
@@ -3956,57 +4021,67 @@ function DiscoverPanel({
           </div>
           <div className="divide-y">
             {searchHistory.map((s, i) => {
-              const isActive = hasSearched && searchMeta?.date === s.date_created;
+              const isActive = activeSearchId === s.id_search;
+              const hasResults = s.results && s.results.length > 0;
               return (
-                <button
+                <div
                   key={s.id_search || i}
-                  onClick={() => {
-                    if (s.results && s.results.length > 0) {
-                      setResults(s.results);
-                      setSearchSummary("");
-                      setHasSearched(true);
-                      setQuery(s.query || "");
-                      setSearchMeta({
-                        userName: s.name_user_created || "Unknown",
-                        date: s.date_created,
-                        provider: s.type_provider || "anthropic",
-                        resultCount: s.units_result_count || s.results.length,
-                        query: s.query || null,
-                      });
-                    }
-                  }}
                   className={cn(
-                    "px-4 py-2.5 flex items-center gap-3 w-full text-left transition-colors",
+                    "flex items-center transition-colors",
                     isActive
                       ? "bg-cyan-500/5 border-l-2 border-l-cyan-500"
                       : "hover:bg-muted/30",
-                    (!s.results || s.results.length === 0) && "opacity-50 cursor-default"
+                    !hasResults && "opacity-50"
                   )}
                 >
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm truncate">
-                      {s.query || <span className="italic text-muted-foreground">Default search</span>}
-                    </p>
-                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                      <span>{s.name_user_created || "Unknown"}</span>
-                      <span>·</span>
-                      <span>{formatRelativeTime(s.date_created)}</span>
+                  <button
+                    onClick={() => {
+                      if (hasResults) loadSearch(s as any);
+                    }}
+                    disabled={!hasResults}
+                    className="flex-1 px-4 py-2.5 flex items-center gap-3 text-left min-w-0"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm truncate">
+                        {s.query || <span className="italic text-muted-foreground">Default search</span>}
+                      </p>
+                      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                        <span>{s.name_user_created || "Unknown"}</span>
+                        <span>·</span>
+                        <span>{formatRelativeTime(s.date_created)}</span>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {s.type_provider === "grok" ? (
-                      <Cpu className="h-3 w-3 text-muted-foreground" />
-                    ) : (
-                      <Sparkles className="h-3 w-3 text-muted-foreground" />
-                    )}
-                    <Badge variant="outline" className="text-[10px] h-5 px-1.5">
-                      {s.units_result_count || 0} results
-                    </Badge>
-                    {isActive && (
-                      <div className="h-1.5 w-1.5 rounded-full bg-cyan-500" />
-                    )}
-                  </div>
-                </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {s.type_provider === "grok" ? (
+                        <Cpu className="h-3 w-3 text-muted-foreground" />
+                      ) : (
+                        <Sparkles className="h-3 w-3 text-muted-foreground" />
+                      )}
+                      <Badge variant="outline" className="text-[10px] h-5 px-1.5">
+                        {s.units_result_count || 0} results
+                      </Badge>
+                      {isActive && (
+                        <div className="h-1.5 w-1.5 rounded-full bg-cyan-500" />
+                      )}
+                    </div>
+                  </button>
+                  {/* Copy link button */}
+                  {hasResults && (
+                    <button
+                      onClick={() => {
+                        const url = new URL(window.location.href);
+                        url.searchParams.set("tab", "discover");
+                        url.searchParams.set("search", s.id_search);
+                        navigator.clipboard.writeText(url.toString());
+                        toast.success("Link copied");
+                      }}
+                      className="px-3 py-2.5 text-muted-foreground/40 hover:text-foreground transition-colors shrink-0"
+                      title="Copy link to this search"
+                    >
+                      <Link2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>
