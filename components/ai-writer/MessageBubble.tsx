@@ -480,6 +480,32 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
     }
   );
 
+  // Media placeholders: [Embed], [Image], [Video], [Carousel], [Infographic], etc.
+  html = html.replace(
+    /\[(Embed|Image|Video|Carousel|Infographic|Reel|Graphic|GIF|Story|Slide(?:\s*\d+)?|Photo|Banner|Cover|Thumbnail|Animation|Chart|Map|Audio|Podcast|Poll|Quote Card|Meme)\]/gi,
+    (_m, label) => {
+      const iconMap: Record<string, string> = {
+        video: '▶', reel: '▶', gif: '▶', animation: '▶',
+        audio: '♪', podcast: '♪',
+        image: '◻', photo: '◻', graphic: '◻', banner: '◻',
+        cover: '◻', thumbnail: '◻', meme: '◻',
+        carousel: '◫', infographic: '◫',
+        chart: '◫', map: '◫',
+        embed: '⊞', poll: '☐',
+        'quote card': '❝',
+      };
+      const key = label.toLowerCase().replace(/\s*\d+$/, '');
+      const icon = iconMap[key] || '⊞';
+      return `<div class="ai-media-placeholder"><span class="ai-media-icon">${icon}</span><span>${escapeHtml(label)}</span></div>`;
+    }
+  );
+
+  // Hashtags: #Word (min 2 chars, starts with letter, not inside tags/URLs)
+  html = html.replace(
+    /(?<![&\w/])#([A-Za-z]\w{1,})/g,
+    '<span class="ai-hashtag">#$1</span>'
+  );
+
   // Ordered lists (handle nested content)
   html = html.replace(/^(\d+)\. (.+)$/gm, '<li class="ai-oli" value="$1">$2</li>');
 
