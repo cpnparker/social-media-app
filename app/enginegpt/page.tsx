@@ -212,7 +212,9 @@ function EngineGPTContent() {
       .then((r) => r.json())
       .then((data) => {
         if (data.currentModel) {
-          setSelectedModel(data.currentModel);
+          // Legacy default was grok-4-1-fast — upgrade to auto
+          const model = data.currentModel === "grok-4-1-fast" ? "auto" : data.currentModel;
+          setSelectedModel(model);
           if (data.contextConfig) {
             setContextConfig(data.contextConfig);
           }

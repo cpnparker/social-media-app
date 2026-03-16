@@ -66,7 +66,7 @@ export async function GET(req: NextRequest) {
     const formatDescriptions: Record<string, string> = settings?.information_format_descriptions || {};
 
     return NextResponse.json({
-      currentModel: settings?.name_model || "grok-4-1-fast",
+      currentModel: settings?.name_model || "auto",
       availableModels: getAvailableModels(),
       contextConfig: normalizeContextConfig(settings?.config_context),
       cuDescription: settings?.information_cu_description || "",
