@@ -183,12 +183,16 @@ function EngineGPTContent() {
   // Prevent hydration mismatch for theme icon
   useEffect(() => setMounted(true), []);
 
-  // Focus the home textarea when returning from a chat (client-side navigation).
-  // Initial page load uses the autoFocus attribute on the textarea instead,
-  // which is the only reliable way to open the mobile keyboard on first load.
+  // Focus the home textarea on mount and when returning from a chat.
+  // autoFocus attribute handles the initial SSR render; this useEffect
+  // covers client-side navigations (back from chat → home).
+  // Double-attempt: immediate + delayed, because some mobile browsers
+  // need the DOM fully settled before focus will trigger the keyboard.
   useEffect(() => {
     if (!selectedId && textareaRef.current) {
-      requestAnimationFrame(() => textareaRef.current?.focus());
+      textareaRef.current.focus();
+      const timer = setTimeout(() => textareaRef.current?.focus(), 100);
+      return () => clearTimeout(timer);
     }
   }, [selectedId]);
 
@@ -1298,8 +1302,8 @@ function EngineGPTContent() {
             {/* Logo + tagline */}
             <div className={cn(
               "flex flex-col items-center px-4 min-h-0",
-              // Mobile: fill available space, push logo to bottom of that space
-              "flex-1 justify-end pb-4",
+              // Mobile: fill available space, center logo in that space (like Claude mobile)
+              "flex-1 justify-center pb-0",
               // Desktop: don't grow, just add top spacing to help center the whole group
               "lg:flex-none lg:justify-start lg:pt-[18vh] lg:pb-6"
             )}>
