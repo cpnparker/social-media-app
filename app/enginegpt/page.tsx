@@ -183,6 +183,19 @@ function EngineGPTContent() {
   // Prevent hydration mismatch for theme icon
   useEffect(() => setMounted(true), []);
 
+  // Track the visual viewport height so the home view resizes when the
+  // mobile keyboard opens/closes. Without this, flex-1 centres against the
+  // full viewport height and the logo gets pushed to the very top.
+  const [viewportHeight, setViewportHeight] = useState<number | null>(null);
+  useEffect(() => {
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    if (!vv) return;
+    const update = () => setViewportHeight(vv.height);
+    update();
+    vv.addEventListener("resize", update);
+    return () => vv.removeEventListener("resize", update);
+  }, []);
+
   // Focus the home textarea on mount and when returning from a chat.
   // autoFocus attribute handles the initial SSR render; this useEffect
   // covers client-side navigations (back from chat → home).
@@ -1293,18 +1306,27 @@ function EngineGPTContent() {
           </div>
         ) : (
           /* ─── Home view (centered input) ─── */
-          <div className="flex-1 flex flex-col overflow-y-auto">
+          <div
+            className="flex-1 flex flex-col overflow-hidden lg:overflow-y-auto"
+            style={
+              // On mobile, use the visual viewport height (minus mobile header 48px)
+              // so the layout tracks the keyboard open/close. On desktop, let CSS handle it.
+              viewportHeight && typeof window !== "undefined" && window.innerWidth < 1024
+                ? { height: `${viewportHeight - 48}px`, flex: "none" }
+                : undefined
+            }
+          >
             {/*
-              Mobile: logo in upper area (flex-1 justify-end), input pinned at bottom
-              Desktop: everything centered as one block (justify-center), privacy at bottom
+              Mobile: logo centred in space above input, tracks keyboard via visualViewport
+              Desktop: everything centred as one block (justify-center), privacy at bottom
             */}
 
             {/* Logo + tagline */}
             <div className={cn(
               "flex flex-col items-center px-4 min-h-0",
-              // Mobile: fill available space, center logo in that space (like Claude mobile)
+              // Mobile: fill available space, centre logo in that space (like Claude mobile)
               "flex-1 justify-center pb-0",
-              // Desktop: don't grow, just add top spacing to help center the whole group
+              // Desktop: don't grow, just add top spacing to help centre the whole group
               "lg:flex-none lg:justify-start lg:pt-[18vh] lg:pb-6"
             )}>
               <img
