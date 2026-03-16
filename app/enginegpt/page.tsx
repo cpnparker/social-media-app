@@ -1383,7 +1383,7 @@ function EngineGPTContent() {
                           <Plus className={cn("h-5 w-5 transition-transform", mobileOptionsOpen && "rotate-45")} />
                         </Button>
                       </PopoverTrigger>
-                      <PopoverContent side="top" align="start" className="w-[280px] p-0 lg:hidden">
+                      <PopoverContent side="top" align="start" className="w-[280px] p-0 lg:hidden max-h-[70vh] overflow-y-auto">
                         <div className="p-2 space-y-1">
                           {/* Attach file */}
                           <button
@@ -1398,53 +1398,6 @@ function EngineGPTContent() {
                             )}
                             Attach file
                           </button>
-
-                          {/* Client selector */}
-                          {customers.length > 0 && (
-                            <>
-                              <div className="h-px bg-border mx-2" />
-                              <div className="px-3 pt-2 pb-1">
-                                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Client</p>
-                              </div>
-                              <div className="max-h-[120px] overflow-y-auto">
-                                {canViewAll && (
-                                  <button
-                                    onClick={() => {
-                                      customerCtx?.setSelectedCustomerId(null);
-                                    }}
-                                    className={cn(
-                                      "w-full flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-muted transition-colors",
-                                      !selectedCustomer && "bg-muted font-medium"
-                                    )}
-                                  >
-                                    <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                                    <span className="flex-1 text-left">General</span>
-                                    {!selectedCustomer && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
-                                  </button>
-                                )}
-                                {customers.slice(0, 6).map((c) => (
-                                  <button
-                                    key={c.id}
-                                    onClick={() => {
-                                      customerCtx?.setSelectedCustomerId(c.id);
-                                    }}
-                                    className={cn(
-                                      "w-full flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-muted transition-colors",
-                                      selectedCustomer?.id === c.id && "bg-muted font-medium"
-                                    )}
-                                  >
-                                    {c.logoUrl ? (
-                                      <img src={c.logoUrl} alt="" className="h-4 w-4 rounded object-cover shrink-0" />
-                                    ) : (
-                                      <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                                    )}
-                                    <span className="flex-1 text-left truncate">{c.name}</span>
-                                    {selectedCustomer?.id === c.id && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
-                                  </button>
-                                ))}
-                              </div>
-                            </>
-                          )}
 
                           {/* Visibility */}
                           <div className="h-px bg-border mx-2" />
