@@ -1290,23 +1290,34 @@ function EngineGPTContent() {
         ) : (
           /* ─── Home view (centered input) ─── */
           <div className="flex-1 flex flex-col overflow-y-auto">
-            {/* Logo + tagline — pushed up like Claude mobile */}
-            <div className="flex flex-col items-center justify-end flex-1 px-4 pb-4 sm:pb-6 min-h-0">
+            {/*
+              Mobile: logo in upper area (flex-1 justify-end), input pinned at bottom
+              Desktop: everything centered as one block (justify-center), privacy at bottom
+            */}
+
+            {/* Logo + tagline */}
+            <div className={cn(
+              "flex flex-col items-center px-4 min-h-0",
+              // Mobile: fill available space, push logo to bottom of that space
+              "flex-1 justify-end pb-4",
+              // Desktop: don't grow, just add top spacing to help center the whole group
+              "lg:flex-none lg:justify-start lg:pt-[18vh] lg:pb-6"
+            )}>
               <img
                 src="/assets/logo_engine_icon.svg"
                 alt="EngineGPT"
-                className="h-10 w-10 sm:h-14 sm:w-14 mb-3 sm:mb-5 dark:brightness-0 dark:invert"
+                className="h-10 w-10 lg:h-14 lg:w-14 mb-3 lg:mb-5 dark:brightness-0 dark:invert"
               />
-              <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight mb-1 sm:mb-2">
+              <h1 className="text-2xl lg:text-4xl font-bold tracking-tight mb-1 lg:mb-2">
                 What are you working on?
               </h1>
-              <p className="text-sm sm:text-base text-muted-foreground max-w-md text-center">
+              <p className="text-sm lg:text-base text-muted-foreground max-w-md text-center lg:mb-0">
                 Brainstorm ideas, draft content, refine messaging, and more.
               </p>
             </div>
 
-            {/* Input area — pinned below logo, centered */}
-            <div className="shrink-0 w-full flex flex-col items-center px-4 pb-4 sm:pb-8">
+            {/* Input area */}
+            <div className="shrink-0 w-full flex flex-col items-center px-4 pb-4 lg:pb-8">
               <div
                 className="w-full max-w-2xl"
                 onDragEnter={handleHomeDragEnter}
@@ -1895,15 +1906,18 @@ function EngineGPTContent() {
                   </button>
                 </div>
 
-                {/* Data privacy line */}
-                <button
-                  onClick={() => setPrivacyModalOpen(true)}
-                  className="text-[11px] text-muted-foreground/50 hover:text-muted-foreground transition-colors text-center mt-4 flex items-center justify-center gap-1.5 mx-auto"
-                >
-                  <ShieldCheck className="h-3 w-3" />
-                  Your data is protected. No AI provider trains on your conversations.
-                </button>
               </div>
+            </div>
+
+            {/* Privacy line — desktop: pushed to bottom with flex-1 spacer; mobile: hidden (saves space for keyboard) */}
+            <div className="hidden lg:flex flex-1 items-end justify-center pb-4">
+              <button
+                onClick={() => setPrivacyModalOpen(true)}
+                className="text-[11px] text-muted-foreground/50 hover:text-muted-foreground transition-colors text-center flex items-center justify-center gap-1.5"
+              >
+                <ShieldCheck className="h-3 w-3" />
+                Your data is protected. No AI provider trains on your conversations.
+              </button>
             </div>
           </div>
         )}
