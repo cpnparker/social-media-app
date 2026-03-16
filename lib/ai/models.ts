@@ -5,6 +5,7 @@
  */
 
 export const AI_MODELS = [
+  { id: "auto", label: "EngineGPT Auto", provider: "auto" },
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", provider: "anthropic" },
   { id: "gemini-3-flash", label: "Gemini 3 Flash", provider: "gemini" },
   { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", provider: "gemini" },
@@ -15,7 +16,7 @@ export const AI_MODELS = [
 ] as const;
 
 export type AIModelId = (typeof AI_MODELS)[number]["id"];
-export const DEFAULT_MODEL: AIModelId = "grok-4-1-fast";
+export const DEFAULT_MODEL: AIModelId = "auto";
 
 /** Get display label for a model ID */
 export function getModelLabel(modelId: string): string {

@@ -772,7 +772,13 @@ export async function POST(
       console.log(`[Messages] MeetingBrain context: ${appContextRows.length} rows, ${meetingBrainContext?.length || 0} chars${isTeamThread ? " (excluded — team thread)" : ""}`);
     }
 
-    const model = body.model || conversation.name_model;
+    // Resolve model — "auto" routes to the best model based on the prompt
+    let model = body.model || conversation.name_model;
+    if (model === "auto") {
+      const { routeModel } = await import("@/lib/ai/auto-router");
+      model = routeModel(userContent || "");
+      console.log(`[Messages] Auto-routed → ${model}`);
+    }
 
     const systemPrompt = buildSystemPrompt({
       workspaceConfig,

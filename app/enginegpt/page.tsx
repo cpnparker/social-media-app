@@ -1516,12 +1516,32 @@ function EngineGPTContent() {
                           size="sm"
                           className="h-9 sm:h-8 gap-1 sm:gap-1.5 text-[11px] sm:text-xs text-muted-foreground hover:text-foreground px-2 sm:px-2.5"
                         >
+                          {selectedModel === "auto" && <Sparkles className="h-3 w-3 text-amber-500" />}
                           {getModelLabel(selectedModel)}
                           <ChevronDown className="h-3 w-3" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-48">
-                        {AI_MODELS.map((m) => (
+                      <DropdownMenuContent align="end" className="w-56">
+                        {/* Auto option */}
+                        <DropdownMenuItem
+                          onClick={() => setSelectedModel("auto")}
+                          className={cn(
+                            "text-sm",
+                            selectedModel === "auto" && "bg-muted font-medium"
+                          )}
+                        >
+                          <Sparkles className="h-3.5 w-3.5 mr-1.5 text-amber-500 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <div>EngineGPT Auto</div>
+                            <div className="text-[10px] text-muted-foreground font-normal">Routes to the best model</div>
+                          </div>
+                          {selectedModel === "auto" && (
+                            <span className="text-primary text-xs">&#10003;</span>
+                          )}
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        {/* Individual models */}
+                        {AI_MODELS.filter((m) => m.id !== "auto").map((m) => (
                           <DropdownMenuItem
                             key={m.id}
                             onClick={() => {

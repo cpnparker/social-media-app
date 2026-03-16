@@ -36,6 +36,11 @@ interface ModelInfo {
 }
 
 const MODEL_REGISTRY: Record<string, ModelInfo> = {
+  "auto": {
+    provider: "xai",
+    apiModel: "grok-4-1-fast-non-reasoning",
+    label: "EngineGPT Auto",
+  },
   "claude-sonnet-4-6": {
     provider: "anthropic",
     apiModel: "claude-sonnet-4-6",

@@ -1,11 +1,12 @@
 "use client";
 
-import { Lock, Users, Plus, MessageSquare, ChevronDown } from "lucide-react";
+import { Lock, Users, Plus, MessageSquare, ChevronDown, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
@@ -64,12 +65,30 @@ export default function ContentChatSelector({
               size="sm"
               className="h-7 gap-1.5 text-xs px-2.5"
             >
+              {selectedModel === "auto" && <Sparkles className="h-3 w-3 text-amber-500" />}
               {getModelLabel(selectedModel)}
               <ChevronDown className="h-3 w-3" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-44">
-            {AI_MODELS.map((m) => (
+          <DropdownMenuContent align="start" className="w-52">
+            <DropdownMenuItem
+              onClick={() => onModelChange("auto")}
+              className={cn(
+                "text-xs",
+                selectedModel === "auto" && "bg-muted font-medium"
+              )}
+            >
+              <Sparkles className="h-3 w-3 mr-1.5 text-amber-500 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div>EngineGPT Auto</div>
+                <div className="text-[10px] text-muted-foreground font-normal">Routes to the best model</div>
+              </div>
+              {selectedModel === "auto" && (
+                <span className="text-primary text-xs">&#10003;</span>
+              )}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            {AI_MODELS.filter((m) => m.id !== "auto").map((m) => (
               <DropdownMenuItem
                 key={m.id}
                 onClick={() => onModelChange(m.id)}
