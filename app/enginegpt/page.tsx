@@ -150,6 +150,7 @@ function EngineGPTContent() {
   const [personaliseDialogOpen, setPersonaliseDialogOpen] = useState(false);
   const [memoryCount, setMemoryCount] = useState(0);
   const [privacyModalOpen, setPrivacyModalOpen] = useState(false);
+  const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
   const [isHomeDragging, setIsHomeDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1129,81 +1130,13 @@ function EngineGPTContent() {
               <span className="text-sm font-bold">EngineGPT</span>
             </div>
             <div className="flex-1" />
-            {customers.length > 0 && (
-              <Popover>
-                <PopoverTrigger asChild>
-                  <button className="flex items-center gap-1.5 rounded-lg border bg-background hover:bg-muted px-2.5 py-1.5 text-[13px] transition-colors text-left shrink-0">
-                    <Building2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                    <span className="truncate max-w-[120px]">
-                      {selectedCustomer?.name || "General"}
-                    </span>
-                    <ChevronsUpDown className="h-3 w-3 text-muted-foreground shrink-0" />
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent align="end" side="bottom" className="w-[260px] p-0">
-                  <div className="flex items-center border-b px-3">
-                    <Search className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
-                    <input
-                      placeholder="Search clients..."
-                      value={clientSearchQuery}
-                      onChange={(e) => setClientSearchQuery(e.target.value)}
-                      className="flex h-10 w-full bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
-                    />
-                    {clientSearchQuery && (
-                      <button
-                        onClick={() => setClientSearchQuery("")}
-                        className="ml-1 h-4 w-4 shrink-0 text-muted-foreground hover:text-foreground"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    )}
-                  </div>
-                  <div className="max-h-[280px] overflow-y-auto p-1">
-                    {canViewAll && !clientSearchQuery && (
-                      <button
-                        onClick={() => {
-                          customerCtx?.setSelectedCustomerId(null);
-                          setClientSearchQuery("");
-                        }}
-                        className={cn(
-                          "w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm hover:bg-accent transition-colors text-left",
-                          !selectedCustomer && "bg-accent"
-                        )}
-                      >
-                        <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                        <span className="flex-1">General</span>
-                        {!selectedCustomer && <Check className="h-4 w-4 text-primary shrink-0" />}
-                      </button>
-                    )}
-                    {filteredClients.length === 0 ? (
-                      <p className="py-4 text-center text-sm text-muted-foreground">No clients found</p>
-                    ) : (
-                      filteredClients.map((c) => (
-                        <button
-                          key={c.id}
-                          onClick={() => {
-                            customerCtx?.setSelectedCustomerId(c.id);
-                            setClientSearchQuery("");
-                          }}
-                          className={cn(
-                            "w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm hover:bg-accent transition-colors text-left",
-                            selectedCustomer?.id === c.id && "bg-accent"
-                          )}
-                        >
-                          {c.logoUrl ? (
-                            <img src={c.logoUrl} alt="" className="h-4 w-4 rounded object-cover shrink-0" />
-                          ) : (
-                            <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                          )}
-                          <span className="flex-1 truncate">{c.name}</span>
-                          {selectedCustomer?.id === c.id && <Check className="h-4 w-4 text-primary shrink-0" />}
-                        </button>
-                      ))
-                    )}
-                  </div>
-                </PopoverContent>
-              </Popover>
-            )}
+            <button
+              onClick={handleNewChat}
+              className="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-muted transition-colors text-muted-foreground"
+              title="New chat"
+            >
+              <Plus className="h-5 w-5" />
+            </button>
           </div>
         )}
 
@@ -1356,17 +1289,17 @@ function EngineGPTContent() {
         ) : (
           /* ─── Home view (centered input) ─── */
           <div className="flex-1 flex flex-col overflow-y-auto">
-            <div className="flex-1 flex flex-col items-center justify-center px-4 pb-24">
+            <div className="flex-1 flex flex-col items-center justify-center px-4 pb-16 sm:pb-24">
               {/* Icon */}
               <img
                 src="/assets/logo_engine_icon.svg"
                 alt="EngineGPT"
-                className="h-14 w-14 mb-6 dark:brightness-0 dark:invert"
+                className="h-10 w-10 sm:h-14 sm:w-14 mb-4 sm:mb-6 dark:brightness-0 dark:invert"
               />
-              <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mb-2">
+              <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight mb-1 sm:mb-2">
                 What are you working on?
               </h1>
-              <p className="text-base text-muted-foreground mb-10 max-w-md text-center">
+              <p className="text-sm sm:text-base text-muted-foreground mb-6 sm:mb-10 max-w-md text-center">
                 Brainstorm ideas, draft content, refine messaging, and more.
               </p>
 
@@ -1431,8 +1364,8 @@ function EngineGPTContent() {
                     placeholder="Ask anything..."
                     disabled={sending}
                     rows={1}
-                    className="w-full resize-none bg-transparent px-4 py-3 sm:px-5 sm:py-4 text-base focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
-                    style={{ minHeight: "48px", maxHeight: "160px" }}
+                    className="w-full resize-none bg-transparent px-4 py-3 sm:px-5 sm:py-4 text-[15px] sm:text-base focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
+                    style={{ minHeight: "44px", maxHeight: "160px" }}
                   />
 
                   {/* Hidden file input */}
@@ -1447,28 +1380,287 @@ function EngineGPTContent() {
 
                   {/* Bottom button bar */}
                   <div className="flex px-3 pb-3 items-center gap-1 sm:gap-1.5">
+                    {/* ── Mobile + button with options popover ── */}
+                    <Popover open={mobileOptionsOpen} onOpenChange={setMobileOptionsOpen}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-9 w-9 p-0 text-muted-foreground hover:text-foreground lg:hidden"
+                        >
+                          <Plus className={cn("h-5 w-5 transition-transform", mobileOptionsOpen && "rotate-45")} />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent side="top" align="start" className="w-[280px] p-0 lg:hidden">
+                        <div className="p-2 space-y-1">
+                          {/* Attach file */}
+                          <button
+                            onClick={() => { fileInputRef.current?.click(); setMobileOptionsOpen(false); }}
+                            disabled={sending || uploading}
+                            className="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm hover:bg-muted transition-colors"
+                          >
+                            {uploading ? (
+                              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                            ) : (
+                              <Paperclip className="h-4 w-4 text-muted-foreground" />
+                            )}
+                            Attach file
+                          </button>
+
+                          {/* Client selector */}
+                          {customers.length > 0 && (
+                            <>
+                              <div className="h-px bg-border mx-2" />
+                              <div className="px-3 pt-2 pb-1">
+                                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Client</p>
+                              </div>
+                              <div className="max-h-[120px] overflow-y-auto">
+                                {canViewAll && (
+                                  <button
+                                    onClick={() => {
+                                      customerCtx?.setSelectedCustomerId(null);
+                                    }}
+                                    className={cn(
+                                      "w-full flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-muted transition-colors",
+                                      !selectedCustomer && "bg-muted font-medium"
+                                    )}
+                                  >
+                                    <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                                    <span className="flex-1 text-left">General</span>
+                                    {!selectedCustomer && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+                                  </button>
+                                )}
+                                {customers.slice(0, 6).map((c) => (
+                                  <button
+                                    key={c.id}
+                                    onClick={() => {
+                                      customerCtx?.setSelectedCustomerId(c.id);
+                                    }}
+                                    className={cn(
+                                      "w-full flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-muted transition-colors",
+                                      selectedCustomer?.id === c.id && "bg-muted font-medium"
+                                    )}
+                                  >
+                                    {c.logoUrl ? (
+                                      <img src={c.logoUrl} alt="" className="h-4 w-4 rounded object-cover shrink-0" />
+                                    ) : (
+                                      <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                                    )}
+                                    <span className="flex-1 text-left truncate">{c.name}</span>
+                                    {selectedCustomer?.id === c.id && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+                                  </button>
+                                ))}
+                              </div>
+                            </>
+                          )}
+
+                          {/* Visibility */}
+                          <div className="h-px bg-border mx-2" />
+                          <div className="px-3 pt-2 pb-1">
+                            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Visibility</p>
+                          </div>
+                          <div className="flex gap-1 px-2">
+                            <button
+                              onClick={() => { setTab("private"); setIncognitoMode(false); }}
+                              className={cn(
+                                "flex-1 flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs transition-colors",
+                                !incognitoMode && tab === "private"
+                                  ? "bg-foreground/10 text-foreground font-medium"
+                                  : "text-muted-foreground hover:bg-muted"
+                              )}
+                            >
+                              <Lock className="h-3 w-3" />
+                              Private
+                            </button>
+                            <button
+                              onClick={() => { setTab("team"); setIncognitoMode(false); }}
+                              className={cn(
+                                "flex-1 flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs transition-colors",
+                                !incognitoMode && tab === "team"
+                                  ? "bg-foreground/10 text-foreground font-medium"
+                                  : "text-muted-foreground hover:bg-muted"
+                              )}
+                            >
+                              <Users className="h-3 w-3" />
+                              Team
+                            </button>
+                            <button
+                              onClick={() => {
+                                setIncognitoMode(true);
+                                setTab("private");
+                                toast.info("Incognito — chat won't be saved and memories are disabled");
+                              }}
+                              className={cn(
+                                "flex-1 flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs transition-colors",
+                                incognitoMode
+                                  ? "bg-amber-500/10 text-amber-500 font-medium"
+                                  : "text-muted-foreground hover:bg-muted"
+                              )}
+                            >
+                              <EyeOff className="h-3 w-3" />
+                              Incognito
+                            </button>
+                          </div>
+
+                          {/* Context toggles */}
+                          <div className="h-px bg-border mx-2" />
+                          <div className="px-3 pt-2 pb-1">
+                            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Context</p>
+                          </div>
+                          <div className="grid grid-cols-4 gap-1 px-2">
+                            {[
+                              { key: "contracts" as const, label: "Contracts", Icon: ScrollText, color: "text-amber-400" },
+                              { key: "contentPipeline" as const, label: "Content", Icon: Newspaper, color: "text-blue-400" },
+                              { key: "socialPresence" as const, label: "Social", Icon: Share2, color: "text-violet-400" },
+                              { key: "ideas" as const, label: "Ideas", Icon: Lightbulb, color: "text-yellow-400" },
+                            ].map((item) => {
+                              const level = contextConfig[item.key];
+                              const isOn = level !== "off";
+                              const nextLevel = level === "off" ? "summary" : level === "summary" ? "full-month" : "off";
+                              return (
+                                <button
+                                  key={item.key}
+                                  onClick={() =>
+                                    setContextConfig((prev) => ({ ...prev, [item.key]: nextLevel }))
+                                  }
+                                  className={cn(
+                                    "flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition-all",
+                                    isOn
+                                      ? "text-foreground/80 bg-foreground/5"
+                                      : "text-muted-foreground/40 hover:bg-muted"
+                                  )}
+                                >
+                                  <item.Icon className={cn("h-3.5 w-3.5", isOn ? item.color : "text-muted-foreground/30")} />
+                                  {item.label}
+                                </button>
+                              );
+                            })}
+                            <button
+                              onClick={() =>
+                                setContextConfig((prev) => ({ ...prev, webSearch: prev.webSearch === "on" ? "off" : "on" }))
+                              }
+                              className={cn(
+                                "flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition-all",
+                                contextConfig.webSearch === "on"
+                                  ? "text-foreground/80 bg-foreground/5"
+                                  : "text-muted-foreground/40 hover:bg-muted"
+                              )}
+                            >
+                              <Globe className={cn("h-3.5 w-3.5", contextConfig.webSearch === "on" ? "text-emerald-400" : "text-muted-foreground/30")} />
+                              Web
+                            </button>
+                            <button
+                              onClick={() =>
+                                setContextConfig((prev) => ({ ...prev, memory: prev.memory === "on" ? "off" : "on" }))
+                              }
+                              className={cn(
+                                "flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition-all",
+                                contextConfig.memory === "on"
+                                  ? "text-foreground/80 bg-foreground/5"
+                                  : "text-muted-foreground/40 hover:bg-muted"
+                              )}
+                            >
+                              <Brain className={cn("h-3.5 w-3.5", contextConfig.memory === "on" ? "text-pink-400" : "text-muted-foreground/30")} />
+                              Memory
+                            </button>
+                            {tab !== "team" && (
+                              <button
+                                onClick={() =>
+                                  setContextConfig((prev) => ({ ...prev, meetingBrain: prev.meetingBrain === "on" ? "off" : "on" }))
+                                }
+                                className={cn(
+                                  "flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition-all",
+                                  contextConfig.meetingBrain === "on"
+                                    ? "text-foreground/80 bg-foreground/5"
+                                    : "text-muted-foreground/40 hover:bg-muted"
+                                )}
+                              >
+                                <ListChecks className={cn("h-3.5 w-3.5", contextConfig.meetingBrain === "on" ? "text-teal-400" : "text-muted-foreground/30")} />
+                                Tasks
+                              </button>
+                            )}
+                            <button
+                              onClick={() =>
+                                setContextConfig((prev) => ({ ...prev, imageGeneration: prev.imageGeneration === "on" ? "off" : "on" }))
+                              }
+                              className={cn(
+                                "flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition-all",
+                                contextConfig.imageGeneration === "on"
+                                  ? "text-foreground/80 bg-foreground/5"
+                                  : "text-muted-foreground/40 hover:bg-muted"
+                              )}
+                            >
+                              <ImageIcon className={cn("h-3.5 w-3.5", contextConfig.imageGeneration === "on" ? "text-violet-400" : "text-muted-foreground/30")} />
+                              Image
+                            </button>
+                          </div>
+
+                          {/* Theme */}
+                          <div className="h-px bg-border mx-2" />
+                          <div className="px-3 pt-2 pb-1">
+                            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Theme</p>
+                          </div>
+                          <div className="flex gap-1 px-2 pb-1">
+                            <button
+                              onClick={() => setTheme("light")}
+                              className={cn(
+                                "flex-1 flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs transition-colors",
+                                mounted && resolvedTheme === "light"
+                                  ? "bg-foreground/10 text-foreground font-medium"
+                                  : "text-muted-foreground hover:bg-muted"
+                              )}
+                            >
+                              <Sun className="h-3 w-3" />
+                              Light
+                            </button>
+                            <button
+                              onClick={() => setTheme("dark")}
+                              className={cn(
+                                "flex-1 flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs transition-colors",
+                                mounted && resolvedTheme === "dark"
+                                  ? "bg-foreground/10 text-foreground font-medium"
+                                  : "text-muted-foreground hover:bg-muted"
+                              )}
+                            >
+                              <Moon className="h-3 w-3" />
+                              Dark
+                            </button>
+                            <button
+                              onClick={() => setTheme("system")}
+                              className="flex-1 flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs text-muted-foreground hover:bg-muted transition-colors"
+                            >
+                              <Monitor className="h-3 w-3" />
+                              System
+                            </button>
+                          </div>
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+
+                    {/* ── Desktop-only: attach button ── */}
                     <Button
                       variant="ghost"
                       size="sm"
                       onClick={() => fileInputRef.current?.click()}
                       disabled={sending || uploading}
-                      className="h-9 w-9 sm:h-8 sm:w-8 p-0 text-muted-foreground hover:text-foreground"
+                      className="hidden lg:flex h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
                       title="Attach file"
                     >
                       {uploading ? (
-                        <Loader2 className="h-4 w-4 sm:h-3.5 sm:w-3.5 animate-spin" />
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       ) : (
-                        <Paperclip className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
+                        <Paperclip className="h-3.5 w-3.5" />
                       )}
                     </Button>
 
+                    {/* ── Desktop-only: visibility dropdown ── */}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button
                           variant="ghost"
                           size="sm"
                           className={cn(
-                            "h-9 sm:h-8 gap-1 sm:gap-1.5 text-[11px] sm:text-xs px-2 sm:px-2.5",
+                            "hidden lg:flex h-8 gap-1.5 text-xs px-2.5",
                             incognitoMode
                               ? "text-amber-500 hover:text-amber-400"
                               : "text-muted-foreground hover:text-foreground"
@@ -1515,8 +1707,19 @@ function EngineGPTContent() {
                       </DropdownMenuContent>
                     </DropdownMenu>
 
+                    {/* ── Mobile: subtle visibility indicator ── */}
+                    <span className={cn(
+                      "lg:hidden text-[10px] px-1.5 py-0.5 rounded-md",
+                      incognitoMode
+                        ? "text-amber-500 bg-amber-500/10"
+                        : "text-muted-foreground/60"
+                    )}>
+                      {incognitoMode ? "Incognito" : tab === "private" ? "" : "Team"}
+                    </span>
+
                     <div className="flex-1" />
 
+                    {/* ── Model selector (both mobile + desktop) ── */}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button
@@ -1595,8 +1798,8 @@ function EngineGPTContent() {
                   Press Enter to send, Shift+Enter for new line
                 </p>
 
-                {/* Context & web search controls */}
-                <div className="flex items-center justify-center gap-1.5 mt-3 flex-wrap">
+                {/* Context & web search controls (desktop only — mobile uses + popover) */}
+                <div className="hidden lg:flex items-center justify-center gap-1.5 mt-3 flex-wrap">
                   {[
                     { key: "contracts" as const, label: "Contracts", Icon: ScrollText, color: "text-amber-400" },
                     { key: "contentPipeline" as const, label: "Content", Icon: Newspaper, color: "text-blue-400" },
