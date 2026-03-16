@@ -119,13 +119,13 @@ export async function GET(req: NextRequest) {
     if (userIds.length > 0) {
       const { data: users } = await supabase
         .from("users")
-        .select("id_user, name_user, email")
+        .select("id_user, name_user, email_user")
         .in("id_user", userIds);
       if (users) {
         userNameMap = new Map(
           users.map((u: any) => [
             u.id_user,
-            u.name_user || u.email || `User ${u.id_user}`,
+            u.name_user || u.email_user || `User ${u.id_user}`,
           ])
         );
       }
