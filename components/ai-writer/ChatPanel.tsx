@@ -474,10 +474,18 @@ export default function ChatPanel({
               {conversation.title}
             </button>
           )}
-          <div className="flex items-center gap-2 mt-0.5 overflow-hidden max-h-5">
+          {/* Mobile subtitle — compact single line */}
+          <p className="md:hidden text-[11px] text-muted-foreground truncate mt-0.5">
+            {conversation.visibility === "private" ? "Private" : "Team"}
+            {" · "}
+            {modelLabel}
+            {conversation.customerName && ` · ${conversation.customerName}`}
+          </p>
+          {/* Desktop badges row */}
+          <div className="hidden md:flex items-center gap-2 mt-0.5 overflow-hidden max-h-5">
             <Badge
               variant="outline"
-              className="text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4 gap-1"
+              className="text-[10px] px-1.5 py-0 h-4 gap-1"
             >
               {conversation.visibility === "private" ? (
                 <Lock className="h-2.5 w-2.5" />
@@ -489,21 +497,21 @@ export default function ChatPanel({
             {myPermission === "view" && (
               <Badge
                 variant="outline"
-                className="text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4 gap-1 text-muted-foreground"
+                className="text-[10px] px-1.5 py-0 h-4 gap-1 text-muted-foreground"
               >
                 View only
               </Badge>
             )}
             <Badge
               variant="outline"
-              className="text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4"
+              className="text-[10px] px-1.5 py-0 h-4"
             >
               {modelLabel}
             </Badge>
             {conversation.customerName && (
               <Badge
                 variant="outline"
-                className="hidden md:inline-flex text-xs md:text-[10px] px-2 md:px-1.5 py-0.5 md:py-0 h-5 md:h-4 gap-1 text-muted-foreground"
+                className="text-[10px] px-1.5 py-0 h-4 gap-1 text-muted-foreground"
               >
                 <Building2 className="h-2.5 w-2.5" />
                 {conversation.customerName}
@@ -537,13 +545,13 @@ export default function ChatPanel({
           </div>
         </div>
 
-        {/* Mobile customer dropdown */}
+        {/* Desktop customer dropdown (mobile shows client in subtitle text) */}
         {customers && customers.length > 0 && onCustomerChange && (
           <Popover>
             <PopoverTrigger asChild>
-              <button className="lg:hidden flex items-center gap-1 rounded-lg border bg-background hover:bg-muted px-2 py-1 text-[12px] transition-colors shrink-0">
+              <button className="hidden lg:flex items-center gap-1 rounded-lg border bg-background hover:bg-muted px-2 py-1 text-[12px] transition-colors shrink-0">
                 <Building2 className="h-3 w-3 text-muted-foreground" />
-                <span className="truncate max-w-[80px]">
+                <span className="truncate max-w-[120px]">
                   {selectedCustomer?.name || "General"}
                 </span>
                 <ChevronsUpDown className="h-2.5 w-2.5 text-muted-foreground" />

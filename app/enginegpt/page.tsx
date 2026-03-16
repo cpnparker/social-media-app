@@ -1129,14 +1129,6 @@ function EngineGPTContent() {
               />
               <span className="text-sm font-bold">EngineGPT</span>
             </div>
-            <div className="flex-1" />
-            <button
-              onClick={handleNewChat}
-              className="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-muted transition-colors text-muted-foreground"
-              title="New chat"
-            >
-              <Plus className="h-5 w-5" />
-            </button>
           </div>
         )}
 
