@@ -133,7 +133,23 @@ export async function GET(req: NextRequest) {
       }))
       .sort((a, b) => b.cost - a.cost);
 
-    return NextResponse.json({ summary, daily, byModel, bySource, byUser });
+    // By user + model — breakdown of which models each user is using
+    const userModelMap: Record<
+      string,
+      { userId: number; model: string; cost: number; calls: number; inputTokens: number; outputTokens: number }
+    > = {};
+    for (const r of usageRows) {
+      const key = `${r.user_usage}::${r.name_model}`;
+      if (!userModelMap[key])
+        userModelMap[key] = { userId: r.user_usage, model: r.name_model, cost: 0, calls: 0, inputTokens: 0, outputTokens: 0 };
+      userModelMap[key].cost += r.units_cost_tenths;
+      userModelMap[key].calls += 1;
+      userModelMap[key].inputTokens += r.units_input;
+      userModelMap[key].outputTokens += r.units_output;
+    }
+    const byUserModel = Object.values(userModelMap).sort((a, b) => b.cost - a.cost);
+
+    return NextResponse.json({ summary, daily, byModel, bySource, byUser, byUserModel });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

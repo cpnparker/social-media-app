@@ -183,6 +183,15 @@ function EngineGPTContent() {
   // Prevent hydration mismatch for theme icon
   useEffect(() => setMounted(true), []);
 
+  // Auto-focus the home textarea on mount so mobile keyboard opens
+  useEffect(() => {
+    if (!selectedId && textareaRef.current) {
+      // Small delay so the page renders first, then focus to open keyboard
+      const timer = setTimeout(() => textareaRef.current?.focus(), 300);
+      return () => clearTimeout(timer);
+    }
+  }, [selectedId]);
+
   // Reset to General (no customer) every time EngineGPT opens
   // — but NOT when arriving via a thread URL (?thread=xxx) since
   //   that would change customerId → recreate fetchConversations →
@@ -1281,21 +1290,23 @@ function EngineGPTContent() {
         ) : (
           /* ─── Home view (centered input) ─── */
           <div className="flex-1 flex flex-col overflow-y-auto">
-            <div className="flex-1 flex flex-col items-center justify-center px-4 pb-16 sm:pb-24">
-              {/* Icon */}
+            {/* Logo + tagline — pushed up like Claude mobile */}
+            <div className="flex flex-col items-center justify-end flex-1 px-4 pb-4 sm:pb-6 min-h-0">
               <img
                 src="/assets/logo_engine_icon.svg"
                 alt="EngineGPT"
-                className="h-10 w-10 sm:h-14 sm:w-14 mb-4 sm:mb-6 dark:brightness-0 dark:invert"
+                className="h-10 w-10 sm:h-14 sm:w-14 mb-3 sm:mb-5 dark:brightness-0 dark:invert"
               />
               <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight mb-1 sm:mb-2">
                 What are you working on?
               </h1>
-              <p className="text-sm sm:text-base text-muted-foreground mb-6 sm:mb-10 max-w-md text-center">
+              <p className="text-sm sm:text-base text-muted-foreground max-w-md text-center">
                 Brainstorm ideas, draft content, refine messaging, and more.
               </p>
+            </div>
 
-              {/* Input area */}
+            {/* Input area — pinned below logo, centered */}
+            <div className="shrink-0 w-full flex flex-col items-center px-4 pb-4 sm:pb-8">
               <div
                 className="w-full max-w-2xl"
                 onDragEnter={handleHomeDragEnter}
@@ -1365,7 +1376,7 @@ function EngineGPTContent() {
                     ref={fileInputRef}
                     type="file"
                     multiple
-                    accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.doc,.xlsx,.xls,.pptx,.txt,.csv,.md"
+                    accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.rtf,.json,.xml,.tsv,.html,.txt,.csv,.md"
                     onChange={handleFileSelect}
                     className="hidden"
                   />

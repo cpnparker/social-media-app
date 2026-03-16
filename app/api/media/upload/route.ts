@@ -22,9 +22,16 @@ const ALLOWED_TYPES = [
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.ms-excel",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.ms-powerpoint",
+  "application/rtf",
+  "application/json",
+  "application/xml",
   "text/plain",
   "text/csv",
   "text/markdown",
+  "text/xml",
+  "text/tab-separated-values",
+  "text/html",
 ];
 
 // POST /api/media/upload

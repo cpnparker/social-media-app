@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Loader2,
   Check,
@@ -109,6 +109,14 @@ interface UsageData {
     inputTokens: number;
     outputTokens: number;
   }[];
+  byUserModel: {
+    userId: number;
+    model: string;
+    cost: number;
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+  }[];
 }
 
 /* ─────────────── Helpers ─────────────── */
@@ -126,7 +134,12 @@ function formatTokens(n: number): string {
 }
 
 const MODEL_LABELS: Record<string, string> = {
+  "claude-sonnet-4-6": "Claude Sonnet 4.6",
   "claude-sonnet-4-20250514": "Claude Sonnet 4",
+  "gemini-3-flash": "Gemini 3 Flash",
+  "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
+  "gemini-2.5-pro": "Gemini 2.5 Pro (Legacy)",
+  "gemini-2.5-flash": "Gemini 2.5 Flash (Legacy)",
   "gpt-4o": "GPT-4o",
   "gpt-4o-mini": "GPT-4o Mini",
   "grok-4-1-fast": "Grok 4 Fast",
@@ -134,10 +147,25 @@ const MODEL_LABELS: Record<string, string> = {
   "grok-3": "Grok 3 (Legacy)",
 };
 
+const MODEL_COLORS: Record<string, string> = {
+  "claude-sonnet-4-6": "bg-orange-500",
+  "claude-sonnet-4-20250514": "bg-orange-400",
+  "gemini-3-flash": "bg-blue-500",
+  "gemini-3.1-flash-lite": "bg-blue-400",
+  "gemini-2.5-pro": "bg-blue-300",
+  "gemini-2.5-flash": "bg-blue-300",
+  "gpt-4o": "bg-green-500",
+  "gpt-4o-mini": "bg-green-400",
+  "grok-4-1-fast": "bg-slate-600",
+  "grok-3-mini": "bg-slate-500",
+  "grok-3": "bg-slate-400",
+};
+
 const PROVIDER_LABELS: Record<string, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   xai: "xAI (Grok)",
+  google: "Google",
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -208,6 +236,7 @@ function UsageTab({ workspaceId }: { workspaceId: string }) {
   const [usageDays, setUsageDays] = useState(30);
   const [usageLoading, setUsageLoading] = useState(false);
   const [userSearch, setUserSearch] = useState("");
+  const [expandedUserId, setExpandedUserId] = useState<number | null>(null);
 
   const fetchUsage = useCallback(async () => {
     setUsageLoading(true);
@@ -353,38 +382,52 @@ function UsageTab({ workspaceId }: { workspaceId: string }) {
           )}
 
           {/* Cost by Model */}
-          {usageData.byModel.length > 0 && (
+          {usageData.byModel.length > 0 && (() => {
+            const totalCalls = usageData.byModel.reduce((s, m) => s + m.calls, 0);
+            const totalCost = usageData.byModel.reduce((s, m) => s + m.cost, 0);
+            return (
             <Card className="border-0 shadow-sm">
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium">Cost by Model</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-3">
-                {usageData.byModel.map((m) => (
+              <CardContent className="space-y-4">
+                {usageData.byModel.map((m) => {
+                  const costPct = totalCost > 0 ? ((m.cost / totalCost) * 100).toFixed(1) : "0";
+                  const callPct = totalCalls > 0 ? ((m.calls / totalCalls) * 100).toFixed(0) : "0";
+                  const barColor = MODEL_COLORS[m.model] || "bg-primary";
+                  return (
                   <div key={m.model}>
                     <div className="flex items-center justify-between mb-1">
                       <div className="flex items-center gap-2">
+                        <div className={cn("h-2.5 w-2.5 rounded-sm shrink-0", barColor)} />
                         <span className="text-sm font-medium">{MODEL_LABELS[m.model] || m.model}</span>
                         <span className="text-[10px] text-muted-foreground">
-                          {m.calls} call{m.calls !== 1 ? "s" : ""}
+                          {m.calls} call{m.calls !== 1 ? "s" : ""} ({callPct}%)
                         </span>
                       </div>
-                      <span className="text-sm font-semibold">{formatCost(m.cost)}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-muted-foreground">{costPct}%</span>
+                        <span className="text-sm font-semibold">{formatCost(m.cost)}</span>
+                      </div>
                     </div>
                     <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-primary transition-all"
+                        className={cn("h-full rounded-full transition-all", barColor)}
                         style={{ width: `${(m.cost / maxModelCost) * 100}%` }}
                       />
                     </div>
                     <div className="flex gap-4 mt-1">
                       <span className="text-[10px] text-muted-foreground">Input: {formatTokens(m.inputTokens)}</span>
                       <span className="text-[10px] text-muted-foreground">Output: {formatTokens(m.outputTokens)}</span>
+                      <span className="text-[10px] text-muted-foreground">Avg: {formatTokens(Math.round((m.inputTokens + m.outputTokens) / m.calls))}/call</span>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </CardContent>
             </Card>
-          )}
+            );
+          })()}
 
           {/* Cost by Source */}
           {usageData.bySource.length > 0 && (
@@ -455,15 +498,48 @@ function UsageTab({ workspaceId }: { workspaceId: string }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredUsers.map((u) => (
-                        <tr key={u.userId} className="border-t border-border/50">
-                          <td className="px-3 py-2 text-sm font-medium">{u.userName}</td>
-                          <td className="px-3 py-2 text-sm text-right">{formatCost(u.cost)}</td>
-                          <td className="px-3 py-2 text-sm text-right text-muted-foreground">{u.calls}</td>
-                          <td className="px-3 py-2 text-xs text-right text-muted-foreground hidden sm:table-cell">{formatTokens(u.inputTokens)}</td>
-                          <td className="px-3 py-2 text-xs text-right text-muted-foreground hidden sm:table-cell">{formatTokens(u.outputTokens)}</td>
-                        </tr>
-                      ))}
+                      {filteredUsers.map((u) => {
+                        const isExpanded = expandedUserId === u.userId;
+                        const userModels = (usageData.byUserModel || [])
+                          .filter((um) => um.userId === u.userId)
+                          .sort((a, b) => b.cost - a.cost);
+                        return (
+                          <React.Fragment key={u.userId}>
+                            <tr
+                              className={cn(
+                                "border-t border-border/50 cursor-pointer hover:bg-muted/30 transition-colors",
+                                isExpanded && "bg-muted/20"
+                              )}
+                              onClick={() => setExpandedUserId(isExpanded ? null : u.userId)}
+                            >
+                              <td className="px-3 py-2 text-sm font-medium">
+                                <div className="flex items-center gap-1.5">
+                                  <ChevronRight className={cn("h-3 w-3 text-muted-foreground transition-transform", isExpanded && "rotate-90")} />
+                                  {u.userName}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-sm text-right">{formatCost(u.cost)}</td>
+                              <td className="px-3 py-2 text-sm text-right text-muted-foreground">{u.calls}</td>
+                              <td className="px-3 py-2 text-xs text-right text-muted-foreground hidden sm:table-cell">{formatTokens(u.inputTokens)}</td>
+                              <td className="px-3 py-2 text-xs text-right text-muted-foreground hidden sm:table-cell">{formatTokens(u.outputTokens)}</td>
+                            </tr>
+                            {isExpanded && userModels.map((um) => (
+                              <tr key={`${u.userId}-${um.model}`} className="bg-muted/10">
+                                <td className="pl-8 pr-3 py-1.5 text-xs text-muted-foreground">
+                                  <div className="flex items-center gap-1.5">
+                                    <div className={cn("h-2 w-2 rounded-sm shrink-0", MODEL_COLORS[um.model] || "bg-gray-400")} />
+                                    {MODEL_LABELS[um.model] || um.model}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-1.5 text-xs text-right text-muted-foreground">{formatCost(um.cost)}</td>
+                                <td className="px-3 py-1.5 text-xs text-right text-muted-foreground">{um.calls}</td>
+                                <td className="px-3 py-1.5 text-xs text-right text-muted-foreground hidden sm:table-cell">{formatTokens(um.inputTokens)}</td>
+                                <td className="px-3 py-1.5 text-xs text-right text-muted-foreground hidden sm:table-cell">{formatTokens(um.outputTokens)}</td>
+                              </tr>
+                            ))}
+                          </React.Fragment>
+                        );
+                      })}
                       {filteredUsers.length === 0 && (
                         <tr>
                           <td colSpan={5} className="px-3 py-6 text-center text-sm text-muted-foreground">

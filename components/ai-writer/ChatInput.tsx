@@ -276,7 +276,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
           ref={fileInputRef}
           type="file"
           multiple
-          accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.doc,.xlsx,.xls,.pptx,.txt,.csv,.md"
+          accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.rtf,.json,.xml,.tsv,.html,.txt,.csv,.md"
           onChange={handleFileSelect}
           className="hidden"
         />
