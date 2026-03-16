@@ -80,6 +80,7 @@ interface ChatPanelProps {
   selectedCustomer?: { id: string; name: string } | null;
   onCustomerChange?: (customerId: string | null) => void;
   isAdmin?: boolean;
+  headerExtra?: React.ReactNode;
 }
 
 type ContextConfig = { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch: string; memory: string; meetingBrain: string; imageGeneration: string };
@@ -99,6 +100,7 @@ export default function ChatPanel({
   selectedCustomer,
   onCustomerChange,
   isAdmin,
+  headerExtra,
 }: ChatPanelProps) {
   const [conversation, setConversation] = useState<AIConversation | null>(null);
   const [messages, setMessages] = useState<AIMessageRow[]>([]);
@@ -588,6 +590,9 @@ export default function ChatPanel({
             </PopoverContent>
           </Popover>
         )}
+
+        {/* Extra header controls injected by parent (e.g. theme toggle) */}
+        {headerExtra}
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

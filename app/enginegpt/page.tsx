@@ -1158,8 +1158,8 @@ function EngineGPTContent() {
           </div>
         )}
 
-        {/* Desktop top bar — client picker + theme toggle */}
-        <div className="hidden lg:flex items-center gap-3 px-4 pt-2.5 pb-1 shrink-0">
+        {/* Desktop top bar — client picker + theme toggle (home view only; chat view uses ChatPanel headerExtra) */}
+        <div className={cn("hidden lg:flex items-center gap-3 px-4 pt-2.5 pb-1 shrink-0", selectedId && "!hidden")}>
           <div className="flex-1" />
           {customers.length > 0 && (
             <Popover>
@@ -1295,6 +1295,37 @@ function EngineGPTContent() {
               customers={customers.map((c) => ({ id: String(c.id), name: c.name, logoUrl: c.logoUrl || undefined }))}
               selectedCustomer={selectedCustomer ? { id: String(selectedCustomer.id), name: selectedCustomer.name } : null}
               onCustomerChange={(id) => customerCtx?.setSelectedCustomerId(id)}
+              headerExtra={
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button className="hidden lg:flex h-8 w-8 rounded-full border bg-background hover:bg-muted items-center justify-center transition-colors shrink-0">
+                      {mounted ? (
+                        resolvedTheme === "dark" ? (
+                          <Moon className="h-3.5 w-3.5 text-muted-foreground" />
+                        ) : (
+                          <Sun className="h-3.5 w-3.5 text-muted-foreground" />
+                        )
+                      ) : (
+                        <div className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-36">
+                    <DropdownMenuItem onClick={() => setTheme("light")} className="gap-2 text-sm">
+                      <Sun className="h-4 w-4" />
+                      Light
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setTheme("dark")} className="gap-2 text-sm">
+                      <Moon className="h-4 w-4" />
+                      Dark
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setTheme("system")} className="gap-2 text-sm">
+                      <Monitor className="h-4 w-4" />
+                      System
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              }
               onCopyLink={() => {
                 const url = new URL(window.location.href);
                 url.searchParams.set("thread", selectedId!);
