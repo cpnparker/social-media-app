@@ -183,12 +183,12 @@ function EngineGPTContent() {
   // Prevent hydration mismatch for theme icon
   useEffect(() => setMounted(true), []);
 
-  // Auto-focus the home textarea on mount so mobile keyboard opens
+  // Focus the home textarea when returning from a chat (client-side navigation).
+  // Initial page load uses the autoFocus attribute on the textarea instead,
+  // which is the only reliable way to open the mobile keyboard on first load.
   useEffect(() => {
     if (!selectedId && textareaRef.current) {
-      // Small delay so the page renders first, then focus to open keyboard
-      const timer = setTimeout(() => textareaRef.current?.focus(), 300);
-      return () => clearTimeout(timer);
+      requestAnimationFrame(() => textareaRef.current?.focus());
     }
   }, [selectedId]);
 
@@ -1377,6 +1377,8 @@ function EngineGPTContent() {
                     onKeyDown={handleKeyDown}
                     placeholder="Ask anything..."
                     disabled={sending}
+                    autoFocus
+                    enterKeyHint="send"
                     rows={1}
                     className="w-full resize-none bg-transparent px-4 py-3 sm:px-5 sm:py-4 text-[15px] sm:text-base focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
                     style={{ minHeight: "44px", maxHeight: "160px" }}
