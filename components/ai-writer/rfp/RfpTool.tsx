@@ -1331,20 +1331,50 @@ function PipelineView({
                     <div
                       key={opp.id_opportunity}
                       onClick={() => setSelectedOpp(opp)}
-                      className="border rounded-lg p-3 bg-background hover:border-cyan-300 hover:shadow-sm transition-all cursor-pointer"
+                      className="border rounded-lg p-3 bg-background hover:border-cyan-300 hover:shadow-sm transition-all cursor-pointer group"
                     >
                       <div className="flex items-start justify-between gap-2 mb-1">
-                        <h4 className="text-sm font-medium line-clamp-2">{opp.title}</h4>
-                        {opp.units_relevance_score != null && opp.units_relevance_score > 0 && (
-                          <span
-                            className={cn(
-                              "text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0",
-                              scoreColor(opp.units_relevance_score)
-                            )}
-                          >
-                            {opp.units_relevance_score}%
-                          </span>
-                        )}
+                        <h4 className="text-sm font-medium line-clamp-2 flex-1">{opp.title}</h4>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {opp.units_relevance_score != null && opp.units_relevance_score > 0 && (
+                            <span
+                              className={cn(
+                                "text-[10px] font-bold px-1.5 py-0.5 rounded-full",
+                                scoreColor(opp.units_relevance_score)
+                              )}
+                            >
+                              {opp.units_relevance_score}%
+                            </span>
+                          )}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                onClick={(e) => e.stopPropagation()}
+                                className="h-6 w-6 flex items-center justify-center rounded hover:bg-muted opacity-0 group-hover:opacity-100 transition-opacity"
+                              >
+                                <MoreHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                              {opp.type_status !== "ignored" && (
+                                <DropdownMenuItem
+                                  onClick={() => handleStatusChange(opp.id_opportunity, "ignored")}
+                                  className="text-xs"
+                                >
+                                  <EyeOff className="h-3.5 w-3.5 mr-1.5" />
+                                  Ignore
+                                </DropdownMenuItem>
+                              )}
+                              <DropdownMenuItem
+                                onClick={() => handleDeleteOpp(opp.id_opportunity)}
+                                className="text-xs text-destructive focus:text-destructive"
+                              >
+                                <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                                Remove from Pipeline
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
                       </div>
                       <p className="text-xs text-muted-foreground mb-2">{opp.organisation_name}</p>
 
@@ -3388,7 +3418,7 @@ function AllRfpsView({
   const [rfps, setRfps] = useState<AggregatedRfp[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchFilter, setSearchFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "open" | "saved" | "unsaved">("all");
+  const [statusFilter, setStatusFilter] = useState<"active" | "all" | "open" | "saved" | "unsaved" | "ignored">("active");
   const [sortField, setSortField] = useState<SortField>("found");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [selectedRfp, setSelectedRfp] = useState<AggregatedRfp | null>(null);
@@ -3449,9 +3479,11 @@ function AllRfpsView({
     }
 
     // Status filter
-    if (statusFilter === "open") result = result.filter((r) => r.status !== "likely_closed");
+    if (statusFilter === "active") result = result.filter((r) => !isIgnored(r));
+    if (statusFilter === "open") result = result.filter((r) => r.status !== "likely_closed" && !isIgnored(r));
     if (statusFilter === "saved") result = result.filter((r) => isInPipeline(r));
     if (statusFilter === "unsaved") result = result.filter((r) => !isInPipeline(r) && !isIgnored(r));
+    if (statusFilter === "ignored") result = result.filter((r) => isIgnored(r));
 
     // Sort
     result = [...result].sort((a, b) => {
@@ -3491,10 +3523,12 @@ function AllRfpsView({
   // Counts for filter pills
   const counts = useMemo(() => {
     const all = rfps.length;
-    const open = rfps.filter((r) => r.status !== "likely_closed").length;
+    const ignored = rfps.filter((r) => isIgnored(r)).length;
+    const active = all - ignored;
+    const open = rfps.filter((r) => r.status !== "likely_closed" && !isIgnored(r)).length;
     const saved = rfps.filter((r) => isInPipeline(r)).length;
     const unsaved = rfps.filter((r) => !isInPipeline(r) && !isIgnored(r)).length;
-    return { all, open, saved, unsaved };
+    return { all, active, open, saved, unsaved, ignored };
   }, [rfps, isInPipeline, isIgnored]);
 
   const handleSort = (field: SortField) => {
@@ -3630,10 +3664,12 @@ function AllRfpsView({
       <div className="flex items-center gap-1.5 flex-wrap">
         {(
           [
+            { id: "active", label: "Active", count: counts.active },
             { id: "all", label: "All", count: counts.all },
             { id: "open", label: "Open", count: counts.open },
             { id: "saved", label: "In Pipeline", count: counts.saved },
             { id: "unsaved", label: "Not Saved", count: counts.unsaved },
+            { id: "ignored", label: "Ignored", count: counts.ignored },
           ] as const
         ).map((pill) => (
           <button
@@ -4753,30 +4789,6 @@ function DiscoverPanel({
         </div>
       </div>
 
-      {/* Saved Searches */}
-      <div className="max-w-2xl mx-auto mb-4">
-        <SavedSearchesPanel
-          workspaceId={workspaceId!}
-          currentConfig={searchConfig}
-          currentQuery={query}
-          currentProvider={provider}
-          onLoadSearch={(config, q, p) => {
-            setSearchConfig(config);
-            if (workspaceId) saveSearchConfig(workspaceId, config);
-            setQuery(q);
-            setProvider(p);
-          }}
-          onRunResult={(opps, summary) => {
-            setResults(opps);
-            setSearchSummary(summary);
-            setHasSearched(true);
-            setSearchMeta(null);
-          }}
-          forceExpand={expandSavedSearches}
-          onForceExpandConsumed={onSavedSearchesExpanded}
-        />
-      </div>
-
       {/* Search progress */}
       {searching && (
         <div className="flex flex-col items-center py-12 max-w-sm mx-auto">
@@ -5272,11 +5284,37 @@ function DiscoverPanel({
 
       {/* Initial empty state */}
       {!searching && !hasSearched && (
-        <div className="flex flex-col items-center py-12">
+        <div className="flex flex-col items-center py-8">
           <Search className="h-6 w-6 text-muted-foreground/40 mb-3" />
           <p className="text-sm text-muted-foreground">
             Search for open procurement opportunities
           </p>
+        </div>
+      )}
+
+      {/* Saved Searches — below results so search output is prominent */}
+      {!searching && (
+        <div className="max-w-2xl mx-auto mb-4 mt-2">
+          <SavedSearchesPanel
+            workspaceId={workspaceId!}
+            currentConfig={searchConfig}
+            currentQuery={query}
+            currentProvider={provider}
+            onLoadSearch={(config, q, p) => {
+              setSearchConfig(config);
+              if (workspaceId) saveSearchConfig(workspaceId, config);
+              setQuery(q);
+              setProvider(p);
+            }}
+            onRunResult={(opps, summary) => {
+              setResults(opps);
+              setSearchSummary(summary);
+              setHasSearched(true);
+              setSearchMeta(null);
+            }}
+            forceExpand={expandSavedSearches}
+            onForceExpandConsumed={onSavedSearchesExpanded}
+          />
         </div>
       )}
 
