@@ -46,6 +46,7 @@ import {
   Sparkles,
   Pin,
   ImageIcon,
+  ShieldCheck,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
@@ -70,6 +71,12 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { AI_MODELS, DEFAULT_MODEL, getModelLabel } from "@/lib/ai/models";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
 import MemoryManager from "@/components/ai-writer/MemoryManager";
@@ -142,6 +149,7 @@ function EngineGPTContent() {
   const [adminDialogOpen, setAdminDialogOpen] = useState(false);
   const [personaliseDialogOpen, setPersonaliseDialogOpen] = useState(false);
   const [memoryCount, setMemoryCount] = useState(0);
+  const [privacyModalOpen, setPrivacyModalOpen] = useState(false);
   const [isHomeDragging, setIsHomeDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1727,11 +1735,90 @@ function EngineGPTContent() {
                     Image
                   </button>
                 </div>
+
+                {/* Data privacy line */}
+                <button
+                  onClick={() => setPrivacyModalOpen(true)}
+                  className="text-[11px] text-muted-foreground/50 hover:text-muted-foreground transition-colors text-center mt-4 flex items-center justify-center gap-1.5 mx-auto"
+                >
+                  <ShieldCheck className="h-3 w-3" />
+                  Your data is protected. No AI provider trains on your conversations.
+                </button>
               </div>
             </div>
           </div>
         )}
       </div>
+
+      {/* Data Privacy Modal */}
+      <Dialog open={privacyModalOpen} onOpenChange={setPrivacyModalOpen}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldCheck className="h-5 w-5 text-emerald-500" />
+              Your Data is Protected
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 text-sm text-muted-foreground">
+            <p>
+              EngineGPT connects to multiple AI providers via their enterprise APIs.
+              Under each provider&apos;s enterprise terms, <strong className="text-foreground">your prompts, responses, and client data
+              are never used to train AI models</strong>.
+            </p>
+
+            <div className="space-y-3">
+              <div className="rounded-lg border p-3 space-y-1">
+                <div className="font-medium text-foreground text-xs">Anthropic (Claude)</div>
+                <p className="text-xs">
+                  API data is explicitly excluded from model training. Inputs are retained for
+                  7 days for abuse monitoring only, then automatically deleted.
+                </p>
+              </div>
+
+              <div className="rounded-lg border p-3 space-y-1">
+                <div className="font-medium text-foreground text-xs">xAI (Grok)</div>
+                <p className="text-xs">
+                  Enterprise API terms state: &ldquo;xAI shall not use any User Content for any of its
+                  internal AI or other training purposes.&rdquo; You own all inputs and outputs.
+                  Data is automatically deleted within 30 days.
+                </p>
+              </div>
+
+              <div className="rounded-lg border p-3 space-y-1">
+                <div className="font-medium text-foreground text-xs">OpenAI (GPT-4o)</div>
+                <p className="text-xs">
+                  API data is not used for training by default &mdash; no opt-out required.
+                  Data is retained for up to 30 days for abuse monitoring only.
+                </p>
+              </div>
+
+              <div className="rounded-lg border p-3 space-y-1">
+                <div className="font-medium text-foreground text-xs">Google (Gemini)</div>
+                <p className="text-xs">
+                  Enterprise and API customer data is never used for model training.
+                  Google explicitly confirms prompts and outputs don&apos;t touch training pipelines.
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-lg bg-muted/50 p-3 space-y-1.5">
+              <div className="font-medium text-foreground text-xs">What this means for The Content Engine</div>
+              <ul className="text-xs space-y-1 list-disc list-inside">
+                <li>Client data shared in conversations stays private</li>
+                <li>No provider will use your content to improve their public models</li>
+                <li>All data is automatically deleted from provider servers within 7&ndash;30 days</li>
+                <li>Conversation history is stored securely in your workspace database</li>
+              </ul>
+            </div>
+
+            <p className="text-xs text-muted-foreground/60">
+              These protections apply to all models available in EngineGPT, including when
+              using Auto mode. For full details, refer to each provider&apos;s enterprise terms of service.
+            </p>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Memory Manager Sheet */}
       {workspaceId && (
         <MemoryManager
