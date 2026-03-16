@@ -221,6 +221,20 @@ function EngineGPTContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Dynamic page title — show conversation title like ChatGPT does
+  useEffect(() => {
+    if (selectedId) {
+      const conv = conversations.find((c) => c.id === selectedId);
+      if (conv?.title) {
+        document.title = `${conv.title} — EngineGPT`;
+      } else {
+        document.title = "EngineGPT — AI Content Assistant";
+      }
+    } else {
+      document.title = "EngineGPT — AI Content Assistant";
+    }
+  }, [selectedId, conversations]);
+
   // Fetch user info for sidebar
   useEffect(() => {
     fetch("/api/me")
