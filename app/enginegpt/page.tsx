@@ -1365,7 +1365,7 @@ function EngineGPTContent() {
                     ref={fileInputRef}
                     type="file"
                     multiple
-                    accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.doc,.txt,.csv,.md"
+                    accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.doc,.xlsx,.xls,.pptx,.txt,.csv,.md"
                     onChange={handleFileSelect}
                     className="hidden"
                   />
