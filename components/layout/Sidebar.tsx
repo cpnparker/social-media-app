@@ -180,7 +180,7 @@ const adminItems: NavSubItem[] = [
 // ── RFP Tool items (flat list) ──
 const rfpToolItems: NavSubItem[] = [
   { label: "Discover RFPs", href: "/rfp-tool?tab=discover", icon: Globe },
-  { label: "Document Library", href: "/rfp-tool?tab=library", icon: FileText },
+  { label: "Company Profile", href: "/rfp-tool?tab=library", icon: FileText },
   { label: "Pipeline", href: "/rfp-tool?tab=pipeline", icon: FolderKanban },
 ];
 

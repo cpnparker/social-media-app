@@ -90,28 +90,32 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
+    const insertPayload: any = {
+      id_workspace: workspaceId,
+      title,
+      organisation_name: organisationName,
+      date_deadline: deadline || null,
+      document_scope: scope || null,
+      tags_sectors: sectors || [],
+      name_region: region || null,
+      document_value: estimatedValue || null,
+      url_source: sourceUrl || null,
+      units_relevance_score: relevanceScore || null,
+      document_ai_reasoning: aiReasoning || null,
+      config_deadlines: milestones || [],
+      type_status: status || "shortlisted",
+      user_created: userId,
+    };
+
+    // URL verification metadata — only include when present
+    // (columns may not exist in older schemas)
+    if (body.urlConfidence) insertPayload.type_url_confidence = body.urlConfidence;
+    if (body.portalName) insertPayload.name_portal = body.portalName;
+    if (body.portalSearchUrl) insertPayload.url_portal_search = body.portalSearchUrl;
+
     const { data, error } = await intelligenceDb
       .from("rfp_opportunities")
-      .insert({
-        id_workspace: workspaceId,
-        title,
-        organisation_name: organisationName,
-        date_deadline: deadline || null,
-        document_scope: scope || null,
-        tags_sectors: sectors || [],
-        name_region: region || null,
-        document_value: estimatedValue || null,
-        url_source: sourceUrl || null,
-        units_relevance_score: relevanceScore || null,
-        document_ai_reasoning: aiReasoning || null,
-        config_deadlines: milestones || [],
-        type_status: status || "shortlisted",
-        user_created: userId,
-        // URL verification metadata
-        type_url_confidence: body.urlConfidence || null,
-        name_portal: body.portalName || null,
-        url_portal_search: body.portalSearchUrl || null,
-      })
+      .insert(insertPayload)
       .select()
       .single();
 

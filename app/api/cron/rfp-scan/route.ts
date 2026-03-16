@@ -42,6 +42,28 @@ export async function GET(req: NextRequest) {
       .single();
 
     try {
+      // Fetch workspace company profile for AI context
+      let companyProfile: string | undefined;
+      try {
+        const { data: profile } = await intelligenceDb
+          .from("rfp_company_profiles")
+          .select("document_overview, document_services, document_sectors, document_differentiators, document_target_rfps")
+          .eq("id_workspace", dueSearch.id_workspace)
+          .maybeSingle();
+
+        if (profile) {
+          companyProfile = [
+            profile.document_overview,
+            profile.document_services ? `Core Services:\n${profile.document_services}` : "",
+            profile.document_sectors ? `Key Sectors:\n${profile.document_sectors}` : "",
+            profile.document_differentiators ? `Differentiators:\n${profile.document_differentiators}` : "",
+            profile.document_target_rfps ? `Target RFP Types:\n${profile.document_target_rfps}` : "",
+          ].filter(Boolean).join("\n\n");
+        }
+      } catch (profileErr) {
+        console.warn("[RFP Cron] Could not load company profile, using default:", profileErr);
+      }
+
       // Run the AI-powered search
       const config = dueSearch.config_search || {};
       const result = await searchForRfps({
@@ -50,6 +72,7 @@ export async function GET(req: NextRequest) {
         regions: config.regions?.length ? config.regions : undefined,
         sources: config.sources?.length ? config.sources : undefined,
         provider: (dueSearch.type_provider || "anthropic") as SearchProvider,
+        companyProfile,
       });
 
       // Deduplicate against existing NON-EXPIRED pipeline opportunities.
@@ -91,7 +114,24 @@ export async function GET(req: NextRequest) {
         name_user_created: dueSearch.name_user_created || "Scheduled Scan",
       });
 
-      // Send notifications for new high-relevance RFPs
+      // Populate digest queue for daily/weekly digest users
+      if (newOpps.length > 0) {
+        await intelligenceDb.from("rfp_digest_queue").insert(
+          newOpps.map((opp) => ({
+            id_workspace: dueSearch.id_workspace,
+            id_scan: scanLog?.id_scan,
+            name_search: dueSearch.name,
+            title: opp.title,
+            organisation_name: opp.organisation,
+            date_deadline: opp.deadline || null,
+            document_scope: opp.scope,
+            units_relevance_score: opp.relevanceScore,
+            url_source: opp.sourceUrl || null,
+          }))
+        );
+      }
+
+      // Send real-time notifications for new high-relevance RFPs
       let notifiedCount = 0;
       if (newOpps.length > 0) {
         notifiedCount = await sendScanNotifications(

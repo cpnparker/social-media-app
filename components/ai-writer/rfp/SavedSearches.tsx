@@ -113,6 +113,8 @@ export function SavedSearchesPanel({
   currentProvider,
   onLoadSearch,
   onRunResult,
+  forceExpand,
+  onForceExpandConsumed,
 }: {
   workspaceId: string;
   currentConfig: SearchConfig;
@@ -120,8 +122,18 @@ export function SavedSearchesPanel({
   currentProvider: SearchProvider;
   onLoadSearch: (config: SearchConfig, query: string, provider: SearchProvider) => void;
   onRunResult: (opportunities: DiscoveredRfp[], summary: string) => void;
+  forceExpand?: boolean;
+  onForceExpandConsumed?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+
+  // Auto-expand when signalled from parent (e.g. overview "Manage scans")
+  useEffect(() => {
+    if (forceExpand && !expanded) {
+      setExpanded(true);
+      onForceExpandConsumed?.();
+    }
+  }, [forceExpand, expanded, onForceExpandConsumed]);
   const [searches, setSearches] = useState<SavedSearch[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);

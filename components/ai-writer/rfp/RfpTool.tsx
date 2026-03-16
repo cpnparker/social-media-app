@@ -56,6 +56,13 @@ import {
   Activity,
   CircleDot,
   History,
+  AlertTriangle,
+  ShieldCheck,
+  List,
+  ArrowUpDown,
+  SortAsc,
+  SortDesc,
+  RotateCcw,
 } from "lucide-react";
 import { SavedSearchesPanel } from "./SavedSearches";
 import { NotificationSettingsDialog } from "./NotificationSettings";
@@ -79,12 +86,13 @@ import {
    Types & Constants
    ──────────────────────────────────────────────── */
 
-type Tab = "overview" | "discover" | "library" | "pipeline";
+type Tab = "overview" | "discover" | "all_rfps" | "library" | "pipeline";
 
 const tabs: { id: Tab; label: string; shortLabel: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: "overview", label: "Overview", shortLabel: "Overview", icon: LayoutDashboard },
   { id: "discover", label: "Discover RFPs", shortLabel: "Discover", icon: Globe },
-  { id: "library", label: "Document Library", shortLabel: "Library", icon: FileText },
+  { id: "all_rfps", label: "All RFPs", shortLabel: "All RFPs", icon: List },
+  { id: "library", label: "Company Profile", shortLabel: "Profile", icon: FileText },
   { id: "pipeline", label: "Pipeline", shortLabel: "Pipeline", icon: FolderKanban },
 ];
 
@@ -167,7 +175,8 @@ const RESPONSE_STAGES: { id: ResponseStageStatus; label: string; dotColor: strin
   { id: "ready_to_submit", label: "Ready to Submit", dotColor: "bg-emerald-500" },
 ];
 
-type UrlConfidence = "verified" | "trusted_domain" | "unverified" | "failed" | "none";
+type UrlConfidence = "verified" | "trusted_domain" | "unverified" | "portal_page" | "failed" | "none";
+type RfpStatus = "confirmed_open" | "likely_open" | "likely_closed" | "unknown";
 
 interface DiscoveredRfp {
   title: string;
@@ -176,11 +185,13 @@ interface DiscoveredRfp {
   milestones: DeadlineMilestone[];
   scope: string;
   relevanceScore: number;
+  qualityScore?: number;
   sourceUrl: string | null;
   reasoning: string;
   sectors: string[];
   region: string | null;
   estimatedValue: string | null;
+  status?: RfpStatus;
   // URL verification metadata
   urlConfidence?: UrlConfidence;
   portalName?: string | null;
@@ -376,6 +387,8 @@ export function RfpTool() {
 
   // Notification settings dialog
   const [showNotifications, setShowNotifications] = useState(false);
+  // Signal to auto-expand saved searches panel when navigating from overview
+  const [expandSavedSearches, setExpandSavedSearches] = useState(false);
 
   // Response editor state — when set, shows editor instead of tabs
   const [editorResponseId, setEditorResponseId] = useState<string | null>(null);
@@ -459,6 +472,8 @@ export function RfpTool() {
             open={showNotifications}
             onOpenChange={setShowNotifications}
             workspaceId={workspaceId}
+            userRole={wsCtx?.selectedWorkspace?.role}
+            onManageScans={() => { setExpandSavedSearches(true); setActiveTab("discover"); }}
           />
 
           {/* Tab bar */}
@@ -468,7 +483,13 @@ export function RfpTool() {
               return (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => {
+                    setActiveTab(tab.id);
+                    const url = new URL(window.location.href);
+                    url.searchParams.set("tab", tab.id);
+                    url.searchParams.delete("subtab");
+                    window.history.replaceState({}, "", url.toString());
+                  }}
                   className={cn(
                     "flex items-center gap-1.5 px-2 py-2 sm:px-4 sm:gap-2 rounded-md text-xs sm:text-sm font-medium transition-colors flex-1 justify-center",
                     activeTab === tab.id
@@ -502,6 +523,8 @@ export function RfpTool() {
                 workspaceId={workspaceId}
                 onNavigate={(tab: Tab) => setActiveTab(tab)}
                 onOpenEditor={handleOpenEditor}
+                onOpenNotifications={() => setShowNotifications(true)}
+                onManageScans={() => { setExpandSavedSearches(true); setActiveTab("discover"); }}
               />
             )}
             {activeTab === "discover" && (
@@ -519,6 +542,15 @@ export function RfpTool() {
                 savedOpps={discoverSavedOpps}
                 setSavedOpps={setDiscoverSavedOpps}
                 initialSearchId={searchIdParam}
+                expandSavedSearches={expandSavedSearches}
+                onSavedSearchesExpanded={() => setExpandSavedSearches(false)}
+              />
+            )}
+            {activeTab === "all_rfps" && (
+              <AllRfpsView
+                workspaceId={workspaceId}
+                savedOpps={discoverSavedOpps}
+                setSavedOpps={setDiscoverSavedOpps}
               />
             )}
             {activeTab === "library" && <DocumentLibrary workspaceId={workspaceId} />}
@@ -599,10 +631,14 @@ function OverviewDashboard({
   workspaceId,
   onNavigate,
   onOpenEditor,
+  onOpenNotifications,
+  onManageScans,
 }: {
   workspaceId?: string;
   onNavigate: (tab: Tab) => void;
   onOpenEditor: (responseId: string, opportunity: RfpOpportunity | null) => void;
+  onOpenNotifications: () => void;
+  onManageScans: () => void;
 }) {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -940,6 +976,97 @@ function OverviewDashboard({
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      </div>
+
+      {/* Scheduled Scans & Notifications */}
+      <div className="border rounded-lg">
+        <div className="flex items-center justify-between px-4 py-3 border-b">
+          <h3 className="text-sm font-medium flex items-center gap-2">
+            <Bell className="h-4 w-4 text-amber-500" />
+            Scans & Notifications
+          </h3>
+          <div className="flex items-center gap-3">
+            <button onClick={onManageScans} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+              Manage Scans →
+            </button>
+            <button onClick={onOpenNotifications} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+              Notifications →
+            </button>
+          </div>
+        </div>
+        <div className="p-4 space-y-3">
+          {/* Scheduled scans */}
+          {searches.savedSearches.length > 0 ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Scheduled Scans</p>
+                <button onClick={onManageScans} className="text-[11px] text-cyan-600 hover:text-cyan-700 dark:text-cyan-400 dark:hover:text-cyan-300 font-medium">
+                  Edit schedules
+                </button>
+              </div>
+              {searches.savedSearches.filter((s) => s.scheduled).length > 0 ? (
+                searches.savedSearches.filter((s) => s.scheduled).map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={onManageScans}
+                    className="flex items-center justify-between gap-2 text-xs bg-muted/30 rounded-lg px-3 py-2 w-full text-left hover:bg-muted/50 transition-colors"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium truncate">{s.name}</p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {s.schedule === "daily" ? "Runs daily" : s.schedule === "weekly" ? "Runs weekly" : s.schedule || "Custom"}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0 text-[10px] text-muted-foreground">
+                      {s.lastRun && (
+                        <span className="flex items-center gap-1">
+                          <Clock className="h-3 w-3" />
+                          {formatRelativeTime(s.lastRun)}
+                        </span>
+                      )}
+                      <Badge variant="outline" className="text-[9px] h-4 px-1.5 bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-400 dark:border-emerald-800">
+                        Active
+                      </Badge>
+                    </div>
+                  </button>
+                ))
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  No scheduled scans.{" "}
+                  <button onClick={onManageScans} className="text-cyan-500 hover:underline">
+                    Set up a scan schedule
+                  </button>
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="text-xs text-muted-foreground">
+              <p>No saved searches yet.</p>
+              <p className="mt-1">
+                <button onClick={() => onNavigate("discover")} className="text-cyan-500 hover:underline">
+                  Discover RFPs
+                </button>{" "}
+                and save your search to enable scheduled scans and notifications.
+              </p>
+            </div>
+          )}
+
+          {/* Notification summary */}
+          <div className="pt-2 border-t">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Your Notifications</p>
+              <button
+                onClick={onOpenNotifications}
+                className="text-[11px] text-cyan-600 hover:text-cyan-700 dark:text-cyan-400 dark:hover:text-cyan-300 font-medium"
+              >
+                Edit settings
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Configure how and when you receive alerts for new RFP opportunities. Admins can also manage team-wide notification preferences.
+            </p>
           </div>
         </div>
       </div>
@@ -2470,20 +2597,38 @@ function ResponseEditor({
    Document Library
    ──────────────────────────────────────────────── */
 
+type LibrarySubTab = "profile" | "previous_response" | "target_rfp" | "supporting";
+
+const LIBRARY_SUBTABS: { id: LibrarySubTab; label: string; shortLabel: string; description: string }[] = [
+  { id: "profile", label: "Company Profile", shortLabel: "Profile", description: "AI-enhanced profile used for RFP matching" },
+  { id: "previous_response", label: "Previous Responses", shortLabel: "Responses", description: "Past RFP responses we've submitted" },
+  { id: "target_rfp", label: "Target RFPs", shortLabel: "Target RFPs", description: "Example RFPs that fit our profile" },
+  { id: "supporting", label: "Supporting Docs", shortLabel: "Supporting", description: "Background info, credentials, case studies" },
+];
+
 function DocumentLibrary({ workspaceId }: { workspaceId?: string }) {
+  const subTabParam = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("subtab") : null;
+  const validSubTabs: LibrarySubTab[] = ["profile", "previous_response", "target_rfp", "supporting"];
+  const [activeSubTab, setActiveSubTab] = useState<LibrarySubTab>(
+    subTabParam && validSubTabs.includes(subTabParam as LibrarySubTab) ? (subTabParam as LibrarySubTab) : "profile"
+  );
+  const [retryingDocs, setRetryingDocs] = useState<Set<string>>(new Set());
   const [documents, setDocuments] = useState<RfpDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+
+  // Per-file upload progress tracking
+  type UploadProgress = { name: string; stage: "uploading" | "extracting" | "summarising" | "done" | "error"; percent: number };
+  const [uploadQueue, setUploadQueue] = useState<UploadProgress[]>([]);
   const [selectedDoc, setSelectedDoc] = useState<RfpDocument | null>(null);
-  const [docTypeFilter, setDocTypeFilter] = useState<string>("all");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchDocuments = useCallback(async () => {
     if (!workspaceId) return;
     try {
       const params = new URLSearchParams({ workspaceId });
-      if (docTypeFilter !== "all") params.set("type", docTypeFilter);
+      if (activeSubTab !== "profile") params.set("type", activeSubTab);
       const res = await fetch(`/api/rfp/documents?${params}`);
       if (res.ok) {
         const data = await res.json();
@@ -2494,11 +2639,14 @@ function DocumentLibrary({ workspaceId }: { workspaceId?: string }) {
     } finally {
       setLoading(false);
     }
-  }, [workspaceId, docTypeFilter]);
+  }, [workspaceId, activeSubTab]);
 
   useEffect(() => {
-    fetchDocuments();
-  }, [fetchDocuments]);
+    if (activeSubTab !== "profile") {
+      setLoading(true);
+      fetchDocuments();
+    }
+  }, [fetchDocuments, activeSubTab]);
 
   useEffect(() => {
     const hasPending = documents.some(
@@ -2509,24 +2657,39 @@ function DocumentLibrary({ workspaceId }: { workspaceId?: string }) {
     return () => clearInterval(interval);
   }, [documents, fetchDocuments]);
 
+  const updateProgress = (name: string, update: Partial<UploadProgress>) => {
+    setUploadQueue((prev) =>
+      prev.map((p) => (p.name === name ? { ...p, ...update } : p))
+    );
+  };
+
   const handleUpload = async (files: FileList | File[]) => {
     if (!workspaceId) return;
+    const fileArr = Array.from(files).filter((f) => {
+      if (f.size > 50 * 1024 * 1024) {
+        toast.error(`"${f.name}" exceeds the 50MB limit`);
+        return false;
+      }
+      return true;
+    });
+    if (fileArr.length === 0) return;
+
     setUploading(true);
-    try {
-      for (const file of Array.from(files)) {
-        // Check file size (50MB limit)
-        if (file.size > 50 * 1024 * 1024) {
-          toast.error(`"${file.name}" exceeds the 50MB limit`);
-          continue;
-        }
-        toast.info(`Uploading ${file.name}...`);
-        // Use client-side Vercel Blob upload (bypasses serverless body limits)
+    setUploadQueue(fileArr.map((f) => ({ name: f.name, stage: "uploading", percent: 0 })));
+
+    for (const file of fileArr) {
+      try {
+        // Stage 1: Upload to Vercel Blob
+        updateProgress(file.name, { stage: "uploading", percent: 10 });
         const { upload } = await import("@vercel/blob/client");
         const blob = await upload(file.name, file, {
           access: "public",
           handleUploadUrl: "/api/media/upload",
         });
-        await fetch("/api/rfp/documents/upload", {
+        updateProgress(file.name, { percent: 40 });
+
+        // Stage 2: Create document record (fast)
+        const res = await fetch("/api/rfp/documents/upload", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2535,18 +2698,43 @@ function DocumentLibrary({ workspaceId }: { workspaceId?: string }) {
             fileUrl: blob.url,
             fileSize: file.size,
             mimeType: file.type,
-            documentType: "previous_response",
+            documentType: activeSubTab,
           }),
         });
+        const { document: doc } = await res.json();
+        if (!res.ok || !doc) throw new Error("Failed to create document record");
+        updateProgress(file.name, { stage: "extracting", percent: 50 });
+        await fetchDocuments();
+
+        // Stage 3: Trigger extraction (fire-and-forget from UI perspective)
+        fetch(`/api/rfp/documents/${doc.id_document}/reextract`, { method: "POST" })
+          .then(async (extractRes) => {
+            if (extractRes.ok) {
+              updateProgress(file.name, { stage: "done", percent: 100 });
+            } else {
+              updateProgress(file.name, { stage: "error", percent: 100 });
+            }
+            await fetchDocuments();
+          })
+          .catch(() => {
+            updateProgress(file.name, { stage: "error", percent: 100 });
+          });
+
+        // Simulate progress while extraction runs
+        updateProgress(file.name, { stage: "extracting", percent: 60 });
+        setTimeout(() => updateProgress(file.name, { stage: "summarising", percent: 80 }), 5000);
+      } catch (err: any) {
+        console.error("Upload error:", err);
+        updateProgress(file.name, { stage: "error", percent: 100 });
+        toast.error(`${file.name}: ${err.message || "Upload failed"}`);
       }
-      await fetchDocuments();
-      toast.success("Upload complete");
-    } catch (err: any) {
-      console.error("Upload error:", err);
-      toast.error(err.message || "Upload failed");
-    } finally {
-      setUploading(false);
     }
+
+    setUploading(false);
+    // Clear completed items after 3s
+    setTimeout(() => {
+      setUploadQueue((prev) => prev.filter((p) => p.stage !== "done" && p.stage !== "error"));
+    }, 3000);
   };
 
   const handleDelete = async (docId: string) => {
@@ -2558,6 +2746,28 @@ function DocumentLibrary({ workspaceId }: { workspaceId?: string }) {
       }
     } catch (err) {
       console.error("Delete failed:", err);
+    }
+  };
+
+  const handleRetryExtraction = async (docId: string) => {
+    setRetryingDocs((prev) => new Set(prev).add(docId));
+    try {
+      const res = await fetch(`/api/rfp/documents/${docId}/reextract`, { method: "POST" });
+      if (res.ok) {
+        toast.success("Document re-processed successfully");
+        await fetchDocuments();
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Re-extraction failed");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Re-extraction failed");
+    } finally {
+      setRetryingDocs((prev) => {
+        const next = new Set(prev);
+        next.delete(docId);
+        return next;
+      });
     }
   };
 
@@ -2604,197 +2814,532 @@ function DocumentLibrary({ workspaceId }: { workspaceId?: string }) {
     );
   }
 
+  const currentSubTab = LIBRARY_SUBTABS.find((t) => t.id === activeSubTab)!;
+
   return (
     <div className="p-4 sm:p-6">
-      {/* Upload zone */}
-      <div
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={handleDrop}
-        className={cn(
-          "border-2 border-dashed rounded-xl p-5 sm:p-8 text-center transition-colors mb-4 sm:mb-6",
-          dragOver
-            ? "border-violet-500 bg-violet-500/5"
-            : "border-muted-foreground/20 hover:border-muted-foreground/40"
-        )}
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          className="hidden"
-          onChange={(e) => {
-            if (e.target.files) handleUpload(e.target.files);
-            e.target.value = "";
-          }}
-        />
-        {uploading ? (
-          <div className="flex flex-col items-center gap-2">
-            <Loader2 className="h-8 w-8 text-violet-500 animate-spin" />
-            <p className="text-sm font-medium">Uploading...</p>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center gap-2">
-            <Upload className="h-8 w-8 text-muted-foreground" />
-            <p className="text-sm font-medium">
-              Drop PDF or DOCX files here, or{" "}
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="text-violet-600 hover:underline"
-              >
-                browse
-              </button>
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Upload previous RFP responses and supporting documents
-            </p>
-          </div>
-        )}
-      </div>
-
-      {/* Filter tabs */}
-      <div className="flex items-center gap-2 mb-4 flex-wrap">
-        {["all", "previous_response", "target_rfp", "supporting"].map((type) => (
+      {/* Sub-tab navigation */}
+      <div className="flex items-center gap-1 mb-6 overflow-x-auto pb-1 border-b">
+        {LIBRARY_SUBTABS.map((tab) => (
           <button
-            key={type}
-            onClick={() => setDocTypeFilter(type)}
+            key={tab.id}
+            onClick={() => {
+              setActiveSubTab(tab.id);
+              const url = new URL(window.location.href);
+              if (tab.id === "profile") {
+                url.searchParams.delete("subtab");
+              } else {
+                url.searchParams.set("subtab", tab.id);
+              }
+              window.history.replaceState({}, "", url.toString());
+            }}
             className={cn(
-              "px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
-              docTypeFilter === type
-                ? "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
-                : "text-muted-foreground hover:bg-muted"
+              "px-3 py-2 rounded-t-lg text-sm font-medium transition-colors whitespace-nowrap -mb-px border-b-2",
+              activeSubTab === tab.id
+                ? "border-violet-500 text-violet-700 dark:text-violet-300"
+                : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
             )}
           >
-            {type === "all" ? "All" : docTypeLabel(type)}
+            <span className="hidden sm:inline">{tab.label}</span>
+            <span className="sm:hidden">{tab.shortLabel}</span>
           </button>
         ))}
       </div>
 
-      {/* Document list */}
-      {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        </div>
-      ) : documents.length === 0 ? (
-        <div className="text-center py-12 text-sm text-muted-foreground">
-          No documents uploaded yet. Upload your first RFP response above.
-        </div>
-      ) : (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {documents.map((doc) => (
-            <div
-              key={doc.id_document}
-              onClick={() => setSelectedDoc(doc)}
-              className="group border rounded-xl p-4 hover:border-violet-300 hover:shadow-sm transition-all cursor-pointer"
-            >
-              <div className="flex items-start gap-3">
-                <div className="h-10 w-10 rounded-lg bg-violet-50 dark:bg-violet-900/20 flex items-center justify-center shrink-0">
-                  <File className="h-5 w-5 text-violet-500" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">{doc.name_file}</p>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-xs text-muted-foreground">
-                      {formatFileSize(doc.units_file_size)}
-                    </span>
-                    <span className="text-xs text-muted-foreground">&middot;</span>
-                    <span className="text-xs text-muted-foreground">
-                      {docTypeLabel(doc.type_document)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5 mt-2">
-                    {statusIcon(doc.type_extraction_status)}
-                    <span className="text-xs text-muted-foreground capitalize">
-                      {doc.type_extraction_status === "ready"
-                        ? "Processed"
-                        : doc.type_extraction_status}
-                    </span>
-                  </div>
-                </div>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDelete(doc.id_document);
-                  }}
-                  className="opacity-100 lg:opacity-0 lg:group-hover:opacity-100 p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-900/20 text-muted-foreground hover:text-red-500 transition-all"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-              {doc.document_summary && (
-                <p className="mt-3 text-xs text-muted-foreground line-clamp-2">
-                  {doc.document_summary}
-                </p>
-              )}
-            </div>
-          ))}
-        </div>
+      {/* Company Profile sub-tab */}
+      {activeSubTab === "profile" && (
+        <CompanyProfileEditor workspaceId={workspaceId} />
       )}
 
-      {/* Document detail modal */}
-      <Dialog open={!!selectedDoc} onOpenChange={(open) => !open && setSelectedDoc(null)}>
-        <DialogContent className="max-w-lg p-4 sm:p-6">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-base">
-              <File className="h-4 w-4 text-violet-500" />
-              {selectedDoc?.name_file}
-            </DialogTitle>
-          </DialogHeader>
-          {selectedDoc && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                <div>
-                  <p className="text-xs text-muted-foreground mb-0.5">Type</p>
-                  <p className="font-medium">{docTypeLabel(selectedDoc.type_document)}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground mb-0.5">Size</p>
-                  <p className="font-medium">{formatFileSize(selectedDoc.units_file_size)}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground mb-0.5">Status</p>
-                  <div className="flex items-center gap-1.5">
-                    {statusIcon(selectedDoc.type_extraction_status)}
-                    <span className="font-medium capitalize">
-                      {selectedDoc.type_extraction_status === "ready"
-                        ? "Processed"
-                        : selectedDoc.type_extraction_status}
-                    </span>
+      {/* Document sub-tabs (Previous Responses, Target RFPs, Supporting) */}
+      {activeSubTab !== "profile" && (
+        <>
+          {/* Upload zone */}
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+            className={cn(
+              "border-2 border-dashed rounded-xl p-5 sm:p-8 text-center transition-colors mb-4 sm:mb-6",
+              dragOver
+                ? "border-violet-500 bg-violet-500/5"
+                : "border-muted-foreground/20 hover:border-muted-foreground/40"
+            )}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) handleUpload(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            {uploadQueue.length > 0 ? (
+              <div className="w-full max-w-md mx-auto space-y-3">
+                {uploadQueue.map((item) => (
+                  <div key={item.name} className="text-left">
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-xs font-medium truncate max-w-[70%]">{item.name}</p>
+                      <span className={cn(
+                        "text-xs font-medium capitalize",
+                        item.stage === "done" ? "text-emerald-600" : item.stage === "error" ? "text-red-500" : "text-violet-600"
+                      )}>
+                        {item.stage === "done" ? "Complete" : item.stage === "error" ? "Failed" : item.stage === "summarising" ? "Summarising..." : item.stage === "extracting" ? "Extracting text..." : "Uploading..."}
+                      </span>
+                    </div>
+                    <div className="h-2 bg-muted rounded-full overflow-hidden">
+                      <div
+                        className={cn(
+                          "h-full rounded-full transition-all duration-700 ease-out",
+                          item.stage === "done" ? "bg-emerald-500" : item.stage === "error" ? "bg-red-500" : "bg-violet-500"
+                        )}
+                        style={{ width: `${item.percent}%` }}
+                      />
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground mb-0.5">Uploaded</p>
-                  <p className="font-medium">
-                    {new Date(selectedDoc.date_created).toLocaleDateString()}
-                  </p>
-                </div>
+                ))}
               </div>
-              {selectedDoc.document_summary && (
-                <div>
-                  <p className="text-xs text-muted-foreground mb-1.5">AI Summary</p>
-                  <div className="bg-muted/50 rounded-lg p-3 text-sm leading-relaxed">
-                    {selectedDoc.document_summary}
+            ) : uploading ? (
+              <div className="flex flex-col items-center gap-2">
+                <Loader2 className="h-8 w-8 text-violet-500 animate-spin" />
+                <p className="text-sm font-medium">Uploading...</p>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-2">
+                <Upload className="h-8 w-8 text-muted-foreground" />
+                <p className="text-sm font-medium">
+                  Drop PDF or DOCX files here, or{" "}
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="text-violet-600 hover:underline"
+                  >
+                    browse
+                  </button>
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {currentSubTab.description}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Document list */}
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : documents.length === 0 ? (
+            <div className="text-center py-12 text-sm text-muted-foreground">
+              No {currentSubTab.label.toLowerCase()} uploaded yet.
+            </div>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {documents.map((doc) => (
+                <div
+                  key={doc.id_document}
+                  onClick={() => setSelectedDoc(doc)}
+                  className="group border rounded-xl p-4 hover:border-violet-300 hover:shadow-sm transition-all cursor-pointer"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="h-10 w-10 rounded-lg bg-violet-50 dark:bg-violet-900/20 flex items-center justify-center shrink-0">
+                      <File className="h-5 w-5 text-violet-500" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{doc.name_file}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs text-muted-foreground">
+                          {formatFileSize(doc.units_file_size)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-2">
+                        {(() => {
+                          const isStuck = doc.type_extraction_status === "extracting" &&
+                            new Date(doc.date_created).getTime() < Date.now() - 5 * 60 * 1000;
+                          if (isStuck) {
+                            return <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />;
+                          }
+                          return statusIcon(doc.type_extraction_status);
+                        })()}
+                        <span className="text-xs text-muted-foreground capitalize">
+                          {doc.type_extraction_status === "ready"
+                            ? "Processed"
+                            : doc.type_extraction_status === "extracting" &&
+                              new Date(doc.date_created).getTime() < Date.now() - 5 * 60 * 1000
+                              ? "Stuck — click retry"
+                              : doc.type_extraction_status}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-1 shrink-0">
+                      {(doc.type_extraction_status === "extracting" || doc.type_extraction_status === "failed") && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRetryExtraction(doc.id_document);
+                          }}
+                          disabled={retryingDocs.has(doc.id_document)}
+                          title="Retry extraction"
+                          className="p-1.5 rounded-md hover:bg-violet-50 dark:hover:bg-violet-900/20 text-muted-foreground hover:text-violet-500 transition-all disabled:opacity-50"
+                        >
+                          {retryingDocs.has(doc.id_document) ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <RotateCcw className="h-4 w-4" />
+                          )}
+                        </button>
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(doc.id_document);
+                        }}
+                        className="opacity-100 lg:opacity-0 lg:group-hover:opacity-100 p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-900/20 text-muted-foreground hover:text-red-500 transition-all"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                  {doc.document_summary && (
+                    <p className="mt-3 text-xs text-muted-foreground line-clamp-2">
+                      {doc.document_summary}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Document detail modal */}
+          <Dialog open={!!selectedDoc} onOpenChange={(open) => !open && setSelectedDoc(null)}>
+            <DialogContent className="max-w-lg p-4 sm:p-6">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2 text-base">
+                  <File className="h-4 w-4 text-violet-500" />
+                  {selectedDoc?.name_file}
+                </DialogTitle>
+              </DialogHeader>
+              {selectedDoc && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-0.5">Type</p>
+                      <p className="font-medium">{docTypeLabel(selectedDoc.type_document)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-0.5">Size</p>
+                      <p className="font-medium">{formatFileSize(selectedDoc.units_file_size)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-0.5">Status</p>
+                      <div className="flex items-center gap-1.5">
+                        {statusIcon(selectedDoc.type_extraction_status)}
+                        <span className="font-medium capitalize">
+                          {selectedDoc.type_extraction_status === "ready"
+                            ? "Processed"
+                            : selectedDoc.type_extraction_status}
+                        </span>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-0.5">Uploaded</p>
+                      <p className="font-medium">
+                        {new Date(selectedDoc.date_created).toLocaleDateString()}
+                      </p>
+                    </div>
+                  </div>
+                  {selectedDoc.document_summary && (
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-1.5">AI Summary</p>
+                      <div className="bg-muted/50 rounded-lg p-3 text-sm leading-relaxed">
+                        {selectedDoc.document_summary}
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => {
+                        handleDelete(selectedDoc.id_document);
+                        setSelectedDoc(null);
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                      Delete
+                    </Button>
                   </div>
                 </div>
               )}
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => {
-                    handleDelete(selectedDoc.id_document);
-                    setSelectedDoc(null);
-                  }}
-                >
-                  <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-                  Delete
-                </Button>
-              </div>
-            </div>
+            </DialogContent>
+          </Dialog>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────
+   Company Profile Editor
+   ──────────────────────────────────────────────── */
+
+interface CompanyProfile {
+  document_overview: string;
+  document_services: string;
+  document_sectors: string;
+  document_differentiators: string;
+  document_target_rfps: string;
+  config_win_themes: string[];
+  url_website: string;
+  url_linkedin: string;
+}
+
+const PROFILE_SECTIONS: { key: keyof CompanyProfile; label: string; placeholder: string; rows: number }[] = [
+  { key: "document_overview", label: "Company Overview", placeholder: "Describe your company, what you do, and who you serve...", rows: 4 },
+  { key: "document_services", label: "Core Services", placeholder: "- Content strategy and production\n- Thought leadership\n- Campaign development...", rows: 6 },
+  { key: "document_sectors", label: "Key Sectors", placeholder: "- Climate and environment\n- Sustainable development\n- Corporate sustainability...", rows: 5 },
+  { key: "document_differentiators", label: "Differentiators", placeholder: "- Deep subject matter expertise\n- Award-winning editorial team\n- Global network...", rows: 5 },
+  { key: "document_target_rfps", label: "Target RFP Types", placeholder: "- Communications and content production\n- Public awareness campaigns\n- Sustainability reporting...", rows: 5 },
+];
+
+function CompanyProfileEditor({ workspaceId }: { workspaceId: string }) {
+  const [profile, setProfile] = useState<CompanyProfile>({
+    document_overview: "",
+    document_services: "",
+    document_sectors: "",
+    document_differentiators: "",
+    document_target_rfps: "",
+    config_win_themes: [],
+    url_website: "",
+    url_linkedin: "",
+  });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [newTheme, setNewTheme] = useState("");
+
+  // Load profile
+  useEffect(() => {
+    fetch(`/api/rfp/company-profile?workspaceId=${workspaceId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.profile) {
+          setProfile({
+            document_overview: data.profile.document_overview || "",
+            document_services: data.profile.document_services || "",
+            document_sectors: data.profile.document_sectors || "",
+            document_differentiators: data.profile.document_differentiators || "",
+            document_target_rfps: data.profile.document_target_rfps || "",
+            config_win_themes: data.profile.config_win_themes || [],
+            url_website: data.profile.url_website || "",
+            url_linkedin: data.profile.url_linkedin || "",
+          });
+        }
+      })
+      .catch((err) => console.error("Failed to load profile:", err))
+      .finally(() => setLoading(false));
+  }, [workspaceId]);
+
+  const updateField = (key: keyof CompanyProfile, value: any) => {
+    setProfile((prev) => ({ ...prev, [key]: value }));
+    setDirty(true);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/rfp/company-profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, ...profile }),
+      });
+      if (res.ok) {
+        toast.success("Company profile saved");
+        setDirty(false);
+      } else {
+        const err = await res.json();
+        toast.error(err.error || "Failed to save");
+      }
+    } catch {
+      toast.error("Failed to save profile");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    try {
+      const res = await fetch("/api/rfp/company-profile/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId }),
+      });
+      const data = await res.json();
+      if (res.ok && data.generated) {
+        setProfile((prev) => ({
+          ...prev,
+          document_overview: data.generated.document_overview || prev.document_overview,
+          document_services: data.generated.document_services || prev.document_services,
+          document_sectors: data.generated.document_sectors || prev.document_sectors,
+          document_differentiators: data.generated.document_differentiators || prev.document_differentiators,
+          document_target_rfps: data.generated.document_target_rfps || prev.document_target_rfps,
+          config_win_themes: data.generated.config_win_themes?.length > 0 ? data.generated.config_win_themes : prev.config_win_themes,
+        }));
+        setDirty(true);
+        toast.success(`Profile generated from ${data.documentsUsed} documents. Review and save when ready.`);
+      } else {
+        toast.error(data.error || "Generation failed");
+      }
+    } catch {
+      toast.error("Failed to generate profile");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const addTheme = () => {
+    if (!newTheme.trim()) return;
+    updateField("config_win_themes", [...profile.config_win_themes, newTheme.trim()]);
+    setNewTheme("");
+  };
+
+  const removeTheme = (idx: number) => {
+    updateField("config_win_themes", profile.config_win_themes.filter((_, i) => i !== idx));
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        {[1, 2, 3, 4].map((i) => (
+          <div key={i} className="h-24 bg-muted/30 rounded-xl animate-pulse" />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 max-w-3xl">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-base font-semibold">Company Profile</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            This profile is used by AI to match and score RFP opportunities. Edit any section or generate from your uploaded documents.
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={handleGenerate}
+          disabled={generating}
+          className="shrink-0"
+        >
+          {generating ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+          ) : (
+            <Sparkles className="h-3.5 w-3.5 mr-1.5" />
           )}
-        </DialogContent>
-      </Dialog>
+          {generating ? "Generating..." : "Generate from Docs"}
+        </Button>
+      </div>
+
+      {/* Online Presence */}
+      <div className="border rounded-xl p-4 space-y-3">
+        <p className="text-sm font-medium">Online Presence</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">Website</label>
+            <Input
+              value={profile.url_website}
+              onChange={(e) => updateField("url_website", e.target.value)}
+              placeholder="https://thecontentengine.com"
+              className="h-9 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">LinkedIn</label>
+            <Input
+              value={profile.url_linkedin}
+              onChange={(e) => updateField("url_linkedin", e.target.value)}
+              placeholder="https://linkedin.com/company/..."
+              className="h-9 text-sm"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Editable sections */}
+      {PROFILE_SECTIONS.map((section) => (
+        <div key={section.key} className="border rounded-xl p-4">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-sm font-medium">{section.label}</label>
+          </div>
+          <textarea
+            value={(profile[section.key] as string) || ""}
+            onChange={(e) => updateField(section.key, e.target.value)}
+            placeholder={section.placeholder}
+            rows={section.rows}
+            className="w-full text-sm rounded-lg border bg-transparent px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-500/30 focus:border-violet-500 resize-y"
+          />
+        </div>
+      ))}
+
+      {/* Win Themes */}
+      <div className="border rounded-xl p-4">
+        <label className="text-sm font-medium block mb-2">Win Themes</label>
+        <p className="text-xs text-muted-foreground mb-3">
+          Key competitive advantages highlighted in your RFP responses
+        </p>
+        <div className="space-y-2">
+          {profile.config_win_themes.map((theme, idx) => (
+            <div key={idx} className="flex items-center gap-2 group">
+              <div className="flex-1 text-sm bg-muted/50 rounded-lg px-3 py-2">
+                {theme}
+              </div>
+              <button
+                onClick={() => removeTheme(idx)}
+                className="p-1 rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-60 hover:opacity-100 transition-all"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+          <div className="flex items-center gap-2">
+            <Input
+              value={newTheme}
+              onChange={(e) => setNewTheme(e.target.value)}
+              placeholder="Add a win theme..."
+              className="h-9 text-sm flex-1"
+              onKeyDown={(e) => e.key === "Enter" && addTheme()}
+            />
+            <Button size="sm" variant="outline" onClick={addTheme} disabled={!newTheme.trim()}>
+              <Plus className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Save button */}
+      <div className="flex items-center justify-end gap-3 pb-4">
+        {dirty && (
+          <span className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+            <div className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+            Unsaved changes
+          </span>
+        )}
+        <Button onClick={handleSave} disabled={saving || !dirty}>
+          {saving ? (
+            <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
+          ) : (
+            <CheckCircle2 className="h-4 w-4 mr-1.5" />
+          )}
+          Save Changes
+        </Button>
+      </div>
     </div>
   );
 }
@@ -2814,6 +3359,657 @@ function setUrlParam(key: string, value: string | null) {
   window.history.replaceState({}, "", url.toString());
 }
 
+/* ────────────────────────────────────────────────
+   All RFPs — Amalgamated Table View
+   ──────────────────────────────────────────────── */
+
+interface AggregatedRfp extends DiscoveredRfp {
+  firstFoundDate: string;
+  lastFoundDate: string;
+  foundInSearches: number;
+  searchQuery: string | null;
+  searchId: string;
+  provider: string;
+  pipelineStatus: string | null;
+  opportunityId: string | null;
+}
+
+type SortField = "score" | "deadline" | "found" | "title" | "value";
+
+function AllRfpsView({
+  workspaceId,
+  savedOpps,
+  setSavedOpps,
+}: {
+  workspaceId?: string;
+  savedOpps: Map<string, SavedOppInfo>;
+  setSavedOpps: React.Dispatch<React.SetStateAction<Map<string, SavedOppInfo>>>;
+}) {
+  const [rfps, setRfps] = useState<AggregatedRfp[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchFilter, setSearchFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "open" | "saved" | "unsaved">("all");
+  const [sortField, setSortField] = useState<SortField>("found");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [selectedRfp, setSelectedRfp] = useState<AggregatedRfp | null>(null);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  // Fetch all results on mount
+  useEffect(() => {
+    if (!workspaceId) return;
+    setLoading(true);
+    fetch(`/api/rfp/searches/all-results?workspaceId=${workspaceId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.rfps) setRfps(data.rfps);
+      })
+      .catch((err) => {
+        console.error("Failed to fetch all RFPs:", err);
+        toast.error("Failed to load RFP index");
+      })
+      .finally(() => setLoading(false));
+  }, [workspaceId]);
+
+  // Check if an rfp is saved in pipeline (via local savedOpps or pipelineStatus from API)
+  const isInPipeline = useCallback(
+    (rfp: AggregatedRfp) => {
+      if (rfp.pipelineStatus && rfp.pipelineStatus !== "ignored") return true;
+      const key = rfp.sourceUrl || rfp.title;
+      return savedOpps.has(key);
+    },
+    [savedOpps]
+  );
+
+  const isIgnored = useCallback(
+    (rfp: AggregatedRfp) => {
+      if (rfp.pipelineStatus === "ignored") return true;
+      const key = rfp.sourceUrl || rfp.title;
+      const info = savedOpps.get(key);
+      return info?.status === "ignored";
+    },
+    [savedOpps]
+  );
+
+  // Client-side filtering & sorting
+  const filteredRfps = useMemo(() => {
+    let result = rfps;
+
+    // Text search
+    if (searchFilter.trim()) {
+      const q = searchFilter.toLowerCase();
+      result = result.filter(
+        (r) =>
+          r.title.toLowerCase().includes(q) ||
+          r.organisation.toLowerCase().includes(q) ||
+          r.scope.toLowerCase().includes(q) ||
+          (r.region && r.region.toLowerCase().includes(q)) ||
+          r.sectors.some((s) => s.toLowerCase().includes(q)) ||
+          (r.estimatedValue && r.estimatedValue.toLowerCase().includes(q))
+      );
+    }
+
+    // Status filter
+    if (statusFilter === "open") result = result.filter((r) => r.status !== "likely_closed");
+    if (statusFilter === "saved") result = result.filter((r) => isInPipeline(r));
+    if (statusFilter === "unsaved") result = result.filter((r) => !isInPipeline(r) && !isIgnored(r));
+
+    // Sort
+    result = [...result].sort((a, b) => {
+      let cmp = 0;
+      switch (sortField) {
+        case "score":
+          cmp = (a.relevanceScore || 0) - (b.relevanceScore || 0);
+          break;
+        case "deadline": {
+          const da = a.deadline ? parseDate(a.deadline)?.getTime() || 0 : 0;
+          const db = b.deadline ? parseDate(b.deadline)?.getTime() || 0 : 0;
+          // Push nulls to end
+          if (!da && db) return 1;
+          if (da && !db) return -1;
+          cmp = da - db;
+          break;
+        }
+        case "found":
+          cmp = new Date(a.lastFoundDate).getTime() - new Date(b.lastFoundDate).getTime();
+          break;
+        case "title":
+          cmp = a.title.localeCompare(b.title);
+          break;
+        case "value": {
+          const va = parseFloat((a.estimatedValue || "0").replace(/[^0-9.]/g, "")) || 0;
+          const vb = parseFloat((b.estimatedValue || "0").replace(/[^0-9.]/g, "")) || 0;
+          cmp = va - vb;
+          break;
+        }
+      }
+      return sortDir === "desc" ? -cmp : cmp;
+    });
+
+    return result;
+  }, [rfps, searchFilter, statusFilter, sortField, sortDir, isInPipeline, isIgnored]);
+
+  // Counts for filter pills
+  const counts = useMemo(() => {
+    const all = rfps.length;
+    const open = rfps.filter((r) => r.status !== "likely_closed").length;
+    const saved = rfps.filter((r) => isInPipeline(r)).length;
+    const unsaved = rfps.filter((r) => !isInPipeline(r) && !isIgnored(r)).length;
+    return { all, open, saved, unsaved };
+  }, [rfps, isInPipeline, isIgnored]);
+
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      setSortField(field);
+      setSortDir("desc");
+    }
+  };
+
+  const SortIcon = ({ field }: { field: SortField }) => {
+    if (sortField !== field) return <ArrowUpDown className="h-3 w-3 opacity-40" />;
+    return sortDir === "desc" ? <SortDesc className="h-3 w-3" /> : <SortAsc className="h-3 w-3" />;
+  };
+
+  // Save to pipeline
+  const handleSaveRfp = async (rfp: AggregatedRfp) => {
+    if (!workspaceId) return;
+    setSaving(rfp.title);
+    try {
+      const normMilestones = (rfp.milestones || []).map((m) => ({
+        ...m,
+        date: toISODate(m.date) || m.date,
+      }));
+      const res = await fetch("/api/rfp/opportunities", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          title: rfp.title,
+          organisationName: rfp.organisation,
+          deadline: toISODate(rfp.deadline),
+          milestones: normMilestones,
+          scope: rfp.scope,
+          sectors: rfp.sectors,
+          region: rfp.region,
+          estimatedValue: rfp.estimatedValue,
+          sourceUrl: rfp.sourceUrl,
+          relevanceScore: rfp.relevanceScore,
+          aiReasoning: rfp.reasoning,
+          urlConfidence: rfp.urlConfidence || null,
+          portalName: rfp.portalName || null,
+          portalSearchUrl: rfp.portalSearchUrl || null,
+          status: "shortlisted",
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const oppId = data.opportunity?.id_opportunity;
+        const key = rfp.sourceUrl || rfp.title;
+        setSavedOpps((prev) => new Map(prev).set(key, { oppId, status: "shortlisted" }));
+        // Update local state
+        setRfps((prev) =>
+          prev.map((r) =>
+            r === rfp ? { ...r, pipelineStatus: "shortlisted", opportunityId: oppId } : r
+          )
+        );
+        toast.success("Saved to pipeline");
+      } else {
+        toast.error("Failed to save");
+      }
+    } catch {
+      toast.error("Failed to save");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  // Loading state
+  if (loading) {
+    return (
+      <div className="p-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="h-10 bg-muted/50 rounded-lg flex-1 animate-pulse" />
+        </div>
+        <div className="flex gap-2">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="h-8 w-24 bg-muted/50 rounded-full animate-pulse" />
+          ))}
+        </div>
+        {[1, 2, 3, 4, 5, 6].map((i) => (
+          <div key={i} className="h-16 bg-muted/30 rounded-lg animate-pulse" />
+        ))}
+      </div>
+    );
+  }
+
+  // Empty state
+  if (rfps.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 px-6 text-center">
+        <div className="h-16 w-16 rounded-2xl bg-muted/50 flex items-center justify-center mb-4">
+          <List className="h-8 w-8 text-muted-foreground" />
+        </div>
+        <h3 className="text-lg font-semibold mb-1">No RFPs found yet</h3>
+        <p className="text-sm text-muted-foreground max-w-md">
+          Run a search in the Discover tab to find RFP opportunities. All discovered RFPs will appear here as a searchable index.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 sm:p-6 space-y-4">
+      {/* Search bar */}
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            value={searchFilter}
+            onChange={(e) => setSearchFilter(e.target.value)}
+            placeholder="Search by title, organisation, scope, region..."
+            className="pl-9 h-10"
+          />
+          {searchFilter && (
+            <button
+              onClick={() => setSearchFilter("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+        <span className="text-xs text-muted-foreground whitespace-nowrap hidden sm:block">
+          {filteredRfps.length === rfps.length
+            ? `${rfps.length} RFPs`
+            : `${filteredRfps.length} of ${rfps.length}`}
+        </span>
+      </div>
+
+      {/* Filter pills */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {(
+          [
+            { id: "all", label: "All", count: counts.all },
+            { id: "open", label: "Open", count: counts.open },
+            { id: "saved", label: "In Pipeline", count: counts.saved },
+            { id: "unsaved", label: "Not Saved", count: counts.unsaved },
+          ] as const
+        ).map((pill) => (
+          <button
+            key={pill.id}
+            onClick={() => setStatusFilter(pill.id)}
+            className={cn(
+              "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors",
+              statusFilter === pill.id
+                ? "bg-primary text-primary-foreground"
+                : "bg-muted/50 text-muted-foreground hover:bg-muted"
+            )}
+          >
+            {pill.label}
+            <span
+              className={cn(
+                "inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold",
+                statusFilter === pill.id
+                  ? "bg-primary-foreground/20 text-primary-foreground"
+                  : "bg-muted text-muted-foreground"
+              )}
+            >
+              {pill.count}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {/* Table */}
+      <div className="border rounded-xl overflow-hidden bg-card">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-muted/30">
+                <th className="text-left px-4 py-3 font-medium text-xs text-muted-foreground uppercase tracking-wider">
+                  <button onClick={() => handleSort("title")} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                    RFP <SortIcon field="title" />
+                  </button>
+                </th>
+                <th className="text-center px-2 py-3 font-medium text-xs text-muted-foreground uppercase tracking-wider w-[52px]">
+                  <button onClick={() => handleSort("score")} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                    Score <SortIcon field="score" />
+                  </button>
+                </th>
+                <th className="text-left px-3 py-3 font-medium text-xs text-muted-foreground uppercase tracking-wider">
+                  <button onClick={() => handleSort("deadline")} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                    Deadline <SortIcon field="deadline" />
+                  </button>
+                </th>
+                <th className="text-left px-3 py-3 font-medium text-xs text-muted-foreground uppercase tracking-wider hidden md:table-cell">
+                  <button onClick={() => handleSort("value")} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                    Value <SortIcon field="value" />
+                  </button>
+                </th>
+                <th className="text-left px-3 py-3 font-medium text-xs text-muted-foreground uppercase tracking-wider hidden lg:table-cell">
+                  Source
+                </th>
+                <th className="text-left px-3 py-3 font-medium text-xs text-muted-foreground uppercase tracking-wider hidden sm:table-cell">
+                  <button onClick={() => handleSort("found")} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                    Found <SortIcon field="found" />
+                  </button>
+                </th>
+                <th className="text-center px-3 py-3 font-medium text-xs text-muted-foreground uppercase tracking-wider w-[100px]">
+                  Status
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredRfps.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="text-center py-12 text-muted-foreground">
+                    <Search className="h-8 w-8 mx-auto mb-2 opacity-40" />
+                    <p className="text-sm">No matching RFPs</p>
+                    <p className="text-xs mt-1">Try adjusting your search or filters</p>
+                  </td>
+                </tr>
+              ) : (
+                filteredRfps.map((rfp, idx) => {
+                  const urgency = rfp.deadline ? getDeadlineUrgency(rfp.deadline) : null;
+                  const domain = extractDomain(rfp.sourceUrl);
+                  const inPipeline = isInPipeline(rfp);
+                  const ignored = isIgnored(rfp);
+                  const isSaving = saving === rfp.title;
+
+                  return (
+                    <tr
+                      key={`${rfp.title}-${idx}`}
+                      onClick={() => setSelectedRfp(rfp)}
+                      className="border-b last:border-b-0 hover:bg-muted/30 transition-colors cursor-pointer group"
+                    >
+                      {/* Title + Org */}
+                      <td className="px-4 py-3 max-w-[320px]">
+                        <p className="font-medium text-sm leading-snug line-clamp-1 group-hover:text-primary transition-colors">
+                          {rfp.title}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{rfp.organisation}</p>
+                      </td>
+
+                      {/* Score */}
+                      <td className="px-2 py-3 text-center">
+                        <span
+                          className={cn(
+                            "inline-flex items-center justify-center w-8 h-8 rounded-full text-xs font-bold",
+                            scoreColor(rfp.relevanceScore)
+                          )}
+                        >
+                          {rfp.relevanceScore}
+                        </span>
+                      </td>
+
+                      {/* Deadline */}
+                      <td className="px-3 py-3">
+                        {rfp.deadline ? (
+                          <div>
+                            <p className="text-xs font-medium">{formatDeadline(rfp.deadline)}</p>
+                            {urgency && (
+                              <span className={cn("inline-block text-[10px] font-medium px-1.5 py-0.5 rounded mt-0.5", urgency.className)}>
+                                {urgency.label}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">TBD</span>
+                        )}
+                      </td>
+
+                      {/* Value */}
+                      <td className="px-3 py-3 hidden md:table-cell">
+                        <span className="text-xs">{rfp.estimatedValue || "—"}</span>
+                      </td>
+
+                      {/* Source */}
+                      <td className="px-3 py-3 hidden lg:table-cell">
+                        {rfp.sourceUrl ? (
+                          <a
+                            href={rfp.sourceUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1 text-xs text-primary hover:underline max-w-[140px] truncate"
+                          >
+                            <ExternalLink className="h-3 w-3 flex-shrink-0" />
+                            {domain}
+                          </a>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </td>
+
+                      {/* Found */}
+                      <td className="px-3 py-3 hidden sm:table-cell">
+                        <div className="flex items-center gap-1.5">
+                          {rfp.provider === "grok" ? (
+                            <span title="Found via Grok"><Cpu className="h-3 w-3 text-muted-foreground" /></span>
+                          ) : (
+                            <span title="Found via Claude"><Sparkles className="h-3 w-3 text-muted-foreground" /></span>
+                          )}
+                          <span className="text-xs text-muted-foreground" title={new Date(rfp.lastFoundDate).toLocaleString()}>
+                            {formatRelativeTime(rfp.lastFoundDate)}
+                          </span>
+                        </div>
+                        {rfp.foundInSearches > 1 && (
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
+                            Found in {rfp.foundInSearches} searches
+                          </p>
+                        )}
+                      </td>
+
+                      {/* Status / Actions */}
+                      <td className="px-3 py-3 text-center" onClick={(e) => e.stopPropagation()}>
+                        {inPipeline ? (
+                          <Badge variant="secondary" className="text-[10px] bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400 border-0">
+                            <CheckCircle2 className="h-3 w-3 mr-0.5" />
+                            Saved
+                          </Badge>
+                        ) : ignored ? (
+                          <Badge variant="secondary" className="text-[10px] opacity-60 border-0">
+                            <EyeOff className="h-3 w-3 mr-0.5" />
+                            Ignored
+                          </Badge>
+                        ) : (
+                          <button
+                            onClick={() => handleSaveRfp(rfp)}
+                            disabled={!!isSaving}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
+                          >
+                            {isSaving ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <Bookmark className="h-3 w-3" />
+                            )}
+                            Save
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Detail Modal */}
+      <Dialog open={!!selectedRfp} onOpenChange={() => setSelectedRfp(null)}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          {selectedRfp && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="text-lg leading-snug pr-8">{selectedRfp.title}</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 mt-2">
+                {/* Top row: org + score */}
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">{selectedRfp.organisation}</p>
+                    {selectedRfp.region && (
+                      <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+                        <MapPin className="h-3 w-3" />
+                        {selectedRfp.region}
+                      </p>
+                    )}
+                  </div>
+                  <span
+                    className={cn(
+                      "inline-flex items-center justify-center w-10 h-10 rounded-full text-sm font-bold flex-shrink-0",
+                      scoreColor(selectedRfp.relevanceScore)
+                    )}
+                  >
+                    {selectedRfp.relevanceScore}
+                  </span>
+                </div>
+
+                {/* Key details grid */}
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-0.5">Deadline</p>
+                    <div className="flex items-center gap-2">
+                      <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="font-medium">{formatDeadline(selectedRfp.deadline)}</span>
+                      {selectedRfp.deadline && (() => {
+                        const u = getDeadlineUrgency(selectedRfp.deadline);
+                        return u ? <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded", u.className)}>{u.label}</span> : null;
+                      })()}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-0.5">Est. Value</p>
+                    <p className="font-medium">{selectedRfp.estimatedValue || "Not specified"}</p>
+                  </div>
+                </div>
+
+                {/* Milestones */}
+                {selectedRfp.milestones?.length > 0 && (
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1.5">Key Milestones</p>
+                    <div className="flex flex-wrap gap-2">
+                      {selectedRfp.milestones.map((m, i) => (
+                        <span key={i} className="inline-flex items-center gap-1 text-xs bg-muted/50 px-2 py-1 rounded">
+                          <Clock className="h-3 w-3 text-muted-foreground" />
+                          {m.label}: {formatDeadline(m.date)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Sectors */}
+                {selectedRfp.sectors?.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedRfp.sectors.map((s, i) => (
+                      <Badge key={i} variant="secondary" className="text-[10px]">
+                        {s}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+
+                {/* Scope */}
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1">Scope</p>
+                  <p className="text-sm leading-relaxed">{selectedRfp.scope}</p>
+                </div>
+
+                {/* Status indicators */}
+                {selectedRfp.status === "confirmed_open" && (
+                  <div className="flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg px-3 py-2">
+                    <ShieldCheck className="h-4 w-4" />
+                    Verified as currently open and accepting submissions
+                  </div>
+                )}
+                {selectedRfp.status === "likely_closed" && (
+                  <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded-lg px-3 py-2">
+                    <AlertTriangle className="h-4 w-4" />
+                    This opportunity may be closed — verify before responding
+                  </div>
+                )}
+
+                {/* AI Reasoning */}
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1">Why this is relevant</p>
+                  <p className="text-sm leading-relaxed text-muted-foreground">{selectedRfp.reasoning}</p>
+                </div>
+
+                {/* Source URL */}
+                {selectedRfp.sourceUrl && (
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Source</p>
+                    <a
+                      href={selectedRfp.sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      {truncateUrl(selectedRfp.sourceUrl)}
+                    </a>
+                  </div>
+                )}
+
+                {/* Metadata */}
+                <div className="flex items-center gap-4 text-xs text-muted-foreground border-t pt-3">
+                  <span className="flex items-center gap-1">
+                    {selectedRfp.provider === "grok" ? <Cpu className="h-3 w-3" /> : <Sparkles className="h-3 w-3" />}
+                    Found via {selectedRfp.provider === "grok" ? "Grok" : "Claude"}
+                  </span>
+                  <span>{formatRelativeTime(selectedRfp.lastFoundDate)}</span>
+                  {selectedRfp.foundInSearches > 1 && (
+                    <span>Found in {selectedRfp.foundInSearches} searches</span>
+                  )}
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-2 pt-2 border-t">
+                  {isInPipeline(selectedRfp) ? (
+                    <Badge className="bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400 border-0">
+                      <CheckCircle2 className="h-3 w-3 mr-1" />
+                      Saved to pipeline
+                    </Badge>
+                  ) : isIgnored(selectedRfp) ? (
+                    <Badge variant="secondary" className="opacity-60">
+                      <EyeOff className="h-3 w-3 mr-1" />
+                      Ignored
+                    </Badge>
+                  ) : (
+                    <Button
+                      size="sm"
+                      onClick={() => handleSaveRfp(selectedRfp)}
+                      disabled={!!saving}
+                    >
+                      {saving === selectedRfp.title ? (
+                        <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                      ) : (
+                        <Bookmark className="h-4 w-4 mr-1" />
+                      )}
+                      Save to Pipeline
+                    </Button>
+                  )}
+                  {selectedRfp.sourceUrl && (
+                    <Button size="sm" variant="outline" asChild>
+                      <a href={selectedRfp.sourceUrl} target="_blank" rel="noopener noreferrer">
+                        <ExternalLink className="h-4 w-4 mr-1" />
+                        Open Source
+                      </a>
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 function DiscoverPanel({
   workspaceId,
   onSaved,
@@ -2828,6 +4024,8 @@ function DiscoverPanel({
   savedOpps,
   setSavedOpps,
   initialSearchId,
+  expandSavedSearches,
+  onSavedSearchesExpanded,
 }: {
   workspaceId?: string;
   onSaved?: () => void;
@@ -2842,6 +4040,8 @@ function DiscoverPanel({
   savedOpps: Map<string, SavedOppInfo>;
   setSavedOpps: React.Dispatch<React.SetStateAction<Map<string, SavedOppInfo>>>;
   initialSearchId?: string | null;
+  expandSavedSearches?: boolean;
+  onSavedSearchesExpanded?: () => void;
 }) {
   const [provider, setProvider] = useState<SearchProvider>("anthropic");
   const [searching, setSearching] = useState(false);
@@ -3572,6 +4772,8 @@ function DiscoverPanel({
             setHasSearched(true);
             setSearchMeta(null);
           }}
+          forceExpand={expandSavedSearches}
+          onForceExpandConsumed={onSavedSearchesExpanded}
         />
       </div>
 
@@ -3719,6 +4921,19 @@ function DiscoverPanel({
                         {rfp.region}
                       </span>
                     )}
+                    {/* Status badge */}
+                    {rfp.status === "confirmed_open" && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                        <ShieldCheck className="h-3 w-3" />
+                        Verified open
+                      </span>
+                    )}
+                    {rfp.status === "likely_closed" && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                        <AlertTriangle className="h-3 w-3" />
+                        May be closed
+                      </span>
+                    )}
                   </div>
 
                   {/* Row 3: Scope (truncated) */}
@@ -3726,7 +4941,7 @@ function DiscoverPanel({
                     {rfp.scope}
                   </p>
 
-                  {/* Row 4: Source URL + status */}
+                  {/* Row 4: Source URL + Quick Actions */}
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       {rfp.sourceUrl ? (
@@ -3762,19 +4977,55 @@ function DiscoverPanel({
                         <span className="text-[11px] text-muted-foreground/50 italic">No source URL</span>
                       )}
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {rfp.sectors.length > 0 && (
-                        <span className="text-[11px] text-muted-foreground/60 hidden sm:inline">
-                          {rfp.sectors.slice(0, 2).join(" · ")}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {matched ? (
+                        <span className={cn(
+                          "text-[11px] font-medium px-2 py-0.5 rounded-full flex items-center gap-1",
+                          matched.status === "ignored"
+                            ? "bg-muted text-muted-foreground"
+                            : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+                        )}>
+                          {matched.status === "ignored" ? (
+                            <><EyeOff className="h-3 w-3" /> Ignored</>
+                          ) : (
+                            <><FolderKanban className="h-3 w-3" />
+                              {matched.status === "submitted" ? "Submitted" :
+                               matched.responseStatus ? getResponseStage(matched.responseStatus).label :
+                               "Saved"}
+                            </>
+                          )}
                         </span>
-                      )}
-                      {matched && (
-                        <span className="text-xs text-muted-foreground flex items-center gap-1.5">
-                          <FolderKanban className="h-3 w-3" />
-                          {matched.status === "submitted" ? "Submitted" :
-                           matched.responseStatus ? getResponseStage(matched.responseStatus).label :
-                           "In Pipeline"}
-                        </span>
+                      ) : (
+                        <>
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={async (e) => { e.stopPropagation(); await handleSave(rfp); }}
+                            onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); handleSave(rfp); } }}
+                            className={cn(
+                              "inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md transition-colors cursor-pointer",
+                              "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-900/30 dark:text-emerald-400 dark:hover:bg-emerald-900/50",
+                              saving === rfp.title && "opacity-60 pointer-events-none"
+                            )}
+                          >
+                            {saving === rfp.title ? <Loader2 className="h-3 w-3 animate-spin" /> : <Bookmark className="h-3 w-3" />}
+                            Save
+                          </span>
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={async (e) => { e.stopPropagation(); await handleIgnore(rfp); }}
+                            onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); handleIgnore(rfp); } }}
+                            className={cn(
+                              "inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md transition-colors cursor-pointer",
+                              "text-muted-foreground hover:bg-muted",
+                              saving === rfp.title && "opacity-60 pointer-events-none"
+                            )}
+                          >
+                            <EyeOff className="h-3 w-3" />
+                            Ignore
+                          </span>
+                        </>
                       )}
                     </div>
                   </div>
@@ -3882,6 +5133,23 @@ function DiscoverPanel({
                         <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5">Scope</p>
                         <p className="text-sm text-muted-foreground leading-relaxed">{rfp.scope}</p>
                       </div>
+
+                      {/* Status indicator */}
+                      {rfp.status === "likely_closed" && (
+                        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 dark:bg-amber-900/20 dark:border-amber-800">
+                          <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                          <div>
+                            <p className="text-sm font-medium text-amber-800 dark:text-amber-300">This opportunity may be closed</p>
+                            <p className="text-xs text-amber-600 dark:text-amber-400">We detected closure signals on the source page. Check the link to confirm.</p>
+                          </div>
+                        </div>
+                      )}
+                      {rfp.status === "confirmed_open" && (
+                        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-emerald-50 border border-emerald-200 dark:bg-emerald-900/20 dark:border-emerald-800">
+                          <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                          <p className="text-sm font-medium text-emerald-800 dark:text-emerald-300">Verified: source page confirms this is still open</p>
+                        </div>
+                      )}
 
                       {/* AI Reasoning */}
                       {rfp.reasoning && (

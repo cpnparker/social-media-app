@@ -8,13 +8,18 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { TCE_COMPANY_PROFILE } from "./company-profile";
-import { verifyOpportunityUrls, type UrlConfidence } from "./url-verification";
+import {
+  verifyOpportunityUrls,
+  type UrlConfidence,
+  type RfpStatus,
+} from "./url-verification";
 
 function getAnthropicClient() {
   return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 }
 
 export type SearchProvider = "anthropic" | "grok";
+export type { RfpStatus } from "./url-verification";
 
 export interface DeadlineMilestone {
   type: string;
@@ -28,12 +33,14 @@ export interface DiscoveredRfp {
   deadline: string | null;
   scope: string;
   relevanceScore: number;
+  qualityScore: number;
   sourceUrl: string | null;
   reasoning: string;
   sectors: string[];
   region: string | null;
   estimatedValue: string | null;
   milestones: DeadlineMilestone[];
+  status: RfpStatus;
   // URL verification metadata (optional — populated after verification)
   urlConfidence?: UrlConfidence;
   portalName?: string | null;
@@ -52,11 +59,13 @@ function buildSearchPrompt({
   sectors,
   regions,
   sources,
+  companyProfile,
 }: {
   query?: string;
   sectors?: string[];
   regions?: string[];
   sources?: string[];
+  companyProfile?: string;
 }) {
   const sectorFilter = sectors?.length
     ? `Focus on these sectors: ${sectors.join(", ")}.`
@@ -74,7 +83,14 @@ function buildSearchPrompt({
 
   const today = new Date().toISOString().split("T")[0];
 
-  const defaultSources = `Search across ALL of these source categories:
+  const defaultSources = `Search across these source categories (pick the most relevant ones to search deeply rather than searching all of them superficially):
+
+**🔥 Marketing / Comms-Specific RFP Sites (HIGH PRIORITY — these are the most relevant to TCE):**
+- RFPalooza (rfpalooza.com/marketing-rfps-2/) — curated marketing, PR, digital, social, branding RFPs
+- CreativeRFPs (creativerfps.com) — marketing-specific RFP feed
+- RFPdb (rfpdb.com) — broad RFP database, strong for marcomms & digital
+- FindRFP (findrfp.com/marketing-contracts/bid.aspx) — marketing contracts, communications, web, government
+- BidsInfo (bidsinfo.com) — global tenders/RFPs, filter by sector and region
 
 **UN & Multilateral Procurement:**
 - UNGM (ungm.org) — the central UN procurement portal for all agencies
@@ -100,6 +116,7 @@ function buildSearchPrompt({
 - UK Find a Tender (find-tender.service.gov.uk)
 - Canada BuyAndSell (buyandsell.gc.ca)
 - Australian Government AusTender
+- BidPrime (bidprime.com) — strong for government comms/marketing contracts
 
 **NGO & Humanitarian:**
 - Save the Children (savethechildren.net/tenders)
@@ -113,30 +130,36 @@ function buildSearchPrompt({
 - DevelopmentAid (developmentaid.org/tenders)
 - DevBusiness / dgMarket (dgmarket.com)
 - GlobalTenders (globaltenders.com)
-- RFPMart (rfpmart.com) — marketing, social media, content categories
-- TendersOnTime (tendersontime.com)
 - ReliefWeb consultancy listings (reliefweb.int/jobs — type: Consultancy)
+- BidNet (bidnet.com)
 
-**Corporate & Private Sector:**
+**Corporate & Research Organisations:**
+- WRI / World Resources Institute (world-resources-institute.public-portal.us.workdayspend.com) — Workday procurement portal
 - Search for corporate RFPs from Fortune 500 companies, large brands, and agencies seeking content, communications, sustainability reporting, ESG communications, and digital marketing services
-- Industry-specific searches: "content agency RFP", "communications services tender", "sustainability report content", "ESG communications RFP"`;
+- Try search queries like: "content agency RFP 2026", "communications services tender", "sustainability report content RFP", "ESG communications RFP", "digital marketing services RFP"`;
 
   return `You are an RFP discovery assistant for The Content Engine. Your job is to find current, open RFPs and procurement opportunities that match our company profile.
 
 Company Profile:
-${TCE_COMPANY_PROFILE}
+${companyProfile || TCE_COMPANY_PROFILE}
 
 Today's date is ${today}.
 
-Instructions:
-1. Search for current, open RFPs and tenders that The Content Engine could respond to
-2. ${portalList ? `Search across these portals: ${portalList}, and general web searches` : defaultSources}
-3. Focus on content production, communications, sustainability, climate, thought leadership, ESG reporting, digital content, campaign development, video/multimedia production, and related services
-4. CRITICAL: Only include RFPs where the deadline (or first deadline to register interest / submit expression of interest) is AFTER ${today}. Do NOT include any RFPs whose deadlines have already passed.
-5. Only include RFPs whose deadlines have not yet passed. Include RFPs with upcoming deadlines — the user will decide which to pursue
-6. Score each opportunity 0-100 based on relevance to our profile
-7. Cast a WIDE net — search multiple portals and combine results. Aim for at least 8-12 opportunities across different source types (UN, government, NGO, corporate, etc.)
-8. Include opportunities from BOTH the international development sector AND the private/corporate sector
+## Instructions:
+
+1. Search for current, open RFPs and tenders that The Content Engine could respond to. Aim to find 5-10 good opportunities.
+2. ${portalList ? `Search across these portals: ${portalList}. Also search general web queries like "communications RFP 2026", "content services tender", "sustainability communications RFP" to find opportunities beyond these portals` : defaultSources}
+3. Focus on content production, communications, sustainability, climate, thought leadership, ESG reporting, digital content, campaign development, video/multimedia production, and related services.
+4. Prefer RFPs where the deadline is after ${today}, but include opportunities even if you're unsure about the exact deadline — just set deadline to null.
+5. Score each opportunity 0-100 based on relevance to our profile.
+6. Include opportunities from both the international development sector AND the private/corporate sector when available.
+7. For each opportunity, assess its status: "open" (confirmed still accepting), "likely_open" (recently posted, no closure signals), or "uncertain" (couldn't verify status).
+
+## URL Guidelines:
+- Prefer direct links to specific tender notice pages (e.g. https://www.ungm.org/Public/Notice/274082)
+- Avoid generic portal homepages like /procurement or /tenders — but if you find a relevant RFP and only have its portal page, use null for the URL and still include the opportunity
+- Copy URLs exactly from search results — never fabricate a URL
+- If you can't find a direct link, set sourceUrl to null — that's fine, the opportunity is still valuable
 
 ${sectorFilter}
 ${regionFilter}
@@ -156,7 +179,8 @@ After searching, return your findings as a JSON object with this exact structure
       ],
       "scope": "Brief description of what they're looking for (2-3 sentences)",
       "relevanceScore": 85,
-      "sourceUrl": "The EXACT URL from your search results where the RFP listing was found. Copy the URL directly from the search result — do NOT reconstruct or guess URLs. Use null if unsure.",
+      "status": "open",
+      "sourceUrl": "Direct URL to the specific tender page, or null if not available",
       "reasoning": "Why this is relevant to The Content Engine",
       "sectors": ["sustainability", "content production"],
       "region": "Region or null",
@@ -167,17 +191,18 @@ After searching, return your findings as a JSON object with this exact structure
 }
 
 IMPORTANT about deadlines:
-- The "deadline" field MUST be the final submission deadline
+- The "deadline" field should be the final submission deadline when known
 - If the RFP has multiple deadlines (register interest, submit questions, attend briefing, final submission), include them all in the "milestones" array with appropriate types and labels
 - Common milestone types: "register_interest", "expression_of_interest", "questions", "briefing", "draft_submission", "submission"
 - If only one deadline is known, put it in "deadline" and leave "milestones" as an empty array
+- If deadline is unknown, use null
 
-IMPORTANT about source URLs:
-- The "sourceUrl" MUST be an exact URL copied from your search results — never fabricate, reconstruct, or guess a URL
-- If you cannot find the direct procurement page URL, use the URL of the search result page where you found the listing
-- If no URL is available at all, use null — a null URL is better than a wrong URL
+IMPORTANT about status:
+- "open": You can see from the search snippet that submissions are still being accepted
+- "likely_open": Recently posted (within last 30 days), no closure signals visible
+- "uncertain": Could not verify if still accepting responses
 
-Sort by relevanceScore descending. Return only genuine, currently open opportunities.
+Sort by relevanceScore descending. It's better to include a borderline opportunity and let the user decide than to miss a good one.
 Return ONLY the JSON object, no other text.`;
 }
 
@@ -287,6 +312,63 @@ function parseFlexibleDate(dateStr: string | null): Date | null {
   return null;
 }
 
+/**
+ * Map AI-provided status strings to our normalised RfpStatus type.
+ */
+function normaliseAiStatus(raw: string | undefined): RfpStatus {
+  if (!raw) return "unknown";
+  const lower = raw.toLowerCase().trim();
+  if (lower === "open" || lower === "confirmed_open") return "likely_open";
+  if (lower === "likely_open") return "likely_open";
+  if (lower === "closed" || lower === "likely_closed" || lower === "expired") return "likely_closed";
+  return "unknown";
+}
+
+/**
+ * Compute a composite quality score based on multiple signals.
+ * Higher = better quality result that the user should see first.
+ */
+function computeQualityScore(opp: DiscoveredRfp): number {
+  let score = opp.relevanceScore || 0;
+
+  // URL quality
+  if (opp.sourceUrl && opp.urlConfidence !== "portal_page") {
+    score += 15; // Has a specific URL (not generic portal page)
+  }
+  if (opp.urlConfidence === "verified" || opp.crossReferenced) {
+    score += 10; // URL cross-referenced against real search results
+  }
+  if (opp.urlConfidence === "portal_page") {
+    score -= 20; // Generic portal page — low quality
+  }
+  if (!opp.sourceUrl && opp.urlConfidence !== "portal_page") {
+    score -= 10; // No URL at all
+  }
+
+  // Deadline quality
+  if (opp.deadline) {
+    const deadlineDate = parseFlexibleDate(opp.deadline);
+    if (deadlineDate) {
+      const now = new Date();
+      now.setHours(0, 0, 0, 0);
+      if (deadlineDate >= now) {
+        score += 10; // Has a valid future deadline
+      }
+    }
+  } else {
+    score -= 5; // No deadline
+  }
+
+  // Status quality
+  if (opp.status === "confirmed_open") {
+    score += 15; // Content-verified as still open
+  } else if (opp.status === "likely_closed") {
+    score -= 40; // Content signals it's closed
+  }
+
+  return Math.max(0, Math.min(150, score));
+}
+
 function parseOpportunities(
   textContent: string,
   realUrls: SearchSourceUrl[] = [],
@@ -368,100 +450,103 @@ function parseOpportunities(
 
     console.log(`[RFP Search] Found ${parsed.opportunities.length} raw opportunities in JSON`);
 
-    if (true) { // scoped block replaces old `if (jsonMatch)`
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
-      const SUSPICIOUS_TLDS = [".xyz", ".top", ".buzz", ".click", ".link", ".surf", ".win", ".bid"];
+    const SUSPICIOUS_TLDS = [".xyz", ".top", ".buzz", ".click", ".link", ".surf", ".win", ".bid"];
 
-      const allOpps = (parsed.opportunities || []).map((opp: any) => {
-        // Validate and sanitise the AI-provided sourceUrl
-        let validatedUrl = opp.sourceUrl || opp.source_url || null;
-        if (validatedUrl) {
-          try {
-            const parsedUrl = new URL(validatedUrl);
-            if (SUSPICIOUS_TLDS.some((tld) => parsedUrl.hostname.endsWith(tld))) {
-              validatedUrl = null;
-            }
-          } catch {
+    const allOpps: DiscoveredRfp[] = (parsed.opportunities || []).map((opp: any) => {
+      // Validate and sanitise the AI-provided sourceUrl
+      let validatedUrl = opp.sourceUrl || opp.source_url || null;
+      if (validatedUrl) {
+        try {
+          const parsedUrl = new URL(validatedUrl);
+          if (SUSPICIOUS_TLDS.some((tld) => parsedUrl.hostname.endsWith(tld))) {
             validatedUrl = null;
           }
+        } catch {
+          validatedUrl = null;
         }
-
-        const title = opp.title || "Untitled";
-        const organisation = opp.organisation || opp.organization || "Unknown";
-
-        // Cross-reference against real search result URLs
-        const matchResult = matchRealUrl(
-          { title, organisation, sourceUrl: validatedUrl },
-          realUrls
-        );
-
-        // Grok-specific: if URL was NOT cross-referenced against real citation
-        // URLs, null it out entirely. Grok fabricates URLs at a much higher rate
-        // than Anthropic — better to show a portal fallback than a dead link.
-        let finalUrl = matchResult.url;
-        if (provider === "grok" && !matchResult.crossReferenced) {
-          finalUrl = null;
-        }
-
-        // Extract milestones
-        const milestones: DeadlineMilestone[] = (opp.milestones || [])
-          .map((m: any) => ({
-            type: m.type || "other",
-            label: m.label || m.type || "Milestone",
-            date: m.date,
-          }))
-          .filter((m: DeadlineMilestone) => m.date);
-
-        return {
-          title,
-          organisation,
-          deadline: opp.deadline || null,
-          scope: opp.scope || "",
-          relevanceScore: opp.relevanceScore || 0,
-          sourceUrl: finalUrl,
-          reasoning: opp.reasoning || "",
-          sectors: opp.sectors || [],
-          region: opp.region || null,
-          estimatedValue: opp.estimatedValue || opp.estimated_value || null,
-          milestones,
-          crossReferenced: matchResult.crossReferenced,
-        };
-      });
-
-      console.log(`[RFP Search] Parsed ${allOpps.length} opportunities from AI response`);
-
-      // Filter out already-expired opportunities only.
-      // Keep opportunities with unparseable dates rather than dropping them.
-      const opportunities = allOpps
-        .filter((opp: DiscoveredRfp) => {
-          if (!opp.deadline) return true;
-          const deadlineDate = parseFlexibleDate(opp.deadline);
-          if (!deadlineDate) return true; // Unparseable date → keep
-          return deadlineDate >= today;
-        })
-        .map((opp: DiscoveredRfp) => ({
-          ...opp,
-          // Strip expired milestones so the UI only shows future ones
-          milestones: opp.milestones.filter((m) => {
-            const mDate = parseFlexibleDate(m.date);
-            return !mDate || mDate >= today;
-          }),
-        }));
-
-      const dropped = allOpps.length - opportunities.length;
-      if (dropped > 0) {
-        console.log(`[RFP Search] Dropped ${dropped} expired opportunities`);
       }
-      console.log(`[RFP Search] Returning ${opportunities.length} opportunities`);
+
+      const title = opp.title || "Untitled";
+      const organisation = opp.organisation || opp.organization || "Unknown";
+
+      // Cross-reference against real search result URLs
+      const matchResult = matchRealUrl(
+        { title, organisation, sourceUrl: validatedUrl },
+        realUrls
+      );
+
+      // Grok-specific: if URL was NOT cross-referenced against real citation
+      // URLs, null it out entirely. Grok fabricates URLs at a much higher rate
+      // than Anthropic — better to show a portal fallback than a dead link.
+      let finalUrl = matchResult.url;
+      if (provider === "grok" && !matchResult.crossReferenced) {
+        finalUrl = null;
+      }
+
+      // Extract milestones
+      const milestones: DeadlineMilestone[] = (opp.milestones || [])
+        .map((m: any) => ({
+          type: m.type || "other",
+          label: m.label || m.type || "Milestone",
+          date: m.date,
+        }))
+        .filter((m: DeadlineMilestone) => m.date);
+
+      // Map AI-provided status
+      const aiStatus = normaliseAiStatus(opp.status);
 
       return {
-        opportunities,
-        searchSummary:
-          parsed.searchSummary || parsed.search_summary || "Search completed",
+        title,
+        organisation,
+        deadline: opp.deadline || null,
+        scope: opp.scope || "",
+        relevanceScore: opp.relevanceScore || 0,
+        qualityScore: 0, // Will be computed after verification
+        sourceUrl: finalUrl,
+        reasoning: opp.reasoning || "",
+        sectors: opp.sectors || [],
+        region: opp.region || null,
+        estimatedValue: opp.estimatedValue || opp.estimated_value || null,
+        milestones,
+        status: aiStatus,
+        crossReferenced: matchResult.crossReferenced,
       };
+    });
+
+    console.log(`[RFP Search] Parsed ${allOpps.length} opportunities from AI response`);
+
+    // Filter out already-expired opportunities only.
+    // Keep opportunities with unparseable dates rather than dropping them.
+    const opportunities = allOpps
+      .filter((opp) => {
+        if (!opp.deadline) return true;
+        const deadlineDate = parseFlexibleDate(opp.deadline);
+        if (!deadlineDate) return true; // Unparseable date → keep
+        return deadlineDate >= today;
+      })
+      .map((opp) => ({
+        ...opp,
+        // Strip expired milestones so the UI only shows future ones
+        milestones: opp.milestones.filter((m) => {
+          const mDate = parseFlexibleDate(m.date);
+          return !mDate || mDate >= today;
+        }),
+      }));
+
+    const dropped = allOpps.length - opportunities.length;
+    if (dropped > 0) {
+      console.log(`[RFP Search] Dropped ${dropped} expired opportunities`);
     }
+    console.log(`[RFP Search] Returning ${opportunities.length} opportunities`);
+
+    return {
+      opportunities,
+      searchSummary:
+        parsed.searchSummary || parsed.search_summary || "Search completed",
+    };
   } catch (err) {
     console.error("[RFP Search] Unexpected error in parseOpportunities:", err);
     return {
@@ -471,11 +556,44 @@ function parseOpportunities(
   }
 }
 
+/**
+ * After URL verification, compute quality scores, filter junk, and sort.
+ * Safety net: if filtering would remove ALL results, keep the top ones anyway.
+ */
+function applyQualityScoring(opportunities: DiscoveredRfp[]): DiscoveredRfp[] {
+  const scored = opportunities.map((opp) => ({
+    ...opp,
+    qualityScore: computeQualityScore(opp),
+  }));
+
+  // Sort by quality score descending first
+  scored.sort((a, b) => b.qualityScore - a.qualityScore);
+
+  // Filter out very low quality results, but with a safety net
+  const QUALITY_THRESHOLD = 20;
+  const filtered = scored.filter((opp) => opp.qualityScore >= QUALITY_THRESHOLD);
+
+  const dropped = scored.length - filtered.length;
+  if (dropped > 0) {
+    console.log(`[RFP Search] Quality filter removed ${dropped} low-quality results (below ${QUALITY_THRESHOLD})`);
+  }
+
+  // Safety net: if we filtered EVERYTHING but the AI did return results,
+  // keep the top 3 so the user at least sees something
+  if (filtered.length === 0 && scored.length > 0) {
+    console.log(`[RFP Search] Safety net: all ${scored.length} results were below threshold, keeping top 3`);
+    return scored.slice(0, 3);
+  }
+
+  return filtered;
+}
+
 async function searchWithAnthropic(params: {
   query?: string;
   sectors?: string[];
   regions?: string[];
   sources?: string[];
+  companyProfile?: string;
 }): Promise<SearchResult> {
   const anthropic = getAnthropicClient();
   const systemPrompt = buildSearchPrompt(params);
@@ -488,14 +606,14 @@ async function searchWithAnthropic(params: {
       {
         role: "user",
         content:
-          "Search for current open RFPs and procurement opportunities that The Content Engine should consider responding to. Be thorough in your search across multiple procurement portals.",
+          "Search for current open RFPs and procurement opportunities that The Content Engine should consider responding to. Focus on quality — only return opportunities you've verified are genuinely open with direct links to the specific tender notice page.",
       },
     ],
     tools: [
       {
         type: "web_search_20250305" as any,
         name: "web_search",
-        max_uses: 10,
+        max_uses: 20,
       } as any,
     ],
   });
@@ -533,11 +651,21 @@ async function searchWithAnthropic(params: {
 
   const parsed = parseOpportunities(textContent, realUrls, "anthropic");
 
-  // Verify URLs: HEAD-check + trusted portal matching + confidence scoring
+  if (parsed.opportunities.length === 0) {
+    console.warn("[RFP Search] AI returned 0 opportunities — prompt may be too restrictive or search found nothing relevant");
+    return { opportunities: [], searchSummary: parsed.searchSummary, provider: "anthropic" as SearchProvider };
+  }
+
+  // Verify URLs: generic detection + HEAD-check + content verification + confidence scoring
   console.log(`[RFP Search] Verifying ${parsed.opportunities.length} URLs (Anthropic)...`);
   const verified = await verifyOpportunityUrls(parsed.opportunities);
+  console.log(`[RFP Search] After verification: ${verified.length} opportunities (statuses: ${verified.map(o => o.status).join(', ')})`);
 
-  return { opportunities: verified, searchSummary: parsed.searchSummary, provider: "anthropic" as SearchProvider };
+  // Apply quality scoring, filter junk, sort by quality
+  const scored = applyQualityScoring(verified);
+  console.log(`[RFP Search] After quality scoring: ${scored.length} opportunities (scores: ${scored.map(o => o.qualityScore).join(', ')})`);
+
+  return { opportunities: scored, searchSummary: parsed.searchSummary, provider: "anthropic" as SearchProvider };
 }
 
 async function searchWithGrok(params: {
@@ -545,6 +673,7 @@ async function searchWithGrok(params: {
   sectors?: string[];
   regions?: string[];
   sources?: string[];
+  companyProfile?: string;
 }): Promise<SearchResult> {
   if (!process.env.XAI_API_KEY) {
     throw new Error("XAI_API_KEY is not set");
@@ -566,18 +695,17 @@ async function searchWithGrok(params: {
         {
           role: "user",
           content:
-            "Search for current open RFPs and procurement opportunities that The Content Engine should consider responding to. Be thorough in your search across multiple procurement portals.",
+            "Search for current open RFPs and procurement opportunities that The Content Engine should consider responding to. Focus on quality — only return opportunities you've verified are genuinely open with direct links to the specific tender notice page.",
         },
       ],
       tools: [{ type: "web_search" }],
-      temperature: 0.3,
     }),
   });
 
   if (!response.ok) {
     const errText = await response.text();
-    console.error("[RFP Search] Grok responses API error:", errText);
-    throw new Error(`Grok search failed: ${response.status}`);
+    console.error("[RFP Search] Grok responses API error:", response.status, errText);
+    throw new Error(`Grok search failed: ${response.status}: ${errText.slice(0, 200)}`);
   }
 
   const data = await response.json();
@@ -618,11 +746,21 @@ async function searchWithGrok(params: {
 
   const parsed = parseOpportunities(textContent, realUrls, "grok");
 
-  // Verify URLs: HEAD-check + trusted portal matching + confidence scoring
+  if (parsed.opportunities.length === 0) {
+    console.warn("[RFP Search] Grok returned 0 opportunities — prompt may be too restrictive or search found nothing relevant");
+    return { opportunities: [], searchSummary: parsed.searchSummary, provider: "grok" as SearchProvider };
+  }
+
+  // Verify URLs: generic detection + HEAD-check + content verification + confidence scoring
   console.log(`[RFP Search] Verifying ${parsed.opportunities.length} URLs (Grok)...`);
   const verified = await verifyOpportunityUrls(parsed.opportunities);
+  console.log(`[RFP Search] After verification: ${verified.length} opportunities (statuses: ${verified.map(o => o.status).join(', ')})`);
 
-  return { opportunities: verified, searchSummary: parsed.searchSummary, provider: "grok" as SearchProvider };
+  // Apply quality scoring, filter junk, sort by quality
+  const scored = applyQualityScoring(verified);
+  console.log(`[RFP Search] After quality scoring: ${scored.length} opportunities (scores: ${scored.map(o => o.qualityScore).join(', ')})`);
+
+  return { opportunities: scored, searchSummary: parsed.searchSummary, provider: "grok" as SearchProvider };
 }
 
 /**
@@ -635,15 +773,17 @@ export async function searchForRfps({
   regions,
   sources,
   provider = "anthropic",
+  companyProfile,
 }: {
   query?: string;
   sectors?: string[];
   regions?: string[];
   sources?: string[];
   provider?: SearchProvider;
+  companyProfile?: string;
 }): Promise<SearchResult> {
   if (provider === "grok") {
-    return searchWithGrok({ query, sectors, regions, sources });
+    return searchWithGrok({ query, sectors, regions, sources, companyProfile });
   }
-  return searchWithAnthropic({ query, sectors, regions, sources });
+  return searchWithAnthropic({ query, sectors, regions, sources, companyProfile });
 }

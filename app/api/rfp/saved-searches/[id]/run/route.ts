@@ -35,6 +35,28 @@ export async function POST(
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
+    // Fetch workspace company profile for AI context
+    let companyProfile: string | undefined;
+    try {
+      const { data: profile } = await intelligenceDb
+        .from("rfp_company_profiles")
+        .select("document_overview, document_services, document_sectors, document_differentiators, document_target_rfps")
+        .eq("id_workspace", savedSearch.id_workspace)
+        .maybeSingle();
+
+      if (profile) {
+        companyProfile = [
+          profile.document_overview,
+          profile.document_services ? `Core Services:\n${profile.document_services}` : "",
+          profile.document_sectors ? `Key Sectors:\n${profile.document_sectors}` : "",
+          profile.document_differentiators ? `Differentiators:\n${profile.document_differentiators}` : "",
+          profile.document_target_rfps ? `Target RFP Types:\n${profile.document_target_rfps}` : "",
+        ].filter(Boolean).join("\n\n");
+      }
+    } catch (profileErr) {
+      console.warn("[RFP Saved Search] Could not load company profile, using default:", profileErr);
+    }
+
     // Run the search using the saved configuration
     const config = savedSearch.config_search || {};
     const result = await searchForRfps({
@@ -43,6 +65,7 @@ export async function POST(
       regions: config.regions?.length ? config.regions : undefined,
       sources: config.sources?.length ? config.sources : undefined,
       provider: (savedSearch.type_provider || "anthropic") as SearchProvider,
+      companyProfile,
     });
 
     // Look up user name

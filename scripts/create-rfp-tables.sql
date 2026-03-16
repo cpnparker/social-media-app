@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS intelligence.rfp_response_documents (
 -- rfp_opportunities
 ALTER TABLE intelligence.rfp_opportunities ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Workspace members can view opportunities" ON intelligence.rfp_opportunities;
 CREATE POLICY "Workspace members can view opportunities"
   ON intelligence.rfp_opportunities FOR SELECT
   USING (
@@ -113,6 +114,7 @@ CREATE POLICY "Workspace members can view opportunities"
     )
   );
 
+DROP POLICY IF EXISTS "Workspace members can insert opportunities" ON intelligence.rfp_opportunities;
 CREATE POLICY "Workspace members can insert opportunities"
   ON intelligence.rfp_opportunities FOR INSERT
   WITH CHECK (
@@ -123,6 +125,7 @@ CREATE POLICY "Workspace members can insert opportunities"
     )
   );
 
+DROP POLICY IF EXISTS "Workspace members can update opportunities" ON intelligence.rfp_opportunities;
 CREATE POLICY "Workspace members can update opportunities"
   ON intelligence.rfp_opportunities FOR UPDATE
   USING (
@@ -133,6 +136,7 @@ CREATE POLICY "Workspace members can update opportunities"
     )
   );
 
+DROP POLICY IF EXISTS "Workspace members can delete opportunities" ON intelligence.rfp_opportunities;
 CREATE POLICY "Workspace members can delete opportunities"
   ON intelligence.rfp_opportunities FOR DELETE
   USING (
@@ -146,6 +150,7 @@ CREATE POLICY "Workspace members can delete opportunities"
 -- rfp_documents
 ALTER TABLE intelligence.rfp_documents ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Workspace members can view documents" ON intelligence.rfp_documents;
 CREATE POLICY "Workspace members can view documents"
   ON intelligence.rfp_documents FOR SELECT
   USING (
@@ -156,6 +161,7 @@ CREATE POLICY "Workspace members can view documents"
     )
   );
 
+DROP POLICY IF EXISTS "Workspace members can insert documents" ON intelligence.rfp_documents;
 CREATE POLICY "Workspace members can insert documents"
   ON intelligence.rfp_documents FOR INSERT
   WITH CHECK (
@@ -166,6 +172,7 @@ CREATE POLICY "Workspace members can insert documents"
     )
   );
 
+DROP POLICY IF EXISTS "Workspace members can delete documents" ON intelligence.rfp_documents;
 CREATE POLICY "Workspace members can delete documents"
   ON intelligence.rfp_documents FOR DELETE
   USING (
@@ -179,6 +186,7 @@ CREATE POLICY "Workspace members can delete documents"
 -- rfp_responses
 ALTER TABLE intelligence.rfp_responses ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Workspace members can view responses" ON intelligence.rfp_responses;
 CREATE POLICY "Workspace members can view responses"
   ON intelligence.rfp_responses FOR SELECT
   USING (
@@ -189,6 +197,7 @@ CREATE POLICY "Workspace members can view responses"
     )
   );
 
+DROP POLICY IF EXISTS "Workspace members can insert responses" ON intelligence.rfp_responses;
 CREATE POLICY "Workspace members can insert responses"
   ON intelligence.rfp_responses FOR INSERT
   WITH CHECK (
@@ -199,6 +208,7 @@ CREATE POLICY "Workspace members can insert responses"
     )
   );
 
+DROP POLICY IF EXISTS "Workspace members can update responses" ON intelligence.rfp_responses;
 CREATE POLICY "Workspace members can update responses"
   ON intelligence.rfp_responses FOR UPDATE
   USING (
@@ -209,6 +219,7 @@ CREATE POLICY "Workspace members can update responses"
     )
   );
 
+DROP POLICY IF EXISTS "Workspace members can delete responses" ON intelligence.rfp_responses;
 CREATE POLICY "Workspace members can delete responses"
   ON intelligence.rfp_responses FOR DELETE
   USING (
@@ -233,6 +244,7 @@ ALTER TABLE intelligence.rfp_opportunities ADD COLUMN IF NOT EXISTS config_deadl
 -- rfp_response_documents
 ALTER TABLE intelligence.rfp_response_documents ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Workspace members can view response-document links" ON intelligence.rfp_response_documents;
 CREATE POLICY "Workspace members can view response-document links"
   ON intelligence.rfp_response_documents FOR SELECT
   USING (
@@ -245,6 +257,7 @@ CREATE POLICY "Workspace members can view response-document links"
     )
   );
 
+DROP POLICY IF EXISTS "Workspace members can manage response-document links" ON intelligence.rfp_response_documents;
 CREATE POLICY "Workspace members can manage response-document links"
   ON intelligence.rfp_response_documents FOR ALL
   USING (
@@ -277,6 +290,7 @@ CREATE TABLE IF NOT EXISTS intelligence.rfp_searches (
 
 ALTER TABLE intelligence.rfp_searches ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Workspace members can view searches" ON intelligence.rfp_searches;
 CREATE POLICY "Workspace members can view searches"
   ON intelligence.rfp_searches FOR SELECT
   USING (
@@ -287,6 +301,7 @@ CREATE POLICY "Workspace members can view searches"
     )
   );
 
+DROP POLICY IF EXISTS "Workspace members can insert searches" ON intelligence.rfp_searches;
 CREATE POLICY "Workspace members can insert searches"
   ON intelligence.rfp_searches FOR INSERT
   WITH CHECK (
@@ -328,6 +343,7 @@ CREATE INDEX IF NOT EXISTS idx_rfp_saved_searches_next_run
 
 ALTER TABLE intelligence.rfp_saved_searches ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Workspace members can view saved searches" ON intelligence.rfp_saved_searches;
 CREATE POLICY "Workspace members can view saved searches"
   ON intelligence.rfp_saved_searches FOR SELECT
   USING (
@@ -338,6 +354,7 @@ CREATE POLICY "Workspace members can view saved searches"
     )
   );
 
+DROP POLICY IF EXISTS "Workspace members can insert saved searches" ON intelligence.rfp_saved_searches;
 CREATE POLICY "Workspace members can insert saved searches"
   ON intelligence.rfp_saved_searches FOR INSERT
   WITH CHECK (
@@ -348,6 +365,7 @@ CREATE POLICY "Workspace members can insert saved searches"
     )
   );
 
+DROP POLICY IF EXISTS "Workspace members can update saved searches" ON intelligence.rfp_saved_searches;
 CREATE POLICY "Workspace members can update saved searches"
   ON intelligence.rfp_saved_searches FOR UPDATE
   USING (
@@ -358,6 +376,7 @@ CREATE POLICY "Workspace members can update saved searches"
     )
   );
 
+DROP POLICY IF EXISTS "Workspace members can delete saved searches" ON intelligence.rfp_saved_searches;
 CREATE POLICY "Workspace members can delete saved searches"
   ON intelligence.rfp_saved_searches FOR DELETE
   USING (
@@ -385,6 +404,7 @@ CREATE TABLE IF NOT EXISTS intelligence.rfp_notification_settings (
 
 ALTER TABLE intelligence.rfp_notification_settings ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Workspace members can view notification settings" ON intelligence.rfp_notification_settings;
 CREATE POLICY "Workspace members can view notification settings"
   ON intelligence.rfp_notification_settings FOR SELECT
   USING (
@@ -395,6 +415,7 @@ CREATE POLICY "Workspace members can view notification settings"
     )
   );
 
+DROP POLICY IF EXISTS "Users can manage own notification settings" ON intelligence.rfp_notification_settings;
 CREATE POLICY "Users can manage own notification settings"
   ON intelligence.rfp_notification_settings FOR ALL
   USING (
@@ -424,6 +445,7 @@ CREATE INDEX IF NOT EXISTS idx_rfp_scan_log_search
 
 ALTER TABLE intelligence.rfp_scan_log ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Workspace members can view scan logs" ON intelligence.rfp_scan_log;
 CREATE POLICY "Workspace members can view scan logs"
   ON intelligence.rfp_scan_log FOR SELECT
   USING (
@@ -434,9 +456,8 @@ CREATE POLICY "Workspace members can view scan logs"
     )
   );
 
-CREATE POLICY "Service can manage scan logs"
-  ON intelligence.rfp_scan_log FOR ALL
-  USING (true);
+-- Service-role key bypasses RLS, so no open policy needed for cron writes.
+-- Only workspace members can SELECT scan logs via the anon key.
 
 -- ────────────────────────────────────────────────
 -- 10. URL Verification metadata on opportunities
@@ -448,3 +469,95 @@ ALTER TABLE intelligence.rfp_opportunities
   ADD COLUMN IF NOT EXISTS name_portal text DEFAULT NULL;
 ALTER TABLE intelligence.rfp_opportunities
   ADD COLUMN IF NOT EXISTS url_portal_search text DEFAULT NULL;
+
+-- ────────────────────────────────────────────────
+-- 11. Notification frequency & digest support
+-- ────────────────────────────────────────────────
+
+-- Frequency mode: 'realtime' | 'daily' | 'weekly' | 'off'
+ALTER TABLE intelligence.rfp_notification_settings
+  ADD COLUMN IF NOT EXISTS type_frequency text NOT NULL DEFAULT 'off';
+
+-- Day of week for weekly digest (1=Mon..7=Sun)
+ALTER TABLE intelligence.rfp_notification_settings
+  ADD COLUMN IF NOT EXISTS units_digest_day integer NOT NULL DEFAULT 1;
+
+-- Track when the last digest was sent for each user
+ALTER TABLE intelligence.rfp_notification_settings
+  ADD COLUMN IF NOT EXISTS date_last_digest timestamptz;
+
+-- Migrate existing enabled users to realtime (preserves current behaviour)
+UPDATE intelligence.rfp_notification_settings
+  SET type_frequency = 'realtime'
+  WHERE flag_enabled = 1 AND type_frequency = 'off';
+
+-- ────────────────────────────────────────────────
+-- 12. Digest Queue (populated by scan cron, consumed by digest cron)
+-- ────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS intelligence.rfp_digest_queue (
+  id_queue uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  id_workspace text NOT NULL,
+  id_scan uuid REFERENCES intelligence.rfp_scan_log(id_scan) ON DELETE CASCADE,
+  name_search text NOT NULL,
+  title text NOT NULL,
+  organisation_name text NOT NULL,
+  date_deadline timestamptz,
+  document_scope text,
+  units_relevance_score integer NOT NULL DEFAULT 0,
+  url_source text,
+  flag_processed smallint NOT NULL DEFAULT 0,
+  date_created timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rfp_digest_queue_ws
+  ON intelligence.rfp_digest_queue (id_workspace, flag_processed, date_created);
+
+ALTER TABLE intelligence.rfp_digest_queue ENABLE ROW LEVEL SECURITY;
+
+-- Service-role key bypasses RLS, so no open policy needed for cron writes.
+-- With RLS enabled and no permissive policies, anon/public key access is fully blocked.
+
+-- ────────────────────────────────────────────────
+-- 13. Company Profile (per-workspace, editable, AI-enhanced)
+-- ────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS intelligence.rfp_company_profiles (
+  id_profile uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  id_workspace text NOT NULL UNIQUE,
+  document_overview text,
+  document_services text,
+  document_sectors text,
+  document_differentiators text,
+  document_target_rfps text,
+  config_win_themes jsonb DEFAULT '[]'::jsonb,
+  url_website text,
+  url_linkedin text,
+  user_updated integer,
+  date_created timestamptz DEFAULT now(),
+  date_updated timestamptz DEFAULT now()
+);
+
+ALTER TABLE intelligence.rfp_company_profiles ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Workspace members can view company profile" ON intelligence.rfp_company_profiles;
+CREATE POLICY "Workspace members can view company profile"
+  ON intelligence.rfp_company_profiles FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM intelligence.workspace_members wm
+      WHERE wm.workspace_id::text = rfp_company_profiles.id_workspace
+        AND wm.user_id = (current_setting('request.jwt.claims', true)::jsonb ->> 'sub')::int
+    )
+  );
+
+DROP POLICY IF EXISTS "Workspace members can manage company profile" ON intelligence.rfp_company_profiles;
+CREATE POLICY "Workspace members can manage company profile"
+  ON intelligence.rfp_company_profiles FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM intelligence.workspace_members wm
+      WHERE wm.workspace_id::text = rfp_company_profiles.id_workspace
+        AND wm.user_id = (current_setting('request.jwt.claims', true)::jsonb ->> 'sub')::int
+    )
+  );

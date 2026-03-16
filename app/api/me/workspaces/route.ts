@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 
 // GET /api/me/workspaces — returns workspaces the user belongs to
@@ -10,7 +11,25 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const userId = parseInt(session.user.id, 10);
+    let userId = parseInt(session.user.id, 10);
+    const isValidId = !isNaN(userId) && userId > 0 && userId < 10000000;
+
+    // If token.sub is a Google ID (not a valid DB ID), resolve via email
+    if (!isValidId && session.user.email) {
+      console.warn(`[/api/me/workspaces] Invalid user ID ${session.user.id}, resolving by email: ${session.user.email}`);
+      const { data: dbUser } = await supabase
+        .from("users")
+        .select("id_user")
+        .eq("email_user", session.user.email)
+        .is("date_deleted", null)
+        .limit(1)
+        .single();
+      if (dbUser) {
+        userId = dbUser.id_user;
+      } else {
+        return NextResponse.json({ workspaces: [] });
+      }
+    }
 
     const { data: memberRows, error } = await intelligenceDb
       .from("workspace_members")
@@ -41,8 +60,6 @@ export async function GET() {
     const results = (wsRows || []).map((ws) => {
       const access = accessMap.get(ws.id);
       const role = roleMap.get(ws.id) || "viewer";
-      // Access is determined by users_access row (created on sign-in).
-      // No row = no access (secure by default).
       return {
         id: ws.id,
         name: ws.name,
@@ -58,6 +75,7 @@ export async function GET() {
       };
     });
 
+    console.log(`[/api/me/workspaces] userId=${userId}, workspaces=${results.length}`, results.map(r => ({ id: r.id, name: r.name, accessEngineGpt: r.accessEngineGpt, role: r.role })));
     return NextResponse.json({ workspaces: results });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

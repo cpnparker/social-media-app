@@ -56,9 +56,12 @@ export const DEFAULT_WIN_THEMES = [
 export const DEFAULT_SOURCES = [
   "UNGM",
   "TED (EU Tenders)",
-  "DevBusiness",
+  "Devex",
+  "DevelopmentAid",
   "SAM.gov",
-  "World Bank Procurement",
+  "RFPalooza",
+  "FindRFP",
+  "CreativeRFPs",
   "UN Agency Procurement Sites",
 ];
 

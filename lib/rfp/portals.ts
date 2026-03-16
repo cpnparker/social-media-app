@@ -13,7 +13,7 @@ export interface TrustedPortal {
   name: string;
   domains: string[];
   searchUrl: string;
-  category: "un" | "government" | "ngo" | "development_bank" | "aggregator" | "eu";
+  category: "un" | "government" | "ngo" | "development_bank" | "aggregator" | "eu" | "marketing" | "corporate";
 }
 
 export const TRUSTED_PORTALS: TrustedPortal[] = [
@@ -237,6 +237,60 @@ export const TRUSTED_PORTALS: TrustedPortal[] = [
     domains: ["tendersontime.com"],
     searchUrl: "https://www.tendersontime.com/",
     category: "aggregator",
+  },
+
+  // ── Marketing / Comms-Specific RFP Sites ──
+  {
+    name: "RFPalooza",
+    domains: ["rfpalooza.com"],
+    searchUrl: "https://rfpalooza.com/marketing-rfps-2/",
+    category: "marketing",
+  },
+  {
+    name: "CreativeRFPs",
+    domains: ["creativerfps.com"],
+    searchUrl: "https://creativerfps.com",
+    category: "marketing",
+  },
+  {
+    name: "RFPdb",
+    domains: ["rfpdb.com"],
+    searchUrl: "https://www.rfpdb.com",
+    category: "marketing",
+  },
+  {
+    name: "FindRFP",
+    domains: ["findrfp.com"],
+    searchUrl: "https://www.findrfp.com/marketing-contracts/bid.aspx",
+    category: "marketing",
+  },
+
+  // ── Additional Aggregators ──
+  {
+    name: "BidsInfo",
+    domains: ["bidsinfo.com"],
+    searchUrl: "https://www.bidsinfo.com",
+    category: "aggregator",
+  },
+  {
+    name: "BidPrime",
+    domains: ["bidprime.com"],
+    searchUrl: "https://www.bidprime.com",
+    category: "aggregator",
+  },
+  {
+    name: "BidNet",
+    domains: ["bidnet.com"],
+    searchUrl: "https://www.bidnet.com",
+    category: "aggregator",
+  },
+
+  // ── Corporate / Research Org Procurement ──
+  {
+    name: "WRI (Workday)",
+    domains: ["world-resources-institute.public-portal.us.workdayspend.com"],
+    searchUrl: "https://world-resources-institute.public-portal.us.workdayspend.com",
+    category: "corporate",
   },
 ];
 
