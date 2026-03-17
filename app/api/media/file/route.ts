@@ -21,8 +21,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const blobToken = process.env.PRIVATE_READ_WRITE_TOKEN || process.env.BLOB_READ_WRITE_TOKEN;
-    const result = await get(blobPath, { access: "private", token: blobToken });
+    const result = await get(blobPath, { access: "private" });
 
     if (!result || result.statusCode !== 200 || !result.stream) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });

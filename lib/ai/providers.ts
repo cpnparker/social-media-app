@@ -413,13 +413,11 @@ async function generateImage(
 
   // Upload to Vercel Blob for permanent storage (private — served via auth proxy)
   const filename = `generated/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
-  const blobToken = process.env.PRIVATE_READ_WRITE_TOKEN || process.env.BLOB_READ_WRITE_TOKEN;
   let blob;
   try {
     blob = await put(filename, imageBuffer, {
       access: "private",
       contentType: "image/png",
-      token: blobToken,
     });
   } catch (err: any) {
     console.error("[Image Gen] Private blob upload failed:", err?.message);

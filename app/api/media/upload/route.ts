@@ -102,14 +102,12 @@ export async function POST(req: NextRequest) {
     }
 
     // Use Vercel Blob server-side (private store)
-    const blobToken = process.env.PRIVATE_READ_WRITE_TOKEN || process.env.BLOB_READ_WRITE_TOKEN;
-    if (blobToken) {
+    if (process.env.BLOB_READ_WRITE_TOKEN) {
       let blob;
       try {
         blob = await put(file.name, file, {
           access: "private",
           addRandomSuffix: true,
-          token: blobToken,
         });
       } catch (privateErr: any) {
         console.error("[Media Upload] Private blob upload failed:", privateErr?.message, privateErr);
@@ -136,7 +134,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Media uploads require Vercel Blob storage. Please add PRIVATE_READ_WRITE_TOKEN to your environment variables.",
+            "Media uploads require Vercel Blob storage. Please add BLOB_READ_WRITE_TOKEN to your environment variables.",
         },
         { status: 500 }
       );
