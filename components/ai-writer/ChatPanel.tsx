@@ -26,6 +26,7 @@ import {
   UserPlus,
   ChevronsUpDown,
   ImageIcon,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -377,6 +378,27 @@ export default function ChatPanel({
     }
   }, []);
 
+  // Dismiss drop overlay via Escape key or safety timeout
+  useEffect(() => {
+    if (!isDragging) return;
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        dragCounterRef.current = 0;
+        setIsDragging(false);
+      }
+    };
+    window.addEventListener("keydown", handleEsc);
+    // Safety timeout: auto-dismiss after 5s in case drag state gets stuck
+    const timer = setTimeout(() => {
+      dragCounterRef.current = 0;
+      setIsDragging(false);
+    }, 5000);
+    return () => {
+      window.removeEventListener("keydown", handleEsc);
+      clearTimeout(timer);
+    };
+  }, [isDragging]);
+
   // Minimal header shown during loading / error — keeps hamburger + back always accessible
   if (loading || !conversation) {
     return (
@@ -426,6 +448,13 @@ export default function ChatPanel({
       {/* Full-panel drop overlay */}
       {isDragging && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <button
+            onClick={() => { dragCounterRef.current = 0; setIsDragging(false); }}
+            className="absolute top-4 right-4 p-2 rounded-lg hover:bg-foreground/10 transition-colors"
+            aria-label="Dismiss"
+          >
+            <X className="h-5 w-5 text-foreground/50" />
+          </button>
           <div className="flex flex-col items-center gap-3 p-8 rounded-2xl border-2 border-dashed border-foreground/20 bg-foreground/[0.03]">
             <Upload className="h-10 w-10 text-foreground/50" />
             <p className="text-sm font-semibold text-foreground/70">Drop files to upload</p>
