@@ -413,26 +413,20 @@ async function generateImage(
 
   // Upload to Vercel Blob for permanent storage (private — served via auth proxy)
   const filename = `generated/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
+  const blobToken = process.env.PRIVATE_READ_WRITE_TOKEN || process.env.BLOB_READ_WRITE_TOKEN;
   let blob;
-  let isPrivate = false;
   try {
     blob = await put(filename, imageBuffer, {
       access: "private",
       contentType: "image/png",
+      token: blobToken,
     });
-    isPrivate = true;
-  } catch {
-    // Fallback to public if private not supported by this blob store
-    blob = await put(filename, imageBuffer, {
-      access: "public",
-      contentType: "image/png",
-    });
+  } catch (err: any) {
+    console.error("[Image Gen] Private blob upload failed:", err?.message);
+    throw err;
   }
 
-  // Private: return auth-gated proxy URL. Public: return direct URL.
-  return isPrivate
-    ? `/api/media/file?path=${encodeURIComponent(blob.pathname)}`
-    : blob.url;
+  return `/api/media/file?path=${encodeURIComponent(blob.pathname)}`;
 }
 
 /* ─────────────── Streaming Result ─────────────── */

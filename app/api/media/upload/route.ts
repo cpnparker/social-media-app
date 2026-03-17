@@ -101,34 +101,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Use Vercel Blob server-side
-    if (process.env.BLOB_READ_WRITE_TOKEN) {
-      // Try private access first (requires a private blob store).
-      // Falls back to public if the store doesn't support private yet.
+    // Use Vercel Blob server-side (private store)
+    const blobToken = process.env.PRIVATE_READ_WRITE_TOKEN || process.env.BLOB_READ_WRITE_TOKEN;
+    if (blobToken) {
       let blob;
-      let isPrivate = false;
       try {
         blob = await put(file.name, file, {
           access: "private",
           addRandomSuffix: true,
+          token: blobToken,
         });
-        isPrivate = true;
       } catch (privateErr: any) {
-        console.warn(
-          "[Media Upload] Private blob upload failed, falling back to public. " +
-          "Configure a private blob store in Vercel dashboard to enable private uploads. " +
-          "Error:", privateErr?.message
+        console.error("[Media Upload] Private blob upload failed:", privateErr?.message, privateErr);
+        return NextResponse.json(
+          { error: `Upload failed: ${privateErr?.message || "Unknown error"}` },
+          { status: 500 }
         );
-        blob = await put(file.name, file, {
-          access: "public",
-          addRandomSuffix: true,
-        });
       }
 
-      // Private: return proxy URL (auth-gated). Public: return direct URL.
-      const url = isPrivate
-        ? `/api/media/file?path=${encodeURIComponent(blob.pathname)}`
-        : blob.url;
+      // Private: return auth-gated proxy URL
+      const url = `/api/media/file?path=${encodeURIComponent(blob.pathname)}`;
 
       return NextResponse.json({
         url,
@@ -139,12 +131,12 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Production without BLOB_READ_WRITE_TOKEN
+    // Production without blob token
     if (process.env.VERCEL) {
       return NextResponse.json(
         {
           error:
-            "Media uploads require Vercel Blob storage. Please add BLOB_READ_WRITE_TOKEN to your environment variables.",
+            "Media uploads require Vercel Blob storage. Please add PRIVATE_READ_WRITE_TOKEN to your environment variables.",
         },
         { status: 500 }
       );
