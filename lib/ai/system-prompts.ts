@@ -201,6 +201,11 @@ ${FORMATTING_GUIDELINES}`;
 ${FORMATTING_GUIDELINES}`;
   }
 
+  // ── Current date ──
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  prompt += `\n\nToday's date is ${dateStr}. Always use this as your reference for "today", "this week", "recent", etc. Your training data may be outdated — if the user asks about current events, recent news, or anything that may have changed since your training cutoff, you MUST use web search to get up-to-date information before responding. Never present outdated training data as current fact.`;
+
   // ── Conversation continuity ──
   prompt += `\n\n## Conversation Continuity
 - You are in a multi-turn conversation. Always maintain awareness of what you have already produced — text, images, drafts, and ideas.
