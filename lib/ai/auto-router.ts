@@ -41,6 +41,28 @@ const MATH_KEYWORDS = [
   "mathematical", "theorem",
 ];
 
+// Image generation prompts need Claude — Grok hallucinates fake markdown images
+// instead of calling the generate_image tool reliably
+const IMAGE_GEN_KEYWORDS = [
+  "generate an image", "generate a image", "generate image",
+  "create an image", "create a image", "create image",
+  "make an image", "make a image", "make image",
+  "draw me", "draw a", "draw an",
+  "make me a picture", "make a picture", "generate a picture",
+  "create a picture", "create a graphic", "make a graphic",
+  "generate a graphic", "design a graphic", "design an image",
+  "make an infographic", "create an infographic", "generate an infographic",
+  "make a visual", "create a visual", "generate a visual",
+  "picture of", "image of", "graphic of",
+  "make me a logo", "create a logo", "design a logo",
+  "make a carousel", "create a carousel", "design a carousel",
+  "make a poster", "create a poster", "design a poster",
+  "make a banner", "create a banner", "design a banner",
+  "make a thumbnail", "create a thumbnail",
+  "generate a photo", "create a photo",
+  "illustrate", "illustration of",
+];
+
 const MULTI_STEP_PATTERNS = [
   /step[\s-]by[\s-]step/i,
   /\b(first|1[\.\)]).*(then|2[\.\)])/i,
@@ -71,6 +93,7 @@ export function routeModel(userMessage: string): typeof FAST_MODEL | typeof REAS
   if (userMessage.length > 500) return REASONING_MODEL;
 
   // Keyword checks
+  if (matchesAny(lower, IMAGE_GEN_KEYWORDS)) return REASONING_MODEL;
   if (matchesAny(lower, REASONING_KEYWORDS)) return REASONING_MODEL;
   if (matchesAny(lower, CODE_KEYWORDS)) return REASONING_MODEL;
   if (matchesAny(lower, COMPLEX_WRITING_KEYWORDS)) return REASONING_MODEL;
