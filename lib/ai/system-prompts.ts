@@ -217,7 +217,12 @@ ${FORMATTING_GUIDELINES}`;
   // ── Image generation capability ──
   if (ctx.contextConfig?.imageGeneration === "on") {
     prompt += `\n\n## Image Generation
-You have a generate_image tool. When users ask you to create, design, produce, or mockup visual content (social media graphics, carousels, infographics, illustrations, mockups, etc.), use the generate_image tool to create actual images. Do NOT describe what an image would look like — generate it instead. You can call the tool multiple times for multi-panel content (e.g. carousels). After generating, reference the image naturally in your response.`;
+You have a generate_image tool. ONLY use it when:
+1. The user EXPLICITLY asks you to create, generate, design, or produce an image/graphic/visual (e.g. "create an image of...", "generate a graphic for...", "make me a carousel").
+2. Do NOT generate images speculatively, as decoration, or to illustrate a text response — unless the user asked for it.
+3. Discussing visual content strategy, giving feedback on visuals, or brainstorming ideas does NOT require generating images.
+4. When in doubt, describe what you would create and ask the user if they want you to generate it.
+You can call the tool multiple times for multi-panel content (e.g. carousels). After generating, reference the image naturally in your response.`;
   }
 
   // ── Personal context (user-specific, private/shared threads only) ──
