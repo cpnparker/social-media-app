@@ -305,7 +305,7 @@ async function buildXAIContent(
 const IMAGE_GEN_TOOL: Anthropic.Tool = {
   name: "generate_image",
   description:
-    "Generate an image ONLY when the user explicitly asks for one (e.g. 'create an image', 'generate a graphic', 'make a picture'). Do NOT use this tool to illustrate answers, visualise concepts, or decorate responses. Questions about news, data, strategy, or content ideas should be answered with text, not images.",
+    "Generate an image when the user asks for one. Use this tool for requests like 'create an image', 'generate a graphic', 'make an infographic', 'generate an image of these', etc. Do not use unsolicited — only when the user requests visual content.",
   input_schema: {
     type: "object" as const,
     properties: {
@@ -331,7 +331,7 @@ const IMAGE_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   function: {
     name: "generate_image",
     description:
-      "Generate an image ONLY when the user explicitly asks for one (e.g. 'create an image', 'generate a graphic', 'make a picture'). Do NOT use this tool to illustrate answers, visualise concepts, or decorate responses. Questions about news, data, strategy, or content ideas should be answered with text, not images.",
+      "Generate an image when the user asks for one. Use this tool for requests like 'create an image', 'generate a graphic', 'make an infographic', 'generate an image of these', etc. Do not use unsolicited — only when the user requests visual content.",
     parameters: {
       type: "object",
       properties: {
@@ -692,9 +692,18 @@ async function streamXAI(
   // Since web search is critical for factual accuracy, prioritise it:
   //   - Web search ON  → Responses API (web search, no image gen tool)
   //   - Web search OFF → Chat Completions API (image gen tool available)
-  // Users who need image generation can toggle web search off for that request.
   if (config.webSearch) {
-    return streamXAIResponses(messages, config, apiModel, controller, encoder, xai);
+    // Strip image generation instructions from system prompt — the Responses
+    // API has no tool support, so keeping them causes the model to output
+    // image descriptions instead of calling the tool.
+    const wsConfig = { ...config };
+    if (wsConfig.systemPrompt) {
+      wsConfig.systemPrompt = wsConfig.systemPrompt.replace(
+        /\n\n## Image Generation[\s\S]*?(?=\n\n## |\n\n---|\s*$)/,
+        "\n\n## Image Generation\nImage generation is not available when web search is active. If the user asks you to generate or create an image, tell them to turn off web search first, then ask again."
+      );
+    }
+    return streamXAIResponses(messages, wsConfig, apiModel, controller, encoder, xai);
   }
 
   const openaiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];

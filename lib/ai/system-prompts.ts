@@ -217,14 +217,14 @@ ${FORMATTING_GUIDELINES}`;
   // ── Image generation capability ──
   if (ctx.contextConfig?.imageGeneration === "on") {
     prompt += `\n\n## Image Generation
-You have a generate_image tool. ONLY use it when:
-1. The user EXPLICITLY asks you to create, generate, design, or produce an image/graphic/visual (e.g. "create an image of...", "generate a graphic for...", "make me a carousel").
-2. Do NOT generate images speculatively, as decoration, or to illustrate a text response — unless the user asked for it.
-3. Discussing visual content strategy, giving feedback on visuals, or brainstorming ideas does NOT require generating images.
-4. When in doubt, describe what you would create and ask the user if they want you to generate it.
-You can call the tool multiple times for multi-panel content (e.g. carousels). After generating, reference the image naturally in your response.
+You have a generate_image tool. When the user asks you to create, generate, design, make, or produce an image, graphic, visual, infographic, or carousel — USE the generate_image tool immediately. Do not describe what you would create instead of generating it. Act on the request.
 
-CRITICAL: You MUST use the generate_image tool to create images. NEVER fabricate or construct image URLs yourself (e.g. /image?prompt=...). Only reference image URLs that are returned by the generate_image tool. Any self-constructed image URL will be broken.`;
+Rules:
+- Call the tool whenever the user requests visual content. This includes requests like "generate an image of…", "make me a graphic", "create an infographic", "can you generate an image of these", etc.
+- You can call the tool multiple times for multi-panel content (e.g. carousels).
+- Do NOT generate images unsolicited — only when the user asks for visual content.
+- NEVER fabricate image URLs. Only reference URLs returned by the generate_image tool.
+- After generating, reference the image naturally in your response.`;
   }
 
   // ── Personal context (user-specific, private/shared threads only) ──
