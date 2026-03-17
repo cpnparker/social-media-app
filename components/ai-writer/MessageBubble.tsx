@@ -463,7 +463,7 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
   // Images ![alt](url) — render as full-width inline images
   // Use a replacer function to HTML-escape the alt text (prompts can contain quotes)
   html = html.replace(
-    /!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g,
+    /!\[([^\]]*)\]\(((https?:\/\/|\/api\/)[^)]+)\)/g,
     (_m, alt, url) =>
       `<div class="ai-generated-image-wrap my-3"><a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${escapeHtml(alt)}" class="ai-generated-image rounded-lg max-w-full" loading="lazy" /></a></div>`
   );
