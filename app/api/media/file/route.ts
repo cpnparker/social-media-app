@@ -24,18 +24,20 @@ export async function GET(req: NextRequest) {
     const result = await get(blobPath, { access: "private" });
 
     if (!result || result.statusCode !== 200 || !result.stream) {
+      console.error("[Media File Proxy] Not found or no stream:", blobPath, "statusCode:", result?.statusCode);
       return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
 
     return new NextResponse(result.stream as ReadableStream, {
       headers: {
         "Content-Type": result.blob.contentType || "application/octet-stream",
+        "Content-Disposition": "inline",
         "Cache-Control": "private, max-age=3600",
         "X-Content-Type-Options": "nosniff",
       },
     });
   } catch (error: any) {
-    console.error("[Media File Proxy] Error:", error?.message);
+    console.error("[Media File Proxy] Error for path:", blobPath, "message:", error?.message, error?.stack);
     return NextResponse.json({ error: "File not found" }, { status: 404 });
   }
 }

@@ -39,15 +39,13 @@ const ALLOWED_TYPES = [
 // 1. Client-side Vercel Blob upload (handleUpload token generation) — for production
 // 2. Direct formData upload — for local dev fallback
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   try {
     const contentType = req.headers.get("content-type") || "";
 
-    // If JSON body, this is a Vercel Blob client-upload handshake
+    // If JSON body, this is a Vercel Blob client-upload handshake.
+    // The completion callback comes from Vercel's infrastructure (no user
+    // cookies), so auth is checked inside onBeforeGenerateToken instead of
+    // at the top of the route.
     if (contentType.includes("application/json")) {
       const body = (await req.json()) as HandleUploadBody;
 
@@ -55,7 +53,11 @@ export async function POST(req: NextRequest) {
         body,
         request: req,
         onBeforeGenerateToken: async (pathname, clientPayload) => {
-          // Validate and configure the upload
+          // Auth-check here so the completion callback isn't blocked
+          const session = await auth();
+          if (!session?.user?.id) {
+            throw new Error("Unauthorized");
+          }
           return {
             allowedContentTypes: ALLOWED_TYPES,
             maximumSizeInBytes: 50 * 1024 * 1024, // 50MB for docs, images; videos handled separately
@@ -63,12 +65,17 @@ export async function POST(req: NextRequest) {
           };
         },
         onUploadCompleted: async ({ blob }) => {
-          // Optional: could log or save to DB here
           console.log("[Media Upload] Client upload completed:", blob.url);
         },
       });
 
       return NextResponse.json(jsonResponse);
+    }
+
+    // Non-JSON requests (formData uploads) require auth
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Otherwise, handle as direct formData upload (local dev / small files)
