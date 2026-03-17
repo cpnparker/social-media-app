@@ -689,23 +689,87 @@ async function streamXAI(
 
   // xAI's Responses API supports web search but NOT function calling (tools).
   // The Chat Completions API supports function calling but NOT web search.
-  // Since web search is critical for factual accuracy, prioritise it:
-  //   - Web search ON  → Responses API (web search, no image gen tool)
-  //   - Web search OFF → Chat Completions API (image gen tool available)
-  if (config.webSearch) {
-    // Strip image generation instructions from system prompt — the Responses
-    // API has no tool support, so keeping them causes the model to output
-    // image descriptions instead of calling the tool.
-    const wsConfig = { ...config };
-    if (wsConfig.systemPrompt) {
-      wsConfig.systemPrompt = wsConfig.systemPrompt.replace(
-        /\n\n## Image Generation[\s\S]*?(?=\n\n## |\n\n---|\s*$)/,
-        "\n\n## Image Generation\nImage generation is not available when web search is active. If the user asks you to generate or create an image, tell them to turn off web search first, then ask again."
-      );
+  // When both are needed, we do a two-step approach:
+  //   1. Non-streaming Responses API call → get web search results
+  //   2. Inject search results as context → stream via Chat Completions with tools
+  if (config.webSearch && config.imageGeneration) {
+    // Both web search AND image gen: two-step approach
+    controller.enqueue(
+      encoder.encode(`data: ${JSON.stringify({ searching: true })}\n\n`)
+    );
+
+    // Step 1: Get web search results via Responses API (non-streaming)
+    const searchInput: any[] = [];
+    for (const m of messages) {
+      searchInput.push({
+        role: m.role as "user" | "assistant" | "system",
+        content: m.role === "user" ? await buildXAIContent(m) : m.content,
+      });
     }
-    return streamXAIResponses(messages, wsConfig, apiModel, controller, encoder, xai);
+
+    let searchContext = "";
+    try {
+      const searchResponse = await (xai.responses.create as any)({
+        model: apiModel,
+        instructions: config.systemPrompt || undefined,
+        input: searchInput,
+        tools: [{ type: "web_search" }],
+      });
+
+      // Extract text from the response output
+      if (searchResponse?.output) {
+        for (const item of searchResponse.output) {
+          if (item.type === "message" && item.content) {
+            for (const block of item.content) {
+              if (block.type === "output_text") {
+                searchContext += block.text || "";
+              }
+            }
+          }
+        }
+      }
+    } catch (searchErr: any) {
+      console.error("[xAI] Web search pre-flight failed:", searchErr?.message);
+      // Fall through — the model will answer without search context
+    }
+
+    // Step 2: Stream via Chat Completions with tools + search context
+    const augmentedConfig = { ...config, webSearch: false };
+    if (searchContext) {
+      // Prepend search results to the last user message context
+      const lastUserIdx = messages.length - 1;
+      const augmentedMessages = messages.map((m, i) => {
+        if (i === lastUserIdx && m.role === "user") {
+          return {
+            ...m,
+            content: `${m.content}\n\n[Web search results for context — use these for factual accuracy:]\n${searchContext}`,
+          };
+        }
+        return m;
+      });
+      return streamXAIChatCompletions(augmentedMessages, augmentedConfig, apiModel, controller, encoder, xai);
+    }
+    return streamXAIChatCompletions(messages, augmentedConfig, apiModel, controller, encoder, xai);
   }
 
+  if (config.webSearch) {
+    // Web search only (no image gen) — use Responses API directly
+    return streamXAIResponses(messages, config, apiModel, controller, encoder, xai);
+  }
+
+  // No web search — go straight to Chat Completions with tools
+  return streamXAIChatCompletions(messages, config, apiModel, controller, encoder, xai);
+}
+
+/** xAI Chat Completions API streaming — supports function calling (tools) */
+async function streamXAIChatCompletions(
+  messages: AIMessage[],
+  config: AIProviderConfig,
+  apiModel: string,
+  controller: ReadableStreamDefaultController,
+  encoder: TextEncoder,
+  xai: OpenAI
+): Promise<StreamResult> {
   const openaiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
   // Add system prompt
