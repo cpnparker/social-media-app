@@ -232,11 +232,8 @@ export default function ChatPanel({
               setIsGeneratingImage(true);
             } else if (parsed.image_ready) {
               setIsGeneratingImage(false);
-              // Embed image markdown into the streamed content
-              // Use safe alt text — the raw prompt can contain quotes/parens
-              // that break markdown and HTML attribute parsing
-              fullText += `\n\n![Generated image](${parsed.image_ready.url})\n\n`;
-              setStreamingContent(fullText);
+              // Image markdown is already embedded in fullText by the backend
+              // (providers.ts) — no need to duplicate it here.
             } else if (parsed.image_error) {
               setIsGeneratingImage(false);
               toast.error(`Image generation failed: ${parsed.image_error}`);
