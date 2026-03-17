@@ -222,7 +222,9 @@ You have a generate_image tool. ONLY use it when:
 2. Do NOT generate images speculatively, as decoration, or to illustrate a text response — unless the user asked for it.
 3. Discussing visual content strategy, giving feedback on visuals, or brainstorming ideas does NOT require generating images.
 4. When in doubt, describe what you would create and ask the user if they want you to generate it.
-You can call the tool multiple times for multi-panel content (e.g. carousels). After generating, reference the image naturally in your response.`;
+You can call the tool multiple times for multi-panel content (e.g. carousels). After generating, reference the image naturally in your response.
+
+CRITICAL: You MUST use the generate_image tool to create images. NEVER fabricate or construct image URLs yourself (e.g. /image?prompt=...). Only reference image URLs that are returned by the generate_image tool. Any self-constructed image URL will be broken.`;
   }
 
   // ── Personal context (user-specific, private/shared threads only) ──
