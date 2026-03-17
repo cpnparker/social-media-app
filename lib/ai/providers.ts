@@ -305,7 +305,7 @@ async function buildXAIContent(
 const IMAGE_GEN_TOOL: Anthropic.Tool = {
   name: "generate_image",
   description:
-    "Generate an image using AI. Use this when the user asks you to create, design, produce, or mockup any visual content — including social media graphics, illustrations, diagrams, mockups, carousels, infographics, or any image. Always use this tool instead of describing what an image would look like in text.",
+    "Generate an image ONLY when the user explicitly asks for one (e.g. 'create an image', 'generate a graphic', 'make a picture'). Do NOT use this tool to illustrate answers, visualise concepts, or decorate responses. Questions about news, data, strategy, or content ideas should be answered with text, not images.",
   input_schema: {
     type: "object" as const,
     properties: {
@@ -331,7 +331,7 @@ const IMAGE_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   function: {
     name: "generate_image",
     description:
-      "Generate an image using AI. Use this when the user asks you to create, design, produce, or mockup any visual content — including social media graphics, illustrations, diagrams, mockups, carousels, infographics, or any image. Always use this tool instead of describing what an image would look like in text.",
+      "Generate an image ONLY when the user explicitly asks for one (e.g. 'create an image', 'generate a graphic', 'make a picture'). Do NOT use this tool to illustrate answers, visualise concepts, or decorate responses. Questions about news, data, strategy, or content ideas should be answered with text, not images.",
     parameters: {
       type: "object",
       properties: {
