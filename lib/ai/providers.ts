@@ -687,12 +687,13 @@ async function streamXAI(
 ): Promise<StreamResult> {
   const xai = getXAIClient();
 
-  // When web search is enabled AND image generation is NOT, use the Responses API.
-  // The Responses API supports built-in web search but doesn't support function
-  // calling tools (like generate_image). When image generation is on, we must use
-  // the Chat Completions API with function calling instead — web search won't be
-  // available in that mode, but image generation will work.
-  if (config.webSearch && !config.imageGeneration) {
+  // xAI's Responses API supports web search but NOT function calling (tools).
+  // The Chat Completions API supports function calling but NOT web search.
+  // Since web search is critical for factual accuracy, prioritise it:
+  //   - Web search ON  → Responses API (web search, no image gen tool)
+  //   - Web search OFF → Chat Completions API (image gen tool available)
+  // Users who need image generation can toggle web search off for that request.
+  if (config.webSearch) {
     return streamXAIResponses(messages, config, apiModel, controller, encoder, xai);
   }
 
