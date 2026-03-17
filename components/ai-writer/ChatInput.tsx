@@ -13,9 +13,10 @@ import {
 import { Send, Loader2, Paperclip, X, FileText, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { upload as blobUpload } from "@vercel/blob/client";
 import type { Attachment } from "@/lib/types/ai";
 
-const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
 interface ChatInputProps {
   onSend: (content: string, attachments?: Attachment[]) => void;
@@ -51,34 +52,30 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     }, [value]);
 
     // Shared file upload logic — uses client-side Vercel Blob upload
-    // to bypass serverless function body size limits
+    // to bypass serverless function body size limits (4.5MB).
+    // Files stream directly to blob storage; the server just issues a token.
     const uploadFiles = useCallback(async (files: File[]) => {
       if (!files.length) return;
       setUploading(true);
 
       for (const file of files) {
         if (file.size > MAX_FILE_SIZE) {
-          toast.error(`${file.name} is too large. Maximum size is 20MB.`);
+          toast.error(`${file.name} is too large. Maximum size is 50MB.`);
           continue;
         }
         try {
-          // Server-side upload (supports private blob access)
-          const formData = new FormData();
-          formData.append("file", file);
-          const res = await fetch("/api/media/upload", {
-            method: "POST",
-            body: formData,
+          const blob = await blobUpload(file.name, file, {
+            access: "private",
+            handleUploadUrl: "/api/media/upload",
           });
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({ error: "Upload failed" }));
-            throw new Error(err.error || "Upload failed");
-          }
-          const data = await res.json();
+
+          // Private blobs: use auth-gated proxy URL
+          const url = `/api/media/file?path=${encodeURIComponent(blob.pathname)}`;
 
           setPendingAttachments((prev) => [
             ...prev,
             {
-              url: data.url,
+              url,
               name: file.name,
               type: file.type,
               size: file.size,
