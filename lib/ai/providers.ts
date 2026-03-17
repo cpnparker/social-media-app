@@ -411,14 +411,28 @@ async function generateImage(
     imageBuffer = Buffer.from(await imageRes.arrayBuffer());
   }
 
-  // Upload to Vercel Blob for permanent storage
+  // Upload to Vercel Blob for permanent storage (private — served via auth proxy)
   const filename = `generated/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
-  const blob = await put(filename, imageBuffer, {
-    access: "public",
-    contentType: "image/png",
-  });
+  let blob;
+  let isPrivate = false;
+  try {
+    blob = await put(filename, imageBuffer, {
+      access: "private",
+      contentType: "image/png",
+    });
+    isPrivate = true;
+  } catch {
+    // Fallback to public if private not supported by this blob store
+    blob = await put(filename, imageBuffer, {
+      access: "public",
+      contentType: "image/png",
+    });
+  }
 
-  return blob.url;
+  // Private: return auth-gated proxy URL. Public: return direct URL.
+  return isPrivate
+    ? `/api/media/file?path=${encodeURIComponent(blob.pathname)}`
+    : blob.url;
 }
 
 /* ─────────────── Streaming Result ─────────────── */

@@ -11,7 +11,6 @@ import {
   type ReactNode,
 } from "react";
 import { Send, Loader2, Paperclip, X, FileText, Upload } from "lucide-react";
-import { upload as blobUpload } from "@vercel/blob/client";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import type { Attachment } from "@/lib/types/ai";
@@ -63,22 +62,30 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
           continue;
         }
         try {
-          const blob = await blobUpload(file.name, file, {
-            access: "public",
-            handleUploadUrl: "/api/media/upload",
+          // Server-side upload (supports private blob access)
+          const formData = new FormData();
+          formData.append("file", file);
+          const res = await fetch("/api/media/upload", {
+            method: "POST",
+            body: formData,
           });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ error: "Upload failed" }));
+            throw new Error(err.error || "Upload failed");
+          }
+          const data = await res.json();
 
           setPendingAttachments((prev) => [
             ...prev,
             {
-              url: blob.url,
+              url: data.url,
               name: file.name,
               type: file.type,
               size: file.size,
             },
           ]);
-        } catch {
-          toast.error(`Failed to upload ${file.name}`);
+        } catch (err: any) {
+          toast.error(err?.message || `Failed to upload ${file.name}`);
         }
       }
 
