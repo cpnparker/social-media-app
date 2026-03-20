@@ -74,6 +74,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "No workspace found" }, { status: 500 });
     }
 
+    // Process max 3 clients per invocation to stay within function timeout.
+    // The cron runs every 2 hours, so all clients get processed over time.
+    const MAX_PER_RUN = 3;
+
     for (const clientId of clientIds) {
       const lastProcessed = lastProcessedMap.get(clientId);
 
@@ -94,6 +98,16 @@ export async function GET(req: NextRequest) {
           });
           continue;
         }
+      }
+
+      // Stop if we've hit the batch limit
+      if (processedCount >= MAX_PER_RUN) {
+        results.push({
+          clientId,
+          name: clientNameMap.get(clientId) || `Client ${clientId}`,
+          status: "deferred",
+        });
+        continue;
       }
 
       // Process this client
