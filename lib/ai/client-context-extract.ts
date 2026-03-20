@@ -12,8 +12,6 @@ import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import OpenAI from "openai";
 
-const SUPABASE_STORAGE_BASE = `https://dcwodczzdeltxlyepxmc.supabase.co/storage/v1/object/public`;
-
 function getXAIClient() {
   if (!process.env.XAI_API_KEY) {
     throw new Error("XAI_API_KEY is not set");
@@ -43,40 +41,86 @@ interface FileSummary {
 }
 
 /**
- * Resolve the download URL for an asset file.
- * Handles Supabase Storage (bucket + path) and direct URLs.
+ * Determine the effective MIME type for an asset.
+ * Uses the stored type_asset first, falls back to file extension.
  */
-function resolveFileUrl(asset: AssetFile): string | null {
-  // Direct URL available
-  if (asset.file_url) return asset.file_url;
-  // Build from bucket + path
-  if (asset.file_bucket && asset.file_path) {
-    return `${SUPABASE_STORAGE_BASE}/${asset.file_bucket}/${asset.file_path}`;
+function getEffectiveMimeType(asset: AssetFile): string {
+  // type_asset often has the real MIME (e.g. "application/pdf")
+  if (asset.type_asset) {
+    // Strip charset suffix if present (e.g. "text/html; charset=utf-8" → "text/html")
+    const base = asset.type_asset.split(";")[0].trim();
+    if (base.includes("/")) return base;
   }
-  return null;
+  // Fall back to file extension
+  const fileName = asset.file_name || asset.name_asset || "";
+  const ext = fileName.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "pdf": return "application/pdf";
+    case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case "doc": return "application/msword";
+    case "txt": case "md": case "csv": return "text/plain";
+    case "pptx": return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    default: return "application/octet-stream";
+  }
 }
 
 /**
- * Detect MIME type from file name extension.
+ * Check if a MIME type is one we can extract text from.
  */
-function guessMimeType(fileName: string): string {
-  const ext = fileName.split(".").pop()?.toLowerCase();
-  switch (ext) {
-    case "pdf":
-      return "application/pdf";
-    case "docx":
-      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    case "doc":
-      return "application/msword";
-    case "txt":
-    case "md":
-    case "csv":
-      return "text/plain";
-    case "pptx":
-      return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-    default:
-      return "application/octet-stream";
+function isExtractable(mimeType: string): boolean {
+  return (
+    mimeType === "application/pdf" ||
+    mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    mimeType.startsWith("text/")
+  );
+}
+
+/**
+ * Check if an asset links to a Google Doc.
+ */
+function isGoogleDoc(asset: AssetFile): boolean {
+  const path = asset.file_path || asset.file_url || "";
+  return path.includes("docs.google.com/document");
+}
+
+/**
+ * Extract the Google Doc ID from a URL and fetch as plain text.
+ */
+async function fetchGoogleDocText(url: string): Promise<string | null> {
+  // Extract doc ID from URL like https://docs.google.com/document/d/DOCID/edit...
+  const match = url.match(/\/document\/d\/([a-zA-Z0-9_-]+)/);
+  if (!match) return null;
+
+  const docId = match[1];
+  const exportUrl = `https://docs.google.com/document/d/${docId}/export?format=txt`;
+
+  try {
+    const response = await fetch(exportUrl);
+    if (!response.ok) {
+      console.warn(`[ClientContext] Google Doc export failed (${response.status}): ${docId}`);
+      return null;
+    }
+    return await response.text();
+  } catch (err) {
+    console.warn(`[ClientContext] Google Doc fetch error: ${docId}`, err);
+    return null;
   }
+}
+
+/**
+ * Download file content from Supabase Storage (private bucket).
+ */
+async function downloadFromStorage(
+  bucket: string,
+  path: string
+): Promise<Buffer | null> {
+  const { data, error } = await supabase.storage.from(bucket).download(path);
+  if (error || !data) {
+    console.warn(`[ClientContext] Storage download failed: ${bucket}/${path}`, error?.message);
+    return null;
+  }
+  const arrayBuffer = await data.arrayBuffer();
+  return Buffer.from(arrayBuffer);
 }
 
 /**
@@ -216,50 +260,69 @@ export async function processClientContext(
     // 2. Process each file
     for (const asset of assets) {
       try {
-        const url = resolveFileUrl(asset);
-        if (!url) {
-          console.warn(
-            `[ClientContext] No URL for asset ${asset.id_asset} (${asset.name_asset})`
-          );
-          continue;
-        }
-
         const fileName =
           asset.file_name || asset.name_asset || `asset-${asset.id_asset}`;
-        const mimeType = guessMimeType(fileName);
 
-        // Skip unsupported file types (images, videos, etc.)
-        if (
-          mimeType === "application/octet-stream" ||
-          mimeType === "application/msword" ||
-          mimeType.startsWith("image/") ||
-          mimeType.startsWith("video/") ||
-          mimeType.startsWith("audio/")
-        ) {
-          console.log(
-            `[ClientContext] Skipping unsupported type: ${fileName} (${mimeType})`
-          );
+        // Handle Google Docs separately
+        if (isGoogleDoc(asset)) {
+          const docUrl = asset.file_path || asset.file_url || "";
+          const text = await fetchGoogleDocText(docUrl);
+          if (!text || text.trim().length < 50) {
+            console.log(`[ClientContext] No usable text from Google Doc: ${asset.name_asset}`);
+            continue;
+          }
+          const summary = await summariseDocument(xai, text, fileName);
+          if (summary) {
+            fileSummaries.push({
+              id_asset: asset.id_asset,
+              name: asset.name_asset || fileName,
+              type: "google-doc",
+              summary,
+              chars_extracted: text.length,
+            });
+            console.log(`[ClientContext] Processed Google Doc "${asset.name_asset}": ${text.length} chars → ${summary.length} char summary`);
+          }
           continue;
         }
 
-        // Fetch file content
-        const response = await fetch(url);
-        if (!response.ok) {
-          console.warn(
-            `[ClientContext] Failed to fetch ${fileName}: ${response.status}`
-          );
+        // Skip assets with no file reference
+        if (!asset.file_path && !asset.file_url) {
           continue;
         }
 
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
+        const mimeType = getEffectiveMimeType(asset);
+
+        // Skip unsupported file types
+        if (!isExtractable(mimeType)) {
+          console.log(`[ClientContext] Skipping: ${fileName} (${mimeType})`);
+          continue;
+        }
+
+        // Download file content
+        let buffer: Buffer | null = null;
+
+        if (asset.file_bucket && asset.file_path && asset.file_bucket !== "external") {
+          // Private/public Supabase Storage — use SDK download
+          buffer = await downloadFromStorage(asset.file_bucket, asset.file_path);
+        } else if (asset.file_url) {
+          // Direct URL fetch
+          const response = await fetch(asset.file_url);
+          if (response.ok) {
+            buffer = Buffer.from(await response.arrayBuffer());
+          } else {
+            console.warn(`[ClientContext] Failed to fetch ${fileName}: ${response.status}`);
+          }
+        }
+
+        if (!buffer) {
+          console.warn(`[ClientContext] Could not download: ${fileName}`);
+          continue;
+        }
 
         // Extract text
         const text = await extractText(buffer, mimeType);
         if (!text || text.trim().length < 50) {
-          console.log(
-            `[ClientContext] No usable text from ${fileName} (${text?.length || 0} chars)`
-          );
+          console.log(`[ClientContext] No usable text from ${fileName} (${text?.length || 0} chars)`);
           continue;
         }
 
@@ -275,14 +338,9 @@ export async function processClientContext(
           });
         }
 
-        console.log(
-          `[ClientContext] Processed ${fileName}: ${text.length} chars → ${summary.length} char summary`
-        );
+        console.log(`[ClientContext] Processed ${fileName}: ${text.length} chars → ${summary.length} char summary`);
       } catch (fileErr) {
-        console.error(
-          `[ClientContext] Error processing asset ${asset.id_asset}:`,
-          fileErr
-        );
+        console.error(`[ClientContext] Error processing asset ${asset.id_asset}:`, fileErr);
         // Continue with other files
       }
     }
