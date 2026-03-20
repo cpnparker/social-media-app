@@ -1,15 +1,17 @@
 /**
  * Client context extraction and summarisation.
  *
- * Fetches client asset files (PDFs, DOCX, text) from Supabase Storage,
- * extracts text, summarises each file, then consolidates into a single
- * structured client profile stored in intelligence.ai_client_context.
+ * Fetches client asset files (PDFs, DOCX, text) from Google Cloud Storage
+ * (private bucket) or public URLs, extracts text, summarises each file,
+ * then consolidates into a single structured client profile stored in
+ * intelligence.ai_client_context.
  *
  * Pattern follows lib/rfp/extract.ts.
  */
 
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { Storage } from "@google-cloud/storage";
 import OpenAI from "openai";
 
 function getXAIClient() {
@@ -108,19 +110,74 @@ async function fetchGoogleDocText(url: string): Promise<string | null> {
 }
 
 /**
- * Download file content from Supabase Storage (private bucket).
+ * Get a GCS Storage client using service account credentials from env.
  */
-async function downloadFromStorage(
+function getGCSClient(): Storage {
+  const project = process.env.GOOGLE_PROJECT;
+  const serviceJson = process.env.GOOGLE_SERVICE;
+  if (!project || !serviceJson) {
+    throw new Error("GOOGLE_PROJECT or GOOGLE_SERVICE env vars not set");
+  }
+  const credentials = JSON.parse(serviceJson);
+  return new Storage({ projectId: project, credentials });
+}
+
+const GCS_BUCKET_PREFIX = "reflex_deploy_";
+
+/**
+ * Get a download URL for a file based on its bucket type.
+ * - "private" → GCS signed URL from reflex_deploy_private
+ * - "public"  → direct GCS public URL from reflex_deploy_public
+ * - "external" → the path itself is the URL
+ */
+async function getFileUrl(
+  bucket: string,
+  path: string
+): Promise<string | null> {
+  try {
+    if (bucket === "private") {
+      const gcs = getGCSClient();
+      const gcsBucket = gcs.bucket(GCS_BUCKET_PREFIX + bucket);
+      const file = gcsBucket.file(path);
+      const [url] = await file.getSignedUrl({
+        version: "v4",
+        action: "read",
+        expires: Date.now() + 2 * 24 * 60 * 60 * 1000, // 2 days
+      });
+      return url;
+    } else if (bucket === "public") {
+      return `https://storage.googleapis.com/${GCS_BUCKET_PREFIX}${bucket}/${path}`;
+    } else if (bucket === "external") {
+      return path;
+    }
+    return null;
+  } catch (err: any) {
+    console.warn(`[ClientContext] Failed to get file URL: ${bucket}/${path}`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Download file content from GCS (private/public) or a direct URL.
+ */
+async function downloadFile(
   bucket: string,
   path: string
 ): Promise<Buffer | null> {
-  const { data, error } = await supabase.storage.from(bucket).download(path);
-  if (error || !data) {
-    console.warn(`[ClientContext] Storage download failed: ${bucket}/${path}`, error?.message);
+  const url = await getFileUrl(bucket, path);
+  if (!url) return null;
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.warn(`[ClientContext] Download failed (${response.status}): ${bucket}/${path}`);
+      return null;
+    }
+    return Buffer.from(await response.arrayBuffer());
+  } catch (err: any) {
+    console.warn(`[ClientContext] Download error: ${bucket}/${path}`, err.message);
     return null;
   }
-  const arrayBuffer = await data.arrayBuffer();
-  return Buffer.from(arrayBuffer);
 }
 
 /**
@@ -298,19 +355,22 @@ export async function processClientContext(
           continue;
         }
 
-        // Download file content
+        // Download file content via GCS signed URL or direct URL
         let buffer: Buffer | null = null;
 
-        if (asset.file_bucket && asset.file_path && asset.file_bucket !== "external") {
-          // Private/public Supabase Storage — use SDK download
-          buffer = await downloadFromStorage(asset.file_bucket, asset.file_path);
+        if (asset.file_bucket && asset.file_path) {
+          buffer = await downloadFile(asset.file_bucket, asset.file_path);
         } else if (asset.file_url) {
-          // Direct URL fetch
-          const response = await fetch(asset.file_url);
-          if (response.ok) {
-            buffer = Buffer.from(await response.arrayBuffer());
-          } else {
-            console.warn(`[ClientContext] Failed to fetch ${fileName}: ${response.status}`);
+          // Fallback: direct URL fetch
+          try {
+            const response = await fetch(asset.file_url);
+            if (response.ok) {
+              buffer = Buffer.from(await response.arrayBuffer());
+            } else {
+              console.warn(`[ClientContext] Failed to fetch ${fileName}: ${response.status}`);
+            }
+          } catch (err: any) {
+            console.warn(`[ClientContext] Fetch error for ${fileName}:`, err.message);
           }
         }
 
