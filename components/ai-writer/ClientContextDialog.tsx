@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, ExternalLink, FileText, Search, Brain } from "lucide-react";
+import { Loader2, ExternalLink, FileText, Search, Brain, RefreshCw } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -75,6 +75,7 @@ export default function ClientContextDialog({
   const [comboOpen, setComboOpen] = useState(false);
   const [context, setContext] = useState<ClientContext | null>(null);
   const [loadingContext, setLoadingContext] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Fetch clients list
   useEffect(() => {
@@ -107,6 +108,22 @@ export default function ClientContextDialog({
       setLoadingContext(false);
     }
   }, []);
+
+  const handleRefresh = useCallback(async (clientId: number) => {
+    setRefreshing(true);
+    try {
+      await fetch("/api/ai/client-context", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId }),
+      });
+      await fetchContext(clientId);
+    } catch {
+      // ignore
+    } finally {
+      setRefreshing(false);
+    }
+  }, [fetchContext]);
 
   useEffect(() => {
     if (selectedClient) {
@@ -197,16 +214,26 @@ export default function ClientContextDialog({
               <p className="text-sm text-muted-foreground mb-3">
                 No context generated yet for this client.
               </p>
-              <p className="text-xs text-muted-foreground">
-                Context is generated automatically from client asset files every 2 hours.
+              <p className="text-xs text-muted-foreground mb-4">
+                Context is generated automatically when asset files are added.
               </p>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={refreshing}
+                onClick={() => handleRefresh(selectedClient.id_client)}
+                className="gap-1.5"
+              >
+                <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+                {refreshing ? "Processing..." : "Generate now"}
+              </Button>
             </div>
           )}
 
           {selectedClient && !loadingContext && context && (
             <div className="space-y-5">
-              {/* Manage assets link */}
-              <div>
+              {/* Actions row */}
+              <div className="flex items-center justify-between">
                 <a
                   href={`https://app.thecontentengine.com/admin/clients/${selectedClient.id_client}`}
                   target="_blank"
@@ -216,6 +243,16 @@ export default function ClientContextDialog({
                   <ExternalLink className="h-3.5 w-3.5" />
                   Manage client assets in Engine
                 </a>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={refreshing}
+                  onClick={() => handleRefresh(selectedClient.id_client)}
+                  className="gap-1.5 text-xs"
+                >
+                  <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+                  {refreshing ? "Checking..." : "Check for changes"}
+                </Button>
               </div>
 
               {/* Processed files */}
