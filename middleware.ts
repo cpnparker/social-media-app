@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
  *
  * engine.thecontentengine.com     → main app (dashboard, content, settings, etc.)
  * operations.thecontentengine.com → operations section + settings
- * ai.thecontentengine.com         → EngineGPT standalone
+ * ai.thecontentengine.com         → EngineAI standalone
  *
  * Cross-subdomain redirects: if a user navigates to the wrong section
  * on the wrong subdomain, redirect them to the correct one.
@@ -35,20 +35,20 @@ export function middleware(req: NextRequest) {
       return NextResponse.next();
     }
 
-    // Already on /enginegpt — pass through
-    if (pathname === "/enginegpt") {
+    // Already on /engineai — pass through
+    if (pathname === "/engineai") {
       return NextResponse.next();
     }
 
-    // Root path: rewrite to /enginegpt so the URL stays clean as "/"
+    // Root path: rewrite to /engineai so the URL stays clean as "/"
     if (pathname === "/") {
       const url = req.nextUrl.clone();
-      url.pathname = "/enginegpt";
+      url.pathname = "/engineai";
       return NextResponse.rewrite(url);
     }
 
     // Any other path (e.g. /dashboard from a stale redirect or client nav) —
-    // hard-redirect back to root, which then rewrites to /enginegpt.
+    // hard-redirect back to root, which then rewrites to /engineai.
     // Using redirect (not rewrite) forces a new server request.
     const url = req.nextUrl.clone();
     url.pathname = "/";
@@ -86,8 +86,8 @@ export function middleware(req: NextRequest) {
       return NextResponse.next();
     }
 
-    // Block /enginegpt on the engine subdomain — redirect to AI subdomain
-    if (pathname === "/enginegpt" || pathname.startsWith("/enginegpt/")) {
+    // Block /engineai on the engine subdomain — redirect to AI subdomain
+    if (pathname === "/engineai" || pathname.startsWith("/engineai/")) {
       const url = req.nextUrl.clone();
       url.hostname = "ai.thecontentengine.com";
       url.pathname = "/";
@@ -108,7 +108,7 @@ export function middleware(req: NextRequest) {
   }
 
   // ── Any other host (Vercel preview URLs, localhost, etc.) ──
-  // Allow /enginegpt on non-production hosts (dev, preview)
+  // Allow /engineai on non-production hosts (dev, preview)
   // so the app is fully testable without subdomain setup.
 
   return NextResponse.next();

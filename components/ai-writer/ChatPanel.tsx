@@ -27,6 +27,10 @@ import {
   ChevronsUpDown,
   ImageIcon,
   X,
+  ShieldCheck,
+  FileText,
+  Database,
+  BrainCircuit,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -107,9 +111,14 @@ export default function ChatPanel({
   const [messages, setMessages] = useState<AIMessageRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const [isSearchingWeb, setIsSearchingWeb] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [isGeneratingDocument, setIsGeneratingDocument] = useState(false);
+  const [isQueryingEngine, setIsQueryingEngine] = useState(false);
+  const [isSearchingMemory, setIsSearchingMemory] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
+  const [isFactChecking, setIsFactChecking] = useState(false);
   const [debugContext, setDebugContext] = useState<string | null>(null);
   const [debugExpanded, setDebugExpanded] = useState(false);
   const [localContextConfig, setLocalContextConfig] = useState<ContextConfig>({
@@ -193,13 +202,19 @@ export default function ChatPanel({
     setDebugContext(null);
     setDebugExpanded(false);
 
+    let fullText = "";
+
     try {
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
       const res = await fetch(
         `/api/ai/conversations/${conversationId}/messages`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ content, attachments, contextConfig: localContextConfig, debugMode }),
+          signal: abortController.signal,
         }
       );
 
@@ -210,7 +225,6 @@ export default function ChatPanel({
 
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
-      let fullText = "";
 
       while (reader) {
         const { done, value } = await reader.read();
@@ -233,17 +247,58 @@ export default function ChatPanel({
               setIsGeneratingImage(true);
             } else if (parsed.image_ready) {
               setIsGeneratingImage(false);
-              // Image markdown is already embedded in fullText by the backend
-              // (providers.ts) — no need to duplicate it here.
+              // Inject image into client fullText for live display
+              // (server has its own copy in server-side fullText for DB persistence)
+              const imgUrl = parsed.image_ready.url;
+              if (imgUrl) {
+                fullText += `\n\n![Generated image](${imgUrl})\n\n`;
+                setStreamingContent(fullText);
+              }
             } else if (parsed.image_error) {
               setIsGeneratingImage(false);
               toast.error(`Image generation failed: ${parsed.image_error}`);
+            } else if (parsed.generating_document) {
+              setIsGeneratingDocument(true);
+            } else if (parsed.document_ready) {
+              setIsGeneratingDocument(false);
+              const docUrl = parsed.document_ready.url;
+              const docName = parsed.document_ready.filename;
+              if (docUrl) {
+                fullText += `\n\n📄 [Download ${docName}](${docUrl})\n\n`;
+                setStreamingContent(fullText);
+              }
+            } else if (parsed.document_error) {
+              setIsGeneratingDocument(false);
+              toast.error(`Document generation failed: ${parsed.document_error}`);
+            } else if (parsed.querying_engine) {
+              setIsQueryingEngine(true);
+            } else if (parsed.query_result) {
+              setIsQueryingEngine(false);
+            } else if (parsed.searching_memory) {
+              setIsSearchingMemory(true);
+            } else if (parsed.memory_result) {
+              setIsSearchingMemory(false);
             } else if (parsed.token) {
               // First token means search/image gen is done (if it was active)
               setIsSearchingWeb(false);
               setIsGeneratingImage(false);
+              setIsGeneratingDocument(false);
+              setIsQueryingEngine(false);
+              setIsSearchingMemory(false);
               fullText += parsed.token;
-              setStreamingContent(fullText);
+              // Remove duplicate image markdown from display text.
+              // The first ![Generated image](url) was injected by image_ready.
+              // Any subsequent ![...](same-url) is the model repeating it — strip those.
+              const seenImgUrls = new Set<string>();
+              const cleanedDisplay = fullText.replace(
+                /!\[([^\]]*)\]\(([^)]+)\)/g,
+                (m, _a, u) => {
+                  if (seenImgUrls.has(u)) return "";
+                  seenImgUrls.add(u);
+                  return m;
+                }
+              );
+              setStreamingContent(cleanedDisplay);
             }
             if (parsed.error) {
               console.error("Stream error:", parsed.error);
@@ -255,18 +310,47 @@ export default function ChatPanel({
         }
       }
 
-      // Add assistant message to state
+      // Add assistant message and clear streaming in the same tick so React
+      // batches the updates into a single render — prevents images from being
+      // unmounted (cancelling their load) between clearing streaming and adding
+      // the permanent message.
       if (fullText) {
+        // Deduplicate image/chart URLs — model sometimes repeats the tool-generated URL
+        const seenUrls = new Set<string>();
+        const dedupedText = fullText.replace(
+          /!\[([^\]]*)\]\(([^)]+)\)/g,
+          (match: string, _alt: string, url: string) => {
+            if (seenUrls.has(url)) return "";
+            seenUrls.add(url);
+            return match;
+          }
+        ).replace(/\n{3,}/g, "\n\n").trim();
+
         const assistantMsg: AIMessageRow = {
           id: `assistant-${Date.now()}`,
           conversationId: conversationId,
           role: "assistant",
-          content: fullText,
+          content: dedupedText,
           model: conversation.model,
           createdBy: null,
           createdAt: new Date().toISOString(),
         };
+        // Batch: add message + clear streaming together
         setMessages((prev) => [...prev, assistantMsg]);
+        setStreamingContent("");
+      } else {
+        // Empty response — show a fallback message instead of blank
+        const fallbackMsg: AIMessageRow = {
+          id: `assistant-${Date.now()}`,
+          conversationId: conversationId,
+          role: "assistant",
+          content: "Sorry, I wasn't able to generate a response. This can happen with complex tool calls. Please try rephrasing your request, or break it into smaller steps (e.g., first get the data, then ask for a chart).",
+          model: conversation.model,
+          createdBy: null,
+          createdAt: new Date().toISOString(),
+        };
+        setMessages((prev) => [...prev, fallbackMsg]);
+        setStreamingContent("");
       }
 
       // Update conversation title if it changed (auto-title on first message)
@@ -280,12 +364,132 @@ export default function ChatPanel({
         }
       }
     } catch (err: any) {
-      console.error("Send error:", err);
-      toast.error(err?.message || "Failed to send message");
+      if (err?.name === "AbortError") {
+        // User clicked stop — save whatever we have so far
+        if (fullText) {
+          const partialMsg: AIMessageRow = {
+            id: `assistant-${Date.now()}`,
+            conversationId: conversationId,
+            role: "assistant",
+            content: fullText + "\n\n*[Generation stopped]*",
+            model: conversation.model,
+            createdBy: null,
+            createdAt: new Date().toISOString(),
+          };
+          setMessages((prev) => [...prev, partialMsg]);
+        }
+      } else {
+        console.error("Send error:", err);
+        toast.error(err?.message || "Failed to send message");
+      }
     } finally {
+      abortControllerRef.current = null;
       setIsStreaming(false);
       setIsSearchingWeb(false);
       setIsGeneratingImage(false);
+      setIsGeneratingDocument(false);
+      setIsQueryingEngine(false);
+      setIsSearchingMemory(false);
+      setStreamingContent("");
+    }
+  };
+
+  // Stop generation
+  const handleStop = () => {
+    abortControllerRef.current?.abort();
+  };
+
+  // Retry last assistant message
+  const handleRetry = async (messageIndex: number) => {
+    if (isStreaming || isFactChecking) return;
+    // Find the user message that preceded this assistant message
+    const userMsg = messages.slice(0, messageIndex).reverse().find(m => m.role === "user");
+    if (!userMsg) return;
+    // Remove the assistant message (and any after it)
+    setMessages(prev => prev.slice(0, messageIndex));
+    // Re-send the user message
+    handleSend(userMsg.content, userMsg.attachments as any || undefined);
+  };
+
+  // Fact-check an assistant message using Claude with web search
+  const handleFactCheck = async (messageId: string, messageContent: string) => {
+    if (isFactChecking || isStreaming) return;
+
+    setIsFactChecking(true);
+    setStreamingContent("");
+
+    // Find the user message that preceded this assistant message for context
+    const msgIndex = messages.findIndex((m) => m.id === messageId);
+    const precedingUserMsg = messages
+      .slice(0, msgIndex)
+      .reverse()
+      .find((m) => m.role === "user");
+
+    try {
+      const res = await fetch(
+        `/api/ai/conversations/${conversationId}/fact-check`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messageId,
+            messageContent,
+            userQuestion: precedingUserMsg?.content || null,
+          }),
+        }
+      );
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "Failed to start fact check");
+      }
+
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      let fullText = "";
+
+      while (reader) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value);
+        const lines = chunk.split("\n").filter((l) => l.startsWith("data: "));
+        for (const line of lines) {
+          const data = line.slice(6);
+          if (data === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.searching) {
+              setIsSearchingWeb(true);
+            } else if (parsed.token) {
+              setIsSearchingWeb(false);
+              fullText += parsed.token;
+              setStreamingContent(fullText);
+            }
+          } catch {
+            // Ignore malformed SSE lines
+          }
+        }
+      }
+
+      // Add the fact-check result as a new message
+      if (fullText.trim()) {
+        const factCheckMsg: AIMessageRow = {
+          id: `factcheck-${Date.now()}`,
+          conversationId,
+          role: "assistant",
+          content: fullText,
+          model: "claude-sonnet-4-6",
+          createdBy: null,
+          createdAt: new Date().toISOString(),
+        };
+        setMessages((prev) => [...prev, factCheckMsg]);
+      }
+    } catch (err: any) {
+      console.error("Fact check error:", err);
+      toast.error(err?.message || "Fact check failed");
+    } finally {
+      setIsFactChecking(false);
+      setIsSearchingWeb(false);
       setStreamingContent("");
     }
   };
@@ -749,7 +953,7 @@ export default function ChatPanel({
           </div>
         ) : (
           <div className="py-4 space-y-1">
-            {messages.map((msg) => (
+            {messages.map((msg, idx) => (
               <MessageBubble
                 key={msg.id}
                 role={msg.role}
@@ -757,6 +961,16 @@ export default function ChatPanel({
                 model={msg.model}
                 attachments={msg.attachments}
                 userName={msg.createdByName}
+                onFactCheck={
+                  msg.role === "assistant" && !isStreaming && !isFactChecking && !msg.content.includes("## 🔍 Fact Check")
+                    ? () => handleFactCheck(msg.id, msg.content)
+                    : undefined
+                }
+                onRetry={
+                  msg.role === "assistant" && !isStreaming && !isFactChecking && idx === messages.length - 1
+                    ? () => handleRetry(idx)
+                    : undefined
+                }
               />
             ))}
             {/* Debug context preview */}
@@ -782,13 +996,43 @@ export default function ChatPanel({
                 )}
               </div>
             )}
-            {isStreaming && isSearchingWeb && !streamingContent && (
+            {isStreaming && !isSearchingWeb && !isGeneratingImage && !isGeneratingDocument && !isQueryingEngine && !isSearchingMemory && !streamingContent && (
               <div className="flex items-start gap-3 px-4 py-3">
                 <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
-                  <Globe className="h-3.5 w-3.5 text-muted-foreground animate-pulse" />
+                  <div className="flex gap-1">
+                    <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-bounce" style={{ animationDelay: "0ms" }} />
+                    <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-bounce" style={{ animationDelay: "150ms" }} />
+                    <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-bounce" style={{ animationDelay: "300ms" }} />
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <span className="animate-pulse">Searching the web…</span>
+                  <span className="animate-pulse">Thinking…</span>
+                </div>
+              </div>
+            )}
+            {(isStreaming || isFactChecking) && isSearchingWeb && !streamingContent && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                  {isFactChecking ? (
+                    <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground animate-pulse" />
+                  ) : (
+                    <Globe className="h-3.5 w-3.5 text-muted-foreground animate-pulse" />
+                  )}
+                </div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <span className="animate-pulse">
+                    {isFactChecking ? "Fact-checking with Claude…" : "Searching the web…"}
+                  </span>
+                </div>
+              </div>
+            )}
+            {isFactChecking && !isSearchingWeb && !streamingContent && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                  <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground animate-pulse" />
+                </div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <span className="animate-pulse">Fact-checking with Claude…</span>
                 </div>
               </div>
             )}
@@ -802,11 +1046,41 @@ export default function ChatPanel({
                 </div>
               </div>
             )}
-            {isStreaming && streamingContent && (
+            {isStreaming && isGeneratingDocument && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                  <FileText className="h-3.5 w-3.5 text-muted-foreground animate-pulse" />
+                </div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <span className="animate-pulse">Generating presentation…</span>
+                </div>
+              </div>
+            )}
+            {isStreaming && isQueryingEngine && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                  <Database className="h-3.5 w-3.5 text-muted-foreground animate-pulse" />
+                </div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <span className="animate-pulse">Querying the Engine…</span>
+                </div>
+              </div>
+            )}
+            {isStreaming && isSearchingMemory && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                  <BrainCircuit className="h-3.5 w-3.5 text-muted-foreground animate-pulse" />
+                </div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <span className="animate-pulse">Searching memories…</span>
+                </div>
+              </div>
+            )}
+            {(isStreaming || isFactChecking) && streamingContent && (
               <MessageBubble
                 role="assistant"
                 content={streamingContent}
-                model={conversation.model}
+                model={isFactChecking ? "claude-sonnet-4-6" : conversation.model}
                 isStreaming
               />
             )}
@@ -820,7 +1094,9 @@ export default function ChatPanel({
         <ChatInput
           ref={chatInputRef}
           onSend={handleSend}
-          disabled={isStreaming || myPermission === "view"}
+          onStop={handleStop}
+          isStreaming={isStreaming}
+          disabled={isStreaming || isFactChecking || myPermission === "view"}
           bottomSlot={
             <Popover>
               <PopoverTrigger asChild>

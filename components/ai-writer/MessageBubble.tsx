@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { User, Bot, FileText, ExternalLink, ChevronDown, ChevronUp } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { User, Bot, FileText, ExternalLink, ChevronDown, ChevronUp, ShieldCheck, Copy, Check, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import DOMPurify from "dompurify";
 import type { Attachment } from "@/lib/types/ai";
@@ -14,6 +14,8 @@ interface MessageBubbleProps {
   isStreaming?: boolean;
   attachments?: Attachment[] | null;
   userName?: string | null;
+  onFactCheck?: () => void;
+  onRetry?: () => void;
 }
 
 interface ParsedSource {
@@ -31,8 +33,33 @@ export default function MessageBubble({
   isStreaming,
   attachments,
   userName,
+  onFactCheck,
+  onRetry,
 }: MessageBubbleProps) {
   const isUser = role === "user";
+  const [copied, setCopied] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  // Auto-retry failed images (blob may take a moment to propagate)
+  useEffect(() => {
+    if (isStreaming || !contentRef.current) return;
+    const images = contentRef.current.querySelectorAll<HTMLImageElement>("img[data-retry-src]");
+    images.forEach((img) => {
+      if (img.complete && img.naturalWidth > 0) return; // already loaded
+      let retries = 0;
+      const handleError = () => {
+        if (retries < 3) {
+          retries++;
+          setTimeout(() => {
+            const base = img.dataset.retrySrc || img.src;
+            img.src = base + (base.includes("?") ? "&" : "?") + `r=${retries}`;
+          }, 1500 * retries);
+        }
+      };
+      img.addEventListener("error", handleError, { once: false });
+    });
+  }, [content, isStreaming]);
+  const isFactCheck = !isUser && content.includes("## 🔍 Fact Check");
   const [sourcesExpanded, setSourcesExpanded] = useState(true);
   const [hoveredSource, setHoveredSource] = useState<number | null>(null);
 
@@ -51,6 +78,7 @@ export default function MessageBubble({
 
   return (
     <div
+      ref={contentRef}
       className={cn(
         "flex gap-2 md:gap-3 px-3 md:px-4 py-3",
         isUser ? "justify-end" : "justify-start"
@@ -123,14 +151,22 @@ export default function MessageBubble({
         {isUser ? (
           content ? <p className="whitespace-pre-wrap leading-relaxed">{content}</p> : null
         ) : (
-          <div
-            className="ai-response"
-            dangerouslySetInnerHTML={{
-              __html: DOMPurify.sanitize(formatMarkdown(cleanContent, sources), {
-                ADD_ATTR: ['target', 'rel', 'data-source-num', 'loading'],
-              }),
-            }}
-          />
+          <>
+            {isFactCheck && (
+              <div className="flex items-center gap-1.5 mb-2 text-[11px] font-medium text-blue-600 dark:text-blue-400">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                <span>Fact Check</span>
+              </div>
+            )}
+            <div
+              className="ai-response"
+              dangerouslySetInnerHTML={{
+                __html: DOMPurify.sanitize(formatMarkdown(cleanContent, sources), {
+                  ADD_ATTR: ['target', 'rel', 'data-source-num', 'loading', 'data-retry-src'],
+                }),
+              }}
+            />
+          </>
         )}
         {isStreaming && (
           <span className="inline-block w-1.5 h-4 bg-foreground/60 animate-pulse ml-0.5 rounded-sm" />
@@ -192,10 +228,55 @@ export default function MessageBubble({
           </div>
         )}
 
-        {!isUser && model && !isStreaming && (
-          <p className="text-[10px] text-muted-foreground/60 mt-2">
-            {getModelLabel(model)}
-          </p>
+        {!isUser && !isStreaming && (
+          <div className="flex items-center gap-1 mt-2">
+            {model && (
+              <p className="text-[10px] text-muted-foreground/60 mr-2">
+                {getModelLabel(model)}
+              </p>
+            )}
+            <button
+              onClick={() => {
+                // Strip markdown formatting for clean clipboard text
+                const plain = content
+                  .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
+                  .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+                  .replace(/\*\*([^*]+)\*\*/g, "$1")
+                  .replace(/^#{1,4}\s+/gm, "")
+                  .replace(/^[-*]\s+/gm, "• ")
+                  .replace(/\n{3,}/g, "\n\n")
+                  .trim();
+                navigator.clipboard.writeText(plain);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              }}
+              className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/40 hover:text-foreground/70 transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50"
+              title="Copy to clipboard"
+            >
+              {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+              <span>{copied ? "Copied" : "Copy"}</span>
+            </button>
+            {onRetry && (
+              <button
+                onClick={onRetry}
+                className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/40 hover:text-foreground/70 transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50"
+                title="Regenerate this response"
+              >
+                <RotateCcw className="h-3 w-3" />
+                <span>Retry</span>
+              </button>
+            )}
+            {onFactCheck && !isFactCheck && (
+              <button
+                onClick={onFactCheck}
+                className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/40 hover:text-foreground/70 transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50"
+                title="Fact-check this response"
+              >
+                <ShieldCheck className="h-3 w-3" />
+                <span>Fact check</span>
+              </button>
+            )}
+          </div>
         )}
       </div>
       {isUser && (
@@ -465,13 +546,31 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
   html = html.replace(
     /!\[([^\]]*)\]\(((https?:\/\/|\/api\/)[^)]+)\)/g,
     (_m, alt, url) =>
-      `<div class="ai-generated-image-wrap my-3"><a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${escapeHtml(alt)}" class="ai-generated-image rounded-lg max-w-full" loading="lazy" /></a></div>`
+      `<div class="ai-generated-image-wrap my-3"><a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${escapeHtml(alt)}" class="ai-generated-image rounded-lg max-w-full" loading="lazy" data-retry-src="${url}" /></a></div>`
+  );
+
+  // Strip any remaining image markdown with non-matching URLs (model-fabricated)
+  // These have invalid/partial URLs and would otherwise show as raw text
+  html = html.replace(/!\[([^\]]*)\]\([^)]+\)/g, "");
+
+  // Document download cards — render 📄 [Download filename.pptx](/api/media/...) as styled download buttons
+  html = html.replace(
+    /📄\s*\[Download ([^\]]+)\]\((\/api\/media\/[^)]+)\)/g,
+    (_m, filename, url) =>
+      `<a href="${url}" download="${escapeHtml(filename)}" class="ai-download-card"><span class="ai-download-icon">📄</span><span class="ai-download-info"><span class="ai-download-name">${escapeHtml(filename)}</span><span class="ai-download-action">Click to download</span></span></a>`
   );
 
   // Links [text](url)
   html = html.replace(
     /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener" class="ai-link">$1</a>'
+  );
+
+  // Also handle download links without the emoji prefix (fallback)
+  html = html.replace(
+    /\[Download ([^\]]+\.pptx)\]\((\/api\/media\/[^)]+)\)/g,
+    (_m, filename, url) =>
+      `<a href="${url}" download="${escapeHtml(filename)}" class="ai-download-card"><span class="ai-download-icon">📄</span><span class="ai-download-info"><span class="ai-download-name">${escapeHtml(filename)}</span><span class="ai-download-action">Click to download</span></span></a>`
   );
 
   // Plain URLs (skip URLs already inside href="", src="", or ">...)

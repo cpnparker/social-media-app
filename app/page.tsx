@@ -19,7 +19,7 @@ export default async function RootPage() {
     host === "ai.thecontentengine.com" ||
     host.startsWith("ai.thecontentengine.com:")
   ) {
-    redirect("/enginegpt");
+    redirect("/engineai");
   }
 
   // Operations subdomain → Operations landing

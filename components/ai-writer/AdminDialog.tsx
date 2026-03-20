@@ -48,6 +48,7 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Legend,
   ResponsiveContainer,
 } from "recharts";
 import type { AIRole } from "@/lib/types/ai";
@@ -92,7 +93,8 @@ interface UsageData {
     week: UsageSummaryPeriod;
     month: UsageSummaryPeriod;
   };
-  daily: { date: string; cost: number; calls: number }[];
+  daily: Record<string, any>[];
+  dailyModels?: string[];
   byModel: {
     model: string;
     cost: number;
@@ -142,10 +144,30 @@ const MODEL_LABELS: Record<string, string> = {
   "gemini-2.5-flash": "Gemini 2.5 Flash (Legacy)",
   "gpt-4o": "GPT-4o",
   "gpt-4o-mini": "GPT-4o Mini",
+  "grok-4-1-fast-non-reasoning": "Grok 4 Fast",
   "grok-4-1-fast": "Grok 4 Fast",
+  "grok-3-fast": "Grok 3 Fast",
   "grok-3-mini": "Grok 3 Mini",
   "grok-3": "Grok 3 (Legacy)",
+  "grok-imagine-image": "Grok Image",
+  "dall-e-3": "DALL-E 3",
 };
+
+const CHART_COLORS: Record<string, string> = {
+  "grok-4-1-fast-non-reasoning": "#00D4AA",
+  "grok-3-fast": "#60A5FA",
+  "grok-3-mini": "#93C5FD",
+  "grok-imagine-image": "#818CF8",
+  "grok-3": "#A78BFA",
+  "claude-sonnet-4-6": "#F97316",
+  "claude-sonnet-4-20250514": "#FB923C",
+  "gpt-4o": "#10B981",
+  "gpt-4o-mini": "#34D399",
+  "dall-e-3": "#A78BFA",
+  "gemini-3-flash": "#EC4899",
+  "gemini-3.1-flash-lite": "#F472B6",
+};
+const DEFAULT_CHART_COLORS = ["#6366F1", "#8B5CF6", "#06B6D4", "#14B8A6", "#F59E0B", "#EF4444", "#84CC16", "#E879F9"];
 
 const MODEL_COLORS: Record<string, string> = {
   "claude-sonnet-4-6": "bg-orange-500",
@@ -169,7 +191,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 const SOURCE_LABELS: Record<string, string> = {
-  enginegpt: "EngineGPT",
+  engineai: "EngineAI",
   engine: "Content Engine",
   api: "API",
 };
@@ -195,7 +217,7 @@ export default function AdminDialog({ workspaceId, open, onClose }: AdminDialogP
         {/* Tab bar */}
         <div className="flex gap-0.5 bg-muted rounded-lg p-0.5 mx-6 mt-3 w-fit">
           {([
-            { key: "usage" as Tab, label: "Usage" },
+            { key: "usage" as Tab, label: "AI Usage" },
             { key: "context" as Tab, label: "Context" },
             { key: "formats" as Tab, label: "Formats" },
             { key: "roles" as Tab, label: "Roles" },
@@ -335,14 +357,14 @@ function UsageTab({ workspaceId }: { workspaceId: string }) {
             ))}
           </div>
 
-          {/* Daily Cost Chart */}
+          {/* Daily Cost by Model — Stacked Bar Chart */}
           {usageData.daily.length > 0 && (
             <Card className="border-0 shadow-sm">
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">Daily Cost</CardTitle>
+                <CardTitle className="text-sm font-medium">Daily Cost by Model</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="h-[220px]">
+                <div className="h-[280px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={usageData.daily} margin={{ top: 4, right: 4, left: -10, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
@@ -361,19 +383,32 @@ function UsageTab({ workspaceId }: { workspaceId: string }) {
                         stroke="hsl(var(--muted-foreground))"
                       />
                       <Tooltip
-                        formatter={(value: any) => [formatCost(Number(value)), "Cost"]}
+                        formatter={(value: any, name: any) => [formatCost(Number(value)), MODEL_LABELS[String(name)] || String(name)]}
                         labelFormatter={(label: any) => {
                           const d = new Date(String(label) + "T00:00:00");
                           return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
                         }}
                         contentStyle={{
-                          fontSize: 12,
+                          fontSize: 11,
                           borderRadius: 8,
                           border: "1px solid hsl(var(--border))",
                           background: "hsl(var(--background))",
                         }}
                       />
-                      <Bar dataKey="cost" fill="hsl(var(--primary))" radius={[3, 3, 0, 0]} maxBarSize={40} />
+                      <Legend
+                        formatter={(value: string) => MODEL_LABELS[value] || value}
+                        wrapperStyle={{ fontSize: 10, paddingTop: 8 }}
+                      />
+                      {(usageData.dailyModels || []).map((model, i) => (
+                        <Bar
+                          key={model}
+                          dataKey={model}
+                          stackId="cost"
+                          fill={CHART_COLORS[model] || DEFAULT_CHART_COLORS[i % DEFAULT_CHART_COLORS.length]}
+                          radius={i === (usageData.dailyModels?.length || 1) - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]}
+                          maxBarSize={40}
+                        />
+                      ))}
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -438,7 +473,7 @@ function UsageTab({ workspaceId }: { workspaceId: string }) {
               <CardContent className="space-y-3">
                 {usageData.bySource.map((s) => {
                   const sourceColors: Record<string, string> = {
-                    enginegpt: "bg-blue-500",
+                    engineai: "bg-blue-500",
                     engine: "bg-violet-500",
                     api: "bg-amber-500",
                   };
@@ -741,16 +776,11 @@ function ContextTab({ workspaceId }: { workspaceId: string }) {
                           "h-7 rounded-md border px-2 pr-7 text-xs font-medium appearance-none cursor-pointer focus:outline-none focus:ring-1 focus:ring-ring",
                           level === "off"
                             ? "bg-muted text-muted-foreground border-input"
-                            : isFull
-                            ? "bg-primary/10 text-primary border-primary/30"
-                            : "bg-background text-foreground border-input"
+                            : "bg-primary/10 text-primary border-primary/30"
                         )}
                       >
                         <option value="off">Off</option>
-                        <option value="summary">Summary</option>
-                        <option value="full-week">Full: Last Week</option>
-                        <option value="full-month">Full: Last Month</option>
-                        <option value="full-year">Full: Last Year</option>
+                        <option value="summary">On</option>
                       </select>
                       <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
                     </div>
@@ -758,9 +788,7 @@ function ContextTab({ workspaceId }: { workspaceId: string }) {
                   <p className="text-xs text-muted-foreground mt-1">
                     {level === "off"
                       ? `${item.label} excluded from AI context`
-                      : level === "summary"
-                      ? `Compact overview — ${item.description.split(",")[0].toLowerCase()}`
-                      : `Full detail (${level === "full-week" ? "7 days" : level === "full-month" ? "30 days" : "12 months"}) — ${item.description.toLowerCase()}`}
+                      : `Context loaded — AI can also query the Engine database for detailed ${item.label.toLowerCase()} data`}
                   </p>
                 </div>
               </div>
@@ -1217,7 +1245,7 @@ function FormatsTab({ workspaceId }: { workspaceId: string }) {
         <div>
           <h3 className="text-sm font-semibold">Format Descriptions</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            AI prompts per content format — included as context when EngineGPT works with that format.
+            AI prompts per content format — included as context when EngineAI works with that format.
           </p>
         </div>
 
@@ -1501,7 +1529,7 @@ function RolesTab({ workspaceId }: { workspaceId: string }) {
         <div>
           <h3 className="text-sm font-semibold">AI Roles</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Configure AI personas that modify how EngineGPT responds.
+            Configure AI personas that modify how EngineAI responds.
           </p>
         </div>
         {!isFormOpen && (

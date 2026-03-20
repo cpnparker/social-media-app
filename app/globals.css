@@ -346,6 +346,51 @@
   opacity: 0.6;
 }
 
+/* Document download cards */
+.ai-response .ai-download-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: hsl(var(--muted)/0.5);
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.75rem;
+  padding: 0.75rem 1.25rem;
+  margin: 0.5rem 0;
+  text-decoration: none !important;
+  color: inherit !important;
+  transition: all 0.15s ease;
+  cursor: pointer;
+  max-width: 100%;
+}
+.ai-response .ai-download-card:hover {
+  background: hsl(var(--muted)/0.8);
+  border-color: hsl(var(--primary)/0.3);
+  box-shadow: 0 2px 8px hsl(var(--primary)/0.08);
+}
+.ai-response .ai-download-icon {
+  font-size: 1.75rem;
+  flex-shrink: 0;
+}
+.ai-response .ai-download-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+.ai-response .ai-download-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-response .ai-download-action {
+  font-size: 0.75rem;
+  color: hsl(var(--primary));
+  font-weight: 500;
+}
+
 /* Safe area insets for modern phones */
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
   .safe-bottom {

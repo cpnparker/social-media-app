@@ -5,7 +5,7 @@
  */
 
 export const AI_MODELS = [
-  { id: "auto", label: "EngineGPT Auto", provider: "auto" },
+  { id: "auto", label: "EngineAI Auto", provider: "auto" },
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", provider: "anthropic" },
   { id: "gemini-3-flash", label: "Gemini 3 Flash", provider: "gemini" },
   { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", provider: "gemini" },

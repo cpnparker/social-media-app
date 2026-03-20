@@ -148,7 +148,7 @@ export async function POST(
       );
     }
 
-    // Check EngineGPT access
+    // Check EngineAI access
     const { data: access } = await intelligenceDb
       .from("users_access")
       .select("flag_access_enginegpt")
@@ -159,7 +159,7 @@ export async function POST(
     // If no access row, default is true; if row exists, check flag
     if (access && !access.flag_access_enginegpt) {
       return NextResponse.json(
-        { error: "User does not have EngineGPT access" },
+        { error: "User does not have EngineAI access" },
         { status: 400 }
       );
     }
@@ -231,7 +231,7 @@ export async function POST(
 
         const sharerName = sharerUser?.name_user || "Someone";
         const recipientName = targetUser.name_user || "there";
-        const threadUrl = `${process.env.NEXTAUTH_URL || "https://ai.thecontentengine.com"}/enginegpt?thread=${conversationId}`;
+        const threadUrl = `${process.env.NEXTAUTH_URL || "https://ai.thecontentengine.com"}/engineai?thread=${conversationId}`;
 
         const { data: convoData } = await intelligenceDb
           .from("ai_conversations")
@@ -241,7 +241,7 @@ export async function POST(
         const convoTitle = convoData?.name_conversation || "Untitled conversation";
 
         await resend.emails.send({
-          from: "EngineGPT <noreply@tasks.thecontentengine.com>",
+          from: "EngineAI <noreply@tasks.thecontentengine.com>",
           to: targetUser.email_user,
           subject: `${sharerName} shared a conversation with you`,
           html: `
@@ -250,7 +250,7 @@ export async function POST(
                 Hi ${recipientName},
               </p>
               <p style="font-size: 15px; color: #333; line-height: 1.6; margin: 0 0 24px;">
-                <strong>${sharerName}</strong> shared an EngineGPT conversation with you:
+                <strong>${sharerName}</strong> shared an EngineAI conversation with you:
               </p>
               <div style="background: #f7f7f8; border-radius: 12px; padding: 16px 20px; margin: 0 0 24px;">
                 <p style="font-size: 15px; font-weight: 600; color: #111; margin: 0 0 4px;">
@@ -264,7 +264,7 @@ export async function POST(
                 Open conversation
               </a>
               <p style="font-size: 12px; color: #999; margin: 24px 0 0; line-height: 1.5;">
-                You received this because ${sharerName} shared an EngineGPT thread with you.
+                You received this because ${sharerName} shared an EngineAI thread with you.
               </p>
             </div>
           `,

@@ -225,7 +225,7 @@ export default function ContentFormatsPage() {
         <h2 className="text-lg font-semibold">Content Format Descriptions</h2>
         <p className="text-sm text-muted-foreground mt-1">
           Add optional AI prompts per content format. When set, these are included as context
-          when a user works with content of that format in EngineGPT.
+          when a user works with content of that format in EngineAI.
         </p>
       </div>
 
@@ -309,7 +309,7 @@ export default function ContentFormatsPage() {
                       <div className="pt-3">
                         <p className="text-sm text-muted-foreground mb-3">
                           Customise the AI prompt for <strong>{def.format}</strong>.
-                          This will be included as context when EngineGPT works with content of this format.
+                          This will be included as context when EngineAI works with content of this format.
                         </p>
 
                         <textarea

@@ -8,7 +8,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import Image from "next/image";
 import { signOut } from "next-auth/react";
 
-export default function EngineGPTShell({
+export default function EngineAIShell({
   children,
 }: {
   children: React.ReactNode;
@@ -32,7 +32,7 @@ export default function EngineGPTShell({
           setAuthChecked(true);
         } else {
           // Server error (500, 404, etc.) — retry a few times before giving up
-          console.warn(`[EngineGPT] /api/me returned ${r.status}, retry ${authRetries + 1}`);
+          console.warn(`[EngineAI] /api/me returned ${r.status}, retry ${authRetries + 1}`);
           if (authRetries < 3) {
             setTimeout(() => setAuthRetries((n) => n + 1), 1500);
           } else {
@@ -63,26 +63,26 @@ export default function EngineGPTShell({
     <WorkspaceProvider>
       <CustomerProvider>
         <TooltipProvider>
-          <EngineGPTAccessGuard>
+          <EngineAIAccessGuard>
             <div className="flex h-dvh bg-background overflow-hidden">
               {children}
             </div>
-          </EngineGPTAccessGuard>
+          </EngineAIAccessGuard>
         </TooltipProvider>
       </CustomerProvider>
     </WorkspaceProvider>
   );
 }
 
-// ── Access guard: checks user has EngineGPT access ──
-function EngineGPTAccessGuard({ children }: { children: React.ReactNode }) {
+// ── Access guard: checks user has EngineAI access ──
+function EngineAIAccessGuard({ children }: { children: React.ReactNode }) {
   const wsCtx = useWorkspaceSafe();
   const [retrying, setRetrying] = useState(false);
 
   // Debug logging
   useEffect(() => {
     if (wsCtx && !wsCtx.loading) {
-      console.log("[EngineGPT Access Guard]", {
+      console.log("[EngineAI Access Guard]", {
         workspaceCount: wsCtx.workspaces.length,
         selectedWorkspace: wsCtx.selectedWorkspace
           ? {
@@ -121,7 +121,7 @@ function EngineGPTAccessGuard({ children }: { children: React.ReactNode }) {
         <div className="text-center px-4">
           <Image
             src="/assets/logo_engine_icon.svg"
-            alt="EngineGPT"
+            alt="EngineAI"
             width={48}
             height={48}
             className="mx-auto mb-4 opacity-50 dark:brightness-0 dark:invert"
@@ -132,7 +132,7 @@ function EngineGPTAccessGuard({ children }: { children: React.ReactNode }) {
           <p className="text-sm text-muted-foreground max-w-sm">
             {noWorkspace
               ? "Your account isn't linked to a workspace yet. Try signing out and back in, or contact your workspace admin to be added."
-              : "You don't have access to EngineGPT. Contact your workspace admin to request access."}
+              : "You don't have access to EngineAI. Contact your workspace admin to request access."}
           </p>
           <div className="mt-6 flex flex-col items-center gap-3">
             <button

@@ -282,7 +282,7 @@ export default function AIWriterPage() {
             <Sparkles className="h-7 w-7 text-primary" />
           </div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight mb-1">
-            EngineGPT
+            EngineAI
           </h1>
           <p className="text-sm text-muted-foreground mb-8">
             Your AI-powered content assistant

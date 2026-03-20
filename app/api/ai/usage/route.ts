@@ -64,17 +64,23 @@ export async function GET(req: NextRequest) {
       month: aggregate(monthRows),
     };
 
-    // Daily breakdown
-    const dailyMap: Record<string, { cost: number; calls: number }> = {};
+    // Daily breakdown — with per-model cost for stacked chart
+    const dailyMap: Record<string, Record<string, number> & { cost: number; calls: number }> = {};
+    const allModelsSet = new Set<string>();
     for (const r of usageRows) {
       const date = r.date_created.split("T")[0];
       if (!dailyMap[date]) dailyMap[date] = { cost: 0, calls: 0 };
       dailyMap[date].cost += r.units_cost_tenths;
       dailyMap[date].calls += 1;
+      // Per-model cost
+      const modelKey = r.name_model || "unknown";
+      allModelsSet.add(modelKey);
+      dailyMap[date][modelKey] = (dailyMap[date][modelKey] || 0) + r.units_cost_tenths;
     }
     const daily = Object.entries(dailyMap)
       .map(([date, d]) => ({ date, ...d }))
       .sort((a, b) => a.date.localeCompare(b.date));
+    const dailyModels = Array.from(allModelsSet).sort();
 
     // By model
     const modelMap: Record<
@@ -154,7 +160,7 @@ export async function GET(req: NextRequest) {
     }
     const byUserModel = Object.values(userModelMap).sort((a, b) => b.cost - a.cost);
 
-    return NextResponse.json({ summary, daily, byModel, bySource, byUser, byUserModel });
+    return NextResponse.json({ summary, daily, dailyModels, byModel, bySource, byUser, byUserModel });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

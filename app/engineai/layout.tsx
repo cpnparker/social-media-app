@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
-import EngineGPTShell from "./EngineGPTShell";
+import EngineAIShell from "./EngineAIShell";
 
 export const metadata: Metadata = {
-  title: "EngineGPT — AI Content Assistant | The Content Engine",
+  title: "EngineAI — AI Content Assistant | The Content Engine",
   description:
     "Your AI-powered content assistant. Brainstorm ideas, draft content, refine messaging, and manage social media — all with deep context about your clients and workflows.",
   icons: {
@@ -10,7 +10,7 @@ export const metadata: Metadata = {
     apple: "/assets/apple-touch-icon.png",
   },
   openGraph: {
-    title: "EngineGPT — AI Content Assistant",
+    title: "EngineAI — AI Content Assistant",
     description:
       "AI-powered content assistant with deep client context. Brainstorm, draft, and refine content for social media management.",
     siteName: "The Content Engine",
@@ -26,16 +26,16 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary",
-    title: "EngineGPT — AI Content Assistant",
+    title: "EngineAI — AI Content Assistant",
     description:
       "AI-powered content assistant with deep client context. Part of The Content Engine platform.",
   },
 };
 
-export default function EngineGPTLayout({
+export default function EngineAILayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return <EngineGPTShell>{children}</EngineGPTShell>;
+  return <EngineAIShell>{children}</EngineAIShell>;
 }

@@ -89,15 +89,15 @@ import type { AIConversation, Attachment } from "@/lib/types/ai";
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
-export default function EngineGPTPage() {
+export default function EngineAIPage() {
   return (
     <Suspense>
-      <EngineGPTContent />
+      <EngineAIContent />
     </Suspense>
   );
 }
 
-function EngineGPTContent() {
+function EngineAIContent() {
   const wsCtx = useWorkspaceSafe();
   const workspaceId = wsCtx?.selectedWorkspace?.id;
   const isAdmin = wsCtx?.selectedWorkspace?.accessAdmin ?? false;
@@ -183,6 +183,39 @@ function EngineGPTContent() {
   // Prevent hydration mismatch for theme icon
   useEffect(() => setMounted(true), []);
 
+  // When opening a thread from URL params (e.g. shared link or refresh),
+  // ensure the client context matches the thread's client.
+  // Wait for CustomerProvider to finish loading before setting — otherwise
+  // fetchCustomers will override our selection with the URL param value.
+  const customerLoading = customerCtx?.loading ?? true;
+  const threadClientSyncedRef = useRef(false);
+
+  useEffect(() => {
+    const threadId = searchParams.get("thread");
+    if (!threadId || customerLoading || threadClientSyncedRef.current) return;
+    threadClientSyncedRef.current = true;
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/ai/conversations/${threadId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const conv = data.conversation;
+        if (!conv) return;
+
+        const threadClientId = (conv.customerId || conv.id_client) ? String(conv.customerId || conv.id_client) : null;
+        const currentClientId = customerCtx?.selectedCustomerId || null;
+        if (threadClientId !== currentClientId) {
+          pendingThreadRef.current = threadId;
+          customerCtx?.setSelectedCustomerId(threadClientId);
+        }
+      } catch {
+        // Ignore — thread will load with current context
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerLoading]);
+
   // Track the visual viewport height so the home view resizes when the
   // mobile keyboard opens/closes. Without this, flex-1 centres against the
   // full viewport height and the logo gets pushed to the very top.
@@ -209,29 +242,21 @@ function EngineGPTContent() {
     }
   }, [selectedId]);
 
-  // Reset to General (no customer) every time EngineGPT opens
-  // — but NOT when arriving via a thread URL (?thread=xxx) since
-  //   that would change customerId → recreate fetchConversations →
-  //   re-fire the conversation effect after urlThreadRef is consumed,
-  //   clearing the selected thread.
-  useEffect(() => {
-    if (customerCtx?.setSelectedCustomerId && !urlThreadRef.current) {
-      customerCtx.setSelectedCustomerId(null);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Client selection is driven by URL ?client= parameter.
+  // If arriving via a thread URL, the thread-client effect (above)
+  // will switch to the correct client for that thread and update the URL.
 
   // Dynamic page title — show conversation title like ChatGPT does
   useEffect(() => {
     if (selectedId) {
       const conv = conversations.find((c) => c.id === selectedId);
       if (conv?.title) {
-        document.title = `${conv.title} — EngineGPT`;
+        document.title = `${conv.title} — EngineAI`;
       } else {
-        document.title = "EngineGPT — AI Content Assistant";
+        document.title = "EngineAI — AI Content Assistant";
       }
     } else {
-      document.title = "EngineGPT — AI Content Assistant";
+      document.title = "EngineAI — AI Content Assistant";
     }
   }, [selectedId, conversations]);
 
@@ -309,33 +334,68 @@ function EngineGPTContent() {
     }
   }, [workspaceId, customerId]);
 
+  // Track whether this is the initial page load vs a user-initiated customer change.
+  // Stays true until CustomerContext has loaded AND the first fetch completes,
+  // so that async customer resolution (from URL param) doesn't reset selectedId.
+  const initialLoadRef = useRef(true);
+  const customerLoaded = !(customerCtx?.loading ?? true);
+
   useEffect(() => {
-    // Don't reset selectedId on initial load if we have a URL thread
     if (urlThreadRef.current) {
-      urlThreadRef.current = null; // Consumed — future customer changes reset normally
+      setSelectedId(urlThreadRef.current);
+      urlThreadRef.current = null;
     } else if (pendingThreadRef.current) {
-      // Don't reset — we're switching customer context for a thread selection
       const threadId = pendingThreadRef.current;
       pendingThreadRef.current = null;
       setSelectedId(threadId);
+    } else if (initialLoadRef.current) {
+      // Still in initial load phase — keep selectedId
     } else {
       setSelectedId(null);
+      setInitialMessage(undefined);
+      setInitialAttachments(undefined);
     }
-    setInitialMessage(undefined);
-    setInitialAttachments(undefined);
+    if (customerLoaded) {
+      initialLoadRef.current = false;
+    }
     fetchConversations();
-  }, [fetchConversations]);
+  }, [fetchConversations, customerLoaded]);
 
-  // Sync selectedId ↔ URL ?thread= param
+  // Sync selectedId ↔ URL ?thread= and client ↔ URL ?client=
+  // Sync state → URL. Only delete a param if we previously wrote it
+  // (prevents race conditions from stripping URL params on load).
+  const prevThreadRef = useRef<string | null | undefined>(undefined);
+  const prevClientRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     const url = new URL(window.location.href);
-    if (selectedId) {
-      url.searchParams.set("thread", selectedId);
-    } else {
-      url.searchParams.delete("thread");
+    let changed = false;
+
+    // Thread
+    if (selectedId !== prevThreadRef.current) {
+      if (selectedId) {
+        url.searchParams.set("thread", selectedId);
+      } else if (prevThreadRef.current !== undefined) {
+        url.searchParams.delete("thread");
+      }
+      prevThreadRef.current = selectedId;
+      changed = true;
     }
-    window.history.replaceState({}, "", url.toString());
-  }, [selectedId]);
+
+    // Client — only delete if we previously set a non-null value
+    if (customerId !== prevClientRef.current) {
+      if (customerId) {
+        url.searchParams.set("client", customerId);
+      } else if (prevClientRef.current && prevClientRef.current !== undefined) {
+        url.searchParams.delete("client");
+      }
+      prevClientRef.current = customerId;
+      changed = true;
+    }
+
+    if (changed) {
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, [selectedId, customerId]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -694,7 +754,7 @@ function EngineGPTContent() {
             </a>
 
             {/* Area icons */}
-            <SectionRailDesktop currentArea="enginegpt" />
+            <SectionRailDesktop currentArea="engineai" />
 
             <div className="flex-1" />
 
@@ -758,7 +818,7 @@ function EngineGPTContent() {
         <div className="flex-1 flex flex-col bg-[#3b4252] text-white border-r border-white/[0.06] overflow-hidden">
           {/* ── Mobile area switcher ── */}
           {showRail && (
-            <SectionRailMobile currentArea="enginegpt" />
+            <SectionRailMobile currentArea="engineai" />
           )}
 
           {/* Top section */}
@@ -775,12 +835,12 @@ function EngineGPTContent() {
                 {!showRail && (
                   <img
                     src="/assets/logo_engine_icon.svg"
-                    alt="EngineGPT"
+                    alt="EngineAI"
                     className="h-7 w-7 brightness-0 invert"
                   />
                 )}
                 <span className="text-[13px] font-bold tracking-tight text-white">
-                  EngineGPT
+                  EngineAI
                 </span>
               </button>
               <button
@@ -1168,10 +1228,10 @@ function EngineGPTContent() {
             <div className="flex items-center gap-2">
               <img
                 src="/assets/logo_engine_icon.svg"
-                alt="EngineGPT"
+                alt="EngineAI"
                 className="h-5 w-5 dark:brightness-0 dark:invert"
               />
-              <span className="text-sm font-bold">EngineGPT</span>
+              <span className="text-sm font-bold">EngineAI</span>
             </div>
           </div>
         )}
@@ -1380,7 +1440,7 @@ function EngineGPTContent() {
             )}>
               <img
                 src="/assets/logo_engine_icon.svg"
-                alt="EngineGPT"
+                alt="EngineAI"
                 className="h-10 w-10 lg:h-14 lg:w-14 mb-3 lg:mb-5 dark:brightness-0 dark:invert"
               />
               <h1 className="text-2xl lg:text-4xl font-bold tracking-tight mb-1 lg:mb-2">
@@ -1560,7 +1620,7 @@ function EngineGPTContent() {
                             ].map((item) => {
                               const level = contextConfig[item.key];
                               const isOn = level !== "off";
-                              const nextLevel = level === "off" ? "summary" : level === "summary" ? "full-month" : "off";
+                              const nextLevel = isOn ? "off" : "summary";
                               return (
                                 <button
                                   key={item.key}
@@ -1787,7 +1847,7 @@ function EngineGPTContent() {
                         >
                           <Sparkles className="h-3.5 w-3.5 mr-1.5 text-amber-500 shrink-0" />
                           <div className="flex-1 min-w-0">
-                            <div>EngineGPT Auto</div>
+                            <div>EngineAI Auto</div>
                             <div className="text-[10px] text-muted-foreground font-normal">Routes to the best model</div>
                           </div>
                           {selectedModel === "auto" && (
@@ -1852,10 +1912,7 @@ function EngineGPTContent() {
                   ].map((item) => {
                     const level = contextConfig[item.key];
                     const isOn = level !== "off";
-                    const isFull = level.startsWith("full");
-                    // Cycle: off → summary → full-month → off
-                    const nextLevel = level === "off" ? "summary" : level === "summary" ? "full-month" : "off";
-                    const fullLabel = level === "full-week" ? "7d" : level === "full-month" ? "30d" : level === "full-year" ? "1y" : "";
+                    const nextLevel = isOn ? "off" : "summary";
                     return (
                       <button
                         key={item.key}
@@ -1865,7 +1922,7 @@ function EngineGPTContent() {
                             [item.key]: nextLevel,
                           }))
                         }
-                        title={`${item.label}: ${level === "off" ? "Off" : level === "summary" ? "Summary" : `Full Detail (${fullLabel})`} — click to cycle`}
+                        title={`${item.label}: ${isOn ? "On" : "Off"} — click to toggle`}
                         className={cn(
                           "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
                           isOn
@@ -1880,9 +1937,6 @@ function EngineGPTContent() {
                             : "text-muted-foreground/30"
                         )} />
                         {item.label}
-                        {isFull && (
-                          <span className="text-[9px] text-muted-foreground/50">{fullLabel}</span>
-                        )}
                       </button>
                     );
                   })}
@@ -2011,7 +2065,7 @@ function EngineGPTContent() {
           </DialogHeader>
           <div className="space-y-4 text-sm text-muted-foreground">
             <p>
-              EngineGPT connects to multiple AI providers via their enterprise APIs.
+              EngineAI connects to multiple AI providers via their enterprise APIs.
               Under each provider&apos;s enterprise terms, <strong className="text-foreground">your prompts, responses, and client data
               are never used to train AI models</strong>.
             </p>
@@ -2062,7 +2116,7 @@ function EngineGPTContent() {
             </div>
 
             <p className="text-xs text-muted-foreground/60">
-              These protections apply to all models available in EngineGPT, including when
+              These protections apply to all models available in EngineAI, including when
               using Auto mode. For full details, refer to each provider&apos;s enterprise terms of service.
             </p>
           </div>

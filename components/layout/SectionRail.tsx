@@ -25,12 +25,13 @@ export type { ExtendedArea };
 // Access-flag mapping (Content-Engine-specific)
 // ────────────────────────────────────────────────
 
-type ExtendedArea = Area | "rfp-tool";
+type ExtendedArea = Area | "rfp-tool" | "engineai";
 
-const ACCESS_FLAG_KEYS: Record<Area, "accessEngine" | "accessOperations" | "accessEngineGpt" | "accessMeetingBrain" | "accessAdmin"> = {
+const ACCESS_FLAG_KEYS: Record<string, "accessEngine" | "accessOperations" | "accessEngineGpt" | "accessMeetingBrain" | "accessAdmin"> = {
   engine: "accessEngine",
   operations: "accessOperations",
-  enginegpt: "accessEngineGpt",
+  enginegpt: "accessEngineGpt",  // DB column stays as enginegpt
+  engineai: "accessEngineGpt",   // UI key maps to same DB column
   meetingbrain: "accessMeetingBrain",
   admin: "accessAdmin",
 };
@@ -94,9 +95,14 @@ interface SectionRailProps {
   onLocalSwitch?: (area: ExtendedArea) => void;
 }
 
+// Map "engineai" to "enginegpt" for comparison with package RAIL_ITEMS
+const normalizeArea = (area: ExtendedArea): ExtendedArea =>
+  area === "engineai" ? "enginegpt" as ExtendedArea : area;
+
 export function SectionRailDesktop({ currentArea, onLocalSwitch }: SectionRailProps) {
   const { items } = useRailItems();
   const router = useRouter();
+  const normalizedCurrent = normalizeArea(currentArea);
 
   const handleClick = (area: ExtendedArea) => {
     if (area === "rfp-tool") {
@@ -121,12 +127,12 @@ export function SectionRailDesktop({ currentArea, onLocalSwitch }: SectionRailPr
                 onClick={() => handleClick(item.area)}
                 className={cn(
                   "relative flex items-center justify-center w-10 h-10 rounded-lg transition-all duration-150",
-                  item.area === currentArea
+                  item.area === normalizedCurrent
                     ? "bg-white/15 text-white"
                     : "text-white/50 hover:bg-white/10 hover:text-white/80"
                 )}
               >
-                {item.area === currentArea && (
+                {item.area === normalizedCurrent && (
                   <div className="absolute -left-1 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-blue-400" />
                 )}
                 {(() => { const Icon = item.icon as any; return <Icon className="h-[18px] w-[18px]" />; })()}
@@ -148,6 +154,7 @@ export function SectionRailDesktop({ currentArea, onLocalSwitch }: SectionRailPr
 export function SectionRailMobile({ currentArea, onLocalSwitch }: SectionRailProps) {
   const { items } = useRailItems();
   const router = useRouter();
+  const normalizedCurrent = normalizeArea(currentArea);
 
   const handleClick = (area: ExtendedArea) => {
     if (area === "rfp-tool") {
@@ -172,7 +179,7 @@ export function SectionRailMobile({ currentArea, onLocalSwitch }: SectionRailPro
               onClick={() => handleClick(item.area)}
               className={cn(
                 "flex-1 px-2 py-1.5 rounded-md text-[11px] font-medium transition-colors text-center",
-                item.area === currentArea
+                item.area === normalizedCurrent
                   ? "bg-white/15 text-white shadow-sm"
                   : "text-white/50 hover:text-white/80"
               )}

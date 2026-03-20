@@ -614,7 +614,7 @@ function EnginePanel({
         </Link>
       </div>
 
-      {/* EngineGPT link */}
+      {/* EngineAI link */}
       {showEngineGpt && (
         <div className="px-3 pb-1">
           <a
@@ -626,7 +626,7 @@ function EnginePanel({
             )}
           >
             <Sparkles className="h-[16px] w-[16px] text-violet-400" />
-            EngineGPT
+            EngineAI
           </a>
         </div>
       )}

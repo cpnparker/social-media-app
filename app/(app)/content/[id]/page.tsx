@@ -767,11 +767,11 @@ export default function ContentDetailPage() {
             <FileText className="h-3.5 w-3.5" /> Content
           </TabsTrigger>
           <TabsTrigger value="ai-writer" className="gap-1.5 text-xs">
-            <Sparkles className="h-3.5 w-3.5" /> EngineGPT
+            <Sparkles className="h-3.5 w-3.5" /> EngineAI
           </TabsTrigger>
         </TabsList>
 
-        {/* ── TAB 3: EngineGPT (full-width two-panel layout) ── */}
+        {/* ── TAB 3: EngineAI (full-width two-panel layout) ── */}
         <TabsContent value="ai-writer" className="mt-0">
           <div className="flex flex-col md:flex-row gap-4" style={{ height: "calc(100vh - 200px)", minHeight: "600px" }}>
             {/* LEFT: AI Tools */}

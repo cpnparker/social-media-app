@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
   const contentObjectId = searchParams.get("contentObjectId");
   const customerId = searchParams.get("customerId");
   const search = searchParams.get("search");
-  const limit = parseInt(searchParams.get("limit") || "50", 10);
+  const limit = parseInt(searchParams.get("limit") || "100", 10);
 
   if (!workspaceId) {
     return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
@@ -82,14 +82,15 @@ export async function GET(req: NextRequest) {
     }
 
     if (customerId === "general") {
-      // Special value: only conversations with no client (General)
-      query = query.is("id_client", null);
+      // "General" = show ALL threads across all clients (no client filter)
     } else if (customerId) {
       query = query.eq("id_client", parseInt(customerId, 10));
     }
 
     if (search) {
-      query = query.ilike("name_conversation", `%${search}%`);
+      // Search across title AND summary (covers conversation content)
+      const searchPattern = `%${search}%`;
+      query = query.or(`name_conversation.ilike.${searchPattern},document_summary.ilike.${searchPattern}`);
     }
 
     const { data: conversations, error } = await query
@@ -97,6 +98,47 @@ export async function GET(req: NextRequest) {
       .limit(limit);
 
     if (error) throw error;
+
+    // If searching and few results from title/summary, also search message content
+    let messageMatchIds: string[] = [];
+    if (search && (conversations || []).length < 5) {
+      const searchPattern = `%${search}%`;
+      // Find conversations with matching message content
+      const { data: msgMatches } = await intelligenceDb
+        .from("ai_messages")
+        .select("id_conversation")
+        .ilike("document_message", searchPattern)
+        .limit(20);
+
+      if (msgMatches?.length) {
+        messageMatchIds = Array.from(new Set(msgMatches.map((m: any) => m.id_conversation)));
+        // Fetch those conversations (that aren't already in results)
+        const existingIds = new Set((conversations || []).map((c: any) => c.id_conversation));
+        const newIds = messageMatchIds.filter(id => !existingIds.has(id));
+
+        if (newIds.length > 0) {
+          const msgQuery = intelligenceDb
+            .from("ai_conversations")
+            .select("*")
+            .eq("id_workspace", workspaceId)
+            .in("id_conversation", newIds)
+            .order("date_updated", { ascending: false })
+            .limit(10);
+
+          const { data: extraConvs } = await msgQuery;
+          if (extraConvs?.length) {
+            // Filter by access (same privacy rules)
+            const accessible = extraConvs.filter((c: any) => {
+              if (c.type_visibility === "team") return true;
+              if (c.user_created === userId) return true;
+              if (sharedConvoIds?.includes(c.id_conversation)) return true;
+              return false;
+            });
+            conversations!.push(...accessible);
+          }
+        }
+      }
+    }
 
     // Resolve customer names from Supabase
     const customerIds = Array.from(

@@ -10,7 +10,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { Send, Loader2, Paperclip, X, FileText, Upload } from "lucide-react";
+import { Send, Loader2, Paperclip, X, FileText, Upload, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { upload as blobUpload } from "@vercel/blob/client";
@@ -20,7 +20,9 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
 interface ChatInputProps {
   onSend: (content: string, attachments?: Attachment[]) => void;
+  onStop?: () => void;
   disabled?: boolean;
+  isStreaming?: boolean;
   placeholder?: string;
   /** Slot rendered inside the input container, bottom-left (for context controls) */
   bottomSlot?: ReactNode;
@@ -31,7 +33,7 @@ export interface ChatInputHandle {
 }
 
 const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
-  function ChatInput({ onSend, disabled, placeholder = "Type your message...", bottomSlot }, ref) {
+  function ChatInput({ onSend, onStop, disabled, isStreaming, placeholder = "Type your message...", bottomSlot }, ref) {
     const [value, setValue] = useState("");
     const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>(
       []
@@ -258,22 +260,33 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
               </Button>
               {bottomSlot}
             </div>
-            <Button
-              size="icon"
-              onClick={handleSubmit}
-              disabled={
-                disabled ||
-                uploading ||
-                (!value.trim() && pendingAttachments.length === 0)
-              }
-              className="h-8 w-8 rounded-lg bg-foreground text-background hover:bg-foreground/80"
-            >
-              {disabled ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Send className="h-3.5 w-3.5" />
-              )}
-            </Button>
+            {isStreaming && onStop ? (
+              <Button
+                size="icon"
+                onClick={onStop}
+                className="h-8 w-8 rounded-lg bg-destructive text-destructive-foreground hover:bg-destructive/80"
+                title="Stop generating"
+              >
+                <Square className="h-3 w-3 fill-current" />
+              </Button>
+            ) : (
+              <Button
+                size="icon"
+                onClick={handleSubmit}
+                disabled={
+                  disabled ||
+                  uploading ||
+                  (!value.trim() && pendingAttachments.length === 0)
+                }
+                className="h-8 w-8 rounded-lg bg-foreground text-background hover:bg-foreground/80"
+              >
+                {disabled ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Send className="h-3.5 w-3.5" />
+                )}
+              </Button>
+            )}
           </div>
         </div>
         <input

@@ -2,13 +2,13 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "EngineGPT",
-    short_name: "EngineGPT",
+    name: "EngineAI",
+    short_name: "EngineAI",
     description:
       "Your AI-powered content assistant. Brainstorm ideas, draft content, and manage social media with deep client context.",
     start_url: "/",
     scope: "/",
-    id: "/enginegpt",
+    id: "/engineai",
     display: "standalone",
     background_color: "#023250",
     theme_color: "#023250",

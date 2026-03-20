@@ -80,7 +80,7 @@ export default function ContentChatSelector({
             >
               <Sparkles className="h-3 w-3 mr-1.5 text-amber-500 shrink-0" />
               <div className="flex-1 min-w-0">
-                <div>EngineGPT Auto</div>
+                <div>EngineAI Auto</div>
                 <div className="text-[10px] text-muted-foreground font-normal">Routes to the best model</div>
               </div>
               {selectedModel === "auto" && (

@@ -26,6 +26,7 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Legend,
   ResponsiveContainer,
 } from "recharts";
 
@@ -66,7 +67,8 @@ interface UsageData {
     week: UsageSummaryPeriod;
     month: UsageSummaryPeriod;
   };
-  daily: { date: string; cost: number; calls: number }[];
+  daily: Record<string, any>[];
+  dailyModels?: string[];
   byModel: {
     model: string;
     cost: number;
@@ -102,12 +104,34 @@ function formatTokens(n: number): string {
 
 const MODEL_LABELS: Record<string, string> = {
   "claude-sonnet-4-20250514": "Claude Sonnet 4",
+  "claude-sonnet-4-6": "Claude Sonnet 4.6",
   "gpt-4o": "GPT-4o",
   "gpt-4o-mini": "GPT-4o Mini",
+  "grok-4-1-fast-non-reasoning": "Grok 4 Fast",
   "grok-4-1-fast": "Grok 4 Fast",
   "grok-3-mini": "Grok 3 Mini",
+  "grok-3-fast": "Grok 3 Fast",
   "grok-3": "Grok 3 (Legacy)",
+  "grok-imagine-image": "Grok Image",
+  "dall-e-3": "DALL-E 3",
+  "gemini-3-flash": "Gemini 3 Flash",
+  "gemini-3.1-flash-lite": "Gemini 3.1 Lite",
 };
+
+const MODEL_COLORS: Record<string, string> = {
+  "grok-4-1-fast-non-reasoning": "#3B82F6",
+  "grok-3-fast": "#60A5FA",
+  "grok-3-mini": "#93C5FD",
+  "grok-imagine-image": "#818CF8",
+  "claude-sonnet-4-6": "#F97316",
+  "claude-sonnet-4-20250514": "#FB923C",
+  "gpt-4o": "#10B981",
+  "gpt-4o-mini": "#34D399",
+  "dall-e-3": "#A78BFA",
+  "gemini-3-flash": "#EC4899",
+  "gemini-3.1-flash-lite": "#F472B6",
+};
+const DEFAULT_MODEL_COLORS = ["#6366F1", "#8B5CF6", "#06B6D4", "#14B8A6", "#F59E0B", "#EF4444", "#84CC16", "#E879F9"];
 
 const PROVIDER_LABELS: Record<string, string> = {
   anthropic: "Anthropic",
@@ -116,7 +140,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 const SOURCE_LABELS: Record<string, string> = {
-  enginegpt: "EngineGPT",
+  engineai: "EngineAI",
   engine: "Content Engine",
   api: "API",
 };
@@ -436,7 +460,7 @@ export default function AIUsagePage() {
               Model
             </label>
             <p className="text-xs text-muted-foreground mb-2">
-              Select the default AI model for new conversations in EngineGPT.
+              Select the default AI model for new conversations in EngineAI.
             </p>
             <div className="relative max-w-md">
               <select
@@ -492,7 +516,7 @@ export default function AIUsagePage() {
         <CardContent className="pt-4 space-y-1">
           <p className="text-xs text-muted-foreground mb-4">
             Control what customer data is included in the AI context when using
-            EngineGPT. Disabling a section reduces token usage and cost.
+            EngineAI. Disabling a section reduces token usage and cost.
           </p>
 
           {[
@@ -574,7 +598,7 @@ export default function AIUsagePage() {
             <div className="min-w-0">
               <p className="text-sm font-medium">Web Search</p>
               <p className="text-xs text-muted-foreground">
-                Enable web search by default in new EngineGPT conversations
+                Enable web search by default in new EngineAI conversations
               </p>
             </div>
           </div>
@@ -700,7 +724,7 @@ export default function AIUsagePage() {
             <div className="min-w-0">
               <p className="text-sm font-medium">Debug Mode</p>
               <p className="text-xs text-muted-foreground">
-                Show the system prompt passed to the AI before each response in EngineGPT
+                Show the system prompt passed to the AI before each response in EngineAI
               </p>
             </div>
           </div>
@@ -809,16 +833,16 @@ export default function AIUsagePage() {
               ))}
             </div>
 
-            {/* Daily Cost Chart */}
+            {/* Daily Cost Chart — stacked by model */}
             {usageData.daily.length > 0 && (
               <Card className="border-0 shadow-sm">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium">
-                    Daily Cost
+                    Daily Cost by Model
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="h-[220px]">
+                  <div className="h-[280px]">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart
                         data={usageData.daily}
@@ -844,9 +868,9 @@ export default function AIUsagePage() {
                           stroke="hsl(var(--muted-foreground))"
                         />
                         <Tooltip
-                          formatter={(value: any) => [
+                          formatter={(value: any, name: any) => [
                             formatCost(Number(value)),
-                            "Cost",
+                            MODEL_LABELS[String(name)] || String(name),
                           ]}
                           labelFormatter={(label: any) => {
                             const d = new Date(String(label) + "T00:00:00");
@@ -857,18 +881,26 @@ export default function AIUsagePage() {
                             });
                           }}
                           contentStyle={{
-                            fontSize: 12,
+                            fontSize: 11,
                             borderRadius: 8,
                             border: "1px solid hsl(var(--border))",
                             background: "hsl(var(--background))",
                           }}
                         />
-                        <Bar
-                          dataKey="cost"
-                          fill="hsl(var(--primary))"
-                          radius={[3, 3, 0, 0]}
-                          maxBarSize={40}
+                        <Legend
+                          formatter={(value: string) => MODEL_LABELS[value] || value}
+                          wrapperStyle={{ fontSize: 10, paddingTop: 8 }}
                         />
+                        {(usageData.dailyModels || []).map((model, i) => (
+                          <Bar
+                            key={model}
+                            dataKey={model}
+                            stackId="cost"
+                            fill={MODEL_COLORS[model] || DEFAULT_MODEL_COLORS[i % DEFAULT_MODEL_COLORS.length]}
+                            radius={i === (usageData.dailyModels?.length || 1) - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]}
+                            maxBarSize={40}
+                          />
+                        ))}
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -933,7 +965,7 @@ export default function AIUsagePage() {
                 <CardContent className="space-y-3">
                   {usageData.bySource.map((s) => {
                     const sourceColors: Record<string, string> = {
-                      enginegpt: "bg-blue-500",
+                      engineai: "bg-blue-500",
                       engine: "bg-violet-500",
                       api: "bg-amber-500",
                     };
