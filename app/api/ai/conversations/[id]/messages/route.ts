@@ -186,8 +186,8 @@ async function fetchClientContext(clientId: number, detailConfig?: NormalizedCon
 
   // Select extra fields for full content mode (briefs, audience, topics, etc.)
   const contentSelect = fullContent
-    ? "name_content, type_content, flag_completed, flag_spiked, units_content, id_contract, information_brief, information_audience, name_topic_array, name_campaign_array, information_platform"
-    : "name_content, type_content, flag_completed, flag_spiked, units_content, id_contract";
+    ? "id_content, name_content, type_content, flag_completed, flag_spiked, units_content, id_contract, date_completed, document_type, information_brief, information_audience, name_topic_array, name_campaign_array, information_platform"
+    : "id_content, name_content, type_content, flag_completed, flag_spiked, units_content, id_contract, date_completed, document_type";
 
   // Date filter and limits for content based on time window
   const contentParams = fullContent ? getDetailParams(contentLevel) : { dateCutoff: null, limit: 30 };
@@ -225,8 +225,35 @@ async function fetchClientContext(clientId: number, detailConfig?: NormalizedCon
   const client = clientRes.data;
   if (!client) return null;
 
-  // Categorize content by status
+  // Fetch current tasks for content items (latest non-completed task per content)
   const content = contentRes.data || [];
+  const taskMap: Record<number, { type: string; assignee: string }> = {};
+  if (content.length > 0) {
+    const contentIds = content
+      .map((c: any) => c.id_content)
+      .filter((id: any) => id != null);
+    if (contentIds.length > 0) {
+      const { data: tasks } = await supabase
+        .from("app_tasks_content")
+        .select("id_content, type_task, name_user_assignee, date_completed")
+        .in("id_content", contentIds)
+        .is("date_completed", null)
+        .order("order_sort", { ascending: true });
+      if (tasks) {
+        // Keep only the first (current) incomplete task per content item
+        for (const t of tasks) {
+          if (t.id_content && !taskMap[t.id_content]) {
+            taskMap[t.id_content] = {
+              type: t.type_task || "",
+              assignee: t.name_user_assignee || "",
+            };
+          }
+        }
+      }
+    }
+  }
+
+  // Categorize content by status
   const commissioned = content.filter((c: any) => c.flag_completed !== 1 && c.flag_spiked !== 1);
   const completed = content.filter((c: any) => c.flag_completed === 1);
   const spiked = content.filter((c: any) => c.flag_spiked === 1);
@@ -261,6 +288,7 @@ async function fetchClientContext(clientId: number, detailConfig?: NormalizedCon
   }
 
   return {
+    id: client.id_client,
     name: client.name_client,
     industry: client.information_industry,
     description: client.information_description,
@@ -274,12 +302,20 @@ async function fetchClientContext(clientId: number, detailConfig?: NormalizedCon
       endDate: c.date_end,
       notes: c.information_notes,
       ...(fullContracts && contractContentMap[c.id_contract]?.length ? {
-        commissionedContent: contractContentMap[c.id_contract].map((item: any) => ({
-          title: item.name_content,
-          type: item.type_content || "other",
-          cu: item.units_content || 0,
-          status: item.flag_completed === 1 ? "Completed" : item.flag_spiked === 1 ? "Spiked" : "Commissioned",
-        }))
+        commissionedContent: contractContentMap[c.id_contract].map((item: any) => {
+          const task = item.id_content ? taskMap[item.id_content] : null;
+          return {
+            id: item.id_content || null,
+            title: item.name_content,
+            type: item.type_content || "other",
+            format: item.document_type || null,
+            cu: item.units_content || 0,
+            status: item.flag_completed === 1 ? "Completed" : item.flag_spiked === 1 ? "Spiked" : "Commissioned",
+            dateCompleted: item.date_completed || null,
+            currentTask: task?.type || null,
+            taskAssignee: task?.assignee || null,
+          };
+        })
       } : {}),
     })),
     contentSummary: {
@@ -559,15 +595,16 @@ export async function POST(
     const memoryEnabled = !isIncognito && contextConfig.memory !== "off";
 
     // Build messages with attachments for AI
-    // Context window truncation: for long conversations with a summary,
-    // use summary + recent messages instead of all messages to save tokens.
-    // Only truncate when memory is enabled (private/shared threads + memory toggle on)
-    // — team threads always get full history.
-    // Wider window (30/20) gives creative/iterative workflows enough context to
-    // reference earlier outputs (images, drafts) before truncation kicks in.
+    // Context window truncation: keep conversations manageable for AI models.
+    // Long conversations with many tool calls (image gen, queries) bloat the
+    // context and cause models to stop calling tools or hit token limits.
     const hasSummary = !!conversation.document_summary;
     const shouldTruncate = memoryEnabled && history.length > 30 && hasSummary;
-    const effectiveHistory = shouldTruncate ? history.slice(-20) : history;
+    // Always cap at last 20 messages regardless — prevents tool call history
+    // from overwhelming the model (each image gen adds ~3 messages)
+    const MAX_HISTORY = 20;
+    const cappedHistory = history.length > MAX_HISTORY ? history.slice(-MAX_HISTORY) : history;
+    const effectiveHistory = shouldTruncate ? history.slice(-MAX_HISTORY) : cappedHistory;
 
     if (shouldTruncate) {
       console.log(`[Messages] Truncating context: ${history.length} messages → summary + last 20`);
@@ -583,10 +620,43 @@ export async function POST(
       });
     }
 
-    for (const m of effectiveHistory) {
+    // Detect if the user's latest message references a previous image/output
+    // (e.g., "make that red", "another version", "change the background", "try again")
+    const latestUserContent = (body.content || "").toLowerCase();
+    const referencesImage = /\b(that|it|the image|the picture|this one|another|again|version|redo|modify|change|adjust|tweak|make it|more like|less|same but|similar|background|color|style|angle|pose)\b/i.test(latestUserContent);
+
+    // Find the index of the last assistant message that contains a generated image
+    let lastImageAssistantIdx = -1;
+    for (let i = effectiveHistory.length - 1; i >= 0; i--) {
+      if (effectiveHistory[i].role_message === "assistant" && /!\[Generated image\]\(/.test(effectiveHistory[i].document_message)) {
+        lastImageAssistantIdx = i;
+        break;
+      }
+    }
+
+    for (let hi = 0; hi < effectiveHistory.length; hi++) {
+      const m = effectiveHistory[hi];
+      let content = m.document_message;
+
+      // For assistant messages: strip image/chart/doc markdown from conversation history
+      // to keep context lean. But if the user references a previous image, keep the
+      // MOST RECENT generated image intact so the model can iterate on it.
+      if (m.role_message === "assistant") {
+        const keepThisImage = referencesImage && hi === lastImageAssistantIdx;
+
+        if (!keepThisImage) {
+          content = content
+            .replace(/!\[Generated image\]\([^)]+\)/g, "[Previously generated image]")
+            .replace(/!\[[^\]]*\]\(\/api\/media\/[^)]+\)/g, "[Previously generated visual]")
+            .replace(/📄\s*\[Download [^\]]+\]\([^)]+\)/g, "[Previously generated document]")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+        }
+      }
+
       const msg: AIMessage = {
         role: m.role_message as "user" | "assistant" | "system",
-        content: m.document_message,
+        content,
       };
 
       // Parse and prepare attachments for user messages
@@ -720,6 +790,30 @@ export async function POST(
       return { clientContext, contentDetail, clientIdeas, workspaceSummary };
     })();
 
+    // Fetch workspace client IDs for query_engine tool scoping
+    const clientIdsPromise = (async () => {
+      const { data } = await supabase
+        .from("app_clients")
+        .select("id_client");
+      return (data || []).map((c: any) => c.id_client).filter(Boolean) as number[];
+    })();
+
+    // Fetch processed client background profile (from asset files)
+    // Note: if conversation is content-scoped (id_content but no id_client),
+    // the client ID is resolved later via fetchContentDetail — we fetch
+    // the background after the parallel block in that case.
+    const clientBackgroundPromise = conversation.id_client
+      ? (async () => {
+          const { data } = await intelligenceDb
+            .from("ai_client_context")
+            .select("document_context, units_asset_count, date_last_processed")
+            .eq("id_workspace", conversation.id_workspace)
+            .eq("id_client", conversation.id_client)
+            .maybeSingle();
+          return data;
+        })()
+      : Promise.resolve(null);
+
     // MeetingBrain / external app context (skip in incognito or when toggled off)
     const meetingBrainEnabled = contextConfig.meetingBrain !== "off";
     const appContextPromise = !isIncognito && meetingBrainEnabled
@@ -733,16 +827,30 @@ export async function POST(
         })()
       : Promise.resolve([]);
 
-    // Run all five in parallel
-    const [memories, role, userPrefs, ctx, appContextRows] = await Promise.all([
+    // Run all in parallel
+    const [memories, role, userPrefs, ctx, appContextRows, workspaceClientIds, clientBackground] = await Promise.all([
       memoryPromise,
       rolePromise,
       userPrefsPromise,
       contextPromise,
       appContextPromise,
+      clientIdsPromise,
+      clientBackgroundPromise,
     ]);
 
     const { clientContext, contentDetail, clientIdeas, workspaceSummary } = ctx;
+
+    // If conversation is content-scoped, fetch client background now that we know the client ID
+    let resolvedClientBackground = clientBackground;
+    if (!resolvedClientBackground && contentDetail?.clientId) {
+      const { data } = await intelligenceDb
+        .from("ai_client_context")
+        .select("document_context, units_asset_count, date_last_processed")
+        .eq("id_workspace", conversation.id_workspace)
+        .eq("id_client", contentDetail.clientId)
+        .maybeSingle();
+      resolvedClientBackground = data;
+    }
 
     // Resolve selected role IDs to role objects (depends on userPrefs)
     let selectedRoles: { name: string; instructions: string }[] = [];
@@ -795,6 +903,7 @@ export async function POST(
       personalContext: isTeamThread ? null : (userPrefs?.information_personal_context || null),
       meetingBrainContext,
       region: userPrefs?.name_region || null,
+      clientBackground: resolvedClientBackground || null,
     });
 
     // Auto-title: if this is the first user message, set conversation title (skip incognito)
@@ -814,7 +923,7 @@ export async function POST(
     // Create streaming response
     const aiStream = createStreamingResponse(
       messages,
-      { model, systemPrompt, maxTokens, webSearch: contextConfig.webSearch === "on", imageGeneration: contextConfig.imageGeneration === "on" },
+      { model, systemPrompt, maxTokens, webSearch: contextConfig.webSearch === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, selectedClientId: conversation.id_client || undefined },
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
