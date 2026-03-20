@@ -30,6 +30,7 @@ import {
   FileSearch,
   Globe,
   PenTool,
+  Brain,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -49,6 +50,12 @@ import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { signOut } from "next-auth/react";
 import { getSubdomainUrl } from "@/lib/subdomain";
 import { SectionRailDesktop, SectionRailMobile, type Area, type ExtendedArea } from "@/components/layout/SectionRail";
+import dynamic from "next/dynamic";
+
+const ClientContextDialog = dynamic(
+  () => import("@/components/ai-writer/ClientContextDialog"),
+  { ssr: false }
+);
 
 // ────────────────────────────────────────────────
 // Types & constants
@@ -211,6 +218,7 @@ export function Sidebar({ onClose }: SidebarProps) {
     : "?";
 
   const showAdmin = wsCtx?.selectedWorkspace?.accessAdmin ?? false;
+  const [clientContextOpen, setClientContextOpen] = useState(false);
 
   const [activeArea, setActiveArea] = useState<ExtendedArea>(() => deriveArea(pathname));
 
@@ -369,6 +377,14 @@ export function Sidebar({ onClose }: SidebarProps) {
             )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
+              onClick={() => setClientContextOpen(true)}
+              className="gap-2"
+            >
+              <Brain className="h-4 w-4" />
+              Client Context
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
               onClick={() => signOut({ callbackUrl: "/login" })}
               className="text-destructive focus:text-destructive gap-2"
             >
@@ -377,6 +393,11 @@ export function Sidebar({ onClose }: SidebarProps) {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        <ClientContextDialog
+          open={clientContextOpen}
+          onClose={() => setClientContextOpen(false)}
+        />
       </div>
 
       {/* ═══════ Sidebar Panel ═══════ */}
@@ -461,6 +482,14 @@ export function Sidebar({ onClose }: SidebarProps) {
                   </Link>
                 </DropdownMenuItem>
               )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => setClientContextOpen(true)}
+                className="gap-2"
+              >
+                <Brain className="h-4 w-4" />
+                Client Context
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={() => signOut({ callbackUrl: "/login" })}
