@@ -10,7 +10,7 @@
     },
     {
       "path": "/api/cron/client-context",
-      "schedule": "0 */2 * * *"
+      "schedule": "0 3 * * *"
     }
   ]
 }

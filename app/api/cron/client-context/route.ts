@@ -6,101 +6,123 @@ import { processClientContext } from "@/lib/ai/client-context-extract";
 export const maxDuration = 300;
 
 /**
- * GET /api/cron/client-context — Vercel Cron handler
+ * GET /api/cron/client-context — Daily catch-all safety net
  *
- * Scans all clients with asset files and processes those whose assets
- * have changed since the last processing run. Creates/updates the
- * consolidated AI client context profile in intelligence.ai_client_context.
+ * Most processing happens in real-time via POST /api/ai/client-context
+ * when assets are added/deleted. This cron catches:
+ * - Assets added directly in the Engine app (bypassing our API)
+ * - Asset deletions that changed the file count
+ * - New clients that gained assets since last run
+ * - Any missed updates
  *
- * Schedule: every 2 hours (0 *​/2 * * *)
+ * Schedule: daily at 3am (0 3 * * *)
  */
 export async function GET(req: NextRequest) {
-  // Verify cron secret
   const authHeader = req.headers.get("authorization");
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
-    // 1. Get all clients that have at least one asset file
-    const { data: clientsWithAssets, error: clientsErr } = await supabase
+    // 1. Get all clients and their current asset counts
+    const { data: allAssets, error: assetsErr } = await supabase
       .from("app_assets_clients")
-      .select("id_client")
-      .not("id_file", "is", null);
+      .select("id_client, id_asset, date_created");
 
-    if (clientsErr) throw clientsErr;
-    if (!clientsWithAssets || clientsWithAssets.length === 0) {
-      return NextResponse.json({ message: "No clients with assets" });
+    if (assetsErr) throw assetsErr;
+
+    // Build per-client stats: asset count + latest asset date
+    const clientStats = new Map<number, { count: number; latestDate: string }>();
+    for (const a of allAssets || []) {
+      const existing = clientStats.get(a.id_client);
+      if (!existing) {
+        clientStats.set(a.id_client, { count: 1, latestDate: a.date_created });
+      } else {
+        existing.count++;
+        if (a.date_created > existing.latestDate) {
+          existing.latestDate = a.date_created;
+        }
+      }
     }
 
-    // Deduplicate client IDs
-    const clientIds = Array.from(new Set(clientsWithAssets.map((r: any) => r.id_client)));
-
-    // 2. Get client names for better logging and profile generation
-    const { data: clients } = await supabase
-      .from("app_clients")
-      .select("id_client, name_client")
-      .in("id_client", clientIds);
-
-    const clientNameMap = new Map(
-      (clients || []).map((c: any) => [c.id_client, c.name_client])
-    );
-
-    // 3. Get existing context records to check freshness
+    // 2. Get existing context records
     const { data: existingContexts } = await intelligenceDb
       .from("ai_client_context")
-      .select("id_client, date_last_processed");
+      .select("id_client, units_asset_count, date_last_processed");
 
-    const lastProcessedMap = new Map(
+    const contextMap = new Map(
       (existingContexts || []).map((c: any) => [
         c.id_client,
-        new Date(c.date_last_processed),
+        { count: c.units_asset_count, lastProcessed: c.date_last_processed },
       ])
     );
 
-    // 4. For each client, check if assets have been updated since last processing
-    const results: { clientId: number; name: string; status: string; files?: number }[] = [];
-    let processedCount = 0;
+    // 3. Determine which clients need reprocessing
+    const clientsToProcess: number[] = [];
 
-    // Get the workspace ID from ai_settings (there's typically one workspace)
+    clientStats.forEach((stats, clientId) => {
+      const existing = contextMap.get(clientId);
+
+      if (!existing) {
+        // New client with assets — never processed
+        clientsToProcess.push(clientId);
+      } else if (stats.count !== existing.count) {
+        // Asset count changed (added or deleted)
+        clientsToProcess.push(clientId);
+      } else if (stats.latestDate > existing.lastProcessed) {
+        // New asset added since last processing
+        clientsToProcess.push(clientId);
+      }
+    });
+
+    // 4. Clean up context for clients that no longer have any assets
+    const activeClientIds = new Set(Array.from(clientStats.keys()));
+    const orphanedContexts = (existingContexts || []).filter(
+      (c: any) => !activeClientIds.has(c.id_client)
+    );
+
+    for (const orphan of orphanedContexts) {
+      await intelligenceDb
+        .from("ai_client_context")
+        .delete()
+        .eq("id_client", orphan.id_client);
+      console.log(`[ClientContext Cron] Cleaned up context for removed client ${orphan.id_client}`);
+    }
+
+    if (clientsToProcess.length === 0) {
+      return NextResponse.json({
+        message: "All clients up to date",
+        totalClients: clientStats.size,
+        cleaned: orphanedContexts.length,
+      });
+    }
+
+    // 5. Get workspace ID and client names
     const { data: wsRow } = await intelligenceDb
       .from("ai_settings")
       .select("id_workspace")
       .limit(1)
       .maybeSingle();
 
-    const workspaceId = wsRow?.id_workspace;
-    if (!workspaceId) {
+    if (!wsRow?.id_workspace) {
       return NextResponse.json({ error: "No workspace found" }, { status: 500 });
     }
 
-    // Process max 3 clients per invocation to stay within function timeout.
-    // The cron runs every 2 hours, so all clients get processed over time.
-    const MAX_PER_RUN = 3;
+    const { data: clients } = await supabase
+      .from("app_clients")
+      .select("id_client, name_client")
+      .in("id_client", clientsToProcess);
 
-    for (const clientId of clientIds) {
-      const lastProcessed = lastProcessedMap.get(clientId);
+    const clientNameMap = new Map(
+      (clients || []).map((c: any) => [c.id_client, c.name_client])
+    );
 
-      // Check if any assets are newer than last processing
-      if (lastProcessed) {
-        const { data: newerAssets } = await supabase
-          .from("app_assets_clients")
-          .select("id_asset")
-          .eq("id_client", clientId)
-          .gt("date_created", lastProcessed.toISOString())
-          .limit(1);
+    // 6. Process changed clients (max 5 per run to stay within timeout)
+    const MAX_PER_RUN = 5;
+    const results: { clientId: number; name: string; status: string; files?: number }[] = [];
+    let processedCount = 0;
 
-        if (!newerAssets || newerAssets.length === 0) {
-          results.push({
-            clientId,
-            name: clientNameMap.get(clientId) || `Client ${clientId}`,
-            status: "fresh",
-          });
-          continue;
-        }
-      }
-
-      // Stop if we've hit the batch limit
+    for (const clientId of clientsToProcess) {
       if (processedCount >= MAX_PER_RUN) {
         results.push({
           clientId,
@@ -110,13 +132,12 @@ export async function GET(req: NextRequest) {
         continue;
       }
 
-      // Process this client
-      const clientName = clientNameMap.get(clientId) || undefined;
-      const result = await processClientContext(workspaceId, clientId, clientName);
+      const clientName = clientNameMap.get(clientId);
+      const result = await processClientContext(wsRow.id_workspace, clientId, clientName);
 
       results.push({
         clientId,
-        name: clientNameMap.get(clientId) || `Client ${clientId}`,
+        name: clientName || `Client ${clientId}`,
         status: result.error ? "error" : result.processed > 0 ? "processed" : "no-content",
         files: result.processed,
       });
@@ -125,8 +146,10 @@ export async function GET(req: NextRequest) {
     }
 
     return NextResponse.json({
-      totalClients: clientIds.length,
+      totalClients: clientStats.size,
+      needsUpdate: clientsToProcess.length,
       processed: processedCount,
+      cleaned: orphanedContexts.length,
       results,
     });
   } catch (error: any) {
