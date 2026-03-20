@@ -36,6 +36,14 @@ interface Client {
   name_client: string;
 }
 
+/** Map the /api/customers response shape to our Client interface */
+function mapCustomer(c: any): Client {
+  return {
+    id_client: Number(c.id ?? c.id_client),
+    name_client: c.name ?? c.name_client ?? "",
+  };
+}
+
 interface FileSummary {
   id_asset: number;
   name: string;
@@ -75,10 +83,7 @@ export default function ClientContextDialog({
     fetch("/api/customers?limit=200")
       .then((r) => r.json())
       .then((data) => {
-        const list = (data.customers || data || []).map((c: any) => ({
-          id_client: c.id_client,
-          name_client: c.name_client,
-        }));
+        const list = (data.customers || data || []).map(mapCustomer);
         list.sort((a: Client, b: Client) =>
           a.name_client.localeCompare(b.name_client)
         );
