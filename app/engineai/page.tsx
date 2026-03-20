@@ -47,6 +47,7 @@ import {
   Pin,
   ImageIcon,
   ShieldCheck,
+  BookOpen,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
@@ -82,6 +83,7 @@ import ChatPanel from "@/components/ai-writer/ChatPanel";
 import MemoryManager from "@/components/ai-writer/MemoryManager";
 import AdminDialog from "@/components/ai-writer/AdminDialog";
 import PersonaliseDialog from "@/components/ai-writer/PersonaliseDialog";
+import ClientContextDialog from "@/components/ai-writer/ClientContextDialog";
 import { signOut } from "next-auth/react";
 import { SectionRailDesktop, SectionRailMobile, useRailItems } from "@/components/layout/SectionRail";
 import { upload as blobUpload } from "@vercel/blob/client";
@@ -148,6 +150,7 @@ function EngineAIContent() {
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false);
   const [adminDialogOpen, setAdminDialogOpen] = useState(false);
   const [personaliseDialogOpen, setPersonaliseDialogOpen] = useState(false);
+  const [clientContextOpen, setClientContextOpen] = useState(false);
   const [memoryCount, setMemoryCount] = useState(0);
   const [privacyModalOpen, setPrivacyModalOpen] = useState(false);
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
@@ -803,6 +806,14 @@ function EngineAIContent() {
                 )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
+                  onClick={() => setClientContextOpen(true)}
+                  className="gap-2"
+                >
+                  <BookOpen className="h-4 w-4" />
+                  Client Context
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
                   onClick={() => signOut({ callbackUrl: "/login" })}
                   className="text-destructive focus:text-destructive gap-2"
                 >
@@ -1200,6 +1211,14 @@ function EngineAIContent() {
                     Administration
                   </DropdownMenuItem>
                 )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => setClientContextOpen(true)}
+                  className="gap-2"
+                >
+                  <BookOpen className="h-4 w-4" />
+                  Client Context
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={() => signOut({ callbackUrl: "/login" })}
@@ -2154,6 +2173,11 @@ function EngineAIContent() {
           onClose={() => setAdminDialogOpen(false)}
         />
       )}
+      {/* Client Context Dialog */}
+      <ClientContextDialog
+        open={clientContextOpen}
+        onClose={() => setClientContextOpen(false)}
+      />
     </>
   );
 }
