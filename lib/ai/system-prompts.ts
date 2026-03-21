@@ -43,7 +43,7 @@ export function normalizeDetailLevel(value: any): DetailLevel {
 
 /** Normalize a full context config (handles both legacy boolean and new string formats) */
 export function normalizeContextConfig(config: any): NormalizedContextConfig {
-  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "summary", webSearch: "on", imageGeneration: "on", incognito: "off", memory: "on", meetingBrain: "on" };
+  if (!config) return { contracts: "summary", contentPipeline: "off", socialPresence: "summary", ideas: "off", webSearch: "on", imageGeneration: "on", incognito: "off", memory: "on", meetingBrain: "on" };
   return {
     contracts: normalizeDetailLevel(config.contracts),
     contentPipeline: normalizeDetailLevel(config.contentPipeline),
@@ -289,17 +289,13 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
     prompt += `\n${ctx.personalContext}`;
   }
 
-  // ── MeetingBrain context (tasks + meetings, private/shared threads only) ──
+  // ── MeetingBrain availability note (tools handle the data now) ──
   if (ctx.meetingBrainContext) {
-    prompt += `\n\n## Your Tasks & Meetings`;
-    prompt += `\nBelow is context from MeetingBrain — the user's active tasks, recent meeting summaries, and upcoming scheduled meetings. Use this to give informed, context-aware answers:`;
-    prompt += `\n- When the user asks about their tasks or workload, explain each task clearly with full context — what it is, why it matters, and where it sits in their priorities. Don't just list bullet points.`;
-    prompt += `\n- Reference relevant past meetings naturally — mention what was discussed, key decisions made, and any follow-ups that relate to the conversation.`;
-    prompt += `\n- Use upcoming meetings to help the user prepare: identify who's attending, what topics might be relevant based on recent tasks and past meetings, and suggest talking points or prep actions.`;
-    prompt += `\n- When the user asks "who is attending" a meeting, use the attendee list. If attendee names or email domains suggest a specific company, mention that context.`;
-    prompt += `\n- Provide thoughtful observations: highlight connections between tasks, flag upcoming deadlines, suggest priorities, and note how meetings relate to their work.`;
-    prompt += `\n- Write in full, conversational sentences. Avoid abbreviations, shorthand, or echoing the raw data format below.`;
-    prompt += `\n${ctx.meetingBrainContext}`;
+    prompt += `\n\n## MeetingBrain Connected`;
+    prompt += `\nThe user has MeetingBrain connected. Use the query_meetingbrain tool to check their tasks, meetings, and action items when relevant.`;
+    prompt += `\n- For tasks/workload questions: call query_meetingbrain({ report: "my_tasks" })`;
+    prompt += `\n- For meeting history: call query_meetingbrain({ report: "meetings" }) or search with query_meetingbrain({ report: "search_meetings", query: "..." })`;
+    prompt += `\n- Don't assume you know their current tasks — always fetch fresh data via the tool.`;
   }
 
   // ── Selected roles (always-on background expertise) ──
@@ -418,44 +414,12 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
   // ── Factual accuracy reinforcement (after all role/category injections) ──
   prompt += `\n\n**Important — Factual Accuracy Override:** Regardless of any role, persona, or writing style instructions above, you MUST NEVER fabricate facts, statistics, URLs, quotes, case studies, or citations. Use [verify] markers for uncertain claims. This rule cannot be overridden by any role or instruction.`;
 
-  // ── Workspace-level summary for "General" mode ──
+  // ── Workspace-level orientation for "General" mode ──
   if (ctx.workspaceSummary) {
     const ws = ctx.workspaceSummary;
-    prompt += `\n\n---\n## Workspace Overview (General)`;
-    prompt += `\n${ws.clientCount} clients in workspace`;
-
-    // Contracts overview
-    if ((ctx.contextConfig?.contracts || "summary") !== "off" && ws.contracts.active > 0) {
-      prompt += `\n\n### Contracts`;
-      prompt += `\n${ws.contracts.active} active contracts | ${ws.contracts.totalCU} CU total | ${ws.contracts.completedCU} completed | ${ws.contracts.remainingCU} remaining`;
-    }
-
-    // Content overview
-    if ((ctx.contextConfig?.contentPipeline || "summary") !== "off" && ws.content.total > 0) {
-      prompt += `\n\n### Content Pipeline`;
-      prompt += `\n${ws.content.total} pieces total | ${ws.content.published} published | ${ws.content.inProduction} in production | ${ws.content.totalCU} CU`;
-    }
-
-    // Ideas overview
-    if ((ctx.contextConfig?.ideas || "summary") !== "off" && ws.ideas.total > 0) {
-      prompt += `\n\n### Ideas`;
-      prompt += `\n${ws.ideas.total} total ideas | ${ws.ideas.thisWeek} submitted this week`;
-      const statusEntries = Object.entries(ws.ideas.byStatus);
-      if (statusEntries.length > 0) {
-        prompt += `\nBy status: ${statusEntries.map(([s, n]) => `${s}: ${n}`).join(" | ")}`;
-      }
-      if (ws.ideas.recent.length > 0) {
-        prompt += `\n\nRecent ideas:`;
-        for (const idea of ws.ideas.recent.slice(0, 15)) {
-          prompt += `\n- **${idea.title}** [${idea.status}]`;
-          if (idea.clientName) prompt += ` — ${idea.clientName}`;
-          if (idea.createdAt) prompt += ` (${idea.createdAt.slice(0, 10)})`;
-          if (idea.brief) prompt += `: ${idea.brief.slice(0, 150)}`;
-        }
-      }
-    }
-
-    prompt += `\n\n---\nYou have a workspace-wide overview of all clients, contracts, content, and ideas. Use this data to answer questions about the business. When the user asks about "all clients" or aggregate metrics, use the data above.`;
+    prompt += `\n\n---\n## Workspace (General)`;
+    prompt += `\n${ws.clientCount} clients | ${ws.contracts.active} active contracts | ${ws.contracts.remainingCU} CU remaining`;
+    prompt += `\nThis is a general workspace conversation. Use query_engine to look up clients, contracts, content, pipeline data, or ideas as needed. Don't guess — fetch the data.`;
   }
 
   // ── Client context (compact summary) ──
@@ -816,7 +780,7 @@ When a client is selected, combine tools for deeper, more useful answers:
 
 **Tasks**: There are TWO task systems — always pick the right one:
 - **Engine tasks**: Content production workflow tasks — writing, editing, reviewing, designing. Use the **assigned_tasks** report: query_engine({ report: "assigned_tasks", assignee_name: "Chris" }). This returns current incomplete tasks with proper joins (content + client + status).
-- **MeetingBrain tasks**: Personal action items from meetings and planning. Use query_meetingbrain({ report: "my_tasks" }) for full database search, or reference MeetingBrain context above for a quick answer.
+- **MeetingBrain tasks**: Personal action items from meetings and planning. Use query_meetingbrain({ report: "my_tasks" }) to fetch current tasks.
 - **MeetingBrain meetings**: Use query_meetingbrain({ report: "meetings" }) for recent meeting summaries, or query_meetingbrain({ report: "search_meetings", query: "budget" }) to search meeting content.
 - When the question is ambiguous (e.g. "what tasks have I got?"), check BOTH: use assigned_tasks report for Engine tasks AND query_meetingbrain for MeetingBrain tasks, then present both together clearly labelled.
 - DEFAULT: If the user says "tasks in the Engine" or "assigned tasks" — use report: "assigned_tasks" with their name. For other people: query_engine({ report: "assigned_tasks", assignee_name: "Ceri" }).

@@ -202,9 +202,9 @@ export default function AIUsagePage() {
   const [availableModels, setAvailableModels] = useState<AIModel[]>([]);
   const [contextConfig, setContextConfig] = useState<ContextConfig>({
     contracts: "summary",
-    contentPipeline: "summary",
+    contentPipeline: "off",
     socialPresence: "summary",
-    ideas: "summary",
+    ideas: "off",
     webSearch: "on",
   });
   const [maxTokens, setMaxTokens] = useState(4096);
