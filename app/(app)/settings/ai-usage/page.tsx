@@ -173,6 +173,30 @@ const SOURCE_LABELS: Record<string, string> = {
   "rfp-sections": "RFP Sections",
   "rfp-generate": "RFP Generate",
   "rfp-profile": "RFP Profile",
+  // Background AI
+  "memory-extract": "Memory Extract",
+  "memory-extract-meeting": "Memory (Meeting)",
+  "memory-extract-task": "Memory (Task)",
+  "memory-consolidate": "Memory Consolidate",
+  "summary-generate": "Summary Generate",
+  "summary-update": "Summary Update",
+  "client-context": "Client Context",
+  // Post Actions
+  "post-generate": "Post Generate",
+  "post-rewrite": "Post Rewrite",
+  "post-hashtags": "Post Hashtags",
+  "post-adapt": "Post Adapt",
+  "post-best-time": "Best Time",
+  "post-insights": "Post Insights",
+  "post-auto-tag": "Auto Tag",
+  "post-score": "Idea Score",
+  "post-ideas": "Idea Suggest",
+  "post-promo": "Promo Drafts",
+  "post-content": "Content Generate",
+  "post-research": "Topic Research",
+  "post-themes": "Theme Suggest",
+  "post-fact-check": "Fact Check",
+  "post-detect-ai": "AI Detection",
 };
 
 const APP_LABELS: Record<string, string> = {

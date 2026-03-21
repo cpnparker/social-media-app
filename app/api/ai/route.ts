@@ -1,10 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { auth } from "@/lib/auth";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!,
 });
+
+/** Wrapper that logs usage after every Anthropic call */
+async function createAndLog(
+  params: Anthropic.MessageCreateParamsNonStreaming,
+  source: string
+): Promise<Anthropic.Message> {
+  const message = await anthropic.messages.create(params);
+  logAiUsage({
+    model: params.model,
+    source,
+    inputTokens: message.usage?.input_tokens || 0,
+    outputTokens: message.usage?.output_tokens || 0,
+  });
+  return message;
+}
 
 // POST /api/ai — handle AI actions
 export async function POST(req: NextRequest) {
@@ -73,7 +89,7 @@ async function handleGenerate(body: any) {
       ? "Make it detailed, 150-250 words."
       : "Keep it around 80-150 words.";
 
-  const message = await anthropic.messages.create({
+  const message = await createAndLog({
     model: "claude-sonnet-4-20250514",
     max_tokens: 1024,
     messages: [
@@ -95,7 +111,7 @@ Rules:
 - Make it feel authentic, not corporate or AI-generated`,
       },
     ],
-  });
+  }, "post-generate");
 
   const content =
     message.content[0].type === "text" ? message.content[0].text : "";
@@ -127,7 +143,7 @@ async function handleRewrite(body: any) {
       ? `This is for: ${platforms.join(", ")}.`
       : "";
 
-  const message = await anthropic.messages.create({
+  const message = await createAndLog({
     model: "claude-sonnet-4-20250514",
     max_tokens: 1024,
     messages: [
@@ -145,7 +161,7 @@ Rules:
 - Do NOT add hashtags`,
       },
     ],
-  });
+  }, "post-rewrite");
 
   const result =
     message.content[0].type === "text" ? message.content[0].text : "";
@@ -160,7 +176,7 @@ async function handleHashtags(body: any) {
   const platformContext =
     platforms?.length > 0 ? `Target platforms: ${platforms.join(", ")}.` : "";
 
-  const message = await anthropic.messages.create({
+  const message = await createAndLog({
     model: "claude-sonnet-4-20250514",
     max_tokens: 512,
     messages: [
@@ -179,7 +195,7 @@ Rules:
 - Format: ["#hashtag1", "#hashtag2", ...]`,
       },
     ],
-  });
+  }, "post-hashtags");
 
   const text =
     message.content[0].type === "text" ? message.content[0].text : "[]";
@@ -219,7 +235,7 @@ async function handleAdapt(body: any) {
     platformGuidelines[targetPlatform?.toLowerCase()] ||
     `${targetPlatform}: Adapt appropriately for this platform.`;
 
-  const message = await anthropic.messages.create({
+  const message = await createAndLog({
     model: "claude-sonnet-4-20250514",
     max_tokens: 1024,
     messages: [
@@ -239,7 +255,7 @@ Rules:
 - Adjust tone, length, and formatting for the platform`,
       },
     ],
-  });
+  }, "post-adapt");
 
   const result =
     message.content[0].type === "text" ? message.content[0].text : "";
@@ -256,7 +272,7 @@ async function handleBestTime(body: any) {
     ? `Here is real performance data from their account:\n${JSON.stringify(analyticsData, null, 2)}`
     : "No historical data available — use industry best practices.";
 
-  const message = await anthropic.messages.create({
+  const message = await createAndLog({
     model: "claude-sonnet-4-20250514",
     max_tokens: 1024,
     messages: [
@@ -284,7 +300,7 @@ Return a JSON object with this exact structure:
 Include 3-5 suggestions, picking the best times across the given platforms. Use 24-hour time format.`,
       },
     ],
-  });
+  }, "post-best-time");
 
   const text =
     message.content[0].type === "text" ? message.content[0].text : "{}";
@@ -302,7 +318,7 @@ Include 3-5 suggestions, picking the best times across the given platforms. Use 
 async function handleInsights(body: any) {
   const { analyticsData } = body;
 
-  const message = await anthropic.messages.create({
+  const message = await createAndLog({
     model: "claude-sonnet-4-20250514",
     max_tokens: 1024,
     messages: [
@@ -329,7 +345,7 @@ Return a JSON object with this exact structure:
 Include 3-5 insights. Be specific — reference actual numbers from the data. Keep language concise and direct.`,
       },
     ],
-  });
+  }, "post-insights");
 
   const text =
     message.content[0].type === "text" ? message.content[0].text : "{}";
@@ -351,7 +367,7 @@ Include 3-5 insights. Be specific — reference actual numbers from the data. Ke
 async function handleAutoTag(body: any) {
   const { title, description } = body;
 
-  const message = await anthropic.messages.create({
+  const message = await createAndLog({
     model: "claude-sonnet-4-20250514",
     max_tokens: 512,
     messages: [
@@ -375,7 +391,7 @@ Rules:
 - Return ONLY the JSON object, no explanations`,
       },
     ],
-  });
+  }, "post-auto-tag");
 
   const text = message.content[0].type === "text" ? message.content[0].text : "{}";
 
@@ -400,7 +416,7 @@ async function handleScoreIdea(body: any) {
 - High performance threshold: ${performanceModel.highPerformanceThreshold || 0}`
     : "No historical performance data available — use general social media best practices.";
 
-  const message = await anthropic.messages.create({
+  const message = await createAndLog({
     model: "claude-sonnet-4-20250514",
     max_tokens: 512,
     messages: [
@@ -429,7 +445,7 @@ Rules:
 - Return ONLY the JSON object`,
       },
     ],
-  });
+  }, "post-score");
 
   const text = message.content[0].type === "text" ? message.content[0].text : "{}";
 
@@ -455,7 +471,7 @@ Best formats: ${JSON.stringify(performanceModel.formatPerformanceMap || {})}`
     ? `Recent content topics (avoid repetition): ${recentTopics.join(", ")}`
     : "";
 
-  const message = await anthropic.messages.create({
+  const message = await createAndLog({
     model: "claude-sonnet-4-20250514",
     max_tokens: 1024,
     messages: [
@@ -487,7 +503,7 @@ Rules:
 - Return ONLY the JSON array`,
       },
     ],
-  });
+  }, "post-ideas");
 
   const text = message.content[0].type === "text" ? message.content[0].text : "[]";
 
@@ -520,7 +536,7 @@ async function handlePromoDrafts(body: any) {
     .map((p: string) => platformGuidelines[p.toLowerCase()] || `${p}: Adapt appropriately.`)
     .join("\n");
 
-  const message = await anthropic.messages.create({
+  const message = await createAndLog({
     model: "claude-sonnet-4-20250514",
     max_tokens: 2048,
     messages: [
@@ -555,7 +571,7 @@ Rules:
 - Return ONLY the JSON array, no explanations`,
       },
     ],
-  });
+  }, "post-promo");
 
   const text = message.content[0].type === "text" ? message.content[0].text : "[]";
 
@@ -663,13 +679,13 @@ Rules:
 - Do NOT wrap in <html>, <head>, or <body> tags — just the content HTML
 - Do NOT include the title as an <h1> — it's already shown above the editor`;
 
-    const message = await anthropic.messages.create({
+    const message = await createAndLog({
       model: "claude-sonnet-4-20250514",
       max_tokens: 4096,
       messages: [
         { role: "user", content: `${systemPrompt}\n\n${userPrompt}` },
       ],
-    });
+  }, "post-content");
 
     const content =
       message.content[0].type === "text" ? message.content[0].text : "";
@@ -689,7 +705,7 @@ async function handleResearchTopics(body: any) {
   try {
     const { title, brief, contentType, topicTags } = body;
 
-    const message = await anthropic.messages.create({
+    const message = await createAndLog({
       model: "claude-sonnet-4-20250514",
       max_tokens: 2048,
       messages: [
@@ -728,7 +744,7 @@ Rules:
 - Return ONLY the JSON object`,
         },
       ],
-    });
+  }, "post-research");
 
     const text = message.content[0].type === "text" ? message.content[0].text : "{}";
     try {
@@ -751,7 +767,7 @@ async function handleSuggestThemes(body: any) {
       ? `Research findings:\n${JSON.stringify(research, null, 2)}`
       : "No prior research available.";
 
-    const message = await anthropic.messages.create({
+    const message = await createAndLog({
       model: "claude-sonnet-4-20250514",
       max_tokens: 1024,
       messages: [
@@ -781,7 +797,7 @@ Rules:
 - Return ONLY the JSON array`,
         },
       ],
-    });
+  }, "post-themes");
 
     const text = message.content[0].type === "text" ? message.content[0].text : "[]";
     try {
@@ -800,7 +816,7 @@ async function handleFactCheck(body: any) {
   try {
     const { content } = body;
 
-    const message = await anthropic.messages.create({
+    const message = await createAndLog({
       model: "claude-sonnet-4-20250514",
       max_tokens: 2048,
       messages: [
@@ -835,7 +851,7 @@ Rules:
 - Return ONLY the JSON object`,
         },
       ],
-    });
+  }, "post-fact-check");
 
     const text = message.content[0].type === "text" ? message.content[0].text : "{}";
     try {
@@ -854,7 +870,7 @@ async function handleDetectAi(body: any) {
   try {
     const { content } = body;
 
-    const message = await anthropic.messages.create({
+    const message = await createAndLog({
       model: "claude-sonnet-4-20250514",
       max_tokens: 1024,
       messages: [
@@ -889,7 +905,7 @@ Rules:
 - Return ONLY the JSON object`,
         },
       ],
-    });
+  }, "post-detect-ai");
 
     const text = message.content[0].type === "text" ? message.content[0].text : "{}";
     try {

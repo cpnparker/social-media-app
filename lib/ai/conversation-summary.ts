@@ -14,6 +14,7 @@
  */
 
 import OpenAI from "openai";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 
 function getXAIClient() {
@@ -123,6 +124,8 @@ export async function generateConversationSummary(
       temperature: 0.3,
     });
 
+    logAiUsage({ model: "grok-3-mini", source: "summary-generate", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+
     const summary = response.choices?.[0]?.message?.content?.trim();
     return summary || null;
   } catch (err) {
@@ -161,6 +164,8 @@ export async function updateConversationSummary(
       max_tokens: 800,
       temperature: 0.3,
     });
+
+    logAiUsage({ model: "grok-3-mini", source: "summary-update", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
     const summary = response.choices?.[0]?.message?.content?.trim();
     return summary || null;

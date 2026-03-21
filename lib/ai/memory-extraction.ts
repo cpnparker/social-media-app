@@ -9,6 +9,7 @@
  */
 
 import OpenAI from "openai";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 import type { MemorySuggestion } from "@/lib/types/ai";
 
 function getXAIClient() {
@@ -77,6 +78,8 @@ export async function extractMemories(
       max_tokens: 500,
       temperature: 0.3,
     });
+
+    logAiUsage({ model: "grok-3-mini", source: "memory-extract", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
     const raw = response.choices?.[0]?.message?.content?.trim();
     if (!raw) return [];
@@ -224,6 +227,8 @@ export async function extractMeetingMemories(
       temperature: 0.3,
     });
 
+    logAiUsage({ model: "grok-3-mini", source: "memory-extract-meeting", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+
     const raw = response.choices?.[0]?.message?.content?.trim();
     if (!raw) return [];
 
@@ -346,6 +351,8 @@ export async function extractTaskMemories(
       max_tokens: 400,
       temperature: 0.3,
     });
+
+    logAiUsage({ model: "grok-3-mini", source: "memory-extract-task", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
     const raw = response.choices?.[0]?.message?.content?.trim();
     if (!raw) return [];

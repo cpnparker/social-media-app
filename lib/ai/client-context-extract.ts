@@ -13,6 +13,7 @@ import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { Storage } from "@google-cloud/storage";
 import OpenAI from "openai";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 
 function getXAIClient() {
   if (!process.env.XAI_API_KEY) {
@@ -244,6 +245,8 @@ Document name: ${fileName}`,
     temperature: 0.3,
   });
 
+  logAiUsage({ model: "grok-3-mini", source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+
   return response.choices?.[0]?.message?.content?.trim() || "";
 }
 
@@ -284,6 +287,8 @@ Do NOT invent information — only include what's supported by the documents.`,
     max_tokens: 1500,
     temperature: 0.3,
   });
+
+  logAiUsage({ model: "grok-3-mini", source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
   return response.choices?.[0]?.message?.content?.trim() || "";
 }

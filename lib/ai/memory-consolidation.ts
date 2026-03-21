@@ -14,6 +14,7 @@
  */
 
 import OpenAI from "openai";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 
 // ── Types ──
@@ -156,6 +157,8 @@ export async function classifyMemoryAction(
       max_tokens: 300,
       temperature: 0.2,
     });
+
+    logAiUsage({ model: "grok-3-mini", source: "memory-consolidate", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
     const raw = response.choices?.[0]?.message?.content?.trim();
     if (!raw) return { action: "NOOP" };
