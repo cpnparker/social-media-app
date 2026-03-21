@@ -702,30 +702,43 @@ export default function AIUsagePage() {
 
             {/* Cost by Product — hierarchical view with expandable functions */}
             {usageData.bySource.length > 0 && (() => {
-              // Aggregate sources into product groups
+              // Aggregate sources into product groups with model breakdown
               const sourceMap = new Map(usageData.bySource.map((s) => [`${(s as any).app || "engine"}::${s.source}`, s]));
               const productTotals = Object.entries(PRODUCT_GROUPS).map(([key, group]) => {
                 let cost = 0, calls = 0;
-                const functions: { source: string; label: string; cost: number; calls: number }[] = [];
+                const productModels: Record<string, { cost: number; calls: number }> = {};
+                const functions: { source: string; label: string; cost: number; calls: number; model: string }[] = [];
                 for (const src of group.sources) {
-                  // Check across all apps
                   for (const appKey of ["engine", "meetingbrain", "authorityon"]) {
-                    const entry = sourceMap.get(`${appKey}::${src}`);
+                    const entry = sourceMap.get(`${appKey}::${src}`) as any;
                     if (entry) {
                       cost += entry.cost;
                       calls += entry.calls;
+                      // Aggregate models at product level
+                      const entryModels = entry.models || {};
+                      for (const [m, v] of Object.entries(entryModels) as [string, { cost: number; calls: number }][]) {
+                        if (!productModels[m]) productModels[m] = { cost: 0, calls: 0 };
+                        productModels[m].cost += v.cost;
+                        productModels[m].calls += v.calls;
+                      }
+                      // Determine primary model for this function
+                      const modelEntries = Object.entries(entryModels) as [string, { cost: number; calls: number }][];
+                      const primaryModel = modelEntries.length > 0
+                        ? modelEntries.sort((a, b) => b[1].calls - a[1].calls)[0][0]
+                        : "unknown";
                       const existing = functions.find((f) => f.source === src);
                       if (existing) {
                         existing.cost += entry.cost;
                         existing.calls += entry.calls;
                       } else {
-                        functions.push({ source: src, label: SOURCE_LABELS[src] || src, cost: entry.cost, calls: entry.calls });
+                        functions.push({ source: src, label: SOURCE_LABELS[src] || src, cost: entry.cost, calls: entry.calls, model: primaryModel });
                       }
                     }
                   }
                 }
                 functions.sort((a, b) => b.cost - a.cost);
-                return { key, ...group, cost, calls, functions };
+                const modelsSorted = Object.entries(productModels).sort((a, b) => b[1].cost - a[1].cost);
+                return { key, ...group, cost, calls, functions, models: modelsSorted };
               }).filter((p) => p.cost > 0 || p.calls > 0).sort((a, b) => b.cost - a.cost);
 
               const maxProductCost = Math.max(...productTotals.map((p) => p.cost), 1);
@@ -764,8 +777,13 @@ export default function AIUsagePage() {
                                 <div className={cn("h-2 w-2 rounded-full", product.color)} />
                                 <span className="text-sm font-medium">{product.label}</span>
                                 <span className="text-[10px] text-muted-foreground">
-                                  {product.calls} call{product.calls !== 1 ? "s" : ""} &middot; {product.functions.length} function{product.functions.length !== 1 ? "s" : ""}
+                                  {product.calls} call{product.calls !== 1 ? "s" : ""}
                                 </span>
+                                {product.models.length > 0 && (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">
+                                    {product.models.map(([m]) => MODEL_LABELS[m] || m).join(", ")}
+                                  </span>
+                                )}
                               </div>
                               <span className="text-sm font-semibold">{formatCost(product.cost)}</span>
                             </div>
@@ -777,20 +795,37 @@ export default function AIUsagePage() {
                             </div>
                           </button>
 
-                          {/* Expanded function breakdown */}
+                          {/* Expanded function breakdown with model info */}
                           {isExpanded && product.functions.length > 0 && (
-                            <div className="ml-8 mb-2 space-y-1.5 border-l-2 border-muted pl-3">
+                            <div className="ml-8 mb-2 border-l-2 border-muted pl-3">
                               {product.functions.map((fn) => (
-                                <div key={fn.source} className="flex items-center justify-between py-1">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-xs text-muted-foreground">{fn.label}</span>
-                                    <span className="text-[10px] text-muted-foreground/60">
+                                <div key={fn.source} className="flex items-center justify-between py-1.5">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span className="text-xs font-medium truncate">{fn.label}</span>
+                                    <span className="text-[9px] px-1 py-0.5 rounded bg-muted/80 text-muted-foreground font-mono shrink-0">
+                                      {MODEL_LABELS[fn.model] || fn.model}
+                                    </span>
+                                    <span className="text-[10px] text-muted-foreground/60 shrink-0">
                                       {fn.calls} call{fn.calls !== 1 ? "s" : ""}
                                     </span>
                                   </div>
-                                  <span className="text-xs font-medium">{formatCost(fn.cost)}</span>
+                                  <span className="text-xs font-medium shrink-0 ml-2">{formatCost(fn.cost)}</span>
                                 </div>
                               ))}
+                              {/* Product model summary */}
+                              {product.models.length > 1 && (
+                                <div className="mt-2 pt-2 border-t border-muted/50">
+                                  <p className="text-[10px] text-muted-foreground mb-1 font-medium">Model breakdown:</p>
+                                  {product.models.map(([model, data]) => (
+                                    <div key={model} className="flex items-center justify-between py-0.5">
+                                      <span className="text-[10px] text-muted-foreground">{MODEL_LABELS[model] || model}</span>
+                                      <span className="text-[10px] text-muted-foreground">
+                                        {(data as any).calls} calls &middot; {formatCost((data as any).cost)}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>

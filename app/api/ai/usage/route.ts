@@ -146,14 +146,18 @@ export async function GET(req: NextRequest) {
     }
     const byModel = Object.values(modelMap).sort((a, b) => b.cost - a.cost);
 
-    // By source (with app prefix for clarity in unified view)
-    const sourceMap: Record<string, { source: string; app: string; cost: number; calls: number }> = {};
+    // By source (with app prefix and model breakdown)
+    const sourceMap: Record<string, { source: string; app: string; cost: number; calls: number; models: Record<string, { cost: number; calls: number }> }> = {};
     for (const r of usageRows) {
       const appName = r.type_app || "engine";
       const key = `${appName}::${r.type_source}`;
-      if (!sourceMap[key]) sourceMap[key] = { source: r.type_source, app: appName, cost: 0, calls: 0 };
+      if (!sourceMap[key]) sourceMap[key] = { source: r.type_source, app: appName, cost: 0, calls: 0, models: {} };
       sourceMap[key].cost += r.units_cost_tenths;
       sourceMap[key].calls += 1;
+      const model = r.name_model || "unknown";
+      if (!sourceMap[key].models[model]) sourceMap[key].models[model] = { cost: 0, calls: 0 };
+      sourceMap[key].models[model].cost += r.units_cost_tenths;
+      sourceMap[key].models[model].calls += 1;
     }
     const bySource = Object.values(sourceMap).sort((a, b) => b.cost - a.cost);
 
