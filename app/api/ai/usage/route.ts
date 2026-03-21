@@ -16,7 +16,9 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const workspaceId = searchParams.get("workspaceId");
-  const days = Math.min(parseInt(searchParams.get("days") || "30", 10), 90);
+  const days = Math.min(parseInt(searchParams.get("days") || "30", 10), 365);
+  const customStart = searchParams.get("startDate");
+  const customEnd = searchParams.get("endDate");
   const appParam = (searchParams.get("app") || "all") as AppFilter;
   const app = VALID_APPS.includes(appParam) ? appParam : "all";
 
@@ -33,8 +35,9 @@ export async function GET(req: NextRequest) {
 
   try {
     const now = new Date();
-    const startDate = new Date(now);
-    startDate.setDate(startDate.getDate() - days);
+    const startDate = customStart ? new Date(customStart) : new Date(now);
+    if (!customStart) startDate.setDate(startDate.getDate() - days);
+    const endDate = customEnd ? new Date(customEnd + "T23:59:59.999Z") : null;
 
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const weekStart = new Date(todayStart);
@@ -81,6 +84,11 @@ export async function GET(req: NextRequest) {
       if (engineResult.error) throw engineResult.error;
       if (externalResult.error) throw externalResult.error;
       usageRows = [...(engineResult.data || []), ...(externalResult.data || [])];
+    }
+
+    // Apply endDate filter if custom range
+    if (endDate) {
+      usageRows = usageRows.filter((r) => new Date(r.date_created) <= endDate);
     }
 
     // Aggregate helper

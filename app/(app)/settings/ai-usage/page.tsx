@@ -265,7 +265,10 @@ export default function AIUsagePage() {
   const [usageLoading, setUsageLoading] = useState(false);
   const [userSearch, setUserSearch] = useState("");
   const [selectedApp, setSelectedApp] = useState("all");
-  const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set());
+  const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set(Object.keys(PRODUCT_GROUPS)));
+  const [customDateRange, setCustomDateRange] = useState(false);
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
 
   // Fetch workspace ID
   useEffect(() => {
@@ -303,9 +306,13 @@ export default function AIUsagePage() {
     if (!workspaceId) return;
     setUsageLoading(true);
     try {
-      const res = await fetch(
-        `/api/ai/usage?workspaceId=${workspaceId}&days=${usageDays}&app=${selectedApp}`
-      );
+      let url = `/api/ai/usage?workspaceId=${workspaceId}&app=${selectedApp}`;
+      if (customDateRange && startDate && endDate) {
+        url += `&startDate=${startDate}&endDate=${endDate}`;
+      } else {
+        url += `&days=${usageDays}`;
+      }
+      const res = await fetch(url);
       const data = await res.json();
       if (!data.error) setUsageData(data);
     } catch (err) {
@@ -313,7 +320,7 @@ export default function AIUsagePage() {
     } finally {
       setUsageLoading(false);
     }
-  }, [workspaceId, usageDays, selectedApp]);
+  }, [workspaceId, usageDays, selectedApp, customDateRange, startDate, endDate]);
 
   // Fetch personal preferences
   const fetchPreferences = useCallback(async () => {
@@ -469,27 +476,68 @@ export default function AIUsagePage() {
       <div>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-base font-semibold">AI Usage Dashboard</h2>
-          <div className="flex gap-0.5 bg-muted rounded-lg p-0.5">
-            {[
-              { label: "7d", value: 7 },
-              { label: "14d", value: 14 },
-              { label: "30d", value: 30 },
-            ].map((p) => (
+          <div className="flex items-center gap-2">
+            <div className="flex gap-0.5 bg-muted rounded-lg p-0.5">
+              {[
+                { label: "7d", value: 7 },
+                { label: "14d", value: 14 },
+                { label: "30d", value: 30 },
+                { label: "90d", value: 90 },
+              ].map((p) => (
+                <button
+                  key={p.value}
+                  onClick={() => { setUsageDays(p.value); setCustomDateRange(false); }}
+                  className={cn(
+                    "px-3 py-1 rounded-md text-xs font-medium transition-colors",
+                    !customDateRange && usageDays === p.value
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {p.label}
+                </button>
+              ))}
               <button
-                key={p.value}
-                onClick={() => setUsageDays(p.value)}
+                onClick={() => {
+                  setCustomDateRange(true);
+                  if (!startDate) {
+                    const s = new Date();
+                    s.setDate(s.getDate() - 30);
+                    setStartDate(s.toISOString().split("T")[0]);
+                    setEndDate(new Date().toISOString().split("T")[0]);
+                  }
+                }}
                 className={cn(
                   "px-3 py-1 rounded-md text-xs font-medium transition-colors",
-                  usageDays === p.value
+                  customDateRange
                     ? "bg-background text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 )}
               >
-                {p.label}
+                Custom
               </button>
-            ))}
+            </div>
           </div>
         </div>
+
+        {/* Custom date range picker */}
+        {customDateRange && (
+          <div className="flex items-center gap-2 mb-4">
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="h-8 rounded-md border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            <span className="text-xs text-muted-foreground">to</span>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="h-8 rounded-md border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+        )}
 
         {/* App selector tabs */}
         <div className="flex gap-0.5 bg-muted rounded-lg p-0.5 mb-4">
