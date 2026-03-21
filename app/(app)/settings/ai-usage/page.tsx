@@ -76,7 +76,8 @@ interface UsageData {
     inputTokens: number;
     outputTokens: number;
   }[];
-  bySource: { source: string; cost: number; calls: number }[];
+  bySource: { source: string; app?: string; cost: number; calls: number }[];
+  byApp?: { app: string; cost: number; calls: number; input: number; output: number }[];
   byUser: {
     userId: number;
     userName: string;
@@ -105,10 +106,14 @@ function formatTokens(n: number): string {
 const MODEL_LABELS: Record<string, string> = {
   "claude-sonnet-4-20250514": "Claude Sonnet 4",
   "claude-sonnet-4-6": "Claude Sonnet 4.6",
+  "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
+  "claude-haiku-3-20240307": "Claude Haiku 3",
   "gpt-4o": "GPT-4o",
   "gpt-4o-mini": "GPT-4o Mini",
+  "gpt-4.1": "GPT-4.1",
   "grok-4-1-fast-non-reasoning": "Grok 4 Fast",
   "grok-4-1-fast": "Grok 4 Fast",
+  "grok-4": "Grok 4",
   "grok-3-mini": "Grok 3 Mini",
   "grok-3-fast": "Grok 3 Fast",
   "grok-3": "Grok 3 (Legacy)",
@@ -116,6 +121,9 @@ const MODEL_LABELS: Record<string, string> = {
   "dall-e-3": "DALL-E 3",
   "gemini-3-flash": "Gemini 3 Flash",
   "gemini-3.1-flash-lite": "Gemini 3.1 Lite",
+  "gemini-2.5-flash": "Gemini 2.5 Flash",
+  "gemini-2.5-pro": "Gemini 2.5 Pro",
+  "mistral-large-latest": "Mistral Large",
 };
 
 const MODEL_COLORS: Record<string, string> = {
@@ -140,9 +148,37 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 const SOURCE_LABELS: Record<string, string> = {
+  // Engine
   engineai: "EngineAI",
+  enginegpt: "EngineAI",
   engine: "Content Engine",
   api: "API",
+  // MeetingBrain
+  email: "Email Scanner",
+  slack: "Slack Scanner",
+  teams: "Teams Scanner",
+  meeting: "Meeting Notes",
+  "ms-email": "MS Email",
+  "ms-calendar": "MS Calendar",
+  dashboard: "Dashboard AI",
+  chat: "Chat",
+  action: "Action Items",
+  project: "Project AI",
+  // AuthorityOn
+  scan: "Brand Scan",
+  "brand-suggest": "Brand Setup",
+};
+
+const APP_LABELS: Record<string, string> = {
+  engine: "Engine",
+  meetingbrain: "MeetingBrain",
+  authorityon: "AuthorityOn",
+};
+
+const APP_COLORS: Record<string, string> = {
+  engine: "bg-blue-500",
+  meetingbrain: "bg-emerald-500",
+  authorityon: "bg-amber-500",
 };
 
 /* ─────────────── Component ─────────────── */
@@ -180,6 +216,7 @@ export default function AIUsagePage() {
   const [usageDays, setUsageDays] = useState(30);
   const [usageLoading, setUsageLoading] = useState(false);
   const [userSearch, setUserSearch] = useState("");
+  const [selectedApp, setSelectedApp] = useState("all");
 
   // Fetch workspace ID
   useEffect(() => {
@@ -218,7 +255,7 @@ export default function AIUsagePage() {
     setUsageLoading(true);
     try {
       const res = await fetch(
-        `/api/ai/usage?workspaceId=${workspaceId}&days=${usageDays}`
+        `/api/ai/usage?workspaceId=${workspaceId}&days=${usageDays}&app=${selectedApp}`
       );
       const data = await res.json();
       if (!data.error) setUsageData(data);
@@ -227,7 +264,7 @@ export default function AIUsagePage() {
     } finally {
       setUsageLoading(false);
     }
-  }, [workspaceId, usageDays]);
+  }, [workspaceId, usageDays, selectedApp]);
 
   // Fetch personal preferences
   const fetchPreferences = useCallback(async () => {
@@ -791,6 +828,29 @@ export default function AIUsagePage() {
           </div>
         </div>
 
+        {/* App selector tabs */}
+        <div className="flex gap-0.5 bg-muted rounded-lg p-0.5 mb-4">
+          {[
+            { label: "All Apps", value: "all" },
+            { label: "Engine", value: "engine" },
+            { label: "MeetingBrain", value: "meetingbrain" },
+            { label: "AuthorityOn", value: "authorityon" },
+          ].map((tab) => (
+            <button
+              key={tab.value}
+              onClick={() => setSelectedApp(tab.value)}
+              className={cn(
+                "px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex-1 text-center",
+                selectedApp === tab.value
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
         {usageLoading && !usageData ? (
           <div className="flex items-center justify-center py-16">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -832,6 +892,29 @@ export default function AIUsagePage() {
                 </Card>
               ))}
             </div>
+
+            {/* Per-app breakdown (when "All Apps" is selected) */}
+            {selectedApp === "all" && usageData.byApp && usageData.byApp.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {usageData.byApp.map((a) => (
+                  <Card key={a.app} className="border-0 shadow-sm">
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className={cn("h-2 w-2 rounded-full", APP_COLORS[a.app] || "bg-gray-500")} />
+                        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                          {APP_LABELS[a.app] || a.app}
+                        </span>
+                      </div>
+                      <p className="text-2xl font-bold">{formatCost(a.cost)}</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {a.calls} call{a.calls !== 1 ? "s" : ""} &middot;{" "}
+                        {formatTokens(a.input + a.output)} tokens
+                      </p>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
 
             {/* Daily Cost Chart — stacked by model */}
             {usageData.daily.length > 0 && (
@@ -964,18 +1047,20 @@ export default function AIUsagePage() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {usageData.bySource.map((s) => {
-                    const sourceColors: Record<string, string> = {
-                      engineai: "bg-blue-500",
-                      engine: "bg-violet-500",
-                      api: "bg-amber-500",
-                    };
+                    const appName = (s as any).app || "engine";
+                    const barColor = APP_COLORS[appName] || "bg-gray-500";
                     return (
-                      <div key={s.source}>
+                      <div key={`${appName}-${s.source}`}>
                         <div className="flex items-center justify-between mb-1">
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-medium">
                               {SOURCE_LABELS[s.source] || s.source}
                             </span>
+                            {selectedApp === "all" && (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">
+                                {APP_LABELS[appName] || appName}
+                              </span>
+                            )}
                             <span className="text-[10px] text-muted-foreground">
                               {s.calls} call{s.calls !== 1 ? "s" : ""}
                             </span>
@@ -988,7 +1073,7 @@ export default function AIUsagePage() {
                           <div
                             className={cn(
                               "h-full rounded-full transition-all",
-                              sourceColors[s.source] || "bg-gray-500"
+                              barColor
                             )}
                             style={{
                               width: `${(s.cost / maxSourceCost) * 100}%`,

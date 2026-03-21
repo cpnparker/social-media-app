@@ -4,6 +4,9 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
 import { verifyWorkspaceMembership } from "@/lib/permissions";
 
+const VALID_APPS = ["all", "engine", "meetingbrain", "authorityon"] as const;
+type AppFilter = (typeof VALID_APPS)[number];
+
 // GET /api/ai/usage — aggregated AI usage data for dashboard
 export async function GET(req: NextRequest) {
   const session = await auth();
@@ -14,6 +17,8 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const workspaceId = searchParams.get("workspaceId");
   const days = Math.min(parseInt(searchParams.get("days") || "30", 10), 90);
+  const appParam = (searchParams.get("app") || "all") as AppFilter;
+  const app = VALID_APPS.includes(appParam) ? appParam : "all";
 
   if (!workspaceId) {
     return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
@@ -36,15 +41,47 @@ export async function GET(req: NextRequest) {
     weekStart.setDate(weekStart.getDate() - weekStart.getDay());
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    // Fetch all usage rows for the period
-    const { data: rows, error } = await intelligenceDb
-      .from("ai_usage")
-      .select("*")
-      .eq("id_workspace", workspaceId)
-      .gte("date_created", startDate.toISOString());
+    // Fetch usage rows based on app filter
+    let usageRows: any[] = [];
 
-    if (error) throw error;
-    const usageRows = rows || [];
+    if (app === "engine") {
+      // Engine only — filter by workspace
+      const { data, error } = await intelligenceDb
+        .from("ai_usage")
+        .select("*")
+        .eq("id_workspace", workspaceId)
+        .eq("type_app", "engine")
+        .gte("date_created", startDate.toISOString());
+      if (error) throw error;
+      usageRows = data || [];
+    } else if (app === "meetingbrain" || app === "authorityon") {
+      // Specific external app — no workspace filter
+      const { data, error } = await intelligenceDb
+        .from("ai_usage")
+        .select("*")
+        .eq("type_app", app)
+        .gte("date_created", startDate.toISOString());
+      if (error) throw error;
+      usageRows = data || [];
+    } else {
+      // All apps — combine engine (workspace-filtered) + external apps
+      const [engineResult, externalResult] = await Promise.all([
+        intelligenceDb
+          .from("ai_usage")
+          .select("*")
+          .eq("id_workspace", workspaceId)
+          .eq("type_app", "engine")
+          .gte("date_created", startDate.toISOString()),
+        intelligenceDb
+          .from("ai_usage")
+          .select("*")
+          .in("type_app", ["meetingbrain", "authorityon"])
+          .gte("date_created", startDate.toISOString()),
+      ]);
+      if (engineResult.error) throw engineResult.error;
+      if (externalResult.error) throw externalResult.error;
+      usageRows = [...(engineResult.data || []), ...(externalResult.data || [])];
+    }
 
     // Aggregate helper
     const aggregate = (filtered: typeof usageRows) => ({
@@ -63,6 +100,18 @@ export async function GET(req: NextRequest) {
       week: aggregate(weekRows),
       month: aggregate(monthRows),
     };
+
+    // By app
+    const appMap: Record<string, { app: string; cost: number; calls: number; input: number; output: number }> = {};
+    for (const r of usageRows) {
+      const a = r.type_app || "engine";
+      if (!appMap[a]) appMap[a] = { app: a, cost: 0, calls: 0, input: 0, output: 0 };
+      appMap[a].cost += r.units_cost_tenths;
+      appMap[a].calls += 1;
+      appMap[a].input += r.units_input;
+      appMap[a].output += r.units_output;
+    }
+    const byApp = Object.values(appMap).sort((a, b) => b.cost - a.cost);
 
     // Daily breakdown — with per-model cost for stacked chart
     const dailyMap: Record<string, Record<string, number> & { cost: number; calls: number }> = {};
@@ -97,62 +146,80 @@ export async function GET(req: NextRequest) {
     }
     const byModel = Object.values(modelMap).sort((a, b) => b.cost - a.cost);
 
-    // By source
-    const sourceMap: Record<string, { source: string; cost: number; calls: number }> = {};
+    // By source (with app prefix for clarity in unified view)
+    const sourceMap: Record<string, { source: string; app: string; cost: number; calls: number }> = {};
     for (const r of usageRows) {
-      if (!sourceMap[r.type_source]) sourceMap[r.type_source] = { source: r.type_source, cost: 0, calls: 0 };
-      sourceMap[r.type_source].cost += r.units_cost_tenths;
-      sourceMap[r.type_source].calls += 1;
+      const appName = r.type_app || "engine";
+      const key = `${appName}::${r.type_source}`;
+      if (!sourceMap[key]) sourceMap[key] = { source: r.type_source, app: appName, cost: 0, calls: 0 };
+      sourceMap[key].cost += r.units_cost_tenths;
+      sourceMap[key].calls += 1;
     }
     const bySource = Object.values(sourceMap).sort((a, b) => b.cost - a.cost);
 
-    // By user — resolve names from Supabase
+    // By user — resolve names from Supabase for engine users, use user_name_external for others
     const userMap: Record<
-      number,
-      { userId: number; cost: number; calls: number; inputTokens: number; outputTokens: number }
+      string,
+      { userId: number; userIdExternal: string | null; userName: string; cost: number; calls: number; inputTokens: number; outputTokens: number }
     > = {};
     for (const r of usageRows) {
-      if (!userMap[r.user_usage])
-        userMap[r.user_usage] = { userId: r.user_usage, cost: 0, calls: 0, inputTokens: 0, outputTokens: 0 };
-      userMap[r.user_usage].cost += r.units_cost_tenths;
-      userMap[r.user_usage].calls += 1;
-      userMap[r.user_usage].inputTokens += r.units_input;
-      userMap[r.user_usage].outputTokens += r.units_output;
+      const key = r.user_id_external || String(r.user_usage || 0);
+      if (!userMap[key])
+        userMap[key] = {
+          userId: r.user_usage || 0,
+          userIdExternal: r.user_id_external || null,
+          userName: r.user_name_external || "",
+          cost: 0,
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+        };
+      userMap[key].cost += r.units_cost_tenths;
+      userMap[key].calls += 1;
+      userMap[key].inputTokens += r.units_input;
+      userMap[key].outputTokens += r.units_output;
     }
 
-    const userIds = Object.keys(userMap).map(Number);
-    let userNameMap = new Map<number, string>();
-    if (userIds.length > 0) {
+    // Resolve Engine user names
+    const engineUserIds = Object.values(userMap)
+      .filter((u) => u.userId > 0 && !u.userIdExternal)
+      .map((u) => u.userId);
+    if (engineUserIds.length > 0) {
       const { data: users } = await supabase
         .from("users")
         .select("id_user, name_user, email_user")
-        .in("id_user", userIds);
+        .in("id_user", engineUserIds);
       if (users) {
-        userNameMap = new Map(
-          users.map((u: any) => [
-            u.id_user,
-            u.name_user || u.email_user || `User ${u.id_user}`,
-          ])
+        const nameMap = new Map(
+          users.map((u: any) => [u.id_user, u.name_user || u.email_user || `User ${u.id_user}`])
         );
+        for (const u of Object.values(userMap)) {
+          if (u.userId > 0 && !u.userIdExternal) {
+            u.userName = nameMap.get(u.userId) || `User ${u.userId}`;
+          }
+        }
       }
     }
 
-    const byUser = Object.values(userMap)
-      .map((u) => ({
-        ...u,
-        userName: userNameMap.get(u.userId) || `User ${u.userId}`,
-      }))
-      .sort((a, b) => b.cost - a.cost);
+    // Label external users by app
+    for (const u of Object.values(userMap)) {
+      if (u.userIdExternal && !u.userName) {
+        u.userName = `External User (${u.userIdExternal.slice(0, 8)}...)`;
+      }
+    }
 
-    // By user + model — breakdown of which models each user is using
+    const byUser = Object.values(userMap).sort((a, b) => b.cost - a.cost);
+
+    // By user + model
     const userModelMap: Record<
       string,
       { userId: number; model: string; cost: number; calls: number; inputTokens: number; outputTokens: number }
     > = {};
     for (const r of usageRows) {
-      const key = `${r.user_usage}::${r.name_model}`;
+      const userKey = r.user_id_external || String(r.user_usage || 0);
+      const key = `${userKey}::${r.name_model}`;
       if (!userModelMap[key])
-        userModelMap[key] = { userId: r.user_usage, model: r.name_model, cost: 0, calls: 0, inputTokens: 0, outputTokens: 0 };
+        userModelMap[key] = { userId: r.user_usage || 0, model: r.name_model, cost: 0, calls: 0, inputTokens: 0, outputTokens: 0 };
       userModelMap[key].cost += r.units_cost_tenths;
       userModelMap[key].calls += 1;
       userModelMap[key].inputTokens += r.units_input;
@@ -160,7 +227,7 @@ export async function GET(req: NextRequest) {
     }
     const byUserModel = Object.values(userModelMap).sort((a, b) => b.cost - a.cost);
 
-    return NextResponse.json({ summary, daily, dailyModels, byModel, bySource, byUser, byUserModel });
+    return NextResponse.json({ summary, daily, dailyModels, byModel, bySource, byUser, byUserModel, byApp });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
