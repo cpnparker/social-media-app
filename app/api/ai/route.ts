@@ -1,25 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { auth } from "@/lib/auth";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
+const xai = new OpenAI({
+  apiKey: process.env.XAI_API_KEY!,
+  baseURL: "https://api.x.ai/v1",
 });
 
-/** Wrapper that logs usage after every Anthropic call */
+/** Wrapper that calls Grok and returns Anthropic-compatible shape with usage logging */
 async function createAndLog(
-  params: Anthropic.MessageCreateParamsNonStreaming,
+  params: { model: string; max_tokens: number; messages: { role: string; content: string }[] },
   source: string
-): Promise<Anthropic.Message> {
-  const message = await anthropic.messages.create(params);
-  logAiUsage({
+): Promise<{ content: { type: "text"; text: string }[]; usage: { input_tokens: number; output_tokens: number } }> {
+  const response = await xai.chat.completions.create({
     model: params.model,
-    source,
-    inputTokens: message.usage?.input_tokens || 0,
-    outputTokens: message.usage?.output_tokens || 0,
+    max_tokens: params.max_tokens,
+    messages: params.messages as OpenAI.ChatCompletionMessageParam[],
   });
-  return message;
+
+  const inputTokens = response.usage?.prompt_tokens || 0;
+  const outputTokens = response.usage?.completion_tokens || 0;
+
+  logAiUsage({ model: params.model, source, inputTokens, outputTokens });
+
+  return {
+    content: [{ type: "text", text: response.choices?.[0]?.message?.content || "" }],
+    usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+  };
 }
 
 // POST /api/ai — handle AI actions
@@ -90,7 +98,7 @@ async function handleGenerate(body: any) {
       : "Keep it around 80-150 words.";
 
   const message = await createAndLog({
-    model: "claude-sonnet-4-20250514",
+    model: "grok-4-1-fast",
     max_tokens: 1024,
     messages: [
       {
@@ -144,7 +152,7 @@ async function handleRewrite(body: any) {
       : "";
 
   const message = await createAndLog({
-    model: "claude-sonnet-4-20250514",
+    model: "grok-4-1-fast",
     max_tokens: 1024,
     messages: [
       {
@@ -177,7 +185,7 @@ async function handleHashtags(body: any) {
     platforms?.length > 0 ? `Target platforms: ${platforms.join(", ")}.` : "";
 
   const message = await createAndLog({
-    model: "claude-sonnet-4-20250514",
+    model: "grok-4-1-fast",
     max_tokens: 512,
     messages: [
       {
@@ -236,7 +244,7 @@ async function handleAdapt(body: any) {
     `${targetPlatform}: Adapt appropriately for this platform.`;
 
   const message = await createAndLog({
-    model: "claude-sonnet-4-20250514",
+    model: "grok-4-1-fast",
     max_tokens: 1024,
     messages: [
       {
@@ -273,7 +281,7 @@ async function handleBestTime(body: any) {
     : "No historical data available — use industry best practices.";
 
   const message = await createAndLog({
-    model: "claude-sonnet-4-20250514",
+    model: "grok-4-1-fast",
     max_tokens: 1024,
     messages: [
       {
@@ -319,7 +327,7 @@ async function handleInsights(body: any) {
   const { analyticsData } = body;
 
   const message = await createAndLog({
-    model: "claude-sonnet-4-20250514",
+    model: "grok-4-1-fast",
     max_tokens: 1024,
     messages: [
       {
@@ -368,7 +376,7 @@ async function handleAutoTag(body: any) {
   const { title, description } = body;
 
   const message = await createAndLog({
-    model: "claude-sonnet-4-20250514",
+    model: "grok-4-1-fast",
     max_tokens: 512,
     messages: [
       {
@@ -417,7 +425,7 @@ async function handleScoreIdea(body: any) {
     : "No historical performance data available — use general social media best practices.";
 
   const message = await createAndLog({
-    model: "claude-sonnet-4-20250514",
+    model: "grok-4-1-fast",
     max_tokens: 512,
     messages: [
       {
@@ -472,7 +480,7 @@ Best formats: ${JSON.stringify(performanceModel.formatPerformanceMap || {})}`
     : "";
 
   const message = await createAndLog({
-    model: "claude-sonnet-4-20250514",
+    model: "grok-4-1-fast",
     max_tokens: 1024,
     messages: [
       {
@@ -537,7 +545,7 @@ async function handlePromoDrafts(body: any) {
     .join("\n");
 
   const message = await createAndLog({
-    model: "claude-sonnet-4-20250514",
+    model: "grok-4-1-fast",
     max_tokens: 2048,
     messages: [
       {
@@ -680,7 +688,7 @@ Rules:
 - Do NOT include the title as an <h1> — it's already shown above the editor`;
 
     const message = await createAndLog({
-      model: "claude-sonnet-4-20250514",
+      model: "grok-4-1-fast",
       max_tokens: 4096,
       messages: [
         { role: "user", content: `${systemPrompt}\n\n${userPrompt}` },
@@ -706,7 +714,7 @@ async function handleResearchTopics(body: any) {
     const { title, brief, contentType, topicTags } = body;
 
     const message = await createAndLog({
-      model: "claude-sonnet-4-20250514",
+      model: "grok-4-1-fast",
       max_tokens: 2048,
       messages: [
         {
@@ -768,7 +776,7 @@ async function handleSuggestThemes(body: any) {
       : "No prior research available.";
 
     const message = await createAndLog({
-      model: "claude-sonnet-4-20250514",
+      model: "grok-4-1-fast",
       max_tokens: 1024,
       messages: [
         {
@@ -817,7 +825,7 @@ async function handleFactCheck(body: any) {
     const { content } = body;
 
     const message = await createAndLog({
-      model: "claude-sonnet-4-20250514",
+      model: "grok-4-1-fast",
       max_tokens: 2048,
       messages: [
         {
@@ -871,7 +879,7 @@ async function handleDetectAi(body: any) {
     const { content } = body;
 
     const message = await createAndLog({
-      model: "claude-sonnet-4-20250514",
+      model: "grok-4-1-fast",
       max_tokens: 1024,
       messages: [
         {
