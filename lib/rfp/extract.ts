@@ -7,6 +7,7 @@
 
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { fetchBlobContent } from "@/lib/ai/blob-utils";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 import OpenAI from "openai";
 
 function getXAIClient() {
@@ -90,6 +91,14 @@ Keep to 200-400 tokens. Return plain text only.`,
       });
 
       summary = response.choices?.[0]?.message?.content?.trim() || null;
+
+      // Log usage
+      logAiUsage({
+        model: "grok-3-mini",
+        source: "rfp-extract",
+        inputTokens: response.usage?.prompt_tokens || 0,
+        outputTokens: response.usage?.completion_tokens || 0,
+      });
     } catch (err) {
       console.error("[RFP] Summary generation failed:", err);
     }

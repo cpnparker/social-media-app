@@ -7,6 +7,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 import { TCE_COMPANY_PROFILE } from "./company-profile";
 
 export interface RfpSection {
@@ -196,6 +197,14 @@ ${opportunity.tags_sectors?.length ? `Sectors: ${opportunity.tags_sectors.join("
 Design the section structure that gives us the best chance of winning this bid.`,
         },
       ],
+    });
+
+    // Log usage
+    logAiUsage({
+      model: "claude-sonnet-4-6",
+      source: "rfp-sections",
+      inputTokens: response.usage?.input_tokens || 0,
+      outputTokens: response.usage?.output_tokens || 0,
     });
 
     let textContent = "";

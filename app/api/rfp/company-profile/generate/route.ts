@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { verifyWorkspaceMembership } from "@/lib/permissions";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 import Anthropic from "@anthropic-ai/sdk";
 
 export const maxDuration = 60;
@@ -87,6 +88,14 @@ Be specific based on what the documents reveal. Focus on actual capabilities dem
 Return ONLY the JSON object, no other text.`,
         },
       ],
+    });
+
+    // Log usage
+    logAiUsage({
+      model: "claude-sonnet-4-20250514",
+      source: "rfp-profile",
+      inputTokens: response.usage?.input_tokens || 0,
+      outputTokens: response.usage?.output_tokens || 0,
     });
 
     // Parse the AI response

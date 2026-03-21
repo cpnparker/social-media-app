@@ -7,6 +7,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 import { TCE_COMPANY_PROFILE } from "./company-profile";
 import {
   verifyOpportunityUrls,
@@ -638,6 +639,14 @@ async function searchWithAnthropic(params: {
     }
   }
 
+  // Log usage
+  logAiUsage({
+    model: "claude-sonnet-4-6",
+    source: "rfp-search",
+    inputTokens: response.usage?.input_tokens || 0,
+    outputTokens: response.usage?.output_tokens || 0,
+  });
+
   console.log(`[RFP Search] Anthropic response: ${response.content.length} blocks, textContent: ${textContent.length} chars, ${realUrls.length} real URLs, stop_reason: ${response.stop_reason}`);
   console.log(`[RFP Search] Anthropic response block types: ${response.content.map((b: any) => b.type).join(", ")}`);
 
@@ -735,6 +744,14 @@ async function searchWithGrok(params: {
       }
     }
   }
+
+  // Log usage
+  logAiUsage({
+    model: "grok-3",
+    source: "rfp-search",
+    inputTokens: data.usage?.input_tokens || 0,
+    outputTokens: data.usage?.output_tokens || 0,
+  });
 
   console.log(`[RFP Search] Grok response: textContent ${textContent.length} chars, ${realUrls.length} citations`);
   if (!textContent) {

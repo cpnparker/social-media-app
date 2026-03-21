@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { verifyWorkspaceMembership } from "@/lib/permissions";
 import Anthropic from "@anthropic-ai/sdk";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 import { TCE_COMPANY_PROFILE } from "@/lib/rfp/company-profile";
 
 export const maxDuration = 120;
@@ -124,6 +125,14 @@ Rules:
           content: `Write the "${section.title}" section for our RFP response titled "${response.title}". Make it compelling and specific to The Content Engine's strengths.`,
         },
       ],
+    });
+
+    // Log usage
+    logAiUsage({
+      model: "claude-sonnet-4-6",
+      source: "rfp-generate",
+      inputTokens: aiResponse.usage?.input_tokens || 0,
+      outputTokens: aiResponse.usage?.output_tokens || 0,
     });
 
     let generatedContent = "";
