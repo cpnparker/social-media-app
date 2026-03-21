@@ -2196,7 +2196,18 @@ export function createStreamingResponse(
 
       try {
         if (modelInfo.provider === "anthropic") {
-          result = await streamAnthropic(messages, config, modelInfo.apiModel, controller, encoder);
+          try {
+            result = await streamAnthropic(messages, config, modelInfo.apiModel, controller, encoder);
+          } catch (anthropicErr: any) {
+            // Fallback to Grok if Anthropic hits rate/spending limits
+            const errMsg = anthropicErr?.message || String(anthropicErr);
+            if (errMsg.includes("usage limits") || errMsg.includes("rate_limit") || anthropicErr?.status === 429 || anthropicErr?.status === 400) {
+              console.warn(`[AI] Anthropic failed (${errMsg.slice(0, 100)}), falling back to Grok`);
+              result = await streamXAI(messages, config, "grok-4-1-fast", controller, encoder);
+            } else {
+              throw anthropicErr;
+            }
+          }
         } else if (modelInfo.provider === "gemini") {
           result = await streamGemini(messages, config, modelInfo.apiModel, controller, encoder);
         } else if (modelInfo.provider === "openai") {
