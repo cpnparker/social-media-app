@@ -6,6 +6,7 @@ import {
   Check,
   Sparkles,
   ChevronDown,
+  ChevronRight,
   Info,
   ExternalLink,
   Search,
@@ -211,6 +212,23 @@ const APP_COLORS: Record<string, string> = {
   authorityon: "bg-amber-500",
 };
 
+/* ─── Product groupings for hierarchical source view ─── */
+
+interface ProductGroup {
+  label: string;
+  color: string;
+  sources: string[];
+}
+
+const PRODUCT_GROUPS: Record<string, ProductGroup> = {
+  "engineai": { label: "EngineAI Conversations", color: "bg-blue-500", sources: ["engine", "enginegpt", "engineai", "api"] },
+  "content-tools": { label: "Content Tools", color: "bg-violet-500", sources: ["post-generate", "post-rewrite", "post-hashtags", "post-adapt", "post-best-time", "post-insights", "post-auto-tag", "post-score", "post-ideas", "post-promo", "post-content", "post-research", "post-themes", "post-fact-check", "post-detect-ai"] },
+  "rfp": { label: "RFP Tool", color: "bg-rose-500", sources: ["rfp-extract", "rfp-search", "rfp-sections", "rfp-generate", "rfp-profile"] },
+  "background": { label: "Background AI", color: "bg-slate-400", sources: ["memory-extract", "memory-extract-meeting", "memory-extract-task", "memory-consolidate", "summary-generate", "summary-update", "client-context"] },
+  "meetingbrain-product": { label: "MeetingBrain", color: "bg-emerald-500", sources: ["email", "slack", "teams", "meeting", "ms-email", "ms-calendar", "dashboard", "chat", "action", "project"] },
+  "authorityon-product": { label: "AuthorityOn", color: "bg-amber-500", sources: ["scan", "brand-suggest"] },
+};
+
 /* ─────────────── Component ─────────────── */
 
 export default function AIUsagePage() {
@@ -247,6 +265,7 @@ export default function AIUsagePage() {
   const [usageLoading, setUsageLoading] = useState(false);
   const [userSearch, setUserSearch] = useState("");
   const [selectedApp, setSelectedApp] = useState("all");
+  const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set());
 
   // Fetch workspace ID
   useEffect(() => {
@@ -681,55 +700,106 @@ export default function AIUsagePage() {
               </Card>
             )}
 
-            {/* Cost by Source */}
-            {usageData.bySource.length > 0 && (
-              <Card className="border-0 shadow-sm">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium">
-                    Cost by Source
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {usageData.bySource.map((s) => {
-                    const appName = (s as any).app || "engine";
-                    const barColor = APP_COLORS[appName] || "bg-gray-500";
-                    return (
-                      <div key={`${appName}-${s.source}`}>
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium">
-                              {SOURCE_LABELS[s.source] || s.source}
-                            </span>
-                            {selectedApp === "all" && (
-                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">
-                                {APP_LABELS[appName] || appName}
-                              </span>
-                            )}
-                            <span className="text-[10px] text-muted-foreground">
-                              {s.calls} call{s.calls !== 1 ? "s" : ""}
-                            </span>
-                          </div>
-                          <span className="text-sm font-semibold">
-                            {formatCost(s.cost)}
-                          </span>
-                        </div>
-                        <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
-                          <div
-                            className={cn(
-                              "h-full rounded-full transition-all",
-                              barColor
-                            )}
-                            style={{
-                              width: `${(s.cost / maxSourceCost) * 100}%`,
+            {/* Cost by Product — hierarchical view with expandable functions */}
+            {usageData.bySource.length > 0 && (() => {
+              // Aggregate sources into product groups
+              const sourceMap = new Map(usageData.bySource.map((s) => [`${(s as any).app || "engine"}::${s.source}`, s]));
+              const productTotals = Object.entries(PRODUCT_GROUPS).map(([key, group]) => {
+                let cost = 0, calls = 0;
+                const functions: { source: string; label: string; cost: number; calls: number }[] = [];
+                for (const src of group.sources) {
+                  // Check across all apps
+                  for (const appKey of ["engine", "meetingbrain", "authorityon"]) {
+                    const entry = sourceMap.get(`${appKey}::${src}`);
+                    if (entry) {
+                      cost += entry.cost;
+                      calls += entry.calls;
+                      const existing = functions.find((f) => f.source === src);
+                      if (existing) {
+                        existing.cost += entry.cost;
+                        existing.calls += entry.calls;
+                      } else {
+                        functions.push({ source: src, label: SOURCE_LABELS[src] || src, cost: entry.cost, calls: entry.calls });
+                      }
+                    }
+                  }
+                }
+                functions.sort((a, b) => b.cost - a.cost);
+                return { key, ...group, cost, calls, functions };
+              }).filter((p) => p.cost > 0 || p.calls > 0).sort((a, b) => b.cost - a.cost);
+
+              const maxProductCost = Math.max(...productTotals.map((p) => p.cost), 1);
+
+              return (
+                <Card className="border-0 shadow-sm">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium">
+                      Cost by Product
+                    </CardTitle>
+                    <p className="text-[11px] text-muted-foreground">Click a product to see function breakdown</p>
+                  </CardHeader>
+                  <CardContent className="space-y-1">
+                    {productTotals.map((product) => {
+                      const isExpanded = expandedProducts.has(product.key);
+                      return (
+                        <div key={product.key}>
+                          <button
+                            onClick={() => {
+                              setExpandedProducts((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(product.key)) next.delete(product.key);
+                                else next.add(product.key);
+                                return next;
+                              });
                             }}
-                          />
+                            className="w-full text-left py-2 px-2 -mx-2 rounded-lg hover:bg-muted/50 transition-colors"
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center gap-2">
+                                {isExpanded ? (
+                                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+                                ) : (
+                                  <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                                )}
+                                <div className={cn("h-2 w-2 rounded-full", product.color)} />
+                                <span className="text-sm font-medium">{product.label}</span>
+                                <span className="text-[10px] text-muted-foreground">
+                                  {product.calls} call{product.calls !== 1 ? "s" : ""} &middot; {product.functions.length} function{product.functions.length !== 1 ? "s" : ""}
+                                </span>
+                              </div>
+                              <span className="text-sm font-semibold">{formatCost(product.cost)}</span>
+                            </div>
+                            <div className="h-2 w-full rounded-full bg-muted overflow-hidden ml-[22px]" style={{ width: "calc(100% - 22px)" }}>
+                              <div
+                                className={cn("h-full rounded-full transition-all", product.color)}
+                                style={{ width: `${(product.cost / maxProductCost) * 100}%` }}
+                              />
+                            </div>
+                          </button>
+
+                          {/* Expanded function breakdown */}
+                          {isExpanded && product.functions.length > 0 && (
+                            <div className="ml-8 mb-2 space-y-1.5 border-l-2 border-muted pl-3">
+                              {product.functions.map((fn) => (
+                                <div key={fn.source} className="flex items-center justify-between py-1">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs text-muted-foreground">{fn.label}</span>
+                                    <span className="text-[10px] text-muted-foreground/60">
+                                      {fn.calls} call{fn.calls !== 1 ? "s" : ""}
+                                    </span>
+                                  </div>
+                                  <span className="text-xs font-medium">{formatCost(fn.cost)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    );
-                  })}
-                </CardContent>
-              </Card>
-            )}
+                      );
+                    })}
+                  </CardContent>
+                </Card>
+              );
+            })()}
 
             {/* Per-User Cost — only visible to workspace owners/admins */}
             {isOwnerOrAdmin && usageData.byUser.length > 0 && (
