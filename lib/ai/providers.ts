@@ -38,6 +38,36 @@ export interface AIProviderConfig {
  *  to reduce hallucination while preserving creativity for content writing. */
 const DEFAULT_CHAT_TEMPERATURE = 0.4;
 
+/* ─────────────── Tool Result Formatting ─────────────── */
+
+const MAX_TOOL_RESULT_ROWS = 20;
+const MAX_WEB_SEARCH_CHARS = 6000;
+
+/** Format query_engine results with optional truncation to reduce token usage */
+function formatToolResult(result: { data: any; count: number; total?: number; summary?: any; error?: string }): string {
+  if (result.error) return `Query failed: ${result.error}`;
+  let content = `Query returned ${result.count} rows.`;
+  if (result.summary) {
+    content += `\n\nSUMMARY (use these pre-calculated numbers):\n${JSON.stringify(result.summary, null, 2)}`;
+  }
+  if (result.total !== undefined) {
+    content += `\nTotal: ${result.total}`;
+  }
+  const rows = Array.isArray(result.data) ? result.data : [];
+  const sample = rows.slice(0, MAX_TOOL_RESULT_ROWS);
+  content += `\n\nData${rows.length > MAX_TOOL_RESULT_ROWS ? ` (first ${MAX_TOOL_RESULT_ROWS} of ${rows.length})` : ""}:\n${JSON.stringify(sample, null, 2)}`;
+  content += `\nIf the user asked for a chart or graph, you MUST call generate_chart next with this data.`;
+  return content;
+}
+
+/** Format MeetingBrain results with truncation */
+function formatMeetingBrainResult(report: string, result: { data: any; count: number; error?: string }): string {
+  if (result.error) return `MeetingBrain query failed: ${result.error}`;
+  const rows = Array.isArray(result.data) ? result.data : [];
+  const sample = rows.slice(0, MAX_TOOL_RESULT_ROWS);
+  return `MeetingBrain ${report}: ${result.count} results\n${JSON.stringify(sample, null, 2)}${rows.length > MAX_TOOL_RESULT_ROWS ? `\n(showing first ${MAX_TOOL_RESULT_ROWS} of ${rows.length})` : ""}`;
+}
+
 /* ─────────────── Model Registry ─────────────── */
 
 interface ModelInfo {
@@ -1803,7 +1833,8 @@ async function executeWebSearch(
     }
 
     console.log(`[WebSearch] Query: "${query.slice(0, 60)}" → ${searchResults.length} chars`);
-    return searchResults || "No results found.";
+    const trimmed = (searchResults || "No results found.").slice(0, MAX_WEB_SEARCH_CHARS);
+    return trimmed;
   } catch (err: any) {
     console.error("[WebSearch] Failed:", err?.message);
     return `Web search failed: ${err?.message}`;
@@ -2522,9 +2553,7 @@ async function streamAnthropic(
           toolResults.push({
             type: "tool_result",
             tool_use_id: tool.id,
-            content: result.error
-              ? `Query failed: ${result.error}`
-              : `Query returned ${result.count} rows:\n${JSON.stringify(result.data, null, 2)}${result.total !== undefined ? `\nTotal: ${result.total}` : ""}${result.summary ? `\n\nSUMMARY (use these pre-calculated numbers):\n${JSON.stringify(result.summary, null, 2)}` : ""}\nIf the user asked for a chart or graph, you MUST call generate_chart next with this data.`,
+            content: formatToolResult(result),
           });
         } catch (err: any) {
           console.error("[QueryEngine] Failed:", err.message);
@@ -2565,7 +2594,7 @@ async function streamAnthropic(
           );
           toolResults.push({
             type: "tool_result", tool_use_id: tool.id,
-            content: result.error ? `MeetingBrain query failed: ${result.error}` : `MeetingBrain ${tool.input.report}: ${result.count} results\n${JSON.stringify(result.data, null, 2)}`,
+            content: formatMeetingBrainResult(tool.input.report, result),
           });
         } catch (err: any) {
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `MeetingBrain error: ${err.message}`, is_error: true });
@@ -2915,9 +2944,7 @@ async function streamXAIChatCompletions(
           openaiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: result.error
-              ? `Query failed: ${result.error}`
-              : `Query returned ${result.count} rows:\n${JSON.stringify(result.data, null, 2)}${result.total !== undefined ? `\nTotal: ${result.total}` : ""}${result.summary ? `\n\nSUMMARY (use these pre-calculated numbers):\n${JSON.stringify(result.summary, null, 2)}` : ""}\nIf the user asked for a chart or graph, you MUST call generate_chart next with this data.`,
+            content: formatToolResult(result),
           } as any);
         } catch (err: any) {
           console.error("[QueryEngine/xAI] Failed:", err.message);
@@ -2975,7 +3002,7 @@ async function streamXAIChatCompletions(
           );
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
-            content: result.error ? `MeetingBrain query failed: ${result.error}` : `MeetingBrain ${input.report}: ${result.count} results\n${JSON.stringify(result.data, null, 2)}`,
+            content: formatMeetingBrainResult(input.report, result),
           } as any);
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `MeetingBrain error: ${err.message}` } as any);
@@ -3350,9 +3377,7 @@ async function streamGemini(
           geminiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: result.error
-              ? `Query failed: ${result.error}`
-              : `Query returned ${result.count} rows:\n${JSON.stringify(result.data, null, 2)}${result.total !== undefined ? `\nTotal: ${result.total}` : ""}${result.summary ? `\n\nSUMMARY (use these pre-calculated numbers):\n${JSON.stringify(result.summary, null, 2)}` : ""}\nIf the user asked for a chart or graph, you MUST call generate_chart next with this data.`,
+            content: formatToolResult(result),
           } as any);
         } catch (err: any) {
           console.error("[QueryEngine/Gemini] Failed:", err.message);
@@ -3393,7 +3418,7 @@ async function streamGemini(
           );
           geminiMessages.push({
             role: "tool", tool_call_id: tc.id,
-            content: result.error ? `MeetingBrain query failed: ${result.error}` : `MeetingBrain ${input.report}: ${result.count} results\n${JSON.stringify(result.data, null, 2)}`,
+            content: formatMeetingBrainResult(input.report, result),
           } as any);
         } catch (err: any) {
           geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `MeetingBrain error: ${err.message}` } as any);
@@ -3697,9 +3722,7 @@ async function streamOpenAI(
           openaiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: result.error
-              ? `Query failed: ${result.error}`
-              : `Query returned ${result.count} rows:\n${JSON.stringify(result.data, null, 2)}${result.total !== undefined ? `\nTotal: ${result.total}` : ""}${result.summary ? `\n\nSUMMARY (use these pre-calculated numbers):\n${JSON.stringify(result.summary, null, 2)}` : ""}\nIf the user asked for a chart or graph, you MUST call generate_chart next with this data.`,
+            content: formatToolResult(result),
           } as any);
         } catch (err: any) {
           console.error("[QueryEngine/OpenAI] Failed:", err.message);
@@ -3740,7 +3763,7 @@ async function streamOpenAI(
           );
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
-            content: result.error ? `MeetingBrain query failed: ${result.error}` : `MeetingBrain ${input.report}: ${result.count} results\n${JSON.stringify(result.data, null, 2)}`,
+            content: formatMeetingBrainResult(input.report, result),
           } as any);
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `MeetingBrain error: ${err.message}` } as any);
