@@ -823,13 +823,37 @@ export async function POST(
     // the background after the parallel block in that case.
     const clientBackgroundPromise = conversation.id_client
       ? (async () => {
-          const { data } = await intelligenceDb
-            .from("ai_client_context")
-            .select("document_context, meeting_context, units_asset_count, date_last_processed")
-            .eq("id_workspace", conversation.id_workspace)
-            .eq("id_client", conversation.id_client)
-            .maybeSingle();
-          return data;
+          const [{ data: ctx }, { data: meetings }] = await Promise.all([
+            intelligenceDb
+              .from("ai_client_context")
+              .select("document_context, units_asset_count, date_last_processed")
+              .eq("id_workspace", conversation.id_workspace)
+              .eq("id_client", conversation.id_client)
+              .maybeSingle(),
+            intelligenceDb
+              .from("ai_client_meetings")
+              .select("meeting_title, meeting_date, meeting_summary, key_topics, next_steps, attendees_external")
+              .eq("id_workspace", conversation.id_workspace)
+              .eq("id_client", conversation.id_client)
+              .gte("meeting_date", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+              .order("meeting_date", { ascending: false })
+              .limit(5),
+          ]);
+          // Build meeting_context from individual rows
+          let meeting_context: string | null = null;
+          if (meetings && meetings.length > 0) {
+            meeting_context = meetings.map((m: any) => {
+              let text = `## ${m.meeting_title} (${m.meeting_date?.slice(0, 10)})`;
+              if (m.attendees_external) text += `\nClient attendees: ${m.attendees_external}`;
+              if (m.meeting_summary) text += `\n${m.meeting_summary}`;
+              if (m.key_topics) {
+                try { const t = JSON.parse(m.key_topics); if (Array.isArray(t)) text += `\nKey topics: ${t.slice(0, 5).join(", ")}`; } catch { /* skip */ }
+              }
+              if (m.next_steps) text += `\nActions: ${m.next_steps.slice(0, 300)}`;
+              return text;
+            }).join("\n\n");
+          }
+          return ctx ? { ...ctx, meeting_context } : meeting_context ? { document_context: "", units_asset_count: 0, date_last_processed: new Date().toISOString(), meeting_context } : null;
         })()
       : Promise.resolve(null);
 
@@ -862,13 +886,34 @@ export async function POST(
     // If conversation is content-scoped, fetch client background now that we know the client ID
     let resolvedClientBackground = clientBackground;
     if (!resolvedClientBackground && contentDetail?.clientId) {
-      const { data } = await intelligenceDb
-        .from("ai_client_context")
-        .select("document_context, meeting_context, units_asset_count, date_last_processed")
-        .eq("id_workspace", conversation.id_workspace)
-        .eq("id_client", contentDetail.clientId)
-        .maybeSingle();
-      resolvedClientBackground = data;
+      const [{ data: ctxData }, { data: mtgData }] = await Promise.all([
+        intelligenceDb
+          .from("ai_client_context")
+          .select("document_context, units_asset_count, date_last_processed")
+          .eq("id_workspace", conversation.id_workspace)
+          .eq("id_client", contentDetail.clientId)
+          .maybeSingle(),
+        intelligenceDb
+          .from("ai_client_meetings")
+          .select("meeting_title, meeting_date, meeting_summary, key_topics, next_steps, attendees_external")
+          .eq("id_workspace", conversation.id_workspace)
+          .eq("id_client", contentDetail.clientId)
+          .gte("meeting_date", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+          .order("meeting_date", { ascending: false })
+          .limit(5),
+      ]);
+      let meeting_context: string | null = null;
+      if (mtgData && mtgData.length > 0) {
+        meeting_context = mtgData.map((m: any) => {
+          let text = `## ${m.meeting_title} (${m.meeting_date?.slice(0, 10)})`;
+          if (m.attendees_external) text += `\nClient attendees: ${m.attendees_external}`;
+          if (m.meeting_summary) text += `\n${m.meeting_summary}`;
+          if (m.key_topics) { try { const t = JSON.parse(m.key_topics); if (Array.isArray(t)) text += `\nKey topics: ${t.slice(0, 5).join(", ")}`; } catch { /* skip */ } }
+          if (m.next_steps) text += `\nActions: ${m.next_steps.slice(0, 300)}`;
+          return text;
+        }).join("\n\n");
+      }
+      resolvedClientBackground = ctxData ? { ...ctxData, meeting_context } : meeting_context ? { document_context: "", units_asset_count: 0, date_last_processed: new Date().toISOString(), meeting_context } : null;
     }
 
     // Resolve selected role IDs to role objects (depends on userPrefs)
@@ -899,22 +944,8 @@ export async function POST(
       }
       return true;
     });
-    // Strip attendee email addresses from meeting context to prevent
-    // the AI from cross-referencing attendees and revealing other people's schedules
     const meetingBrainContext = filteredAppContext.length > 0
-      ? filteredAppContext.map((r: any) => {
-          let content = r.information_content || "";
-          // Replace "Attendees: email1, email2, ..." lines with just names (strip @domain)
-          content = content.replace(/^Attendees: .+$/gm, (line: string) => {
-            const names = line.replace("Attendees: ", "").split(", ").map((a: string) => {
-              // Convert email to first name: chris@company.com → Chris
-              const name = a.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
-              return name;
-            });
-            return `Attendees: ${names.join(", ")}`;
-          });
-          return content;
-        }).join("\n\n")
+      ? filteredAppContext.map((r: any) => r.information_content || "").join("\n\n")
       : null;
 
     if (appContextRows.length > 0) {

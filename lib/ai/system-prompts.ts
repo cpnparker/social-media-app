@@ -293,12 +293,8 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
   if (ctx.meetingBrainContext) {
     prompt += `\n\n## MeetingBrain`;
     prompt += `\n${ctx.meetingBrainContext}`;
-    prompt += `\n\n_The data above includes YOUR current tasks, recent meetings, and upcoming schedule. Use this for questions about YOUR week, schedule, and tasks. Only use query_meetingbrain for deeper searches._`;
-    prompt += `\n\n**PRIVACY RULES:**`;
-    prompt += `\n1. This meeting data belongs to YOU only. NEVER use it to answer questions about other people's schedules or activities.`;
-    prompt += `\n2. If asked "What meetings did [someone else] have?", say you can only show the user's own meetings.`;
-    prompt += `\n3. When asked about a CLIENT's meetings (e.g. "What was the last WBCSD meeting like?"), use the client_meetings report from query_meetingbrain FIRST — this contains verified client meetings only. Do NOT use search_meetings or your personal meeting data for client questions, as that would expose private internal discussions.`;
-    prompt += `\n4. The "Recent Client Meetings" section (if shown) contains workspace-shared client meeting data — this IS safe to discuss.`;
+    prompt += `\n\n_The data above is YOUR personal schedule. Use it for questions about YOUR week, tasks, and meetings._`;
+    prompt += `\n\n**PRIVACY:** This is your private data. Never use it to answer questions about other people's schedules. If asked about a colleague's meetings, say you can only access the user's own data. For client meeting questions, use the client_meetings report (query_meetingbrain) which contains verified, workspace-shared client meetings only.`;
   }
 
   // ── Selected roles (always-on background expertise) ──
@@ -622,7 +618,6 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
     if (ctx.clientBackground?.meeting_context) {
       prompt += `\n\n### Recent Client Meetings`;
       prompt += `\n${ctx.clientBackground.meeting_context}`;
-      prompt += `\n\n**Important:** When the user asks about meetings in this client context, use ONLY the client meetings listed above. Do NOT use query_meetingbrain to search for meetings — that tool returns all personal meetings which may include unrelated private meetings. The meetings above have been verified as relevant to this client.`;
     }
   }
 

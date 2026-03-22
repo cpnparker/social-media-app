@@ -2015,19 +2015,28 @@ async function queryMeetingBrain(
       case "client_meetings": {
         if (!options.workspaceId) return { data: [], count: 0, error: "Workspace ID required" };
         const { intelligenceDb } = await import("@/lib/supabase-intelligence");
-        const { data: contexts, error: ctxErr } = await intelligenceDb
-          .from("ai_client_context")
-          .select("id_client, meeting_context, meeting_context_updated_at")
-          .eq("id_workspace", options.workspaceId)
-          .not("meeting_context", "is", null);
-        if (ctxErr) return { data: [], count: 0, error: ctxErr.message };
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-        const data = (contexts || []).map((r: any) => ({
+        const { data: meetings, error: mtgErr } = await intelligenceDb
+          .from("ai_client_meetings")
+          .select("id_client, meeting_title, meeting_date, meeting_summary, key_topics, next_steps, attendees_external")
+          .eq("id_workspace", options.workspaceId)
+          .gte("meeting_date", thirtyDaysAgo.toISOString())
+          .order("meeting_date", { ascending: false })
+          .limit(30);
+        if (mtgErr) return { data: [], count: 0, error: mtgErr.message };
+
+        const data = (meetings || []).map((r: any) => ({
           client_id: r.id_client,
-          meeting_summary: r.meeting_context,
-          updated: r.meeting_context_updated_at?.slice(0, 10),
+          title: r.meeting_title,
+          date: r.meeting_date?.slice(0, 10),
+          summary: r.meeting_summary?.slice(0, 400),
+          key_topics: r.key_topics?.slice(0, 200),
+          next_steps: r.next_steps?.slice(0, 200),
+          attendees: r.attendees_external,
         }));
-        console.log(`[MeetingBrain] Client meetings: ${data.length} clients with linked meetings`);
+        console.log(`[MeetingBrain] Client meetings: ${data.length} from ai_client_meetings`);
         return { data, count: data.length };
       }
       default: return { data: [], count: 0, error: `Unknown report: ${report}` };
