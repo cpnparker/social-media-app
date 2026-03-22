@@ -835,7 +835,7 @@ export async function POST(
               .select("meeting_title, meeting_date, meeting_summary, key_topics, next_steps, attendees_external")
               .eq("id_workspace", conversation.id_workspace)
               .eq("id_client", conversation.id_client)
-              .gte("meeting_date", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+              .gte("meeting_date", new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString())
               .order("meeting_date", { ascending: false })
               .limit(5),
           ]);
@@ -898,7 +898,7 @@ export async function POST(
           .select("meeting_title, meeting_date, meeting_summary, key_topics, next_steps, attendees_external")
           .eq("id_workspace", conversation.id_workspace)
           .eq("id_client", contentDetail.clientId)
-          .gte("meeting_date", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+          .gte("meeting_date", new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString())
           .order("meeting_date", { ascending: false })
           .limit(5),
       ]);

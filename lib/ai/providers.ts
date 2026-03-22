@@ -1867,7 +1867,7 @@ const MEETINGBRAIN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         },
         query: { type: "string", description: "Search keyword for search_meetings" },
         status: { type: "string", enum: ["open", "completed", "all"], description: "Task status filter. Default: open" },
-        days: { type: "number", description: "Meetings lookback/forward window in days. Default: 14" },
+        days: { type: "number", description: "Lookback window in days. Default: 90 for meetings, 14 for upcoming" },
       },
       required: ["report"],
     },
@@ -1948,26 +1948,34 @@ async function queryMeetingBrain(
         return { data, count: data.length };
       }
       case "meetings": {
-        const d = options.days || 14;
+        const d = options.days || 90;
         const since = new Date(); since.setDate(since.getDate() - d);
-        const until = new Date(); until.setDate(until.getDate() + d);
+        const now = new Date();
+        const twoWeeksAgo = new Date(); twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
 
         const { data: meetings, error } = await mbDb.from("processed_meeting")
-          .select("meeting_title, meeting_date, meeting_end_date, attendees, location, summary, key_topics, next_steps, tasks_extracted")
+          .select("meeting_title, meeting_date, attendees, summary, key_topics, next_steps")
           .eq("user_id", mbUserId)
           .gte("meeting_date", since.toISOString())
-          .lte("meeting_date", until.toISOString())
+          .lte("meeting_date", now.toISOString())
           .not("summary", "is", null)
           .order("meeting_date", { ascending: false })
-          .limit(20);
+          .limit(40);
         if (error) return { data: [], count: 0, error: error.message };
 
-        const data = (meetings || []).map((r: any) => ({
-          title: r.meeting_title, date: r.meeting_date?.slice(0, 16),
-          attendees: r.attendees, summary: r.summary?.slice(0, 500),
-          key_topics: r.key_topics?.slice(0, 300) || null, next_steps: r.next_steps?.slice(0, 300) || null,
-        }));
-        console.log(`[MeetingBrain] Meetings: ${data.length} (${d}d window)`);
+        // Tiered detail: full for recent (14d), lighter for older
+        const data = (meetings || []).map((r: any) => {
+          const meetDate = new Date(r.meeting_date);
+          const isRecent = meetDate >= twoWeeksAgo;
+          return {
+            title: r.meeting_title, date: r.meeting_date?.slice(0, 16),
+            attendees: isRecent ? r.attendees : undefined,
+            summary: isRecent ? r.summary?.slice(0, 500) : r.summary?.slice(0, 150),
+            key_topics: r.key_topics?.slice(0, isRecent ? 300 : 150) || null,
+            next_steps: isRecent ? (r.next_steps?.slice(0, 300) || null) : undefined,
+          };
+        });
+        console.log(`[MeetingBrain] Meetings: ${data.length} (${d}d window, ${data.filter((m: any) => m.attendees).length} recent)`);
         return { data, count: data.length };
       }
       case "upcoming_meetings": {
@@ -1995,47 +2003,58 @@ async function queryMeetingBrain(
       case "search_meetings": {
         if (!options.query) return { data: [], count: 0, error: "query required" };
         const q = `%${options.query}%`;
+        const twoWeeksAgo = new Date(); twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
 
+        // Search across all time — no date restriction for keyword searches
         const { data: meetings, error } = await mbDb.from("processed_meeting")
-          .select("meeting_title, meeting_date, summary, key_topics, next_steps, attendees")
+          .select("meeting_title, meeting_date, summary, key_topics, next_steps")
           .eq("user_id", mbUserId)
           .or(`meeting_title.ilike.${q},summary.ilike.${q},key_topics.ilike.${q},next_steps.ilike.${q}`)
           .order("meeting_date", { ascending: false })
-          .limit(10);
+          .limit(20);
         if (error) return { data: [], count: 0, error: error.message };
 
-        const data = (meetings || []).map((r: any) => ({
-          title: r.meeting_title, date: r.meeting_date?.slice(0, 10),
-          summary: r.summary?.slice(0, 400), key_topics: r.key_topics?.slice(0, 200),
-          next_steps: r.next_steps?.slice(0, 200), attendees: r.attendees,
-        }));
+        // Tiered detail: full for recent, lighter for older
+        const data = (meetings || []).map((r: any) => {
+          const isRecent = new Date(r.meeting_date) >= twoWeeksAgo;
+          return {
+            title: r.meeting_title, date: r.meeting_date?.slice(0, 10),
+            summary: isRecent ? r.summary?.slice(0, 500) : r.summary?.slice(0, 200),
+            key_topics: r.key_topics?.slice(0, isRecent ? 300 : 150) || null,
+            next_steps: isRecent ? (r.next_steps?.slice(0, 300) || null) : undefined,
+          };
+        });
         console.log(`[MeetingBrain] Search "${options.query}": ${data.length} matches`);
         return { data, count: data.length };
       }
       case "client_meetings": {
         if (!options.workspaceId) return { data: [], count: 0, error: "Workspace ID required" };
         const { intelligenceDb } = await import("@/lib/supabase-intelligence");
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const ninetyDaysAgo = new Date();
+        ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
 
         const { data: meetings, error: mtgErr } = await intelligenceDb
           .from("ai_client_meetings")
           .select("id_client, meeting_title, meeting_date, meeting_summary, key_topics, next_steps, attendees_external")
           .eq("id_workspace", options.workspaceId)
-          .gte("meeting_date", thirtyDaysAgo.toISOString())
+          .gte("meeting_date", ninetyDaysAgo.toISOString())
           .order("meeting_date", { ascending: false })
-          .limit(30);
+          .limit(50);
         if (mtgErr) return { data: [], count: 0, error: mtgErr.message };
 
-        const data = (meetings || []).map((r: any) => ({
-          client_id: r.id_client,
-          title: r.meeting_title,
-          date: r.meeting_date?.slice(0, 10),
-          summary: r.meeting_summary?.slice(0, 400),
-          key_topics: r.key_topics?.slice(0, 200),
-          next_steps: r.next_steps?.slice(0, 200),
-          attendees: r.attendees_external,
-        }));
+        const twoWeeksBack = new Date(); twoWeeksBack.setDate(twoWeeksBack.getDate() - 14);
+        const data = (meetings || []).map((r: any) => {
+          const isRecent = new Date(r.meeting_date) >= twoWeeksBack;
+          return {
+            client_id: r.id_client,
+            title: r.meeting_title,
+            date: r.meeting_date?.slice(0, 10),
+            summary: isRecent ? r.meeting_summary?.slice(0, 400) : r.meeting_summary?.slice(0, 150),
+            key_topics: r.key_topics?.slice(0, isRecent ? 200 : 100),
+            next_steps: isRecent ? (r.next_steps?.slice(0, 200) || null) : undefined,
+            attendees: r.attendees_external,
+          };
+        });
         console.log(`[MeetingBrain] Client meetings: ${data.length} from ai_client_meetings`);
         return { data, count: data.length };
       }
