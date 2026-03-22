@@ -1862,8 +1862,8 @@ const MEETINGBRAIN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
       properties: {
         report: {
           type: "string",
-          enum: ["my_tasks", "meetings", "upcoming_meetings", "search_meetings"],
-          description: "my_tasks = open tasks/action items, meetings = recent past meetings with summaries, upcoming_meetings = scheduled future meetings, search_meetings = search by keyword",
+          enum: ["my_tasks", "meetings", "upcoming_meetings", "search_meetings", "client_meetings"],
+          description: "my_tasks = open tasks/action items, meetings = recent past meetings with summaries, upcoming_meetings = scheduled future meetings, search_meetings = search by keyword, client_meetings = summaries of all recent meetings with clients across the workspace (for cross-client overview questions)",
         },
         query: { type: "string", description: "Search keyword for search_meetings" },
         status: { type: "string", enum: ["open", "completed", "all"], description: "Task status filter. Default: open" },
@@ -1899,7 +1899,7 @@ function getMeetingBrainDb() {
 async function queryMeetingBrain(
   report: string,
   userEmail: string,
-  options: { query?: string; status?: string; days?: number; personName?: string } = {}
+  options: { query?: string; status?: string; days?: number; personName?: string; workspaceId?: string } = {}
 ): Promise<{ data: any; count: number; error?: string }> {
   const mbDb = getMeetingBrainDb();
   try {
@@ -2016,6 +2016,24 @@ async function queryMeetingBrain(
           next_steps: r.next_steps?.slice(0, 200), attendees: r.attendees,
         }));
         console.log(`[MeetingBrain] Search "${options.query}": ${data.length} matches`);
+        return { data, count: data.length };
+      }
+      case "client_meetings": {
+        if (!options.workspaceId) return { data: [], count: 0, error: "Workspace ID required" };
+        const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+        const { data: contexts, error: ctxErr } = await intelligenceDb
+          .from("ai_client_context")
+          .select("id_client, meeting_context, meeting_context_updated_at")
+          .eq("id_workspace", options.workspaceId)
+          .not("meeting_context", "is", null);
+        if (ctxErr) return { data: [], count: 0, error: ctxErr.message };
+
+        const data = (contexts || []).map((r: any) => ({
+          client_id: r.id_client,
+          meeting_summary: r.meeting_context,
+          updated: r.meeting_context_updated_at?.slice(0, 10),
+        }));
+        console.log(`[MeetingBrain] Client meetings: ${data.length} clients with linked meetings`);
         return { data, count: data.length };
       }
       default: return { data: [], count: 0, error: `Unknown report: ${report}` };
@@ -2656,7 +2674,7 @@ async function streamAnthropic(
         try {
           const result = await queryMeetingBrain(
             tool.input.report, config.userEmail!,
-            { query: tool.input.query, status: tool.input.status, days: tool.input.days, personName: tool.input.person_name }
+            { query: tool.input.query, status: tool.input.status, days: tool.input.days, personName: tool.input.person_name, workspaceId: config.workspaceId }
           );
           toolResults.push({
             type: "tool_result", tool_use_id: tool.id,
@@ -3067,7 +3085,7 @@ async function streamXAIChatCompletions(
           const input = JSON.parse(tc.function.arguments);
           const result = await queryMeetingBrain(
             input.report, config.userEmail!,
-            { query: input.query, status: input.status, days: input.days, personName: input.person_name }
+            { query: input.query, status: input.status, days: input.days, personName: input.person_name, workspaceId: config.workspaceId }
           );
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
@@ -3483,7 +3501,7 @@ async function streamGemini(
           const input = JSON.parse(tc.function.arguments);
           const result = await queryMeetingBrain(
             input.report, config.userEmail!,
-            { query: input.query, status: input.status, days: input.days, personName: input.person_name }
+            { query: input.query, status: input.status, days: input.days, personName: input.person_name, workspaceId: config.workspaceId }
           );
           geminiMessages.push({
             role: "tool", tool_call_id: tc.id,
@@ -3828,7 +3846,7 @@ async function streamOpenAI(
           const input = JSON.parse(tc.function.arguments);
           const result = await queryMeetingBrain(
             input.report, config.userEmail!,
-            { query: input.query, status: input.status, days: input.days, personName: input.person_name }
+            { query: input.query, status: input.status, days: input.days, personName: input.person_name, workspaceId: config.workspaceId }
           );
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
