@@ -1802,22 +1802,30 @@ const WEB_SEARCH_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
 
 /**
  * Execute a web search via xAI's Responses API and return text results.
+ * Always uses grok-3-mini for speed and cost efficiency.
  */
 async function executeWebSearch(
   query: string,
-  systemPrompt?: string,
-  model: string = "grok-3-fast"
+  _systemPrompt?: string,
+  _model?: string
 ): Promise<string> {
   const xai = getXAIClient();
+  const WEB_SEARCH_TIMEOUT = 30_000; // 30 second timeout
 
   try {
-    const response = await (xai.responses.create as any)({
-      model,
+    const searchPromise = (xai.responses.create as any)({
+      model: "grok-3-mini", // Always use mini — fast, cheap, only fetching search results
       temperature: 0.3,
-      instructions: "You are a web research assistant. Search the web and return factual, well-sourced information. Include source URLs where possible.",
+      instructions: "You are a web research assistant. Search the web and return factual, well-sourced information. Include source URLs where possible. Be concise.",
       input: [{ role: "user", content: query }],
       tools: [{ type: "web_search" }],
     });
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Web search timed out after 30s")), WEB_SEARCH_TIMEOUT)
+    );
+
+    const response = await Promise.race([searchPromise, timeoutPromise]);
 
     let searchResults = "";
     if (response?.output) {
