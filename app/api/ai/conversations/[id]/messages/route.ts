@@ -612,6 +612,23 @@ export async function POST(
       console.log(`[Messages] Truncating context: ${history.length} messages → summary + last 20`);
     }
 
+    // Collapse consecutive user messages (orphaned messages from failed responses).
+    // Keep only the last user message in each consecutive run to avoid the model
+    // trying to answer 5+ unanswered questions at once and hitting timeouts.
+    const deduped: typeof effectiveHistory = [];
+    for (let i = 0; i < effectiveHistory.length; i++) {
+      const isUser = effectiveHistory[i].role_message === "user";
+      const nextIsUser = i + 1 < effectiveHistory.length && effectiveHistory[i + 1].role_message === "user";
+      if (isUser && nextIsUser) {
+        // Skip — keep only the last user message in a consecutive run
+        continue;
+      }
+      deduped.push(effectiveHistory[i]);
+    }
+    if (deduped.length < effectiveHistory.length) {
+      console.log(`[Messages] Collapsed ${effectiveHistory.length - deduped.length} orphaned user messages`);
+    }
+
     const messages: AIMessage[] = [];
 
     // Inject summary as context if truncating
@@ -629,15 +646,15 @@ export async function POST(
 
     // Find the index of the last assistant message that contains a generated image
     let lastImageAssistantIdx = -1;
-    for (let i = effectiveHistory.length - 1; i >= 0; i--) {
-      if (effectiveHistory[i].role_message === "assistant" && /!\[Generated image\]\(/.test(effectiveHistory[i].document_message)) {
+    for (let i = deduped.length - 1; i >= 0; i--) {
+      if (deduped[i].role_message === "assistant" && /!\[Generated image\]\(/.test(deduped[i].document_message)) {
         lastImageAssistantIdx = i;
         break;
       }
     }
 
-    for (let hi = 0; hi < effectiveHistory.length; hi++) {
-      const m = effectiveHistory[hi];
+    for (let hi = 0; hi < deduped.length; hi++) {
+      const m = deduped[hi];
       let content = m.document_message;
 
       // For assistant messages: strip image/chart/doc markdown from conversation history
