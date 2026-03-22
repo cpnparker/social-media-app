@@ -1868,7 +1868,6 @@ const MEETINGBRAIN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         query: { type: "string", description: "Search keyword for search_meetings" },
         status: { type: "string", enum: ["open", "completed", "all"], description: "Task status filter. Default: open" },
         days: { type: "number", description: "Meetings lookback/forward window in days. Default: 14" },
-        person_name: { type: "string", description: "Query for another person by first name. Default: current user" },
       },
       required: ["report"],
     },
@@ -1899,20 +1898,15 @@ function getMeetingBrainDb() {
 async function queryMeetingBrain(
   report: string,
   userEmail: string,
-  options: { query?: string; status?: string; days?: number; personName?: string; workspaceId?: string } = {}
+  options: { query?: string; status?: string; days?: number; workspaceId?: string } = {}
 ): Promise<{ data: any; count: number; error?: string }> {
   const mbDb = getMeetingBrainDb();
   try {
-    // Find user by email or name
+    // Find current user by email — always scoped to authenticated user only (privacy)
     let mbUserId: string | null = null;
-    if (options.personName) {
-      const { data: user } = await mbDb.from("users").select("id").ilike("name", `%${options.personName}%`).limit(1).maybeSingle();
-      mbUserId = user?.id || null;
-    } else {
-      const { data: user } = await mbDb.from("users").select("id").eq("email", userEmail).limit(1).maybeSingle();
-      mbUserId = user?.id || null;
-    }
-    if (!mbUserId) return { data: [], count: 0, error: `User not found: ${options.personName || userEmail}` };
+    const { data: mbUser } = await mbDb.from("users").select("id").eq("email", userEmail).limit(1).maybeSingle();
+    mbUserId = mbUser?.id || null;
+    if (!mbUserId) return { data: [], count: 0, error: `User not found: ${userEmail}` };
 
     switch (report) {
       case "my_tasks": {
@@ -2674,7 +2668,7 @@ async function streamAnthropic(
         try {
           const result = await queryMeetingBrain(
             tool.input.report, config.userEmail!,
-            { query: tool.input.query, status: tool.input.status, days: tool.input.days, personName: tool.input.person_name, workspaceId: config.workspaceId }
+            { query: tool.input.query, status: tool.input.status, days: tool.input.days, workspaceId: config.workspaceId }
           );
           toolResults.push({
             type: "tool_result", tool_use_id: tool.id,
@@ -3085,7 +3079,7 @@ async function streamXAIChatCompletions(
           const input = JSON.parse(tc.function.arguments);
           const result = await queryMeetingBrain(
             input.report, config.userEmail!,
-            { query: input.query, status: input.status, days: input.days, personName: input.person_name, workspaceId: config.workspaceId }
+            { query: input.query, status: input.status, days: input.days, workspaceId: config.workspaceId }
           );
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
@@ -3501,7 +3495,7 @@ async function streamGemini(
           const input = JSON.parse(tc.function.arguments);
           const result = await queryMeetingBrain(
             input.report, config.userEmail!,
-            { query: input.query, status: input.status, days: input.days, personName: input.person_name, workspaceId: config.workspaceId }
+            { query: input.query, status: input.status, days: input.days, workspaceId: config.workspaceId }
           );
           geminiMessages.push({
             role: "tool", tool_call_id: tc.id,
@@ -3846,7 +3840,7 @@ async function streamOpenAI(
           const input = JSON.parse(tc.function.arguments);
           const result = await queryMeetingBrain(
             input.report, config.userEmail!,
-            { query: input.query, status: input.status, days: input.days, personName: input.person_name, workspaceId: config.workspaceId }
+            { query: input.query, status: input.status, days: input.days, workspaceId: config.workspaceId }
           );
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
