@@ -289,13 +289,11 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
     prompt += `\n${ctx.personalContext}`;
   }
 
-  // ── MeetingBrain availability note (tools handle the data now) ──
+  // ── MeetingBrain context (inline data + tool for deeper searches) ──
   if (ctx.meetingBrainContext) {
-    prompt += `\n\n## MeetingBrain Connected`;
-    prompt += `\nThe user has MeetingBrain connected. Use the query_meetingbrain tool to check their tasks, meetings, and action items when relevant.`;
-    prompt += `\n- For tasks/workload questions: call query_meetingbrain({ report: "my_tasks" })`;
-    prompt += `\n- For meeting history: call query_meetingbrain({ report: "meetings" }) or search with query_meetingbrain({ report: "search_meetings", query: "..." })`;
-    prompt += `\n- Don't assume you know their current tasks — always fetch fresh data via the tool.`;
+    prompt += `\n\n## MeetingBrain`;
+    prompt += `\n${ctx.meetingBrainContext}`;
+    prompt += `\n\n_The data above includes your current tasks, recent meetings, and upcoming schedule from MeetingBrain. Use this data to answer questions about your week, schedule, tasks, and recent meetings. Only use the query_meetingbrain tool if you need to search for something specific not shown above._`;
   }
 
   // ── Selected roles (always-on background expertise) ──
