@@ -888,10 +888,18 @@ export async function POST(
     const isTeamThread = conversation.type_visibility === "team";
 
     // MeetingBrain context: only for private/shared threads (never team threads)
-    const meetingBrainContext = isTeamThread ? null
-      : appContextRows.length > 0
-        ? appContextRows.map((r: any) => r.information_content).join("\n\n")
-        : null;
+    // When in a client conversation with linked meeting context, exclude general
+    // meetings/upcoming to avoid leaking unrelated meetings into client scope.
+    const hasClientMeetings = resolvedClientBackground?.meeting_context;
+    const filteredAppContext = isTeamThread ? [] : appContextRows.filter((r: any) => {
+      if (hasClientMeetings && (r.type_context === "meetings" || r.type_context === "upcoming_meetings")) {
+        return false; // Use client-linked meetings instead
+      }
+      return true;
+    });
+    const meetingBrainContext = filteredAppContext.length > 0
+      ? filteredAppContext.map((r: any) => r.information_content).join("\n\n")
+      : null;
 
     if (appContextRows.length > 0) {
       console.log(`[Messages] MeetingBrain context: ${appContextRows.length} rows, ${meetingBrainContext?.length || 0} chars${isTeamThread ? " (excluded — team thread)" : ""}`);
