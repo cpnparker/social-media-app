@@ -825,7 +825,7 @@ export async function POST(
       ? (async () => {
           const { data } = await intelligenceDb
             .from("ai_client_context")
-            .select("document_context, units_asset_count, date_last_processed")
+            .select("document_context, meeting_context, units_asset_count, date_last_processed")
             .eq("id_client", conversation.id_client)
             .maybeSingle();
           return data;
@@ -863,7 +863,7 @@ export async function POST(
     if (!resolvedClientBackground && contentDetail?.clientId) {
       const { data } = await intelligenceDb
         .from("ai_client_context")
-        .select("document_context, units_asset_count, date_last_processed")
+        .select("document_context, meeting_context, units_asset_count, date_last_processed")
         .eq("id_client", contentDetail.clientId)
         .maybeSingle();
       resolvedClientBackground = data;

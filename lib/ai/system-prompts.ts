@@ -181,7 +181,7 @@ export function buildSystemPrompt(ctx: {
   personalContext?: string | null;
   meetingBrainContext?: string | null;
   region?: string | null;
-  clientBackground?: { document_context: string; units_asset_count: number; date_last_processed: string } | null;
+  clientBackground?: { document_context: string; meeting_context?: string | null; units_asset_count: number; date_last_processed: string } | null;
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
 
@@ -613,6 +613,12 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
       prompt += `\n\n### Client Background (from ${ctx.clientBackground.units_asset_count} asset file${ctx.clientBackground.units_asset_count !== 1 ? "s" : ""})`;
       prompt += `\n${ctx.clientBackground.document_context}`;
       prompt += `\n_Last updated: ${ctx.clientBackground.date_last_processed?.slice(0, 10)}_`;
+    }
+
+    // Client meeting context from MeetingBrain (linked via attendee email domains)
+    if (ctx.clientBackground?.meeting_context) {
+      prompt += `\n\n### Recent Client Meetings`;
+      prompt += `\n${ctx.clientBackground.meeting_context}`;
     }
   }
 

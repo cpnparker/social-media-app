@@ -61,6 +61,8 @@ interface ClientContext {
   units_asset_count: number;
   date_last_processed: string;
   date_created: string;
+  meeting_context?: string | null;
+  meeting_context_updated_at?: string | null;
 }
 
 /* ─────────────── Main Dialog ─────────────── */
@@ -281,6 +283,24 @@ export default function ClientContextDialog({
                   )}
                 </div>
               </div>
+
+              {/* Linked meetings */}
+              {context.meeting_context && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-medium">Linked Meetings</h3>
+                    {context.meeting_context_updated_at && (
+                      <span className="text-xs text-muted-foreground">
+                        Updated:{" "}
+                        {new Date(context.meeting_context_updated_at).toLocaleDateString()}
+                      </span>
+                    )}
+                  </div>
+                  <div className="rounded-md border bg-blue-50/50 dark:bg-blue-950/20 p-4 text-sm leading-relaxed whitespace-pre-wrap max-h-[200px] overflow-y-auto">
+                    {context.meeting_context}
+                  </div>
+                </div>
+              )}
 
               {/* Generated context */}
               <div>
