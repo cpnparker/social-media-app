@@ -1814,7 +1814,7 @@ async function executeWebSearch(
 
   try {
     const searchPromise = (xai.responses.create as any)({
-      model: "grok-3-mini", // Always use mini — fast, cheap, only fetching search results
+      model: "grok-4-1-fast", // Only grok-4 family supports web_search tool — fast and cheap ($0.20/$0.50)
       temperature: 0.3,
       instructions: "You are a web research assistant. Search the web and return factual, well-sourced information. Include source URLs where possible. Be concise.",
       input: [{ role: "user", content: query }],
