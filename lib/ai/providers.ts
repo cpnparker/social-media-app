@@ -1862,8 +1862,8 @@ const MEETINGBRAIN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
       properties: {
         report: {
           type: "string",
-          enum: ["my_tasks", "meetings", "search_meetings"],
-          description: "my_tasks = open tasks/action items, meetings = recent/upcoming with summaries, search_meetings = search by keyword",
+          enum: ["my_tasks", "meetings", "upcoming_meetings", "search_meetings"],
+          description: "my_tasks = open tasks/action items, meetings = recent past meetings with summaries, upcoming_meetings = scheduled future meetings, search_meetings = search by keyword",
         },
         query: { type: "string", description: "Search keyword for search_meetings" },
         status: { type: "string", enum: ["open", "completed", "all"], description: "Task status filter. Default: open" },
@@ -1974,6 +1974,28 @@ async function queryMeetingBrain(
           key_topics: r.key_topics?.slice(0, 300) || null, next_steps: r.next_steps?.slice(0, 300) || null,
         }));
         console.log(`[MeetingBrain] Meetings: ${data.length} (${d}d window)`);
+        return { data, count: data.length };
+      }
+      case "upcoming_meetings": {
+        const d = options.days || 14;
+        const now = new Date();
+        const until = new Date(); until.setDate(until.getDate() + d);
+
+        const { data: meetings, error } = await mbDb.from("processed_meeting")
+          .select("meeting_title, meeting_date, meeting_end_date, attendees, location")
+          .eq("user_id", mbUserId)
+          .gte("meeting_date", now.toISOString())
+          .lte("meeting_date", until.toISOString())
+          .order("meeting_date", { ascending: true })
+          .limit(30);
+        if (error) return { data: [], count: 0, error: error.message };
+
+        const data = (meetings || []).map((r: any) => ({
+          title: r.meeting_title, date: r.meeting_date?.slice(0, 16),
+          end_date: r.meeting_end_date?.slice(0, 16) || null,
+          attendees: r.attendees, location: r.location?.slice(0, 200) || null,
+        }));
+        console.log(`[MeetingBrain] Upcoming: ${data.length} (${d}d window)`);
         return { data, count: data.length };
       }
       case "search_meetings": {
