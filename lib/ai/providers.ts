@@ -1890,6 +1890,13 @@ function getNeonPool() {
       connectionString: process.env.NEON_DATABASE_URL,
       ssl: { rejectUnauthorized: false },
       max: 3,
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
+    });
+    // Handle stale connections gracefully
+    _neonPool.on("error", (err: any) => {
+      console.error("[MeetingBrain] Pool error:", err.message);
+      _neonPool = null; // Force pool recreation on next call
     });
   }
   return _neonPool;
