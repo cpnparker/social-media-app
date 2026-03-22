@@ -294,7 +294,11 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
     prompt += `\n\n## MeetingBrain`;
     prompt += `\n${ctx.meetingBrainContext}`;
     prompt += `\n\n_The data above includes YOUR current tasks, recent meetings, and upcoming schedule. Use this for questions about YOUR week, schedule, and tasks. Only use query_meetingbrain for deeper searches._`;
-    prompt += `\n\n**PRIVACY RULE:** This meeting data belongs to YOU only. NEVER use it to answer questions about other people's schedules, meetings, or activities — even if they appear as attendees in your meetings. If asked "What meetings did [someone else] have?", respond that you can only show the user's own meetings and suggest they ask that person directly. The only exception is client-linked meetings shown in the "Recent Client Meetings" section, which are shared workspace data.`;
+    prompt += `\n\n**PRIVACY RULES:**`;
+    prompt += `\n1. This meeting data belongs to YOU only. NEVER use it to answer questions about other people's schedules or activities.`;
+    prompt += `\n2. If asked "What meetings did [someone else] have?", say you can only show the user's own meetings.`;
+    prompt += `\n3. When asked about a CLIENT's meetings (e.g. "What was the last WBCSD meeting like?"), use the client_meetings report from query_meetingbrain FIRST — this contains verified client meetings only. Do NOT use search_meetings or your personal meeting data for client questions, as that would expose private internal discussions.`;
+    prompt += `\n4. The "Recent Client Meetings" section (if shown) contains workspace-shared client meeting data — this IS safe to discuss.`;
   }
 
   // ── Selected roles (always-on background expertise) ──
