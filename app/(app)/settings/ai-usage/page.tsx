@@ -261,7 +261,7 @@ export default function AIUsagePage() {
 
   // Usage state
   const [usageData, setUsageData] = useState<UsageData | null>(null);
-  const [usageDays, setUsageDays] = useState(30);
+  const [usageDays, setUsageDays] = useState(1);
   const [usageLoading, setUsageLoading] = useState(false);
   const [userSearch, setUserSearch] = useState("");
   const [selectedApp, setSelectedApp] = useState("all");
@@ -479,6 +479,7 @@ export default function AIUsagePage() {
           <div className="flex items-center gap-2">
             <div className="flex gap-0.5 bg-muted rounded-lg p-0.5">
               {[
+                { label: "Today", value: 1 },
                 { label: "7d", value: 7 },
                 { label: "14d", value: 14 },
                 { label: "30d", value: 30 },
