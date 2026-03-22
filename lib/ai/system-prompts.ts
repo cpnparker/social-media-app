@@ -619,6 +619,7 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
     if (ctx.clientBackground?.meeting_context) {
       prompt += `\n\n### Recent Client Meetings`;
       prompt += `\n${ctx.clientBackground.meeting_context}`;
+      prompt += `\n\n**Important:** When the user asks about meetings in this client context, use ONLY the client meetings listed above. Do NOT use query_meetingbrain to search for meetings — that tool returns all personal meetings which may include unrelated private meetings. The meetings above have been verified as relevant to this client.`;
     }
   }
 
