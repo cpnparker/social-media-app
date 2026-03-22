@@ -960,7 +960,7 @@ export async function POST(
     // Create streaming response
     const aiStream = createStreamingResponse(
       messages,
-      { model, systemPrompt, maxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, selectedClientId: conversation.id_client || undefined },
+      { model, systemPrompt, maxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: isTeamThread ? undefined : (session.user?.email || undefined), selectedClientId: conversation.id_client || undefined },
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
