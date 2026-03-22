@@ -1944,7 +1944,7 @@ async function queryMeetingBrain(
           created: r.created_at?.slice(0, 10),
           from_meeting: meetingMap.get(r.meeting_id) || null,
         }));
-        console.log(`[MeetingBrain] Tasks: ${data.length} for ${options.personName || userEmail}`);
+        console.log(`[MeetingBrain] Tasks: ${data.length} for ${userEmail}`);
         return { data, count: data.length };
       }
       case "meetings": {
