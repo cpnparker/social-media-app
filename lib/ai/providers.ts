@@ -2732,7 +2732,7 @@ async function streamXAIChatCompletions(
       stream: true,
       stream_options: { include_usage: true },
       ...(tools.length > 0 ? { tools } : {}),
-      ...(config.webSearch ? { search_mode: "auto" } : {}),
+      ...(config.webSearch ? { search_mode: "on" } : {}),
     } as any)) as unknown as AsyncIterable<any>;
 
     // Collect tool calls from the streamed response
