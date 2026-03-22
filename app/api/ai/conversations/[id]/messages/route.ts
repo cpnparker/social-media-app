@@ -899,8 +899,22 @@ export async function POST(
       }
       return true;
     });
+    // Strip attendee email addresses from meeting context to prevent
+    // the AI from cross-referencing attendees and revealing other people's schedules
     const meetingBrainContext = filteredAppContext.length > 0
-      ? filteredAppContext.map((r: any) => r.information_content).join("\n\n")
+      ? filteredAppContext.map((r: any) => {
+          let content = r.information_content || "";
+          // Replace "Attendees: email1, email2, ..." lines with just names (strip @domain)
+          content = content.replace(/^Attendees: .+$/gm, (line: string) => {
+            const names = line.replace("Attendees: ", "").split(", ").map((a: string) => {
+              // Convert email to first name: chris@company.com → Chris
+              const name = a.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+              return name;
+            });
+            return `Attendees: ${names.join(", ")}`;
+          });
+          return content;
+        }).join("\n\n")
       : null;
 
     if (appContextRows.length > 0) {

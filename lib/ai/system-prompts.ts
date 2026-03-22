@@ -293,7 +293,8 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
   if (ctx.meetingBrainContext) {
     prompt += `\n\n## MeetingBrain`;
     prompt += `\n${ctx.meetingBrainContext}`;
-    prompt += `\n\n_The data above includes your current tasks, recent meetings, and upcoming schedule from MeetingBrain. Use this data to answer questions about your week, schedule, tasks, and recent meetings. Only use the query_meetingbrain tool if you need to search for something specific not shown above._`;
+    prompt += `\n\n_The data above includes YOUR current tasks, recent meetings, and upcoming schedule. Use this for questions about YOUR week, schedule, and tasks. Only use query_meetingbrain for deeper searches._`;
+    prompt += `\n\n**PRIVACY RULE:** This meeting data belongs to YOU only. NEVER use it to answer questions about other people's schedules, meetings, or activities — even if they appear as attendees in your meetings. If asked "What meetings did [someone else] have?", respond that you can only show the user's own meetings and suggest they ask that person directly. The only exception is client-linked meetings shown in the "Recent Client Meetings" section, which are shared workspace data.`;
   }
 
   // ── Selected roles (always-on background expertise) ──
