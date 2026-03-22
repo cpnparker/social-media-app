@@ -2705,10 +2705,9 @@ async function streamXAIChatCompletions(
   if (config.workspaceClientIds?.length) {
     tools.push(QUERY_ENGINE_OPENAI_TOOL);
   }
-  // Add web_search as a callable tool for xAI (since Responses API can't coexist with function calling)
-  if (config.webSearch) {
-    tools.push(WEB_SEARCH_OPENAI_TOOL);
-  }
+  // Web search: use xAI's native search_mode instead of a tool call.
+  // This is faster and more reliable than the Responses API approach.
+  // (WEB_SEARCH_OPENAI_TOOL is kept for reference but no longer added to tools)
   if (config.workspaceId && config.userId) {
     tools.push(SEARCH_MEMORY_OPENAI_TOOL);
   }
@@ -2733,6 +2732,7 @@ async function streamXAIChatCompletions(
       stream: true,
       stream_options: { include_usage: true },
       ...(tools.length > 0 ? { tools } : {}),
+      ...(config.webSearch ? { search_mode: "auto" } : {}),
     } as any)) as unknown as AsyncIterable<any>;
 
     // Collect tool calls from the streamed response
