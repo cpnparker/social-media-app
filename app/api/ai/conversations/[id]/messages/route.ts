@@ -905,7 +905,12 @@ export async function POST(
       console.log(`[Messages] Auto-routed → ${model}`);
     }
 
-    const systemPrompt = buildSystemPrompt({
+    // Route query to determine search mode and data source hints
+    const { routeQuery } = await import("@/lib/ai/query-router");
+    const queryRoute = routeQuery(userContent || "", contextConfig);
+    console.log(`[Messages] Query route: intent=${queryRoute.intent}, searchMode=${queryRoute.searchMode}, hints=${queryRoute.hints.length}`);
+
+    let systemPrompt = buildSystemPrompt({
       workspaceConfig,
       clientContext,
       contentDetail,
@@ -922,6 +927,11 @@ export async function POST(
       region: userPrefs?.name_region || null,
       clientBackground: resolvedClientBackground || null,
     });
+
+    // Append query router hints to system prompt
+    if (queryRoute.hints.length > 0) {
+      systemPrompt += "\n\n<!-- Query Router Hints -->\n" + queryRoute.hints.join("\n");
+    }
 
     // Auto-title: if this is the first user message, set conversation title (skip incognito)
     const userMessages = messages.filter((m) => m.role === "user");
@@ -940,7 +950,7 @@ export async function POST(
     // Create streaming response
     const aiStream = createStreamingResponse(
       messages,
-      { model, systemPrompt, maxTokens, webSearch: contextConfig.webSearch === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, selectedClientId: conversation.id_client || undefined },
+      { model, systemPrompt, maxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, selectedClientId: conversation.id_client || undefined },
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
