@@ -1881,25 +1881,19 @@ const MEETINGBRAIN_TOOL: Anthropic.Tool = {
   input_schema: { ...(MEETINGBRAIN_OPENAI_TOOL.function.parameters as any) },
 };
 
-let _neonPool: any = null;
-function getNeonPool() {
-  if (!_neonPool) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pg = require("pg");
-    _neonPool = new pg.Pool({
-      connectionString: process.env.NEON_DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
-      max: 3,
-      connectionTimeoutMillis: 10000,
-      idleTimeoutMillis: 30000,
-    });
-    // Handle stale connections gracefully
-    _neonPool.on("error", (err: any) => {
-      console.error("[MeetingBrain] Pool error:", err.message);
-      _neonPool = null; // Force pool recreation on next call
-    });
+// MeetingBrain Supabase client (meetingbrain schema)
+import { createClient as createMBClient } from "@supabase/supabase-js";
+
+let _mbDb: any = null;
+function getMeetingBrainDb() {
+  if (!_mbDb) {
+    _mbDb = createMBClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { db: { schema: "meetingbrain" } }
+    );
   }
-  return _neonPool;
+  return _mbDb;
 }
 
 async function queryMeetingBrain(
@@ -1907,39 +1901,54 @@ async function queryMeetingBrain(
   userEmail: string,
   options: { query?: string; status?: string; days?: number; personName?: string } = {}
 ): Promise<{ data: any; count: number; error?: string }> {
-  if (!process.env.NEON_DATABASE_URL) {
-    return { data: [], count: 0, error: "MeetingBrain database not configured" };
-  }
-  const pool = getNeonPool();
+  const mbDb = getMeetingBrainDb();
   try {
     // Find user by email or name
     let mbUserId: string | null = null;
     if (options.personName) {
-      const { rows } = await pool.query('SELECT id FROM "User" WHERE name ILIKE $1 LIMIT 1', [`%${options.personName}%`]);
-      mbUserId = rows[0]?.id || null;
+      const { data: user } = await mbDb.from("users").select("id").ilike("name", `%${options.personName}%`).limit(1).maybeSingle();
+      mbUserId = user?.id || null;
     } else {
-      const { rows } = await pool.query('SELECT id FROM "User" WHERE email = $1 LIMIT 1', [userEmail]);
-      mbUserId = rows[0]?.id || null;
+      const { data: user } = await mbDb.from("users").select("id").eq("email", userEmail).limit(1).maybeSingle();
+      mbUserId = user?.id || null;
     }
     if (!mbUserId) return { data: [], count: 0, error: `User not found: ${options.personName || userEmail}` };
 
     switch (report) {
       case "my_tasks": {
-        const sf = options.status === "completed" ? "AND t.status = 'DONE'" : options.status === "all" ? "" : "AND t.status != 'DONE'";
-        const { rows } = await pool.query(`
-          SELECT t.title, t.description, t.status, t.responsible, t.deadline,
-                 t."createdAt", pm."meetingTitle" as source_meeting, pm."meetingDate" as meeting_date
-          FROM "Task" t LEFT JOIN "ProcessedMeeting" pm ON t."meetingId" = pm.id
-          WHERE t."userId" = $1 ${sf}
-          ORDER BY CASE t.status WHEN 'IN_PROGRESS' THEN 0 WHEN 'TODO' THEN 1 ELSE 2 END, t."createdAt" DESC
-          LIMIT 50
-        `, [mbUserId]);
-        const data = rows.map((r: any) => ({
+        let query = mbDb.from("task")
+          .select("title, description, status, responsible, deadline, created_at, meeting_id")
+          .eq("user_id", mbUserId)
+          .order("created_at", { ascending: false })
+          .limit(50);
+
+        if (options.status === "completed") {
+          query = query.eq("status", "DONE");
+        } else if (options.status !== "all") {
+          query = query.neq("status", "DONE");
+        }
+
+        const { data: tasks, error } = await query;
+        if (error) return { data: [], count: 0, error: error.message };
+
+        // Fetch meeting titles for tasks with meeting_id
+        const meetingIds = Array.from(new Set((tasks || []).map((t: any) => t.meeting_id).filter(Boolean)));
+        const meetingMap = new Map<string, string>();
+        if (meetingIds.length > 0) {
+          const { data: meetings } = await mbDb.from("processed_meeting")
+            .select("id, meeting_title, meeting_date")
+            .in("id", meetingIds);
+          for (const m of meetings || []) {
+            meetingMap.set(m.id, m.meeting_title);
+          }
+        }
+
+        const data = (tasks || []).map((r: any) => ({
           title: r.title, description: r.description?.slice(0, 200) || null,
           status: r.status, responsible: r.responsible,
-          deadline: r.deadline?.toISOString()?.slice(0, 10) || null,
-          created: r.createdAt?.toISOString()?.slice(0, 10),
-          from_meeting: r.source_meeting || null,
+          deadline: r.deadline?.slice(0, 10) || null,
+          created: r.created_at?.slice(0, 10),
+          from_meeting: meetingMap.get(r.meeting_id) || null,
         }));
         console.log(`[MeetingBrain] Tasks: ${data.length} for ${options.personName || userEmail}`);
         return { data, count: data.length };
@@ -1948,33 +1957,41 @@ async function queryMeetingBrain(
         const d = options.days || 14;
         const since = new Date(); since.setDate(since.getDate() - d);
         const until = new Date(); until.setDate(until.getDate() + d);
-        const { rows } = await pool.query(`
-          SELECT "meetingTitle", "meetingDate", "meetingEndDate", attendees, location,
-                 summary, "keyTopics", "nextSteps", "tasksExtracted"
-          FROM "ProcessedMeeting" WHERE "userId" = $1 AND "meetingDate" BETWEEN $2 AND $3 AND summary IS NOT NULL
-          ORDER BY "meetingDate" DESC LIMIT 20
-        `, [mbUserId, since.toISOString(), until.toISOString()]);
-        const data = rows.map((r: any) => ({
-          title: r.meetingTitle, date: r.meetingDate?.toISOString()?.slice(0, 16),
+
+        const { data: meetings, error } = await mbDb.from("processed_meeting")
+          .select("meeting_title, meeting_date, meeting_end_date, attendees, location, summary, key_topics, next_steps, tasks_extracted")
+          .eq("user_id", mbUserId)
+          .gte("meeting_date", since.toISOString())
+          .lte("meeting_date", until.toISOString())
+          .not("summary", "is", null)
+          .order("meeting_date", { ascending: false })
+          .limit(20);
+        if (error) return { data: [], count: 0, error: error.message };
+
+        const data = (meetings || []).map((r: any) => ({
+          title: r.meeting_title, date: r.meeting_date?.slice(0, 16),
           attendees: r.attendees, summary: r.summary?.slice(0, 500),
-          key_topics: r.keyTopics?.slice(0, 300) || null, next_steps: r.nextSteps?.slice(0, 300) || null,
+          key_topics: r.key_topics?.slice(0, 300) || null, next_steps: r.next_steps?.slice(0, 300) || null,
         }));
         console.log(`[MeetingBrain] Meetings: ${data.length} (${d}d window)`);
         return { data, count: data.length };
       }
       case "search_meetings": {
         if (!options.query) return { data: [], count: 0, error: "query required" };
-        const p = `%${options.query}%`;
-        const { rows } = await pool.query(`
-          SELECT "meetingTitle", "meetingDate", summary, "keyTopics", "nextSteps", attendees
-          FROM "ProcessedMeeting" WHERE "userId" = $1
-          AND ("meetingTitle" ILIKE $2 OR summary ILIKE $2 OR "keyTopics" ILIKE $2 OR "nextSteps" ILIKE $2)
-          ORDER BY "meetingDate" DESC LIMIT 10
-        `, [mbUserId, p]);
-        const data = rows.map((r: any) => ({
-          title: r.meetingTitle, date: r.meetingDate?.toISOString()?.slice(0, 10),
-          summary: r.summary?.slice(0, 400), key_topics: r.keyTopics?.slice(0, 200),
-          next_steps: r.nextSteps?.slice(0, 200), attendees: r.attendees,
+        const q = `%${options.query}%`;
+
+        const { data: meetings, error } = await mbDb.from("processed_meeting")
+          .select("meeting_title, meeting_date, summary, key_topics, next_steps, attendees")
+          .eq("user_id", mbUserId)
+          .or(`meeting_title.ilike.${q},summary.ilike.${q},key_topics.ilike.${q},next_steps.ilike.${q}`)
+          .order("meeting_date", { ascending: false })
+          .limit(10);
+        if (error) return { data: [], count: 0, error: error.message };
+
+        const data = (meetings || []).map((r: any) => ({
+          title: r.meeting_title, date: r.meeting_date?.slice(0, 10),
+          summary: r.summary?.slice(0, 400), key_topics: r.key_topics?.slice(0, 200),
+          next_steps: r.next_steps?.slice(0, 200), attendees: r.attendees,
         }));
         console.log(`[MeetingBrain] Search "${options.query}": ${data.length} matches`);
         return { data, count: data.length };
