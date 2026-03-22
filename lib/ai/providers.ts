@@ -2212,6 +2212,7 @@ export function createStreamingResponse(
             if (errMsg.includes("usage limits") || errMsg.includes("rate_limit") || anthropicErr?.status === 429 || anthropicErr?.status === 400) {
               console.warn(`[AI] Anthropic failed (${errMsg.slice(0, 100)}), falling back to Grok`);
               result = await streamXAI(messages, config, "grok-4-1-fast", controller, encoder);
+              console.log(`[AI] Grok fallback result: ${result.fullText.length} chars, ${result.inputTokens} in, ${result.outputTokens} out`);
             } else {
               throw anthropicErr;
             }
@@ -2821,7 +2822,7 @@ async function streamXAIChatCompletions(
     // Add web_search indicator detection (xAI specific)
     // Already handled inline above with the other tool indicators
 
-    console.log(`[xAI] Round ${round}: finishReason=${finishReason}, toolCalls=${toolCalls.size}`);
+    console.log(`[xAI] Round ${round}: finishReason=${finishReason}, toolCalls=${toolCalls.size}, textLen=${fullText.length}`);
 
     // If no tool calls, we're done
     if (finishReason !== "tool_calls" || toolCalls.size === 0) {
@@ -2976,7 +2977,10 @@ async function streamXAIChatCompletions(
       } else if (tc.function.name === "web_search") {
         try {
           const input = JSON.parse(tc.function.arguments);
+          console.log(`[WebSearch/xAI] Starting search: "${input.query?.slice(0, 80)}"`);
+          const searchStart = Date.now();
           const searchResults = await executeWebSearch(input.query, config.systemPrompt, apiModel);
+          console.log(`[WebSearch/xAI] Completed in ${Date.now() - searchStart}ms, ${searchResults.length} chars, starts: "${searchResults.slice(0, 80)}"`);
           openaiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
@@ -2987,7 +2991,7 @@ async function streamXAIChatCompletions(
           openaiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: `Web search failed: ${err.message}`,
+            content: `Web search failed: ${err.message}. Answer based on your existing knowledge instead.`,
           } as any);
         }
       } else if (tc.function.name === "search_memory") {
