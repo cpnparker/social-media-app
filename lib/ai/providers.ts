@@ -2030,29 +2030,30 @@ async function queryMeetingBrain(
       case "client_meetings": {
         if (!options.workspaceId) return { data: [], count: 0, error: "Workspace ID required" };
         const { intelligenceDb } = await import("@/lib/supabase-intelligence");
-        const ninetyDaysAgo = new Date();
-        ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
 
+        // Fetch all client meetings — no time limit, tiered detail by age
         const { data: meetings, error: mtgErr } = await intelligenceDb
           .from("ai_client_meetings")
           .select("id_client, meeting_title, meeting_date, meeting_summary, key_topics, next_steps, attendees_external")
           .eq("id_workspace", options.workspaceId)
-          .gte("meeting_date", ninetyDaysAgo.toISOString())
           .order("meeting_date", { ascending: false })
-          .limit(50);
+          .limit(100);
         if (mtgErr) return { data: [], count: 0, error: mtgErr.message };
 
         const twoWeeksBack = new Date(); twoWeeksBack.setDate(twoWeeksBack.getDate() - 14);
+        const threeMonthsBack = new Date(); threeMonthsBack.setDate(threeMonthsBack.getDate() - 90);
         const data = (meetings || []).map((r: any) => {
-          const isRecent = new Date(r.meeting_date) >= twoWeeksBack;
+          const meetDate = new Date(r.meeting_date);
+          const isRecent = meetDate >= twoWeeksBack;
+          const isMedium = !isRecent && meetDate >= threeMonthsBack;
           return {
             client_id: r.id_client,
             title: r.meeting_title,
             date: r.meeting_date?.slice(0, 10),
-            summary: isRecent ? r.meeting_summary?.slice(0, 400) : r.meeting_summary?.slice(0, 150),
-            key_topics: r.key_topics?.slice(0, isRecent ? 200 : 100),
+            summary: isRecent ? r.meeting_summary?.slice(0, 400) : isMedium ? r.meeting_summary?.slice(0, 150) : r.meeting_summary?.slice(0, 80),
+            key_topics: isRecent ? r.key_topics?.slice(0, 200) : r.key_topics?.slice(0, 100),
             next_steps: isRecent ? (r.next_steps?.slice(0, 200) || null) : undefined,
-            attendees: r.attendees_external,
+            attendees: isRecent ? r.attendees_external : undefined,
           };
         });
         console.log(`[MeetingBrain] Client meetings: ${data.length} from ai_client_meetings`);
