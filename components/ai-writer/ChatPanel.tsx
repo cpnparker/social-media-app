@@ -207,10 +207,18 @@ export default function ChatPanel({
     return () => container.removeEventListener("scroll", checkPosition);
   }, []);
 
-  // Scroll to bottom when messages array changes (user sent message or response complete)
+  // Scroll to bottom only when USER sends a message, not when assistant response finishes
+  const prevMessagesLenRef = useRef(messages.length);
   useEffect(() => {
-    setUserScrolledUp(false);
-    scrollToBottom();
+    const prev = prevMessagesLenRef.current;
+    prevMessagesLenRef.current = messages.length;
+    if (messages.length > prev) {
+      const latest = messages[messages.length - 1];
+      if (latest?.role === "user") {
+        setUserScrolledUp(false);
+        scrollToBottom();
+      }
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length]);
 
