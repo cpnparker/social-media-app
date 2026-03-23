@@ -31,6 +31,7 @@ import {
   FileText,
   Database,
   BrainCircuit,
+  ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -140,6 +141,10 @@ export default function ChatPanel({
   const canManage = myPermission === "owner" || !!isAdmin;
   const [shares, setShares] = useState<{ userId: number; userName: string | null; permission: string }[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [userScrolledUp, setUserScrolledUp] = useState(false);
+  const isNearBottomRef = useRef(true);
+  const userScrollIntentRef = useRef(false); // true when user manually scrolled
   const initialMessageSent = useRef(false);
   const chatInputRef = useRef<ChatInputHandle>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -176,10 +181,61 @@ export default function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialMessage, initialAttachments, conversation, loading]);
 
-  // Scroll to bottom on new messages
+  // Smart scroll: only auto-scroll if user hasn't scrolled up
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
+  }, []);
+
+  // Track scroll position — detect if user scrolled up
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingContent]);
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    let ticking = false;
+    const handleScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        const { scrollTop, scrollHeight, clientHeight } = container;
+        const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+        const nearBottom = distanceFromBottom < 120;
+        isNearBottomRef.current = nearBottom;
+        if (nearBottom) {
+          setUserScrolledUp(false);
+          userScrollIntentRef.current = false;
+        } else if (userScrollIntentRef.current) {
+          setUserScrolledUp(true);
+        }
+        ticking = false;
+      });
+    };
+    // Detect user-initiated scroll (touch or wheel)
+    const markUserScroll = () => { userScrollIntentRef.current = true; };
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    container.addEventListener("wheel", markUserScroll, { passive: true });
+    container.addEventListener("touchmove", markUserScroll, { passive: true });
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      container.removeEventListener("wheel", markUserScroll);
+      container.removeEventListener("touchmove", markUserScroll);
+    };
+  }, []);
+
+  // Auto-scroll on new content — only if user hasn't scrolled up
+  useEffect(() => {
+    if (!userScrollIntentRef.current && isNearBottomRef.current) {
+      scrollToBottom("smooth");
+    }
+  }, [messages, streamingContent, scrollToBottom]);
+
+  // Always scroll to bottom when user sends a new message
+  useEffect(() => {
+    if (isStreaming) {
+      setUserScrolledUp(false);
+      userScrollIntentRef.current = false;
+      scrollToBottom("smooth");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStreaming]);
 
   // Send message with streaming
   const handleSend = async (content: string, attachments?: Attachment[]) => {
@@ -937,7 +993,7 @@ export default function ChatPanel({
       </div>
 
       {/* Messages */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto relative">
         {messages.length === 0 && !isStreaming ? (
           <div className="flex flex-col items-center justify-center h-full px-4 sm:px-8 text-center">
             <div className="h-12 w-12 rounded-full bg-foreground/[0.05] flex items-center justify-center mb-4">
@@ -1086,6 +1142,20 @@ export default function ChatPanel({
             )}
             <div ref={messagesEndRef} />
           </div>
+        )}
+        {/* Scroll to bottom button */}
+        {userScrolledUp && (
+          <button
+            onClick={() => {
+              setUserScrolledUp(false);
+              userScrollIntentRef.current = false;
+              scrollToBottom("smooth");
+            }}
+            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-foreground/90 text-background px-3 py-1.5 text-xs font-medium shadow-lg hover:bg-foreground transition-colors backdrop-blur-sm"
+          >
+            <ChevronDown className="h-3.5 w-3.5" />
+            New content below
+          </button>
         )}
       </div>
 
