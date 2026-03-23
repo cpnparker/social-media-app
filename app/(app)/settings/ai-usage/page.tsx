@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Loader2,
   Check,
@@ -81,7 +81,16 @@ interface UsageData {
   byApp?: { app: string; cost: number; calls: number; input: number; output: number }[];
   byUser: {
     userId: number;
+    userIdExternal?: string | null;
     userName: string;
+    cost: number;
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+  }[];
+  byUserModel: {
+    userId: number;
+    model: string;
     cost: number;
     calls: number;
     inputTokens: number;
@@ -264,6 +273,8 @@ export default function AIUsagePage() {
   const [usageDays, setUsageDays] = useState(1);
   const [usageLoading, setUsageLoading] = useState(false);
   const [userSearch, setUserSearch] = useState("");
+  const [expandedUsers, setExpandedUsers] = useState<Set<string>>(new Set());
+  const [allUsersExpanded, setAllUsersExpanded] = useState(false);
   const [selectedApp, setSelectedApp] = useState("all");
   const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set(Object.keys(PRODUCT_GROUPS)));
   const [customDateRange, setCustomDateRange] = useState(false);
@@ -453,6 +464,7 @@ export default function AIUsagePage() {
     userSearch
       ? u.userName.toLowerCase().includes(userSearch.toLowerCase())
       : true
+  ).sort((a, b) => b.cost - a.cost
   );
 
   const REGION_OPTIONS = [
@@ -893,17 +905,36 @@ export default function AIUsagePage() {
                     <CardTitle className="text-sm font-medium">
                       Per-User Cost
                     </CardTitle>
-                    {usageData.byUser.length > 5 && (
-                      <div className="relative">
-                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
-                        <input
-                          value={userSearch}
-                          onChange={(e) => setUserSearch(e.target.value)}
-                          placeholder="Search users..."
-                          className="h-7 rounded-md border border-input bg-background pl-7 pr-3 text-xs focus:outline-none focus:ring-1 focus:ring-ring w-40"
-                        />
-                      </div>
-                    )}
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs text-muted-foreground"
+                        onClick={() => {
+                          if (allUsersExpanded) {
+                            setExpandedUsers(new Set());
+                            setAllUsersExpanded(false);
+                          } else {
+                            const allKeys = new Set(filteredUsers.map((u) => u.userIdExternal || String(u.userId)));
+                            setExpandedUsers(allKeys);
+                            setAllUsersExpanded(true);
+                          }
+                        }}
+                      >
+                        {allUsersExpanded ? "Collapse all" : "Expand all"}
+                      </Button>
+                      {usageData.byUser.length > 5 && (
+                        <div className="relative">
+                          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                          <input
+                            value={userSearch}
+                            onChange={(e) => setUserSearch(e.target.value)}
+                            placeholder="Search users..."
+                            className="h-7 rounded-md border border-input bg-background pl-7 pr-3 text-xs focus:outline-none focus:ring-1 focus:ring-ring w-40"
+                          />
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </CardHeader>
                 <CardContent>
@@ -929,28 +960,72 @@ export default function AIUsagePage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredUsers.map((u) => (
-                          <tr
-                            key={u.userId}
-                            className="border-t border-border/50"
-                          >
-                            <td className="px-3 py-2 text-sm font-medium">
-                              {u.userName}
-                            </td>
-                            <td className="px-3 py-2 text-sm text-right">
-                              {formatCost(u.cost)}
-                            </td>
-                            <td className="px-3 py-2 text-sm text-right text-muted-foreground">
-                              {u.calls}
-                            </td>
-                            <td className="px-3 py-2 text-xs text-right text-muted-foreground hidden sm:table-cell">
-                              {formatTokens(u.inputTokens)}
-                            </td>
-                            <td className="px-3 py-2 text-xs text-right text-muted-foreground hidden sm:table-cell">
-                              {formatTokens(u.outputTokens)}
-                            </td>
-                          </tr>
-                        ))}
+                        {filteredUsers.map((u) => {
+                          const userKey = u.userIdExternal || String(u.userId);
+                          const isExpanded = expandedUsers.has(userKey);
+                          const userModels = (usageData.byUserModel || []).filter(
+                            (um) => String(um.userId) === String(u.userId)
+                          ).sort((a, b) => b.cost - a.cost);
+                          return (
+                            <React.Fragment key={userKey}>
+                              <tr
+                                className="border-t border-border/50 cursor-pointer hover:bg-muted/30 transition-colors"
+                                onClick={() => {
+                                  const next = new Set(expandedUsers);
+                                  if (isExpanded) next.delete(userKey);
+                                  else next.add(userKey);
+                                  setExpandedUsers(next);
+                                  if (!isExpanded === false) setAllUsersExpanded(false);
+                                }}
+                              >
+                                <td className="px-3 py-2 text-sm font-medium">
+                                  <span className="inline-flex items-center gap-1.5">
+                                    {isExpanded ? (
+                                      <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
+                                    ) : (
+                                      <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />
+                                    )}
+                                    {u.userName}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-sm text-right">
+                                  {formatCost(u.cost)}
+                                </td>
+                                <td className="px-3 py-2 text-sm text-right text-muted-foreground">
+                                  {u.calls}
+                                </td>
+                                <td className="px-3 py-2 text-xs text-right text-muted-foreground hidden sm:table-cell">
+                                  {formatTokens(u.inputTokens)}
+                                </td>
+                                <td className="px-3 py-2 text-xs text-right text-muted-foreground hidden sm:table-cell">
+                                  {formatTokens(u.outputTokens)}
+                                </td>
+                              </tr>
+                              {isExpanded && userModels.map((um) => (
+                                <tr
+                                  key={`${userKey}-${um.model}`}
+                                  className="border-t border-border/30 bg-muted/20"
+                                >
+                                  <td className="px-3 py-1.5 text-xs text-muted-foreground pl-8">
+                                    {um.model}
+                                  </td>
+                                  <td className="px-3 py-1.5 text-xs text-right text-muted-foreground">
+                                    {formatCost(um.cost)}
+                                  </td>
+                                  <td className="px-3 py-1.5 text-xs text-right text-muted-foreground">
+                                    {um.calls}
+                                  </td>
+                                  <td className="px-3 py-1.5 text-xs text-right text-muted-foreground hidden sm:table-cell">
+                                    {formatTokens(um.inputTokens)}
+                                  </td>
+                                  <td className="px-3 py-1.5 text-xs text-right text-muted-foreground hidden sm:table-cell">
+                                    {formatTokens(um.outputTokens)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </React.Fragment>
+                          );
+                        })}
                         {filteredUsers.length === 0 && (
                           <tr>
                             <td
