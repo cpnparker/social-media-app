@@ -110,6 +110,9 @@ const CATEGORY_MAP: Record<string, string> = {
   // Written
   article: "Written",
   article_interview: "Written",
+  newsletter: "Written",
+  original_reporting: "Written",
+  reporting: "Written",
   // Video
   video: "Video",
   animation: "Video",

@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/rfp-scan",
+      "schedule": "0 */1 * * *"
+    },
+    {
+      "path": "/api/cron/rfp-digest",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/client-context",
+      "schedule": "0 */12 * * *"
+    }
+  ]
+}

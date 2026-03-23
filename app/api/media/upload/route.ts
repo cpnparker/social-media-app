@@ -4,6 +4,7 @@ import { put } from "@vercel/blob";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 import crypto from "crypto";
+import { auth } from "@/lib/auth";
 
 // Route segment config
 export const maxDuration = 60;
@@ -16,6 +17,21 @@ const ALLOWED_TYPES = [
   "video/mp4",
   "video/quicktime",
   "video/webm",
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.ms-powerpoint",
+  "application/rtf",
+  "application/json",
+  "application/xml",
+  "text/plain",
+  "text/csv",
+  "text/markdown",
+  "text/xml",
+  "text/tab-separated-values",
+  "text/html",
 ];
 
 // POST /api/media/upload
@@ -26,7 +42,10 @@ export async function POST(req: NextRequest) {
   try {
     const contentType = req.headers.get("content-type") || "";
 
-    // If JSON body, this is a Vercel Blob client-upload handshake
+    // If JSON body, this is a Vercel Blob client-upload handshake.
+    // The completion callback comes from Vercel's infrastructure (no user
+    // cookies), so auth is checked inside onBeforeGenerateToken instead of
+    // at the top of the route.
     if (contentType.includes("application/json")) {
       const body = (await req.json()) as HandleUploadBody;
 
@@ -34,20 +53,29 @@ export async function POST(req: NextRequest) {
         body,
         request: req,
         onBeforeGenerateToken: async (pathname, clientPayload) => {
-          // Validate and configure the upload
+          // Auth-check here so the completion callback isn't blocked
+          const session = await auth();
+          if (!session?.user?.id) {
+            throw new Error("Unauthorized");
+          }
           return {
             allowedContentTypes: ALLOWED_TYPES,
-            maximumSizeInBytes: 200 * 1024 * 1024, // 200MB
+            maximumSizeInBytes: 50 * 1024 * 1024, // 50MB for docs, images; videos handled separately
             addRandomSuffix: true,
           };
         },
         onUploadCompleted: async ({ blob }) => {
-          // Optional: could log or save to DB here
           console.log("[Media Upload] Client upload completed:", blob.url);
         },
       });
 
       return NextResponse.json(jsonResponse);
+    }
+
+    // Non-JSON requests (formData uploads) require auth
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Otherwise, handle as direct formData upload (local dev / small files)
@@ -69,8 +97,8 @@ export async function POST(req: NextRequest) {
     }
 
     const isVideo = file.type.startsWith("video/");
-    const maxSize = isVideo ? 200 * 1024 * 1024 : 20 * 1024 * 1024;
-    const maxLabel = isVideo ? "200MB" : "20MB";
+    const maxSize = isVideo ? 200 * 1024 * 1024 : 50 * 1024 * 1024;
+    const maxLabel = isVideo ? "200MB" : "50MB";
     if (file.size > maxSize) {
       return NextResponse.json(
         {
@@ -80,15 +108,27 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Use Vercel Blob server-side for small files
+    // Use Vercel Blob server-side (private store)
     if (process.env.BLOB_READ_WRITE_TOKEN) {
-      const blob = await put(file.name, file, {
-        access: "public",
-        addRandomSuffix: true,
-      });
+      let blob;
+      try {
+        blob = await put(file.name, file, {
+          access: "private",
+          addRandomSuffix: true,
+        });
+      } catch (privateErr: any) {
+        console.error("[Media Upload] Private blob upload failed:", privateErr?.message, privateErr);
+        return NextResponse.json(
+          { error: `Upload failed: ${privateErr?.message || "Unknown error"}` },
+          { status: 500 }
+        );
+      }
+
+      // Private: return auth-gated proxy URL
+      const url = `/api/media/file?path=${encodeURIComponent(blob.pathname)}`;
 
       return NextResponse.json({
-        url: blob.url,
+        url,
         pathname: blob.pathname,
         contentType: file.type,
         size: file.size,
@@ -96,7 +136,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Production without BLOB_READ_WRITE_TOKEN
+    // Production without blob token
     if (process.env.VERCEL) {
       return NextResponse.json(
         {

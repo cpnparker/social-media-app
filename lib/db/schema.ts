@@ -131,6 +131,14 @@ export const workspaces = pgTable("workspaces", {
   plan: planEnum("plan").default("free").notNull(),
   lateApiKey: text("late_api_key"),
   aiModel: text("ai_model").default("claude-sonnet-4-20250514"),
+  aiContextConfig: jsonb("ai_context_config")
+    .default({ contracts: true, contentPipeline: true, socialPresence: true })
+    .$type<{ contracts: boolean; contentPipeline: boolean; socialPresence: boolean }>(),
+  aiCuDescription: text("ai_cu_description"),
+  aiMaxTokens: integer("ai_max_tokens").default(4096),
+  aiDebugMode: boolean("ai_debug_mode").default(false),
+  aiFormatDescriptions: jsonb("ai_format_descriptions").$type<Record<string, string>>(),
+  aiTypeInstructions: jsonb("ai_type_instructions").$type<Record<string, string>>(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -595,7 +603,9 @@ export const aiConversations = pgTable("ai_conversations", {
   title: text("title").default("New Conversation").notNull(),
   visibility: text("visibility").default("private").notNull(),
   contentObjectId: integer("content_object_id"),
+  customerId: integer("customer_id"),
   model: text("model").default("claude-sonnet-4-20250514").notNull(),
+  isIncognito: boolean("is_incognito").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -607,7 +617,92 @@ export const aiMessages = pgTable("ai_messages", {
     .notNull(),
   role: text("role").notNull(),
   content: text("content").notNull(),
+  attachments: text("attachments"),
   model: text("model"),
   createdBy: integer("created_by"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// ── AI Conversation Shares ──
+// Allows sharing private conversations with specific workspace members.
+// "view" = read-only, "collaborate" = can send messages.
+export const aiConversationShares = pgTable("ai_conversation_shares", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  conversationId: uuid("conversation_id")
+    .references(() => aiConversations.id, { onDelete: "cascade" })
+    .notNull(),
+  userId: integer("user_id").notNull(), // Supabase id_user of recipient
+  permission: text("permission").default("view").notNull(), // 'view' | 'collaborate'
+  sharedBy: integer("shared_by").notNull(), // Supabase id_user of owner who shared
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// ── AI Roles ──
+// Configurable AI personas/roles that modify the system prompt.
+// Auto-seeded with defaults on first access per workspace.
+export const aiRoles = pgTable("ai_roles", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspaces.id, { onDelete: "cascade" })
+    .notNull(),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  instructions: text("instructions").notNull(),
+  icon: text("icon").default("🤖").notNull(),
+  isDefault: boolean("is_default").default(false).notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  sortOrder: integer("sort_order").default(0).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// ── User Area Access ──
+// Stores per-workspace per-user area access flags.
+// Separate from Supabase workspace_members to keep in Drizzle/Neon.
+export const userAccess = pgTable("user_access", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull(),
+  userId: integer("user_id").notNull(),
+  accessEngine: boolean("access_engine").default(true).notNull(),
+  accessEngineGpt: boolean("access_enginegpt").default(true).notNull(),
+  accessOperations: boolean("access_operations").default(false).notNull(),
+  accessAdmin: boolean("access_admin").default(false).notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// ── AI Memories ──
+// Stores user/team memories extracted from conversations for personalisation.
+// Private memories (userId set) are only injected for that user.
+// Team memories (userId null, scope='team') are shared across the workspace.
+export const aiMemories = pgTable("ai_memories", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspaces.id, { onDelete: "cascade" })
+    .notNull(),
+  userId: integer("user_id"), // null = team memory, set = user-private
+  scope: text("scope").default("private").notNull(), // 'private' | 'team'
+  category: text("category").default("fact").notNull(), // preference | fact | instruction | style | client_insight
+  content: text("content").notNull(),
+  sourceConversationId: uuid("source_conversation_id")
+    .references(() => aiConversations.id, { onDelete: "set null" }),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// ── AI Usage Tracking ──
+// Logs every AI API call with token counts and cost for dashboard analytics.
+export const aiUsage = pgTable("ai_usage", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspaces.id, { onDelete: "cascade" })
+    .notNull(),
+  userId: integer("user_id").notNull(),
+  model: text("model").notNull(),
+  source: text("source").notNull(), // 'enginegpt' | 'engine' | 'api'
+  inputTokens: integer("input_tokens").default(0).notNull(),
+  outputTokens: integer("output_tokens").default(0).notNull(),
+  costTenths: integer("cost_tenths").default(0).notNull(), // cost in tenths of cents
+  conversationId: uuid("conversation_id").references(() => aiConversations.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
