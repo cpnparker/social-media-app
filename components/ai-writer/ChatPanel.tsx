@@ -32,6 +32,7 @@ import {
   Database,
   BrainCircuit,
   ChevronDown,
+  Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -136,6 +137,8 @@ export default function ChatPanel({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [moveClientConfirm, setMoveClientConfirm] = useState<{ id: string | null; name: string } | null>(null);
+  const [clientSearchQuery, setClientSearchQuery] = useState("");
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [myPermission, setMyPermission] = useState<"owner" | "view" | "collaborate">("owner");
   const canManage = myPermission === "owner" || !!isAdmin;
@@ -833,9 +836,9 @@ export default function ChatPanel({
           </div>
         </div>
 
-        {/* Desktop customer dropdown (mobile shows client in subtitle text) */}
+        {/* Desktop customer dropdown with search + move confirmation */}
         {customers && customers.length > 0 && onCustomerChange && (
-          <Popover>
+          <Popover onOpenChange={(open) => { if (!open) setClientSearchQuery(""); }}>
             <PopoverTrigger asChild>
               <button className="hidden lg:flex items-center gap-1 rounded-lg border bg-background hover:bg-muted px-2 py-1 text-[12px] transition-colors shrink-0">
                 <Building2 className="h-3 w-3 text-muted-foreground" />
@@ -845,23 +848,49 @@ export default function ChatPanel({
                 <ChevronsUpDown className="h-2.5 w-2.5 text-muted-foreground" />
               </button>
             </PopoverTrigger>
-            <PopoverContent align="end" side="bottom" className="w-[240px] p-0">
+            <PopoverContent align="end" side="bottom" className="w-[260px] p-0">
+              <div className="flex items-center border-b px-3">
+                <Search className="mr-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <input
+                  placeholder="Search clients..."
+                  value={clientSearchQuery}
+                  onChange={(e) => setClientSearchQuery(e.target.value)}
+                  className="flex h-9 w-full bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
+                />
+                {clientSearchQuery && (
+                  <button onClick={() => setClientSearchQuery("")} className="ml-1 shrink-0 text-muted-foreground hover:text-foreground">
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
               <div className="max-h-[280px] overflow-y-auto py-1">
-                <button
-                  onClick={() => onCustomerChange(null)}
-                  className={cn(
-                    "w-full flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-accent transition-colors text-left",
-                    !selectedCustomer && "bg-accent"
-                  )}
-                >
-                  <Globe className="h-4 w-4 text-muted-foreground shrink-0" />
-                  <span className="flex-1">General</span>
-                  {!selectedCustomer && <Check className="h-4 w-4 text-primary shrink-0" />}
-                </button>
-                {customers.map((c) => (
+                {!clientSearchQuery && (
+                  <button
+                    onClick={() => {
+                      if (selectedCustomer) {
+                        setMoveClientConfirm({ id: null, name: "General" });
+                      }
+                    }}
+                    className={cn(
+                      "w-full flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-accent transition-colors text-left",
+                      !selectedCustomer && "bg-accent"
+                    )}
+                  >
+                    <Globe className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <span className="flex-1">General</span>
+                    {!selectedCustomer && <Check className="h-4 w-4 text-primary shrink-0" />}
+                  </button>
+                )}
+                {customers
+                  .filter((c) => !clientSearchQuery || c.name.toLowerCase().includes(clientSearchQuery.toLowerCase()))
+                  .map((c) => (
                   <button
                     key={c.id}
-                    onClick={() => onCustomerChange(c.id)}
+                    onClick={() => {
+                      if (selectedCustomer?.id !== c.id) {
+                        setMoveClientConfirm({ id: c.id, name: c.name });
+                      }
+                    }}
                     className={cn(
                       "w-full flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-accent transition-colors text-left",
                       selectedCustomer?.id === c.id && "bg-accent"
@@ -974,6 +1003,40 @@ export default function ChatPanel({
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               >
                 Delete
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        {/* Move to client confirmation */}
+        <AlertDialog open={!!moveClientConfirm} onOpenChange={(open) => { if (!open) setMoveClientConfirm(null); }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Move conversation?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Move &ldquo;{conversation.title}&rdquo; to <strong>{moveClientConfirm?.name}</strong>? Future messages will use that client&apos;s context.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={async () => {
+                  if (!moveClientConfirm) return;
+                  const newId = moveClientConfirm.id;
+                  try {
+                    await fetch(`/api/ai/conversations/${conversationId}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ customerId: newId }),
+                    });
+                    onCustomerChange?.(newId || "general");
+                    setMoveClientConfirm(null);
+                  } catch {
+                    setMoveClientConfirm(null);
+                  }
+                }}
+              >
+                Move
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
