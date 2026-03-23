@@ -35,6 +35,8 @@ const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> =
   "gemini-2.5-pro": { inputPer1M: 125, outputPer1M: 1000 },          // $1.25/$10
   "gemini-3-flash": { inputPer1M: 50, outputPer1M: 300 },            // $0.50/$3
   "gemini-3.1-flash-lite": { inputPer1M: 25, outputPer1M: 150 },     // $0.25/$1.50
+  "sonar": { inputPer1M: 100, outputPer1M: 100 },                    // $1/$1
+  "sonar-pro": { inputPer1M: 300, outputPer1M: 1500 },               // $3/$15
 };
 
 function calculateCostTenths(model: string, inputTokens: number, outputTokens: number): number {

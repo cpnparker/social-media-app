@@ -71,7 +71,7 @@ function formatMeetingBrainResult(report: string, result: { data: any; count: nu
 /* ─────────────── Model Registry ─────────────── */
 
 interface ModelInfo {
-  provider: "anthropic" | "xai" | "openai" | "gemini";
+  provider: "anthropic" | "xai" | "openai" | "gemini" | "perplexity";
   apiModel: string;
   label: string;
   legacy?: boolean;
@@ -117,6 +117,16 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     provider: "xai",
     apiModel: "grok-3-mini",
     label: "Grok 3 Mini",
+  },
+  "sonar": {
+    provider: "perplexity",
+    apiModel: "sonar",
+    label: "Perplexity Sonar",
+  },
+  "sonar-pro": {
+    provider: "perplexity",
+    apiModel: "sonar-pro",
+    label: "Perplexity Sonar Pro",
   },
   // Legacy mappings for old conversations
   "gemini-2.5-pro": {
@@ -179,6 +189,16 @@ function getXAIClient() {
   return new OpenAI({
     apiKey: process.env.XAI_API_KEY,
     baseURL: "https://api.x.ai/v1",
+  });
+}
+
+function getPerplexityClient() {
+  if (!process.env.PERPLEXITY_API_KEY) {
+    throw new Error("PERPLEXITY_API_KEY environment variable is not set. Add it to use Perplexity models.");
+  }
+  return new OpenAI({
+    apiKey: process.env.PERPLEXITY_API_KEY,
+    baseURL: "https://api.perplexity.ai",
   });
 }
 
@@ -2416,6 +2436,8 @@ export function createStreamingResponse(
           result = await streamGemini(messages, config, modelInfo.apiModel, controller, encoder);
         } else if (modelInfo.provider === "openai") {
           result = await streamOpenAI(messages, config, modelInfo.apiModel, controller, encoder);
+        } else if (modelInfo.provider === "perplexity") {
+          result = await streamPerplexity(messages, config, modelInfo.apiModel, controller, encoder);
         } else {
           result = await streamXAI(messages, config, modelInfo.apiModel, controller, encoder);
         }
@@ -4051,4 +4073,55 @@ async function streamOpenAI(
   }
 
   return { fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+}
+
+/* ─────────────── Perplexity Streaming ─────────────── */
+
+async function streamPerplexity(
+  messages: AIMessage[],
+  config: AIProviderConfig,
+  apiModel: string,
+  controller: ReadableStreamDefaultController,
+  encoder: TextEncoder
+): Promise<StreamResult> {
+  const client = getPerplexityClient();
+
+  const pplxMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+  if (config.systemPrompt) {
+    pplxMessages.push({ role: "system", content: config.systemPrompt });
+  }
+  for (const msg of messages) {
+    if (msg.role === "user" || msg.role === "assistant") {
+      pplxMessages.push({ role: msg.role, content: msg.content });
+    }
+  }
+
+  let fullText = "";
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  const stream = (await client.chat.completions.create({
+    model: apiModel,
+    messages: pplxMessages,
+    stream: true,
+    ...(config.maxTokens ? { max_tokens: config.maxTokens } : {}),
+    ...(config.temperature !== undefined ? { temperature: config.temperature } : {}),
+  })) as unknown as AsyncIterable<any>;
+
+  for await (const chunk of stream) {
+    if (chunk.usage) {
+      inputTokens = chunk.usage.prompt_tokens || 0;
+      outputTokens = chunk.usage.completion_tokens || 0;
+    }
+
+    const delta = chunk.choices?.[0]?.delta;
+    if (delta?.content) {
+      fullText += delta.content;
+      controller.enqueue(
+        encoder.encode(`data: ${JSON.stringify({ token: delta.content })}\n\n`)
+      );
+    }
+  }
+
+  return { fullText, inputTokens, outputTokens };
 }
