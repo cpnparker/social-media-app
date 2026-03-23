@@ -840,7 +840,7 @@ const QUERY_ENGINE_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         },
         limit: {
           type: "number",
-          description: "Max rows (default 25, max 100)",
+          description: "Max rows (default 100). Always use 100 for listing queries.",
         },
       },
       required: [],
@@ -1508,7 +1508,7 @@ async function queryEngine(
   }
 
   // Limit
-  const maxRows = Math.min(Math.max(limit || 25, 1), 100);
+  const maxRows = Math.min(Math.max(limit || 100, 1), 100);
   query = query.limit(maxRows);
 
   const { data, error } = await query;
