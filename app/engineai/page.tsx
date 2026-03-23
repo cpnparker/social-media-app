@@ -2202,6 +2202,16 @@ function EngineAIContent() {
                   Google explicitly confirms prompts and outputs don&apos;t touch training pipelines.
                 </p>
               </div>
+
+              <div className="rounded-lg border p-3 space-y-1">
+                <div className="font-medium text-foreground text-xs">Perplexity (Sonar)</div>
+                <p className="text-xs">
+                  API data is not used for model training. Perplexity&apos;s API terms state that
+                  customer inputs and outputs are not used to train or improve their models.
+                  Perplexity includes built-in web search &mdash; queries are sent to the web to
+                  retrieve real-time information, but your conversation data remains private.
+                </p>
+              </div>
             </div>
 
             <div className="rounded-lg bg-muted/50 p-3 space-y-1.5">
