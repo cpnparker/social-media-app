@@ -102,11 +102,11 @@ export async function POST(
       },
     ];
 
-    // Use Grok 4 Fast with web search for fact-checking (cheaper, no rate limits)
+    // Use Claude with web_search tool for fact-checking — only model that returns real source URLs
     const aiStream = createStreamingResponse(
       messages,
       {
-        model: "grok-4-1-fast",
+        model: "claude-sonnet-4-6",
         systemPrompt: FACT_CHECK_SYSTEM_PROMPT,
         maxTokens: 4096,
         webSearch: true,
@@ -121,7 +121,7 @@ export async function POST(
             id_conversation: conversationId,
             role_message: "assistant",
             document_message: fullText,
-            name_model: "grok-4-1-fast",
+            name_model: "claude-sonnet-4-6",
           });
 
           await intelligenceDb
