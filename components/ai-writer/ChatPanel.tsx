@@ -33,6 +33,7 @@ import {
   BrainCircuit,
   ChevronDown,
   Search,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -60,7 +61,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { getModelLabel } from "@/lib/ai/models";
+import { AI_MODELS, getModelLabel } from "@/lib/ai/models";
 import MessageBubble from "./MessageBubble";
 import ChatInput, { type ChatInputHandle } from "./ChatInput";
 import ShareDialog from "./ShareDialog";
@@ -461,6 +462,24 @@ export default function ChatPanel({
     handleSend(newContent);
   };
 
+  // Change model mid-conversation
+  const handleModelChange = async (newModelId: string) => {
+    try {
+      const res = await fetch(`/api/ai/conversations/${conversationId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: newModelId }),
+      });
+      if (res.ok) {
+        setConversation((prev) => prev ? { ...prev, model: newModelId } : prev);
+        onConversationUpdated?.({ ...conversation!, model: newModelId } as AIConversation);
+        toast.success(`Switched to ${getModelLabel(newModelId)}`);
+      }
+    } catch {
+      toast.error("Failed to change model");
+    }
+  };
+
   // Fact-check an assistant message using Claude with web search
   const handleFactCheck = async (messageId: string, messageContent: string) => {
     if (isFactChecking || isStreaming) return;
@@ -784,12 +803,39 @@ export default function ChatPanel({
                 View only
               </Badge>
             )}
-            <Badge
-              variant="outline"
-              className="text-[10px] px-1.5 py-0 h-4"
-            >
-              {modelLabel}
-            </Badge>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="inline-flex items-center gap-1 text-[10px] px-1.5 h-4 rounded-full border border-border bg-background hover:bg-muted transition-colors font-medium">
+                  {modelLabel}
+                  <ChevronDown className="h-2 w-2" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-56">
+                {AI_MODELS.map((m) => (
+                  <DropdownMenuItem
+                    key={m.id}
+                    onClick={() => handleModelChange(m.id)}
+                    className={cn(
+                      "text-sm py-2",
+                      conversation?.model === m.id && "bg-muted font-medium"
+                    )}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        {m.id === "auto" && <Sparkles className="h-3 w-3 text-amber-500" />}
+                        {m.label}
+                      </div>
+                      {"description" in m && m.description && (
+                        <div className="text-[10px] text-muted-foreground font-normal">{m.description}</div>
+                      )}
+                    </div>
+                    {conversation?.model === m.id && (
+                      <span className="text-primary text-xs shrink-0">&#10003;</span>
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
             {conversation.customerName && (
               <Badge
                 variant="outline"
