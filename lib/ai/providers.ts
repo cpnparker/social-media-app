@@ -40,7 +40,7 @@ const DEFAULT_CHAT_TEMPERATURE = 0.4;
 
 /* ─────────────── Tool Result Formatting ─────────────── */
 
-const MAX_TOOL_RESULT_ROWS = 20;
+const MAX_TOOL_RESULT_ROWS = 100;
 const MAX_WEB_SEARCH_CHARS = 6000;
 
 /** Format query_engine results with optional truncation to reduce token usage */

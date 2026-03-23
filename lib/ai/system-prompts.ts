@@ -208,7 +208,9 @@ Response format:
 - Use markdown: headings for structure, **bold** for key terms, tables for comparisons or data
 - Keep paragraphs to 2-3 sentences; use them to explain reasoning, nuance, or narrative
 - Use bullet lists for actionable steps, options, or quick-reference items
-- Vary your structure to match the content — don't default to the same layout every time`;
+- Vary your structure to match the content — don't default to the same layout every time
+- ALWAYS use markdown tables for data listings (clients, contracts, tasks, metrics) — never verbose bullet lists. Include all results in the table, not a partial list with "and X more". Tables should have clear column headers and be sortable at a glance.
+- When showing data from query_engine, present ALL returned rows — don't truncate or summarise. The user asked for data, give them the complete data.`;
 
   let prompt: string;
   if (ctx.role) {
