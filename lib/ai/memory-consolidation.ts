@@ -149,16 +149,16 @@ export async function classifyMemoryAction(
       .replace("{CONTENT}", candidate.content);
 
     const response = await xai.chat.completions.create({
-      model: "grok-3-mini",
+      model: "grok-4-1-fast",
       messages: [
         { role: "system", content: prompt },
         { role: "user", content: "Classify this memory." },
       ],
-      max_tokens: 300,
+      max_completion_tokens: 300,
       temperature: 0.2,
     });
 
-    logAiUsage({ model: "grok-3-mini", source: "memory-consolidate", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+    logAiUsage({ model: "grok-4-1-fast", source: "memory-consolidate", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
     const raw = response.choices?.[0]?.message?.content?.trim();
     if (!raw) return { action: "NOOP" };

@@ -222,7 +222,7 @@ async function summariseDocument(
   const truncated = text.slice(0, 12000);
 
   const response = await xai.chat.completions.create({
-    model: "grok-3-mini",
+    model: "grok-4-1-fast",
     messages: [
       {
         role: "system",
@@ -241,11 +241,11 @@ Document name: ${fileName}`,
       },
       { role: "user", content: truncated },
     ],
-    max_tokens: 600,
+    max_completion_tokens: 600,
     temperature: 0.3,
   });
 
-  logAiUsage({ model: "grok-3-mini", source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+  logAiUsage({ model: "grok-4-1-fast", source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
   return response.choices?.[0]?.message?.content?.trim() || "";
 }
@@ -263,7 +263,7 @@ async function consolidateProfile(
     .join("\n\n");
 
   const response = await xai.chat.completions.create({
-    model: "grok-3-mini",
+    model: "grok-4-1-fast",
     messages: [
       {
         role: "system",
@@ -284,11 +284,11 @@ Do NOT invent information — only include what's supported by the documents.`,
       },
       { role: "user", content: input },
     ],
-    max_tokens: 1500,
+    max_completion_tokens: 1500,
     temperature: 0.3,
   });
 
-  logAiUsage({ model: "grok-3-mini", source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+  logAiUsage({ model: "grok-4-1-fast", source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
   return response.choices?.[0]?.message?.content?.trim() || "";
 }

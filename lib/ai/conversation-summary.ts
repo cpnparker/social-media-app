@@ -10,7 +10,7 @@
  * 1. Context-window truncation in long conversations (>20 messages)
  * 2. Cross-conversation awareness (injecting past summaries into system prompt)
  *
- * Cost: ~$0.001 per summary generation (grok-3-mini).
+ * Cost: ~$0.001 per summary generation (grok-4-1-fast).
  */
 
 import OpenAI from "openai";
@@ -115,16 +115,16 @@ export async function generateConversationSummary(
       .slice(0, 6000);
 
     const response = await xai.chat.completions.create({
-      model: "grok-3-mini",
+      model: "grok-4-1-fast",
       messages: [
         { role: "system", content: GENERATE_PROMPT },
         { role: "user", content: conversationText },
       ],
-      max_tokens: 800,
+      max_completion_tokens: 800,
       temperature: 0.3,
     });
 
-    logAiUsage({ model: "grok-3-mini", source: "summary-generate", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+    logAiUsage({ model: "grok-4-1-fast", source: "summary-generate", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
     const summary = response.choices?.[0]?.message?.content?.trim();
     return summary || null;
@@ -156,16 +156,16 @@ export async function updateConversationSummary(
       .slice(0, 4000);
 
     const response = await xai.chat.completions.create({
-      model: "grok-3-mini",
+      model: "grok-4-1-fast",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: `New messages:\n\n${newConversationText}` },
       ],
-      max_tokens: 800,
+      max_completion_tokens: 800,
       temperature: 0.3,
     });
 
-    logAiUsage({ model: "grok-3-mini", source: "summary-update", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+    logAiUsage({ model: "grok-4-1-fast", source: "summary-update", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
     const summary = response.choices?.[0]?.message?.content?.trim();
     return summary || null;
