@@ -146,8 +146,6 @@ export default function ChatPanel({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [userScrolledUp, setUserScrolledUp] = useState(false);
-  const isNearBottomRef = useRef(true);
-  const userScrollIntentRef = useRef(false); // true when user manually scrolled
   const initialMessageSent = useRef(false);
   const chatInputRef = useRef<ChatInputHandle>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -184,61 +182,80 @@ export default function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialMessage, initialAttachments, conversation, loading]);
 
-  // Smart scroll: only auto-scroll if user hasn't scrolled up
+  // ── Smart scroll (ChatGPT/Perplexity pattern) ──
+  // Sticky-to-bottom: auto-scroll while stuck, stop completely when user scrolls up.
+  const stickyRef = useRef(true); // true = auto-scroll active
+  const prevScrollHeightRef = useRef(0);
+  const programmaticScrollRef = useRef(false); // ignore scroll events we caused
+
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
-    messagesEndRef.current?.scrollIntoView({ behavior });
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    programmaticScrollRef.current = true;
+    if (behavior === "instant") {
+      container.scrollTop = container.scrollHeight;
+    } else {
+      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+    }
+    // Reset programmatic flag after scroll completes
+    setTimeout(() => { programmaticScrollRef.current = false; }, 100);
   }, []);
 
-  // Track scroll position — detect if user scrolled up
+  // Detect user scroll intent (wheel/touch = user, programmatic = ignore)
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
-    let ticking = false;
-    const handleScroll = () => {
-      if (ticking) return;
-      ticking = true;
-      requestAnimationFrame(() => {
-        const { scrollTop, scrollHeight, clientHeight } = container;
-        const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-        const nearBottom = distanceFromBottom < 120;
-        isNearBottomRef.current = nearBottom;
-        if (nearBottom) {
-          setUserScrolledUp(false);
-          userScrollIntentRef.current = false;
-        } else if (userScrollIntentRef.current) {
-          setUserScrolledUp(true);
-        }
-        ticking = false;
-      });
+
+    const handleUserScroll = () => {
+      if (programmaticScrollRef.current) return; // we caused this scroll, ignore
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+      if (distanceFromBottom < 50) {
+        // User scrolled back to bottom — re-stick
+        stickyRef.current = true;
+        setUserScrolledUp(false);
+      } else {
+        // User scrolled up — unstick
+        stickyRef.current = false;
+        setUserScrolledUp(true);
+      }
     };
-    // Detect user-initiated scroll (touch or wheel)
-    const markUserScroll = () => { userScrollIntentRef.current = true; };
-    container.addEventListener("scroll", handleScroll, { passive: true });
-    container.addEventListener("wheel", markUserScroll, { passive: true });
-    container.addEventListener("touchmove", markUserScroll, { passive: true });
+
+    // Only listen for user-initiated scroll (wheel/touch), not programmatic
+    const onWheel = () => { programmaticScrollRef.current = false; };
+    const onTouch = () => { programmaticScrollRef.current = false; };
+
+    container.addEventListener("scroll", handleUserScroll, { passive: true });
+    container.addEventListener("wheel", onWheel, { passive: true });
+    container.addEventListener("touchstart", onTouch, { passive: true });
     return () => {
-      container.removeEventListener("scroll", handleScroll);
-      container.removeEventListener("wheel", markUserScroll);
-      container.removeEventListener("touchmove", markUserScroll);
+      container.removeEventListener("scroll", handleUserScroll);
+      container.removeEventListener("wheel", onWheel);
+      container.removeEventListener("touchstart", onTouch);
     };
   }, []);
 
-  // Auto-scroll on new content — only if user hasn't scrolled up
+  // Auto-scroll on new streaming content — only if sticky
   useEffect(() => {
-    if (!userScrollIntentRef.current && isNearBottomRef.current) {
-      scrollToBottom("smooth");
+    if (!stickyRef.current) return;
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    // Only scroll if content actually grew
+    if (container.scrollHeight > prevScrollHeightRef.current) {
+      programmaticScrollRef.current = true;
+      container.scrollTop = container.scrollHeight;
+      setTimeout(() => { programmaticScrollRef.current = false; }, 50);
     }
-  }, [messages, streamingContent, scrollToBottom]);
+    prevScrollHeightRef.current = container.scrollHeight;
+  }, [streamingContent]);
 
-  // Always scroll to bottom when user sends a new message
+  // Scroll to bottom when new messages array changes (user sent message or response complete)
   useEffect(() => {
-    if (isStreaming) {
-      setUserScrolledUp(false);
-      userScrollIntentRef.current = false;
-      scrollToBottom("smooth");
-    }
+    stickyRef.current = true;
+    setUserScrolledUp(false);
+    scrollToBottom("instant");
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStreaming]);
+  }, [messages.length]);
 
   // Send message with streaming
   const handleSend = async (content: string, attachments?: Attachment[]) => {
@@ -1210,8 +1227,8 @@ export default function ChatPanel({
         {userScrolledUp && (
           <button
             onClick={() => {
+              stickyRef.current = true;
               setUserScrolledUp(false);
-              userScrollIntentRef.current = false;
               scrollToBottom("smooth");
             }}
             className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-foreground/90 text-background px-3 py-1.5 text-xs font-medium shadow-lg hover:bg-foreground transition-colors backdrop-blur-sm"
