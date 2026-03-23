@@ -6,7 +6,7 @@ import { createStreamingResponse, type AIMessage } from "@/lib/ai/providers";
 
 export const maxDuration = 120;
 
-const FACT_CHECK_SYSTEM_PROMPT = `You are a precise fact-checker. Your job is to verify the factual claims in an AI-generated response.
+const FACT_CHECK_SYSTEM_PROMPT = `You are a precise fact-checker. Your job is to verify the factual claims in an AI-generated response using web search.
 
 Instructions:
 1. Read the AI response carefully and identify ALL verifiable factual claims (dates, statistics, names, events, regulatory details, company information, scientific claims, etc.)
@@ -15,29 +15,38 @@ Instructions:
    - ✅ **Verified** — confirmed by reliable sources
    - ⚠️ **Unverified** — could not find reliable sources to confirm or deny
    - ❌ **Incorrect** — contradicted by reliable sources
-4. Provide brief evidence or corrections for each claim, citing your sources
+4. For EVERY claim, you MUST include a working URL to the source you used to verify it. This is critical — fact checking without sources is useless.
 5. Skip subjective opinions, recommendations, and general advice — only check verifiable facts
 6. If the response contains no verifiable factual claims, say so
 
+CRITICAL: Every verified or incorrect claim MUST include at least one clickable source URL. Use the actual URLs from your web search results. Never fabricate URLs.
+
 Format your response as:
 
-## 🔍 Fact Check
+## Fact Check
 
 **Summary**: X verified, Y unverified, Z incorrect out of N claims checked
 
 ### Claims
 
 1. **"[Exact claim text]"**
-   ✅ Verified — [brief evidence with source]
+   ✅ Verified — [brief evidence]
+   Source: [Source Name](https://actual-url-from-search.com)
 
 2. **"[Exact claim text]"**
-   ❌ Incorrect — [what's actually correct + source]
+   ❌ Incorrect — [what's actually correct]
+   Source: [Source Name](https://actual-url-from-search.com)
 
 3. **"[Exact claim text]"**
-   ⚠️ Unverified — [why it couldn't be verified]
+   ⚠️ Unverified — [why it couldn't be verified, what you searched for]
 
 ### Corrections
-[Only include this section if there are incorrect claims. Provide the corrected information clearly so the user can update their content.]`;
+[Only include this section if there are incorrect claims. Provide the corrected information clearly so the user can update their content.]
+
+### Sources
+[List all unique sources used, formatted as clickable markdown links]
+- [Source Name](https://url)
+- [Source Name](https://url)`;
 
 export async function POST(
   req: NextRequest,
