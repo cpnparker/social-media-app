@@ -1962,13 +1962,18 @@ function EngineAIContent() {
                               setSelectedModel(m.id);
                             }}
                             className={cn(
-                              "text-sm",
+                              "text-sm py-2",
                               selectedModel === m.id && "bg-muted font-medium"
                             )}
                           >
-                            <span className="flex-1">{m.label}</span>
+                            <div className="flex-1 min-w-0">
+                              <div>{m.label}</div>
+                              {"description" in m && m.description && (
+                                <div className="text-[10px] text-muted-foreground font-normal">{m.description}</div>
+                              )}
+                            </div>
                             {selectedModel === m.id && (
-                              <span className="text-primary text-xs">
+                              <span className="text-primary text-xs shrink-0">
                                 &#10003;
                               </span>
                             )}

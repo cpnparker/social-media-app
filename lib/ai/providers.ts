@@ -74,7 +74,9 @@ interface ModelInfo {
   provider: "anthropic" | "xai" | "openai" | "gemini" | "perplexity";
   apiModel: string;
   label: string;
+  description?: string;
   legacy?: boolean;
+  hidden?: boolean; // Hide from user selector (used for background processing only)
 }
 
 const MODEL_REGISTRY: Record<string, ModelInfo> = {
@@ -82,51 +84,61 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     provider: "xai",
     apiModel: "grok-4-1-fast-non-reasoning",
     label: "EngineAI Auto",
+    description: "Routes to the best model for your query",
   },
   "claude-sonnet-4-6": {
     provider: "anthropic",
     apiModel: "claude-sonnet-4-6",
     label: "Claude Sonnet 4.6",
+    description: "Best for complex reasoning, analysis and code",
   },
   "gemini-3-flash": {
     provider: "gemini",
     apiModel: "gemini-3-flash",
     label: "Gemini 3 Flash",
+    description: "Google's fast, capable model with large context",
   },
   "gemini-3.1-flash-lite": {
     provider: "gemini",
     apiModel: "gemini-3.1-flash-lite",
     label: "Gemini 3.1 Flash-Lite",
+    hidden: true,
   },
   "gpt-4o": {
     provider: "openai",
     apiModel: "gpt-4o",
     label: "GPT-4o",
+    description: "OpenAI's flagship model for versatile tasks",
   },
   "gpt-4o-mini": {
     provider: "openai",
     apiModel: "gpt-4o-mini",
     label: "GPT-4o Mini",
+    hidden: true,
   },
   "grok-4-1-fast": {
     provider: "xai",
     apiModel: "grok-4-1-fast-non-reasoning",
     label: "Grok 4 Fast",
+    description: "Fast and affordable with built-in web search",
   },
   "grok-3-mini": {
     provider: "xai",
     apiModel: "grok-3-mini",
     label: "Grok 3 Mini",
+    hidden: true,
   },
   "sonar": {
     provider: "perplexity",
     apiModel: "sonar",
     label: "Perplexity Sonar",
+    description: "Every reply searches the web — fast research",
   },
   "sonar-pro": {
     provider: "perplexity",
     apiModel: "sonar-pro",
     label: "Perplexity Sonar Pro",
+    description: "Deep research with comprehensive web analysis",
   },
   // Legacy mappings for old conversations
   "gemini-2.5-pro": {
@@ -157,11 +169,12 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
 
 export function getAvailableModels() {
   return Object.entries(MODEL_REGISTRY)
-    .filter(([, info]) => !info.legacy)
+    .filter(([, info]) => !info.legacy && !info.hidden)
     .map(([id, info]) => ({
       id,
       label: info.label,
       provider: info.provider,
+      description: info.description,
     }));
 }
 
