@@ -252,18 +252,47 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const byUser = Object.values(userMap).sort((a, b) => b.cost - a.cost);
+    // Merge duplicate users (same person with Engine user ID + external ID)
+    const mergedUserMap: Record<string, typeof userMap[string]> = {};
+    for (const u of Object.values(userMap)) {
+      const mergeKey = u.userName || u.userIdExternal || String(u.userId);
+      if (mergedUserMap[mergeKey]) {
+        mergedUserMap[mergeKey].cost += u.cost;
+        mergedUserMap[mergeKey].calls += u.calls;
+        mergedUserMap[mergeKey].inputTokens += u.inputTokens;
+        mergedUserMap[mergeKey].outputTokens += u.outputTokens;
+        // Keep the Engine userId if available
+        if (u.userId > 0) mergedUserMap[mergeKey].userId = u.userId;
+      } else {
+        mergedUserMap[mergeKey] = { ...u };
+      }
+    }
 
-    // By user + model
+    const byUser = Object.values(mergedUserMap).sort((a, b) => b.cost - a.cost);
+
+    // By user + model — use resolved userName as key to merge duplicates
+    // Build a lookup from raw key to resolved userName
+    const rawKeyToName: Record<string, string> = {};
+    for (const [rawKey, u] of Object.entries(userMap)) {
+      rawKeyToName[rawKey] = u.userName || rawKey;
+    }
+    // Also map resolved name → merged userId
+    const nameToUserId: Record<string, number> = {};
+    for (const u of Object.values(mergedUserMap)) {
+      nameToUserId[u.userName || ""] = u.userId;
+    }
+
     const userModelMap: Record<
       string,
       { userId: number; model: string; cost: number; calls: number; inputTokens: number; outputTokens: number }
     > = {};
     for (const r of usageRows) {
-      const userKey = r.user_id_external || String(r.user_usage || 0);
-      const key = `${userKey}::${r.name_model}`;
+      const rawKey = r.user_id_external || String(r.user_usage || 0);
+      const resolvedName = rawKeyToName[rawKey] || rawKey;
+      const mergedUserId = nameToUserId[resolvedName] || r.user_usage || 0;
+      const key = `${resolvedName}::${r.name_model}`;
       if (!userModelMap[key])
-        userModelMap[key] = { userId: r.user_usage || 0, model: r.name_model, cost: 0, calls: 0, inputTokens: 0, outputTokens: 0 };
+        userModelMap[key] = { userId: mergedUserId, model: r.name_model, cost: 0, calls: 0, inputTokens: 0, outputTokens: 0 };
       userModelMap[key].cost += r.units_cost_tenths;
       userModelMap[key].calls += 1;
       userModelMap[key].inputTokens += r.units_input;
