@@ -462,6 +462,24 @@ export default function ChatPanel({
     handleSend(newContent);
   };
 
+  // Change visibility (private ↔ team)
+  const handleVisibilityChange = async (newVisibility: string) => {
+    try {
+      const res = await fetch(`/api/ai/conversations/${conversationId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ visibility: newVisibility }),
+      });
+      if (res.ok) {
+        setConversation((prev) => prev ? { ...prev, visibility: newVisibility as any } : prev);
+        onConversationUpdated?.({ ...conversation!, visibility: newVisibility } as AIConversation);
+        toast.success(`Changed to ${newVisibility === "private" ? "Private" : "Team"}`);
+      }
+    } catch {
+      toast.error("Failed to change visibility");
+    }
+  };
+
   // Change model mid-conversation
   const handleModelChange = async (newModelId: string) => {
     try {
@@ -784,17 +802,37 @@ export default function ChatPanel({
           </p>
           {/* Desktop badges row */}
           <div className="hidden md:flex items-center gap-2 mt-0.5 overflow-hidden max-h-5">
-            <Badge
-              variant="outline"
-              className="text-[10px] px-1.5 py-0 h-4 gap-1"
-            >
-              {conversation.visibility === "private" ? (
-                <Lock className="h-2.5 w-2.5" />
-              ) : (
-                <Users className="h-2.5 w-2.5" />
-              )}
-              {conversation.visibility === "private" ? "Private" : "Team"}
-            </Badge>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="inline-flex items-center gap-1 text-[10px] px-1.5 h-4 rounded-full border border-border bg-background hover:bg-muted transition-colors font-medium">
+                  {conversation.visibility === "private" ? (
+                    <Lock className="h-2.5 w-2.5" />
+                  ) : (
+                    <Users className="h-2.5 w-2.5" />
+                  )}
+                  {conversation.visibility === "private" ? "Private" : "Team"}
+                  <ChevronDown className="h-2 w-2" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-40">
+                <DropdownMenuItem
+                  onClick={() => handleVisibilityChange("private")}
+                  className={cn("text-xs gap-2", conversation.visibility === "private" && "bg-muted font-medium")}
+                >
+                  <Lock className="h-3 w-3" />
+                  <span className="flex-1">Private</span>
+                  {conversation.visibility === "private" && <span className="text-primary text-xs">&#10003;</span>}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => handleVisibilityChange("team")}
+                  className={cn("text-xs gap-2", conversation.visibility === "team" && "bg-muted font-medium")}
+                >
+                  <Users className="h-3 w-3" />
+                  <span className="flex-1">Team</span>
+                  {conversation.visibility === "team" && <span className="text-primary text-xs">&#10003;</span>}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             {myPermission === "view" && (
               <Badge
                 variant="outline"
@@ -1272,6 +1310,7 @@ export default function ChatPanel({
           isStreaming={isStreaming}
           disabled={isStreaming || isFactChecking || myPermission === "view"}
           bottomSlot={
+            <>
             <Popover>
               <PopoverTrigger asChild>
                 <button className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-muted-foreground/60 hover:text-muted-foreground/80 hover:bg-muted/50 transition-colors">
@@ -1423,6 +1462,37 @@ export default function ChatPanel({
                 </div>
               </PopoverContent>
             </Popover>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-muted-foreground/60 hover:text-muted-foreground/80 hover:bg-muted/50 transition-colors">
+                  {conversation?.model === "auto" && <Sparkles className="h-2.5 w-2.5 text-amber-500" />}
+                  <span className="hidden sm:inline">{getModelLabel(conversation?.model || "auto")}</span>
+                  <ChevronDown className="h-2 w-2" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" side="top" className="w-56">
+                {AI_MODELS.map((m) => (
+                  <DropdownMenuItem
+                    key={m.id}
+                    onClick={() => handleModelChange(m.id)}
+                    className={cn(
+                      "text-xs py-1.5",
+                      conversation?.model === m.id && "bg-muted font-medium"
+                    )}
+                  >
+                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                      {m.id === "auto" && <Sparkles className="h-3 w-3 text-amber-500 shrink-0" />}
+                      <span>{m.label}</span>
+                      <span className="text-muted-foreground/50 text-[9px] truncate">— {m.description}</span>
+                    </div>
+                    {conversation?.model === m.id && (
+                      <span className="text-primary text-xs shrink-0">&#10003;</span>
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            </>
           }
           placeholder={
             myPermission === "view"

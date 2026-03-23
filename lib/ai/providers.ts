@@ -84,19 +84,19 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     provider: "xai",
     apiModel: "grok-4-1-fast-non-reasoning",
     label: "EngineAI Auto",
-    description: "Routes to the best model for your query",
+    description: "Best model for each query",
   },
   "claude-sonnet-4-6": {
     provider: "anthropic",
     apiModel: "claude-sonnet-4-6",
     label: "Claude Sonnet 4.6",
-    description: "Best for complex reasoning, analysis and code",
+    description: "Complex reasoning & analysis",
   },
   "gemini-3-flash": {
     provider: "gemini",
     apiModel: "gemini-3-flash",
     label: "Gemini 3 Flash",
-    description: "Google's fast, capable model with large context",
+    description: "Fast, large context window",
   },
   "gemini-3.1-flash-lite": {
     provider: "gemini",
@@ -108,7 +108,7 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     provider: "openai",
     apiModel: "gpt-4o",
     label: "GPT-4o",
-    description: "OpenAI's flagship model for versatile tasks",
+    description: "OpenAI's versatile flagship",
   },
   "gpt-4o-mini": {
     provider: "openai",
@@ -120,7 +120,7 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     provider: "xai",
     apiModel: "grok-4-1-fast-non-reasoning",
     label: "Grok 4 Fast",
-    description: "Fast and affordable with built-in web search",
+    description: "Fast, affordable, web search",
   },
   "grok-3-mini": {
     provider: "xai",
@@ -132,13 +132,13 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     provider: "perplexity",
     apiModel: "sonar",
     label: "Perplexity Sonar",
-    description: "Every reply searches the web — fast research",
+    description: "Every reply searches the web",
   },
   "sonar-pro": {
     provider: "perplexity",
     apiModel: "sonar-pro",
     label: "Perplexity Sonar Pro",
-    description: "Deep research with comprehensive web analysis",
+    description: "Deep web research & analysis",
   },
   // Legacy mappings for old conversations
   "gemini-2.5-pro": {
