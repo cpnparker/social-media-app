@@ -73,12 +73,13 @@ const MEMORY_KEYWORDS_3 = /\b(you said|you recommended|you suggested|your advice
 const MEMORY_KEYWORDS_4 = /\b(in our (last|previous|earlier) (conversation|chat|discussion|session))\b/i;
 
 // Step 7: Implicit web (soft signals — benefits from web data)
-const WEB_IMPLICIT = /\b(competitors?|competitor analysis|industry (benchmark|trend|standard|average))\b/i;
+const WEB_IMPLICIT = /\b(competitors?|competitor analysis|industry (benchmark|trend|standard|average)|market (offerings?|rates?|leaders?|landscape|analysis|research))\b/i;
 const WEB_IMPLICIT_2 = /\b(best practices?|how to|tutorial|guide|documentation for)\b/i;
-const WEB_IMPLICIT_3 = /\b(pricing|cost of|how much does .{3,} cost|price of|price for)\b/i;
-const WEB_IMPLICIT_4 = /\b(vs\.?|versus|compared to|comparison of|compare .{3,} (with|to|and|vs))\b/i;
+const WEB_IMPLICIT_3 = /\b(pricing|cost of|how much does .{3,} cost|price of|price for|going rate|market rate|rates for)\b/i;
+const WEB_IMPLICIT_4 = /\b(vs\.?|versus|compared to|comparison of|compare .{3,} (with|to|and|vs|against)|compare against)\b/i;
 const WEB_IMPLICIT_5 = /\b(instagram|tiktok|linkedin|facebook|twitter|x algorithm|threads|youtube|canva|figma|hubspot|mailchimp|hootsuite)\b/i;
 const WEB_IMPLICIT_6 = /\b(news about|recent developments?|what'?s new with|updates? on|latest on)\b/i;
+const WEB_IMPLICIT_7 = /\b(what others are (doing|offering|charging|selling)|what.{1,20}(already selling|on the market|out there))\b/i;
 
 /* ─────────────── Helper ─────────────── */
 
@@ -175,7 +176,7 @@ export function routeQuery(
   }
 
   // ── Step 7: Implicit web search ──
-  const implicitWeb = webAllowed && !wantsEngine && matchesAny(lower, [WEB_IMPLICIT, WEB_IMPLICIT_2, WEB_IMPLICIT_3, WEB_IMPLICIT_4, WEB_IMPLICIT_5, WEB_IMPLICIT_6]);
+  const implicitWeb = webAllowed && !wantsEngine && matchesAny(lower, [WEB_IMPLICIT, WEB_IMPLICIT_2, WEB_IMPLICIT_3, WEB_IMPLICIT_4, WEB_IMPLICIT_5, WEB_IMPLICIT_6, WEB_IMPLICIT_7]);
 
   // If Engine data + implicit web → hybrid
   if (wantsEngine && implicitWeb) {
