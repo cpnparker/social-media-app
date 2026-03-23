@@ -182,49 +182,33 @@ export default function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialMessage, initialAttachments, conversation, loading]);
 
-  // ── Smart scroll (ChatGPT pattern) ──
-  // Key insight: unstick IMMEDIATELY on any user input (wheel/touch).
-  // Auto-scroll uses rAF to batch with browser paint — never fights user input.
-  const stickyRef = useRef(true);
-  const rafRef = useRef<number>(0);
+  // ── Smart scroll ──
+  // Simple rule: scroll to bottom ONCE when user sends a message.
+  // Never auto-scroll during streaming. User reads at their own pace.
+  // "↓" pill button lets user jump to bottom manually.
 
   const scrollToBottom = useCallback(() => {
     const el = scrollContainerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, []);
 
-  // 1. IMMEDIATELY unstick on wheel/touch — no debounce, no delay
-  // Only re-stick via: clicking "↓" button or sending a new message.
-  // NEVER re-stick automatically — this is what ChatGPT does.
+  // Track whether user can see the bottom (for showing the ↓ button)
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    const unstick = () => {
-      stickyRef.current = false;
-      setUserScrolledUp(true);
+    const checkPosition = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      const atBottom = scrollHeight - scrollTop - clientHeight < 100;
+      setUserScrolledUp(!atBottom);
     };
 
-    container.addEventListener("wheel", unstick, { passive: true });
-    container.addEventListener("touchmove", unstick, { passive: true });
-    return () => {
-      container.removeEventListener("wheel", unstick);
-      container.removeEventListener("touchmove", unstick);
-    };
+    container.addEventListener("scroll", checkPosition, { passive: true });
+    return () => container.removeEventListener("scroll", checkPosition);
   }, []);
 
-  // 2. Auto-scroll during streaming — throttled to animation frames
+  // Scroll to bottom when messages array changes (user sent message or response complete)
   useEffect(() => {
-    if (!stickyRef.current) return;
-    cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(() => {
-      if (stickyRef.current) scrollToBottom();
-    });
-  }, [streamingContent, scrollToBottom]);
-
-  // 3. New message sent or response finished → re-stick
-  useEffect(() => {
-    stickyRef.current = true;
     setUserScrolledUp(false);
     scrollToBottom();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1200,7 +1184,6 @@ export default function ChatPanel({
         {userScrolledUp && (
           <button
             onClick={() => {
-              stickyRef.current = true;
               setUserScrolledUp(false);
               scrollToBottom();
             }}
