@@ -194,32 +194,22 @@ export default function ChatPanel({
   }, []);
 
   // 1. IMMEDIATELY unstick on wheel/touch — no debounce, no delay
+  // Only re-stick via: clicking "↓" button or sending a new message.
+  // NEVER re-stick automatically — this is what ChatGPT does.
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
     const unstick = () => {
-      // Any user scroll input = stop auto-scrolling instantly
       stickyRef.current = false;
       setUserScrolledUp(true);
     };
 
-    // Re-stick when user scrolls back to bottom (via scroll event)
-    const onScroll = () => {
-      const { scrollTop, scrollHeight, clientHeight } = container;
-      if (scrollHeight - scrollTop - clientHeight < 40) {
-        stickyRef.current = true;
-        setUserScrolledUp(false);
-      }
-    };
-
     container.addEventListener("wheel", unstick, { passive: true });
     container.addEventListener("touchmove", unstick, { passive: true });
-    container.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       container.removeEventListener("wheel", unstick);
       container.removeEventListener("touchmove", unstick);
-      container.removeEventListener("scroll", onScroll);
     };
   }, []);
 
