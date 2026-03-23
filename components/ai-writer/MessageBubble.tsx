@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { User, Bot, FileText, ExternalLink, ChevronDown, ChevronUp, ShieldCheck, Copy, Check, RotateCcw } from "lucide-react";
+import { User, Bot, FileText, ExternalLink, ChevronDown, ChevronUp, ShieldCheck, Copy, Check, RotateCcw, Pencil, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import DOMPurify from "dompurify";
 import type { Attachment } from "@/lib/types/ai";
@@ -16,6 +17,7 @@ interface MessageBubbleProps {
   userName?: string | null;
   onFactCheck?: () => void;
   onRetry?: () => void;
+  onEdit?: (newContent: string) => void;
 }
 
 interface ParsedSource {
@@ -35,9 +37,13 @@ export default function MessageBubble({
   userName,
   onFactCheck,
   onRetry,
+  onEdit,
 }: MessageBubbleProps) {
   const isUser = role === "user";
   const [copied, setCopied] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState(content);
+  const editRef = useRef<HTMLTextAreaElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
 
   // Auto-retry failed images (blob may take a moment to propagate)
@@ -149,7 +155,57 @@ export default function MessageBubble({
         )}
 
         {isUser ? (
-          content ? <p className="whitespace-pre-wrap leading-relaxed">{content}</p> : null
+          isEditing ? (
+            <div className="w-full">
+              <textarea
+                ref={editRef}
+                value={editText}
+                onChange={(e) => setEditText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") { setIsEditing(false); setEditText(content); }
+                }}
+                className="w-full bg-transparent text-[15px] leading-relaxed resize-none outline-none min-h-[60px] max-h-[300px]"
+                rows={Math.min(editText.split("\n").length + 1, 10)}
+                autoFocus
+              />
+              <div className="flex items-center gap-2 mt-2 justify-end">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => { setIsEditing(false); setEditText(content); }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={!editText.trim() || editText.trim() === content}
+                  onClick={() => {
+                    if (onEdit && editText.trim() && editText.trim() !== content) {
+                      onEdit(editText.trim());
+                      setIsEditing(false);
+                    }
+                  }}
+                >
+                  Save & Submit
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="group/edit relative">
+              {content ? <p className="whitespace-pre-wrap leading-relaxed">{content}</p> : null}
+              {onEdit && (
+                <button
+                  onClick={() => { setEditText(content); setIsEditing(true); }}
+                  className="absolute -top-1 -right-1 p-1 rounded-md bg-background/80 border border-border/50 shadow-sm opacity-0 group-hover/edit:opacity-100 transition-opacity"
+                  title="Edit message"
+                >
+                  <Pencil className="h-3 w-3 text-muted-foreground" />
+                </button>
+              )}
+            </div>
+          )
         ) : (
           <>
             {isFactCheck && (

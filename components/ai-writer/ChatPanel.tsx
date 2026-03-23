@@ -452,6 +452,15 @@ export default function ChatPanel({
     handleSend(userMsg.content, userMsg.attachments as any || undefined);
   };
 
+  // Edit a user message: truncate conversation at that point, resend with new content
+  const handleEditMessage = async (messageIndex: number, newContent: string) => {
+    if (isStreaming || isFactChecking) return;
+    // Remove this message and everything after it
+    setMessages((prev) => prev.slice(0, messageIndex));
+    // Send the edited content as a new message
+    handleSend(newContent);
+  };
+
   // Fact-check an assistant message using Claude with web search
   const handleFactCheck = async (messageId: string, messageContent: string) => {
     if (isFactChecking || isStreaming) return;
@@ -1070,6 +1079,11 @@ export default function ChatPanel({
                 onRetry={
                   msg.role === "assistant" && !isStreaming && !isFactChecking && idx === messages.length - 1
                     ? () => handleRetry(idx)
+                    : undefined
+                }
+                onEdit={
+                  msg.role === "user" && !isStreaming && !isFactChecking
+                    ? (newContent: string) => handleEditMessage(idx, newContent)
                     : undefined
                 }
               />
