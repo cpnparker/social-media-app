@@ -48,6 +48,8 @@ import {
   ImageIcon,
   ShieldCheck,
   BookOpen,
+  Trash2,
+  Pencil,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
@@ -151,6 +153,8 @@ function EngineAIContent() {
   const [adminDialogOpen, setAdminDialogOpen] = useState(false);
   const [personaliseDialogOpen, setPersonaliseDialogOpen] = useState(false);
   const [clientContextOpen, setClientContextOpen] = useState(false);
+  const [editingConvId, setEditingConvId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
   const [memoryCount, setMemoryCount] = useState(0);
   const [privacyModalOpen, setPrivacyModalOpen] = useState(false);
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
@@ -699,6 +703,52 @@ function EngineAIContent() {
     }).catch(() => {});
   };
 
+  // Delete conversation
+  const handleDeleteConversation = async (e: React.MouseEvent, convId: string) => {
+    e.stopPropagation();
+    if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
+    try {
+      await fetch(`/api/ai/conversations/${convId}`, { method: "DELETE" });
+      setConversations((prev) => prev.filter((c) => c.id !== convId));
+      if (selectedId === convId) {
+        setSelectedId(null);
+        router.replace("/engineai");
+      }
+      toast.success("Conversation deleted");
+    } catch {
+      toast.error("Failed to delete");
+    }
+  };
+
+  // Rename conversation (double-click to start, Enter/blur to save)
+  const startRenaming = (e: React.MouseEvent, conv: AIConversation) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setEditingConvId(conv.id);
+    setEditingTitle(conv.title || "");
+  };
+
+  const saveRename = async (convId: string) => {
+    const trimmed = editingTitle.trim();
+    if (!trimmed || trimmed === conversations.find((c) => c.id === convId)?.title) {
+      setEditingConvId(null);
+      return;
+    }
+    try {
+      await fetch(`/api/ai/conversations/${convId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: trimmed }),
+      });
+      setConversations((prev) =>
+        prev.map((c) => (c.id === convId ? { ...c, title: trimmed } : c))
+      );
+    } catch {
+      toast.error("Failed to rename");
+    }
+    setEditingConvId(null);
+  };
+
   // Select thread + switch customer dropdown + close mobile sidebar
   const handleSelectThread = (conv: AIConversation) => {
     if (conv.customerId && customerCtx) {
@@ -1052,7 +1102,8 @@ function EngineAIContent() {
                       {group.conversations.map((conv) => (
                         <button
                           key={conv.id}
-                          onClick={() => handleSelectThread(conv)}
+                          onClick={() => editingConvId !== conv.id && handleSelectThread(conv)}
+                          onDoubleClick={(e) => startRenaming(e, conv)}
                           className={cn(
                             "w-full text-left rounded-lg px-2.5 py-2 transition-colors group/conv",
                             selectedId === conv.id
@@ -1061,8 +1112,30 @@ function EngineAIContent() {
                           )}
                         >
                           <div className="flex items-center justify-between gap-2">
-                            <p className="text-[13px] font-medium truncate flex-1">{conv.title}</p>
-                            <div className="flex items-center gap-1 shrink-0">
+                            {editingConvId === conv.id ? (
+                              <input
+                                autoFocus
+                                value={editingTitle}
+                                onChange={(e) => setEditingTitle(e.target.value)}
+                                onBlur={() => saveRename(conv.id)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") saveRename(conv.id);
+                                  if (e.key === "Escape") setEditingConvId(null);
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-[13px] font-medium flex-1 bg-white/10 text-white rounded px-1.5 py-0.5 outline-none ring-1 ring-white/30 focus:ring-white/60 min-w-0"
+                              />
+                            ) : (
+                              <p className="text-[13px] font-medium truncate flex-1">{conv.title}</p>
+                            )}
+                            <div className="flex items-center gap-0.5 shrink-0">
+                              <button
+                                onClick={(e) => startRenaming(e, conv)}
+                                className="p-0.5 rounded opacity-0 group-hover/conv:opacity-100 transition-opacity"
+                                title="Rename"
+                              >
+                                <Pencil className="h-3 w-3 text-white/30 hover:text-white/60" />
+                              </button>
                               <button
                                 onClick={(e) => togglePinConversation(e, conv.id)}
                                 className={cn(
@@ -1082,7 +1155,14 @@ function EngineAIContent() {
                                   )}
                                 />
                               </button>
-                              <span className="text-[11px] text-white/40">
+                              <button
+                                onClick={(e) => handleDeleteConversation(e, conv.id)}
+                                className="p-0.5 rounded opacity-0 group-hover/conv:opacity-100 transition-opacity"
+                                title="Delete"
+                              >
+                                <Trash2 className="h-3 w-3 text-white/30 hover:text-red-400" />
+                              </button>
+                              <span className="text-[11px] text-white/40 ml-0.5">
                                 {timeAgo(conv.updatedAt)}
                               </span>
                             </div>
