@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
+import { createClient } from "@supabase/supabase-js";
 import { verifyWorkspaceMembership } from "@/lib/permissions";
 
 const VALID_APPS = ["all", "engine", "meetingbrain", "authorityon"] as const;
@@ -213,10 +214,41 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Label external users by app
+    // Resolve external user names from MeetingBrain users table (meetingbrain schema)
+    const externalUserIds = Object.values(userMap)
+      .filter((u) => u.userIdExternal && !u.userName)
+      .map((u) => u.userIdExternal!);
+    if (externalUserIds.length > 0) {
+      const mbDb = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!,
+        { db: { schema: "meetingbrain" } }
+      );
+      const { data: mbUsers } = await mbDb
+        .from("users")
+        .select("id, name, email")
+        .in("id", externalUserIds);
+      if (mbUsers) {
+        const extNameMap = new Map(
+          mbUsers.map((u: any) => {
+            const email = u.email || "";
+            const nameParts = email.split("@")[0]?.split(".") || [];
+            const displayName = u.name || nameParts.map((p: string) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ") || "User";
+            return [u.id, displayName];
+          })
+        );
+        for (const u of Object.values(userMap)) {
+          if (u.userIdExternal && !u.userName) {
+            u.userName = extNameMap.get(u.userIdExternal) || `External User (${u.userIdExternal.slice(0, 8)}...)`;
+          }
+        }
+      }
+    }
+
+    // Label blank rows (background/cron operations with no user)
     for (const u of Object.values(userMap)) {
-      if (u.userIdExternal && !u.userName) {
-        u.userName = `External User (${u.userIdExternal.slice(0, 8)}...)`;
+      if (!u.userName && u.userId === 0 && !u.userIdExternal) {
+        u.userName = "System / Background";
       }
     }
 
