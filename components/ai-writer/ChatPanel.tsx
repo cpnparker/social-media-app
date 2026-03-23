@@ -183,77 +183,78 @@ export default function ChatPanel({
   }, [initialMessage, initialAttachments, conversation, loading]);
 
   // ── Smart scroll (ChatGPT/Perplexity pattern) ──
-  // Sticky-to-bottom: auto-scroll while stuck, stop completely when user scrolls up.
-  const stickyRef = useRef(true); // true = auto-scroll active
-  const prevScrollHeightRef = useRef(0);
-  const programmaticScrollRef = useRef(false); // ignore scroll events we caused
+  // Uses ResizeObserver instead of reacting to every React state update.
+  // Only fires once per browser paint frame when content actually grows.
+  const stickyRef = useRef(true);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    programmaticScrollRef.current = true;
-    if (behavior === "instant") {
-      container.scrollTop = container.scrollHeight;
-    } else {
-      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
-    }
-    // Reset programmatic flag after scroll completes
-    setTimeout(() => { programmaticScrollRef.current = false; }, 100);
+  // Check if container is near bottom (call BEFORE content changes)
+  const isNearBottom = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   }, []);
 
-  // Detect user scroll intent (wheel/touch = user, programmatic = ignore)
+  // Scroll to bottom — instant during streaming, smooth for button clicks
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+  }, []);
+
+  // ResizeObserver: auto-scroll when content grows, only if sticky
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const content = container.firstElementChild as HTMLElement | null;
+    if (!content) return;
+
+    const observer = new ResizeObserver(() => {
+      if (stickyRef.current) {
+        // Instant scroll — no animation, no jitter
+        container.scrollTop = container.scrollHeight;
+      }
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [messages.length]); // re-attach when messages change (content div may remount)
+
+  // Detect user scroll: wheel or touch = user wants to read, unstick
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    const handleUserScroll = () => {
-      if (programmaticScrollRef.current) return; // we caused this scroll, ignore
-      const { scrollTop, scrollHeight, clientHeight } = container;
-      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-      if (distanceFromBottom < 50) {
-        // User scrolled back to bottom — re-stick
+    const onUserScroll = () => {
+      if (isNearBottom()) {
         stickyRef.current = true;
         setUserScrolledUp(false);
       } else {
-        // User scrolled up — unstick
         stickyRef.current = false;
         setUserScrolledUp(true);
       }
     };
 
-    // Only listen for user-initiated scroll (wheel/touch), not programmatic
-    const onWheel = () => { programmaticScrollRef.current = false; };
-    const onTouch = () => { programmaticScrollRef.current = false; };
-
-    container.addEventListener("scroll", handleUserScroll, { passive: true });
-    container.addEventListener("wheel", onWheel, { passive: true });
-    container.addEventListener("touchstart", onTouch, { passive: true });
-    return () => {
-      container.removeEventListener("scroll", handleUserScroll);
-      container.removeEventListener("wheel", onWheel);
-      container.removeEventListener("touchstart", onTouch);
+    // Debounce scroll checks to avoid thrashing
+    let scrollTimer: ReturnType<typeof setTimeout>;
+    const debouncedScroll = () => {
+      clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(onUserScroll, 50);
     };
-  }, []);
 
-  // Auto-scroll on new streaming content — only if sticky
-  useEffect(() => {
-    if (!stickyRef.current) return;
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    // Only scroll if content actually grew
-    if (container.scrollHeight > prevScrollHeightRef.current) {
-      programmaticScrollRef.current = true;
-      container.scrollTop = container.scrollHeight;
-      setTimeout(() => { programmaticScrollRef.current = false; }, 50);
-    }
-    prevScrollHeightRef.current = container.scrollHeight;
-  }, [streamingContent]);
+    container.addEventListener("wheel", debouncedScroll, { passive: true });
+    container.addEventListener("touchmove", debouncedScroll, { passive: true });
+    return () => {
+      container.removeEventListener("wheel", debouncedScroll);
+      container.removeEventListener("touchmove", debouncedScroll);
+      clearTimeout(scrollTimer);
+    };
+  }, [isNearBottom]);
 
-  // Scroll to bottom when new messages array changes (user sent message or response complete)
+  // New message sent or response finished → re-stick and scroll
   useEffect(() => {
     stickyRef.current = true;
     setUserScrolledUp(false);
-    scrollToBottom("instant");
+    const el = scrollContainerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length]);
 
@@ -1229,7 +1230,7 @@ export default function ChatPanel({
             onClick={() => {
               stickyRef.current = true;
               setUserScrolledUp(false);
-              scrollToBottom("smooth");
+              scrollToBottom("instant");
             }}
             className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-foreground/90 text-background px-3 py-1.5 text-xs font-medium shadow-lg hover:bg-foreground transition-colors backdrop-blur-sm"
           >
