@@ -857,6 +857,114 @@ const QUERY_ENGINE_TOOL: Anthropic.Tool = {
   },
 };
 
+/* ─────────────── Client Context Lookup Tool ─────────────── */
+
+const LOOKUP_CLIENT_CONTEXT_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "lookup_client_context",
+    description:
+      "Look up a client's full context including brand guidelines, AI-processed asset summaries, recent client meetings, and active contracts. Use this when the user asks about a specific client in the General channel or needs client-specific context that isn't already in the conversation.",
+    parameters: {
+      type: "object",
+      properties: {
+        client_name: {
+          type: "string",
+          description: "The client name to look up (e.g. 'IEEE', 'Zurich Insurance', 'WBCSD'). Fuzzy matching is supported.",
+        },
+      },
+      required: ["client_name"],
+    },
+  },
+};
+
+const LOOKUP_CLIENT_CONTEXT_TOOL = {
+  name: "lookup_client_context",
+  description: LOOKUP_CLIENT_CONTEXT_OPENAI_TOOL.function.description,
+  input_schema: {
+    ...(LOOKUP_CLIENT_CONTEXT_OPENAI_TOOL.function.parameters as any),
+  },
+};
+
+/**
+ * Look up a client's full context by name — brand guidelines, meetings, contracts.
+ */
+async function lookupClientContext(
+  clientName: string,
+  workspaceId: string
+): Promise<string> {
+  // 1. Fuzzy match client name
+  const { data: clients } = await supabase
+    .from("app_clients")
+    .select("id_client, name_client, link_website, information_industry, information_description")
+    .ilike("name_client", `%${clientName}%`)
+    .limit(3);
+
+  if (!clients || clients.length === 0) {
+    return `No client found matching "${clientName}". Available clients can be queried with query_engine on the app_clients table.`;
+  }
+
+  const client = clients[0]; // Best match
+  const parts: string[] = [];
+  parts.push(`# Client: ${client.name_client}`);
+  if (client.link_website) parts.push(`Website: ${client.link_website}`);
+  if (client.information_industry) parts.push(`Industry: ${client.information_industry}`);
+  if (client.information_description) parts.push(`Description: ${client.information_description}`);
+
+  // 2. Fetch AI-processed context (brand guidelines, asset summaries)
+  const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+  const { data: ctx } = await intelligenceDb
+    .from("ai_client_context")
+    .select("document_context, units_asset_count, date_last_processed")
+    .eq("id_workspace", workspaceId)
+    .eq("id_client", client.id_client)
+    .maybeSingle();
+
+  if (ctx?.document_context) {
+    parts.push(`\n## Brand & Asset Context (from ${ctx.units_asset_count} files, updated ${ctx.date_last_processed?.slice(0, 10)})`);
+    parts.push(ctx.document_context);
+  }
+
+  // 3. Fetch client meetings
+  const { data: meetings } = await intelligenceDb
+    .from("ai_client_meetings")
+    .select("meeting_title, meeting_date, meeting_summary, key_topics, next_steps, attendees_external")
+    .eq("id_workspace", workspaceId)
+    .eq("id_client", client.id_client)
+    .order("meeting_date", { ascending: false })
+    .limit(5);
+
+  if (meetings && meetings.length > 0) {
+    parts.push(`\n## Recent Client Meetings (${meetings.length})`);
+    for (const m of meetings) {
+      parts.push(`\n### ${m.meeting_title} (${m.meeting_date?.slice(0, 10)})`);
+      if (m.attendees_external) parts.push(`External attendees: ${m.attendees_external}`);
+      if (m.meeting_summary) parts.push(m.meeting_summary.slice(0, 500));
+      if (m.key_topics) parts.push(`Key topics: ${m.key_topics}`);
+      if (m.next_steps) parts.push(`Next steps: ${m.next_steps}`);
+    }
+  }
+
+  // 4. Fetch active contracts summary
+  const { data: contracts } = await supabase
+    .from("app_contracts")
+    .select("name_contract, units_contract, units_total_completed, date_start, date_end, type_status")
+    .eq("id_client", client.id_client)
+    .in("type_status", ["active", "Active"])
+    .limit(5);
+
+  if (contracts && contracts.length > 0) {
+    parts.push(`\n## Active Contracts (${contracts.length})`);
+    for (const c of contracts) {
+      const used = c.units_total_completed || 0;
+      const total = c.units_contract || 0;
+      parts.push(`- ${c.name_contract}: ${used}/${total} CUs used (${c.date_start?.slice(0, 10)} → ${c.date_end?.slice(0, 10)})`);
+    }
+  }
+
+  return parts.join("\n");
+}
+
 /* ─────────────── Pre-built Reports ─────────────── */
 
 /**
@@ -2403,6 +2511,7 @@ async function streamAnthropic(
   }
   if (config.workspaceClientIds?.length) {
     tools.push(QUERY_ENGINE_TOOL);
+    tools.push(LOOKUP_CLIENT_CONTEXT_TOOL);
   }
   if (config.workspaceId && config.userId) {
     tools.push(SEARCH_MEMORY_TOOL);
@@ -2671,6 +2780,23 @@ async function streamAnthropic(
             is_error: true,
           });
         }
+      } else if (tool.name === "lookup_client_context") {
+        try {
+          const result = await lookupClientContext(tool.input.client_name, config.workspaceId!);
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: result,
+          });
+        } catch (err: any) {
+          console.error("[LookupClientContext] Failed:", err.message);
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: `Client context lookup failed: ${err.message}`,
+            is_error: true,
+          });
+        }
       } else if (tool.name === "search_memory") {
         try {
           const result = await searchMemory(
@@ -2791,6 +2917,7 @@ async function streamXAIChatCompletions(
   }
   if (config.workspaceClientIds?.length) {
     tools.push(QUERY_ENGINE_OPENAI_TOOL);
+    tools.push(LOOKUP_CLIENT_CONTEXT_OPENAI_TOOL);
   }
   // Web search: use xAI's native search_mode instead of a tool call.
   // This is faster and more reliable than the Responses API approach.
@@ -3061,6 +3188,23 @@ async function streamXAIChatCompletions(
             content: `Query failed: ${err.message}`,
           } as any);
         }
+      } else if (tc.function.name === "lookup_client_context") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const result = await lookupClientContext(input.client_name, config.workspaceId!);
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: result,
+          } as any);
+        } catch (err: any) {
+          console.error("[LookupClientContext/xAI] Failed:", err.message);
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Client context lookup failed: ${err.message}`,
+          } as any);
+        }
       } else if (tc.function.name === "web_search") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -3241,6 +3385,7 @@ async function streamGemini(
   }
   if (config.workspaceClientIds?.length) {
     tools.push(QUERY_ENGINE_OPENAI_TOOL);
+    tools.push(LOOKUP_CLIENT_CONTEXT_OPENAI_TOOL);
   }
   if (config.workspaceId && config.userId) {
     tools.push(SEARCH_MEMORY_OPENAI_TOOL);
@@ -3497,6 +3642,14 @@ async function streamGemini(
             content: `Query failed: ${err.message}`,
           } as any);
         }
+      } else if (tc.function.name === "lookup_client_context") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const result = await lookupClientContext(input.client_name, config.workspaceId!);
+          geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: result } as any);
+        } catch (err: any) {
+          geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Client context lookup failed: ${err.message}` } as any);
+        }
       } else if (tc.function.name === "search_memory") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -3585,6 +3738,7 @@ async function streamOpenAI(
   }
   if (config.workspaceClientIds?.length) {
     tools.push(QUERY_ENGINE_OPENAI_TOOL);
+    tools.push(LOOKUP_CLIENT_CONTEXT_OPENAI_TOOL);
   }
   if (config.workspaceId && config.userId) {
     tools.push(SEARCH_MEMORY_OPENAI_TOOL);
@@ -3841,6 +3995,14 @@ async function streamOpenAI(
             tool_call_id: tc.id,
             content: `Query failed: ${err.message}`,
           } as any);
+        }
+      } else if (tc.function.name === "lookup_client_context") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const result = await lookupClientContext(input.client_name, config.workspaceId!);
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: result } as any);
+        } catch (err: any) {
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Client context lookup failed: ${err.message}` } as any);
         }
       } else if (tc.function.name === "search_memory") {
         try {

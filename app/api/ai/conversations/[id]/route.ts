@@ -174,6 +174,7 @@ export async function PATCH(
     if (body.title !== undefined) updateData.name_conversation = body.title;
     if (body.visibility !== undefined) updateData.type_visibility = body.visibility;
     if (body.model !== undefined) updateData.name_model = body.model;
+    if (body.customerId !== undefined) updateData.id_client = body.customerId ? parseInt(String(body.customerId), 10) : null;
 
     const { data: updated, error } = await intelligenceDb
       .from("ai_conversations")

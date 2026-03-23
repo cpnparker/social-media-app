@@ -1391,7 +1391,17 @@ function EngineAIContent() {
               debugMode={debugMode}
               customers={customers.map((c) => ({ id: String(c.id), name: c.name, logoUrl: c.logoUrl || undefined }))}
               selectedCustomer={selectedCustomer ? { id: String(selectedCustomer.id), name: selectedCustomer.name } : null}
-              onCustomerChange={(id) => customerCtx?.setSelectedCustomerId(id)}
+              onCustomerChange={(id) => {
+                customerCtx?.setSelectedCustomerId(id);
+                // Also update the conversation's client assignment
+                if (selectedId) {
+                  fetch(`/api/ai/conversations/${selectedId}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ customerId: id === "general" ? null : id || null }),
+                  }).catch(() => {});
+                }
+              }}
               headerExtra={
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
