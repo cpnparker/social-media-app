@@ -15,7 +15,7 @@ import {
   DEFAULT_HOST_CONFIG,
   type Area,
 } from "@cpnparker/engine-nav";
-import { FileSearch } from "lucide-react";
+import { FileSearch, Shield } from "lucide-react";
 
 // Re-export Area so existing consumers don't need to change their imports
 export type { Area } from "@cpnparker/engine-nav";
@@ -25,7 +25,7 @@ export type { ExtendedArea };
 // Access-flag mapping (Content-Engine-specific)
 // ────────────────────────────────────────────────
 
-type ExtendedArea = Area | "rfp-tool" | "engineai";
+type ExtendedArea = Area | "rfp-tool" | "authorityon" | "engineai";
 
 const ACCESS_FLAG_KEYS: Record<string, "accessEngine" | "accessOperations" | "accessEngineGpt" | "accessMeetingBrain" | "accessAdmin"> = {
   engine: "accessEngine",
@@ -47,12 +47,19 @@ interface RailItem extends ExtendedRailItemConfig {
   hidden: boolean;
 }
 
-// Custom rail item for RFP Tool (inserted between MeetingBrain and Admin)
+// Custom rail items (inserted after MeetingBrain, before Admin)
 const RFP_TOOL_ITEM: ExtendedRailItemConfig = {
   area: "rfp-tool",
   icon: FileSearch,
   label: "RFP Tool",
   shortLabel: "RFP",
+};
+
+const AUTHORITYON_ITEM: ExtendedRailItemConfig = {
+  area: "authorityon",
+  icon: Shield,
+  label: "AuthorityOn",
+  shortLabel: "Auth",
 };
 
 // ────────────────────────────────────────────────
@@ -72,11 +79,15 @@ export function useRailItems(): { items: RailItem[]; visibleCount: number } {
       ...item,
       hidden: !(ws?.[ACCESS_FLAG_KEYS[item.area]] ?? false),
     });
-    // Insert RFP Tool after MeetingBrain
+    // Insert RFP Tool and AuthorityOn after MeetingBrain
     if (item.area === "meetingbrain") {
       items.push({
         ...RFP_TOOL_ITEM,
         hidden: !(ws?.accessRfpTool ?? false),
+      });
+      items.push({
+        ...AUTHORITYON_ITEM,
+        hidden: false, // Always visible — AuthorityOn has its own auth
       });
     }
   }
@@ -111,6 +122,12 @@ export function SectionRailDesktop({ currentArea, onLocalSwitch }: SectionRailPr
       } else {
         router.push("/rfp-tool");
       }
+      return;
+    }
+    if (area === "authorityon") {
+      window.location.href = isProductionHost()
+        ? "https://authority.thecontentengine.com/"
+        : "/";
       return;
     }
     navigateToArea(area as Area, currentArea as Area, { onLocalSwitch: onLocalSwitch as ((area: Area) => void) | undefined });
@@ -163,6 +180,12 @@ export function SectionRailMobile({ currentArea, onLocalSwitch }: SectionRailPro
       } else {
         router.push("/rfp-tool");
       }
+      return;
+    }
+    if (area === "authorityon") {
+      window.location.href = isProductionHost()
+        ? "https://authority.thecontentengine.com/"
+        : "/";
       return;
     }
     navigateToArea(area as Area, currentArea as Area, { onLocalSwitch: onLocalSwitch as ((area: Area) => void) | undefined });
