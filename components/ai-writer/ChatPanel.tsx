@@ -34,6 +34,7 @@ import {
   ChevronDown,
   Search,
   Sparkles,
+  ArrowDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -207,6 +208,25 @@ export default function ChatPanel({
     container.addEventListener("scroll", checkPosition, { passive: true });
     return () => container.removeEventListener("scroll", checkPosition);
   }, []);
+
+  // Scroll to bottom on initial conversation load
+  const hasScrolledOnLoad = useRef(false);
+  useEffect(() => {
+    if (messages.length > 0 && !hasScrolledOnLoad.current) {
+      hasScrolledOnLoad.current = true;
+      // Wait for DOM to render messages before scrolling
+      requestAnimationFrame(() => {
+        setUserScrolledUp(false);
+        scrollToBottom();
+      });
+    }
+  }, [messages.length, scrollToBottom]);
+
+  // Reset scroll flag when conversation changes
+  useEffect(() => {
+    hasScrolledOnLoad.current = false;
+    setUserScrolledUp(false);
+  }, [conversationId]);
 
   // Scroll to bottom only when USER sends a message, not when assistant response finishes
   const prevMessagesLenRef = useRef(messages.length);
@@ -1293,10 +1313,10 @@ export default function ChatPanel({
               setUserScrolledUp(false);
               scrollToBottom();
             }}
-            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-foreground/90 text-background px-3 py-1.5 text-xs font-medium shadow-lg hover:bg-foreground transition-colors backdrop-blur-sm"
+            className="absolute bottom-20 right-4 z-10 flex items-center justify-center h-8 w-8 rounded-full bg-background border border-border shadow-md hover:bg-muted transition-colors"
+            aria-label="Scroll to bottom"
           >
-            <ChevronDown className="h-3.5 w-3.5" />
-            New content below
+            <ArrowDown className="h-4 w-4 text-muted-foreground" />
           </button>
         )}
       </div>
