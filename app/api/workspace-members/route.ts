@@ -59,6 +59,7 @@ export async function GET() {
         accessAdmin: access ? !!access.flag_access_admin : false,
         accessMeetingBrain: access ? !!access.flag_access_meetingbrain : false,
         accessRfpTool: access ? !!access.flag_access_rfptool : false,
+        accessAuthorityOn: access ? !!access.flag_access_authorityon : false,
       };
     });
 
@@ -148,6 +149,7 @@ export async function POST(req: NextRequest) {
       flag_access_admin: 0,
       flag_access_meetingbrain: 0,
       flag_access_rfptool: 0,
+      flag_access_authorityon: 0,
     });
 
     return NextResponse.json(
@@ -177,7 +179,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
-    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain, accessRfpTool } = body;
+    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain, accessRfpTool, accessAuthorityOn } = body;
 
     // Determine target user IDs — bulk or single
     const isBulk = Array.isArray(userIds) && userIds.length > 0;
@@ -261,6 +263,7 @@ export async function PATCH(req: NextRequest) {
             if (accessAdmin !== undefined) updates.flag_access_admin = accessAdmin ? 1 : 0;
             if (accessMeetingBrain !== undefined) updates.flag_access_meetingbrain = accessMeetingBrain ? 1 : 0;
             if (accessRfpTool !== undefined) updates.flag_access_rfptool = accessRfpTool ? 1 : 0;
+            if (accessAuthorityOn !== undefined) updates.flag_access_authorityon = accessAuthorityOn ? 1 : 0;
 
             await intelligenceDb
               .from("users_access")
@@ -276,6 +279,7 @@ export async function PATCH(req: NextRequest) {
               flag_access_admin: accessAdmin ? 1 : 0,
               flag_access_meetingbrain: accessMeetingBrain ? 1 : 0,
               flag_access_rfptool: accessRfpTool ? 1 : 0,
+              flag_access_authorityon: accessAuthorityOn ? 1 : 0,
             });
           }
         })

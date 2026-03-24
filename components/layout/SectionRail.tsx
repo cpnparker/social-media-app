@@ -87,7 +87,7 @@ export function useRailItems(): { items: RailItem[]; visibleCount: number } {
       });
       items.push({
         ...AUTHORITYON_ITEM,
-        hidden: false, // Always visible — AuthorityOn has its own auth
+        hidden: !(ws?.accessAuthorityOn ?? false),
       });
     }
   }
