@@ -182,6 +182,8 @@ export function buildSystemPrompt(ctx: {
   meetingBrainContext?: string | null;
   region?: string | null;
   clientBackground?: { document_context: string; meeting_context?: string | null; units_asset_count: number; date_last_processed: string } | null;
+  userName?: string | null;
+  userEmail?: string | null;
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
 
@@ -234,6 +236,13 @@ ${FORMATTING_GUIDELINES}`;
   const now = new Date();
   const dateStr = now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   prompt += `\n\nToday's date is ${dateStr}. Always use this as your reference for "today", "this week", "recent", etc. Your training data may be outdated — if the user asks about current events, recent news, industry trends, company information, market data, statistics, or anything that may have changed since your training cutoff, you MUST use web search to get up-to-date information before responding. Never present outdated training data as current fact. When writing content that includes factual claims about a client's industry, competitors, or market — search first, don't guess.`;
+
+  // ── User identity ──
+  if (ctx.userName) {
+    prompt += `\n\nThe current user is ${ctx.userName}`;
+    if (ctx.userEmail) prompt += ` (${ctx.userEmail})`;
+    prompt += `. When they say "I", "me", "my", or "mine", this refers to this person. For Engine queries, use name_user_assignee or name_account_manager matching their name.`;
+  }
 
   // ── Web search disabled warning ──
   if (ctx.contextConfig?.webSearch === "off") {

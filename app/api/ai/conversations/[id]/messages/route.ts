@@ -982,6 +982,8 @@ export async function POST(
       meetingBrainContext,
       region: userPrefs?.name_region || null,
       clientBackground: resolvedClientBackground || null,
+      userName: session.user?.name || null,
+      userEmail: session.user?.email || null,
     });
 
     // Append query router hints to system prompt
