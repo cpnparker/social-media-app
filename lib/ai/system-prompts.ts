@@ -241,7 +241,16 @@ ${FORMATTING_GUIDELINES}`;
   if (ctx.userName) {
     prompt += `\n\nThe current user is ${ctx.userName}`;
     if (ctx.userEmail) prompt += ` (${ctx.userEmail})`;
-    prompt += `. When they say "I", "me", "my", or "mine", this refers to this person. For Engine queries, use name_user_assignee or name_account_manager matching their name.`;
+    prompt += `.
+When they say "I", "me", "my", or "mine", this refers to this person.
+
+CRITICAL — determining "my work" accurately:
+1. First query app_contracts filtered by name_account_manager matching "${ctx.userName}" to find which clients this user manages
+2. Then query app_content or app_tasks_content filtered by those client IDs to find their work
+3. For directly assigned tasks, also check app_tasks_content where name_user_assignee matches "${ctx.userName}"
+4. NEVER guess or infer involvement — only return items where the user's name explicitly appears in name_user_assignee, name_account_manager, or where the content belongs to their managed clients
+5. If unsure whether an item belongs to the user, EXCLUDE it — accuracy is more important than completeness
+6. Always state clearly what filter criteria you used (e.g. "Filtered by account manager: ${ctx.userName}" or "Filtered by assignee: ${ctx.userName}")`;
   }
 
   // ── Web search disabled warning ──
