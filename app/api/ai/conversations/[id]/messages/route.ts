@@ -984,6 +984,7 @@ export async function POST(
       clientBackground: resolvedClientBackground || null,
       userName: session.user?.name || null,
       userEmail: session.user?.email || null,
+      userEngineId: userId,
     });
 
     // Append query router hints to system prompt
