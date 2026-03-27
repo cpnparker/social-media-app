@@ -2447,15 +2447,13 @@ export function createStreamingResponse(
           try {
             result = await streamAnthropic(messages, config, modelInfo.apiModel, controller, encoder);
           } catch (anthropicErr: any) {
-            // Fallback to Grok if Anthropic hits rate/spending limits
+            // Fallback to Grok if Anthropic fails for any reason (rate limits, overloaded, timeouts, etc.)
             const errMsg = anthropicErr?.message || String(anthropicErr);
-            if (errMsg.includes("usage limits") || errMsg.includes("rate_limit") || anthropicErr?.status === 429 || anthropicErr?.status === 400) {
-              console.warn(`[AI] Anthropic failed (${errMsg.slice(0, 100)}), falling back to Grok`);
-              result = await streamXAI(messages, config, "grok-4-1-fast", controller, encoder);
-              console.log(`[AI] Grok fallback result: ${result.fullText.length} chars, ${result.inputTokens} in, ${result.outputTokens} out`);
-            } else {
-              throw anthropicErr;
-            }
+            const status = anthropicErr?.status || 0;
+            console.warn(`[AI] Anthropic failed (status=${status}, ${errMsg.slice(0, 150)}), falling back to Grok`);
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: "Claude unavailable — using Grok" })}\n\n`));
+            result = await streamXAI(messages, config, "grok-4-1-fast-non-reasoning", controller, encoder);
+            console.log(`[AI] Grok fallback result: ${result.fullText.length} chars, ${result.inputTokens} in, ${result.outputTokens} out`);
           }
         } else if (modelInfo.provider === "gemini") {
           result = await streamGemini(messages, config, modelInfo.apiModel, controller, encoder);
