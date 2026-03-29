@@ -72,6 +72,9 @@ const MEMORY_KEYWORDS_2 = /\b(my preference|i prefer|i like to|i always|my style
 const MEMORY_KEYWORDS_3 = /\b(you said|you recommended|you suggested|your advice|you told me)\b/i;
 const MEMORY_KEYWORDS_4 = /\b(in our (last|previous|earlier) (conversation|chat|discussion|session))\b/i;
 
+// URL detection — if user pastes a URL, they want web access
+const CONTAINS_URL = /https?:\/\/[^\s]+/i;
+
 // Step 7: Implicit web (soft signals — benefits from web data)
 const WEB_IMPLICIT = /\b(competitors?|competitor analysis|industry (benchmark|trend|standard|average)|market (offerings?|rates?|leaders?|landscape|analysis|research))\b/i;
 const WEB_IMPLICIT_2 = /\b(best practices?|how to|tutorial|guide|documentation for)\b/i;
@@ -161,7 +164,8 @@ export function routeQuery(
   }
 
   // ── Step 2: Explicit web search ──
-  const wantsWeb = webAllowed && matchesAny(lower, [WEB_EXPLICIT, WEB_EXPLICIT_2, WEB_EXPLICIT_3, WEB_EXPLICIT_4]);
+  const hasUrl = CONTAINS_URL.test(userMessage);
+  const wantsWeb = webAllowed && (hasUrl || matchesAny(lower, [WEB_EXPLICIT, WEB_EXPLICIT_2, WEB_EXPLICIT_3, WEB_EXPLICIT_4]));
 
   // ── Step 3-5: Detect data source signals ──
   const wantsMeeting = meetingBrainAllowed && matchesAny(lower, [MEETING_KEYWORDS, MEETING_KEYWORDS_2, MEETING_KEYWORDS_3]);
