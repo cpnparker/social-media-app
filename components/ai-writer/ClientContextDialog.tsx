@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, ExternalLink, FileText, Search, Brain, RefreshCw } from "lucide-react";
+import { Loader2, ExternalLink, FileText, Search, Brain, RefreshCw, AlertCircle } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -52,13 +52,21 @@ interface FileSummary {
   chars_extracted: number;
 }
 
+interface SkippedFile {
+  id_asset: number;
+  name: string;
+  reason: string;
+}
+
 interface ClientContext {
   id_context: string;
   id_workspace: string;
   id_client: number;
   document_context: string;
   document_file_summaries: FileSummary[];
+  document_skipped_files?: SkippedFile[];
   units_asset_count: number;
+  units_asset_total?: number;
   date_last_processed: string;
   date_created: string;
   meeting_context?: string | null;
@@ -260,7 +268,8 @@ export default function ClientContextDialog({
               {/* Processed files */}
               <div>
                 <h3 className="text-sm font-medium mb-2">
-                  Processed Files ({context.units_asset_count})
+                  Processed Files ({context.units_asset_count}
+                  {context.units_asset_total ? ` of ${context.units_asset_total}` : ""})
                 </h3>
                 <div className="space-y-1.5">
                   {context.document_file_summaries?.map(
@@ -283,6 +292,31 @@ export default function ClientContextDialog({
                   )}
                 </div>
               </div>
+
+              {/* Skipped files */}
+              {context.document_skipped_files && context.document_skipped_files.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-medium mb-2 text-muted-foreground">
+                    Skipped ({context.document_skipped_files.length})
+                  </h3>
+                  <div className="space-y-1">
+                    {context.document_skipped_files.map(
+                      (file: SkippedFile) => (
+                        <div
+                          key={file.id_asset}
+                          className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm text-muted-foreground"
+                        >
+                          <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                          <span className="flex-1 truncate">{file.name}</span>
+                          <span className="text-xs shrink-0">
+                            {file.reason}
+                          </span>
+                        </div>
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Linked meetings */}
               {context.meeting_context && (

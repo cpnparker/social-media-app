@@ -84,6 +84,8 @@ export async function POST(req: NextRequest) {
       clientId,
       name: client?.name_client || `Client ${clientId}`,
       filesProcessed: result.processed,
+      filesTotal: result.total,
+      skipped: result.skipped || [],
       error: result.error || null,
     });
   } catch (err: any) {

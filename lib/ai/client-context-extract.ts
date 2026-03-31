@@ -74,6 +74,7 @@ function isExtractable(mimeType: string): boolean {
   return (
     mimeType === "application/pdf" ||
     mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    mimeType === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
     mimeType.startsWith("text/")
   );
 }
@@ -204,6 +205,39 @@ async function extractText(
     return result.value;
   }
 
+  if (
+    mimeType ===
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+  ) {
+    // Extract text from PPTX slides using JSZip + XML parsing
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(buffer);
+    const slideTexts: string[] = [];
+
+    // PPTX slides are in ppt/slides/slide1.xml, slide2.xml, etc.
+    const slideFiles = Object.keys(zip.files)
+      .filter((f) => /^ppt\/slides\/slide\d+\.xml$/.test(f))
+      .sort((a, b) => {
+        const numA = parseInt(a.match(/slide(\d+)/)?.[1] || "0");
+        const numB = parseInt(b.match(/slide(\d+)/)?.[1] || "0");
+        return numA - numB;
+      });
+
+    for (const slideFile of slideFiles) {
+      const xml = await zip.files[slideFile].async("string");
+      // Extract all text between <a:t> tags (PowerPoint text runs)
+      const texts = xml.match(/<a:t>([^<]*)<\/a:t>/g);
+      if (texts) {
+        const slideText = texts
+          .map((t) => t.replace(/<\/?a:t>/g, ""))
+          .join(" ");
+        if (slideText.trim()) slideTexts.push(slideText.trim());
+      }
+    }
+
+    return slideTexts.join("\n\n");
+  }
+
   if (mimeType.startsWith("text/")) {
     return buffer.toString("utf-8");
   }
@@ -293,6 +327,12 @@ Do NOT invent information — only include what's supported by the documents.`,
   return response.choices?.[0]?.message?.content?.trim() || "";
 }
 
+interface SkippedFile {
+  id_asset: number;
+  name: string;
+  reason: string;
+}
+
 /**
  * Process all asset files for a client and store the consolidated profile.
  */
@@ -300,7 +340,7 @@ export async function processClientContext(
   workspaceId: string,
   clientId: number,
   clientName?: string
-): Promise<{ processed: number; error?: string }> {
+): Promise<{ processed: number; total: number; skipped: SkippedFile[]; error?: string }> {
   try {
     // 1. Fetch all asset files for this client via the joined view
     const { data: assets, error: assetsErr } = await supabase
@@ -313,11 +353,12 @@ export async function processClientContext(
     if (assetsErr) throw assetsErr;
     if (!assets || assets.length === 0) {
       console.log(`[ClientContext] No assets for client ${clientId}`);
-      return { processed: 0 };
+      return { processed: 0, total: 0, skipped: [] };
     }
 
     const xai = getXAIClient();
     const fileSummaries: FileSummary[] = [];
+    const skippedFiles: SkippedFile[] = [];
 
     // 2. Process each file
     for (const asset of assets) {
@@ -331,6 +372,7 @@ export async function processClientContext(
           const text = await fetchGoogleDocText(docUrl);
           if (!text || text.trim().length < 50) {
             console.log(`[ClientContext] No usable text from Google Doc: ${asset.name_asset}`);
+            skippedFiles.push({ id_asset: asset.id_asset, name: asset.name_asset || fileName, reason: "Google Doc empty or inaccessible" });
             continue;
           }
           const summary = await summariseDocument(xai, text, fileName);
@@ -349,6 +391,7 @@ export async function processClientContext(
 
         // Skip assets with no file reference
         if (!asset.file_path && !asset.file_url) {
+          skippedFiles.push({ id_asset: asset.id_asset, name: asset.name_asset || fileName, reason: "No file attached" });
           continue;
         }
 
@@ -357,6 +400,7 @@ export async function processClientContext(
         // Skip unsupported file types
         if (!isExtractable(mimeType)) {
           console.log(`[ClientContext] Skipping: ${fileName} (${mimeType})`);
+          skippedFiles.push({ id_asset: asset.id_asset, name: asset.name_asset || fileName, reason: `Unsupported file type (${mimeType.split("/").pop()})` });
           continue;
         }
 
@@ -381,6 +425,7 @@ export async function processClientContext(
 
         if (!buffer) {
           console.warn(`[ClientContext] Could not download: ${fileName}`);
+          skippedFiles.push({ id_asset: asset.id_asset, name: asset.name_asset || fileName, reason: "Download failed" });
           continue;
         }
 
@@ -388,6 +433,7 @@ export async function processClientContext(
         const text = await extractText(buffer, mimeType);
         if (!text || text.trim().length < 50) {
           console.log(`[ClientContext] No usable text from ${fileName} (${text?.length || 0} chars)`);
+          skippedFiles.push({ id_asset: asset.id_asset, name: asset.name_asset || fileName, reason: "No extractable text content" });
           continue;
         }
 
@@ -406,15 +452,17 @@ export async function processClientContext(
         console.log(`[ClientContext] Processed ${fileName}: ${text.length} chars → ${summary.length} char summary`);
       } catch (fileErr) {
         console.error(`[ClientContext] Error processing asset ${asset.id_asset}:`, fileErr);
+        const fileName = asset.file_name || asset.name_asset || `asset-${asset.id_asset}`;
+        skippedFiles.push({ id_asset: asset.id_asset, name: asset.name_asset || fileName, reason: "Processing error" });
         // Continue with other files
       }
     }
 
     if (fileSummaries.length === 0) {
       console.log(
-        `[ClientContext] No extractable content for client ${clientId}`
+        `[ClientContext] No extractable content for client ${clientId} (${skippedFiles.length} skipped)`
       );
-      return { processed: 0 };
+      return { processed: 0, total: assets.length, skipped: skippedFiles };
     }
 
     // 3. Consolidate into one profile
@@ -425,33 +473,44 @@ export async function processClientContext(
       name
     );
 
-    // 4. Upsert into ai_client_context
-    const { error: upsertErr } = await intelligenceDb
+    // 4. Upsert into ai_client_context (try with new columns, fall back without)
+    const fullPayload = {
+      id_workspace: workspaceId,
+      id_client: clientId,
+      document_context: consolidatedProfile,
+      document_file_summaries: fileSummaries,
+      document_skipped_files: skippedFiles,
+      units_asset_count: fileSummaries.length,
+      units_asset_total: assets.length,
+      date_last_processed: new Date().toISOString(),
+    };
+
+    let { error: upsertErr } = await intelligenceDb
       .from("ai_client_context")
-      .upsert(
-        {
-          id_workspace: workspaceId,
-          id_client: clientId,
-          document_context: consolidatedProfile,
-          document_file_summaries: fileSummaries,
-          units_asset_count: fileSummaries.length,
-          date_last_processed: new Date().toISOString(),
-        },
-        { onConflict: "id_workspace,id_client" }
-      );
+      .upsert(fullPayload, { onConflict: "id_workspace,id_client" });
+
+    // Fallback: if new columns don't exist yet, upsert without them
+    if (upsertErr?.code === "42703") {
+      console.warn("[ClientContext] New columns not yet migrated, upserting without skipped_files/asset_total");
+      const { document_skipped_files, units_asset_total, ...legacyPayload } = fullPayload;
+      const fallback = await intelligenceDb
+        .from("ai_client_context")
+        .upsert(legacyPayload, { onConflict: "id_workspace,id_client" });
+      upsertErr = fallback.error;
+    }
 
     if (upsertErr) throw upsertErr;
 
     console.log(
-      `[ClientContext] Client ${clientId} (${name}): ${fileSummaries.length} files → ${consolidatedProfile.length} char profile`
+      `[ClientContext] Client ${clientId} (${name}): ${fileSummaries.length}/${assets.length} files processed → ${consolidatedProfile.length} char profile (${skippedFiles.length} skipped)`
     );
 
-    return { processed: fileSummaries.length };
+    return { processed: fileSummaries.length, total: assets.length, skipped: skippedFiles };
   } catch (err: any) {
     console.error(
       `[ClientContext] Failed for client ${clientId}:`,
       err.message
     );
-    return { processed: 0, error: err.message };
+    return { processed: 0, total: 0, skipped: [], error: err.message };
   }
 }
