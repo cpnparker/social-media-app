@@ -3380,10 +3380,14 @@ async function streamXAIChatCompletions(
   if (!fullText.trim() && openaiMessages.length > 1) {
     console.log(`[xAI] Tool loop produced no text after ${MAX_TOOL_ROUNDS} rounds — forcing final response`);
     try {
+      // Use max_completion_tokens for Grok-4 (same logic as main loop)
+      const finalTokenParam = apiModel.startsWith("grok-4")
+        ? { max_completion_tokens: config.maxTokens || 4096 }
+        : { max_tokens: config.maxTokens || 4096 };
       const finalStream = await xai.chat.completions.create({
         model: apiModel,
         temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
-        max_tokens: config.maxTokens || 4096,
+        ...finalTokenParam,
         messages: openaiMessages as any,
         stream: true,
       });
@@ -3403,7 +3407,17 @@ async function streamXAIChatCompletions(
   return { fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
 }
 
-/** xAI Responses API streaming — used when web search is enabled */
+/**
+ * xAI Responses API streaming — CURRENTLY UNUSED (kept for reference).
+ *
+ * This was the original web-search implementation using xAI's Responses API
+ * with `type: "web_search"` as an explicit tool. It has a nice `searching: true`
+ * signal but was replaced by `streamXAIChatCompletions` with `search_mode: "on"`
+ * because Chat Completions supports custom function calling (query_engine etc.)
+ * while the Responses API does not.
+ *
+ * Could be revived if xAI adds function-call support to the Responses API.
+ */
 async function streamXAIResponses(
   messages: AIMessage[],
   config: AIProviderConfig,
