@@ -84,6 +84,13 @@ const WEB_IMPLICIT_5 = /\b(instagram|tiktok|linkedin|facebook|twitter|x algorith
 const WEB_IMPLICIT_6 = /\b(news about|recent developments?|what'?s new with|updates? on|latest on)\b/i;
 const WEB_IMPLICIT_7 = /\b(what others are (doing|offering|charging|selling)|what.{1,20}(already selling|on the market|out there))\b/i;
 
+// Step 7 (continued): General research, buying decisions, product recommendations
+const WEB_IMPLICIT_8 = /\b(research|do (some|extensive|thorough|detailed) research|look into|find out about|investigate|look up)\b/i;
+const WEB_IMPLICIT_9 = /\b(recommend(ation)?s?|best option|best choice|best deal|best value|top pick|worth buying|worth it|good (option|choice|deal|buy))\b/i;
+const WEB_IMPLICIT_10 = /\b(i want to buy|looking to buy|want to (purchase|get|order)|thinking of buying|planning to buy|considering buying|should i buy|i('m| am) (looking|trying) to (buy|get|find|purchase))\b/i;
+const WEB_IMPLICIT_11 = /\b(available (in|at|from|near)|in stock|where (can i|to) (buy|get|find|purchase|order)|where (is it|are they) (sold|available)|import (to|from))\b/i;
+const WEB_IMPLICIT_12 = /\b(find me (the|a|an)|help me find|find (the |a |an )best|what('s| is) (the |a |an )best|which (one|is|are) (best|better|recommended)|which (model|option|product|version) (should|would))\b/i;
+
 /* ─────────────── Helper ─────────────── */
 
 function matchesAny(text: string, patterns: RegExp[]): boolean {
@@ -180,7 +187,7 @@ export function routeQuery(
   }
 
   // ── Step 7: Implicit web search ──
-  const implicitWeb = webAllowed && !wantsEngine && matchesAny(lower, [WEB_IMPLICIT, WEB_IMPLICIT_2, WEB_IMPLICIT_3, WEB_IMPLICIT_4, WEB_IMPLICIT_5, WEB_IMPLICIT_6, WEB_IMPLICIT_7]);
+  const implicitWeb = webAllowed && !wantsEngine && matchesAny(lower, [WEB_IMPLICIT, WEB_IMPLICIT_2, WEB_IMPLICIT_3, WEB_IMPLICIT_4, WEB_IMPLICIT_5, WEB_IMPLICIT_6, WEB_IMPLICIT_7, WEB_IMPLICIT_8, WEB_IMPLICIT_9, WEB_IMPLICIT_10, WEB_IMPLICIT_11, WEB_IMPLICIT_12]);
 
   // If Engine data + implicit web → hybrid
   if (wantsEngine && implicitWeb) {
