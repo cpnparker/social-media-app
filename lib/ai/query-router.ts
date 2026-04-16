@@ -231,6 +231,12 @@ export function routeQuery(
     return { ...partial, hints: generateHints(partial) };
   }
 
-  // ── Step 8: Default — no special routing ──
+  // ── Step 8: Default — web search ON for anything unclassified ──
+  // Better to ground the model in real data than risk a hallucinated answer.
+  // Only structured intents (workspace_data, meeting_data, conversational) stay off.
+  if (webAllowed) {
+    const partial = { searchMode: "on" as const, suggestEngine: false, suggestMemory: wantsMemory, suggestMeetingBrain: false, intent: "general" as const };
+    return { ...partial, hints: generateHints(partial) };
+  }
   return { searchMode: "off", suggestEngine: false, suggestMemory: false, suggestMeetingBrain: false, intent: "general", hints: [] };
 }
