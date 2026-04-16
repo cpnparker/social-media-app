@@ -995,12 +995,8 @@ export async function POST(
     // For xAI/Grok: web search is built-in via LiveSearch — NOT a callable tool.
     // The system prompt references "web_search" as a tool name, which confuses Grok
     // into saying "I don't have a web_search function". This note overrides that.
-    if (queryRoute.searchMode === "on") {
-      const { getModelInfo } = await import("@/lib/ai/providers");
-      const resolvedModelInfo = getModelInfo(model);
-      if (resolvedModelInfo.provider === "xai") {
-        systemPrompt += "\n\n**WEB SEARCH (xAI LiveSearch):** Web search is BUILT-IN to your responses — there is NO separate web_search tool to call. When instructions above mention 'use web_search', that means use your native real-time web knowledge. Do NOT say you lack web search access. Just research and answer directly with current information.";
-      }
+    if (queryRoute.searchMode === "on" && model.startsWith("grok")) {
+      systemPrompt += "\n\n**WEB SEARCH (xAI LiveSearch):** Web search is BUILT-IN to your responses — there is NO separate web_search tool to call. When instructions above mention 'use web_search', that means use your native real-time web knowledge. Do NOT say you lack web search access. Just research and answer directly with current information.";
     }
 
     // Auto-title: if this is the first user message, set conversation title (skip incognito)

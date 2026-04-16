@@ -2499,7 +2499,9 @@ export function createStreamingResponse(
             return "";
           }
         );
-        // Strip fabricated markdown links — keep our own URLs and anchors.
+        // Strip fabricated markdown links — keep our own URLs, anchors, and web search citations.
+        // IMPORTANT: when webSearch is active (xAI LiveSearch or Claude web_search), all http/https
+        // URLs are real citations returned by the search — do NOT strip them.
         if (!config.preserveLinks) {
           result.fullText = result.fullText.replace(
             /\[([^\]]+)\]\(([^)]+)\)/g,
@@ -2507,6 +2509,8 @@ export function createStreamingResponse(
               if (url.startsWith("/api/media/")) return match;
               if (url.startsWith("#")) return match;
               if (url.startsWith("https://app.thecontentengine.com/")) return match;
+              // Preserve all http/https URLs when web search is active — these are real citations
+              if (config.webSearch && (url.startsWith("https://") || url.startsWith("http://"))) return match;
               console.warn("[Stream] Stripped fabricated link:", url.slice(0, 100));
               return text;
             }
