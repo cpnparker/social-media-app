@@ -958,9 +958,11 @@ export async function POST(
 
     // Resolve model — "auto" routes to the best model based on the prompt
     let model = body.model || conversation.name_model;
+    let wasAutoRouted = false;
     if (model === "auto") {
       const { routeModel } = await import("@/lib/ai/auto-router");
       model = routeModel(userContent || "");
+      wasAutoRouted = true;
       console.log(`[Messages] Auto-routed → ${model}`);
     }
 
@@ -968,6 +970,16 @@ export async function POST(
     const { routeQuery } = await import("@/lib/ai/query-router");
     const queryRoute = routeQuery(userContent || "", contextConfig);
     console.log(`[Messages] Query route: intent=${queryRoute.intent}, searchMode=${queryRoute.searchMode}, hints=${queryRoute.hints.length}`);
+
+    // Web search queries: use Claude (tool-based web_search_20250305) instead of Grok
+    // when the model was auto-selected. Grok's search_mode blends training data with
+    // live results — it silently fills missing facts with plausible-sounding fabrications.
+    // Claude's web_search tool is explicit and discrete: it can only cite what it fetched.
+    // User-selected Grok models keep their native LiveSearch behaviour unchanged.
+    if (queryRoute.searchMode === "on" && wasAutoRouted && model === "grok-4-1-fast") {
+      model = "claude-sonnet-4-6";
+      console.log(`[Messages] Web search: auto-route override → claude-sonnet-4-6 (tool-based search)`);
+    }
 
     let systemPrompt = buildSystemPrompt({
       workspaceConfig,
