@@ -20,8 +20,10 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { downloadCSV } from "@/lib/csv-utils";
 import {
   BarChart,
   Bar,
@@ -62,6 +64,7 @@ interface ContractRow {
   clientId: string | null;
   clientName: string;
   totalContractCUs: number;
+  commissionedContractCUs: number;
   completedContractCUs: number;
 }
 
@@ -314,7 +317,7 @@ export default function CommissionedCUsPage() {
     const rows = relevant.map((c) => ({
       ...c,
       periodCUs: periodCUsByContract[c.contractId] || 0,
-      remaining: Math.max(0, c.totalContractCUs - c.completedContractCUs),
+      remaining: Math.max(0, c.totalContractCUs - c.commissionedContractCUs),
     }));
     return sortRows(rows, contractSort.currentSort, contractSort.currentAsc);
   }, [selectedCustomerId, contracts, filtered, contractSort.currentSort, contractSort.currentAsc]);
@@ -508,8 +511,13 @@ export default function CommissionedCUsPage() {
           {/* ── ② Active Customers (full width table) ── */}
           <Card className="border-0 shadow-sm">
             <CardContent className="p-0">
-              <div className="px-4 py-2.5 border-b">
+              <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Active Customers</h2>
+                {customerList.length > 0 && (
+                  <button onClick={() => downloadCSV(customerList.map(row => ({ Customer: row.name, CUs: Math.round(row.cus * 10) / 10, Tasks: row.taskCount })), "customers-commissioned.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               {customerList.length === 0 ? (
                 <p className="text-xs text-muted-foreground text-center py-8">No customers found.</p>
@@ -548,10 +556,15 @@ export default function CommissionedCUsPage() {
           {/* ── ③ Contract Activity (full width) ── */}
           <Card className="border-0 shadow-sm">
             <CardContent className="p-0">
-              <div className="px-4 py-2.5 border-b">
+              <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   Contract Activity{selectedCustomerName ? ` — ${selectedCustomerName}` : ""}
                 </h2>
+                {customerContracts.length > 0 && (
+                  <button onClick={() => downloadCSV(customerContracts.map(row => ({ Contract: row.contractName, "Total CUs": Math.round(row.totalContractCUs * 10) / 10, Commissioned: Math.round(row.commissionedContractCUs * 10) / 10, Remaining: Math.round(row.remaining * 10) / 10, "Period CUs": Math.round(row.periodCUs * 10) / 10 })), "contract-activity.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               {!selectedCustomerId ? (
                 <p className="text-xs text-muted-foreground text-center py-6">Select a customer above to view contracts.</p>
@@ -564,7 +577,7 @@ export default function CommissionedCUsPage() {
                       <tr className="border-b">
                         <SortHeader label="Contract" sortKey="contractName" {...contractSort} onSort={contractSort.toggle} />
                         <SortHeader label="Total CUs" sortKey="totalContractCUs" {...contractSort} onSort={contractSort.toggle} align="right" />
-                        <SortHeader label="Commissioned" sortKey="completedContractCUs" {...contractSort} onSort={contractSort.toggle} align="right" />
+                        <SortHeader label="Commissioned" sortKey="commissionedContractCUs" {...contractSort} onSort={contractSort.toggle} align="right" />
                         <SortHeader label="Remaining" sortKey="remaining" {...contractSort} onSort={contractSort.toggle} align="right" />
                         <SortHeader label="Period CUs" sortKey="periodCUs" {...contractSort} onSort={contractSort.toggle} align="right" />
                         <th className="px-3 py-2 text-[10px] font-medium text-muted-foreground uppercase tracking-wider text-center">Link</th>
@@ -575,7 +588,7 @@ export default function CommissionedCUsPage() {
                         <tr key={c.contractId} className="border-b border-border/50 hover:bg-muted/30">
                           <td className="px-3 py-2 font-medium">{c.contractName}</td>
                           <td className="px-3 py-2 text-right tabular-nums">{c.totalContractCUs.toFixed(1)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{c.completedContractCUs.toFixed(1)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{c.commissionedContractCUs.toFixed(1)}</td>
                           <td className="px-3 py-2 text-right tabular-nums font-medium">
                             <span className={c.remaining <= 0 ? "text-red-500" : "text-green-600"}>{c.remaining.toFixed(1)}</span>
                           </td>
@@ -595,10 +608,15 @@ export default function CommissionedCUsPage() {
           {/* ── ④ Content Commissioned (full width) ── */}
           <Card className="border-0 shadow-sm">
             <CardContent className="p-0">
-              <div className="px-4 py-2.5 border-b">
+              <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   Content Commissioned{selectedCustomerName ? ` — ${selectedCustomerName}` : ""}
                 </h2>
+                {customerContent.length > 0 && (
+                  <button onClick={() => downloadCSV(customerContent.map(row => ({ Content: row.title, Type: row.type, "Commissioned By": row.commissionedBy || "", CUs: Math.round(row.cus * 10) / 10, Commissioned: row.createdAt ? fmtDate(row.createdAt) : "" })), "content-commissioned.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               {!selectedCustomerId ? (
                 <p className="text-xs text-muted-foreground text-center py-6">Select a customer above to view content.</p>
@@ -688,8 +706,13 @@ export default function CommissionedCUsPage() {
             {/* ⑦ Team Commissions */}
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0">
-                <div className="px-4 py-2.5 border-b">
+                <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Team Commissions</h2>
+                  {teamList.length > 0 && (
+                    <button onClick={() => downloadCSV(teamList.map(row => ({ Name: row.name, Items: row.count, CUs: Math.round(row.cus * 10) / 10 })), "team-commissions.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
                 {teamList.length === 0 ? (
                   <p className="text-xs text-muted-foreground text-center py-8">No data.</p>

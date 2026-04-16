@@ -21,8 +21,10 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { downloadCSV } from "@/lib/csv-utils";
 import {
   getTypeHex,
   typeColors,
@@ -511,10 +513,29 @@ export default function ContractsPage() {
       {/* ── Contract Selector Table ── */}
       <Card className="border-0 shadow-sm">
         <CardContent className="p-0">
-          <div className="px-4 pt-4 pb-2">
+          <div className="px-4 pt-4 pb-2 flex items-center justify-between">
             <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
               Contracts ({contracts.length})
             </h3>
+            {sortedContracts.length > 0 && (
+              <button
+                onClick={() => downloadCSV(
+                  sortedContracts.map((c) => ({
+                    Contract: c.contractName,
+                    Client: c.clientName,
+                    Start: c.dateStart || "",
+                    End: c.dateEnd || "",
+                    Contracted: Math.round((c.cusContract || 0) * 10) / 10,
+                    Delivered: Math.round((c.cusDelivered || 0) * 10) / 10,
+                  })),
+                  "contracts.csv"
+                )}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+                title="Download CSV"
+              >
+                <Download className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">

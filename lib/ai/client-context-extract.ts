@@ -12,6 +12,7 @@
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { Storage } from "@google-cloud/storage";
+import { google } from "googleapis";
 import OpenAI from "openai";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 
@@ -33,6 +34,7 @@ interface AssetFile {
   file_path: string | null;
   file_bucket: string | null;
   file_name: string | null;
+  information_description: string | null;
 }
 
 interface FileSummary {
@@ -80,35 +82,147 @@ function isExtractable(mimeType: string): boolean {
 }
 
 /**
- * Check if an asset links to a Google Doc.
+ * Google Workspace document types we can export text from.
  */
+const GOOGLE_DOC_PATTERNS: { pattern: RegExp; type: string; exportPath: string }[] = [
+  { pattern: /docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]+)/, type: "document", exportPath: "document" },
+  { pattern: /docs\.google\.com\/presentation\/d\/([a-zA-Z0-9_-]+)/, type: "presentation", exportPath: "presentation" },
+  { pattern: /docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/, type: "spreadsheet", exportPath: "spreadsheets" },
+];
+
+/**
+ * Check if an asset links to a Google Workspace document (Doc, Slides, or Sheet).
+ * Checks file_path, file_url, AND information_description for URLs.
+ */
+function isGoogleWorkspaceDoc(asset: AssetFile): boolean {
+  const sources = [asset.file_path, asset.file_url, asset.information_description].filter(Boolean).join(" ");
+  return GOOGLE_DOC_PATTERNS.some(({ pattern }) => pattern.test(sources));
+}
+
+/** @deprecated Use isGoogleWorkspaceDoc instead */
 function isGoogleDoc(asset: AssetFile): boolean {
-  const path = asset.file_path || asset.file_url || "";
-  return path.includes("docs.google.com/document");
+  return isGoogleWorkspaceDoc(asset);
 }
 
 /**
- * Extract the Google Doc ID from a URL and fetch as plain text.
+ * Extract a Google Workspace doc URL from any asset field (file_path, file_url, or description).
  */
-async function fetchGoogleDocText(url: string): Promise<string | null> {
-  // Extract doc ID from URL like https://docs.google.com/document/d/DOCID/edit...
-  const match = url.match(/\/document\/d\/([a-zA-Z0-9_-]+)/);
-  if (!match) return null;
-
-  const docId = match[1];
-  const exportUrl = `https://docs.google.com/document/d/${docId}/export?format=txt`;
-
-  try {
-    const response = await fetch(exportUrl);
-    if (!response.ok) {
-      console.warn(`[ClientContext] Google Doc export failed (${response.status}): ${docId}`);
-      return null;
+function extractGoogleDocUrl(asset: AssetFile): string | null {
+  const sources = [asset.file_path, asset.file_url, asset.information_description].filter(Boolean);
+  for (const source of sources) {
+    for (const { pattern } of GOOGLE_DOC_PATTERNS) {
+      if (pattern.test(source!)) return source!;
     }
-    return await response.text();
-  } catch (err) {
-    console.warn(`[ClientContext] Google Doc fetch error: ${docId}`, err);
+  }
+  return null;
+}
+
+/**
+ * Get an authenticated Google Drive client using service account credentials
+ * with domain-wide delegation to impersonate a workspace user.
+ *
+ * Setup required (one-time, by Google Workspace admin):
+ * 1. Go to Google Workspace Admin → Security → API Controls → Domain-wide Delegation
+ * 2. Add the service account client ID (from GOOGLE_SERVICE credentials)
+ * 3. Authorize scope: https://www.googleapis.com/auth/drive.readonly
+ * 4. Set GOOGLE_IMPERSONATE_EMAIL env var to a user in the workspace (e.g. service@thecontentengine.com)
+ */
+function getGoogleDriveAuth() {
+  const serviceJson = process.env.GOOGLE_SERVICE;
+  if (!serviceJson) return null;
+  try {
+    const credentials = JSON.parse(serviceJson);
+    const impersonateEmail = process.env.GOOGLE_IMPERSONATE_EMAIL;
+
+    if (impersonateEmail) {
+      // Domain-wide delegation: impersonate a workspace user to access org-shared files
+      const auth = new google.auth.JWT({
+        email: credentials.client_email,
+        key: credentials.private_key,
+        scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+        subject: impersonateEmail,
+      });
+      return auth;
+    }
+
+    // Fallback: direct service account access (only works for files shared with the SA)
+    const auth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+    });
+    return auth;
+  } catch {
     return null;
   }
+}
+
+/** MIME types for exporting Google Workspace files as plain text */
+const EXPORT_MIME: Record<string, string> = {
+  document: "text/plain",
+  presentation: "text/plain",
+  spreadsheet: "text/csv",
+};
+
+/**
+ * Extract a Google Workspace doc ID and fetch as plain text.
+ * Supports Google Docs, Slides, and Sheets.
+ * Tries unauthenticated export first, falls back to Google Drive API with service account.
+ * Returns { text, error } so callers can surface diagnostics.
+ */
+async function fetchGoogleDocText(url: string): Promise<{ text: string | null; error?: string }> {
+  for (const { pattern, type, exportPath } of GOOGLE_DOC_PATTERNS) {
+    const match = url.match(pattern);
+    if (!match) continue;
+
+    const docId = match[1];
+
+    // Try 1: Unauthenticated export (works for publicly shared files)
+    const exportUrl = `https://docs.google.com/${exportPath}/d/${docId}/export?format=txt`;
+    try {
+      const response = await fetch(exportUrl);
+      if (response.ok) {
+        const text = await response.text();
+        if (text && text.trim().length >= 50) {
+          console.log(`[ClientContext] Google ${type} public export OK: ${docId} (${text.length} chars)`);
+          return { text };
+        }
+      }
+      console.log(`[ClientContext] Google ${type} public export failed (${response.status}): ${docId}, trying authenticated...`);
+    } catch (err) {
+      console.log(`[ClientContext] Google ${type} public fetch error, trying authenticated...`);
+    }
+
+    // Try 2: Authenticated export via Google Drive API (for org-restricted files)
+    const impersonateEmail = process.env.GOOGLE_IMPERSONATE_EMAIL;
+    try {
+      const auth = getGoogleDriveAuth();
+      if (!auth) {
+        const reason = !process.env.GOOGLE_SERVICE
+          ? "GOOGLE_SERVICE env var not set"
+          : !impersonateEmail
+            ? "GOOGLE_IMPERSONATE_EMAIL env var not set — domain-wide delegation not configured"
+            : "Failed to create auth client";
+        console.warn(`[ClientContext] ${reason}`);
+        return { text: null, error: reason };
+      }
+      console.log(`[ClientContext] Attempting authenticated export for ${type} ${docId} (impersonate=${impersonateEmail || 'none'})`);
+      const drive = google.drive({ version: "v3", auth });
+      const mimeType = EXPORT_MIME[type] || "text/plain";
+      const res = await drive.files.export({ fileId: docId, mimeType }, { responseType: "text" });
+      const text = typeof res.data === "string" ? res.data : String(res.data);
+      if (text && text.trim().length >= 50) {
+        console.log(`[ClientContext] Google ${type} authenticated export OK: ${docId} (${text.length} chars)`);
+        return { text };
+      }
+      return { text: null, error: `Google ${type} exported but content too short (${text?.length || 0} chars)` };
+    } catch (authErr: any) {
+      const errMsg = authErr?.errors?.[0]?.message || authErr?.message || String(authErr);
+      console.warn(`[ClientContext] Google ${type} authenticated export failed: ${docId} — ${errMsg}`);
+      return { text: null, error: `Auth export failed: ${errMsg.slice(0, 100)}` };
+    }
+  }
+
+  return { text: null, error: "URL does not match any Google Workspace document pattern" };
 }
 
 /**
@@ -124,7 +238,7 @@ function getGCSClient(): Storage {
   return new Storage({ projectId: project, credentials });
 }
 
-const GCS_BUCKET_PREFIX = "reflex_deploy_";
+const GCS_BUCKET_PREFIX = "production-env-engine-";
 
 /**
  * Get a download URL for a file based on its bucket type.
@@ -260,23 +374,31 @@ async function summariseDocument(
     messages: [
       {
         role: "system",
-        content: `You are summarising a client document for a content agency's AI assistant. Extract the most useful context about this client, capturing:
-1. Brand identity, voice, and tone guidelines
-2. Strategic objectives and business goals
-3. Target audience and market positioning
-4. Content guidelines, dos and don'ts
-5. Key messages, themes, and talking points
-6. Any specific instructions, preferences, or constraints
-7. Industry context and competitive positioning
+        content: `You are extracting factual information from a client document for a content agency's AI assistant.
 
-Focus on actionable details the AI can use when writing content for this client.
-Keep to 300-500 tokens. Return plain text, no markdown headers.
-Document name: ${fileName}`,
+RULES:
+- Extract ONLY what the document explicitly states. Do not infer, embellish, or generalise.
+- Preserve the document's own language strength: if it says "we aim to be innovative", write "aims to be innovative" — do NOT upgrade to "is innovative" or "known for innovation".
+- Distinguish between directives (rules to follow) vs descriptions (context about the client).
+- If the document is aspirational or forward-looking, label it as such (e.g. "Goals include..." not "The brand is...").
+- If the document doesn't cover a topic, say nothing about that topic. Do NOT fill gaps with assumptions.
+- Prioritise concrete, specific details over vague generalisations.
+
+Extract any of the following that the document DIRECTLY addresses:
+- Brand voice/tone rules or guidelines (exact language, not paraphrased)
+- Stated business objectives or KPIs
+- Defined target audiences or personas
+- Content rules, dos and don'ts
+- Key messages or approved talking points
+- Industry/market context
+
+Keep to 200-400 tokens. Return plain text, no markdown headers.
+Document: "${fileName}"`,
       },
       { role: "user", content: truncated },
     ],
-    max_completion_tokens: 600,
-    temperature: 0.3,
+    max_completion_tokens: 500,
+    temperature: 0.2,
   });
 
   logAiUsage({ model: "grok-4-1-fast", source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
@@ -293,7 +415,7 @@ async function consolidateProfile(
   clientName: string
 ): Promise<string> {
   const input = fileSummaries
-    .map((f) => `--- ${f.name} (${f.type}) ---\n${f.summary}`)
+    .map((f) => `--- ${f.name} (${f.type}, ${f.chars_extracted.toLocaleString()} chars extracted) ---\n${f.summary}`)
     .join("\n\n");
 
   const response = await xai.chat.completions.create({
@@ -301,25 +423,33 @@ async function consolidateProfile(
     messages: [
       {
         role: "system",
-        content: `You are building a client context profile for "${clientName}" that an AI content assistant will use when writing for this client.
+        content: `You are compiling a factual client reference profile for "${clientName}" from document summaries. This profile will be used by an AI content assistant.
 
-Synthesise the document summaries below into a structured client background. Use these sections (skip any that have no relevant information):
+RULES:
+- Compile faithfully. Do NOT synthesise, blend, or amplify. If two documents each briefly mention "innovation", say "innovation is mentioned in [source1] and [source2]" — do NOT upgrade to "strong focus on innovation".
+- Include source attribution in parentheses, e.g. "(from Brand Guidelines)" or "(from Campaign Brief FY23)".
+- Weight sources by depth: a document that extracted 5,000+ characters is more authoritative than one with 500 characters. The character counts are shown below.
+- OMIT sections entirely if the evidence is thin, only from one peripheral document, or speculative.
+- If sources contradict each other, note both positions rather than merging them.
+- Distinguish between established rules ("Brand voice MUST be...") and contextual observations ("Campaign brief mentioned...").
 
-**Brand & Voice**: Tone, personality, language style, dos and don'ts
-**Strategic Objectives**: Business goals, KPIs, what success looks like
-**Target Audience**: Who they're trying to reach, demographics, personas
-**Content Guidelines**: Preferred formats, topics, editorial rules
-**Key Messages**: Core themes, talking points, value propositions
-**Industry Context**: Sector, competitive landscape, market position
-**Other Notes**: Anything else useful for content creation
+Use these sections — but ONLY include sections with solid evidence:
 
-Be concise but specific. Use bullet points. Aim for 800-1200 tokens total.
-Do NOT invent information — only include what's supported by the documents.`,
+**Brand & Voice**: Tone, personality, language rules — only from explicit guidelines
+**Strategic Objectives**: Stated goals, KPIs — only what's explicitly documented
+**Target Audience**: Defined personas or segments — only if specified
+**Content Guidelines**: Dos, don'ts, format preferences — only explicit rules
+**Key Messages**: Approved talking points, themes — only stated messages
+**Industry Context**: Sector, positioning — only documented facts
+**Other Notes**: Anything else useful — only if clearly evidenced
+
+If fewer than 3 sections have solid evidence, that's fine — a short accurate profile is better than a padded inaccurate one.
+Aim for 400-1000 tokens. Use bullet points.`,
       },
       { role: "user", content: input },
     ],
     max_completion_tokens: 1500,
-    temperature: 0.3,
+    temperature: 0.2,
   });
 
   logAiUsage({ model: "grok-4-1-fast", source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
@@ -346,7 +476,7 @@ export async function processClientContext(
     const { data: assets, error: assetsErr } = await supabase
       .from("app_assets_clients")
       .select(
-        "id_asset, name_asset, type_asset, file_url, file_path, file_bucket, file_name"
+        "id_asset, name_asset, type_asset, file_url, file_path, file_bucket, file_name, information_description"
       )
       .eq("id_client", clientId);
 
@@ -366,13 +496,14 @@ export async function processClientContext(
         const fileName =
           asset.file_name || asset.name_asset || `asset-${asset.id_asset}`;
 
-        // Handle Google Docs separately
-        if (isGoogleDoc(asset)) {
-          const docUrl = asset.file_path || asset.file_url || "";
-          const text = await fetchGoogleDocText(docUrl);
+        // Handle Google Workspace docs (Docs, Slides, Sheets) separately
+        if (isGoogleWorkspaceDoc(asset)) {
+          const docUrl = extractGoogleDocUrl(asset) || "";
+          const { text, error: gdocError } = await fetchGoogleDocText(docUrl);
           if (!text || text.trim().length < 50) {
-            console.log(`[ClientContext] No usable text from Google Doc: ${asset.name_asset}`);
-            skippedFiles.push({ id_asset: asset.id_asset, name: asset.name_asset || fileName, reason: "Google Doc empty or inaccessible" });
+            const reason = gdocError || "Google Doc/Slides empty or inaccessible";
+            console.log(`[ClientContext] No usable text from Google Workspace doc: ${asset.name_asset} (url: ${docUrl}, error: ${reason})`);
+            skippedFiles.push({ id_asset: asset.id_asset, name: asset.name_asset || fileName, reason });
             continue;
           }
           const summary = await summariseDocument(xai, text, fileName);

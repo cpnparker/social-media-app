@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS intelligence.ai_conversations (
   id_conversation   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   id_workspace      uuid NOT NULL, -- public.workspaces(id_workspace)
   name_conversation text NOT NULL DEFAULT 'New Conversation',
-  name_model        text NOT NULL DEFAULT 'claude-sonnet-4-20250514',
+  name_model        text NOT NULL DEFAULT 'claude-sonnet-4-6',
   type_visibility   text NOT NULL DEFAULT 'private',
   user_created      integer NOT NULL -- public.users(id_user)
 );
@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS intelligence.ai_settings (
   information_cu_description      text,
   information_format_descriptions jsonb,
   information_type_instructions   jsonb,
-  name_model                      text DEFAULT 'claude-sonnet-4-20250514',
+  name_model                      text DEFAULT 'claude-sonnet-4-6',
   units_max_tokens                integer DEFAULT 4096
 );
 

@@ -133,12 +133,14 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     apiModel: "sonar",
     label: "Perplexity Sonar",
     description: "Every reply searches the web",
+    hidden: true,
   },
   "sonar-pro": {
     provider: "perplexity",
     apiModel: "sonar-pro",
     label: "Perplexity Sonar Pro",
     description: "Deep web research & analysis",
+    hidden: true,
   },
   // Legacy mappings for old conversations
   "gemini-2.5-pro": {
@@ -179,7 +181,7 @@ export function getAvailableModels() {
 }
 
 export function getModelInfo(modelId: string): ModelInfo {
-  return MODEL_REGISTRY[modelId] || MODEL_REGISTRY["claude-sonnet-4-20250514"];
+  return MODEL_REGISTRY[modelId] || MODEL_REGISTRY["claude-sonnet-4-6"];
 }
 
 /* ─────────────── Provider Clients ─────────────── */
@@ -2462,7 +2464,20 @@ export function createStreamingResponse(
         } else if (modelInfo.provider === "perplexity") {
           result = await streamPerplexity(messages, config, modelInfo.apiModel, controller, encoder);
         } else {
-          result = await streamXAI(messages, config, modelInfo.apiModel, controller, encoder);
+          // xAI (Grok) — with fallback to Anthropic on failure or empty response
+          try {
+            result = await streamXAI(messages, config, modelInfo.apiModel, controller, encoder);
+            if (!result.fullText.trim()) {
+              console.warn(`[AI] xAI returned empty response, falling back to Claude`);
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: "Grok returned empty — using Claude" })}\n\n`));
+              result = await streamAnthropic(messages, config, "claude-sonnet-4-6", controller, encoder);
+            }
+          } catch (xaiErr: any) {
+            const errMsg = xaiErr?.message || String(xaiErr);
+            console.warn(`[AI] xAI failed (${errMsg.slice(0, 150)}), falling back to Claude`);
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: "Grok unavailable — using Claude" })}\n\n`));
+            result = await streamAnthropic(messages, config, "claude-sonnet-4-6", controller, encoder);
+          }
         }
 
         // Strip fabricated image markdown AND deduplicate legitimate ones
@@ -2895,6 +2910,43 @@ async function streamAnthropic(
     });
   }
 
+  // If the loop exhausted all rounds without generating text, do one final
+  // round with tools disabled to force the model to produce a text response
+  // from whatever tool context has been gathered.
+  if (!fullText.trim() && anthropicMessages.length > 1) {
+    console.log(`[Anthropic] Tool loop produced no text after ${MAX_TOOL_ROUNDS} rounds — forcing final response`);
+    try {
+      const finalStream = anthropic.messages.stream({
+        model: apiModel,
+        max_tokens: config.maxTokens || 4096,
+        temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
+        system: systemText,
+        messages: anthropicMessages,
+        // No tools — forces a text-only response
+      });
+
+      for await (const event of finalStream) {
+        if (
+          event.type === "content_block_delta" &&
+          (event.delta as any).type === "text_delta"
+        ) {
+          const token = (event.delta as any).text;
+          fullText += token;
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)
+          );
+        }
+      }
+
+      const finalMsg = await finalStream.finalMessage();
+      totalInputTokens += finalMsg.usage?.input_tokens || 0;
+      totalOutputTokens += finalMsg.usage?.output_tokens || 0;
+      console.log(`[Anthropic] Forced final response: ${fullText.length} chars`);
+    } catch (err: any) {
+      console.error(`[Anthropic] Forced final response failed:`, err.message);
+    }
+  }
+
   return { fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
 }
 
@@ -3319,6 +3371,31 @@ async function streamXAIChatCompletions(
     // Don't reset — we want to accumulate all text across rounds
   }
 
+  // If the loop exhausted all rounds without generating text, do one final
+  // round with tools disabled to force a text response.
+  if (!fullText.trim() && openaiMessages.length > 1) {
+    console.log(`[xAI] Tool loop produced no text after ${MAX_TOOL_ROUNDS} rounds — forcing final response`);
+    try {
+      const finalStream = await xai.chat.completions.create({
+        model: apiModel,
+        temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
+        max_tokens: config.maxTokens || 4096,
+        messages: openaiMessages as any,
+        stream: true,
+      });
+      for await (const chunk of finalStream) {
+        const token = chunk.choices?.[0]?.delta?.content;
+        if (token) {
+          fullText += token;
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
+        }
+      }
+      console.log(`[xAI] Forced final response: ${fullText.length} chars`);
+    } catch (err: any) {
+      console.error(`[xAI] Forced final response failed:`, err.message);
+    }
+  }
+
   return { fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
 }
 
@@ -3741,6 +3818,31 @@ async function streamGemini(
     }
   }
 
+  // If the loop exhausted all rounds without generating text, do one final
+  // round with tools disabled to force a text response.
+  if (!fullText.trim() && geminiMessages.length > 1) {
+    console.log(`[Gemini] Tool loop produced no text after ${MAX_TOOL_ROUNDS} rounds — forcing final response`);
+    try {
+      const finalStream = await client.chat.completions.create({
+        model: apiModel,
+        temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
+        max_tokens: config.maxTokens || 4096,
+        messages: geminiMessages as any,
+        stream: true,
+      });
+      for await (const chunk of finalStream) {
+        const token = chunk.choices?.[0]?.delta?.content;
+        if (token) {
+          fullText += token;
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
+        }
+      }
+      console.log(`[Gemini] Forced final response: ${fullText.length} chars`);
+    } catch (err: any) {
+      console.error(`[Gemini] Forced final response failed:`, err.message);
+    }
+  }
+
   return { fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
 }
 
@@ -4092,6 +4194,31 @@ async function streamOpenAI(
           content: "Tool not implemented",
         } as any);
       }
+    }
+  }
+
+  // If the loop exhausted all rounds without generating text, do one final
+  // round with tools disabled to force a text response.
+  if (!fullText.trim() && openaiMessages.length > 1) {
+    console.log(`[OpenAI] Tool loop produced no text after ${MAX_TOOL_ROUNDS} rounds — forcing final response`);
+    try {
+      const finalStream = await client.chat.completions.create({
+        model: apiModel,
+        temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
+        max_tokens: config.maxTokens || 4096,
+        messages: openaiMessages as any,
+        stream: true,
+      });
+      for await (const chunk of finalStream) {
+        const token = chunk.choices?.[0]?.delta?.content;
+        if (token) {
+          fullText += token;
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
+        }
+      }
+      console.log(`[OpenAI] Forced final response: ${fullText.length} chars`);
+    } catch (err: any) {
+      console.error(`[OpenAI] Forced final response failed:`, err.message);
     }
   }
 

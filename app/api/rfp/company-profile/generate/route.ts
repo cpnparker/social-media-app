@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
     const anthropic = new Anthropic();
 
     const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 2000,
       messages: [
         {
@@ -92,7 +92,7 @@ Return ONLY the JSON object, no other text.`,
 
     // Log usage
     logAiUsage({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       source: "rfp-profile",
       inputTokens: response.usage?.input_tokens || 0,
       outputTokens: response.usage?.output_tokens || 0,

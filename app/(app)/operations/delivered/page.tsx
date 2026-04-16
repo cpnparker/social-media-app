@@ -19,8 +19,10 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { downloadCSV } from "@/lib/csv-utils";
 import {
   BarChart,
   Bar,
@@ -504,8 +506,13 @@ export default function DeliveredPage() {
           {/* Active Customers */}
           <Card className="border-0 shadow-sm">
             <CardContent className="p-0">
-              <div className="px-4 py-2.5 border-b">
+              <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Active Customers</h2>
+                {customerList.length > 0 && (
+                  <button onClick={() => downloadCSV(customerList.map(c => ({ Customer: c.name, CUs: Math.round(c.cus * 10) / 10, Tasks: c.taskCount })), "active-customers")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               {customerList.length === 0 ? (
                 <p className="text-xs text-muted-foreground text-center py-8">No customers found.</p>
@@ -544,10 +551,15 @@ export default function DeliveredPage() {
           {/* Contract Activity */}
           <Card className="border-0 shadow-sm">
             <CardContent className="p-0">
-              <div className="px-4 py-2.5 border-b">
+              <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   Contract Activity{selectedCustomerName ? ` \u2014 ${selectedCustomerName}` : ""}
                 </h2>
+                {customerContracts.length > 0 && (
+                  <button onClick={() => downloadCSV(customerContracts.map(c => ({ Contract: c.contractName, "Total CUs": Math.round(c.totalContractCUs * 10) / 10, Completed: Math.round(c.completedContractCUs * 10) / 10, Remaining: Math.round(c.remaining * 10) / 10, "Period CUs": Math.round(c.periodCUs * 10) / 10 })), "contract-activity")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               {!selectedCustomerId ? (
                 <p className="text-xs text-muted-foreground text-center py-6">Select a customer above to view contracts.</p>
@@ -591,10 +603,15 @@ export default function DeliveredPage() {
           {/* Content Delivered */}
           <Card className="border-0 shadow-sm">
             <CardContent className="p-0">
-              <div className="px-4 py-2.5 border-b">
+              <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   Content Delivered{selectedCustomerName ? ` \u2014 ${selectedCustomerName}` : ""}
                 </h2>
+                {customerContent.length > 0 && (
+                  <button onClick={() => downloadCSV(customerContent.map(c => ({ Content: c.title, Type: c.type, "Commissioned By": c.commissionedBy || "\u2014", CUs: Math.round(c.cus * 10) / 10, Completed: fmtDate(c.completedAt), Commissioned: fmtDate(c.createdAt) })), "content-delivered")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               {!selectedCustomerId ? (
                 <p className="text-xs text-muted-foreground text-center py-6">Select a customer above to view content.</p>
@@ -683,8 +700,13 @@ export default function DeliveredPage() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0">
-                <div className="px-4 py-2.5 border-b">
+                <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Team Deliveries</h2>
+                  {teamList.length > 0 && (
+                    <button onClick={() => downloadCSV(teamList.map(u => ({ Name: u.name, Items: u.count, CUs: Math.round(u.cus * 10) / 10 })), "team-deliveries")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
                 {teamList.length === 0 ? (
                   <p className="text-xs text-muted-foreground text-center py-8">No data.</p>
@@ -727,10 +749,15 @@ export default function DeliveredPage() {
 
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0">
-                <div className="px-4 py-2.5 border-b">
+                <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     {selectedCommissioner ? `Content \u2014 ${selectedCommissioner}` : "Content by User"}
                   </h2>
+                  {commissionerContent.length > 0 && (
+                    <button onClick={() => downloadCSV(commissionerContent.map(c => ({ Content: c.title, Customer: c.customer, Type: c.type, CUs: Math.round(c.cus * 10) / 10 })), "content-by-user")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
                 {!selectedCommissioner ? (
                   <p className="text-xs text-muted-foreground text-center py-8">Select a team member to view their content.</p>

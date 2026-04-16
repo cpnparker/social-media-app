@@ -249,7 +249,7 @@ export async function POST(req: NextRequest) {
         .select("name_model")
         .eq("id_workspace", workspaceId)
         .maybeSingle();
-      aiModel = settings?.name_model || "claude-sonnet-4-20250514";
+      aiModel = settings?.name_model || "claude-sonnet-4-6";
     }
 
     const { data: conversation, error } = await intelligenceDb

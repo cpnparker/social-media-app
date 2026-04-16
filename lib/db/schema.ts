@@ -130,7 +130,7 @@ export const workspaces = pgTable("workspaces", {
   slug: text("slug").unique().notNull(),
   plan: planEnum("plan").default("free").notNull(),
   lateApiKey: text("late_api_key"),
-  aiModel: text("ai_model").default("claude-sonnet-4-20250514"),
+  aiModel: text("ai_model").default("claude-sonnet-4-6"),
   aiContextConfig: jsonb("ai_context_config")
     .default({ contracts: true, contentPipeline: true, socialPresence: true })
     .$type<{ contracts: boolean; contentPipeline: boolean; socialPresence: boolean }>(),
@@ -604,7 +604,7 @@ export const aiConversations = pgTable("ai_conversations", {
   visibility: text("visibility").default("private").notNull(),
   contentObjectId: integer("content_object_id"),
   customerId: integer("customer_id"),
-  model: text("model").default("claude-sonnet-4-20250514").notNull(),
+  model: text("model").default("claude-sonnet-4-6").notNull(),
   isIncognito: boolean("is_incognito").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
