@@ -590,7 +590,10 @@ export async function POST(
     // Allow per-request context config override from the client (normalize to detail levels)
     const contextConfig = normalizeContextConfig(body.contextConfig ?? wsSettings?.config_context ?? undefined);
     const cuDescription = wsSettings?.information_cu_description ?? undefined;
-    const maxTokens = wsSettings?.units_max_tokens || 4096;
+    // Web search responses (with citations, sources, detailed research) need more room.
+    // Bump the cap for search queries to avoid mid-sentence cut-offs.
+    const baseMaxTokens = wsSettings?.units_max_tokens || 4096;
+    const maxTokens = baseMaxTokens; // resolved per-query below after route is known
     const debugMode = body.debugMode || wsSettings?.flag_debug || false;
 
     // Determine if memory/summary features are enabled for this request
@@ -993,17 +996,19 @@ export async function POST(
     }
 
     // For xAI/Grok: web search is built-in via LiveSearch — NOT a callable tool.
-    // The system prompt references "web_search" as a tool name, which confuses Grok
-    // into saying "I don't have a web_search function". This note overrides that.
     if (queryRoute.searchMode === "on" && model.startsWith("grok")) {
-      systemPrompt += "\n\n**WEB SEARCH (xAI LiveSearch):** Web search is BUILT-IN to your responses — there is NO separate web_search tool to call. When instructions above mention 'use web_search', that means use your native real-time web knowledge. Do NOT say you lack web search access. Just research and answer directly with current information.";
+      systemPrompt += "\n\n**LIVESEARCH ACTIVE:** xAI LiveSearch is running for this query. You are fetching LIVE results from the web RIGHT NOW. Rules:\n- Only report facts that appear in your actual search results. Do NOT use training data or prior conversation responses to fill gaps.\n- If your live search does not confirm a specific fact (price, stock level, availability, phone number), say \"I couldn't confirm this in my search\" — do not guess.\n- Your previous responses in this conversation may have been wrong. Do not simply repeat or confirm what you said before — re-verify everything with your current search results.\n- Cite the actual URLs your search returned. Do not invent citation numbers.";
     }
 
-    // Safety guard: when web search is NOT active for this query, prevent the model
-    // from confabulating real-world facts it cannot know (prices, stock, availability).
+    // Safety guard: when web search is NOT active for this query.
     if (queryRoute.searchMode === "off" && contextConfig.webSearch !== "off") {
-      systemPrompt += "\n\n**NO WEB SEARCH FOR THIS QUERY:** Real-time data (current stock levels, live prices, today's availability at specific stores, shipping ETAs) is NOT available right now. Do NOT invent specific prices, stock status, or availability — you have no way to know. Instead: (1) state clearly you cannot confirm without searching, (2) offer to search if the user wants, (3) give general guidance from your training data clearly labelled as such.";
+      systemPrompt += "\n\n**NO LIVE SEARCH FOR THIS QUERY:** You cannot access the web right now. Do NOT state specific prices, stock levels, availability, phone numbers, or any real-time facts — you have no way to verify them. Say clearly that you cannot confirm without searching, and offer to search if the user asks.";
     }
+
+    // Boost token limit for web search queries — citations + research responses run long.
+    const effectiveMaxTokens = queryRoute.searchMode === "on"
+      ? Math.max(baseMaxTokens, 8192)
+      : baseMaxTokens;
 
     // Auto-title: if this is the first user message, set conversation title (skip incognito)
     const userMessages = messages.filter((m) => m.role === "user");
@@ -1022,7 +1027,7 @@ export async function POST(
     // Create streaming response
     const aiStream = createStreamingResponse(
       messages,
-      { model, systemPrompt, maxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: isTeamThread ? undefined : (session.user?.email || undefined), selectedClientId: conversation.id_client || undefined },
+      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: isTeamThread ? undefined : (session.user?.email || undefined), selectedClientId: conversation.id_client || undefined },
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
