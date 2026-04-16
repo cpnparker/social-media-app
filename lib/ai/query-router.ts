@@ -91,6 +91,12 @@ const WEB_IMPLICIT_10 = /\b(i want to buy|looking to buy|want to (purchase|get|o
 const WEB_IMPLICIT_11 = /\b(available (in|at|from|near)|in stock|where (can i|to) (buy|get|find|purchase|order)|where (is it|are they) (sold|available)|import (to|from))\b/i;
 const WEB_IMPLICIT_12 = /\b(find me (the|a|an)|help me find|find (the |a |an )best|what('s| is) (the |a |an )best|which (one|is|are) (best|better|recommended)|which (model|option|product|version) (should|would))\b/i;
 
+// Step 7 (continued): Store/site availability checks — "does X have Y", "check site.ch"
+const WEB_IMPLICIT_13 = /\b(do(es)? .{1,60} (have|carry|stock|sell|list)|have .{1,60} in stock|check .{1,50} for (me|us|stock|availability)|what does .{1,60} (charge|cost|offer|sell|ship)|can (i|you|we) .{1,50} at [a-z])\b/i;
+
+// Bare domain name references (bike.ch, galaxus.ch, bike24.de etc.) — user wants info FROM that site
+const WEB_IMPLICIT_14 = /\b[a-z0-9][a-z0-9-]+\.(ch|de|fr|at|be|nl|it|es|se|dk|no|fi|co\.uk|eu)\b/i;
+
 /* ─────────────── Helper ─────────────── */
 
 function matchesAny(text: string, patterns: RegExp[]): boolean {
@@ -187,7 +193,7 @@ export function routeQuery(
   }
 
   // ── Step 7: Implicit web search ──
-  const implicitWeb = webAllowed && !wantsEngine && matchesAny(lower, [WEB_IMPLICIT, WEB_IMPLICIT_2, WEB_IMPLICIT_3, WEB_IMPLICIT_4, WEB_IMPLICIT_5, WEB_IMPLICIT_6, WEB_IMPLICIT_7, WEB_IMPLICIT_8, WEB_IMPLICIT_9, WEB_IMPLICIT_10, WEB_IMPLICIT_11, WEB_IMPLICIT_12]);
+  const implicitWeb = webAllowed && !wantsEngine && matchesAny(lower, [WEB_IMPLICIT, WEB_IMPLICIT_2, WEB_IMPLICIT_3, WEB_IMPLICIT_4, WEB_IMPLICIT_5, WEB_IMPLICIT_6, WEB_IMPLICIT_7, WEB_IMPLICIT_8, WEB_IMPLICIT_9, WEB_IMPLICIT_10, WEB_IMPLICIT_11, WEB_IMPLICIT_12, WEB_IMPLICIT_13, WEB_IMPLICIT_14]);
 
   // If Engine data + implicit web → hybrid
   if (wantsEngine && implicitWeb) {

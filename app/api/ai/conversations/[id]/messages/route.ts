@@ -999,6 +999,12 @@ export async function POST(
       systemPrompt += "\n\n**WEB SEARCH (xAI LiveSearch):** Web search is BUILT-IN to your responses — there is NO separate web_search tool to call. When instructions above mention 'use web_search', that means use your native real-time web knowledge. Do NOT say you lack web search access. Just research and answer directly with current information.";
     }
 
+    // Safety guard: when web search is NOT active for this query, prevent the model
+    // from confabulating real-world facts it cannot know (prices, stock, availability).
+    if (queryRoute.searchMode === "off" && contextConfig.webSearch !== "off") {
+      systemPrompt += "\n\n**NO WEB SEARCH FOR THIS QUERY:** Real-time data (current stock levels, live prices, today's availability at specific stores, shipping ETAs) is NOT available right now. Do NOT invent specific prices, stock status, or availability — you have no way to know. Instead: (1) state clearly you cannot confirm without searching, (2) offer to search if the user wants, (3) give general guidance from your training data clearly labelled as such.";
+    }
+
     // Auto-title: if this is the first user message, set conversation title (skip incognito)
     const userMessages = messages.filter((m) => m.role === "user");
     if (userMessages.length === 1 && !conversation.flag_incognito) {
