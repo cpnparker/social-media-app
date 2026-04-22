@@ -17,7 +17,7 @@ import {
 } from "@/lib/ai/conversation-summary";
 import type { Attachment } from "@/lib/types/ai";
 
-export const maxDuration = 120; // Allow up to 2 minutes for AI streaming responses
+export const maxDuration = 300; // 5 min — covers slow attachment extractions + long responses
 
 // ── Cost calculation for usage tracking ──
 const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> = {
@@ -1036,21 +1036,69 @@ export async function POST(
         .eq("id_conversation", conversationId);
     }
 
-    // Create streaming response
+    // Insert a pending assistant row BEFORE starting the stream so that clients
+    // returning to this conversation mid-generation can see "a response is in
+    // flight" and poll for completion. onComplete UPDATEs this row; a failure
+    // path below marks it failed so the UI can surface retry instead of hanging.
+    let pendingMessageId: string | null = null;
+    let pendingComplete = false;
+    if (!conversation.flag_incognito) {
+      const { data: pending, error: pendErr } = await intelligenceDb
+        .from("ai_messages")
+        .insert({
+          id_conversation: conversationId,
+          role_message: "assistant",
+          document_message: "",
+          name_model: model,
+          status_message: "pending",
+        })
+        .select("id_message")
+        .single();
+      if (pendErr) {
+        console.error("[Messages] Failed to insert pending assistant row:", pendErr);
+      } else {
+        pendingMessageId = pending?.id_message || null;
+      }
+    }
+
+    // Create streaming response.
+    // The onComplete callback saves the assistant reply. It runs when the
+    // upstream AI stream finishes — which happens regardless of whether the
+    // CLIENT is still connected, as long as we swallow enqueue errors in the
+    // wrapper below (see `clientDisconnected` try/catch). This guards against
+    // the "user navigated away mid-stream and lost their response" bug.
     const aiStream = createStreamingResponse(
       messages,
       { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: isTeamThread ? undefined : (session.user?.email || undefined), selectedClientId: conversation.id_client || undefined },
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
-          const { error: assistantErr } = await intelligenceDb
-            .from("ai_messages")
-            .insert({
-              id_conversation: conversationId,
-              role_message: "assistant",
-              document_message: fullText,
-              name_model: model,
-            });
+          let assistantErr: any = null;
+          if (pendingMessageId) {
+            const { error } = await intelligenceDb
+              .from("ai_messages")
+              .update({
+                document_message: fullText,
+                name_model: model,
+                status_message: "complete",
+              })
+              .eq("id_message", pendingMessageId);
+            assistantErr = error;
+          } else {
+            // Fallback path if pending-row insert failed earlier. Omits
+            // status_message so the DB DEFAULT ('complete') applies — keeps
+            // the endpoint working if the migration hasn't been applied yet.
+            const { error } = await intelligenceDb
+              .from("ai_messages")
+              .insert({
+                id_conversation: conversationId,
+                role_message: "assistant",
+                document_message: fullText,
+                name_model: model,
+              });
+            assistantErr = error;
+          }
+          pendingComplete = true;
           if (assistantErr) console.error("[Messages] Failed to save assistant message:", assistantErr);
 
           const { error: updateErr } = await intelligenceDb
@@ -1084,6 +1132,17 @@ export async function POST(
         const encoder = new TextEncoder();
         const decoder = new TextDecoder();
 
+        // First SSE event: expose the pending assistant-message id so clients
+        // can correlate streamed tokens with the DB row and resume via polling
+        // if they disconnect and return mid-stream.
+        if (pendingMessageId) {
+          try {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ assistantMessageId: pendingMessageId })}\n\n`)
+            );
+          } catch {}
+        }
+
         // Send debug context if enabled
         if (debugMode) {
           controller.enqueue(
@@ -1091,9 +1150,16 @@ export async function POST(
           );
         }
 
-        // Pass through AI stream, intercepting [DONE] for memory extraction
+        // Pass through AI stream, intercepting [DONE] for memory extraction.
+        // Critical: if the CLIENT disconnects mid-stream (user navigates away,
+        // tab closed, network blip), `controller.enqueue()` will throw. We
+        // swallow that so we keep draining the upstream AI stream — which
+        // lets its `onComplete` callback fire and persist the assistant
+        // message to the DB. Without this, long responses + large attachments
+        // could lose the reply on any client navigation.
         const reader = aiStream.getReader();
         let capturedText = "";
+        let clientDisconnected = false;
         try {
           while (true) {
             const { done, value } = await reader.read();
@@ -1112,11 +1178,41 @@ export async function POST(
               }
             }
 
-            // Forward all chunks immediately — no [DONE] interception
-            controller.enqueue(value);
+            // Forward to client — enqueue can throw if the client closed.
+            // If it does, keep looping so the upstream AI stream completes
+            // and its onComplete callback saves the assistant message.
+            if (!clientDisconnected) {
+              try {
+                controller.enqueue(value);
+              } catch {
+                clientDisconnected = true;
+                console.warn(
+                  `[Messages] Client disconnected mid-stream for convo ${conversationId} — continuing upstream drain so response still saves`
+                );
+              }
+            }
           }
         } finally {
-          controller.close();
+          try { controller.close(); } catch {}
+        }
+
+        // Safety net: if onComplete never fired (upstream errored early, stream
+        // closed before any tokens, etc.) the pending assistant row would dangle
+        // forever as 'pending' and the client would spin indefinitely. Mark it
+        // failed so the UI shows retry.
+        if (pendingMessageId && !pendingComplete) {
+          try {
+            await intelligenceDb
+              .from("ai_messages")
+              .update({
+                document_message: "Generation failed — please retry.",
+                status_message: "failed",
+              })
+              .eq("id_message", pendingMessageId)
+              .eq("status_message", "pending");
+          } catch (err) {
+            console.error("[Messages] Failed to mark pending row as failed:", err);
+          }
         }
 
         // Fire-and-forget: background memory extraction after stream closes

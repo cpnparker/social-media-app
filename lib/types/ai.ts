@@ -87,4 +87,5 @@ export interface AIMessageRow {
   createdBy: number | null;
   createdByName?: string;
   createdAt: string;
+  status?: "pending" | "complete" | "failed";
 }

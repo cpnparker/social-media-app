@@ -116,6 +116,10 @@ export default function ChatPanel({
   const [loading, setLoading] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // Captures the assistant message id emitted by the server as the first SSE
+  // event. Lets the local optimistic row reuse the real DB id so fetch-on-reload
+  // merges cleanly and returning tabs know which row to poll.
+  const assistantIdRef = useRef<string | null>(null);
   const [isSearchingWeb, setIsSearchingWeb] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isGeneratingDocument, setIsGeneratingDocument] = useState(false);
@@ -174,6 +178,61 @@ export default function ChatPanel({
   useEffect(() => {
     fetchConversation();
   }, [fetchConversation]);
+
+  // Fire-and-forget resume: if we return to a conversation where the last row
+  // is still `pending` (streaming continued server-side while this tab was
+  // unmounted), poll the GET endpoint until the row flips to `complete` or
+  // `failed`. Skipped while a local stream is active — that flow owns its own
+  // completion.
+  const lastMsg = messages[messages.length - 1];
+  const pendingAssistantId =
+    lastMsg?.role === "assistant" && lastMsg.status === "pending" ? lastMsg.id : null;
+
+  useEffect(() => {
+    if (!pendingAssistantId || isStreaming) return;
+
+    const POLL_INTERVAL_MS = 2000;
+    const POLL_TIMEOUT_MS = 3 * 60 * 1000; // 3 min cap
+    const startedAt = Date.now();
+    let cancelled = false;
+
+    const intervalId = window.setInterval(async () => {
+      if (cancelled) return;
+      if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+        window.clearInterval(intervalId);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === pendingAssistantId
+              ? { ...m, status: "failed", content: "Generation timed out — please retry." }
+              : m
+          )
+        );
+        return;
+      }
+      try {
+        const res = await fetch(`/api/ai/conversations/${conversationId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const serverLast = data.messages?.[data.messages.length - 1];
+        if (
+          serverLast &&
+          serverLast.id === pendingAssistantId &&
+          serverLast.status &&
+          serverLast.status !== "pending"
+        ) {
+          window.clearInterval(intervalId);
+          if (!cancelled) setMessages(data.messages);
+        }
+      } catch {
+        // Swallow transient fetch errors; keep polling
+      }
+    }, POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [pendingAssistantId, isStreaming, conversationId]);
 
   // Auto-send initial message (quick-send from home page)
   useEffect(() => {
@@ -263,6 +322,7 @@ export default function ChatPanel({
     setStreamingContent("");
     setDebugContext(null);
     setDebugExpanded(false);
+    assistantIdRef.current = null;
 
     let fullText = "";
 
@@ -301,7 +361,9 @@ export default function ChatPanel({
 
           try {
             const parsed = JSON.parse(data);
-            if (parsed.debugContext) {
+            if (parsed.assistantMessageId) {
+              assistantIdRef.current = parsed.assistantMessageId;
+            } else if (parsed.debugContext) {
               setDebugContext(parsed.debugContext);
             } else if (parsed.searching) {
               setIsSearchingWeb(true);
@@ -389,13 +451,14 @@ export default function ChatPanel({
         ).replace(/\n{3,}/g, "\n\n").trim();
 
         const assistantMsg: AIMessageRow = {
-          id: `assistant-${Date.now()}`,
+          id: assistantIdRef.current || `assistant-${Date.now()}`,
           conversationId: conversationId,
           role: "assistant",
           content: dedupedText,
           model: conversation.model,
           createdBy: null,
           createdAt: new Date().toISOString(),
+          status: "complete",
         };
         // Batch: add message + clear streaming together
         setMessages((prev) => [...prev, assistantMsg]);
@@ -403,13 +466,14 @@ export default function ChatPanel({
       } else {
         // Empty response — show a fallback message instead of blank
         const fallbackMsg: AIMessageRow = {
-          id: `assistant-${Date.now()}`,
+          id: assistantIdRef.current || `assistant-${Date.now()}`,
           conversationId: conversationId,
           role: "assistant",
           content: "Sorry, I wasn't able to generate a response. This can happen with complex tool calls. Please try rephrasing your request, or break it into smaller steps (e.g., first get the data, then ask for a chart).",
           model: conversation.model,
           createdBy: null,
           createdAt: new Date().toISOString(),
+          status: "complete",
         };
         setMessages((prev) => [...prev, fallbackMsg]);
         setStreamingContent("");
@@ -430,13 +494,14 @@ export default function ChatPanel({
         // User clicked stop — save whatever we have so far
         if (fullText) {
           const partialMsg: AIMessageRow = {
-            id: `assistant-${Date.now()}`,
+            id: assistantIdRef.current || `assistant-${Date.now()}`,
             conversationId: conversationId,
             role: "assistant",
             content: fullText + "\n\n*[Generation stopped]*",
             model: conversation.model,
             createdBy: null,
             createdAt: new Date().toISOString(),
+            status: "complete",
           };
           setMessages((prev) => [...prev, partialMsg]);
         }
@@ -1167,31 +1232,51 @@ export default function ChatPanel({
           </div>
         ) : (
           <div className="py-4 space-y-1">
-            {messages.map((msg, idx) => (
-              <MessageBubble
-                key={msg.id}
-                role={msg.role}
-                content={msg.content}
-                model={msg.model}
-                attachments={msg.attachments}
-                userName={msg.createdByName}
-                onFactCheck={
-                  msg.role === "assistant" && !isStreaming && !isFactChecking && !msg.content.includes("## 🔍 Fact Check")
-                    ? () => handleFactCheck(msg.id, msg.content)
-                    : undefined
-                }
-                onRetry={
-                  msg.role === "assistant" && !isStreaming && !isFactChecking && idx === messages.length - 1
-                    ? () => handleRetry(idx)
-                    : undefined
-                }
-                onEdit={
-                  msg.role === "user" && !isStreaming && !isFactChecking
-                    ? (newContent: string) => handleEditMessage(idx, newContent)
-                    : undefined
-                }
-              />
-            ))}
+            {messages.map((msg, idx) => {
+              // Pending assistant rows render as a spinner block (below), not
+              // an empty bubble. Failed rows render normally so the user sees
+              // the error + retry affordance.
+              if (msg.role === "assistant" && msg.status === "pending") return null;
+              return (
+                <MessageBubble
+                  key={msg.id}
+                  role={msg.role}
+                  content={msg.content}
+                  model={msg.model}
+                  attachments={msg.attachments}
+                  userName={msg.createdByName}
+                  onFactCheck={
+                    msg.role === "assistant" && !isStreaming && !isFactChecking && !msg.content.includes("## 🔍 Fact Check") && msg.status !== "failed"
+                      ? () => handleFactCheck(msg.id, msg.content)
+                      : undefined
+                  }
+                  onRetry={
+                    msg.role === "assistant" && !isStreaming && !isFactChecking && idx === messages.length - 1
+                      ? () => handleRetry(idx)
+                      : undefined
+                  }
+                  onEdit={
+                    msg.role === "user" && !isStreaming && !isFactChecking
+                      ? (newContent: string) => handleEditMessage(idx, newContent)
+                      : undefined
+                  }
+                />
+              );
+            })}
+            {pendingAssistantId && !isStreaming && !isFactChecking && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                  <div className="flex gap-1">
+                    <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-bounce" style={{ animationDelay: "0ms" }} />
+                    <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-bounce" style={{ animationDelay: "150ms" }} />
+                    <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-bounce" style={{ animationDelay: "300ms" }} />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <span className="animate-pulse">Still generating… (picking up where you left off)</span>
+                </div>
+              </div>
+            )}
             {/* Debug context preview */}
             {debugContext && (
               <div className="mx-4 sm:mx-8 my-2">

@@ -42,6 +42,7 @@ export function mapMessage(row: any) {
     model: row.name_model ?? null,
     createdBy: row.user_created ?? null,
     createdAt: row.date_created,
+    status: (row.status_message as "pending" | "complete" | "failed" | undefined) ?? "complete",
   };
 }
 
