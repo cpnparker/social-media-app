@@ -828,7 +828,7 @@ export default function ContractsPage() {
                                 <td className="px-3 py-2">
                                   {item.contentId && (
                                     <a
-                                      href={`https://app.thecontentengine.com/content/${item.contentId}`}
+                                      href={`https://app.thecontentengine.com/all/contents/${item.contentId}`}
                                       target="_blank" rel="noopener noreferrer"
                                       className="text-muted-foreground hover:text-foreground transition-colors"
                                     >

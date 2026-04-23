@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -23,6 +23,12 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv-utils";
+import { MultiSelectFilter } from "@/components/operations/MultiSelectFilter";
+import {
+  categorizeContentType,
+  getCategoryFilterOptions,
+  getFormatFilterOptions,
+} from "@/lib/content-type-utils";
 import {
   BarChart,
   Bar,
@@ -197,8 +203,20 @@ export default function DeliveredPage() {
   const [excludeTestClients, setExcludeTestClients] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
 
-  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+  const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
+  const [selectedFormats, setSelectedFormats] = useState<Set<string>>(new Set());
+  const autoSelectedRef = useRef(false);
+  const autoSelectedTaxonomyRef = useRef({ categories: false, formats: false });
   const [selectedCommissioner, setSelectedCommissioner] = useState<string | null>(null);
+
+  const toggleCustomer = (id: string) => {
+    setSelectedCustomerIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   const custSort = useSort("name", true);
   const contractSort = useSort("contractName", true);
@@ -218,7 +236,9 @@ export default function DeliveredPage() {
       const data = await res.json();
       setAllTasks(data.tasks || []);
       setContracts(data.contracts || []);
-      setSelectedCustomerId(null);
+      setSelectedCustomerIds(new Set());
+      autoSelectedRef.current = false;
+      autoSelectedTaxonomyRef.current = { categories: false, formats: false };
       setSelectedCommissioner(null);
     } catch (err) {
       console.error("Failed to fetch:", err);
@@ -247,20 +267,44 @@ export default function DeliveredPage() {
   /* ─── Filter to completed tasks only ─── */
   const tasks = useMemo(() => allTasks.filter((t) => t.taskStatus === "done"), [allTasks]);
 
+  /* ─── Category / Format options (derived from completed tasks) ─── */
+  const categoryOptions = useMemo(() => getCategoryFilterOptions(tasks), [tasks]);
+  const formatOptions = useMemo(() => getFormatFilterOptions(tasks), [tasks]);
+
+  /* ─── Auto-select all categories/formats on first populate ─── */
+  useEffect(() => {
+    if (categoryOptions.length > 0 && !autoSelectedTaxonomyRef.current.categories) {
+      setSelectedCategories(new Set(categoryOptions.map((o) => o.value)));
+      autoSelectedTaxonomyRef.current.categories = true;
+    }
+  }, [categoryOptions]);
+  useEffect(() => {
+    if (formatOptions.length > 0 && !autoSelectedTaxonomyRef.current.formats) {
+      setSelectedFormats(new Set(formatOptions.map((o) => o.value)));
+      autoSelectedTaxonomyRef.current.formats = true;
+    }
+  }, [formatOptions]);
+
   /* ─── Filtered tasks ─── */
   const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return tasks;
-    const q = searchQuery.toLowerCase();
-    return tasks.filter(
-      (t) =>
-        t.contentTitle.toLowerCase().includes(q) ||
-        t.customerName.toLowerCase().includes(q) ||
-        t.taskTitle.toLowerCase().includes(q) ||
-        t.contentType.toLowerCase().includes(q) ||
-        (t.assigneeName && t.assigneeName.toLowerCase().includes(q)) ||
-        (t.commissionedByName && t.commissionedByName.toLowerCase().includes(q))
-    );
-  }, [tasks, searchQuery]);
+    const q = searchQuery.trim().toLowerCase();
+    return tasks.filter((t) => {
+      const cat = categorizeContentType(t.contentType || "");
+      if (!selectedCategories.has(cat)) return false;
+      if (!selectedFormats.has(t.contentType || "unknown")) return false;
+      if (q) {
+        const hit =
+          t.contentTitle.toLowerCase().includes(q) ||
+          t.customerName.toLowerCase().includes(q) ||
+          t.taskTitle.toLowerCase().includes(q) ||
+          t.contentType.toLowerCase().includes(q) ||
+          (t.assigneeName ? t.assigneeName.toLowerCase().includes(q) : false) ||
+          (t.commissionedByName ? t.commissionedByName.toLowerCase().includes(q) : false);
+        if (!hit) return false;
+      }
+      return true;
+    });
+  }, [tasks, searchQuery, selectedCategories, selectedFormats]);
 
   /* ─── Totals ─── */
   const totals = useMemo(() => {
@@ -296,18 +340,26 @@ export default function DeliveredPage() {
   }, [filtered, custSort.currentSort, custSort.currentAsc]);
 
   useEffect(() => {
-    if (customerList.length > 0 && !selectedCustomerId) {
-      setSelectedCustomerId(customerList[0].id);
+    if (customerList.length > 0 && !autoSelectedRef.current) {
+      setSelectedCustomerIds(new Set(customerList.map((c) => c.id)));
+      autoSelectedRef.current = true;
     }
-  }, [customerList, selectedCustomerId]);
+  }, [customerList]);
 
-  /* ─── Contracts for selected customer ─── */
+  const selectAllCustomers = useCallback(() => {
+    setSelectedCustomerIds(new Set(customerList.map((c) => c.id)));
+  }, [customerList]);
+  const selectNoCustomers = useCallback(() => {
+    setSelectedCustomerIds(new Set());
+  }, []);
+
+  /* ─── Contracts for selected customers ─── */
   const customerContracts = useMemo(() => {
-    if (!selectedCustomerId) return [];
-    const relevant = contracts.filter((c) => c.clientId === selectedCustomerId);
+    if (selectedCustomerIds.size === 0) return [];
+    const relevant = contracts.filter((c) => c.clientId && selectedCustomerIds.has(c.clientId));
     const periodCUsByContract: Record<string, number> = {};
     for (const t of filtered) {
-      if (t.customerId === selectedCustomerId && t.contractId) {
+      if (t.customerId && selectedCustomerIds.has(t.customerId) && t.contractId) {
         periodCUsByContract[t.contractId] = (periodCUsByContract[t.contractId] || 0) + t.taskCUs;
       }
     }
@@ -317,17 +369,17 @@ export default function DeliveredPage() {
       remaining: Math.max(0, c.totalContractCUs - c.completedContractCUs),
     }));
     return sortRows(rows, contractSort.currentSort, contractSort.currentAsc);
-  }, [selectedCustomerId, contracts, filtered, contractSort.currentSort, contractSort.currentAsc]);
+  }, [selectedCustomerIds, contracts, filtered, contractSort.currentSort, contractSort.currentAsc]);
 
-  /* ─── Content for selected customer ─── */
+  /* ─── Content for selected customers ─── */
   const customerContent = useMemo(() => {
-    if (!selectedCustomerId) return [];
+    if (selectedCustomerIds.size === 0) return [];
     const map: Record<string, {
       contentId: string; title: string; type: string; commissionedBy: string | null;
       cus: number; completedAt: string | null; createdAt: string;
     }> = {};
     for (const t of filtered) {
-      if (t.customerId !== selectedCustomerId) continue;
+      if (!t.customerId || !selectedCustomerIds.has(t.customerId)) continue;
       const cid = t.contentId || t.taskId;
       if (!map[cid]) {
         map[cid] = {
@@ -338,7 +390,7 @@ export default function DeliveredPage() {
       map[cid].cus += t.taskCUs;
     }
     return sortRows(Object.values(map), contentSort.currentSort, contentSort.currentAsc);
-  }, [filtered, selectedCustomerId, contentSort.currentSort, contentSort.currentAsc]);
+  }, [filtered, selectedCustomerIds, contentSort.currentSort, contentSort.currentAsc]);
 
   /* ─── Daily chart ─── */
   const dailyData = useMemo(() => {
@@ -396,7 +448,14 @@ export default function DeliveredPage() {
   }, [filtered, selectedCommissioner, userContentSort.currentSort, userContentSort.currentAsc]);
 
   const isFiltered = dateFrom || dateTo;
-  const selectedCustomerName = customerList.find((c) => c.id === selectedCustomerId)?.name;
+  const selectionLabel = useMemo(() => {
+    const n = selectedCustomerIds.size;
+    if (n === 0) return "";
+    if (n === customerList.length && n > 0) return " \u2014 All customers";
+    const names = customerList.filter((c) => selectedCustomerIds.has(c.id)).map((c) => c.name);
+    if (names.length <= 3) return ` \u2014 ${names.join(", ")}`;
+    return ` \u2014 ${n} customers`;
+  }, [selectedCustomerIds, customerList]);
 
   /* ─────────────── Render ─────────────── */
   return (
@@ -461,6 +520,12 @@ export default function DeliveredPage() {
               </label>
             </div>
           </div>
+
+          {/* Row 2: Category + Format filters */}
+          <div className="flex flex-wrap items-end gap-3">
+            <MultiSelectFilter label="Category" options={categoryOptions} selected={selectedCategories} onChange={setSelectedCategories} allLabel="All categories" />
+            <MultiSelectFilter label="Format" options={formatOptions} selected={selectedFormats} onChange={setSelectedFormats} allLabel="All formats" />
+          </div>
         </CardContent>
       </Card>
 
@@ -521,26 +586,48 @@ export default function DeliveredPage() {
                   <table className="w-full text-xs">
                     <thead className="sticky top-0 bg-background z-[1]">
                       <tr className="border-b">
+                        <th className="px-2 py-2 w-8">
+                          <input
+                            type="checkbox"
+                            aria-label={selectedCustomerIds.size === customerList.length ? "Deselect all customers" : "Select all customers"}
+                            checked={customerList.length > 0 && selectedCustomerIds.size === customerList.length}
+                            ref={(el) => { if (el) el.indeterminate = selectedCustomerIds.size > 0 && selectedCustomerIds.size < customerList.length; }}
+                            onChange={() => selectedCustomerIds.size === customerList.length ? selectNoCustomers() : selectAllCustomers()}
+                            className="rounded border-muted-foreground/30 h-3.5 w-3.5 cursor-pointer"
+                          />
+                        </th>
                         <SortHeader label="Customer" sortKey="name" {...custSort} onSort={custSort.toggle} />
                         <SortHeader label="CUs" sortKey="cus" {...custSort} onSort={custSort.toggle} align="right" />
                         <SortHeader label="Tasks" sortKey="taskCount" {...custSort} onSort={custSort.toggle} align="right" />
                       </tr>
                     </thead>
                     <tbody>
-                      {customerList.map((c) => (
-                        <tr
-                          key={c.id}
-                          onClick={() => setSelectedCustomerId(c.id)}
-                          className={cn(
-                            "border-b border-border/30 cursor-pointer transition-colors hover:bg-muted/40",
-                            selectedCustomerId === c.id && "bg-blue-500/8 border-l-2 border-l-blue-500"
-                          )}
-                        >
-                          <td className={cn("px-3 py-2 font-medium", selectedCustomerId === c.id && "text-blue-600")}>{c.name}</td>
-                          <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(1)}</td>
-                          <td className="px-3 py-2 text-right text-muted-foreground tabular-nums">{c.taskCount}</td>
-                        </tr>
-                      ))}
+                      {customerList.map((c) => {
+                        const checked = selectedCustomerIds.has(c.id);
+                        return (
+                          <tr
+                            key={c.id}
+                            onClick={() => toggleCustomer(c.id)}
+                            className={cn(
+                              "border-b border-border/30 cursor-pointer transition-colors hover:bg-muted/40",
+                              checked && "bg-blue-500/8 border-l-2 border-l-blue-500"
+                            )}
+                          >
+                            <td className="px-2 py-2 w-8" onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                aria-label={`${checked ? "Deselect" : "Select"} ${c.name}`}
+                                checked={checked}
+                                onChange={() => toggleCustomer(c.id)}
+                                className="rounded border-muted-foreground/30 h-3.5 w-3.5 cursor-pointer"
+                              />
+                            </td>
+                            <td className={cn("px-3 py-2 font-medium", checked && "text-blue-600")}>{c.name}</td>
+                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(1)}</td>
+                            <td className="px-3 py-2 text-right text-muted-foreground tabular-nums">{c.taskCount}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -553,7 +640,7 @@ export default function DeliveredPage() {
             <CardContent className="p-0">
               <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Contract Activity{selectedCustomerName ? ` \u2014 ${selectedCustomerName}` : ""}
+                  Contract Activity{selectionLabel}
                 </h2>
                 {customerContracts.length > 0 && (
                   <button onClick={() => downloadCSV(customerContracts.map(c => ({ Contract: c.contractName, "Total CUs": Math.round(c.totalContractCUs * 10) / 10, Completed: Math.round(c.completedContractCUs * 10) / 10, Remaining: Math.round(c.remaining * 10) / 10, "Period CUs": Math.round(c.periodCUs * 10) / 10 })), "contract-activity")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
@@ -561,10 +648,10 @@ export default function DeliveredPage() {
                   </button>
                 )}
               </div>
-              {!selectedCustomerId ? (
-                <p className="text-xs text-muted-foreground text-center py-6">Select a customer above to view contracts.</p>
+              {selectedCustomerIds.size === 0 ? (
+                <p className="text-xs text-muted-foreground text-center py-6">Select one or more customers above to view contracts.</p>
               ) : customerContracts.length === 0 ? (
-                <p className="text-xs text-muted-foreground text-center py-6">No contracts found for this customer.</p>
+                <p className="text-xs text-muted-foreground text-center py-6">No contracts found for the selected customers.</p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
@@ -589,7 +676,7 @@ export default function DeliveredPage() {
                           </td>
                           <td className="px-3 py-2 text-right tabular-nums font-semibold">{c.periodCUs.toFixed(1)}</td>
                           <td className="px-3 py-2 text-center">
-                            <a href={`https://app.thecontentengine.com/admin/contracts/${c.contractId}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-600"><ExternalLink className="h-3 w-3 inline" /></a>
+                            <a href={`https://app.thecontentengine.com/all/contracts/${c.contractId}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-600"><ExternalLink className="h-3 w-3 inline" /></a>
                           </td>
                         </tr>
                       ))}
@@ -605,7 +692,7 @@ export default function DeliveredPage() {
             <CardContent className="p-0">
               <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Content Delivered{selectedCustomerName ? ` \u2014 ${selectedCustomerName}` : ""}
+                  Content Delivered{selectionLabel}
                 </h2>
                 {customerContent.length > 0 && (
                   <button onClick={() => downloadCSV(customerContent.map(c => ({ Content: c.title, Type: c.type, "Commissioned By": c.commissionedBy || "\u2014", CUs: Math.round(c.cus * 10) / 10, Completed: fmtDate(c.completedAt), Commissioned: fmtDate(c.createdAt) })), "content-delivered")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
@@ -613,8 +700,8 @@ export default function DeliveredPage() {
                   </button>
                 )}
               </div>
-              {!selectedCustomerId ? (
-                <p className="text-xs text-muted-foreground text-center py-6">Select a customer above to view content.</p>
+              {selectedCustomerIds.size === 0 ? (
+                <p className="text-xs text-muted-foreground text-center py-6">Select one or more customers above to view content.</p>
               ) : customerContent.length === 0 ? (
                 <p className="text-xs text-muted-foreground text-center py-6">No delivered content found in this period.</p>
               ) : (

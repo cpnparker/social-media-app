@@ -245,7 +245,7 @@ export default function ClientContextDialog({
               {/* Actions row */}
               <div className="flex items-center justify-between">
                 <a
-                  href={`https://app.thecontentengine.com/admin/clients/${selectedClient.id_client}`}
+                  href={`https://app.thecontentengine.com/all/clients/${selectedClient.id_client}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 hover:underline"
@@ -276,7 +276,7 @@ export default function ClientContextDialog({
                     (file: FileSummary) => (
                       <a
                         key={file.id_asset}
-                        href={`https://app.thecontentengine.com/admin/clients/${selectedClient.id_client}`}
+                        href={`https://app.thecontentengine.com/all/clients/${selectedClient.id_client}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="flex items-center gap-2 px-3 py-2 rounded-md bg-muted/50 hover:bg-muted text-sm transition-colors group"

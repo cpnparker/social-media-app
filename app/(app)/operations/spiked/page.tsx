@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -23,6 +23,12 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv-utils";
+import { MultiSelectFilter } from "@/components/operations/MultiSelectFilter";
+import {
+  categorizeContentType,
+  getCategoryFilterOptions,
+  getFormatFilterOptions,
+} from "@/lib/content-type-utils";
 import {
   BarChart,
   Bar,
@@ -190,6 +196,10 @@ export default function SpikedPage() {
 
   const [chargeFilter, setChargeFilter] = useState<ChargeFilter>("all");
 
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
+  const [selectedFormats, setSelectedFormats] = useState<Set<string>>(new Set());
+  const autoSelectedTaxonomyRef = useRef({ categories: false, formats: false });
+
   const custSort = useSort("name", true);
   const contentSort = useSort("dateSpiked", false);
 
@@ -204,6 +214,7 @@ export default function SpikedPage() {
       const res = await fetch(`/api/operations/spiked?${params.toString()}`);
       const data = await res.json();
       setAllTasks(data.tasks || []);
+      autoSelectedTaxonomyRef.current = { categories: false, formats: false };
     } catch (err) {
       console.error("Failed to fetch:", err);
     } finally {
@@ -249,19 +260,43 @@ export default function SpikedPage() {
     return result;
   }, [allTasks, excludeTestClients, chargeFilter]);
 
-  /* ─── Filtered tasks (search) ─── */
+  /* ─── Category / Format options (derived from charge-filtered tasks) ─── */
+  const categoryOptions = useMemo(() => getCategoryFilterOptions(tasks), [tasks]);
+  const formatOptions = useMemo(() => getFormatFilterOptions(tasks), [tasks]);
+
+  /* ─── Auto-select all categories/formats on first populate ─── */
+  useEffect(() => {
+    if (categoryOptions.length > 0 && !autoSelectedTaxonomyRef.current.categories) {
+      setSelectedCategories(new Set(categoryOptions.map((o) => o.value)));
+      autoSelectedTaxonomyRef.current.categories = true;
+    }
+  }, [categoryOptions]);
+  useEffect(() => {
+    if (formatOptions.length > 0 && !autoSelectedTaxonomyRef.current.formats) {
+      setSelectedFormats(new Set(formatOptions.map((o) => o.value)));
+      autoSelectedTaxonomyRef.current.formats = true;
+    }
+  }, [formatOptions]);
+
+  /* ─── Filtered tasks (search + category + format) ─── */
   const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return tasks;
-    const q = searchQuery.toLowerCase();
-    return tasks.filter(
-      (t) =>
-        t.contentTitle.toLowerCase().includes(q) ||
-        t.customerName.toLowerCase().includes(q) ||
-        t.taskTitle.toLowerCase().includes(q) ||
-        t.contentType.toLowerCase().includes(q) ||
-        (t.assigneeName && t.assigneeName.toLowerCase().includes(q))
-    );
-  }, [tasks, searchQuery]);
+    const q = searchQuery.trim().toLowerCase();
+    return tasks.filter((t) => {
+      const cat = categorizeContentType(t.contentType || "");
+      if (!selectedCategories.has(cat)) return false;
+      if (!selectedFormats.has(t.contentType || "unknown")) return false;
+      if (q) {
+        const hit =
+          t.contentTitle.toLowerCase().includes(q) ||
+          t.customerName.toLowerCase().includes(q) ||
+          t.taskTitle.toLowerCase().includes(q) ||
+          t.contentType.toLowerCase().includes(q) ||
+          (t.assigneeName ? t.assigneeName.toLowerCase().includes(q) : false);
+        if (!hit) return false;
+      }
+      return true;
+    });
+  }, [tasks, searchQuery, selectedCategories, selectedFormats]);
 
   /* ─── Totals ─── */
   const totals = useMemo(() => {
@@ -435,6 +470,12 @@ export default function SpikedPage() {
               {chargeFilter === "charged" && "(Billed to external clients)"}
               {chargeFilter === "not-charged" && "(Absorbed by TCE)"}
             </span>
+          </div>
+
+          {/* Category + Format filters */}
+          <div className="flex flex-wrap items-end gap-3">
+            <MultiSelectFilter label="Category" options={categoryOptions} selected={selectedCategories} onChange={setSelectedCategories} allLabel="All categories" />
+            <MultiSelectFilter label="Format" options={formatOptions} selected={selectedFormats} onChange={setSelectedFormats} allLabel="All formats" />
           </div>
         </CardContent>
       </Card>

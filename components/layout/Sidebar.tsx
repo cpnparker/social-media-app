@@ -144,6 +144,7 @@ const operationsItems: NavSubItem[] = [
     children: [
       { label: "Commissioned", href: "/operations/commissioned-cus" },
       { label: "Delivered", href: "/operations/delivered" },
+      { label: "All Content", href: "/operations/all-content" },
       { label: "Spiked", href: "/operations/spiked" },
     ],
   },

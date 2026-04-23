@@ -46,6 +46,41 @@ function calculateCostTenths(model: string, inputTokens: number, outputTokens: n
   return Math.round(inputCost + outputCost);
 }
 
+// ── Helper: extract text from a .pptx (PowerPoint) file ──
+// .pptx is a zip; slide XML lives at ppt/slides/slide*.xml. Text runs are <a:t> elements.
+async function extractPptxText(buffer: Buffer): Promise<string | undefined> {
+  const JSZipModule = await import("jszip");
+  const JSZip = JSZipModule.default ?? JSZipModule;
+  const zip = await JSZip.loadAsync(buffer);
+
+  const slideFiles = Object.keys(zip.files)
+    .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+    .sort((a, b) => {
+      const an = parseInt(a.match(/slide(\d+)\.xml/)?.[1] ?? "0", 10);
+      const bn = parseInt(b.match(/slide(\d+)\.xml/)?.[1] ?? "0", 10);
+      return an - bn;
+    });
+
+  if (slideFiles.length === 0) return undefined;
+
+  const slides: string[] = [];
+  for (let i = 0; i < slideFiles.length; i++) {
+    const xml = await zip.files[slideFiles[i]].async("string");
+    const runs = [...xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)].map((m) =>
+      m[1]
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'"),
+    );
+    const slideText = runs.join(" ").trim();
+    if (slideText) slides.push(`--- Slide ${i + 1} ---\n${slideText}`);
+  }
+
+  return slides.join("\n\n") || undefined;
+}
+
 // ── Helper: extract text from a document attachment ──
 // Uses fetchBlobContent() which handles both private proxy URLs and legacy public URLs
 async function extractDocumentText(att: Attachment): Promise<string | undefined> {
@@ -63,6 +98,13 @@ async function extractDocumentText(att: Attachment): Promise<string | undefined>
       const mammoth = await import("mammoth");
       const result = await mammoth.extractRawText({ buffer });
       return result.value;
+    }
+
+    const isPptx =
+      att.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+      att.name.toLowerCase().endsWith(".pptx");
+    if (isPptx) {
+      return await extractPptxText(buffer);
     }
 
     if (att.type.startsWith("text/")) {
