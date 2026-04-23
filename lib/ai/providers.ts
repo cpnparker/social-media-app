@@ -2375,8 +2375,46 @@ function formatSlackResult(
     return `Slack query failed: ${result.error}`;
   }
   const rows = Array.isArray(result.data) ? result.data : [];
-  const sample = rows.slice(0, MAX_TOOL_RESULT_ROWS);
-  return `Slack ${report}: ${result.count} results\n${JSON.stringify(sample, null, 2)}${rows.length > MAX_TOOL_RESULT_ROWS ? `\n(showing first ${MAX_TOOL_RESULT_ROWS} of ${rows.length})` : ""}`;
+
+  // MeetingBrain returns raw Slack IDs (sender="U01J5...", channel_name=channel_id)
+  // with names embedded only inside <@ID|Name> mention tags. Harvest those tags
+  // across every row to build an ID→Name map, then enrich each row with a
+  // resolved `sender_name` field. The map is also surfaced to the AI as an
+  // explicit hints table so it has one unambiguous place to resolve names,
+  // instead of inventing "a colleague" / "team member" when the sender field
+  // is an opaque ID.
+  const userIdToName = new Map<string, string>();
+  for (const row of rows) {
+    const text: string = typeof (row as any)?.text === "string" ? (row as any).text : "";
+    const re = /<@([UW][A-Z0-9]+)\|([^>]+)>/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      if (m[1] && m[2]) userIdToName.set(m[1], m[2].trim());
+    }
+  }
+
+  const enriched = rows.map((row: any) => {
+    if (row && typeof row.sender === "string" && userIdToName.has(row.sender)) {
+      return { ...row, sender_name: userIdToName.get(row.sender) };
+    }
+    return row;
+  });
+
+  const sample = enriched.slice(0, MAX_TOOL_RESULT_ROWS);
+
+  const nameHints = userIdToName.size
+    ? `\n\nKnown user IDs (harvested from <@ID|Name> mention tags in the messages themselves — use these to resolve the "sender" field and bare <@ID> mentions):\n${Array.from(userIdToName.entries()).map(([id, n]) => `  ${id} → ${n}`).join("\n")}`
+    : "";
+
+  const namingRule = `\n\nNAMING RULES — follow strictly when summarising these results:
+- If a row has "sender_name" populated, use that name.
+- Else if "sender" matches an entry in the Known user IDs map above, use that name.
+- Else if the message text contains <@ID|Name>, use the Name.
+- Otherwise refer to the person as "a Slack user" (or quote the raw @ID) and link to the message via its "permalink". NEVER invent a descriptor like "a colleague", "a team member", "someone on the team", "a coworker" — those are fabrications when no name is available.
+- Same rule for channels: if "channel_name" equals "channel_id" (starts with C/D), MeetingBrain didn't resolve it — say "a Slack channel" or "a Slack thread" and link the permalink; do not guess the channel name.
+- When presenting items to the user, always include the permalink as a markdown link so they can jump to the thread.`;
+
+  return `Slack ${report}: ${result.count} results${nameHints}${namingRule}\n\n${JSON.stringify(sample, null, 2)}${rows.length > MAX_TOOL_RESULT_ROWS ? `\n(showing first ${MAX_TOOL_RESULT_ROWS} of ${rows.length})` : ""}`;
 }
 
 /* ─────────────── Memory Search Tool ─────────────── */
