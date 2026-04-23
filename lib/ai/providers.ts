@@ -2222,6 +2222,163 @@ async function queryMeetingBrain(
   }
 }
 
+/* ─────────────── Slack Query Tool ─────────────── */
+
+/**
+ * query_slack — reads the user's Slack via MeetingBrain's stored OAuth token.
+ *
+ * Privacy: server-to-server request to MeetingBrain; MeetingBrain uses the
+ * requesting user's own user-scope Slack token so Slack itself enforces the
+ * access boundary (user only sees messages they could see in Slack).
+ */
+const SLACK_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "query_slack",
+    description:
+      "Query the user's own Slack (read-only) for DMs, mentions, messages, and threads. All access is scoped to the user's own Slack account via their OAuth token — you can only see what the user could see in Slack themselves. Never use this to answer questions about another user's Slack activity.",
+    parameters: {
+      type: "object",
+      properties: {
+        report: {
+          type: "string",
+          enum: [
+            "recent_dms",
+            "search_messages",
+            "channel_messages",
+            "my_mentions",
+            "thread",
+            "list_channels",
+          ],
+          description:
+            "recent_dms = user's most recent DMs/group DMs with previews, search_messages = full-text search across everything the user can read (requires query), channel_messages = recent messages in a named channel (requires channel name or id), my_mentions = messages that @-mention the user, thread = full thread replies (requires channel_id + thread_ts), list_channels = channels the user is a member of",
+        },
+        query: {
+          type: "string",
+          description: "Search keyword(s) for search_messages. Slack operators are allowed (e.g. `from:@alice after:2026-04-01`).",
+        },
+        channel: {
+          type: "string",
+          description: "Channel name (e.g. '#general') or channel ID for channel_messages. Must be a channel the user is a member of.",
+        },
+        channel_id: {
+          type: "string",
+          description: "Channel ID (starts with C, D, or G) for the thread report.",
+        },
+        thread_ts: {
+          type: "string",
+          description: "Parent message timestamp for the thread report (from a previous search_messages or channel_messages result).",
+        },
+        days: {
+          type: "number",
+          description: "Lookback window in days. Default: 7 for messages, 30 for search.",
+        },
+        limit: {
+          type: "number",
+          description: "Max results to return. Default 20, max 50.",
+        },
+      },
+      required: ["report"],
+    },
+  },
+};
+
+const SLACK_TOOL: Anthropic.Tool = {
+  name: "query_slack",
+  description: SLACK_OPENAI_TOOL.function.description!,
+  input_schema: { ...(SLACK_OPENAI_TOOL.function.parameters as any) },
+};
+
+/**
+ * Server-to-server call from EngineAI to MeetingBrain's Slack query endpoint.
+ * MeetingBrain holds the user's Slack OAuth token; EngineAI never touches it.
+ */
+async function querySlack(
+  report: string,
+  userEmail: string,
+  options: {
+    query?: string;
+    channel?: string;
+    channel_id?: string;
+    thread_ts?: string;
+    days?: number;
+    limit?: number;
+  } = {}
+): Promise<{ data: any; count: number; error?: string; needsReauth?: boolean }> {
+  const baseUrl = (
+    process.env.MEETINGBRAIN_BASE_URL ||
+    "https://www.meetingbrain.ai"
+  ).trim();
+  // Trim to defend against trailing whitespace/newlines in the env value.
+  const key = (
+    process.env.MEETINGBRAIN_API_KEY ||
+    process.env.ENGINEGPT_INGEST_KEY ||
+    ""
+  ).trim();
+
+  if (!key) {
+    return { data: [], count: 0, error: "MEETINGBRAIN_API_KEY not configured on EngineAI" };
+  }
+
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/engineai/slack/query`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": key,
+      },
+      body: JSON.stringify({ userEmail, report, ...options }),
+    });
+
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = json?.error || `HTTP ${res.status}`;
+      const needsReauth = json?.needs_reauth === true;
+      console.warn(`[Slack] ${report} for ${userEmail} failed (${res.status}): ${msg}${needsReauth ? " [needs_reauth]" : ""}`);
+      return { data: [], count: 0, error: msg, needsReauth };
+    }
+    const results = Array.isArray(json?.results) ? json.results : [];
+    console.log(`[Slack] ${report} for ${userEmail}: ${results.length} results`);
+    return { data: results, count: Number(json?.count ?? results.length) };
+  } catch (err: any) {
+    console.error(`[Slack] ${report} error:`, err?.message || err);
+    return { data: [], count: 0, error: err?.message || String(err) };
+  }
+}
+
+/** Format Slack results for AI tool_result (with truncation) */
+function formatSlackResult(
+  report: string,
+  result: { data: any; count: number; error?: string; needsReauth?: boolean }
+): string {
+  if (result.error) {
+    // Special-case re-auth: wrap in an explicit directive so the AI surfaces
+    // the actionable re-connect link to the user instead of paraphrasing it
+    // as a generic "I don't have access to Slack". MeetingBrain's own error
+    // text already contains the URL; we just make sure the model doesn't
+    // swallow it.
+    if (result.needsReauth) {
+      return [
+        `Slack query failed — USER ACTION REQUIRED (needs_reauth=true, report=${report}).`,
+        ``,
+        `MeetingBrain returned: ${result.error}`,
+        ``,
+        `INSTRUCTIONS FOR YOUR RESPONSE — follow exactly:`,
+        `1. Briefly apologise that Slack isn't fully connected.`,
+        `2. Tell the user their Slack needs re-authorising in MeetingBrain.`,
+        `3. Include this EXACT markdown link so they can click it: [Re-connect Slack in MeetingBrain](https://www.meetingbrain.ai/settings)`,
+        `4. Mention that 'search_messages' and 'my_mentions' still work today with the current scopes — the other reports (recent_dms, channel_messages, list_channels, thread) need the re-auth to enable channel/DM read scopes.`,
+        `5. Do NOT say "I don't have access to Slack" — that's misleading. Say the connection needs re-authorising.`,
+        `6. Keep it short and friendly, not alarming.`,
+      ].join("\n");
+    }
+    return `Slack query failed: ${result.error}`;
+  }
+  const rows = Array.isArray(result.data) ? result.data : [];
+  const sample = rows.slice(0, MAX_TOOL_RESULT_ROWS);
+  return `Slack ${report}: ${result.count} results\n${JSON.stringify(sample, null, 2)}${rows.length > MAX_TOOL_RESULT_ROWS ? `\n(showing first ${MAX_TOOL_RESULT_ROWS} of ${rows.length})` : ""}`;
+}
+
 /* ─────────────── Memory Search Tool ─────────────── */
 
 /** OpenAI-compatible tool definition for search_memory */
@@ -2582,6 +2739,7 @@ async function streamAnthropic(
   }
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_TOOL);
+    tools.push(SLACK_TOOL);
   }
 
   console.log(`[Anthropic] Streaming with tools: [${tools.map(t => (t as any).name || (t as any).type).join(', ') || 'none'}], imageGeneration=${config.imageGeneration}`);
@@ -2649,6 +2807,11 @@ async function streamAnthropic(
             );
           }
           if (block.name === "query_meetingbrain") {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ searching_memory: true })}\n\n`)
+            );
+          }
+          if (block.name === "query_slack") {
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ searching_memory: true })}\n\n`)
             );
@@ -2896,6 +3059,26 @@ async function streamAnthropic(
         } catch (err: any) {
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `MeetingBrain error: ${err.message}`, is_error: true });
         }
+      } else if (tool.name === "query_slack") {
+        try {
+          const result = await querySlack(
+            tool.input.report, config.userEmail!,
+            {
+              query: tool.input.query,
+              channel: tool.input.channel,
+              channel_id: tool.input.channel_id,
+              thread_ts: tool.input.thread_ts,
+              days: tool.input.days,
+              limit: tool.input.limit,
+            }
+          );
+          toolResults.push({
+            type: "tool_result", tool_use_id: tool.id,
+            content: formatSlackResult(tool.input.report, result),
+          });
+        } catch (err: any) {
+          toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Slack error: ${err.message}`, is_error: true });
+        }
       } else {
         // Unknown tool — return error
         toolResults.push({
@@ -3028,6 +3211,7 @@ async function streamXAIChatCompletions(
   }
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
+    tools.push(SLACK_OPENAI_TOOL);
   }
 
   console.log(`[xAI] Streaming model=${apiModel}, webSearch=${config.webSearch}, imageGen=${config.imageGeneration}, tools=[${tools.map(t => (t as any).function?.name || t.type).join(', ') || 'none'}]`);
@@ -3118,6 +3302,11 @@ async function streamXAIChatCompletions(
             );
           }
           if (existing.name === "query_meetingbrain" && tc.function?.name) {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ searching_memory: true })}\n\n`)
+            );
+          }
+          if (existing.name === "query_slack" && tc.function?.name) {
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ searching_memory: true })}\n\n`)
             );
@@ -3362,6 +3551,27 @@ async function streamXAIChatCompletions(
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `MeetingBrain error: ${err.message}` } as any);
         }
+      } else if (tc.function.name === "query_slack") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const result = await querySlack(
+            input.report, config.userEmail!,
+            {
+              query: input.query,
+              channel: input.channel,
+              channel_id: input.channel_id,
+              thread_ts: input.thread_ts,
+              days: input.days,
+              limit: input.limit,
+            }
+          );
+          openaiMessages.push({
+            role: "tool", tool_call_id: tc.id,
+            content: formatSlackResult(input.report, result),
+          } as any);
+        } catch (err: any) {
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Slack error: ${err.message}` } as any);
+        }
       } else {
         openaiMessages.push({
           role: "tool",
@@ -3532,6 +3742,7 @@ async function streamGemini(
   }
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
+    tools.push(SLACK_OPENAI_TOOL);
   }
 
   let fullText = "";
@@ -3616,6 +3827,11 @@ async function streamGemini(
             );
           }
           if (existing.name === "query_meetingbrain" && tc.function?.name) {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ searching_memory: true })}\n\n`)
+            );
+          }
+          if (existing.name === "query_slack" && tc.function?.name) {
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ searching_memory: true })}\n\n`)
             );
@@ -3826,6 +4042,27 @@ async function streamGemini(
         } catch (err: any) {
           geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `MeetingBrain error: ${err.message}` } as any);
         }
+      } else if (tc.function.name === "query_slack") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const result = await querySlack(
+            input.report, config.userEmail!,
+            {
+              query: input.query,
+              channel: input.channel,
+              channel_id: input.channel_id,
+              thread_ts: input.thread_ts,
+              days: input.days,
+              limit: input.limit,
+            }
+          );
+          geminiMessages.push({
+            role: "tool", tool_call_id: tc.id,
+            content: formatSlackResult(input.report, result),
+          } as any);
+        } catch (err: any) {
+          geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Slack error: ${err.message}` } as any);
+        }
       } else {
         geminiMessages.push({
           role: "tool",
@@ -3910,6 +4147,7 @@ async function streamOpenAI(
   }
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
+    tools.push(SLACK_OPENAI_TOOL);
   }
 
   let fullText = "";
@@ -3996,6 +4234,11 @@ async function streamOpenAI(
             );
           }
           if (existing.name === "query_meetingbrain" && tc.function?.name) {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ searching_memory: true })}\n\n`)
+            );
+          }
+          if (existing.name === "query_slack" && tc.function?.name) {
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ searching_memory: true })}\n\n`)
             );
@@ -4204,6 +4447,27 @@ async function streamOpenAI(
           } as any);
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `MeetingBrain error: ${err.message}` } as any);
+        }
+      } else if (tc.function.name === "query_slack") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const result = await querySlack(
+            input.report, config.userEmail!,
+            {
+              query: input.query,
+              channel: input.channel,
+              channel_id: input.channel_id,
+              thread_ts: input.thread_ts,
+              days: input.days,
+              limit: input.limit,
+            }
+          );
+          openaiMessages.push({
+            role: "tool", tool_call_id: tc.id,
+            content: formatSlackResult(input.report, result),
+          } as any);
+        } catch (err: any) {
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Slack error: ${err.message}` } as any);
         }
       } else {
         openaiMessages.push({

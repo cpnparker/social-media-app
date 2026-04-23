@@ -473,7 +473,7 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
       if (isFullDetail(contractLevel)) {
         for (const c of clientContext.contracts) {
           const remaining = (c.totalUnits || 0) - (c.completedUnits || 0);
-          const contractUrl = c.id ? `https://app.thecontentengine.com/admin/contracts/${c.id}` : null;
+          const contractUrl = c.id ? `https://app.thecontentengine.com/all/contracts/${c.id}` : null;
           prompt += `\n\n**${c.name}** [${c.active ? "Active" : "Inactive"}]`;
           if (contractUrl) prompt += ` — [View in Engine](${contractUrl})`;
           prompt += `\n- CU Budget: ${c.completedUnits || 0}/${c.totalUnits || 0} used (${remaining} remaining)`;
@@ -732,7 +732,7 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
   prompt += `\n\n## Engine Links
 When listing content items, tasks, or contracts, include clickable links to the Content Engine app:
 - Content: https://app.thecontentengine.com/all/contents/{contentId}
-- Contract: https://app.thecontentengine.com/admin/contracts/{contractId}
+- Contract: https://app.thecontentengine.com/all/contracts/{contractId}
 - Social promo: https://app.thecontentengine.com/{clientId}/social-media/all-social-promos/{id_social}
 - Social post/schedule: https://app.thecontentengine.com/{clientId}/social-media/schedule/{id_social}
 When you have IDs from query results, ALWAYS include the relevant link. Format: [Content Name](https://app.thecontentengine.com/all/contents/12345)
@@ -829,6 +829,16 @@ When a client is selected, combine tools for deeper, more useful answers:
 - DEFAULT: If the user says "tasks in the Engine" or "assigned tasks" — use report: "assigned_tasks" with their name. For other people: query_engine({ report: "assigned_tasks", assignee_name: "Ceri" }).
 - For MeetingBrain queries about other people: query_meetingbrain({ report: "my_tasks", person_name: "Ceri" }).
 - Use first name only for names — both tools do partial matching.
+
+**Slack (user's own inbox)**: Use query_slack({ report: "..." }) to read the user's Slack.
+- recent_dms — user's most recent DMs/group DMs with previews (good for "what's new in Slack?", "any unread DMs?")
+- search_messages — full-text search (e.g. query_slack({ report: "search_messages", query: "bahrain pitch" }))
+- channel_messages — recent messages in a specific channel (e.g. query_slack({ report: "channel_messages", channel: "#content" }))
+- my_mentions — messages that @-mention the user (good for "did anyone tag me?")
+- thread — replies in a thread (requires channel_id + thread_ts from a prior result)
+- list_channels — channels the user is a member of
+- **PRIVACY:** Slack access is scoped to the USER'S OWN account via their OAuth token. You can only read messages the user could read in Slack themselves (their DMs, channels they're in, mentions directed at them). NEVER claim to see another user's DMs or a channel the user isn't in. If asked about a colleague's Slack activity, say you can only access the user's own data.
+- **ERROR HANDLING:** If query_slack returns an error containing "needs_reauth" or "re-authorizing", the tool_result will include explicit response instructions — follow them exactly. Relay the re-connect link ([Re-connect Slack in MeetingBrain](https://www.meetingbrain.ai/settings)) as a clickable markdown link. NEVER respond with "I don't have access to Slack" or "I can't read Slack" — that's misleading when the real issue is a missing scope that the user can fix in two clicks. Always surface the exact error and the fix.
 
 **Social Media Review**: When asked about social media, posts, or social content:
 1. query_engine → report="social_performance" with client_id, date_from, and optionally args.network (MANDATORY for any publishing/metrics/performance/count questions). This queries app_posting_posts (ground truth) enriched with metrics.
