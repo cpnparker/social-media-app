@@ -86,11 +86,23 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "EngineAI Auto",
     description: "Best model for each query",
   },
+  "claude-opus-4-7": {
+    provider: "anthropic",
+    apiModel: "claude-opus-4-7",
+    label: "Claude Opus 4.7",
+    description: "Top-tier reasoning, code & long-form",
+  },
   "claude-sonnet-4-6": {
     provider: "anthropic",
     apiModel: "claude-sonnet-4-6",
     label: "Claude Sonnet 4.6",
     description: "Complex reasoning & analysis",
+  },
+  "claude-haiku-4-5": {
+    provider: "anthropic",
+    apiModel: "claude-haiku-4-5-20251001",
+    label: "Claude Haiku 4.5",
+    description: "Fast, cheap Claude",
   },
   "gemini-3-flash": {
     provider: "gemini",
@@ -121,12 +133,6 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     apiModel: "grok-4-1-fast-non-reasoning",
     label: "Grok 4 Fast",
     description: "Fast, affordable, web search",
-  },
-  "grok-3-mini": {
-    provider: "xai",
-    apiModel: "grok-3-mini",
-    label: "Grok 3 Mini",
-    hidden: true,
   },
   "sonar": {
     provider: "perplexity",

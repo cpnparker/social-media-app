@@ -136,8 +136,10 @@ function formatTokens(n: number): string {
 }
 
 const MODEL_LABELS: Record<string, string> = {
+  "claude-opus-4-7": "Claude Opus 4.7",
   "claude-sonnet-4-6": "Claude Sonnet 4.6",
   "claude-sonnet-4-20250514": "Claude Sonnet 4",
+  "claude-haiku-4-5": "Claude Haiku 4.5",
   "gemini-3-flash": "Gemini 3 Flash",
   "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
   "gemini-2.5-pro": "Gemini 2.5 Pro (Legacy)",
@@ -159,8 +161,10 @@ const CHART_COLORS: Record<string, string> = {
   "grok-3-mini": "#93C5FD",
   "grok-imagine-image": "#818CF8",
   "grok-3": "#A78BFA",
+  "claude-opus-4-7": "#EA580C",
   "claude-sonnet-4-6": "#F97316",
   "claude-sonnet-4-20250514": "#FB923C",
+  "claude-haiku-4-5": "#FDBA74",
   "gpt-4o": "#10B981",
   "gpt-4o-mini": "#34D399",
   "dall-e-3": "#A78BFA",
@@ -170,8 +174,10 @@ const CHART_COLORS: Record<string, string> = {
 const DEFAULT_CHART_COLORS = ["#6366F1", "#8B5CF6", "#06B6D4", "#14B8A6", "#F59E0B", "#EF4444", "#84CC16", "#E879F9"];
 
 const MODEL_COLORS: Record<string, string> = {
+  "claude-opus-4-7": "bg-orange-600",
   "claude-sonnet-4-6": "bg-orange-500",
   "claude-sonnet-4-20250514": "bg-orange-400",
+  "claude-haiku-4-5": "bg-orange-300",
   "gemini-3-flash": "bg-blue-500",
   "gemini-3.1-flash-lite": "bg-blue-400",
   "gemini-2.5-pro": "bg-blue-300",

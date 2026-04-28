@@ -6,9 +6,11 @@
 
 export const AI_MODELS = [
   { id: "auto", label: "EngineAI Auto", provider: "auto", description: "Best model for each query" },
+  { id: "claude-opus-4-7", label: "Claude Opus 4.7", provider: "anthropic", description: "Top-tier reasoning, code & long-form" },
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", provider: "anthropic", description: "Complex reasoning & analysis" },
-  { id: "grok-4-1-fast", label: "Grok 4 Fast", provider: "xai", description: "Fast, affordable, web search" },
+  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", provider: "anthropic", description: "Fast, cheap Claude" },
   { id: "gpt-4o", label: "GPT-4o", provider: "openai", description: "OpenAI's versatile flagship" },
+  { id: "grok-4-1-fast", label: "Grok 4 Fast", provider: "xai", description: "Fast, affordable, web search" },
   { id: "gemini-3-flash", label: "Gemini 3 Flash", provider: "gemini", description: "Fast, large context window" },
 ] as const;
 

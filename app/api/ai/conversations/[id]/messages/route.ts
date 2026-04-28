@@ -21,13 +21,14 @@ export const maxDuration = 300; // 5 min — covers slow attachment extractions 
 
 // ── Cost calculation for usage tracking ──
 const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> = {
+  "claude-opus-4-7": { inputPer1M: 1500, outputPer1M: 7500 },        // $15/$75 — VERIFY current Anthropic pricing
   "claude-sonnet-4-6": { inputPer1M: 300, outputPer1M: 1500 },       // $3/$15
   "claude-sonnet-4-20250514": { inputPer1M: 300, outputPer1M: 1500 },
+  "claude-haiku-4-5": { inputPer1M: 100, outputPer1M: 500 },         // $1/$5 — VERIFY current Anthropic pricing
   "gpt-4o": { inputPer1M: 250, outputPer1M: 1000 },                  // $2.50/$10
   "gpt-4o-mini": { inputPer1M: 15, outputPer1M: 60 },                // $0.15/$0.60
   "gpt-4.1": { inputPer1M: 200, outputPer1M: 800 },                  // $2/$8
   "grok-4-1-fast": { inputPer1M: 20, outputPer1M: 50 },              // $0.20/$0.50
-  "grok-3-mini": { inputPer1M: 30, outputPer1M: 50 },                // $0.30/$0.50
   "grok-3": { inputPer1M: 300, outputPer1M: 1500 },                  // $3/$15
   "grok-4": { inputPer1M: 200, outputPer1M: 1000 },                  // $2/$10
   "mistral-large-latest": { inputPer1M: 200, outputPer1M: 600 },     // $2/$6
@@ -1044,9 +1045,9 @@ export async function POST(
       userEngineId: userId,
     });
 
-    // Append query router hints to system prompt
+    // Append query router hints to system prompt as required tool calls
     if (queryRoute.hints.length > 0) {
-      systemPrompt += "\n\n<!-- Query Router Hints -->\n" + queryRoute.hints.join("\n");
+      systemPrompt += "\n\n## Required tool calls for this turn\nBased on the question, you MUST call these tools before answering. Do not answer from cached inline context or training data alone.\n- " + queryRoute.hints.join("\n- ");
     }
 
     // For xAI/Grok: web search is built-in via LiveSearch — NOT a callable tool.
