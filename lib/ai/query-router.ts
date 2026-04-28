@@ -118,7 +118,7 @@ function generateHints(route: Omit<QueryRoute, "hints">): string[] {
     hints.push("The user may be referencing something from a past conversation — consider using search_memory to find relevant context.");
   }
   if (route.suggestMeetingBrain) {
-    hints.push("This query appears to involve meetings or tasks — consider using query_meetingbrain to find relevant meeting notes or action items.");
+    hints.push("query_meetingbrain (the question mentions meetings/tasks). For 'now / today / current meeting' questions use report: 'upcoming_meetings', days: 1 and filter by current time. For searches about a specific person, use upcoming_meetings or meetings and scan the attendees field — do NOT use search_meetings with a person's name as the query, it only matches titles/summaries.");
   }
   if (route.searchMode === "on") {
     hints.push("Web search is active for this query. Use the search results to provide current, factual information with sources.");

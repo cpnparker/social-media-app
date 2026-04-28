@@ -331,7 +331,7 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
   if (ctx.meetingBrainContext) {
     prompt += `\n\n## MeetingBrain`;
     prompt += `\n${ctx.meetingBrainContext}`;
-    prompt += `\n\n_The data above is YOUR personal schedule. Use it for questions about YOUR week, tasks, and meetings._`;
+    prompt += `\n\n_The data above is a cached snapshot that may be stale or incomplete. Treat it as a hint only. For any question about meetings — especially "now", "today", or a specific person — you MUST call query_meetingbrain to get fresh data. Do not answer "no meeting found" based on this cache alone._`;
     prompt += `\n\n**PRIVACY:** This is your private data. Never use it to answer questions about other people's schedules. If asked about a colleague's meetings, say you can only access the user's own data. For client meeting questions, use the client_meetings report (query_meetingbrain) which contains verified, workspace-shared client meetings only.`;
   }
 
@@ -825,6 +825,13 @@ When a client is selected, combine tools for deeper, more useful answers:
 - **Engine tasks**: Content production workflow tasks — writing, editing, reviewing, designing. Use the **assigned_tasks** report: query_engine({ report: "assigned_tasks", assignee_name: "Chris" }). This returns current incomplete tasks with proper joins (content + client + status).
 - **MeetingBrain tasks**: Personal action items from meetings and planning. Use query_meetingbrain({ report: "my_tasks" }) to fetch current tasks.
 - **MeetingBrain meetings**: Use query_meetingbrain({ report: "meetings" }) for recent meeting summaries, or query_meetingbrain({ report: "search_meetings", query: "budget" }) to search meeting content.
+- **"Who am I meeting now?" / "What's my next meeting?" / "Current meeting" / "Who is [name] I'm meeting today?"**:
+  1. Call query_meetingbrain({ report: "upcoming_meetings", days: 1 }).
+  2. Filter the returned list by the current time — find the meeting whose [date, end_date] window contains right now, or the next one starting soon.
+  3. The result includes the full attendee list (name + email). Answer from that. If the person's name is only in an email local-part (e.g. maria.stambler@holcim.com), identify them by that and include the email so the user can confirm.
+  4. Do NOT use search_meetings for "who am I meeting" questions — the query text ("Maria", "Chris") won't match meeting titles. upcoming_meetings is the right report.
+  5. If no meeting overlaps the current window, say so plainly — BUT add this caveat: "MeetingBrain only sees meetings with a video-conference link (Google Meet / Zoom). If you're meeting in person, it won't appear here — share the invite and I can help." Do not say "your schedule doesn't list one" as if MB were authoritative for all meetings.
+  6. If the user names a person who doesn't appear in attendees of any found meeting, respond with step 5's caveat — do NOT guess who the person is, what they do, what they handle, or prep notes for them based on Slack history or general context. That's hallucination, not help.
 - When the question is ambiguous (e.g. "what tasks have I got?"), check BOTH: use assigned_tasks report for Engine tasks AND query_meetingbrain for MeetingBrain tasks, then present both together clearly labelled.
 - DEFAULT: If the user says "tasks in the Engine" or "assigned tasks" — use report: "assigned_tasks" with their name. For other people: query_engine({ report: "assigned_tasks", assignee_name: "Ceri" }).
 - For MeetingBrain queries about other people: query_meetingbrain({ report: "my_tasks", person_name: "Ceri" }).
@@ -841,6 +848,12 @@ When a client is selected, combine tools for deeper, more useful answers:
 - **ERROR HANDLING:** If query_slack returns an error containing "needs_reauth" or "re-authorizing", the tool_result will include explicit response instructions — follow them exactly. Relay the re-connect link ([Re-connect Slack in MeetingBrain](https://www.meetingbrain.ai/settings)) as a clickable markdown link. NEVER respond with "I don't have access to Slack" or "I can't read Slack" — that's misleading when the real issue is a missing scope that the user can fix in two clicks. Always surface the exact error and the fix.
 - **NAMING — do not invent people.** Slack rows come back with opaque IDs (sender="UXXXXXXX", channel_id="CXXXXXXX"). The tool_result wraps each batch with a "Known user IDs" map extracted from <@ID|Name> mention tags and populates a "sender_name" field where it can. Use those. If sender has no resolved name anywhere (not in sender_name, not in the Known user IDs map, not embedded in the message text), call them "a Slack user" and link the message's permalink — NEVER fall back to "a colleague", "a team member", "someone on the team", "a coworker", or any other invented descriptor. Same for channels: if channel_name matches channel_id, call it "a Slack thread" and link the permalink; do not guess the channel's name.
 - **ALWAYS include permalinks.** Every Slack row has a "permalink" field. When you list or summarise Slack items for the user, render each as a markdown link — e.g. "[View thread](permalink)" — so they can one-click into Slack.
+
+**Identifying people — never guess, never invent facts about them.** If the user asks "who is X" and X does not appear in the tool result you just fetched (by name in attendees, summary, email local-part, or a resolved sender_name), say so: "I couldn't find X in your MeetingBrain / calendar / Slack — can you share more context?" Then STOP. Do NOT:
+- infer identity from a matching first name in Slack history, older meetings, or other adjacent context
+- speculate about what the person does, their role, what they handle, or what to prep ("She's likely handling editorial…", "probably involved in X", "prep the Y brief")
+- offer prep notes, briefs, or talking points for an unknown person — you have no basis for them
+Hedging words like "likely", "probably", "appears to be", or "may be" are a signal you're about to hallucinate, not a license to do it. If tools don't name the person, ask the user — don't fill the gap.
 
 **Social Media Review**: When asked about social media, posts, or social content:
 1. query_engine → report="social_performance" with client_id, date_from, and optionally args.network (MANDATORY for any publishing/metrics/performance/count questions). This queries app_posting_posts (ground truth) enriched with metrics.
