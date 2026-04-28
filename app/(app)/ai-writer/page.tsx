@@ -273,7 +273,7 @@ export default function AIWriterPage() {
 
   // ─── Home view (Perplexity-style) ───
   return (
-    <div className="h-[calc(100vh-57px)] -m-4 sm:-m-6 flex flex-col overflow-y-auto">
+    <div className="engine-ai-scope h-[calc(100vh-57px)] -m-4 sm:-m-6 flex flex-col overflow-y-auto">
       <div className="flex-1 flex flex-col">
         {/* Hero + Input */}
         <div className="flex flex-col items-center pt-12 sm:pt-20 pb-8 px-4">

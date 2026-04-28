@@ -815,7 +815,7 @@ export default function ChatPanel({
 
   return (
     <div
-      className="flex flex-col flex-1 min-h-0 relative overflow-hidden"
+      className="engine-ai-scope flex flex-col flex-1 min-h-0 relative overflow-hidden"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}

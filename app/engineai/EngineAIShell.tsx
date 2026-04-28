@@ -64,7 +64,7 @@ export default function EngineAIShell({
       <CustomerProvider>
         <TooltipProvider>
           <EngineAIAccessGuard>
-            <div className="flex h-dvh bg-background overflow-hidden">
+            <div className="engine-ai-scope flex h-dvh bg-background overflow-hidden">
               {children}
             </div>
           </EngineAIAccessGuard>

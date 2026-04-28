@@ -391,6 +391,35 @@
   font-weight: 500;
 }
 
+/* ─── EngineAI desktop font-size scale (+20%) ─── */
+/* Mobile keeps stock sizing; desktop bumps everything in the EngineAI surface
+   by ~20% via Tailwind text-* overrides + .ai-response explicit-size overrides. */
+@media (min-width: 1024px) {
+  .engine-ai-scope { font-size: 1.05rem; }
+
+  .engine-ai-scope .text-xs    { font-size: 0.9rem;   line-height: 1.2rem; }
+  .engine-ai-scope .text-sm    { font-size: 1.05rem;  line-height: 1.5rem; }
+  .engine-ai-scope .text-base  { font-size: 1.2rem;   line-height: 1.8rem; }
+  .engine-ai-scope .text-lg    { font-size: 1.35rem;  line-height: 2.1rem; }
+  .engine-ai-scope .text-xl    { font-size: 1.5rem;   line-height: 2.1rem; }
+  .engine-ai-scope .text-2xl   { font-size: 1.8rem;   line-height: 2.4rem; }
+  .engine-ai-scope .text-3xl   { font-size: 2.25rem;  line-height: 2.7rem; }
+
+  .engine-ai-scope .ai-response                  { font-size: 1.125rem; }
+  .engine-ai-scope .ai-response .ai-h1           { font-size: 1.5rem; }
+  .engine-ai-scope .ai-response .ai-h2           { font-size: 1.275rem; }
+  .engine-ai-scope .ai-response .ai-h3           { font-size: 1.125rem; }
+  .engine-ai-scope .ai-response .ai-h4           { font-size: 1.05rem; }
+  .engine-ai-scope .ai-response .ai-code-block   { font-size: 1.05rem; }
+  .engine-ai-scope .ai-response .ai-inline-code  { font-size: 1.125rem; }
+  .engine-ai-scope .ai-response .ai-content-card { font-size: 1.125rem; }
+  .engine-ai-scope .ai-response .ai-table        { font-size: 1.125rem; }
+  .engine-ai-scope .ai-response .ai-table th     { font-size: 1.05rem; }
+  .engine-ai-scope .ai-response .ai-hashtag      { font-size: 0.975rem; }
+  .engine-ai-scope .ai-response .ai-download-name   { font-size: 1.05rem; }
+  .engine-ai-scope .ai-response .ai-download-action { font-size: 0.9rem; }
+}
+
 /* Safe area insets for modern phones */
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
   .safe-bottom {
