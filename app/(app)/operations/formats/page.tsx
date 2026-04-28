@@ -14,6 +14,7 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -115,6 +116,8 @@ const CATEGORY_HEX: Record<string, string> = {
   Strategy: "#f59e0b",
   Other: "#6b7280",
 };
+
+import { downloadCSV } from "@/lib/csv-utils";
 
 /* ─── Sortable header helper ─── */
 function SortHeader({ label, sortKey, currentSort, currentAsc, onSort, align = "left" }: {
@@ -305,12 +308,20 @@ export default function FormatsPage() {
     return sortRows(Object.values(map), contentSort.currentSort, contentSort.currentAsc);
   }, [filtered, selectedFormat, contentSort.currentSort, contentSort.currentAsc]);
 
-  /* ─── Pie chart data ─── */
-  const pieData = useMemo(() => {
-    return formatList.map((f) => ({
-      name: f.type,
+  /* ─── Bar chart data (replaces pie chart) ─── */
+  const barData = useMemo(() => {
+    const top = formatList.slice(0, 15);
+    const rest = formatList.slice(15);
+    const rows = top.map((f) => ({
+      name: f.type.replace(/_/g, " "),
       value: Math.round(f.cus * 10) / 10,
+      category: f.category,
     }));
+    if (rest.length > 0) {
+      const otherCUs = rest.reduce((sum, f) => sum + f.cus, 0);
+      rows.push({ name: "Other", value: Math.round(otherCUs * 10) / 10, category: "Other" });
+    }
+    return rows;
   }, [formatList]);
 
   /* ─── Line chart data ─── */
@@ -557,8 +568,20 @@ export default function FormatsPage() {
               {/* Formats table */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-0">
-                  <div className="px-4 py-2.5 border-b">
+                  <div className="px-4 py-2.5 border-b flex items-center justify-between">
                     <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Formats Commissioned</h2>
+                    {formatList.length > 0 && (
+                      <button
+                        onClick={() => downloadCSV(
+                          formatList.map((f) => ({ Format: f.type.replace(/_/g, " "), Category: f.category, CUs: Math.round(f.cus * 10) / 10, Tasks: f.count })),
+                          `formats-commissioned-${dateFrom || "all"}-to-${dateTo || "all"}.csv`
+                        )}
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                        title="Download CSV"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                   {formatList.length === 0 ? (
                     <p className="text-xs text-muted-foreground text-center py-8">No formats found.</p>
@@ -603,38 +626,47 @@ export default function FormatsPage() {
                 </CardContent>
               </Card>
 
-              {/* Pie chart */}
+              {/* Horizontal bar chart */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-4">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Format Breakdown</h2>
-                  {pieData.length === 0 ? (
+                  <div className="flex items-center gap-3 mb-3">
+                    {CATEGORY_ORDER.map((cat) => (
+                      <span key={cat} className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                        <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: CATEGORY_HEX[cat] }} />
+                        {cat}
+                      </span>
+                    ))}
+                  </div>
+                  {barData.length === 0 ? (
                     <p className="text-xs text-muted-foreground text-center py-8">No data.</p>
                   ) : (
-                    <ResponsiveContainer width="100%" height={320}>
-                      <PieChart>
-                        <Pie
-                          data={pieData}
-                          cx="50%"
-                          cy="50%"
-                          outerRadius={100}
-                          innerRadius={40}
-                          dataKey="value"
-                          paddingAngle={2}
-                          label={({ name, value }) => `${(name as string).replace(/_/g, " ")}: ${value}`}
-                          labelLine={{ strokeWidth: 1 }}
-                        >
-                          {pieData.map((entry, i) => (
-                            <Cell key={i} fill={typeHexColors[entry.name.toLowerCase()] || typeHexColors.other} />
-                          ))}
-                        </Pie>
+                    <ResponsiveContainer width="100%" height={Math.max(200, barData.length * 28 + 20)}>
+                      <BarChart data={barData} layout="vertical" margin={{ left: 0, right: 40, top: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} opacity={0.3} />
+                        <XAxis type="number" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                        <YAxis
+                          type="category"
+                          dataKey="name"
+                          width={150}
+                          tick={{ fontSize: 11 }}
+                          axisLine={false}
+                          tickLine={false}
+                          style={{ textTransform: "capitalize" }}
+                        />
                         <Tooltip
                           contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid hsl(var(--border))" }}
                           formatter={(value) => [`${value} CUs`, "Commissioned"]}
+                          labelFormatter={(label) => String(label).replace(/_/g, " ")}
                         />
-                        <Legend
-                          formatter={(value) => <span className="text-xs capitalize">{(value as string).replace(/_/g, " ")}</span>}
-                        />
-                      </PieChart>
+                        <Bar dataKey="value" radius={[0, 4, 4, 0]} maxBarSize={20}
+                          label={{ position: "right", fontSize: 10, fill: "#6b7280", formatter: (v: any) => Number(v).toFixed(1) }}
+                        >
+                          {barData.map((entry, i) => (
+                            <Cell key={i} fill={CATEGORY_HEX[entry.category] || CATEGORY_HEX.Other} />
+                          ))}
+                        </Bar>
+                      </BarChart>
                     </ResponsiveContainer>
                   )}
                 </CardContent>
@@ -644,10 +676,22 @@ export default function FormatsPage() {
             {/* ── Content commissioned table (linked to selected format) ── */}
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0">
-                <div className="px-4 py-2.5 border-b">
+                <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     Content Commissioned{selectedFormat ? ` \u2014 ${selectedFormat.replace(/_/g, " ")}` : ""}
                   </h2>
+                  {formatContent.length > 0 && (
+                    <button
+                      onClick={() => downloadCSV(
+                        formatContent.map((c) => ({ Content: c.name, Client: c.clientName, Contract: c.contractName || "", CUs: Math.round(c.cus * 10) / 10, Commissioned: fmtDate(c.dateCreated) })),
+                        `content-${(selectedFormat || "all").replace(/_/g, "-")}-${dateFrom || "all"}-to-${dateTo || "all"}.csv`
+                      )}
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      title="Download CSV"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
                 {!selectedFormat ? (
                   <p className="text-xs text-muted-foreground text-center py-6">Select a format above to view content.</p>
@@ -748,8 +792,20 @@ export default function FormatsPage() {
             {/* ── Customer format matrix table ── */}
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0">
-                <div className="px-4 py-2.5 border-b">
+                <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Customer Format Breakdown</h2>
+                  {customerFormatData.length > 0 && (
+                    <button
+                      onClick={() => downloadCSV(
+                        customerFormatData.map((c) => ({ Customer: c.name, Written: Math.round(c.Written * 10) / 10, Video: Math.round(c.Video * 10) / 10, Visual: Math.round(c.Visual * 10) / 10, Strategy: Math.round(c.Strategy * 10) / 10, "Total CUs": Math.round(c.total * 10) / 10 })),
+                        `customer-format-breakdown-${dateFrom || "all"}-to-${dateTo || "all"}.csv`
+                      )}
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      title="Download CSV"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
                 {customerFormatData.length === 0 ? (
                   <p className="text-xs text-muted-foreground text-center py-8">No customers found.</p>
@@ -822,10 +878,22 @@ export default function FormatsPage() {
             {/* ── Customer detail table ── */}
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0">
-                <div className="px-4 py-2.5 border-b">
+                <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     Content{selectedCustomerName ? ` \u2014 ${selectedCustomerName}` : ""}
                   </h2>
+                  {customerDetailContent.length > 0 && (
+                    <button
+                      onClick={() => downloadCSV(
+                        customerDetailContent.map((c) => ({ Content: c.name, Type: c.contentType.replace(/_/g, " "), Category: c.category, CUs: Math.round(c.cus * 10) / 10, Commissioned: fmtDate(c.dateCreated) })),
+                        `content-${(selectedCustomerName || "customer").replace(/\s+/g, "-").toLowerCase()}.csv`
+                      )}
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      title="Download CSV"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
                 {!selectedCustomerId ? (
                   <p className="text-xs text-muted-foreground text-center py-6">Select a customer above to view their content.</p>
