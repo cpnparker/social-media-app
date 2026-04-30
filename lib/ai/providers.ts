@@ -2177,7 +2177,11 @@ async function queryMeetingBrain(
           date: d.meeting_date?.slice(0, 16),
           attendees: d.attendees,
           summary: d.summary,
-          transcript: d.transcript?.slice(0, 8000) || null,
+          // Transcripts can be 25k+ chars for an hour-long recording. Claude
+          // has plenty of context budget — give it the whole thing up to a
+          // generous cap (~25k tokens). Truncating at 8k cut off mid-sentence
+          // and made the AI miss most of the meeting.
+          transcript: d.transcript?.slice(0, 100000) || null,
           key_topics: d.key_topics,
           next_steps: d.next_steps,
           insights: d.insights,
