@@ -1,15 +1,22 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Loader2,
   Clock,
   Zap,
-  Power,
   AlertTriangle,
+  Settings2,
+  PlayCircle,
+  StopCircle,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import {
@@ -18,6 +25,18 @@ import {
   APP_COLORS,
   ScheduleType,
 } from "@/lib/admin/service-registry";
+
+interface ServiceConfigPayload {
+  killed: boolean;
+  killedReason: string | null;
+  killedAt: string | null;
+  dailyCapCents: number | null;
+  monthlyCapCents: number | null;
+  alertThresholdPct: number | null;
+  hardBlock: boolean;
+  overDailyCap: boolean;
+  overMonthlyCap: boolean;
+}
 
 interface ServiceRow {
   id: string;
@@ -41,6 +60,7 @@ interface ServiceRow {
     callsToday: number;
     topModels: { model: string; cost30dCents: number }[];
   };
+  config: ServiceConfigPayload;
 }
 
 interface UnregisteredRow {
@@ -105,22 +125,54 @@ export default function AIControlCentrePage() {
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
+  const refresh = useCallback(async () => {
     if (!workspaceId) return;
     setLoading(true);
-    fetch(`/api/admin/control-center?workspaceId=${workspaceId}`)
-      .then(async (r) => {
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.error || "request failed");
-        return j as PayloadShape;
-      })
-      .then((d) => {
-        setData(d);
-        setError(null);
-      })
-      .catch((e) => setError(String(e?.message || e)))
-      .finally(() => setLoading(false));
+    try {
+      const res = await fetch(`/api/admin/control-center?workspaceId=${workspaceId}`);
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || "request failed");
+      setData(j as PayloadShape);
+      setError(null);
+    } catch (e) {
+      setError(String((e as Error)?.message || e));
+    } finally {
+      setLoading(false);
+    }
   }, [workspaceId]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const patchConfig = useCallback(
+    async (
+      app: string,
+      typeSource: string,
+      patch: Partial<{
+        killed: boolean;
+        killedReason: string | null;
+        dailyCapCents: number | null;
+        monthlyCapCents: number | null;
+        alertThresholdPct: number | null;
+        hardBlock: boolean;
+      }>,
+    ) => {
+      if (!workspaceId) return;
+      const res = await fetch(`/api/admin/control-center/config?workspaceId=${workspaceId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app, typeSource, ...patch }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        toast.error(j.error || "Failed to update");
+        return;
+      }
+      await refresh();
+    },
+    [workspaceId, refresh],
+  );
 
   const totals = useMemo(() => {
     if (!data) return { cost30d: 0, cost7d: 0, costToday: 0, services: 0, crons: 0 };
@@ -208,7 +260,7 @@ export default function AIControlCentrePage() {
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0 divide-y">
                 {rows.map((row) => (
-                  <ServiceRowView key={row.id} row={row} />
+                  <ServiceRowView key={row.id} row={row} onPatch={patchConfig} />
                 ))}
               </CardContent>
             </Card>
@@ -266,28 +318,59 @@ function Tile({ label, value, sub }: { label: string; value: string; sub?: strin
   );
 }
 
-function ServiceRowView({ row }: { row: ServiceRow }) {
+function ServiceRowView({
+  row,
+  onPatch,
+}: {
+  row: ServiceRow;
+  onPatch: (
+    app: string,
+    typeSource: string,
+    patch: Partial<{
+      killed: boolean;
+      killedReason: string | null;
+      dailyCapCents: number | null;
+      monthlyCapCents: number | null;
+      alertThresholdPct: number | null;
+      hardBlock: boolean;
+    }>,
+  ) => Promise<void>;
+}) {
   const sb = SCHEDULE_BADGE[row.schedule.type];
   const cronText =
     row.schedule.type === "cron" && row.schedule.cronExpression
       ? describeCron(row.schedule.cronExpression)
       : null;
+  const killed = row.config.killed;
+  const overCap = row.config.overDailyCap || row.config.overMonthlyCap;
+
   return (
-    <div className="grid grid-cols-12 gap-4 px-4 py-3 items-start">
+    <div
+      className={cn(
+        "grid grid-cols-12 gap-4 px-4 py-3 items-start transition-colors",
+        killed && "bg-red-500/5",
+      )}
+    >
       {/* Label + description */}
       <div className="col-span-5 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-sm">{row.label}</span>
-          {row.killSwitchEnv && (
-            <Badge variant="outline" className="text-[10px] gap-1 border-red-500/30 text-red-600">
-              <Power className="h-3 w-3" />
-              {row.killSwitchEnv}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={cn("font-medium text-sm", killed && "text-red-700 line-through decoration-red-500/40")}>
+            {row.label}
+          </span>
+          {killed && (
+            <Badge variant="outline" className="text-[10px] gap-1 border-red-500/40 text-red-700 bg-red-500/10">
+              <StopCircle className="h-3 w-3" />
+              KILLED
+            </Badge>
+          )}
+          {!killed && overCap && (
+            <Badge variant="outline" className="text-[10px] gap-1 border-amber-500/40 text-amber-700 bg-amber-500/10">
+              <AlertTriangle className="h-3 w-3" />
+              OVER CAP
             </Badge>
           )}
         </div>
-        <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
-          {row.description}
-        </p>
+        <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{row.description}</p>
         <div className="mt-2 flex flex-wrap gap-1">
           {row.metrics.topModels.length === 0 ? (
             <span className="text-[11px] text-muted-foreground">no usage in last 30d</span>
@@ -318,12 +401,165 @@ function ServiceRowView({ row }: { row: ServiceRow }) {
       </div>
 
       {/* Spend */}
-      <div className="col-span-4 grid grid-cols-3 gap-2 text-xs tabular-nums">
+      <div className="col-span-3 grid grid-cols-3 gap-2 text-xs tabular-nums">
         <Metric label="Today" value={formatCost(row.metrics.costTodayCents)} sub={`${row.metrics.callsToday} calls`} />
         <Metric label="7d" value={formatCost(row.metrics.cost7dCents)} sub={`${row.metrics.calls7d} calls`} />
         <Metric label="30d" value={formatCost(row.metrics.cost30dCents)} sub={`${formatNumber(row.metrics.calls30d)} calls`} />
       </div>
+
+      {/* Controls */}
+      <div className="col-span-1 flex items-start justify-end gap-1">
+        <Button
+          size="icon"
+          variant={killed ? "default" : "ghost"}
+          className={cn("h-7 w-7", killed && "bg-red-600 hover:bg-red-700 text-white")}
+          title={killed ? "Resume service" : "Stop service (kill switch)"}
+          onClick={() =>
+            onPatch(row.app, row.typeSource, killed
+              ? { killed: false, killedReason: null }
+              : { killed: true, killedReason: "Stopped from Control Centre" })
+          }
+        >
+          {killed ? <PlayCircle className="h-4 w-4" /> : <StopCircle className="h-4 w-4" />}
+        </Button>
+        <CapsPopover row={row} onPatch={onPatch} />
+      </div>
     </div>
+  );
+}
+
+function CapsPopover({
+  row,
+  onPatch,
+}: {
+  row: ServiceRow;
+  onPatch: (
+    app: string,
+    typeSource: string,
+    patch: Partial<{
+      dailyCapCents: number | null;
+      monthlyCapCents: number | null;
+      alertThresholdPct: number | null;
+      hardBlock: boolean;
+    }>,
+  ) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [daily, setDaily] = useState(
+    row.config.dailyCapCents != null ? (row.config.dailyCapCents / 100).toString() : "",
+  );
+  const [monthly, setMonthly] = useState(
+    row.config.monthlyCapCents != null ? (row.config.monthlyCapCents / 100).toString() : "",
+  );
+  const [alert, setAlert] = useState(
+    row.config.alertThresholdPct != null ? row.config.alertThresholdPct.toString() : "",
+  );
+  const [hardBlock, setHardBlock] = useState(row.config.hardBlock);
+  const [saving, setSaving] = useState(false);
+
+  const hasCaps = row.config.dailyCapCents != null || row.config.monthlyCapCents != null;
+
+  async function save() {
+    setSaving(true);
+    try {
+      await onPatch(row.app, row.typeSource, {
+        dailyCapCents: daily.trim() === "" ? null : Math.round(parseFloat(daily) * 100),
+        monthlyCapCents: monthly.trim() === "" ? null : Math.round(parseFloat(monthly) * 100),
+        alertThresholdPct: alert.trim() === "" ? null : parseInt(alert, 10),
+        hardBlock,
+      });
+      toast.success("Caps updated");
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          size="icon"
+          variant={hasCaps ? "secondary" : "ghost"}
+          className="h-7 w-7"
+          title="Spend caps"
+        >
+          <Settings2 className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72">
+        <div className="space-y-3">
+          <div>
+            <h4 className="text-sm font-semibold">Spend caps</h4>
+            <p className="text-xs text-muted-foreground">
+              Enforced at every LLM call. Leave blank for no cap.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`d-${row.id}`} className="text-xs">
+              Daily cap (USD)
+            </Label>
+            <Input
+              id={`d-${row.id}`}
+              type="number"
+              step="0.01"
+              min="0"
+              value={daily}
+              onChange={(e) => setDaily(e.target.value)}
+              placeholder="e.g. 50"
+              className="h-8 text-sm"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`m-${row.id}`} className="text-xs">
+              Monthly cap (USD)
+            </Label>
+            <Input
+              id={`m-${row.id}`}
+              type="number"
+              step="0.01"
+              min="0"
+              value={monthly}
+              onChange={(e) => setMonthly(e.target.value)}
+              placeholder="e.g. 500"
+              className="h-8 text-sm"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`a-${row.id}`} className="text-xs">
+              Alert at % of cap
+            </Label>
+            <Input
+              id={`a-${row.id}`}
+              type="number"
+              min="0"
+              max="100"
+              value={alert}
+              onChange={(e) => setAlert(e.target.value)}
+              placeholder="e.g. 80"
+              className="h-8 text-sm"
+            />
+          </div>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={hardBlock}
+              onChange={(e) => setHardBlock(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <span>Hard block when cap reached (not just alert)</span>
+          </label>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button size="sm" variant="ghost" onClick={() => setOpen(false)} disabled={saving}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={save} disabled={saving}>
+              {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+            </Button>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

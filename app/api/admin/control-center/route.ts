@@ -18,8 +18,23 @@ interface ServiceMetrics {
   topModels: { model: string; cost30dCents: number }[];
 }
 
+export interface ServiceConfig {
+  killed: boolean;
+  killedReason: string | null;
+  killedAt: string | null;
+  dailyCapCents: number | null;
+  monthlyCapCents: number | null;
+  alertThresholdPct: number | null;
+  hardBlock: boolean;
+  /** computed: true if monthly_cap_cents set AND current month spend ≥ cap */
+  overMonthlyCap: boolean;
+  /** computed: true if daily_cap_cents set AND last-24h spend ≥ cap */
+  overDailyCap: boolean;
+}
+
 export interface ServiceRow extends ServiceEntry {
   metrics: ServiceMetrics;
+  config: ServiceConfig;
 }
 
 const ZERO_METRICS: ServiceMetrics = {
@@ -54,30 +69,57 @@ export async function GET(req: NextRequest) {
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-  const { data, error } = await intelligenceDb
-    .from("ai_usage")
-    .select("type_app, type_source, name_model, units_cost_tenths, date_created")
-    .gte("date_created", thirtyDaysAgo.toISOString());
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  const [usageRes, configRes] = await Promise.all([
+    intelligenceDb
+      .from("ai_usage")
+      .select("type_app, type_source, name_model, units_cost_tenths, date_created")
+      .gte("date_created", thirtyDaysAgo.toISOString()),
+    intelligenceDb.from("service_config").select("*"),
+  ]);
+  if (usageRes.error) {
+    return NextResponse.json({ error: usageRes.error.message }, { status: 500 });
   }
-  const rows = (data ?? []) as Array<{
+  if (configRes.error) {
+    return NextResponse.json({ error: configRes.error.message }, { status: 500 });
+  }
+  const rows = (usageRes.data ?? []) as Array<{
     type_app: string;
     type_source: string;
     name_model: string;
     units_cost_tenths: number;
     date_created: string;
   }>;
+  const configRows = (configRes.data ?? []) as Array<{
+    app: string;
+    type_source: string;
+    killed: boolean;
+    killed_reason: string | null;
+    killed_at: string | null;
+    daily_cap_cents: string | number | null;
+    monthly_cap_cents: string | number | null;
+    alert_threshold_pct: number | null;
+    hard_block: boolean;
+  }>;
+  const configByKey = new Map<string, (typeof configRows)[number]>();
+  for (const c of configRows) {
+    configByKey.set(`${c.app}::${c.type_source}`, c);
+  }
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
-  // Aggregate per (app, type_source)
-  const bucket = new Map<string, ServiceMetrics & { _models: Map<string, number> }>();
+  // Aggregate per (app, type_source). Track daily / monthly buckets too —
+  // the cap logic in service_config is per-day-rolling and per-month-to-date.
+  const bucket = new Map<
+    string,
+    ServiceMetrics & { _models: Map<string, number>; spendDailyCents: number; spendMonthlyCents: number }
+  >();
   const key = (app: string, src: string) => `${app}::${src}`;
 
   for (const r of rows) {
     const k = key(r.type_app, r.type_source);
     let m = bucket.get(k);
     if (!m) {
-      m = { ...ZERO_METRICS, _models: new Map() };
+      m = { ...ZERO_METRICS, _models: new Map(), spendDailyCents: 0, spendMonthlyCents: 0 };
       bucket.set(k, m);
     }
     const cents = (r.units_cost_tenths || 0) / 10;
@@ -92,6 +134,8 @@ export async function GET(req: NextRequest) {
       m.costTodayCents += cents;
       m.callsToday += 1;
     }
+    if (d >= dayAgo) m.spendDailyCents += cents;
+    if (d >= monthStart) m.spendMonthlyCents += cents;
     if (r.name_model) {
       m._models.set(
         r.name_model,
@@ -100,9 +144,50 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  const buildConfig = (
+    app: string,
+    typeSource: string,
+    spendDailyCents: number,
+    spendMonthlyCents: number,
+  ): ServiceConfig => {
+    const c = configByKey.get(`${app}::${typeSource}`);
+    if (!c) {
+      return {
+        killed: false,
+        killedReason: null,
+        killedAt: null,
+        dailyCapCents: null,
+        monthlyCapCents: null,
+        alertThresholdPct: null,
+        hardBlock: true,
+        overDailyCap: false,
+        overMonthlyCap: false,
+      };
+    }
+    const dailyCap = c.daily_cap_cents == null ? null : Number(c.daily_cap_cents);
+    const monthlyCap = c.monthly_cap_cents == null ? null : Number(c.monthly_cap_cents);
+    return {
+      killed: c.killed,
+      killedReason: c.killed_reason,
+      killedAt: c.killed_at,
+      dailyCapCents: dailyCap,
+      monthlyCapCents: monthlyCap,
+      alertThresholdPct: c.alert_threshold_pct,
+      hardBlock: c.hard_block,
+      overDailyCap: dailyCap != null && spendDailyCents >= dailyCap,
+      overMonthlyCap: monthlyCap != null && spendMonthlyCents >= monthlyCap,
+    };
+  };
+
   const services: ServiceRow[] = SERVICE_REGISTRY.map((entry) => {
     const m = bucket.get(key(entry.app, entry.typeSource));
-    if (!m) return { ...entry, metrics: ZERO_METRICS };
+    if (!m) {
+      return {
+        ...entry,
+        metrics: ZERO_METRICS,
+        config: buildConfig(entry.app, entry.typeSource, 0, 0),
+      };
+    }
     const topModels = Array.from(m._models.entries())
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3)
@@ -121,6 +206,7 @@ export async function GET(req: NextRequest) {
         callsToday: m.callsToday,
         topModels,
       },
+      config: buildConfig(entry.app, entry.typeSource, m.spendDailyCents, m.spendMonthlyCents),
     };
   });
 
