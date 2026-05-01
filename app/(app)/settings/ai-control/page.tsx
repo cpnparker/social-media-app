@@ -9,6 +9,7 @@ import {
   Settings2,
   PlayCircle,
   StopCircle,
+  Cpu,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -38,6 +39,11 @@ interface ServiceConfigPayload {
   overMonthlyCap: boolean;
 }
 
+interface ModelOverridePayload {
+  provider: string;
+  model: string;
+}
+
 interface ServiceRow {
   id: string;
   app: AppName;
@@ -59,8 +65,10 @@ interface ServiceRow {
     calls7d: number;
     callsToday: number;
     topModels: { model: string; cost30dCents: number }[];
+    activeProviders: string[];
   };
   config: ServiceConfigPayload;
+  overrides: ModelOverridePayload[];
 }
 
 interface UnregisteredRow {
@@ -174,6 +182,27 @@ export default function AIControlCentrePage() {
     [workspaceId, refresh],
   );
 
+  const setOverride = useCallback(
+    async (app: string, typeSource: string, provider: string, model: string | null) => {
+      if (!workspaceId) return;
+      const res = await fetch(
+        `/api/admin/control-center/model-override?workspaceId=${workspaceId}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ app, typeSource, provider, model }),
+        },
+      );
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        toast.error(j.error || "Failed to update override");
+        return;
+      }
+      await refresh();
+    },
+    [workspaceId, refresh],
+  );
+
   const totals = useMemo(() => {
     if (!data) return { cost30d: 0, cost7d: 0, costToday: 0, services: 0, crons: 0 };
     const cost30d = data.services.reduce((s, x) => s + x.metrics.cost30dCents, 0);
@@ -260,7 +289,12 @@ export default function AIControlCentrePage() {
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0 divide-y">
                 {rows.map((row) => (
-                  <ServiceRowView key={row.id} row={row} onPatch={patchConfig} />
+                  <ServiceRowView
+                    key={row.id}
+                    row={row}
+                    onPatch={patchConfig}
+                    onSetOverride={setOverride}
+                  />
                 ))}
               </CardContent>
             </Card>
@@ -321,6 +355,7 @@ function Tile({ label, value, sub }: { label: string; value: string; sub?: strin
 function ServiceRowView({
   row,
   onPatch,
+  onSetOverride,
 }: {
   row: ServiceRow;
   onPatch: (
@@ -334,6 +369,12 @@ function ServiceRowView({
       alertThresholdPct: number | null;
       hardBlock: boolean;
     }>,
+  ) => Promise<void>;
+  onSetOverride: (
+    app: string,
+    typeSource: string,
+    provider: string,
+    model: string | null,
   ) => Promise<void>;
 }) {
   const sb = SCHEDULE_BADGE[row.schedule.type];
@@ -408,7 +449,7 @@ function ServiceRowView({
       </div>
 
       {/* Controls */}
-      <div className="col-span-1 flex items-start justify-end gap-1">
+      <div className="col-span-1 flex items-start justify-end gap-1 flex-wrap">
         <Button
           size="icon"
           variant={killed ? "default" : "ghost"}
@@ -423,7 +464,18 @@ function ServiceRowView({
           {killed ? <PlayCircle className="h-4 w-4" /> : <StopCircle className="h-4 w-4" />}
         </Button>
         <CapsPopover row={row} onPatch={onPatch} />
+        <ModelOverridePopover row={row} onSetOverride={onSetOverride} />
       </div>
+      {row.overrides.length > 0 && (
+        <div className="col-span-12 flex flex-wrap gap-1 pl-1 -mt-1">
+          {row.overrides.map((o) => (
+            <Badge key={o.provider} variant="outline" className="text-[10px] gap-1 border-blue-500/40 text-blue-700 bg-blue-500/10">
+              <Cpu className="h-3 w-3" />
+              {o.provider} → <span className="font-mono">{o.model}</span>
+            </Badge>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -557,6 +609,115 @@ function CapsPopover({
               {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
             </Button>
           </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function ModelOverridePopover({
+  row,
+  onSetOverride,
+}: {
+  row: ServiceRow;
+  onSetOverride: (
+    app: string,
+    typeSource: string,
+    provider: string,
+    model: string | null,
+  ) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  // Universe of providers to show: any provider that's been seen + any
+  // provider that already has an override set, deduped.
+  const providers = Array.from(
+    new Set([...row.metrics.activeProviders, ...row.overrides.map((o) => o.provider)]),
+  ).sort();
+
+  // Local edit buffer keyed by provider.
+  const [edits, setEdits] = useState<Record<string, string>>(() => {
+    const init: Record<string, string> = {};
+    for (const o of row.overrides) init[o.provider] = o.model;
+    return init;
+  });
+
+  const hasOverrides = row.overrides.length > 0;
+
+  async function save(provider: string) {
+    setSaving(provider);
+    try {
+      const value = (edits[provider] ?? "").trim();
+      await onSetOverride(row.app, row.typeSource, provider, value || null);
+      toast.success(value ? `${provider} → ${value}` : `${provider} override cleared`);
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          size="icon"
+          variant={hasOverrides ? "secondary" : "ghost"}
+          className={cn("h-7 w-7", hasOverrides && "text-blue-700")}
+          title="Model overrides"
+        >
+          <Cpu className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80">
+        <div className="space-y-3">
+          <div>
+            <h4 className="text-sm font-semibold">Model overrides</h4>
+            <p className="text-xs text-muted-foreground">
+              Set a specific model per provider for this service. Blank = use the code default.
+            </p>
+          </div>
+          {providers.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic">
+              No providers seen yet for this service.
+            </p>
+          ) : (
+            providers.map((p) => {
+              const existing = row.overrides.find((o) => o.provider === p);
+              return (
+                <div key={p} className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-medium">{p}</Label>
+                    {existing && (
+                      <span className="text-[10px] text-blue-700">overridden</span>
+                    )}
+                  </div>
+                  <div className="flex gap-1">
+                    <Input
+                      type="text"
+                      value={edits[p] ?? ""}
+                      onChange={(e) => setEdits((prev) => ({ ...prev, [p]: e.target.value }))}
+                      placeholder={existing ? existing.model : "use default"}
+                      className="h-8 text-xs font-mono"
+                    />
+                    <Button
+                      size="sm"
+                      variant={(edits[p] ?? "") === (existing?.model ?? "") ? "ghost" : "default"}
+                      disabled={
+                        saving === p ||
+                        (edits[p] ?? "") === (existing?.model ?? "")
+                      }
+                      onClick={() => save(p)}
+                    >
+                      {saving === p ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+                    </Button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+          <p className="text-[10px] text-muted-foreground pt-1">
+            Override takes effect within ~30 seconds (cache TTL on each app).
+          </p>
         </div>
       </PopoverContent>
     </Popover>

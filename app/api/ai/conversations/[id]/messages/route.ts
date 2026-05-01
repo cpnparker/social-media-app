@@ -16,6 +16,7 @@ import {
   runBackgroundSummaryUpdate,
 } from "@/lib/ai/conversation-summary";
 import type { Attachment } from "@/lib/types/ai";
+import { assertServiceAllowed, ServiceControlError } from "@/lib/admin/service-control";
 
 export const maxDuration = 300; // 5 min — covers slow attachment extractions + long responses
 
@@ -539,6 +540,19 @@ export async function POST(
   }
   const userId = parseInt(session.user.id, 10);
   const conversationId = params.id;
+
+  // Control Centre kill switch + cap. Source matches what logAiUsage writes.
+  try {
+    await assertServiceAllowed("engine", "enginegpt");
+  } catch (e) {
+    if (e instanceof ServiceControlError) {
+      return new Response(JSON.stringify({ error: e.message, reason: e.reason }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    throw e;
+  }
 
   try {
     const body = await req.json();

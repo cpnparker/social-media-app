@@ -3,6 +3,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { searchForRfps, SearchProvider } from "@/lib/rfp/search";
 import { sendScanNotifications } from "@/lib/rfp/notifications";
 import { computeNextRun } from "@/lib/rfp/schedule";
+import { assertNotKilled, ServiceControlError } from "@/lib/admin/service-control";
 
 export const maxDuration = 300;
 
@@ -13,6 +14,16 @@ export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Control Centre kill switch.
+  try {
+    await assertNotKilled("engine", "rfp-search");
+  } catch (e) {
+    if (e instanceof ServiceControlError && e.reason === "killed") {
+      return NextResponse.json({ status: "disabled", reason: e.message });
+    }
+    throw e;
   }
 
   try {

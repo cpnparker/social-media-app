@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { processClientContext } from "@/lib/ai/client-context-extract";
+import { assertNotKilled, ServiceControlError } from "@/lib/admin/service-control";
 
 export const maxDuration = 300;
 
@@ -21,6 +22,15 @@ export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    await assertNotKilled("engine", "client-context");
+  } catch (e) {
+    if (e instanceof ServiceControlError && e.reason === "killed") {
+      return NextResponse.json({ status: "disabled", reason: e.message });
+    }
+    throw e;
   }
 
   try {
