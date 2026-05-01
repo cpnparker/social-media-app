@@ -216,6 +216,115 @@ export async function shouldRunNow(app: string, source: string): Promise<Schedul
   return { ok: true };
 }
 
+// ── Per-provider global caps ──────────────────────────────────────────────
+
+interface ProviderCapRow {
+  provider: string;
+  daily_cap_cents: number | null;
+  monthly_cap_cents: number | null;
+  alert_threshold_pct: number | null;
+  hard_block: boolean;
+}
+
+const providerCapCache = new Map<string, CacheEntry<ProviderCapRow | null>>();
+const providerSpendCache = new Map<string, CacheEntry<{ daily: number; monthly: number }>>();
+
+function modelToProvider(model: string): string {
+  if (model.startsWith("claude-")) return "claude";
+  if (model.startsWith("gpt-") || model.startsWith("o4-") || model.startsWith("text-embedding")) return "openai";
+  if (model.startsWith("gemini-") && model.includes("pro")) return "gemini-pro";
+  if (model.startsWith("gemini-")) return "gemini";
+  if (model.startsWith("mistral-") || model.startsWith("ministral-")) return "mistral";
+  if (model.startsWith("grok-4")) return "grok-4";
+  if (model.startsWith("grok-")) return "grok";
+  if (model.startsWith("sonar")) return "perplexity";
+  return "other";
+}
+
+async function getProviderCap(provider: string): Promise<ProviderCapRow | null> {
+  const cached = providerCapCache.get(provider);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  try {
+    const { data, error } = await intelligenceDb
+      .from("provider_caps")
+      .select("*")
+      .eq("provider", provider)
+      .maybeSingle();
+    if (error) throw error;
+    const row = (data as ProviderCapRow | null) ?? null;
+    providerCapCache.set(provider, { value: row, expiresAt: Date.now() + CONFIG_TTL_MS });
+    return row;
+  } catch (error) {
+    console.warn(
+      `[service-control] provider-cap lookup failed for ${provider}; failing open:`,
+      error instanceof Error ? error.message : error,
+    );
+    providerCapCache.set(provider, { value: null, expiresAt: Date.now() + 5_000 });
+    return null;
+  }
+}
+
+async function getProviderSpendCents(
+  provider: string,
+): Promise<{ daily: number; monthly: number }> {
+  const cached = providerSpendCache.get(provider);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const now = new Date();
+  const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  try {
+    const { data, error } = await intelligenceDb
+      .from("ai_usage")
+      .select("name_model, units_cost_tenths, date_created")
+      .gte("date_created", monthStart.toISOString());
+    if (error) throw error;
+    let monthly = 0;
+    let daily = 0;
+    for (const r of data ?? []) {
+      const row = r as { name_model: string; units_cost_tenths?: number; date_created: string };
+      if (modelToProvider(row.name_model) !== provider) continue;
+      const cents = (row.units_cost_tenths ?? 0) / 10;
+      monthly += cents;
+      if (new Date(row.date_created) >= dayAgo) daily += cents;
+    }
+    const result = { daily, monthly };
+    providerSpendCache.set(provider, { value: result, expiresAt: Date.now() + SPEND_TTL_MS });
+    return result;
+  } catch (error) {
+    console.warn(
+      `[service-control] provider-spend lookup failed for ${provider}; treating as 0:`,
+      error instanceof Error ? error.message : error,
+    );
+    return { daily: 0, monthly: 0 };
+  }
+}
+
+export async function isOverProviderCap(provider: string): Promise<boolean> {
+  const cfg = await getProviderCap(provider);
+  if (!cfg || !cfg.hard_block) return false;
+  if (cfg.daily_cap_cents == null && cfg.monthly_cap_cents == null) return false;
+  const spend = await getProviderSpendCents(provider);
+  if (cfg.daily_cap_cents != null && spend.daily >= cfg.daily_cap_cents) return true;
+  if (cfg.monthly_cap_cents != null && spend.monthly >= cfg.monthly_cap_cents) return true;
+  return false;
+}
+
+export async function assertCallAllowed(
+  app: string,
+  source: string,
+  provider: string,
+): Promise<void> {
+  await assertServiceAllowed(app, source);
+  if (await isOverProviderCap(provider)) {
+    throw new ServiceControlError(
+      "budget_exceeded",
+      app,
+      source,
+      `Provider ${provider} blocked: global spend cap reached`,
+    );
+  }
+}
+
 export async function markScheduleRan(app: string, source: string): Promise<void> {
   try {
     await intelligenceDb.from("service_config").upsert(

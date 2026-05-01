@@ -98,13 +98,19 @@ export async function GET(req: NextRequest) {
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-  const [usageRes, configRes, overrideRes] = await Promise.all([
+  const [usageRes, configRes, overrideRes, providerCapRes, alertsRes] = await Promise.all([
     intelligenceDb
       .from("ai_usage")
       .select("type_app, type_source, name_model, units_cost_tenths, date_created")
       .gte("date_created", thirtyDaysAgo.toISOString()),
     intelligenceDb.from("service_config").select("*"),
     intelligenceDb.from("model_overrides").select("*"),
+    intelligenceDb.from("provider_caps").select("*"),
+    intelligenceDb
+      .from("service_alerts")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(20),
   ]);
   if (usageRes.error) {
     return NextResponse.json({ error: usageRes.error.message }, { status: 500 });
@@ -115,6 +121,10 @@ export async function GET(req: NextRequest) {
   if (overrideRes.error) {
     return NextResponse.json({ error: overrideRes.error.message }, { status: 500 });
   }
+  if (providerCapRes.error) {
+    return NextResponse.json({ error: providerCapRes.error.message }, { status: 500 });
+  }
+  // Alerts are best-effort — don't fail the whole page load if the query errors.
   const rows = (usageRes.data ?? []) as Array<{
     type_app: string;
     type_source: string;
@@ -155,6 +165,19 @@ export async function GET(req: NextRequest) {
   }
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+  const providerCapsRows = (providerCapRes.data ?? []) as Array<{
+    provider: string;
+    daily_cap_cents: string | number | null;
+    monthly_cap_cents: string | number | null;
+    alert_threshold_pct: number | null;
+    hard_block: boolean;
+  }>;
+  const providerCapByName = new Map<string, (typeof providerCapsRows)[number]>();
+  for (const c of providerCapsRows) providerCapByName.set(c.provider, c);
+
+  // Per-provider rolling spend (daily / monthly) for the global cap UI.
+  const providerSpend = new Map<string, { daily: number; monthly: number }>();
 
   // Aggregate per (app, type_source). Track daily / monthly buckets too —
   // the cap logic in service_config is per-day-rolling and per-month-to-date.
@@ -201,7 +224,15 @@ export async function GET(req: NextRequest) {
         r.name_model,
         (m._models.get(r.name_model) || 0) + cents,
       );
-      m._providers.add(modelToProvider(r.name_model));
+      const prov = modelToProvider(r.name_model);
+      m._providers.add(prov);
+      let ps = providerSpend.get(prov);
+      if (!ps) {
+        ps = { daily: 0, monthly: 0 };
+        providerSpend.set(prov, ps);
+      }
+      if (d >= monthStart) ps.monthly += cents;
+      if (d >= dayAgo) ps.daily += cents;
     }
   }
 
@@ -297,5 +328,39 @@ export async function GET(req: NextRequest) {
   });
   unregistered.sort((a, b) => b.cost30dCents - a.cost30dCents);
 
-  return NextResponse.json({ services, unregistered });
+  // Provider summary: union of providers seen in data + providers with caps.
+  const providerNames = new Set<string>();
+  providerSpend.forEach((_v, k) => providerNames.add(k));
+  providerCapByName.forEach((_v, k) => providerNames.add(k));
+  const providers = Array.from(providerNames)
+    .filter((p) => p !== "other")
+    .sort()
+    .map((provider) => {
+      const cap = providerCapByName.get(provider);
+      const spend = providerSpend.get(provider) ?? { daily: 0, monthly: 0 };
+      const dailyCap = cap?.daily_cap_cents == null ? null : Number(cap.daily_cap_cents);
+      const monthlyCap = cap?.monthly_cap_cents == null ? null : Number(cap.monthly_cap_cents);
+      return {
+        provider,
+        spendDailyCents: Math.round(spend.daily * 100) / 100,
+        spendMonthlyCents: Math.round(spend.monthly * 100) / 100,
+        dailyCapCents: dailyCap,
+        monthlyCapCents: monthlyCap,
+        alertThresholdPct: cap?.alert_threshold_pct ?? null,
+        hardBlock: cap?.hard_block ?? true,
+        overDailyCap: dailyCap != null && spend.daily >= dailyCap,
+        overMonthlyCap: monthlyCap != null && spend.monthly >= monthlyCap,
+      };
+    });
+
+  const alerts = (alertsRes.data ?? []) as Array<{
+    id: string;
+    app: string;
+    type_source: string;
+    kind: string;
+    detail: Record<string, unknown>;
+    created_at: string;
+  }>;
+
+  return NextResponse.json({ services, unregistered, providers, alerts });
 }

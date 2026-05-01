@@ -2654,21 +2654,48 @@ export function createStreamingResponse(
       const encoder = new TextEncoder();
       let result: StreamResult = { fullText: "", inputTokens: 0, outputTokens: 0 };
 
-      // Control Centre model override — looked up per (provider, source).
-      // Override > registry-resolved model. Mutates modelInfo.apiModel in place
-      // so the streamers below use the correct model.
+      // Control Centre model override + global provider cap.
+      // - Override > registry-resolved model.
+      // - Provider cap is checked AFTER override, against whatever provider
+      //   the final model maps to (an override could change it).
+      let finalProviderKey =
+        modelInfo.provider === "anthropic" ? "claude" :
+        modelInfo.provider === "xai" ? "grok-4" :
+        modelInfo.provider; // gemini / openai / perplexity already match
       try {
-        const { resolveModelOverride } = await import("@/lib/admin/service-control");
-        const providerKey =
-          modelInfo.provider === "anthropic" ? "claude" :
-          modelInfo.provider === "xai" ? "grok-4" :
-          modelInfo.provider; // gemini / openai / perplexity already match
-        const override = await resolveModelOverride("engine", source, providerKey);
+        const { resolveModelOverride, isOverProviderCap, ServiceControlError } = await import(
+          "@/lib/admin/service-control"
+        );
+        const override = await resolveModelOverride("engine", source, finalProviderKey);
         if (override) {
           modelInfo.apiModel = override;
+          // Re-derive provider from the override model name in case it switched providers.
+          if (override.startsWith("claude-")) finalProviderKey = "claude";
+          else if (override.startsWith("gpt-") || override.startsWith("o4-")) finalProviderKey = "openai";
+          else if (override.startsWith("gemini-") && override.includes("pro")) finalProviderKey = "gemini-pro";
+          else if (override.startsWith("gemini-")) finalProviderKey = "gemini";
+          else if (override.startsWith("grok-4")) finalProviderKey = "grok-4";
+          else if (override.startsWith("grok-")) finalProviderKey = "grok";
+          else if (override.startsWith("sonar")) finalProviderKey = "perplexity";
         }
-      } catch (e) {
-        console.warn("[AI] model-override lookup failed; using default", e);
+        if (await isOverProviderCap(finalProviderKey)) {
+          throw new ServiceControlError(
+            "budget_exceeded",
+            "engine",
+            source,
+            `Provider ${finalProviderKey} blocked: global spend cap reached`,
+          );
+        }
+      } catch (e: any) {
+        if (e?.name === "ServiceControlError") {
+          // Surface to client as an SSE error event — the streamer hasn't started yet.
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ error: e.message, reason: e.reason })}\n\n`),
+          );
+          controller.close();
+          return;
+        }
+        console.warn("[AI] control-centre lookup failed; using default", e);
       }
 
       try {

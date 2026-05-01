@@ -82,9 +82,32 @@ interface UnregisteredRow {
   calls30d: number;
 }
 
+interface ProviderRow {
+  provider: string;
+  spendDailyCents: number;
+  spendMonthlyCents: number;
+  dailyCapCents: number | null;
+  monthlyCapCents: number | null;
+  alertThresholdPct: number | null;
+  hardBlock: boolean;
+  overDailyCap: boolean;
+  overMonthlyCap: boolean;
+}
+
+interface AlertRow {
+  id: string;
+  app: string;
+  type_source: string;
+  kind: string;
+  detail: Record<string, unknown>;
+  created_at: string;
+}
+
 interface PayloadShape {
   services: ServiceRow[];
   unregistered: UnregisteredRow[];
+  providers: ProviderRow[];
+  alerts: AlertRow[];
 }
 
 function formatCost(cents: number): string {
@@ -188,6 +211,36 @@ export default function AIControlCentrePage() {
     [workspaceId, refresh],
   );
 
+  const setProviderCap = useCallback(
+    async (
+      provider: string,
+      patch: Partial<{
+        dailyCapCents: number | null;
+        monthlyCapCents: number | null;
+        alertThresholdPct: number | null;
+        hardBlock: boolean;
+        clear: boolean;
+      }>,
+    ) => {
+      if (!workspaceId) return;
+      const res = await fetch(
+        `/api/admin/control-center/provider-cap?workspaceId=${workspaceId}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider, ...patch }),
+        },
+      );
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        toast.error(j.error || "Failed to update provider cap");
+        return;
+      }
+      await refresh();
+    },
+    [workspaceId, refresh],
+  );
+
   const setOverride = useCallback(
     async (app: string, typeSource: string, provider: string, model: string | null) => {
       if (!workspaceId) return;
@@ -279,6 +332,31 @@ export default function AIControlCentrePage() {
         <Tile label="Cron schedules" value={String(totals.crons)} />
       </div>
 
+      {/* Per-provider global caps — sits above every service. */}
+      <section className="space-y-2">
+        <div className="flex items-center gap-2 px-1">
+          <Cpu className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-sm font-semibold uppercase tracking-wider">Provider caps</h2>
+          <span className="text-xs text-muted-foreground">
+            Global per-provider hard limits — block ALL services from a provider once
+            its rolling daily / month-to-date spend hits the cap.
+          </span>
+        </div>
+        <Card className="border-0 shadow-sm">
+          <CardContent className="p-0 divide-y">
+            {data.providers.length === 0 ? (
+              <div className="px-4 py-6 text-sm text-muted-foreground italic">
+                No provider activity in the last 30 days.
+              </div>
+            ) : (
+              data.providers.map((p) => (
+                <ProviderRowView key={p.provider} row={p} onSet={setProviderCap} />
+              ))
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
       {/* Per-app sections */}
       {(Object.keys(grouped) as AppName[]).map((app) => {
         const rows = grouped[app];
@@ -307,6 +385,26 @@ export default function AIControlCentrePage() {
           </section>
         );
       })}
+
+      {/* Recent activity — kill toggles, cap changes, schedule edits. */}
+      {data.alerts && data.alerts.length > 0 && (
+        <section className="space-y-2">
+          <div className="flex items-center gap-2 px-1">
+            <Clock className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold uppercase tracking-wider">Recent activity</h2>
+            <span className="text-xs text-muted-foreground">
+              Last {data.alerts.length} Control Centre changes (kill toggles, cap edits).
+            </span>
+          </div>
+          <Card className="border-0 shadow-sm">
+            <CardContent className="p-0 divide-y">
+              {data.alerts.map((a) => (
+                <ActivityRow key={a.id} alert={a} />
+              ))}
+            </CardContent>
+          </Card>
+        </section>
+      )}
 
       {/* Unregistered sources (data we have but don't have metadata for) */}
       {data.unregistered.length > 0 && (
@@ -730,6 +828,236 @@ function ModelOverridePopover({
         </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+function ActivityRow({ alert }: { alert: AlertRow }) {
+  const when = new Date(alert.created_at);
+  const ms = Date.now() - when.getTime();
+  const ago =
+    ms < 60_000 ? `${Math.floor(ms / 1000)}s ago` :
+    ms < 3_600_000 ? `${Math.floor(ms / 60_000)}m ago` :
+    ms < 86_400_000 ? `${Math.floor(ms / 3_600_000)}h ago` :
+    `${Math.floor(ms / 86_400_000)}d ago`;
+
+  const kindLabel: Record<string, { label: string; className: string }> = {
+    kill_on: { label: "Stopped", className: "bg-red-500/10 text-red-700 border-red-500/30" },
+    kill_off: { label: "Resumed", className: "bg-emerald-500/10 text-emerald-700 border-emerald-500/30" },
+    cap_alert: { label: "Cap alert", className: "bg-amber-500/10 text-amber-700 border-amber-500/30" },
+    cap_block: { label: "Cap block", className: "bg-red-500/10 text-red-700 border-red-500/30" },
+  };
+  const kind = kindLabel[alert.kind] ?? { label: alert.kind, className: "bg-slate-500/10 text-slate-700 border-slate-500/30" };
+  const by = (alert.detail?.by as string | undefined) ?? null;
+  const reason = (alert.detail?.reason as string | undefined) ?? null;
+
+  return (
+    <div className="flex items-center gap-3 px-4 py-2 text-xs">
+      <Badge variant="outline" className={cn("text-[10px]", kind.className)}>
+        {kind.label}
+      </Badge>
+      <span className="font-mono text-[11px]">{alert.app}/{alert.type_source}</span>
+      {reason && <span className="text-muted-foreground italic truncate">{reason}</span>}
+      <div className="ml-auto flex items-center gap-2 text-muted-foreground">
+        {by && <span>by {by}</span>}
+        <span>{ago}</span>
+      </div>
+    </div>
+  );
+}
+
+function ProviderRowView({
+  row,
+  onSet,
+}: {
+  row: ProviderRow;
+  onSet: (
+    provider: string,
+    patch: Partial<{
+      dailyCapCents: number | null;
+      monthlyCapCents: number | null;
+      alertThresholdPct: number | null;
+      hardBlock: boolean;
+      clear: boolean;
+    }>,
+  ) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [daily, setDaily] = useState(
+    row.dailyCapCents != null ? (row.dailyCapCents / 100).toString() : "",
+  );
+  const [monthly, setMonthly] = useState(
+    row.monthlyCapCents != null ? (row.monthlyCapCents / 100).toString() : "",
+  );
+  const [hardBlock, setHardBlock] = useState(row.hardBlock);
+  const [saving, setSaving] = useState(false);
+
+  const hasCap = row.dailyCapCents != null || row.monthlyCapCents != null;
+  const overCap = row.overDailyCap || row.overMonthlyCap;
+
+  // Visual indicator: % of cap consumed for the most-utilised window.
+  const dailyPct = row.dailyCapCents ? Math.min(100, (row.spendDailyCents / row.dailyCapCents) * 100) : 0;
+  const monthlyPct =
+    row.monthlyCapCents ? Math.min(100, (row.spendMonthlyCents / row.monthlyCapCents) * 100) : 0;
+
+  async function save() {
+    setSaving(true);
+    try {
+      await onSet(row.provider, {
+        dailyCapCents: daily.trim() === "" ? null : Math.round(parseFloat(daily) * 100),
+        monthlyCapCents: monthly.trim() === "" ? null : Math.round(parseFloat(monthly) * 100),
+        hardBlock,
+      });
+      toast.success(`${row.provider} cap updated`);
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function clear() {
+    setSaving(true);
+    try {
+      await onSet(row.provider, { clear: true });
+      toast.success(`${row.provider} cap cleared`);
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-4 px-4 py-3">
+      <div className="w-32 font-mono text-xs">{row.provider}</div>
+      <div className="flex-1 grid grid-cols-2 gap-4">
+        <CapColumn
+          label="Today (24h)"
+          spend={row.spendDailyCents}
+          cap={row.dailyCapCents}
+          pct={dailyPct}
+          over={row.overDailyCap}
+        />
+        <CapColumn
+          label="Month-to-date"
+          spend={row.spendMonthlyCents}
+          cap={row.monthlyCapCents}
+          pct={monthlyPct}
+          over={row.overMonthlyCap}
+        />
+      </div>
+      {overCap && (
+        <Badge variant="outline" className="text-[10px] gap-1 border-red-500/40 text-red-700 bg-red-500/10">
+          <AlertTriangle className="h-3 w-3" />
+          BLOCKED
+        </Badge>
+      )}
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            size="icon"
+            variant={hasCap ? "secondary" : "ghost"}
+            className="h-7 w-7"
+            title="Set caps"
+          >
+            <Settings2 className="h-4 w-4" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-72">
+          <div className="space-y-3">
+            <div>
+              <h4 className="text-sm font-semibold">{row.provider} caps</h4>
+              <p className="text-xs text-muted-foreground">
+                Hard global limits across every service that calls this provider.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Daily cap (USD)</Label>
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={daily}
+                onChange={(e) => setDaily(e.target.value)}
+                placeholder="e.g. 50"
+                className="h-8 text-sm"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Monthly cap (USD)</Label>
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={monthly}
+                onChange={(e) => setMonthly(e.target.value)}
+                placeholder="e.g. 800"
+                className="h-8 text-sm"
+              />
+            </div>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={hardBlock}
+                onChange={(e) => setHardBlock(e.target.checked)}
+                className="h-4 w-4"
+              />
+              <span>Hard block when cap reached (vs alert-only)</span>
+            </label>
+            <div className="flex justify-between gap-2 pt-1">
+              {hasCap && (
+                <Button size="sm" variant="ghost" onClick={clear} disabled={saving} className="text-red-600">
+                  Clear
+                </Button>
+              )}
+              <div className="flex gap-2 ml-auto">
+                <Button size="sm" variant="ghost" onClick={() => setOpen(false)} disabled={saving}>
+                  Cancel
+                </Button>
+                <Button size="sm" onClick={save} disabled={saving}>
+                  {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
+
+function CapColumn({
+  label,
+  spend,
+  cap,
+  pct,
+  over,
+}: {
+  label: string;
+  spend: number;
+  cap: number | null;
+  pct: number;
+  over: boolean;
+}) {
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline gap-2 text-xs">
+        <span className="text-muted-foreground">{label}</span>
+        <span className="font-medium tabular-nums">{formatCost(spend)}</span>
+        <span className="text-muted-foreground">
+          {cap != null ? `/ ${formatCost(cap)}` : "(no cap)"}
+        </span>
+      </div>
+      {cap != null && (
+        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+          <div
+            className={cn(
+              "h-full transition-all",
+              over ? "bg-red-500" : pct > 80 ? "bg-amber-500" : "bg-emerald-500",
+            )}
+            style={{ width: `${Math.max(2, pct)}%` }}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
