@@ -414,25 +414,37 @@ export default function AIUsagePage() {
     );
   }
 
-  // Usage summary cards
+  // Usage summary cards. The "week-to-date" / "month-to-date" labels make it
+  // explicit that early in a week/month these will be smaller than "Today" —
+  // and on the 1st of the month, "Month-to-date" deliberately equals "Today".
+  const _now = new Date();
+  const _weekStart = new Date(_now);
+  _weekStart.setDate(_weekStart.getDate() - _weekStart.getDay());
+  const _monthStart = new Date(_now.getFullYear(), _now.getMonth(), 1);
+  const _daysInWeekToDate = Math.floor((_now.getTime() - _weekStart.getTime()) / 86400000) + 1;
+  const _daysInMonthToDate = _now.getDate();
+
   const summaryCards = usageData
     ? [
         {
           label: "Today",
+          subLabel: _now.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
           data: usageData.summary.today,
           color: "emerald",
           bg: "bg-emerald-500/10",
           text: "text-emerald-600",
         },
         {
-          label: "This Week",
+          label: "Week-to-date",
+          subLabel: `${_daysInWeekToDate} day${_daysInWeekToDate === 1 ? "" : "s"}`,
           data: usageData.summary.week,
           color: "blue",
           bg: "bg-blue-500/10",
           text: "text-blue-600",
         },
         {
-          label: "This Month",
+          label: "Month-to-date",
+          subLabel: `${_daysInMonthToDate} day${_daysInMonthToDate === 1 ? "" : "s"}`,
           data: usageData.summary.month,
           color: "purple",
           bg: "bg-purple-500/10",
@@ -603,6 +615,11 @@ export default function AIUsagePage() {
                       <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                         {card.label}
                       </span>
+                      {(card as any).subLabel && (
+                        <span className="text-[10px] text-muted-foreground/70 ml-auto">
+                          {(card as any).subLabel}
+                        </span>
+                      )}
                     </div>
                     <p className="text-2xl font-bold">
                       {formatCost(card.data.cost)}

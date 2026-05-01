@@ -68,23 +68,17 @@ export async function GET(req: NextRequest) {
       if (error) throw error;
       usageRows = data || [];
     } else {
-      // All apps — combine engine (workspace-filtered) + external apps
-      const [engineResult, externalResult] = await Promise.all([
-        intelligenceDb
-          .from("ai_usage")
-          .select("*")
-          .eq("id_workspace", workspaceId)
-          .eq("type_app", "engine")
-          .gte("date_created", startDate.toISOString()),
-        intelligenceDb
-          .from("ai_usage")
-          .select("*")
-          .in("type_app", ["meetingbrain", "authorityon"])
-          .gte("date_created", startDate.toISOString()),
-      ]);
-      if (engineResult.error) throw engineResult.error;
-      if (externalResult.error) throw externalResult.error;
-      usageRows = [...(engineResult.data || []), ...(externalResult.data || [])];
+      // All apps — Engine + AuthorityOn + MeetingBrain, all without workspace filter.
+      // The three services share API keys, so this is the cross-service total
+      // a CFO/admin needs to reconcile against the provider bills. (The
+      // per-workspace Engine view is still available via app=engine.)
+      const { data, error } = await intelligenceDb
+        .from("ai_usage")
+        .select("*")
+        .in("type_app", ["engine", "meetingbrain", "authorityon"])
+        .gte("date_created", startDate.toISOString());
+      if (error) throw error;
+      usageRows = data || [];
     }
 
     // Apply endDate filter if custom range
