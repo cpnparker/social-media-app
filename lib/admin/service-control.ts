@@ -153,3 +153,84 @@ export async function assertServiceAllowed(app: string, source: string): Promise
     );
   }
 }
+
+// ── Model overrides ────────────────────────────────────────────────────────
+const overrideCache = new Map<string, CacheEntry<string | null>>();
+
+export async function resolveModelOverride(
+  app: string,
+  source: string,
+  provider: string,
+): Promise<string | null> {
+  const key = `${app}::${source}::${provider}`;
+  const cached = overrideCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  try {
+    const { data, error } = await intelligenceDb
+      .from("model_overrides")
+      .select("model")
+      .eq("app", app)
+      .eq("type_source", source)
+      .eq("provider", provider)
+      .maybeSingle();
+    if (error) throw error;
+    const model = (data as { model?: string } | null)?.model ?? null;
+    overrideCache.set(key, { value: model, expiresAt: Date.now() + CONFIG_TTL_MS });
+    return model;
+  } catch (error) {
+    console.warn(
+      `[service-control] model-override lookup failed for ${app}/${source}/${provider}; falling back:`,
+      error instanceof Error ? error.message : error,
+    );
+    overrideCache.set(key, { value: null, expiresAt: Date.now() + 5_000 });
+    return null;
+  }
+}
+
+// ── Schedule gating ────────────────────────────────────────────────────────
+
+export interface ScheduleDecision {
+  ok: boolean;
+  reason?: "schedule_disabled" | "not_due" | "killed";
+  nextRunAt?: string;
+}
+
+export async function shouldRunNow(app: string, source: string): Promise<ScheduleDecision> {
+  const cfg = await getConfig(app, source);
+  if (!cfg) return { ok: true };
+  if (cfg.killed) return { ok: false, reason: "killed" };
+  const c = cfg as ServiceConfigRow & {
+    schedule_enabled?: boolean;
+    schedule_interval_minutes?: number | null;
+    schedule_last_run_at?: string | null;
+  };
+  if (c.schedule_enabled === false) return { ok: false, reason: "schedule_disabled" };
+  const interval = c.schedule_interval_minutes;
+  if (interval && c.schedule_last_run_at) {
+    const last = new Date(c.schedule_last_run_at).getTime();
+    const due = last + interval * 60_000;
+    if (Date.now() < due) {
+      return { ok: false, reason: "not_due", nextRunAt: new Date(due).toISOString() };
+    }
+  }
+  return { ok: true };
+}
+
+export async function markScheduleRan(app: string, source: string): Promise<void> {
+  try {
+    await intelligenceDb.from("service_config").upsert(
+      {
+        app,
+        type_source: source,
+        schedule_last_run_at: new Date().toISOString(),
+      },
+      { onConflict: "app,type_source" },
+    );
+    configCache.delete(`${app}::${source}`);
+  } catch (error) {
+    console.warn(
+      `[service-control] failed to update schedule_last_run_at for ${app}/${source}:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
+}

@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { processClientContext } from "@/lib/ai/client-context-extract";
-import { assertNotKilled, ServiceControlError } from "@/lib/admin/service-control";
+import {
+  assertNotKilled,
+  ServiceControlError,
+  shouldRunNow,
+  markScheduleRan,
+} from "@/lib/admin/service-control";
 
 export const maxDuration = 300;
 
@@ -32,6 +37,15 @@ export async function GET(req: NextRequest) {
     }
     throw e;
   }
+  const _scheduleDecision = await shouldRunNow("engine", "client-context");
+  if (!_scheduleDecision.ok) {
+    return NextResponse.json({
+      status: "skipped",
+      reason: _scheduleDecision.reason,
+      nextRunAt: _scheduleDecision.nextRunAt,
+    });
+  }
+  await markScheduleRan("engine", "client-context");
 
   try {
     // 1. Get all clients and their current asset counts

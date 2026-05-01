@@ -32,6 +32,10 @@ export interface ServiceConfig {
   overMonthlyCap: boolean;
   /** computed: true if daily_cap_cents set AND last-24h spend ≥ cap */
   overDailyCap: boolean;
+  // Schedule (Phase 4)
+  scheduleEnabled: boolean;
+  scheduleIntervalMinutes: number | null;
+  scheduleLastRunAt: string | null;
 }
 
 export interface ModelOverride {
@@ -128,6 +132,9 @@ export async function GET(req: NextRequest) {
     monthly_cap_cents: string | number | null;
     alert_threshold_pct: number | null;
     hard_block: boolean;
+    schedule_enabled?: boolean;
+    schedule_interval_minutes?: number | null;
+    schedule_last_run_at?: string | null;
   }>;
   const configByKey = new Map<string, (typeof configRows)[number]>();
   for (const c of configRows) {
@@ -216,6 +223,9 @@ export async function GET(req: NextRequest) {
         hardBlock: true,
         overDailyCap: false,
         overMonthlyCap: false,
+        scheduleEnabled: true,
+        scheduleIntervalMinutes: null,
+        scheduleLastRunAt: null,
       };
     }
     const dailyCap = c.daily_cap_cents == null ? null : Number(c.daily_cap_cents);
@@ -230,6 +240,9 @@ export async function GET(req: NextRequest) {
       hardBlock: c.hard_block,
       overDailyCap: dailyCap != null && spendDailyCents >= dailyCap,
       overMonthlyCap: monthlyCap != null && spendMonthlyCents >= monthlyCap,
+      scheduleEnabled: c.schedule_enabled !== false,
+      scheduleIntervalMinutes: c.schedule_interval_minutes ?? null,
+      scheduleLastRunAt: c.schedule_last_run_at ?? null,
     };
   };
 

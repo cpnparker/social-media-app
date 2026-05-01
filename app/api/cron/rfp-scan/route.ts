@@ -3,7 +3,12 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { searchForRfps, SearchProvider } from "@/lib/rfp/search";
 import { sendScanNotifications } from "@/lib/rfp/notifications";
 import { computeNextRun } from "@/lib/rfp/schedule";
-import { assertNotKilled, ServiceControlError } from "@/lib/admin/service-control";
+import {
+  assertNotKilled,
+  ServiceControlError,
+  shouldRunNow,
+  markScheduleRan,
+} from "@/lib/admin/service-control";
 
 export const maxDuration = 300;
 
@@ -16,7 +21,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Control Centre kill switch.
+  // Control Centre kill + schedule gate.
   try {
     await assertNotKilled("engine", "rfp-search");
   } catch (e) {
@@ -25,6 +30,11 @@ export async function GET(req: NextRequest) {
     }
     throw e;
   }
+  const decision = await shouldRunNow("engine", "rfp-search");
+  if (!decision.ok) {
+    return NextResponse.json({ status: "skipped", reason: decision.reason, nextRunAt: decision.nextRunAt });
+  }
+  await markScheduleRan("engine", "rfp-search");
 
   try {
     // Find the oldest due search

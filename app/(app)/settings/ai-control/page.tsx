@@ -10,6 +10,7 @@ import {
   PlayCircle,
   StopCircle,
   Cpu,
+  CalendarClock,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +38,9 @@ interface ServiceConfigPayload {
   hardBlock: boolean;
   overDailyCap: boolean;
   overMonthlyCap: boolean;
+  scheduleEnabled: boolean;
+  scheduleIntervalMinutes: number | null;
+  scheduleLastRunAt: string | null;
 }
 
 interface ModelOverridePayload {
@@ -164,6 +168,8 @@ export default function AIControlCentrePage() {
         monthlyCapCents: number | null;
         alertThresholdPct: number | null;
         hardBlock: boolean;
+        scheduleEnabled: boolean;
+        scheduleIntervalMinutes: number | null;
       }>,
     ) => {
       if (!workspaceId) return;
@@ -368,6 +374,8 @@ function ServiceRowView({
       monthlyCapCents: number | null;
       alertThresholdPct: number | null;
       hardBlock: boolean;
+      scheduleEnabled: boolean;
+      scheduleIntervalMinutes: number | null;
     }>,
   ) => Promise<void>;
   onSetOverride: (
@@ -465,6 +473,7 @@ function ServiceRowView({
         </Button>
         <CapsPopover row={row} onPatch={onPatch} />
         <ModelOverridePopover row={row} onSetOverride={onSetOverride} />
+        {row.schedule.type === "cron" && <SchedulePopover row={row} onPatch={onPatch} />}
       </div>
       {row.overrides.length > 0 && (
         <div className="col-span-12 flex flex-wrap gap-1 pl-1 -mt-1">
@@ -718,6 +727,149 @@ function ModelOverridePopover({
           <p className="text-[10px] text-muted-foreground pt-1">
             Override takes effect within ~30 seconds (cache TTL on each app).
           </p>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function SchedulePopover({
+  row,
+  onPatch,
+}: {
+  row: ServiceRow;
+  onPatch: (
+    app: string,
+    typeSource: string,
+    patch: Partial<{
+      scheduleEnabled: boolean;
+      scheduleIntervalMinutes: number | null;
+    }>,
+  ) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [interval, setInterval] = useState(
+    row.config.scheduleIntervalMinutes != null ? String(row.config.scheduleIntervalMinutes) : "",
+  );
+  const [enabled, setEnabled] = useState(row.config.scheduleEnabled);
+  const [saving, setSaving] = useState(false);
+  const hasCustom =
+    row.config.scheduleIntervalMinutes != null || row.config.scheduleEnabled === false;
+
+  const lastRun = row.config.scheduleLastRunAt
+    ? new Date(row.config.scheduleLastRunAt)
+    : null;
+  const intervalMin = row.config.scheduleIntervalMinutes;
+  const nextRun =
+    lastRun && intervalMin ? new Date(lastRun.getTime() + intervalMin * 60_000) : null;
+
+  async function save() {
+    setSaving(true);
+    try {
+      const trimmed = interval.trim();
+      await onPatch(row.app, row.typeSource, {
+        scheduleEnabled: enabled,
+        scheduleIntervalMinutes: trimmed === "" ? null : Math.max(1, parseInt(trimmed, 10)),
+      });
+      toast.success("Schedule updated");
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function fmtAgo(d: Date | null): string {
+    if (!d) return "never";
+    const ms = Date.now() - d.getTime();
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const days = Math.floor(h / 24);
+    return `${days}d ago`;
+  }
+
+  function fmtIn(d: Date | null): string {
+    if (!d) return "—";
+    const ms = d.getTime() - Date.now();
+    if (ms <= 0) return "now";
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `in ${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `in ${m}m`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `in ${h}h`;
+    return `in ${Math.floor(h / 24)}d`;
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          size="icon"
+          variant={hasCustom ? "secondary" : "ghost"}
+          className={cn("h-7 w-7", hasCustom && "text-amber-700")}
+          title="Schedule"
+        >
+          <CalendarClock className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80">
+        <div className="space-y-3">
+          <div>
+            <h4 className="text-sm font-semibold">Schedule</h4>
+            <p className="text-xs text-muted-foreground">
+              The cron fires every{" "}
+              {row.schedule.cronExpression
+                ? describeCron(row.schedule.cronExpression).toLowerCase()
+                : "(unknown)"}
+              . You can widen the effective interval below — narrower than the cron itself isn&apos;t possible without a redeploy.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Last run</Label>
+            <div className="text-sm tabular-nums">{fmtAgo(lastRun)}</div>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Next eligible run</Label>
+            <div className="text-sm tabular-nums">{fmtIn(nextRun)}</div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor={`int-${row.id}`} className="text-xs">
+              Minimum interval (minutes)
+            </Label>
+            <Input
+              id={`int-${row.id}`}
+              type="number"
+              min="1"
+              value={interval}
+              onChange={(e) => setInterval(e.target.value)}
+              placeholder="leave blank to use the cron's own cadence"
+              className="h-8 text-sm"
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Examples: 60 = at most once per hour, 1440 = once per day.
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <span>Schedule enabled (uncheck to pause)</span>
+          </label>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button size="sm" variant="ghost" onClick={() => setOpen(false)} disabled={saving}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={save} disabled={saving}>
+              {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+            </Button>
+          </div>
         </div>
       </PopoverContent>
     </Popover>

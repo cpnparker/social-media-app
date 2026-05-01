@@ -13,6 +13,8 @@ interface PatchBody {
   monthlyCapCents?: number | null;
   alertThresholdPct?: number | null;
   hardBlock?: boolean;
+  scheduleEnabled?: boolean;
+  scheduleIntervalMinutes?: number | null;
 }
 
 export async function PATCH(req: NextRequest) {
@@ -62,6 +64,10 @@ export async function PATCH(req: NextRequest) {
   if (body.monthlyCapCents !== undefined) update.monthly_cap_cents = body.monthlyCapCents;
   if (body.alertThresholdPct !== undefined) update.alert_threshold_pct = body.alertThresholdPct;
   if (body.hardBlock !== undefined) update.hard_block = body.hardBlock;
+  if (body.scheduleEnabled !== undefined) update.schedule_enabled = body.scheduleEnabled;
+  if (body.scheduleIntervalMinutes !== undefined) {
+    update.schedule_interval_minutes = body.scheduleIntervalMinutes;
+  }
 
   const { error } = await intelligenceDb
     .from("service_config")

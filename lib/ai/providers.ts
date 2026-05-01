@@ -32,6 +32,10 @@ export interface AIProviderConfig {
   userId?: number;
   userEmail?: string;
   selectedClientId?: number;
+  /** type_source string used for ai_usage logging + Control Centre lookups.
+   *  Defaults to "enginegpt" (the user-facing chat). Set to a different
+   *  value when calling from RFP / memory / summary code paths. */
+  source?: string;
 }
 
 /** Default temperature for user-facing chat. Lower than model defaults (~0.7-1.0)
@@ -2643,11 +2647,29 @@ export function createStreamingResponse(
   onComplete?: (result: StreamResult) => Promise<void>
 ): ReadableStream {
   const modelInfo = getModelInfo(config.model);
+  const source = config.source ?? "enginegpt";
 
   return new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
       let result: StreamResult = { fullText: "", inputTokens: 0, outputTokens: 0 };
+
+      // Control Centre model override — looked up per (provider, source).
+      // Override > registry-resolved model. Mutates modelInfo.apiModel in place
+      // so the streamers below use the correct model.
+      try {
+        const { resolveModelOverride } = await import("@/lib/admin/service-control");
+        const providerKey =
+          modelInfo.provider === "anthropic" ? "claude" :
+          modelInfo.provider === "xai" ? "grok-4" :
+          modelInfo.provider; // gemini / openai / perplexity already match
+        const override = await resolveModelOverride("engine", source, providerKey);
+        if (override) {
+          modelInfo.apiModel = override;
+        }
+      } catch (e) {
+        console.warn("[AI] model-override lookup failed; using default", e);
+      }
 
       try {
         if (modelInfo.provider === "anthropic") {
