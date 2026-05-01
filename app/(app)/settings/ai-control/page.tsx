@@ -7,7 +7,6 @@ import {
   Zap,
   Power,
   AlertTriangle,
-  ExternalLink,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -226,7 +225,7 @@ export default function AIControlCentrePage() {
               Unregistered sources
             </h2>
             <span className="text-xs text-muted-foreground">
-              These appear in ai_usage but aren't in the registry. Add them to{" "}
+              These appear in ai_usage but aren&apos;t in the registry. Add them to{" "}
               <code className="text-[11px]">lib/admin/service-registry.ts</code>.
             </span>
           </div>
