@@ -17,3 +17,5 @@ CREATE TABLE IF NOT EXISTS intelligence.provider_caps (
   updated_at timestamptz NOT NULL DEFAULT now(),
   updated_by text
 );
+
+GRANT ALL ON intelligence.provider_caps TO service_role, intelligence, authenticated;

@@ -47,3 +47,9 @@ CREATE TABLE IF NOT EXISTS intelligence.service_alerts (
 
 CREATE INDEX IF NOT EXISTS idx_service_alerts_recent
   ON intelligence.service_alerts(created_at DESC);
+
+-- Grants: tables created via the postgres pooler are owned by intelligence_app,
+-- so the default ACLs (which fire only when postgres creates a table) don't
+-- apply. Explicitly grant the Supabase REST roles.
+GRANT ALL ON intelligence.service_config TO service_role, intelligence, authenticated;
+GRANT ALL ON intelligence.service_alerts TO service_role, intelligence, authenticated;

@@ -13,3 +13,5 @@ CREATE TABLE IF NOT EXISTS intelligence.model_overrides (
   updated_by text,
   PRIMARY KEY (app, type_source, provider)
 );
+
+GRANT ALL ON intelligence.model_overrides TO service_role, intelligence, authenticated;
