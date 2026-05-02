@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
-import { auth } from "@/lib/auth";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 
-// GET /api/workspace-members — list all users in the workspace
+// GET /api/workspace-members — list ALL users from Postgres, enriched with workspace data
 export async function GET() {
   try {
     // Get the default workspace
-    const { data: ws } = await supabase
+    const { data: ws } = await intelligenceDb
       .from("workspaces")
       .select("id")
       .limit(1)
@@ -16,66 +16,50 @@ export async function GET() {
       return NextResponse.json({ members: [] });
     }
 
-    // Ensure the logged-in user is a workspace member
-    const session = await auth();
-    if (session?.user?.email) {
-      const { data: sessionUser } = await supabase
-        .from("users")
-        .select("id_user")
-        .eq("email_user", session.user.email)
-        .is("date_deleted", null)
-        .limit(1)
-        .single();
+    // Fetch ALL non-deleted users from Postgres (source of truth)
+    const { data: allUsers, error: usersErr } = await supabase
+      .from("users")
+      .select("id_user, name_user, email_user, role_user, date_created")
+      .is("date_deleted", null)
+      .order("name_user", { ascending: true });
 
-      if (sessionUser) {
-        const { data: existingMember } = await supabase
-          .from("workspace_members")
-          .select("id")
-          .eq("workspace_id", ws.id)
-          .eq("user_id", sessionUser.id_user)
-          .limit(1)
-          .single();
+    if (usersErr) throw usersErr;
 
-        if (!existingMember) {
-          await supabase.from("workspace_members").insert({
-            workspace_id: ws.id,
-            user_id: sessionUser.id_user,
-            role: "admin",
-            joined_at: new Date().toISOString(),
-          });
-        }
-      }
-    }
-
-    // Fetch all members with user details
-    const { data: memberRows, error } = await supabase
+    // Fetch workspace membership data (may not exist for every user)
+    const { data: memberRows } = await intelligenceDb
       .from("workspace_members")
       .select("*")
       .eq("workspace_id", ws.id);
+    const memberMap = new Map((memberRows || []).map((m) => [m.user_id, m]));
 
-    if (error) throw error;
+    // Fetch area access flags from intelligence schema (may not exist for every user)
+    const { data: accessRows } = await intelligenceDb
+      .from("users_access")
+      .select("*")
+      .eq("id_workspace", ws.id);
+    const accessMap = new Map((accessRows || []).map((a: any) => [a.user_target, a]));
 
-    // Get user details for each member
-    const userIds = (memberRows || []).map((m) => m.user_id);
-    const { data: userRows } = await supabase
-      .from("users")
-      .select("id_user, name_user, email_user, role_user, date_created")
-      .in("id_user", userIds);
-
-    const userMap = new Map((userRows || []).map((u) => [u.id_user, u]));
-
-    const members = (memberRows || []).map((m) => {
-      const user = userMap.get(m.user_id);
+    const members = (allUsers || []).map((user) => {
+      const member = memberMap.get(user.id_user);
+      const access = accessMap.get(user.id_user);
       return {
-        id: String(m.user_id),
-        name: user?.name_user || null,
-        email: user?.email_user || null,
+        id: String(user.id_user),
+        name: user.name_user || null,
+        email: user.email_user || null,
         avatarUrl: null,
         provider: null,
-        createdAt: user?.date_created || null,
-        role: m.role,
-        supabaseRole: user?.role_user || null,
-        joinedAt: m.joined_at || null,
+        createdAt: user.date_created || null,
+        role: member?.role || "viewer",
+        appRole: user.role_user || "none",
+        joinedAt: member?.joined_at || null,
+        // No access row = no access (secure by default)
+        accessEngine: access ? !!access.flag_access_engine : false,
+        accessEngineGpt: access ? !!access.flag_access_enginegpt : false,
+        accessOperations: access ? !!access.flag_access_operations : false,
+        accessAdmin: access ? !!access.flag_access_admin : false,
+        accessMeetingBrain: access ? !!access.flag_access_meetingbrain : false,
+        accessRfpTool: access ? !!access.flag_access_rfptool : false,
+        accessAuthorityOn: access ? !!access.flag_access_authorityon : false,
       };
     });
 
@@ -96,7 +80,7 @@ export async function POST(req: NextRequest) {
 
     const normalizedEmail = email.trim().toLowerCase();
 
-    const { data: ws } = await supabase
+    const { data: ws } = await intelligenceDb
       .from("workspaces")
       .select("id")
       .limit(1)
@@ -134,7 +118,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Check if already a workspace member
-    const { data: existingMember } = await supabase
+    const { data: existingMember } = await intelligenceDb
       .from("workspace_members")
       .select("id")
       .eq("workspace_id", ws.id)
@@ -149,10 +133,23 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    await supabase.from("workspace_members").insert({
+    await intelligenceDb.from("workspace_members").insert({
       workspace_id: ws.id,
       user_id: existingUser.id_user,
       role: role || "viewer",
+    });
+
+    // Create default area access row in intelligence schema (secure default: no access)
+    await intelligenceDb.from("users_access").insert({
+      id_workspace: ws.id,
+      user_target: existingUser.id_user,
+      flag_access_engine: 0,
+      flag_access_enginegpt: 0,
+      flag_access_operations: 0,
+      flag_access_admin: 0,
+      flag_access_meetingbrain: 0,
+      flag_access_rfptool: 0,
+      flag_access_authorityon: 0,
     });
 
     return NextResponse.json(
@@ -162,6 +159,12 @@ export async function POST(req: NextRequest) {
           name: existingUser.name_user,
           email: existingUser.email_user,
           role: role || "viewer",
+          accessEngine: false,
+          accessEngineGpt: false,
+          accessOperations: false,
+          accessAdmin: false,
+          accessMeetingBrain: false,
+          accessRfpTool: false,
         },
       },
       { status: 201 }
@@ -171,19 +174,23 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// PATCH /api/workspace-members — update a member's role
+// PATCH /api/workspace-members — update a member's role and/or area access
+// Supports both single-user (userId) and bulk (userIds[]) updates
 export async function PATCH(req: NextRequest) {
   try {
-    const { userId, role } = await req.json();
+    const body = await req.json();
+    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain, accessRfpTool, accessAuthorityOn } = body;
 
-    if (!userId || !role) {
+    // Determine target user IDs — bulk or single
+    const isBulk = Array.isArray(userIds) && userIds.length > 0;
+    if (!userId && !isBulk) {
       return NextResponse.json(
-        { error: "userId and role are required" },
+        { error: "userId or userIds[] is required" },
         { status: 400 }
       );
     }
 
-    const { data: ws } = await supabase
+    const { data: ws } = await intelligenceDb
       .from("workspaces")
       .select("id")
       .limit(1)
@@ -193,19 +200,93 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "No workspace found" }, { status: 404 });
     }
 
-    const { data: updated, error } = await supabase
-      .from("workspace_members")
-      .update({ role })
-      .eq("workspace_id", ws.id)
-      .eq("user_id", parseInt(userId, 10))
-      .select()
-      .single();
+    const targetIds: number[] = isBulk
+      ? userIds.map((id: string) => parseInt(id, 10))
+      : [parseInt(userId, 10)];
 
-    if (error || !updated) {
-      return NextResponse.json({ error: "Member not found" }, { status: 404 });
+    // Ensure each target user has a workspace_members row (auto-create if missing)
+    await Promise.all(
+      targetIds.map(async (numericId) => {
+        const { data: existing } = await intelligenceDb
+          .from("workspace_members")
+          .select("id")
+          .eq("workspace_id", ws.id)
+          .eq("user_id", numericId)
+          .maybeSingle();
+
+        if (!existing) {
+          await intelligenceDb.from("workspace_members").insert({
+            workspace_id: ws.id,
+            user_id: numericId,
+            role: role || "viewer",
+            joined_at: new Date().toISOString(),
+          });
+        }
+      })
+    );
+
+    // Update workspace role if provided (single-user only)
+    if (role && !isBulk) {
+      await intelligenceDb
+        .from("workspace_members")
+        .update({ role })
+        .eq("workspace_id", ws.id)
+        .eq("user_id", targetIds[0]);
     }
 
-    return NextResponse.json({ member: updated });
+    // Update area access in intelligence schema if any access flags provided
+    const hasAccessUpdate =
+      accessEngine !== undefined ||
+      accessEngineGpt !== undefined ||
+      accessOperations !== undefined ||
+      accessAdmin !== undefined ||
+      accessMeetingBrain !== undefined ||
+      accessRfpTool !== undefined;
+
+    if (hasAccessUpdate) {
+      await Promise.all(
+        targetIds.map(async (numericId) => {
+          const { data: existing } = await intelligenceDb
+            .from("users_access")
+            .select("*")
+            .eq("id_workspace", ws.id)
+            .eq("user_target", numericId)
+            .maybeSingle();
+
+          if (existing) {
+            const updates: Record<string, any> = {
+              date_updated: new Date().toISOString(),
+            };
+            if (accessEngine !== undefined) updates.flag_access_engine = accessEngine ? 1 : 0;
+            if (accessEngineGpt !== undefined) updates.flag_access_enginegpt = accessEngineGpt ? 1 : 0;
+            if (accessOperations !== undefined) updates.flag_access_operations = accessOperations ? 1 : 0;
+            if (accessAdmin !== undefined) updates.flag_access_admin = accessAdmin ? 1 : 0;
+            if (accessMeetingBrain !== undefined) updates.flag_access_meetingbrain = accessMeetingBrain ? 1 : 0;
+            if (accessRfpTool !== undefined) updates.flag_access_rfptool = accessRfpTool ? 1 : 0;
+            if (accessAuthorityOn !== undefined) updates.flag_access_authorityon = accessAuthorityOn ? 1 : 0;
+
+            await intelligenceDb
+              .from("users_access")
+              .update(updates)
+              .eq("id_access", existing.id_access);
+          } else {
+            await intelligenceDb.from("users_access").insert({
+              id_workspace: ws.id,
+              user_target: numericId,
+              flag_access_engine: accessEngine ? 1 : 0,
+              flag_access_enginegpt: accessEngineGpt ? 1 : 0,
+              flag_access_operations: accessOperations ? 1 : 0,
+              flag_access_admin: accessAdmin ? 1 : 0,
+              flag_access_meetingbrain: accessMeetingBrain ? 1 : 0,
+              flag_access_rfptool: accessRfpTool ? 1 : 0,
+              flag_access_authorityon: accessAuthorityOn ? 1 : 0,
+            });
+          }
+        })
+      );
+    }
+
+    return NextResponse.json({ success: true, updated: targetIds.length });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -224,7 +305,7 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    const { data: ws } = await supabase
+    const { data: ws } = await intelligenceDb
       .from("workspaces")
       .select("id")
       .limit(1)
@@ -234,13 +315,22 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "No workspace found" }, { status: 404 });
     }
 
-    const { error } = await supabase
+    const numericUserId = parseInt(userId, 10);
+
+    const { error } = await intelligenceDb
       .from("workspace_members")
       .delete()
       .eq("workspace_id", ws.id)
-      .eq("user_id", parseInt(userId, 10));
+      .eq("user_id", numericUserId);
 
     if (error) throw error;
+
+    // Clean up area access row in intelligence schema
+    await intelligenceDb
+      .from("users_access")
+      .delete()
+      .eq("id_workspace", ws.id)
+      .eq("user_target", numericUserId);
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

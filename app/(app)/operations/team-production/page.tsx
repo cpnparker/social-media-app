@@ -16,8 +16,10 @@ import {
   Search,
   CalendarDays,
   Users,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { downloadCSV } from "@/lib/csv-utils";
 
 /* ─────────────── Team structure ─────────────── */
 
@@ -722,6 +724,14 @@ export default function TeamProductionPage() {
               {/* Summary table */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-0">
+                  <div className="px-4 py-3 border-b flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">Summary</h3>
+                    {sortedSummary.length > 0 && (
+                      <button onClick={() => downloadCSV(sortedSummary.map(row => ({ "Team Member": row.assigneeName, "Assigned CUs": Math.round(row.assignedCUs * 10) / 10, "Delivered CUs": Math.round(row.deliveredCUs * 10) / 10 })), "team-production-summary.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
                   <div className="overflow-auto max-h-[240px]">
                     <table className="w-full text-xs">
                       <thead className="sticky top-0 bg-background z-[1]">
@@ -759,10 +769,17 @@ export default function TeamProductionPage() {
               {/* Assigned Tasks Table */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-0">
-                  <div className="px-4 py-3 border-b flex items-center gap-2">
-                    <ClipboardList className="h-4 w-4 text-blue-500" />
-                    <h3 className="text-sm font-semibold">Assigned Tasks</h3>
-                    <span className="text-xs text-muted-foreground">({assignedTasks.length})</span>
+                  <div className="px-4 py-3 border-b flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <ClipboardList className="h-4 w-4 text-blue-500" />
+                      <h3 className="text-sm font-semibold">Assigned Tasks</h3>
+                      <span className="text-xs text-muted-foreground">({assignedTasks.length})</span>
+                    </div>
+                    {assignedTasks.length > 0 && (
+                      <button onClick={() => downloadCSV(assignedTasks.map(row => ({ Assignee: row.assigneeName || "", Customer: row.customerName, Type: row.contentType, Content: row.contentTitle, Task: row.taskTitle, CUs: Math.round(row.taskCUs * 10) / 10, Deadline: row.deadline || "", Created: row.createdAt || "" })), "team-assigned-tasks.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                   <div className="overflow-auto max-h-[400px]">
                     <table className="w-full text-xs">
@@ -815,10 +832,17 @@ export default function TeamProductionPage() {
               {/* Delivered Tasks Table */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-0">
-                  <div className="px-4 py-3 border-b flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                    <h3 className="text-sm font-semibold">Delivered Tasks</h3>
-                    <span className="text-xs text-muted-foreground">({deliveredTasks.length})</span>
+                  <div className="px-4 py-3 border-b flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                      <h3 className="text-sm font-semibold">Delivered Tasks</h3>
+                      <span className="text-xs text-muted-foreground">({deliveredTasks.length})</span>
+                    </div>
+                    {deliveredTasks.length > 0 && (
+                      <button onClick={() => downloadCSV(deliveredTasks.map(row => ({ Assignee: row.assigneeName || "", Customer: row.customerName, Type: row.contentType, Content: row.contentTitle, Task: row.taskTitle, CUs: Math.round(row.taskCUs * 10) / 10, Completed: row.completedAt || "", Created: row.createdAt || "" })), "team-delivered-tasks.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                   <div className="overflow-auto max-h-[400px]">
                     <table className="w-full text-xs">

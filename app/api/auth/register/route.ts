@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 
 export async function POST(req: NextRequest) {
   try {
@@ -52,7 +53,7 @@ export async function POST(req: NextRequest) {
 
     // Create a default workspace for the new user
     const slug = email.split("@")[0].replace(/[^a-z0-9-]/gi, "-").toLowerCase();
-    const { data: workspace, error: wsError } = await supabase
+    const { data: workspace, error: wsError } = await intelligenceDb
       .from("workspaces")
       .insert({
         name: `${name}'s Workspace`,
@@ -67,7 +68,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Add user as admin of their workspace
-    await supabase.from("workspace_members").insert({
+    await intelligenceDb.from("workspace_members").insert({
       workspace_id: workspace.id,
       user_id: newUser.id_user,
       role: "admin",

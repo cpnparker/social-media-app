@@ -4,8 +4,6 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
-  Package,
-  Gauge,
   Settings,
   ChevronsUpDown,
   Check,
@@ -29,6 +27,10 @@ import {
   Boxes,
   Users,
   Sparkles,
+  FileSearch,
+  Globe,
+  PenTool,
+  Brain,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -46,12 +48,18 @@ import {
 import { useState, useEffect, useCallback } from "react";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { signOut } from "next-auth/react";
+import { getSubdomainUrl } from "@/lib/subdomain";
+import { SectionRailDesktop, SectionRailMobile, type Area, type ExtendedArea } from "@/components/layout/SectionRail";
+import dynamic from "next/dynamic";
+
+const ClientContextDialog = dynamic(
+  () => import("@/components/ai-writer/ClientContextDialog"),
+  { ssr: false }
+);
 
 // ────────────────────────────────────────────────
 // Types & constants
 // ────────────────────────────────────────────────
-
-type Area = "engine" | "operations" | "admin";
 
 interface NavSubItem {
   label: string;
@@ -67,8 +75,10 @@ interface NavSection {
   defaultOpen?: boolean;
 }
 
-const deriveArea = (pathname: string): Area => {
+const deriveArea = (pathname: string): ExtendedArea => {
+  if (pathname.startsWith("/rfp-tool")) return "rfp-tool";
   if (pathname.startsWith("/operations")) return "operations";
+  if (pathname.startsWith("/meetingbrain")) return "meetingbrain";
   if (
     pathname.startsWith("/settings") ||
     pathname === "/accounts" ||
@@ -77,6 +87,7 @@ const deriveArea = (pathname: string): Area => {
     return "admin";
   return "engine";
 };
+
 
 // ── Engine sections (collapsible) ──
 const engineSections: NavSection[] = [
@@ -133,6 +144,7 @@ const operationsItems: NavSubItem[] = [
     children: [
       { label: "Commissioned", href: "/operations/commissioned-cus" },
       { label: "Delivered", href: "/operations/delivered" },
+      { label: "All Content", href: "/operations/all-content" },
       { label: "Spiked", href: "/operations/spiked" },
     ],
   },
@@ -167,53 +179,18 @@ const adminItems: NavSubItem[] = [
   { label: "Users", href: "/settings/users", icon: UserPlus },
   { label: "Templates", href: "/settings/templates", icon: ListChecks },
   { label: "Content Units", href: "/settings/content-units", icon: Boxes },
+  { label: "Content Formats", href: "/settings/content-formats", icon: FileText },
+  { label: "AI Usage", href: "/settings/ai-usage", icon: Sparkles },
   { label: "Links", href: "/settings/links", icon: Link2 },
   { label: "Billing", href: "/settings/billing", icon: CreditCard },
 ];
 
-const TCE_STAFF_ROLES = ["super", "tceadmin", "tcemanager", "tceuser"];
-
-// ────────────────────────────────────────────────
-// Rail Icon Button
-// ────────────────────────────────────────────────
-function RailIcon({
-  area,
-  icon: Icon,
-  label,
-  isActive,
-  onClick,
-}: {
-  area: Area;
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  isActive: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <Tooltip delayDuration={300}>
-      <TooltipTrigger asChild>
-        <button
-          onClick={onClick}
-          className={cn(
-            "relative flex items-center justify-center w-10 h-10 rounded-lg transition-all duration-150",
-            isActive
-              ? "bg-white/15 text-white"
-              : "text-white/50 hover:bg-white/10 hover:text-white/80"
-          )}
-        >
-          {/* Active indicator — left bar */}
-          {isActive && (
-            <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-blue-400" />
-          )}
-          <Icon className="h-[18px] w-[18px]" />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="right" sideOffset={8}>
-        {label}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
+// ── RFP Tool items (flat list) ──
+const rfpToolItems: NavSubItem[] = [
+  { label: "Discover RFPs", href: "/rfp-tool?tab=discover", icon: Globe },
+  { label: "Company Profile", href: "/rfp-tool?tab=library", icon: FileText },
+  { label: "Pipeline", href: "/rfp-tool?tab=pipeline", icon: FolderKanban },
+];
 
 // ────────────────────────────────────────────────
 // Component
@@ -241,7 +218,10 @@ export function Sidebar({ onClose }: SidebarProps) {
         .slice(0, 2)
     : "?";
 
-  const [activeArea, setActiveArea] = useState<Area>(() => deriveArea(pathname));
+  const showAdmin = wsCtx?.selectedWorkspace?.accessAdmin ?? false;
+  const [clientContextOpen, setClientContextOpen] = useState(false);
+
+  const [activeArea, setActiveArea] = useState<ExtendedArea>(() => deriveArea(pathname));
 
   // Auto-update area when pathname changes (e.g. direct navigation)
   useEffect(() => {
@@ -275,7 +255,8 @@ export function Sidebar({ onClose }: SidebarProps) {
       .catch(() => {});
   }, []);
 
-  const showOperations = TCE_STAFF_ROLES.includes(userRole);
+  // EngineGPT visibility (used by EnginePanel for the quick-launch link)
+  const showEngineGpt = wsCtx?.selectedWorkspace?.accessEngineGpt ?? true;
 
   // ── Inbox count ──
   const fetchInboxCount = useCallback(async () => {
@@ -329,19 +310,12 @@ export function Sidebar({ onClose }: SidebarProps) {
     return false;
   };
 
-  // ── Area rail icons definition ──
-  const railIcons: { area: Area; icon: React.ComponentType<{ className?: string }>; label: string; hidden?: boolean }[] = [
-    { area: "engine", icon: Package, label: "The Engine" },
-    { area: "operations", icon: Gauge, label: "Operations", hidden: !showOperations },
-    { area: "admin", icon: Settings, label: "Administration" },
-  ];
-
   return (
     <aside className="h-screen sticky top-0 flex w-[260px]">
       {/* ═══════ Icon Rail ═══════ */}
       <div className="hidden lg:flex flex-col items-center w-12 bg-[#2e3440] py-3 shrink-0">
         {/* Logo */}
-        <Link href="/dashboard" onClick={onClose} className="mb-4">
+        <a href={getSubdomainUrl("engine", "/dashboard")} onClick={onClose} className="mb-4">
           <div className="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-white/10 transition-colors">
             <img
               src="/assets/logo_engine_icon.svg"
@@ -351,24 +325,10 @@ export function Sidebar({ onClose }: SidebarProps) {
               className="h-6 w-6 brightness-0 invert"
             />
           </div>
-        </Link>
+        </a>
 
         {/* Area icons */}
-        <div className="flex flex-col items-center gap-1">
-          {railIcons.map(
-            (item) =>
-              !item.hidden && (
-                <RailIcon
-                  key={item.area}
-                  area={item.area}
-                  icon={item.icon}
-                  label={item.label}
-                  isActive={activeArea === item.area}
-                  onClick={() => setActiveArea(item.area)}
-                />
-              )
-          )}
-        </div>
+        <SectionRailDesktop currentArea={activeArea} onLocalSwitch={setActiveArea} />
 
         <div className="flex-1" />
 
@@ -389,12 +349,40 @@ export function Sidebar({ onClose }: SidebarProps) {
               <p className="text-sm font-medium">{userName || "User"}</p>
               <p className="text-xs text-muted-foreground">{userEmail || ""}</p>
             </div>
+            {showAdmin && (
+              <>
+                <DropdownMenuSeparator />
+                <div className="px-2 py-1.5">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Administration</p>
+                </div>
+                {adminItems.map((item) => (
+                  <DropdownMenuItem key={item.href} asChild>
+                    <Link href={item.href} className="gap-2">
+                      {item.icon && <item.icon className="h-4 w-4" />}
+                      {item.label}
+                    </Link>
+                  </DropdownMenuItem>
+                ))}
+              </>
+            )}
+            {!showAdmin && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/workspace" className="gap-2">
+                    <Settings className="h-4 w-4" />
+                    Settings
+                  </Link>
+                </DropdownMenuItem>
+              </>
+            )}
             <DropdownMenuSeparator />
-            <DropdownMenuItem asChild>
-              <Link href="/settings/workspace" className="gap-2">
-                <Settings className="h-4 w-4" />
-                Workspace settings
-              </Link>
+            <DropdownMenuItem
+              onClick={() => setClientContextOpen(true)}
+              className="gap-2"
+            >
+              <Brain className="h-4 w-4" />
+              Client Context
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
@@ -406,38 +394,20 @@ export function Sidebar({ onClose }: SidebarProps) {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        <ClientContextDialog
+          open={clientContextOpen}
+          onClose={() => setClientContextOpen(false)}
+        />
       </div>
 
       {/* ═══════ Sidebar Panel ═══════ */}
       <div className="flex-1 flex flex-col bg-[#3b4252] text-white overflow-hidden">
         {/* ── Mobile area switcher (visible only on mobile) ── */}
-        <div className="lg:hidden px-3 pt-3 pb-2">
-          <div className="flex items-center gap-1 bg-white/10 rounded-lg p-0.5">
-            {railIcons
-              .filter((i) => !i.hidden)
-              .map((item) => (
-                <button
-                  key={item.area}
-                  onClick={() => setActiveArea(item.area)}
-                  className={cn(
-                    "flex-1 px-2 py-1.5 rounded-md text-[11px] font-medium transition-colors text-center",
-                    activeArea === item.area
-                      ? "bg-white/15 text-white shadow-sm"
-                      : "text-white/50 hover:text-white/80"
-                  )}
-                >
-                  {item.area === "engine"
-                    ? "Engine"
-                    : item.area === "operations"
-                    ? "Ops"
-                    : "Admin"}
-                </button>
-              ))}
-          </div>
-        </div>
+        <SectionRailMobile currentArea={activeArea} onLocalSwitch={setActiveArea} />
 
         {/* ── Panel content based on area ── */}
-        {activeArea === "engine" && (
+        {(activeArea === "engine" || activeArea === "admin") && (
           <EnginePanel
             wsCtx={wsCtx}
             sections={engineSections}
@@ -447,9 +417,7 @@ export function Sidebar({ onClose }: SidebarProps) {
             inboxCount={inboxCount}
             onClose={onClose}
             pathname={pathname}
-            userName={userName}
-            userEmail={userEmail}
-            userInitials={userInitials}
+            showEngineGpt={showEngineGpt}
           />
         )}
 
@@ -461,14 +429,79 @@ export function Sidebar({ onClose }: SidebarProps) {
           />
         )}
 
-        {activeArea === "admin" && (
-          <AdminPanel
-            items={adminItems}
+        {activeArea === "rfp-tool" && (
+          <RfpToolPanel
+            items={rfpToolItems}
             checkActive={checkActive}
-            inboxCount={inboxCount}
             onClose={onClose}
           />
         )}
+
+        {/* User profile — mobile only (desktop uses rail avatar) */}
+        <div className="lg:hidden border-t border-white/10 px-3 py-3 shrink-0">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-white/10 transition-colors text-left">
+                <Avatar className="h-8 w-8 shrink-0">
+                  <AvatarImage src="" />
+                  <AvatarFallback className="bg-blue-500/30 text-blue-200 text-xs font-semibold">
+                    {userInitials}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-medium truncate text-white">
+                    {userName || "User"}
+                  </p>
+                  <p className="text-[10px] text-white/50 truncate">
+                    {userEmail || ""}
+                  </p>
+                </div>
+                <ChevronsUpDown className="h-3 w-3 text-white/40 shrink-0" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" side="top" className="w-56 mb-1">
+              {showAdmin && (
+                <>
+                  <div className="px-2 py-1.5">
+                    <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Administration</p>
+                  </div>
+                  {adminItems.map((item) => (
+                    <DropdownMenuItem key={item.href} asChild>
+                      <Link href={item.href} className="gap-2" onClick={onClose}>
+                        {item.icon && <item.icon className="h-4 w-4" />}
+                        {item.label}
+                      </Link>
+                    </DropdownMenuItem>
+                  ))}
+                </>
+              )}
+              {!showAdmin && (
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/workspace" className="gap-2">
+                    <Settings className="h-4 w-4" />
+                    Settings
+                  </Link>
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => setClientContextOpen(true)}
+                className="gap-2"
+              >
+                <Brain className="h-4 w-4" />
+                Client Context
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => signOut({ callbackUrl: "/login" })}
+                className="text-destructive focus:text-destructive gap-2"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
     </aside>
   );
@@ -486,9 +519,7 @@ function EnginePanel({
   inboxCount,
   onClose,
   pathname,
-  userName,
-  userEmail,
-  userInitials,
+  showEngineGpt,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   wsCtx: any;
@@ -499,9 +530,7 @@ function EnginePanel({
   inboxCount: number;
   onClose?: () => void;
   pathname: string;
-  userName: string;
-  userEmail: string;
-  userInitials: string;
+  showEngineGpt: boolean;
 }) {
   return (
     <>
@@ -543,7 +572,7 @@ function EnginePanel({
                     alt=""
                     width={20}
                     height={20}
-                    className="h-5 w-5 shrink-0"
+                    className="h-5 w-5 shrink-0 dark:brightness-0 dark:invert"
                   />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{ws.name}</p>
@@ -610,27 +639,27 @@ function EnginePanel({
               : "text-white/70 hover:bg-white/10 hover:text-white"
           )}
         >
-          <Home className="h-[16px] w-[16px]" />
+          <Home className={cn("h-[16px] w-[16px]", pathname === "/dashboard" && "text-blue-400")} />
           Home
         </Link>
       </div>
 
-      {/* AI Writer link */}
-      <div className="px-3 pb-1">
-        <Link
-          href="/ai-writer"
-          onClick={onClose}
-          className={cn(
-            "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
-            pathname.startsWith("/ai-writer")
-              ? "bg-white/15 text-white"
-              : "text-white/70 hover:bg-white/10 hover:text-white"
-          )}
-        >
-          <Sparkles className="h-[16px] w-[16px]" />
-          AI Writer
-        </Link>
-      </div>
+      {/* EngineAI link */}
+      {showEngineGpt && (
+        <div className="px-3 pb-1">
+          <a
+            href={getSubdomainUrl("ai")}
+            onClick={onClose}
+            className={cn(
+              "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
+              "text-white/70 hover:bg-white/10 hover:text-white"
+            )}
+          >
+            <Sparkles className="h-[16px] w-[16px] text-violet-400" />
+            EngineAI
+          </a>
+        </div>
+      )}
 
       {/* Navigation sections */}
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-hide px-3 pb-4 mt-1">
@@ -653,7 +682,16 @@ function EnginePanel({
                       : "text-white/80 hover:bg-white/10 hover:text-white"
                   )}
                 >
-                  <Icon className="h-[16px] w-[16px] shrink-0" />
+                  <Icon className={cn(
+                    "h-[16px] w-[16px] shrink-0",
+                    hasActiveChild && (
+                      section.label === "Ideas" ? "text-amber-400" :
+                      section.label === "Content Items" ? "text-blue-400" :
+                      section.label === "Social Media" ? "text-violet-400" :
+                      section.label === "Project Plans" ? "text-emerald-400" :
+                      "text-white"
+                    )
+                  )} />
                   <span className="flex-1 text-left truncate">
                     {section.label}
                   </span>
@@ -691,48 +729,8 @@ function EnginePanel({
             );
           })}
         </div>
-      </nav>
 
-      {/* User profile — mobile only (desktop uses rail avatar) */}
-      <div className="lg:hidden border-t border-white/10 px-3 py-3 shrink-0">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-white/10 transition-colors text-left">
-              <Avatar className="h-8 w-8 shrink-0">
-                <AvatarImage src="" />
-                <AvatarFallback className="bg-blue-500/30 text-blue-200 text-xs font-semibold">
-                  {userInitials}
-                </AvatarFallback>
-              </Avatar>
-              <div className="flex-1 min-w-0">
-                <p className="text-[13px] font-medium truncate text-white">
-                  {userName || "User"}
-                </p>
-                <p className="text-[10px] text-white/50 truncate">
-                  {userEmail || ""}
-                </p>
-              </div>
-              <ChevronsUpDown className="h-3 w-3 text-white/40 shrink-0" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" side="top" className="w-56 mb-1">
-            <DropdownMenuItem asChild>
-              <Link href="/settings/workspace" className="gap-2">
-                <Settings className="h-4 w-4" />
-                Workspace settings
-              </Link>
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onClick={() => signOut({ callbackUrl: "/login" })}
-              className="text-destructive focus:text-destructive gap-2"
-            >
-              <LogOut className="h-4 w-4" />
-              Sign out
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
+      </nav>
     </>
   );
 }
@@ -751,12 +749,16 @@ function OperationsPanel({
 }) {
   return (
     <>
-      <div className="px-3 pt-4 pb-2 shrink-0">
-        <div className="flex items-center gap-2 px-2.5">
-          <Gauge className="h-4 w-4 text-white/50" />
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-white/40">
-            Operations
-          </p>
+      <div className="px-3 pt-3 pb-2 shrink-0">
+        <div className="flex items-center gap-2.5 px-2 py-1">
+          <div className="flex-1 min-w-0">
+            <p className="text-[13px] font-bold tracking-tight truncate text-white">
+              Operations
+            </p>
+            <p className="text-[10px] text-white/40">
+              Management &amp; Oversight
+            </p>
+          </div>
         </div>
       </div>
 
@@ -778,7 +780,16 @@ function OperationsPanel({
                       : "text-white/70 hover:bg-white/10 hover:text-white"
                   )}
                 >
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-white/40" />
+                  <ChevronRight className={cn(
+                    "h-3.5 w-3.5 shrink-0",
+                    (active || childActive)
+                      ? (item.label === "Content" ? "text-blue-400" :
+                         item.label === "Contracts" ? "text-emerald-400" :
+                         item.label === "Production" ? "text-orange-400" :
+                         item.label === "Duty Editor" ? "text-violet-400" :
+                         "text-white/40")
+                      : "text-white/40"
+                  )} />
                   <span className="truncate">{item.label}</span>
                 </Link>
                 {item.children && showChildren && (
@@ -814,27 +825,30 @@ function OperationsPanel({
 }
 
 // ────────────────────────────────────────────────
-// Admin Panel
+// RFP Tool Panel
 // ────────────────────────────────────────────────
-function AdminPanel({
+function RfpToolPanel({
   items,
   checkActive,
-  inboxCount,
   onClose,
 }: {
   items: NavSubItem[];
   checkActive: (href: string) => boolean;
-  inboxCount: number;
   onClose?: () => void;
 }) {
   return (
     <>
-      <div className="px-3 pt-4 pb-2 shrink-0">
-        <div className="flex items-center gap-2 px-2.5">
-          <Settings className="h-4 w-4 text-white/50" />
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-white/40">
-            Administration
-          </p>
+      <div className="px-3 pt-3 pb-2 shrink-0">
+        <div className="flex items-center gap-2.5 px-2 py-1">
+          <FileSearch className="h-4 w-4 text-cyan-400 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[13px] font-bold tracking-tight truncate text-white">
+              RFP Tool
+            </p>
+            <p className="text-[10px] text-white/40">
+              Find &amp; Respond to RFPs
+            </p>
+          </div>
         </div>
       </div>
 
@@ -855,17 +869,8 @@ function AdminPanel({
                     : "text-white/70 hover:bg-white/10 hover:text-white"
                 )}
               >
-                {Icon ? (
-                  <Icon className="h-4 w-4 shrink-0 text-white/40" />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-white/40" />
-                )}
-                <span className="flex-1 truncate">{item.label}</span>
-                {item.label === "Inbox" && inboxCount > 0 && (
-                  <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-500 px-1.5 text-[11px] font-semibold text-white">
-                    {inboxCount}
-                  </span>
-                )}
+                {Icon && <Icon className="h-4 w-4 shrink-0 text-white/50" />}
+                <span className="truncate">{item.label}</span>
               </Link>
             );
           })}
@@ -874,3 +879,4 @@ function AdminPanel({
     </>
   );
 }
+

@@ -146,22 +146,63 @@ export async function GET(req: NextRequest) {
     if (contractIdSet.size > 0) {
       const contractIdArr = Array.from(contractIdSet);
       const batchSize = 200;
+
+      // 6a. Fetch contract metadata
+      const contractMetaMap: Record<number, { name: string; clientId: number | null; clientName: string; units: number }> = {};
       for (let i = 0; i < contractIdArr.length; i += batchSize) {
         const batch = contractIdArr.slice(i, i + batchSize);
         const { data: rows } = await supabase
           .from("app_contracts")
-          .select("id_contract, name_contract, id_client, name_client, units_contract, units_total_completed")
+          .select("id_contract, name_contract, id_client, name_client, units_contract")
           .in("id_contract", batch);
         for (const c of rows || []) {
-          contracts.push({
-            contractId: String(c.id_contract),
-            contractName: c.name_contract || "Unnamed",
-            clientId: c.id_client ? String(c.id_client) : null,
+          contractMetaMap[c.id_contract] = {
+            name: c.name_contract || "Unnamed",
+            clientId: c.id_client || null,
             clientName: c.name_client || "Unknown",
-            totalContractCUs: Number(c.units_contract) || 0,
-            completedContractCUs: Number(c.units_total_completed) || 0,
-          });
+            units: Number(c.units_contract) || 0,
+          };
         }
+      }
+
+      // 6b. Aggregate task CUs per contract (all time, no date filter)
+      const cuAgg: Record<number, { commissioned: number; completed: number }> = {};
+      for (let i = 0; i < contractIdArr.length; i += batchSize) {
+        const batch = contractIdArr.slice(i, i + batchSize);
+        const [contentRes, socialRes] = await Promise.all([
+          supabase
+            .from("app_tasks_content")
+            .select("id_contract, units_content, date_completed, flag_spiked")
+            .in("id_contract", batch),
+          supabase
+            .from("app_tasks_social")
+            .select("id_contract, units_content, date_completed, flag_spiked")
+            .in("id_contract", batch),
+        ]);
+        for (const t of [...(contentRes.data || []), ...(socialRes.data || [])]) {
+          if (t.flag_spiked === 1 && !t.date_completed) continue;
+          const cid = t.id_contract;
+          if (!cuAgg[cid]) cuAgg[cid] = { commissioned: 0, completed: 0 };
+          const cus = Number(t.units_content) || 0;
+          cuAgg[cid].commissioned += cus;
+          if (t.date_completed) cuAgg[cid].completed += cus;
+        }
+      }
+
+      // 6c. Build contract list
+      for (const id of contractIdArr) {
+        const meta = contractMetaMap[id];
+        if (!meta) continue;
+        const agg = cuAgg[id] || { commissioned: 0, completed: 0 };
+        contracts.push({
+          contractId: String(id),
+          contractName: meta.name,
+          clientId: meta.clientId ? String(meta.clientId) : null,
+          clientName: meta.clientName,
+          totalContractCUs: meta.units,
+          commissionedContractCUs: agg.commissioned,
+          completedContractCUs: agg.completed,
+        });
       }
     }
 

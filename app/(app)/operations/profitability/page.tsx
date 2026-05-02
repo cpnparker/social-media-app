@@ -15,8 +15,10 @@ import {
   ChevronDown,
   ChevronRight,
   AlertCircle,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { downloadCSV } from "@/lib/csv-utils";
 import {
   BarChart,
   Bar,
@@ -443,8 +445,31 @@ export default function ProfitabilityPage() {
           {/* Client table */}
           <Card>
             <CardContent className="p-0">
-              <div className="p-4 border-b">
+              <div className="p-4 border-b flex items-center justify-between">
                 <h3 className="text-sm font-semibold">Client Breakdown</h3>
+                {sortedClients.length > 0 && (
+                  <button
+                    onClick={() =>
+                      downloadCSV(
+                        sortedClients.map((c) => ({
+                          Client: c.clientName,
+                          "Matched Client": c.supabaseClientName || "",
+                          "Total Hours": Math.round(c.totalHours * 100) / 100,
+                          "Content Production": Math.round((c.activityBreakdown["Content Production"] || 0) * 100) / 100,
+                          Strategy: Math.round((c.activityBreakdown["Strategy"] || 0) * 100) / 100,
+                          "Account Management": Math.round((c.activityBreakdown["Account Management"] || 0) * 100) / 100,
+                          "CUs (period)": c.cusInPeriod,
+                          "Hours / CU": c.hoursPerCU !== null ? Math.round(c.hoursPerCU * 100) / 100 : "",
+                        })),
+                        "client-profitability.csv"
+                      )
+                    }
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                    title="Download CSV"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">

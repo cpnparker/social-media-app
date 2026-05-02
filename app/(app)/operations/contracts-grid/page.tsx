@@ -14,8 +14,10 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { downloadCSV } from "@/lib/csv-utils";
 
 /* ─────────────── Types ─────────────── */
 
@@ -339,10 +341,33 @@ export default function ContractsGridPage() {
           {/* Main contracts table */}
           <Card className="border-0 shadow-sm">
             <CardContent className="p-0">
-              <div className="px-4 py-2.5 border-b">
+              <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   Contracts ({sorted.length})
                 </h2>
+                {sorted.length > 0 && (
+                  <button
+                    onClick={() => downloadCSV(sorted.map(row => ({
+                      Client: row.clientName,
+                      Contract: row.contractName,
+                      Start: row.dateStart ?? "",
+                      End: row.dateEnd ?? "",
+                      "CUs Contract": Math.round(row.cusContract),
+                      "CUs Commissioned": Math.round(row.cusCommissioned),
+                      "CUs Complete": Math.round(row.cusComplete),
+                      "Remaining (Comm.)": Math.round(row.remainingCommission),
+                      "Remaining (Comp.)": Math.round(row.remainingComplete),
+                      "% Duration": fmtPct(row.pctDuration),
+                      "% Commissioned": fmtPct(row.pctCommission),
+                      "% Complete": fmtPct(row.pctComplete),
+                      Gap: Math.round(row.gapCommission),
+                    })), "contracts-grid.csv")}
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                    title="Download CSV"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               {sorted.length === 0 ? (
                 <p className="text-xs text-muted-foreground text-center py-8">No contracts found.</p>
