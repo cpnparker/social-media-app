@@ -275,6 +275,7 @@ export default function AIControlCentrePage() {
   const grouped = useMemo(() => {
     if (!data) return null;
     const out: Record<AppName, ServiceRow[]> = {
+      "authorityon-platform": [],
       authorityon: [],
       engine: [],
       meetingbrain: [],

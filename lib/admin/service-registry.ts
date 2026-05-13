@@ -10,7 +10,7 @@
  * shared `intelligence.service_config` table that services read at runtime.
  */
 
-export type AppName = "authorityon" | "engine" | "meetingbrain";
+export type AppName = "authorityon" | "authorityon-platform" | "engine" | "meetingbrain";
 
 export type ScheduleType = "cron" | "user-triggered" | "background";
 
@@ -40,13 +40,15 @@ export interface ServiceEntry {
 }
 
 export const APP_LABELS: Record<AppName, string> = {
-  authorityon: "AuthorityOn",
+  authorityon: "AuthorityOn (legacy)",
+  "authorityon-platform": "AuthorityOn",
   engine: "Engine",
   meetingbrain: "MeetingBrain",
 };
 
 export const APP_COLORS: Record<AppName, string> = {
-  authorityon: "bg-amber-500",
+  authorityon: "bg-amber-700",
+  "authorityon-platform": "bg-amber-500",
   engine: "bg-blue-500",
   meetingbrain: "bg-emerald-500",
 };
@@ -386,6 +388,127 @@ export const SERVICE_REGISTRY: ServiceEntry[] = [
     typeSource: "dedup",
     label: "Deduplication",
     description: "Cross-source dedup of tasks and topics.",
+    schedule: { type: "background" },
+  },
+
+  // ── AuthorityOn (rebuild — authorityon-platform) ───────────────────────
+  // The new build serves authority.thecontentengine.com. Mirrors the legacy
+  // surface plus a few new sources (workbench, prompt-groups-*).
+  {
+    id: "aop-scan",
+    app: "authorityon-platform",
+    typeSource: "scan",
+    label: "Brand Scan",
+    description: "Multi-provider LLM probe per template × brand.",
+    schedule: {
+      type: "cron",
+      cronExpression: "(deploy-dependent)",
+      cronPath: "(see authorityon-platform vercel.json)",
+      vercelProject: "authorityon-platform",
+    },
+  },
+  {
+    id: "aop-topic-scan",
+    app: "authorityon-platform",
+    typeSource: "topic-scan",
+    label: "Topic Scan",
+    description: "Daily category leaderboard scan across providers.",
+    schedule: { type: "background" },
+  },
+  {
+    id: "aop-audit-website",
+    app: "authorityon-platform",
+    typeSource: "audit-website",
+    label: "Audit — Website",
+    description: "Grok-4 qualitative findings on website AI-discoverability.",
+    schedule: { type: "background" },
+  },
+  {
+    id: "aop-audit-content",
+    app: "authorityon-platform",
+    typeSource: "audit-content",
+    label: "Audit — Content",
+    description: "Grok-4 content-quality assessment.",
+    schedule: { type: "background" },
+  },
+  {
+    id: "aop-audit-social",
+    app: "authorityon-platform",
+    typeSource: "audit-social",
+    label: "Audit — Social",
+    description: "Grok-4 LinkedIn/social presence assessment.",
+    schedule: { type: "background" },
+  },
+  {
+    id: "aop-audit-lighthouse",
+    app: "authorityon-platform",
+    typeSource: "audit-lighthouse",
+    label: "Audit — Lighthouse",
+    description: "Google PageSpeed Insights fetch + light LLM summary.",
+    schedule: { type: "background" },
+  },
+  {
+    id: "aop-workbench",
+    app: "authorityon-platform",
+    typeSource: "workbench",
+    label: "Workbench",
+    description: "Ad-hoc prompt workbench for testing/iterating templates.",
+    schedule: { type: "user-triggered" },
+  },
+  {
+    id: "aop-stories-extract",
+    app: "authorityon-platform",
+    typeSource: "stories-extract",
+    label: "Stories — Extract Claims",
+    description: "Pulls quotable claims out of brand mentions.",
+    schedule: { type: "background" },
+  },
+  {
+    id: "aop-stories-summarize",
+    app: "authorityon-platform",
+    typeSource: "stories-summarize",
+    label: "Stories — Summarize",
+    description: "Per-brand story summary on the dashboard.",
+    schedule: { type: "background" },
+  },
+  {
+    id: "aop-stories-recommend",
+    app: "authorityon-platform",
+    typeSource: "stories-recommend",
+    label: "Stories — Recommendations",
+    description: "Generates content/PR recommendations.",
+    schedule: { type: "background" },
+  },
+  {
+    id: "aop-stories-source-attr",
+    app: "authorityon-platform",
+    typeSource: "stories-source-attr",
+    label: "Stories — Source Attribution",
+    description: "Attributes each claim to a source.",
+    schedule: { type: "background" },
+  },
+  {
+    id: "aop-stories-embed",
+    app: "authorityon-platform",
+    typeSource: "stories-embed",
+    label: "Stories — Embeddings",
+    description: "Semantic embeddings for clustering similar claims.",
+    schedule: { type: "background" },
+  },
+  {
+    id: "aop-prompt-groups-embed",
+    app: "authorityon-platform",
+    typeSource: "prompt-groups-embed",
+    label: "Prompt Groups — Embed",
+    description: "Computes embeddings for prompt-group clustering.",
+    schedule: { type: "background" },
+  },
+  {
+    id: "aop-prompt-groups-label",
+    app: "authorityon-platform",
+    typeSource: "prompt-groups-label",
+    label: "Prompt Groups — Label",
+    description: "Labels emerging prompt groups using an LLM.",
     schedule: { type: "background" },
   },
 ];
