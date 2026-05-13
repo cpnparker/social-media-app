@@ -209,17 +209,28 @@ const SOURCE_LABELS: Record<string, string> = {
   "post-detect-ai": "AI Detection",
 };
 
+// Known apps get a friendly label + colour. Anything else (a future app,
+// a typo, etc.) renders with its raw type_app string + a fallback colour.
 const APP_LABELS: Record<string, string> = {
   engine: "Engine",
   meetingbrain: "MeetingBrain",
   authorityon: "AuthorityOn",
+  "authorityon-platform": "AuthorityOn (rebuild)",
 };
 
 const APP_COLORS: Record<string, string> = {
   engine: "bg-blue-500",
   meetingbrain: "bg-emerald-500",
   authorityon: "bg-amber-500",
+  "authorityon-platform": "bg-orange-500",
 };
+
+function appLabel(appKey: string): string {
+  return APP_LABELS[appKey] ?? appKey;
+}
+function appColor(appKey: string): string {
+  return APP_COLORS[appKey] ?? "bg-slate-400";
+}
 
 /* ─── Product groupings for hierarchical source view ─── */
 
@@ -564,14 +575,28 @@ export default function AIUsagePage() {
           </div>
         )}
 
-        {/* App selector tabs */}
-        <div className="flex gap-0.5 bg-muted rounded-lg p-0.5 mb-4">
-          {[
+        {/* App selector tabs — data-driven. "All Apps" plus one tab per
+            distinct type_app seen in the current data window. So new apps
+            (e.g. authorityon-platform) appear automatically without a
+            code change. Known apps get friendly labels; unknown ones
+            render with their raw type_app key. */}
+        <div className="flex gap-0.5 bg-muted rounded-lg p-0.5 mb-4 flex-wrap">
+          {(() => {
+          const seenApps = new Set<string>();
+          // Pull from the current data when available so the tabs accurately
+          // reflect what's in the selected time window.
+          (usageData?.byApp ?? []).forEach((b) => b.app && seenApps.add(b.app));
+          // Always include the known set so an empty-data state still gives
+          // recognisable tabs.
+          Object.keys(APP_LABELS).forEach((k) => seenApps.add(k));
+          const tabs = [
             { label: "All Apps", value: "all" },
-            { label: "Engine", value: "engine" },
-            { label: "MeetingBrain", value: "meetingbrain" },
-            { label: "AuthorityOn", value: "authorityon" },
-          ].map((tab) => (
+            ...Array.from(seenApps)
+              .sort()
+              .map((k) => ({ label: appLabel(k), value: k })),
+          ];
+          return tabs;
+        })().map((tab) => (
             <button
               key={tab.value}
               onClick={() => setSelectedApp(tab.value)}
@@ -636,14 +661,20 @@ export default function AIUsagePage() {
 
             {/* Per-app breakdown (when "All Apps" is selected) */}
             {selectedApp === "all" && usageData.byApp && usageData.byApp.length > 0 && (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div
+                className={cn(
+                  "grid grid-cols-1 sm:grid-cols-3 gap-3",
+                  usageData.byApp.length > 3 && "lg:grid-cols-4",
+                  usageData.byApp.length > 4 && "xl:grid-cols-5",
+                )}
+              >
                 {usageData.byApp.map((a) => (
                   <Card key={a.app} className="border-0 shadow-sm">
                     <CardContent className="p-4">
                       <div className="flex items-center gap-2 mb-2">
-                        <div className={cn("h-2 w-2 rounded-full", APP_COLORS[a.app] || "bg-gray-500")} />
+                        <div className={cn("h-2 w-2 rounded-full", appColor(a.app))} />
                         <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                          {APP_LABELS[a.app] || a.app}
+                          {appLabel(a.app)}
                         </span>
                       </div>
                       <p className="text-2xl font-bold">{formatCost(a.cost)}</p>

@@ -5,10 +5,13 @@ import { supabase } from "@/lib/supabase";
 import { createClient } from "@supabase/supabase-js";
 import { verifyWorkspaceMembership } from "@/lib/permissions";
 
-const VALID_APPS = ["all", "engine", "meetingbrain", "authorityon"] as const;
-type AppFilter = (typeof VALID_APPS)[number];
-
-// GET /api/ai/usage — aggregated AI usage data for dashboard
+// GET /api/ai/usage — aggregated AI usage data for dashboard.
+//
+// `app` is data-driven (not a hardcoded allowlist): "all" returns every
+// type_app value seen in ai_usage; any specific value (engine, authorityon,
+// authorityon-platform, meetingbrain, etc.) filters to that bucket. New apps
+// that start writing to intelligence.ai_usage appear automatically — no
+// dashboard change needed.
 export async function GET(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -20,8 +23,7 @@ export async function GET(req: NextRequest) {
   const days = Math.min(parseInt(searchParams.get("days") || "30", 10), 365);
   const customStart = searchParams.get("startDate");
   const customEnd = searchParams.get("endDate");
-  const appParam = (searchParams.get("app") || "all") as AppFilter;
-  const app = VALID_APPS.includes(appParam) ? appParam : "all";
+  const app = (searchParams.get("app") || "all").trim();
 
   if (!workspaceId) {
     return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
@@ -45,7 +47,8 @@ export async function GET(req: NextRequest) {
     weekStart.setDate(weekStart.getDate() - weekStart.getDay());
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    // Fetch usage rows based on app filter
+    // Fetch usage rows. Engine traffic is workspace-scoped (multi-tenant);
+    // every other app is shared-account so no workspace filter applies.
     let usageRows: any[] = [];
 
     if (app === "engine") {
@@ -58,8 +61,8 @@ export async function GET(req: NextRequest) {
         .gte("date_created", startDate.toISOString());
       if (error) throw error;
       usageRows = data || [];
-    } else if (app === "meetingbrain" || app === "authorityon") {
-      // Specific external app — no workspace filter
+    } else if (app !== "all") {
+      // Any specific app other than engine — no workspace filter
       const { data, error } = await intelligenceDb
         .from("ai_usage")
         .select("*")
@@ -68,17 +71,25 @@ export async function GET(req: NextRequest) {
       if (error) throw error;
       usageRows = data || [];
     } else {
-      // All apps — Engine + AuthorityOn + MeetingBrain, all without workspace filter.
-      // The three services share API keys, so this is the cross-service total
-      // a CFO/admin needs to reconcile against the provider bills. (The
-      // per-workspace Engine view is still available via app=engine.)
-      const { data, error } = await intelligenceDb
-        .from("ai_usage")
-        .select("*")
-        .in("type_app", ["engine", "meetingbrain", "authorityon"])
-        .gte("date_created", startDate.toISOString());
-      if (error) throw error;
-      usageRows = data || [];
+      // All apps — fetch Engine (workspace-scoped) and everything else
+      // (account-wide) and stitch them together. Done as two queries
+      // because the workspace filter only applies to Engine.
+      const [engineRes, externalRes] = await Promise.all([
+        intelligenceDb
+          .from("ai_usage")
+          .select("*")
+          .eq("id_workspace", workspaceId)
+          .eq("type_app", "engine")
+          .gte("date_created", startDate.toISOString()),
+        intelligenceDb
+          .from("ai_usage")
+          .select("*")
+          .neq("type_app", "engine")
+          .gte("date_created", startDate.toISOString()),
+      ]);
+      if (engineRes.error) throw engineRes.error;
+      if (externalRes.error) throw externalRes.error;
+      usageRows = [...(engineRes.data || []), ...(externalRes.data || [])];
     }
 
     // Apply endDate filter if custom range
