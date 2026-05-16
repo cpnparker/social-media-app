@@ -20,44 +20,52 @@ export default function DesignModePage() {
 
   const [conversationId, setConversationId] = useState<string | null>(searchParams.get("thread"));
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [messages, setMessages] = useState<DesignMessage[]>([]);
   const [assets, setAssets] = useState<DesignAsset[]>([]);
   const [activeTab, setActiveTab] = useState<"canvas" | "library">("canvas");
   const [animatePrompt, setAnimatePrompt] = useState<string | undefined>();
 
   // Auto-create a design session on first load if none exists.
-  useEffect(() => {
-    if (conversationId || !workspaceId || creating) return;
-    let cancelled = false;
+  const createSession = useCallback(async () => {
+    if (!workspaceId) return;
     setCreating(true);
-    (async () => {
-      try {
-        const res = await fetch("/api/ai/conversations", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            workspaceId,
-            mode: "design",
-            visibility: "private",
-            customerId: customer?.id ?? undefined,
-          }),
-        });
-        if (!res.ok) throw new Error(await res.text());
-        const json = await res.json();
-        if (!cancelled) {
-          setConversationId(json.conversation.id);
-          // Preserve whatever URL the user is on (e.g. /design on the ai subdomain).
-          const currentPath = typeof window !== "undefined" ? window.location.pathname : "/engineai/design";
-          router.replace(`${currentPath}?thread=${json.conversation.id}`);
-        }
-      } catch (err) {
-        console.error("Failed to create design session:", err);
-      } finally {
-        if (!cancelled) setCreating(false);
+    setCreateError(null);
+    try {
+      const res = await fetch("/api/ai/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          mode: "design",
+          visibility: "private",
+          customerId: customer?.id ?? undefined,
+        }),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
       }
-    })();
-    return () => { cancelled = true; };
-  }, [conversationId, workspaceId, creating, customer?.id, router]);
+      const json = JSON.parse(text);
+      if (!json?.conversation?.id) {
+        throw new Error(`Unexpected response shape: ${text.slice(0, 200)}`);
+      }
+      setConversationId(json.conversation.id);
+      const currentPath = typeof window !== "undefined" ? window.location.pathname : "/engineai/design";
+      router.replace(`${currentPath}?thread=${json.conversation.id}`);
+    } catch (err: any) {
+      const msg = err?.message || String(err) || "Unknown error";
+      console.error("Failed to create design session:", msg);
+      setCreateError(msg);
+    } finally {
+      setCreating(false);
+    }
+  }, [workspaceId, customer?.id, router]);
+
+  useEffect(() => {
+    if (conversationId || !workspaceId || creating || createError) return;
+    createSession();
+  }, [conversationId, workspaceId, creating, createError, createSession]);
 
   // Load existing assets when the conversation is set.
   useEffect(() => {
@@ -182,9 +190,22 @@ export default function DesignModePage() {
               onAssetProgress={onAssetProgress}
               initialInput={animatePrompt}
             />
+          ) : createError ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+              <div className="text-sm font-medium text-destructive">Couldn&apos;t start a design session</div>
+              <div className="max-w-md whitespace-pre-wrap break-words rounded border bg-muted p-3 text-left text-xs text-muted-foreground">
+                {createError}
+              </div>
+              <button
+                onClick={() => { setCreateError(null); createSession(); }}
+                className="rounded border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+              >
+                Retry
+              </button>
+            </div>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              {creating ? "Starting your design session…" : "Pick a workspace to begin."}
+              {creating ? "Starting your design session…" : !workspaceId ? "Pick a workspace to begin." : "Loading…"}
             </div>
           )}
         </div>
