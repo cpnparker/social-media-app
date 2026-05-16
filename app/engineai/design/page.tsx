@@ -10,8 +10,8 @@ import { LeftNavRail } from "@/components/design-mode/shell/LeftNavRail";
 import { Header } from "@/components/design-mode/shell/Header";
 import { BrandKitRail } from "@/components/design-mode/brand-kit/BrandKitRail";
 import { CanvasStage } from "@/components/design-mode/canvas/CanvasStage";
-import { TrackTimeline } from "@/components/design-mode/timeline/TrackTimeline";
-import { AIRailSide } from "@/components/design-mode/ai-rail/AIRailSide";
+import { Timeline } from "@/components/design-mode/timeline/Timeline";
+import { AIRailWrapper } from "@/components/design-mode/ai-rail/AIRailWrapper";
 import { PublishSheet } from "@/components/design-mode/publish/PublishSheet";
 
 import type { DesignSessionFull, DesignShot } from "@/lib/design/types";
@@ -187,6 +187,20 @@ export default function DesignModePage() {
     refreshSession();
   }, [sessionId, currentShotId, refreshSession]);
 
+  const handleSelectVersion = useCallback(async (versionId: string) => {
+    if (!sessionId || !currentShotId) return;
+    // Optimistic
+    setData((prev) => prev ? {
+      ...prev,
+      shots: prev.shots.map((s) => s.id === currentShotId ? { ...s, currentVersionId: versionId } : s),
+    } : prev);
+    fetch(`/api/design/sessions/${sessionId}/shots/${currentShotId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ currentVersionId: versionId }),
+    }).catch(() => refreshSession());
+  }, [sessionId, currentShotId, refreshSession]);
+
   const handlePromptSave = useCallback(async (prompt: string) => {
     if (!sessionId || !currentShotId) return;
     // Optimistic UI update
@@ -311,6 +325,7 @@ export default function DesignModePage() {
             client={data.client}
             shots={data.shots}
             currentShot={currentShot}
+            defaultCollapsed={true}
           />
 
           <div className="flex min-w-0 flex-1 flex-col">
@@ -322,27 +337,39 @@ export default function DesignModePage() {
                 onModelChange={handleModelChange}
                 onPromptSave={handlePromptSave}
                 onFormatChange={setActiveFormat}
+                onSelectVersion={handleSelectVersion}
+                onAddShot={handleAddShot}
                 activeFormat={activeFormat}
                 generating={generating}
               />
             </div>
             <div className="h-[270px] flex-shrink-0">
-              <TrackTimeline
+              <Timeline
                 tracks={data.tracks}
                 shots={data.shots}
                 currentShotId={currentShotId}
+                defaultShape={(data.session.timelineShape as "storyboard" | "tracks") || "storyboard"}
                 onSelectShot={handleSelectShot}
                 onAddShot={handleAddShot}
+                onShapeChange={async (shape) => {
+                  if (!sessionId) return;
+                  await fetch(`/api/design/sessions/${sessionId}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ timelineShape: shape }),
+                  });
+                }}
               />
             </div>
           </div>
 
-          <AIRailSide
+          <AIRailWrapper
             currentShot={currentShot}
             workspaceId={workspaceId || null}
             clientId={data.session.clientId}
             contentId={data.session.contentId}
             onAssetReady={refreshSession}
+            defaultOpen={false}
           />
         </div>
       </div>

@@ -2,7 +2,8 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { ArrowLeft, Search, ChevronDown, History, Lock, Users, EyeOff, FileText, BadgeCheck, Calendar } from "lucide-react";
+import { ArrowLeft, Search, ChevronDown, History, Lock, Users, EyeOff, FileText, BadgeCheck, Calendar, Info } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -85,68 +86,14 @@ export function Header({
           <span className="section-label muted">Studio · v2</span>
         </div>
 
-        {/* Scope pills */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          {content && (
-            <Link href={`/content/${content.id}`} className="pill pill-accent" title={`Brief: ${content.title}`}>
-              <FileText className="h-3 w-3" />
-              {content.type ? `${content.type}: ` : ""}{truncate(content.title || `#${content.id}`, 32)}
-            </Link>
-          )}
-          {client && (
-            <span className="pill pill-success" title={`Brand: ${client.name}`}>
-              <BadgeCheck className="h-3 w-3" />
-              {client.name}
-            </span>
-          )}
-          {session && !session.isIncognito && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  className={cn(
-                    "pill",
-                    session.visibility === "private" ? "pill-neutral" : "pill-runway",
-                    !isOwner && "opacity-70 cursor-default",
-                  )}
-                  disabled={!isOwner}
-                >
-                  {session.visibility === "private" ? <Lock className="h-3 w-3" /> : <Users className="h-3 w-3" />}
-                  {session.visibility === "private" ? "Private" : "Team"}
-                  {isOwner && <ChevronDown className="h-2.5 w-2.5" />}
-                </button>
-              </DropdownMenuTrigger>
-              {isOwner && (
-                <DropdownMenuContent align="start" className="w-44">
-                  <DropdownMenuItem
-                    onClick={() => onChangeVisibility("private")}
-                    className={cn("text-xs gap-2", session.visibility === "private" && "bg-muted font-medium")}
-                  >
-                    <Lock className="h-3 w-3" />
-                    <span className="flex-1">Private</span>
-                    {session.visibility === "private" && <span className="text-primary text-xs">✓</span>}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => onChangeVisibility("team")}
-                    className={cn("text-xs gap-2", session.visibility === "team" && "bg-muted font-medium")}
-                  >
-                    <Users className="h-3 w-3" />
-                    <span className="flex-1">Team</span>
-                    {session.visibility === "team" && <span className="text-primary text-xs">✓</span>}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              )}
-            </DropdownMenu>
-          )}
-          {session?.isIncognito && (
-            <span className="pill pill-warning">
-              <EyeOff className="h-3 w-3" />
-              Incognito
-            </span>
-          )}
-          {session?.myPermission === "view" && (
-            <span className="pill pill-neutral">View only</span>
-          )}
-        </div>
+        {/* Scope summary — one consolidated pill that opens a context popover */}
+        <ScopeSummary
+          session={session}
+          content={content}
+          client={client}
+          isOwner={isOwner}
+          onChangeVisibility={onChangeVisibility}
+        />
 
         <div className="flex-1" />
 
@@ -256,6 +203,111 @@ export function Header({
         </div>
       )}
     </header>
+  );
+}
+
+/**
+ * One-pill summary of the session scope (content + brand + visibility).
+ * Clicking opens a popover with the detail + visibility toggle.
+ */
+function ScopeSummary({
+  session, content, client, isOwner, onChangeVisibility,
+}: {
+  session: DesignSession | null;
+  content: DesignContent | null;
+  client: DesignClient | null;
+  isOwner: boolean;
+  onChangeVisibility: (v: "private" | "team") => void;
+}) {
+  if (!session) return null;
+  const isIncognito = session.isIncognito;
+  const isView = session.myPermission === "view";
+
+  const parts: React.ReactNode[] = [];
+  if (content) parts.push(<span key="c" className="truncate font-medium">{truncate(content.title || `Content #${content.id}`, 28)}</span>);
+  if (client) parts.push(<span key="b" className="text-[hsl(var(--design-success))]">· {client.name}</span>);
+  if (!content && !client) parts.push(<span key="e" className="text-muted-foreground">Untitled session</span>);
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] hover:border-[hsl(var(--design-accent))]/40 hover:bg-[hsl(var(--design-accent-soft))]/30"
+          style={{ borderColor: "hsl(var(--design-border))" }}
+          title="Session context"
+        >
+          {content && <FileText className="h-3 w-3 text-[hsl(var(--design-accent))]" />}
+          {!content && client && <BadgeCheck className="h-3 w-3 text-[hsl(var(--design-success))]" />}
+          {!content && !client && <Info className="h-3 w-3 text-muted-foreground" />}
+          <span className="flex items-center gap-1 max-w-[260px] truncate">{parts}</span>
+          {isIncognito && <EyeOff className="h-3 w-3 text-[hsl(var(--design-warning))]" />}
+          {!isIncognito && session.visibility === "team" && <Users className="h-3 w-3 text-purple-600" />}
+          {!isIncognito && session.visibility === "private" && <Lock className="h-3 w-3 text-muted-foreground" />}
+          <ChevronDown className="h-2.5 w-2.5 text-muted-foreground" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-72 p-3">
+        <div className="space-y-3">
+          {content && (
+            <div>
+              <div className="section-label muted text-[9px]">Brief</div>
+              <Link href={`/content/${content.id}`} className="mt-0.5 block truncate text-[12.5px] font-medium hover:underline">
+                {content.title || `Content #${content.id}`}
+              </Link>
+              {content.type && <div className="text-[10.5px] text-muted-foreground">{content.type}</div>}
+            </div>
+          )}
+          {client && (
+            <div>
+              <div className="section-label muted text-[9px]">Brand</div>
+              <div className="mt-0.5 flex items-center gap-1 text-[12.5px]">
+                <BadgeCheck className="h-3 w-3 text-[hsl(var(--design-success))]" />
+                <span className="font-medium">{client.name}</span>
+              </div>
+              <div className="text-[10.5px] text-muted-foreground">Brand auto-injected into every shot</div>
+            </div>
+          )}
+          <div>
+            <div className="section-label muted text-[9px]">Visibility</div>
+            {isIncognito ? (
+              <div className="mt-1 flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-[11.5px] text-amber-800">
+                <EyeOff className="h-3 w-3" />
+                <span className="font-medium">Incognito</span>
+                <span className="text-[10.5px]">· nothing saved</span>
+              </div>
+            ) : (
+              <div className="mt-1 flex gap-1">
+                <button
+                  onClick={() => onChangeVisibility("private")}
+                  disabled={!isOwner}
+                  className={cn(
+                    "flex flex-1 items-center justify-center gap-1 rounded-md border px-2 py-1.5 text-[11.5px] font-medium transition-colors",
+                    session.visibility === "private" ? "border-[hsl(var(--design-accent))] bg-[hsl(var(--design-accent-soft))] text-[hsl(var(--design-accent))]" : "border-[hsl(var(--design-border))]",
+                    !isOwner && "opacity-50 cursor-not-allowed",
+                  )}
+                >
+                  <Lock className="h-3 w-3" /> Private
+                </button>
+                <button
+                  onClick={() => onChangeVisibility("team")}
+                  disabled={!isOwner}
+                  className={cn(
+                    "flex flex-1 items-center justify-center gap-1 rounded-md border px-2 py-1.5 text-[11.5px] font-medium transition-colors",
+                    session.visibility === "team" ? "border-purple-300 bg-purple-50 text-purple-800" : "border-[hsl(var(--design-border))]",
+                    !isOwner && "opacity-50 cursor-not-allowed",
+                  )}
+                >
+                  <Users className="h-3 w-3" /> Team
+                </button>
+              </div>
+            )}
+            {isView && (
+              <div className="mt-1.5 text-[10.5px] text-muted-foreground">You have view-only access.</div>
+            )}
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

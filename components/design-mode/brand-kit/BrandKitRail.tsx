@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
-import { BadgeCheck, AlertTriangle, Wand2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { BadgeCheck, AlertTriangle, Wand2, PanelLeftClose, PanelLeftOpen, Palette } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DesignBrandKit, DesignClient, DesignShot, VisualIdentity } from "@/lib/design/types";
 
@@ -10,6 +10,7 @@ interface BrandKitRailProps {
   client: DesignClient | null;
   shots: DesignShot[];
   currentShot: DesignShot | null;
+  defaultCollapsed?: boolean;
 }
 
 /**
@@ -17,14 +18,30 @@ interface BrandKitRailProps {
  * (palette + typography + voice + do's/don'ts), the sandstone cap meter, and
  * a "current shot check" card that flips between on-brand and drift.
  */
-export function BrandKitRail({ brandKit, client, shots, currentShot }: BrandKitRailProps) {
+export function BrandKitRail({ brandKit, client, shots, currentShot, defaultCollapsed }: BrandKitRailProps) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed ?? false);
+
   if (!brandKit) {
+    if (collapsed) {
+      return (
+        <CollapsedRail onExpand={() => setCollapsed(false)} hasBrand={false} clientName={client?.name} primaryHex={undefined} secondaryHexes={[]} onBrand={true} />
+      );
+    }
     return (
       <aside
         className="flex w-[280px] flex-shrink-0 flex-col gap-3 overflow-y-auto border-r p-4"
         style={{ borderColor: "hsl(var(--design-border))", background: "hsl(var(--design-bg-elev))" }}
       >
-        <div className="section-label muted">Brand kit</div>
+        <div className="flex items-center justify-between">
+          <div className="section-label muted">Brand kit</div>
+          <button
+            onClick={() => setCollapsed(true)}
+            className="rounded p-1 text-muted-foreground hover:bg-[hsl(var(--design-border))]/40 hover:text-foreground"
+            title="Collapse"
+          >
+            <PanelLeftClose className="h-3.5 w-3.5" />
+          </button>
+        </div>
         <div className="rounded-lg border border-dashed p-3 text-[11.5px] leading-relaxed text-muted-foreground"
              style={{ borderColor: "hsl(var(--design-border-strong))" }}>
           {client
@@ -45,6 +62,20 @@ export function BrandKitRail({ brandKit, client, shots, currentShot }: BrandKitR
 
   const onBrandCount = shots.filter((s) => s.onBrand).length;
   const totalShots = shots.length || 1;
+  const allOnBrand = onBrandCount === totalShots;
+
+  if (collapsed) {
+    return (
+      <CollapsedRail
+        onExpand={() => setCollapsed(false)}
+        hasBrand
+        clientName={client?.name}
+        primaryHex={primary[0]?.hex}
+        secondaryHexes={[...primary.slice(1), ...secondary].slice(0, 4).map((c) => c.hex)}
+        onBrand={allOnBrand}
+      />
+    );
+  }
 
   return (
     <aside
@@ -57,7 +88,16 @@ export function BrandKitRail({ brandKit, client, shots, currentShot }: BrandKitR
           <div className="section-label">Brand kit</div>
           <div className="mt-0.5 text-[10px] text-muted-foreground">{brandKit.versionTag}</div>
         </div>
-        <ClientMark name={client?.name || "?"} />
+        <div className="flex items-center gap-1">
+          <ClientMark name={client?.name || "?"} />
+          <button
+            onClick={() => setCollapsed(true)}
+            className="rounded p-1 text-muted-foreground hover:bg-[hsl(var(--design-border))]/40 hover:text-foreground"
+            title="Collapse"
+          >
+            <PanelLeftClose className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
       <div>
         <div className="editorial-display text-[18px] leading-tight">{client?.name || "—"}</div>
@@ -143,6 +183,81 @@ export function BrandKitRail({ brandKit, client, shots, currentShot }: BrandKitR
 
       {/* Current shot check card */}
       <CurrentShotCheck shot={currentShot} />
+    </aside>
+  );
+}
+
+/**
+ * Slim collapsed brand kit rail — 56px wide. Shows the palette as a vertical
+ * swatch stack, with click-to-expand. Frees the canvas to breathe.
+ */
+function CollapsedRail({
+  onExpand, hasBrand, clientName, primaryHex, secondaryHexes, onBrand,
+}: {
+  onExpand: () => void;
+  hasBrand: boolean;
+  clientName?: string;
+  primaryHex?: string;
+  secondaryHexes: string[];
+  onBrand: boolean;
+}) {
+  return (
+    <aside
+      className="flex w-14 flex-shrink-0 flex-col items-center gap-2 border-r py-3"
+      style={{ borderColor: "hsl(var(--design-border))", background: "hsl(var(--design-bg-elev))" }}
+    >
+      <button
+        onClick={onExpand}
+        className="rounded-full p-1.5 text-muted-foreground hover:bg-[hsl(var(--design-border))]/40 hover:text-foreground"
+        title="Open brand kit"
+      >
+        <PanelLeftOpen className="h-4 w-4" />
+      </button>
+
+      {/* Vertical palette stack */}
+      <div className="flex flex-col items-center gap-1">
+        {primaryHex ? (
+          <button
+            onClick={onExpand}
+            title={clientName || "Brand palette"}
+            className="h-7 w-7 rounded-md ring-1 ring-black/5 transition-transform hover:scale-110"
+            style={{ background: primaryHex }}
+          />
+        ) : (
+          <button
+            onClick={onExpand}
+            title="No brand kit"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-dashed"
+            style={{ borderColor: "hsl(var(--design-border-strong))" }}
+          >
+            <Palette className="h-3.5 w-3.5 text-muted-foreground" />
+          </button>
+        )}
+        {secondaryHexes.map((hex, i) => (
+          <button
+            key={i}
+            onClick={onExpand}
+            className="h-5 w-5 rounded ring-1 ring-black/5 transition-transform hover:scale-110"
+            style={{ background: hex }}
+          />
+        ))}
+      </div>
+
+      {/* On-brand indicator at bottom */}
+      <div className="mt-auto">
+        {hasBrand && (
+          <div
+            className="flex h-6 w-6 items-center justify-center rounded-full"
+            style={{
+              background: onBrand ? "hsl(var(--design-success))" : "hsl(var(--design-warning))",
+              color: "white",
+            }}
+            title={onBrand ? "All shots on brand" : "Some shots drifting"}
+          >
+            {onBrand ? <BadgeCheck className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
+          </div>
+        )}
+      </div>
     </aside>
   );
 }

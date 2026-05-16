@@ -1,10 +1,10 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Play, Pause, SkipBack, SkipForward, ChevronDown, Upload, Sparkles, Check, AlertTriangle, BadgeCheck } from "lucide-react";
+import { Play, Pause, SkipBack, SkipForward, ChevronDown, Upload, Sparkles, Check, AlertTriangle, BadgeCheck, Pencil, Plus, Wand2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DesignShot } from "@/lib/design/types";
-import { DESIGN_MODELS } from "@/lib/design/types";
+import { DESIGN_MODELS, LEGACY_MODEL_ALIASES } from "@/lib/design/types";
 
 interface CanvasStageProps {
   shot: DesignShot | null;
@@ -13,6 +13,8 @@ interface CanvasStageProps {
   onModelChange: (modelId: string) => void;
   onPromptSave: (prompt: string) => void;
   onFormatChange: (ratio: string) => void;
+  onSelectVersion?: (versionId: string) => void;
+  onAddShot?: () => void;
   activeFormat?: string;
   generating?: boolean;
 }
@@ -32,6 +34,8 @@ export function CanvasStage({
   onModelChange,
   onPromptSave,
   onFormatChange,
+  onSelectVersion,
+  onAddShot,
   activeFormat = "16:9",
   generating = false,
 }: CanvasStageProps) {
@@ -48,18 +52,35 @@ export function CanvasStage({
 
   if (!shot) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
-        <Sparkles className="h-7 w-7" style={{ color: "hsl(var(--design-accent))" }} />
-        <h3 className="editorial-display text-xl">A blank stage.</h3>
-        <p className="max-w-sm text-[12.5px] text-muted-foreground">
-          Add a shot from the timeline or ask Engine AI to propose directions for this brief.
-        </p>
+      <div className="flex h-full flex-col items-center justify-center gap-5 p-8 text-center">
+        <div className="relative">
+          <div className="absolute inset-0 -m-4 rounded-full bg-[hsl(var(--design-accent-soft))] blur-2xl opacity-70" />
+          <Sparkles className="relative h-10 w-10" style={{ color: "hsl(var(--design-accent))" }} />
+        </div>
+        <div className="space-y-1.5 max-w-md">
+          <h3 className="editorial-display text-[26px] leading-tight">Let&apos;s design your first shot.</h3>
+          <p className="text-[13px] leading-relaxed text-muted-foreground">
+            Add a shot to start. Write a prompt, pick a model, and we&apos;ll generate it on-brand.
+          </p>
+        </div>
+        {onAddShot && (
+          <button
+            onClick={onAddShot}
+            className="inline-flex items-center gap-2 rounded-full bg-[hsl(var(--design-accent))] px-5 py-2 text-[13px] font-medium text-white shadow-sm transition hover:opacity-90"
+          >
+            <Plus className="h-4 w-4" /> Create a shot
+          </button>
+        )}
+        <div className="mt-2 text-[11px] text-muted-foreground">
+          or ask Engine AI on the right to propose directions
+        </div>
       </div>
     );
   }
 
   const statusInfo = STATUS_PILL[shot.status] || STATUS_PILL.queued;
-  const currentModel = DESIGN_MODELS.find((m) => m.id === shot.modelId) || DESIGN_MODELS[1];
+  const resolvedModelId = shot.modelId ? (LEGACY_MODEL_ALIASES[shot.modelId] || shot.modelId) : "runway-g4-5";
+  const currentModel = DESIGN_MODELS.find((m) => m.id === resolvedModelId) || DESIGN_MODELS[0];
 
   return (
     <div className="flex h-full flex-col gap-3 p-4">
@@ -96,7 +117,12 @@ export function CanvasStage({
             onToggle={() => setPlaying((p) => !p)}
             duration={shot.duration}
           />
-          <VersionsStrip versions={shot.versions} current={shot.currentVersionId} onVary={() => {}} />
+          <VersionsStrip
+            versions={shot.versions}
+            current={shot.currentVersionId}
+            onSelect={onSelectVersion || (() => {})}
+            onVary={onRegenerate}
+          />
         </div>
 
         {/* Inspector */}
@@ -175,10 +201,19 @@ export function CanvasStage({
             ) : (
               <div
                 onClick={() => setEditingPrompt(true)}
-                className="cursor-text rounded-lg border p-2.5 font-mono text-[11px] leading-relaxed hover:border-[hsl(var(--design-accent))]/40"
+                className="group relative cursor-text rounded-lg border p-2.5 font-mono text-[11px] leading-relaxed transition-colors hover:border-[hsl(var(--design-accent))]/60"
                 style={{ borderColor: "hsl(var(--design-border))", background: "hsl(var(--design-bg))" }}
+                title="Click to edit"
               >
-                {shot.prompt || <span className="italic text-muted-foreground">Click to add a prompt</span>}
+                {shot.prompt ? (
+                  shot.prompt
+                ) : (
+                  <span className="flex items-center gap-1.5 italic text-muted-foreground">
+                    <Pencil className="h-3 w-3" />
+                    Click to write a prompt
+                  </span>
+                )}
+                <Pencil className="absolute right-2 top-2 h-3 w-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-60" />
               </div>
             )}
           </div>
@@ -349,7 +384,7 @@ function Transport({ playing, onToggle, duration }: { playing: boolean; onToggle
   );
 }
 
-function VersionsStrip({ versions, current, onVary }: { versions: DesignShot["versions"]; current: string | null; onVary: () => void }) {
+function VersionsStrip({ versions, current, onSelect, onVary }: { versions: DesignShot["versions"]; current: string | null; onSelect: (id: string) => void; onVary: () => void }) {
   if (versions.length === 0) {
     return (
       <div className="flex items-center gap-1.5 rounded-lg border border-dashed p-2 text-[10.5px] text-muted-foreground"
@@ -365,10 +400,11 @@ function VersionsStrip({ versions, current, onVary }: { versions: DesignShot["ve
         const isVideo = v.assetType === "video" || v.assetType === "artlist_video";
         const isActive = v.id === current;
         return (
-          <div
+          <button
             key={v.id}
+            onClick={() => onSelect(v.id)}
             className={cn(
-              "relative flex h-12 w-16 flex-shrink-0 items-center justify-center overflow-hidden rounded",
+              "relative flex h-12 w-16 flex-shrink-0 items-center justify-center overflow-hidden rounded transition-transform hover:scale-105",
               !v.assetUrl && "thumb thumb-stripe",
               isActive && "ring-2 ring-offset-1",
             )}
@@ -388,37 +424,53 @@ function VersionsStrip({ versions, current, onVary }: { versions: DesignShot["ve
             <span className="absolute bottom-0.5 right-0.5 rounded bg-black/60 px-1 font-mono text-[9px] text-white/95">
               v{v.idx}
             </span>
-          </div>
+          </button>
         );
       })}
       <button
         onClick={onVary}
-        className="flex h-12 flex-shrink-0 items-center justify-center rounded border border-dashed px-3 text-[10.5px] font-medium text-muted-foreground hover:text-foreground"
+        className="flex h-12 flex-shrink-0 items-center justify-center gap-1 rounded border border-dashed px-3 text-[10.5px] font-medium text-muted-foreground transition-colors hover:border-[hsl(var(--design-accent))] hover:text-[hsl(var(--design-accent))]"
         style={{ borderColor: "hsl(var(--design-border-strong))" }}
+        title="Generate a new variation"
       >
-        + VARY
+        <Wand2 className="h-3 w-3" />
+        Vary
       </button>
     </div>
   );
 }
 
+const FORMAT_LABELS: Record<string, string> = {
+  "16:9": "Landscape",
+  "9:16": "Story",
+  "1:1": "Square",
+  "4:5": "Feed",
+};
+
 function FormatChip({ ratio, active, onClick }: { ratio: string; active: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
+      title={FORMAT_LABELS[ratio]}
       className={cn(
-        "rounded-full border px-2.5 py-0.5 text-[10.5px] font-medium",
+        "flex flex-col items-center gap-0 rounded-md border px-2 py-1 transition-colors",
         active
           ? "border-[hsl(var(--design-accent))] bg-[hsl(var(--design-accent-soft))] text-[hsl(var(--design-accent))]"
           : "border-[hsl(var(--design-border))] bg-[hsl(var(--design-bg-elev))] text-foreground hover:border-[hsl(var(--design-accent))]/40",
       )}
     >
-      {ratio}
+      <span className="text-[10px] font-medium leading-none">{FORMAT_LABELS[ratio] || ratio}</span>
+      <span className="font-mono text-[9px] opacity-60">{ratio}</span>
     </button>
   );
 }
 
 function ModelPicker({ activeId, onPick, onClose }: { activeId: string; onPick: (id: string) => void; onClose: () => void }) {
+  // Group models into Video / Image / Coming soon to reduce overwhelm
+  const videoModels = DESIGN_MODELS.filter((m) => (m.provider === "runway") && m.status === "live");
+  const imageModels = DESIGN_MODELS.filter((m) => (m.provider === "openai-image" || m.provider === "xai-image") && m.status === "live");
+  const comingSoon = DESIGN_MODELS.filter((m) => m.status === "coming-soon");
+
   return (
     <>
       <div className="fixed inset-0 z-30" onClick={onClose} />
@@ -426,46 +478,64 @@ function ModelPicker({ activeId, onPick, onClose }: { activeId: string; onPick: 
         className="absolute right-0 top-full z-40 mt-1 w-[340px] overflow-hidden rounded-lg border bg-[hsl(var(--design-bg-elev))] shadow-lg"
         style={{ borderColor: "hsl(var(--design-border))", boxShadow: "var(--shadow-pop)" }}
       >
-        <div className="border-b px-3 py-2 text-[10px] uppercase tracking-wider text-muted-foreground"
-             style={{ borderColor: "hsl(var(--design-border))" }}>
-          Pick a generator
+        <div className="max-h-[440px] overflow-y-auto">
+          <ModelGroup label="Video" models={videoModels} activeId={activeId} onPick={onPick} />
+          <ModelGroup label="Image" models={imageModels} activeId={activeId} onPick={onPick} />
+          {comingSoon.length > 0 && (
+            <ModelGroup label="Coming soon" models={comingSoon} activeId={activeId} onPick={onPick} muted />
+          )}
         </div>
-        <ul className="max-h-[360px] overflow-y-auto">
-          {DESIGN_MODELS.map((m) => {
-            const active = m.id === activeId;
-            const live = m.status === "live";
-            return (
-              <li key={m.id}>
-                <button
-                  onClick={() => live && onPick(m.id)}
-                  disabled={!live}
-                  className={cn(
-                    "flex w-full items-start gap-2 border-b px-3 py-2 text-left transition-colors",
-                    active && "bg-[hsl(var(--design-accent-soft))]",
-                    !live && "opacity-50",
-                    live && "hover:bg-[hsl(var(--design-accent-soft))]/60",
-                  )}
-                  style={{ borderColor: "hsl(var(--design-border))" }}
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[12.5px] font-semibold">{m.name}</span>
-                      {!live && <span className="pill pill-neutral">soon</span>}
-                    </div>
-                    <div className="mt-0.5 text-[10.5px] text-muted-foreground">{m.tag}</div>
-                    <div className="mt-0.5 text-[10px] italic text-muted-foreground">
-                      <span style={{ color: "hsl(var(--design-success))" }}>{m.strength}</span>
-                      <span className="mx-1">·</span>
-                      <span style={{ color: "hsl(var(--design-warning))" }}>{m.weakness}</span>
-                    </div>
-                  </div>
-                  {active && <Check className="h-3.5 w-3.5 mt-0.5" style={{ color: "hsl(var(--design-accent))" }} />}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
       </div>
     </>
+  );
+}
+
+function ModelGroup({
+  label, models, activeId, onPick, muted,
+}: {
+  label: string;
+  models: typeof DESIGN_MODELS;
+  activeId: string;
+  onPick: (id: string) => void;
+  muted?: boolean;
+}) {
+  if (models.length === 0) return null;
+  return (
+    <div>
+      <div className="sticky top-0 z-10 border-b bg-[hsl(var(--design-bg-elev))] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+           style={{ borderColor: "hsl(var(--design-border))" }}>
+        {label}
+      </div>
+      <ul>
+        {models.map((m) => {
+          const active = m.id === activeId;
+          const live = m.status === "live";
+          return (
+            <li key={m.id}>
+              <button
+                onClick={() => live && onPick(m.id)}
+                disabled={!live}
+                className={cn(
+                  "flex w-full items-center gap-2 border-b px-3 py-2 text-left transition-colors",
+                  active && "bg-[hsl(var(--design-accent-soft))]",
+                  muted && "opacity-60",
+                  live && "hover:bg-[hsl(var(--design-accent-soft))]/60",
+                )}
+                style={{ borderColor: "hsl(var(--design-border))" }}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[12.5px] font-semibold">{m.name}</span>
+                    {!live && <span className="pill pill-neutral">soon</span>}
+                  </div>
+                  <div className="mt-0.5 line-clamp-1 text-[10.5px] text-muted-foreground">{m.tag}</div>
+                </div>
+                {active && <Check className="h-3.5 w-3.5 flex-shrink-0" style={{ color: "hsl(var(--design-accent))" }} />}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
