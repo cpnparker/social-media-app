@@ -18,6 +18,7 @@ interface CanvasStageProps {
   onAddShot?: () => void;
   onTitleSave?: (title: string) => void;
   onBeatSave?: (beat: string | null) => void;
+  onDurationSave?: (duration: number) => void;
   onDelete?: () => void;
   onUploadReference?: (file: File) => void;
   onRemoveReference?: (refId: string) => void;
@@ -46,6 +47,7 @@ export function CanvasStage({
   onAddShot,
   onTitleSave,
   onBeatSave,
+  onDurationSave,
   onDelete,
   onUploadReference,
   onRemoveReference,
@@ -100,11 +102,12 @@ export function CanvasStage({
 
   return (
     <div className="flex h-full flex-col gap-3 p-4">
-      {/* Top meta strip — editable title + beat */}
+      {/* Top meta strip — editable title + beat + duration */}
       <ShotMetaStrip
         shot={shot}
         onTitleSave={onTitleSave}
         onBeatSave={onBeatSave}
+        onDurationSave={onDurationSave}
         onDelete={onDelete}
       />
 
@@ -339,20 +342,24 @@ export function CanvasStage({
  * + duration / version count / brand-status pill + overflow menu (delete).
  */
 function ShotMetaStrip({
-  shot, onTitleSave, onBeatSave, onDelete,
+  shot, onTitleSave, onBeatSave, onDurationSave, onDelete,
 }: {
   shot: DesignShot;
   onTitleSave?: (title: string) => void;
   onBeatSave?: (beat: string | null) => void;
+  onDurationSave?: (duration: number) => void;
   onDelete?: () => void;
 }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [editingBeat, setEditingBeat] = useState(false);
+  const [editingDuration, setEditingDuration] = useState(false);
   const [titleDraft, setTitleDraft] = useState(shot.title);
   const [beatDraft, setBeatDraft] = useState(shot.beat || "");
+  const [durationDraft, setDurationDraft] = useState(shot.duration);
 
   useEffect(() => { setTitleDraft(shot.title); setEditingTitle(false); }, [shot.id, shot.title]);
   useEffect(() => { setBeatDraft(shot.beat || ""); setEditingBeat(false); }, [shot.id, shot.beat]);
+  useEffect(() => { setDurationDraft(shot.duration); setEditingDuration(false); }, [shot.id, shot.duration]);
 
   return (
     <div className="flex items-baseline justify-between gap-3">
@@ -413,7 +420,40 @@ function ShotMetaStrip({
 
       <div className="flex items-center gap-2">
         <div className="flex items-baseline gap-1">
-          <span className="editorial-numeric text-[14px] leading-none">{shot.duration.toFixed(1)}s</span>
+          {editingDuration && onDurationSave ? (
+            <input
+              type="number"
+              step="0.5"
+              min="0.5"
+              max="30"
+              value={durationDraft}
+              autoFocus
+              onChange={(e) => setDurationDraft(parseFloat(e.target.value) || 0)}
+              onBlur={() => {
+                if (durationDraft > 0 && durationDraft <= 30) onDurationSave(durationDraft);
+                setEditingDuration(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  if (durationDraft > 0 && durationDraft <= 30) onDurationSave(durationDraft);
+                  setEditingDuration(false);
+                }
+                if (e.key === "Escape") { setDurationDraft(shot.duration); setEditingDuration(false); }
+              }}
+              className="editorial-numeric w-14 border-b border-[hsl(var(--design-accent))] bg-transparent text-[14px] leading-none outline-none focus:ring-0"
+            />
+          ) : (
+            <button
+              onClick={() => onDurationSave && setEditingDuration(true)}
+              className={cn(
+                "editorial-numeric text-[14px] leading-none",
+                onDurationSave && "cursor-text rounded-sm hover:bg-[hsl(var(--design-accent-soft))]/40",
+              )}
+              title={onDurationSave ? "Click to edit duration" : undefined}
+            >
+              {shot.duration.toFixed(1)}s
+            </button>
+          )}
           <span className="text-[10px] text-muted-foreground">·</span>
           <span className="text-[11px] text-muted-foreground">v{shot.versions.length || 0}</span>
         </div>

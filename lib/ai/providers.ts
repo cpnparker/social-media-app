@@ -770,12 +770,15 @@ const DESIGN_GENERATE_SHOT_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   function: {
     name: "design_generate_shot",
     description:
-      "Generate (or regenerate) a new version of an existing shot using its current model + prompt. Equivalent to clicking the Regenerate button in the canvas inspector. Use after design_create_shot or design_update_shot.",
+      "Generate (or regenerate) a new version of an existing shot using its current model + prompt — or override either inline. Equivalent to clicking the Regenerate button in the canvas inspector. Use after design_create_shot or design_update_shot, or to iterate.",
     parameters: {
       type: "object",
       properties: {
         shot_id: { type: "string", description: "The shot id to generate. The focused shot from the context block is a safe default." },
+        modelId: { type: "string", description: "Override the model just for this generation (e.g. switch from gen4.5 to veo3.1)." },
+        prompt: { type: "string", description: "Override the prompt just for this generation." },
         format: { type: "string", enum: ["landscape", "portrait", "square"], description: "Output aspect ratio." },
+        duration: { type: "number", enum: [5, 10], description: "Video clip duration in seconds (videos only)." },
       },
       required: ["shot_id"],
     },
@@ -3922,38 +3925,42 @@ async function streamAnthropic(
       } else if (tool.name === "design_generate_shot") {
         try {
           if (!config.designSessionId) throw new Error("No design session");
+          if (!config.userId) throw new Error("No user");
           const shotId = tool.input.shot_id;
           if (!shotId) throw new Error("shot_id required");
-          // Internal HTTP call to the existing generate endpoint to reuse all
-          // the brand-injection + persistence + brand-check logic.
-          const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000";
-          // Inline call into the local generate function would be ideal, but
-          // for simplicity invoke the route handler directly.
-          const { POST: generatePost } = await import("@/app/api/design/sessions/[id]/shots/[shotId]/generate/route");
-          // We need to fabricate a minimal Request — easier: query the DB directly
-          // and call the generation primitives. To keep things simple we'll just
-          // mark the shot as queued for now and tell the user to click Regenerate.
-          //
-          // (Real internal-call routing requires the Next.js context which we don't
-          // have here. Leaving this as a follow-up: refactor the generate handler
-          // into a pure server function.)
-          //
-          // For v1: queue the shot's status and surface a clean instruction.
-          const { intelligenceDb } = await import("@/lib/supabase-intelligence");
-          await intelligenceDb
-            .from("design_shots")
-            .update({ status: "generating", date_updated: new Date().toISOString() })
-            .eq("id_shot", shotId)
-            .eq("id_session", config.designSessionId);
+
+          // Heartbeat — UI marks the shot as generating
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ design_shot_generating: { id: shotId } })}\n\n`));
-          // Suppress unused warning for the dynamic import — see refactor note above.
-          void generatePost;
-          void baseUrl;
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: tool.id,
-            content: `Shot ${shotId} marked as generating. The designer can click Regenerate in the canvas to produce v1, or you can call generate_image / generate_video directly for ad-hoc creation.`,
-          });
+
+          const { generateShotVersion } = await import("@/lib/design/generate-shot");
+          const result = await generateShotVersion(
+            config.designSessionId,
+            shotId,
+            config.userId,
+            {
+              modelId: tool.input.modelId,
+              prompt: tool.input.prompt,
+              format: tool.input.format,
+              duration: tool.input.duration === 10 ? 10 : 5,
+            },
+          );
+
+          if (!result.ok) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ design_shot_error: { id: shotId, message: result.message } })}\n\n`));
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: tool.id,
+              content: `Generate failed: ${result.message}`,
+              is_error: true,
+            });
+          } else {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ design_shot_generated: { id: shotId, versionId: result.version.id, blobUrl: result.version.blobUrl, status: result.shot.status, onBrand: result.shot.onBrand } })}\n\n`));
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: tool.id,
+              content: `Generated v${result.version.idx} for shot ${shotId} using ${result.version.modelId}. Status: ${result.shot.status}${result.shot.onBrand ? " (on brand)" : " (drift detected)"}.`,
+            });
+          }
         } catch (err: any) {
           console.error("[design_generate_shot]", err?.message);
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Generate shot failed: ${err?.message}`, is_error: true });

@@ -174,7 +174,15 @@ export function AIRailSide({ currentShot, workspaceId, clientId, contentId, desi
           url: ready.url,
         }],
       }]);
-    } else if (data.design_shot_created || data.design_shot_updated || data.design_shot_generating || data.design_shot_committed) {
+    } else if (data.design_shot_created || data.design_shot_updated || data.design_shot_generating || data.design_shot_generated || data.design_shot_committed) {
+      onAssetReady?.();
+      if (data.design_shot_generated) {
+        setStatusLabel(null);
+      } else if (data.design_shot_generating) {
+        setStatusLabel("Generating shot");
+      }
+    } else if (data.design_shot_error) {
+      setStatusLabel(null);
       onAssetReady?.();
     } else if (data.artlist_results) {
       const items: ResultCard[] = (data.artlist_results.items || []).slice(0, 4).map((it: any) => ({

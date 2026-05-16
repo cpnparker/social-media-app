@@ -10,6 +10,7 @@ interface PublishSheetProps {
   onClose: () => void;
   content: DesignContent | null;
   shots: DesignShot[];
+  sessionId?: string | null;
   onPublish: (opts: PublishOptions) => Promise<void> | void;
 }
 
@@ -30,13 +31,33 @@ const FORMATS = [
 
 const DEFAULT_CAPTION = "Patient capital. Considered horizons. A film about how OmInvest allocates conviction across cycles. #OmInvest #PatientCapital";
 
-export function PublishSheet({ open, onClose, content, shots, onPublish }: PublishSheetProps) {
+export function PublishSheet({ open, onClose, content, shots, sessionId, onPublish }: PublishSheetProps) {
   const [caption, setCaption] = useState(DEFAULT_CAPTION);
   const [queueForPosting, setQueueForPosting] = useState(true);
   const [notifyOwner, setNotifyOwner] = useState(true);
   const [attachLicense, setAttachLicense] = useState(true);
   const [generateAltCopy, setGenerateAltCopy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [variationsLoading, setVariationsLoading] = useState(false);
+  const [variations, setVariations] = useState<string[]>([]);
+
+  async function loadVariations() {
+    if (!sessionId || variationsLoading) return;
+    setVariationsLoading(true);
+    try {
+      const res = await fetch(`/api/design/sessions/${sessionId}/caption-variations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ current: caption }),
+      });
+      if (res.ok) {
+        const j = await res.json();
+        setVariations(j.variations || []);
+      }
+    } finally {
+      setVariationsLoading(false);
+    }
+  }
 
   if (!open) return null;
 
@@ -98,7 +119,14 @@ export function PublishSheet({ open, onClose, content, shots, onPublish }: Publi
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="section-label muted">Caption</span>
-              <button className="text-[10.5px] underline" style={{ color: "hsl(var(--design-accent))" }}>Variations</button>
+              <button
+                onClick={loadVariations}
+                disabled={!sessionId || variationsLoading}
+                className="text-[10.5px] underline disabled:opacity-40"
+                style={{ color: "hsl(var(--design-accent))" }}
+              >
+                {variationsLoading ? "Generating…" : variations.length > 0 ? "Refresh variations" : "Generate variations"}
+              </button>
             </div>
             <textarea
               value={caption}
@@ -111,8 +139,25 @@ export function PublishSheet({ open, onClose, content, shots, onPublish }: Publi
               <span>{caption.length} chars</span>
               <span>·</span>
               <span className="pill pill-success">on-voice</span>
-              <span className="pill pill-neutral">#OmInvest · #PatientCapital</span>
             </div>
+
+            {/* Variations list */}
+            {variations.length > 0 && (
+              <div className="space-y-1.5 pt-1">
+                <div className="text-[10.5px] font-medium text-muted-foreground">Pick one to use:</div>
+                {variations.map((v, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setCaption(v)}
+                    className="design-tile group flex w-full items-start gap-2 rounded-lg border bg-[hsl(var(--design-bg))] p-2.5 text-left text-[12px] leading-relaxed transition-colors hover:border-[hsl(var(--design-accent))]/40"
+                    style={{ borderColor: "hsl(var(--design-border))", fontFamily: "ui-serif, Georgia, serif" }}
+                  >
+                    <span className="font-mono text-[9px] text-muted-foreground mt-0.5">{i + 1}</span>
+                    <span className="flex-1">{v}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 

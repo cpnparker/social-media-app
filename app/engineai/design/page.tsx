@@ -245,6 +245,19 @@ export default function DesignModePage() {
     });
   }, [sessionId]);
 
+  const handleShotDurationSave = useCallback(async (shotId: string, duration: number) => {
+    if (!sessionId) return;
+    setData((prev) => prev ? {
+      ...prev,
+      shots: prev.shots.map((s) => s.id === shotId ? { ...s, duration } : s),
+    } : prev);
+    await fetch(`/api/design/sessions/${sessionId}/shots/${shotId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ duration }),
+    });
+  }, [sessionId]);
+
   const handleReorderShots = useCallback(async (orderedIds: string[]) => {
     if (!sessionId) return;
     // Optimistic: re-order in place, reassign idx
@@ -502,6 +515,7 @@ export default function DesignModePage() {
                 onAddShot={handleAddShot}
                 onTitleSave={(title) => currentShot && handleShotTitleSave(currentShot.id, title)}
                 onBeatSave={(beat) => currentShot && handleShotBeatSave(currentShot.id, beat)}
+                onDurationSave={(duration) => currentShot && handleShotDurationSave(currentShot.id, duration)}
                 onDelete={() => currentShot && handleDeleteShot(currentShot.id)}
                 onUploadReference={handleUploadReference}
                 onRemoveReference={handleRemoveReference}
@@ -553,6 +567,7 @@ export default function DesignModePage() {
         onClose={() => setPublishOpen(false)}
         content={data.content}
         shots={data.shots}
+        sessionId={sessionId}
         onPublish={handlePublish}
       />
     </div>
