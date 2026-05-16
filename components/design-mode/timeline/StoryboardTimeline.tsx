@@ -1,8 +1,25 @@
 "use client";
 
 import { useMemo } from "react";
-import { Plus, AlertTriangle, BadgeCheck, Clock } from "lucide-react";
+import { Plus, AlertTriangle, BadgeCheck, Clock, X, GripVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  horizontalListSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import type { DesignShot } from "@/lib/design/types";
 
 interface StoryboardTimelineProps {
@@ -10,26 +27,30 @@ interface StoryboardTimelineProps {
   currentShotId: string | null;
   onSelectShot: (id: string) => void;
   onAddShot?: () => void;
+  onDeleteShot?: (id: string) => void;
+  onReorder?: (orderedIds: string[]) => void;
 }
 
 /**
  * Storyboard view — horizontal row of shot cards, grouped by beat.
- * Much simpler than the Premiere-style Tracks view; the default for new
- * sessions.
+ * Supports drag-to-reorder (within and across beats) and hover-delete.
  */
-export function StoryboardTimeline({ shots, currentShotId, onSelectShot, onAddShot }: StoryboardTimelineProps) {
+export function StoryboardTimeline({ shots, currentShotId, onSelectShot, onAddShot, onDeleteShot, onReorder }: StoryboardTimelineProps) {
   const totalDuration = useMemo(() => shots.reduce((a, s) => a + s.duration, 0), [shots]);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
-  // Group by beat — preserves shot.idx order
-  const beatGroups = useMemo(() => {
-    const groups: Array<{ beat: string | null; shots: DesignShot[] }> = [];
-    for (const s of shots) {
-      const last = groups[groups.length - 1];
-      if (last && last.beat === (s.beat || null)) last.shots.push(s);
-      else groups.push({ beat: s.beat || null, shots: [s] });
-    }
-    return groups;
-  }, [shots]);
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = shots.findIndex((s) => s.id === active.id);
+    const newIndex = shots.findIndex((s) => s.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    const reordered = arrayMove(shots, oldIndex, newIndex);
+    onReorder?.(reordered.map((s) => s.id));
+  }
 
   if (shots.length === 0) {
     return (
@@ -53,6 +74,17 @@ export function StoryboardTimeline({ shots, currentShotId, onSelectShot, onAddSh
     );
   }
 
+  // Build beat groupings while preserving order
+  const beatGroups = (() => {
+    const groups: Array<{ beat: string | null; shots: DesignShot[] }> = [];
+    for (const s of shots) {
+      const last = groups[groups.length - 1];
+      if (last && last.beat === (s.beat || null)) last.shots.push(s);
+      else groups.push({ beat: s.beat || null, shots: [s] });
+    }
+    return groups;
+  })();
+
   return (
     <section
       className="flex h-full flex-col border-t"
@@ -72,48 +104,98 @@ export function StoryboardTimeline({ shots, currentShotId, onSelectShot, onAddSh
         </div>
       </div>
 
-      {/* Strip */}
-      <div className="flex-1 overflow-x-auto p-4">
-        <div className="flex h-full items-stretch gap-2.5">
-          {beatGroups.map((g, gi) => (
-            <div key={gi} className="flex items-stretch gap-2.5">
-              {g.beat && (
-                <div className="flex flex-col items-center justify-center px-1">
-                  <div className="text-[9px] font-semibold uppercase tracking-wider"
-                       style={{ color: "hsl(var(--design-accent))" }}>
-                    {g.beat}
-                  </div>
-                  <div className="h-full w-px bg-[hsl(var(--design-border))] mt-1" />
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={shots.map((s) => s.id)} strategy={horizontalListSortingStrategy}>
+          <div className="flex-1 overflow-x-auto p-4">
+            <div className="flex h-full items-stretch gap-2.5">
+              {beatGroups.map((g, gi) => (
+                <div key={gi} className="flex items-stretch gap-2.5">
+                  {g.beat && (
+                    <div className="flex flex-col items-center justify-center px-1">
+                      <div className="text-[9px] font-semibold uppercase tracking-wider"
+                           style={{ color: "hsl(var(--design-accent))" }}>
+                        {g.beat}
+                      </div>
+                      <div className="h-full w-px bg-[hsl(var(--design-border))] mt-1" />
+                    </div>
+                  )}
+                  {g.shots.map((s) => (
+                    <SortableShotCard
+                      key={s.id}
+                      shot={s}
+                      active={s.id === currentShotId}
+                      onClick={() => onSelectShot(s.id)}
+                      onDelete={onDeleteShot ? () => onDeleteShot(s.id) : undefined}
+                    />
+                  ))}
                 </div>
-              )}
-              {g.shots.map((s) => (
-                <ShotCard
-                  key={s.id}
-                  shot={s}
-                  active={s.id === currentShotId}
-                  onClick={() => onSelectShot(s.id)}
-                />
               ))}
+              {/* Add shot affordance */}
+              {onAddShot && (
+                <button
+                  onClick={onAddShot}
+                  className="flex h-full min-h-[150px] w-[148px] flex-shrink-0 flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed text-muted-foreground transition-colors hover:border-[hsl(var(--design-accent))] hover:text-[hsl(var(--design-accent))]"
+                  style={{ borderColor: "hsl(var(--design-border-strong))" }}
+                >
+                  <Plus className="h-5 w-5" />
+                  <span className="text-[11px] font-medium">Add shot</span>
+                </button>
+              )}
             </div>
-          ))}
-          {/* Add shot affordance */}
-          {onAddShot && (
-            <button
-              onClick={onAddShot}
-              className="flex h-full min-h-[150px] w-[148px] flex-shrink-0 flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed text-muted-foreground transition-colors hover:border-[hsl(var(--design-accent))] hover:text-[hsl(var(--design-accent))]"
-              style={{ borderColor: "hsl(var(--design-border-strong))" }}
-            >
-              <Plus className="h-5 w-5" />
-              <span className="text-[11px] font-medium">Add shot</span>
-            </button>
-          )}
-        </div>
-      </div>
+          </div>
+        </SortableContext>
+      </DndContext>
     </section>
   );
 }
 
-function ShotCard({ shot, active, onClick }: { shot: DesignShot; active: boolean; onClick: () => void }) {
+function SortableShotCard({
+  shot, active, onClick, onDelete,
+}: {
+  shot: DesignShot;
+  active: boolean;
+  onClick: () => void;
+  onDelete?: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: shot.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 50 : undefined,
+    opacity: isDragging ? 0.6 : 1,
+  };
+  return (
+    <div ref={setNodeRef} style={style} className="relative">
+      <ShotCard
+        shot={shot}
+        active={active}
+        onClick={onClick}
+        onDelete={onDelete}
+        dragHandle={
+          <button
+            {...attributes}
+            {...listeners}
+            className="absolute left-1 top-1 z-10 rounded-md bg-black/40 p-1 text-white/80 opacity-0 backdrop-blur transition-opacity hover:text-white group-hover:opacity-100"
+            title="Drag to reorder"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <GripVertical className="h-3 w-3" />
+          </button>
+        }
+      />
+    </div>
+  );
+}
+
+function ShotCard({
+  shot, active, onClick, onDelete, dragHandle,
+}: {
+  shot: DesignShot;
+  active: boolean;
+  onClick: () => void;
+  onDelete?: () => void;
+  dragHandle?: React.ReactNode;
+}) {
   const current = shot.versions.find((v) => v.id === shot.currentVersionId) || shot.versions[shot.versions.length - 1];
   const hasAsset = !!current?.assetUrl;
   const isVideo = current?.assetType === "video" || current?.assetType === "artlist_video";
@@ -154,26 +236,40 @@ function ShotCard({ shot, active, onClick }: { shot: DesignShot; active: boolean
           </div>
         )}
 
-        {/* Status dot — top left */}
+        {/* Drag handle (top-left, hover-only) */}
+        {dragHandle}
+
+        {/* Status dot */}
         <span
-          className="absolute left-2 top-2 h-2 w-2 rounded-full ring-2 ring-white/80"
+          className="absolute right-2 top-2 h-2 w-2 rounded-full ring-2 ring-white/80"
           style={{ background: statusColor(shot.status) }}
           title={shot.status}
         />
 
         {/* Drift warning */}
         {!shot.onBrand && (
-          <div className="absolute right-2 top-2 flex items-center gap-0.5 rounded-full bg-[hsl(var(--design-warning))] px-1.5 py-0.5 text-[9px] font-semibold text-white">
+          <div className="absolute left-2 bottom-2 flex items-center gap-0.5 rounded-full bg-[hsl(var(--design-warning))] px-1.5 py-0.5 text-[9px] font-semibold text-white">
             <AlertTriangle className="h-2.5 w-2.5" />
             drift
           </div>
         )}
 
-        {/* On-brand check */}
+        {/* On-brand committed check */}
         {shot.onBrand && shot.status === "approved" && (
-          <div className="absolute right-2 top-2 rounded-full bg-[hsl(var(--design-success))]/95 p-1 text-white">
+          <div className="absolute left-2 bottom-2 rounded-full bg-[hsl(var(--design-success))]/95 p-1 text-white" title="Committed to timeline">
             <BadgeCheck className="h-2.5 w-2.5" />
           </div>
+        )}
+
+        {/* Hover delete (top-right, behind status dot) */}
+        {onDelete && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="absolute right-2 bottom-2 rounded-full bg-black/50 p-1 text-white/90 opacity-0 backdrop-blur transition-opacity hover:bg-[hsl(var(--design-danger))] group-hover:opacity-100"
+            title="Delete shot"
+          >
+            <X className="h-2.5 w-2.5" />
+          </button>
         )}
       </div>
 

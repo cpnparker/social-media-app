@@ -187,6 +187,81 @@ export default function DesignModePage() {
     refreshSession();
   }, [sessionId, currentShotId, refreshSession]);
 
+  const handleCommit = useCallback(async () => {
+    if (!sessionId || !currentShotId) return;
+    const res = await fetch(`/api/design/sessions/${sessionId}/shots/${currentShotId}/commit`, {
+      method: "POST",
+    });
+    if (res.ok) {
+      toast.success("Committed to timeline");
+      refreshSession();
+    } else {
+      const j = await res.json().catch(() => ({}));
+      toast.error(j?.error || "Commit failed");
+    }
+  }, [sessionId, currentShotId, refreshSession]);
+
+  const handleDeleteShot = useCallback(async (shotId: string) => {
+    if (!sessionId) return;
+    const res = await fetch(`/api/design/sessions/${sessionId}/shots/${shotId}`, {
+      method: "DELETE",
+    });
+    if (res.ok) {
+      // If we deleted the current shot, clear selection
+      if (shotId === currentShotId) setCurrentShotId(null);
+      toast.success("Shot removed");
+      refreshSession();
+    } else {
+      toast.error("Couldn't remove shot");
+    }
+  }, [sessionId, currentShotId, refreshSession]);
+
+  const handleShotTitleSave = useCallback(async (shotId: string, title: string) => {
+    if (!sessionId) return;
+    setData((prev) => prev ? {
+      ...prev,
+      shots: prev.shots.map((s) => s.id === shotId ? { ...s, title } : s),
+    } : prev);
+    await fetch(`/api/design/sessions/${sessionId}/shots/${shotId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+  }, [sessionId]);
+
+  const handleShotBeatSave = useCallback(async (shotId: string, beat: string | null) => {
+    if (!sessionId) return;
+    setData((prev) => prev ? {
+      ...prev,
+      shots: prev.shots.map((s) => s.id === shotId ? { ...s, beat } : s),
+    } : prev);
+    await fetch(`/api/design/sessions/${sessionId}/shots/${shotId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ beat }),
+    });
+  }, [sessionId]);
+
+  const handleReorderShots = useCallback(async (orderedIds: string[]) => {
+    if (!sessionId) return;
+    // Optimistic: re-order in place, reassign idx
+    setData((prev) => prev ? {
+      ...prev,
+      shots: orderedIds.map((id, i) => {
+        const s = prev.shots.find((x) => x.id === id);
+        return s ? { ...s, idx: i + 1 } : s!;
+      }).filter(Boolean),
+    } : prev);
+    // Persist per-shot idx updates in parallel
+    await Promise.all(orderedIds.map((id, i) =>
+      fetch(`/api/design/sessions/${sessionId}/shots/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idx: i + 1 }),
+      })
+    ));
+  }, [sessionId]);
+
   const handleSelectVersion = useCallback(async (versionId: string) => {
     if (!sessionId || !currentShotId) return;
     // Optimistic
@@ -333,12 +408,15 @@ export default function DesignModePage() {
               <CanvasStage
                 shot={currentShot}
                 onRegenerate={handleRegenerate}
-                onCommit={() => toast.info("Commit to timeline ships in 2c")}
+                onCommit={handleCommit}
                 onModelChange={handleModelChange}
                 onPromptSave={handlePromptSave}
                 onFormatChange={setActiveFormat}
                 onSelectVersion={handleSelectVersion}
                 onAddShot={handleAddShot}
+                onTitleSave={(title) => currentShot && handleShotTitleSave(currentShot.id, title)}
+                onBeatSave={(beat) => currentShot && handleShotBeatSave(currentShot.id, beat)}
+                onDelete={() => currentShot && handleDeleteShot(currentShot.id)}
                 activeFormat={activeFormat}
                 generating={generating}
               />
@@ -351,6 +429,8 @@ export default function DesignModePage() {
                 defaultShape={(data.session.timelineShape as "storyboard" | "tracks") || "storyboard"}
                 onSelectShot={handleSelectShot}
                 onAddShot={handleAddShot}
+                onDeleteShot={handleDeleteShot}
+                onReorder={handleReorderShots}
                 onShapeChange={async (shape) => {
                   if (!sessionId) return;
                   await fetch(`/api/design/sessions/${sessionId}`, {
@@ -368,6 +448,9 @@ export default function DesignModePage() {
             workspaceId={workspaceId || null}
             clientId={data.session.clientId}
             contentId={data.session.contentId}
+            allShots={data.shots}
+            briefExcerpt={data.content?.brief || null}
+            brandSummary={data.brandKit?.visualIdentity?.voice || data.brandKit?.versionTag || (data.client?.name ? `Client: ${data.client.name}` : null)}
             onAssetReady={refreshSession}
             defaultOpen={false}
           />

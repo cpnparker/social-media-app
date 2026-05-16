@@ -10,6 +10,12 @@ interface AIRailSideProps {
   workspaceId: string | null;
   clientId: number | null;
   contentId: number | null;
+  /** All shots in the session — used to compose richer studio context. */
+  allShots?: DesignShot[];
+  /** Content brief excerpt for context. */
+  briefExcerpt?: string | null;
+  /** Brand summary for context. */
+  brandSummary?: string | null;
   /** Called when the AI generates an image/video — host can refresh canvas/timeline. */
   onAssetReady?: () => void;
   onClose?: () => void;
@@ -31,7 +37,7 @@ const SUGGESTIONS = [
   { label: "Tighten to 28s",         icon: <Search className="h-3 w-3" /> },
 ];
 
-export function AIRailSide({ currentShot, workspaceId, clientId, contentId, onAssetReady, onClose }: AIRailSideProps) {
+export function AIRailSide({ currentShot, workspaceId, clientId, contentId, allShots, briefExcerpt, brandSummary, onAssetReady, onClose }: AIRailSideProps) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
@@ -83,17 +89,16 @@ export function AIRailSide({ currentShot, workspaceId, clientId, contentId, onAs
     setStreaming(true);
     setStatusLabel(null);
 
-    // Include the current shot context in the message so the AI can reason about it
-    const shotContext = currentShot
-      ? `\n\n[Design context — focused shot: S${String(currentShot.idx).padStart(2, "0")} "${currentShot.title}", model ${currentShot.modelId || "?"}, status ${currentShot.status}, ${currentShot.duration}s${currentShot.beat ? `, beat ${currentShot.beat}` : ""}]`
-      : "";
+    // Compose a rich studio context block so Claude can reason about the
+    // brief, brand, all shots, and the focused shot in one pass.
+    const studioContext = buildStudioContext({ allShots: allShots || [], currentShot, briefExcerpt, brandSummary });
 
     abortRef.current = new AbortController();
     try {
       const res = await fetch(`/api/ai/conversations/${convId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: v + shotContext }),
+        body: JSON.stringify({ content: v + studioContext }),
         signal: abortRef.current.signal,
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -133,7 +138,7 @@ export function AIRailSide({ currentShot, workspaceId, clientId, contentId, onAs
     }
   // handleEvent is a closure over setTurns/setStatusLabel/onAssetReady — those are stable.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streaming, ensureConversation, currentShot, onAssetReady]);
+  }, [streaming, ensureConversation, currentShot, allShots, briefExcerpt, brandSummary, onAssetReady]);
 
   function handleEvent(data: any, aiTurnId: string) {
     if (typeof data.token === "string") {
@@ -373,4 +378,48 @@ function Bubble({ children }: { children: React.ReactNode }) {
       {children}
     </div>
   );
+}
+
+/**
+ * Build the studio context block appended to every user message. Gives Claude
+ * the brief, brand, all-shots overview, and the focused shot in a single
+ * compact block so it can reason across the session without us having to
+ * thread state through tool calls.
+ */
+function buildStudioContext(opts: {
+  allShots: DesignShot[];
+  currentShot: DesignShot | null;
+  briefExcerpt?: string | null;
+  brandSummary?: string | null;
+}): string {
+  const lines: string[] = [];
+  lines.push("\n\n---");
+  lines.push("[Design Mode session context — for your reasoning, not for the user to see]");
+
+  if (opts.briefExcerpt) {
+    const brief = opts.briefExcerpt.replace(/\s+/g, " ").trim().slice(0, 280);
+    lines.push(`Brief: ${brief}${opts.briefExcerpt.length > 280 ? "…" : ""}`);
+  }
+  if (opts.brandSummary) {
+    const b = opts.brandSummary.replace(/\s+/g, " ").trim().slice(0, 180);
+    lines.push(`Brand: ${b}`);
+  }
+
+  if (opts.allShots.length > 0) {
+    lines.push(`Shots (${opts.allShots.length}):`);
+    for (const s of opts.allShots.slice(0, 12)) {
+      const tag = s.id === opts.currentShot?.id ? "→ " : "  ";
+      const status = s.status === "approved" ? "✓" : s.status === "drift" ? "⚠" : s.status;
+      const v = s.versions.length > 0 ? ` (v${s.versions.length})` : "";
+      lines.push(`${tag}S${String(s.idx).padStart(2, "0")} "${s.title}" [${s.beat || "—"}, ${s.duration}s, ${s.modelId || "no model"}${v}] ${status}`);
+    }
+    if (opts.allShots.length > 12) lines.push(`  … +${opts.allShots.length - 12} more`);
+  }
+
+  if (opts.currentShot) {
+    const cs = opts.currentShot;
+    lines.push(`Focused: S${String(cs.idx).padStart(2, "0")} — prompt: "${(cs.prompt || "(empty)").slice(0, 200)}"`);
+  }
+
+  return lines.join("\n");
 }

@@ -14,6 +14,8 @@ interface TimelineProps {
   defaultShape?: "storyboard" | "tracks";
   onSelectShot: (id: string) => void;
   onAddShot?: () => void;
+  onDeleteShot?: (id: string) => void;
+  onReorder?: (orderedIds: string[]) => void;
   onShapeChange?: (shape: "storyboard" | "tracks") => void;
 }
 
@@ -31,6 +33,8 @@ export function Timeline({
   defaultShape = "storyboard",
   onSelectShot,
   onAddShot,
+  onDeleteShot,
+  onReorder,
   onShapeChange,
 }: TimelineProps) {
   const [shape, setShape] = useState<"storyboard" | "tracks">(defaultShape);
@@ -65,6 +69,8 @@ export function Timeline({
           currentShotId={currentShotId}
           onSelectShot={onSelectShot}
           onAddShot={onAddShot}
+          onDeleteShot={onDeleteShot}
+          onReorder={onReorder}
         />
       ) : (
         <TrackTimeline

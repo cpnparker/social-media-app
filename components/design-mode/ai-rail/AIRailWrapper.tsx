@@ -10,6 +10,9 @@ interface AIRailWrapperProps {
   workspaceId: string | null;
   clientId: number | null;
   contentId: number | null;
+  allShots?: DesignShot[];
+  briefExcerpt?: string | null;
+  brandSummary?: string | null;
   onAssetReady?: () => void;
   defaultOpen?: boolean;
 }

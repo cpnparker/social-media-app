@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Play, Pause, SkipBack, SkipForward, ChevronDown, Upload, Sparkles, Check, AlertTriangle, BadgeCheck, Pencil, Plus, Wand2 } from "lucide-react";
+import { Play, Pause, SkipBack, SkipForward, ChevronDown, Upload, Sparkles, Check, AlertTriangle, BadgeCheck, Pencil, Plus, Wand2, MoreVertical, Trash2 } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { DesignShot } from "@/lib/design/types";
 import { DESIGN_MODELS, LEGACY_MODEL_ALIASES } from "@/lib/design/types";
@@ -15,6 +16,9 @@ interface CanvasStageProps {
   onFormatChange: (ratio: string) => void;
   onSelectVersion?: (versionId: string) => void;
   onAddShot?: () => void;
+  onTitleSave?: (title: string) => void;
+  onBeatSave?: (beat: string | null) => void;
+  onDelete?: () => void;
   activeFormat?: string;
   generating?: boolean;
 }
@@ -36,6 +40,9 @@ export function CanvasStage({
   onFormatChange,
   onSelectVersion,
   onAddShot,
+  onTitleSave,
+  onBeatSave,
+  onDelete,
   activeFormat = "16:9",
   generating = false,
 }: CanvasStageProps) {
@@ -84,28 +91,13 @@ export function CanvasStage({
 
   return (
     <div className="flex h-full flex-col gap-3 p-4">
-      {/* Top meta strip */}
-      <div className="flex items-baseline justify-between gap-3">
-        <div className="flex items-baseline gap-2 min-w-0">
-          <span className="section-label muted">Shot · {String(shot.idx).padStart(2, "0")}</span>
-          <h2 className="editorial-display truncate text-[22px] leading-none">{shot.title}</h2>
-          {shot.beat && <span className="text-[12px] text-muted-foreground whitespace-nowrap">· {shot.beat}</span>}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="editorial-numeric text-[14px] leading-none">{shot.duration.toFixed(1)}s</span>
-          <span className="text-[10px] text-muted-foreground">/</span>
-          <span className="text-[11px]">v{shot.versions.length || 1} of {shot.versions.length || 1}</span>
-          {shot.onBrand ? (
-            <span className="pill pill-success ml-2">
-              <BadgeCheck className="h-3 w-3" /> On brand
-            </span>
-          ) : (
-            <span className="pill pill-warning ml-2">
-              <AlertTriangle className="h-3 w-3" /> Drift
-            </span>
-          )}
-        </div>
-      </div>
+      {/* Top meta strip — editable title + beat */}
+      <ShotMetaStrip
+        shot={shot}
+        onTitleSave={onTitleSave}
+        onBeatSave={onBeatSave}
+        onDelete={onDelete}
+      />
 
       {/* Preview + inspector */}
       <div className="grid flex-1 gap-3 lg:grid-cols-[1fr_280px]">
@@ -270,13 +262,134 @@ export function CanvasStage({
             </button>
             <button
               onClick={onCommit}
-              className="w-full rounded-lg border px-3 py-2 text-[12px] font-medium hover:bg-[hsl(var(--design-bg))]"
-              style={{ borderColor: "hsl(var(--design-border))" }}
+              disabled={shot.versions.length === 0}
+              className={cn(
+                "flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-[12px] font-medium transition-colors disabled:opacity-50",
+                shot.status === "approved"
+                  ? "border-[hsl(var(--design-success))] bg-[hsl(158_60%_96%)] text-[hsl(var(--design-success))]"
+                  : "border-[hsl(var(--design-border))] hover:bg-[hsl(var(--design-bg))]",
+              )}
             >
-              Commit to timeline
+              {shot.status === "approved" ? (
+                <><BadgeCheck className="h-3.5 w-3.5" /> Committed</>
+              ) : (
+                <>Commit to timeline</>
+              )}
             </button>
           </div>
         </aside>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Editable top strip: Shot · NN | Title (inline editable) | Beat (inline editable)
+ * + duration / version count / brand-status pill + overflow menu (delete).
+ */
+function ShotMetaStrip({
+  shot, onTitleSave, onBeatSave, onDelete,
+}: {
+  shot: DesignShot;
+  onTitleSave?: (title: string) => void;
+  onBeatSave?: (beat: string | null) => void;
+  onDelete?: () => void;
+}) {
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [editingBeat, setEditingBeat] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(shot.title);
+  const [beatDraft, setBeatDraft] = useState(shot.beat || "");
+
+  useEffect(() => { setTitleDraft(shot.title); setEditingTitle(false); }, [shot.id, shot.title]);
+  useEffect(() => { setBeatDraft(shot.beat || ""); setEditingBeat(false); }, [shot.id, shot.beat]);
+
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <div className="flex items-baseline gap-2 min-w-0 flex-1">
+        <span className="section-label muted">Shot · {String(shot.idx).padStart(2, "0")}</span>
+
+        {editingTitle && onTitleSave ? (
+          <input
+            value={titleDraft}
+            autoFocus
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={() => { onTitleSave(titleDraft.trim() || shot.title); setEditingTitle(false); }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { onTitleSave(titleDraft.trim() || shot.title); setEditingTitle(false); }
+              if (e.key === "Escape") { setTitleDraft(shot.title); setEditingTitle(false); }
+            }}
+            className="editorial-display min-w-0 flex-1 truncate border-b border-[hsl(var(--design-accent))] bg-transparent text-[22px] leading-none outline-none focus:ring-0"
+          />
+        ) : (
+          <h2
+            onClick={() => onTitleSave && setEditingTitle(true)}
+            className={cn(
+              "editorial-display truncate text-[22px] leading-none",
+              onTitleSave && "cursor-text rounded-sm transition-colors hover:bg-[hsl(var(--design-accent-soft))]/40",
+            )}
+            title={onTitleSave ? "Click to rename" : undefined}
+          >
+            {shot.title}
+          </h2>
+        )}
+
+        {editingBeat && onBeatSave ? (
+          <input
+            value={beatDraft}
+            autoFocus
+            onChange={(e) => setBeatDraft(e.target.value)}
+            onBlur={() => { onBeatSave(beatDraft.trim() || null); setEditingBeat(false); }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { onBeatSave(beatDraft.trim() || null); setEditingBeat(false); }
+              if (e.key === "Escape") { setBeatDraft(shot.beat || ""); setEditingBeat(false); }
+            }}
+            placeholder="Beat"
+            className="w-24 border-b border-[hsl(var(--design-accent))] bg-transparent text-[12px] text-muted-foreground outline-none focus:ring-0"
+          />
+        ) : (
+          <button
+            onClick={() => onBeatSave && setEditingBeat(true)}
+            className={cn(
+              "text-[12px] text-muted-foreground whitespace-nowrap",
+              onBeatSave && "cursor-text rounded-sm hover:text-foreground",
+            )}
+            title={onBeatSave ? "Click to set beat" : undefined}
+          >
+            {shot.beat ? `· ${shot.beat}` : <span className="italic">+ add beat</span>}
+          </button>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <div className="flex items-baseline gap-1">
+          <span className="editorial-numeric text-[14px] leading-none">{shot.duration.toFixed(1)}s</span>
+          <span className="text-[10px] text-muted-foreground">·</span>
+          <span className="text-[11px] text-muted-foreground">v{shot.versions.length || 0}</span>
+        </div>
+        {shot.onBrand ? (
+          <span className="pill pill-success">
+            <BadgeCheck className="h-3 w-3" /> On brand
+          </span>
+        ) : (
+          <span className="pill pill-warning">
+            <AlertTriangle className="h-3 w-3" /> Drift
+          </span>
+        )}
+        {onDelete && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="rounded-full p-1 text-muted-foreground hover:bg-[hsl(var(--design-border))]/40 hover:text-foreground" title="More">
+                <MoreVertical className="h-3.5 w-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onClick={onDelete} className="text-xs gap-2 text-[hsl(var(--design-danger))]">
+                <Trash2 className="h-3 w-3" />
+                Delete shot
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
     </div>
   );
