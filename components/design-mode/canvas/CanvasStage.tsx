@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Play, Pause, SkipBack, SkipForward, ChevronDown, Sparkles, Check, AlertTriangle, BadgeCheck, Pencil, Plus, Wand2, MoreVertical, Trash2 } from "lucide-react";
+import { Play, Pause, SkipBack, SkipForward, ChevronDown, Sparkles, Check, AlertTriangle, BadgeCheck, Pencil, Plus, Wand2, MoreVertical, Trash2, Download } from "lucide-react";
 import { ReferencePicker } from "./ReferencePicker";
 import { VersionDetailDialog } from "./VersionDetailDialog";
+import { QuickStartPicker } from "../QuickStartPicker";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { DesignShot } from "@/lib/design/types";
@@ -20,6 +21,7 @@ interface CanvasStageProps {
   onFormatChange: (ratio: string) => void;
   onSelectVersion?: (versionId: string) => void;
   onAddShot?: () => void;
+  onApplyTemplate?: (templateId: string) => Promise<void>;
   onTitleSave?: (title: string) => void;
   onBeatSave?: (beat: string | null) => void;
   onDurationSave?: (duration: number) => void;
@@ -51,6 +53,7 @@ export function CanvasStage({
   onFormatChange,
   onSelectVersion,
   onAddShot,
+  onApplyTemplate,
   onTitleSave,
   onBeatSave,
   onDurationSave,
@@ -77,28 +80,31 @@ export function CanvasStage({
 
   if (!shot) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-5 p-8 text-center">
-        <div className="relative">
-          <div className="absolute inset-0 -m-4 rounded-full bg-[hsl(var(--design-accent-soft))] blur-2xl opacity-70" />
-          <Sparkles className="relative h-10 w-10" style={{ color: "hsl(var(--design-accent))" }} />
+      <div className="flex h-full flex-col items-center justify-start gap-6 overflow-y-auto p-8">
+        <div className="flex flex-col items-center gap-2.5 text-center">
+          <div className="relative">
+            <div className="absolute inset-0 -m-4 rounded-full bg-[hsl(var(--design-accent-soft))] blur-2xl opacity-70" />
+            <Sparkles className="relative h-9 w-9" style={{ color: "hsl(var(--design-accent))" }} />
+          </div>
+          <div className="space-y-1 max-w-md">
+            <h3 className="editorial-display text-[24px] leading-tight">Let&apos;s design something.</h3>
+            <p className="text-[12.5px] leading-relaxed text-muted-foreground">
+              Start from a template, add a single shot, or describe what you want in Engine AI on the right.
+            </p>
+          </div>
         </div>
-        <div className="space-y-1.5 max-w-md">
-          <h3 className="editorial-display text-[26px] leading-tight">Let&apos;s design your first shot.</h3>
-          <p className="text-[13px] leading-relaxed text-muted-foreground">
-            Add a shot to start. Write a prompt, pick a model, and we&apos;ll generate it on-brand.
-          </p>
-        </div>
-        {onAddShot && (
+
+        {/* Quick-start template picker */}
+        {onApplyTemplate ? (
+          <QuickStartPicker onPick={onApplyTemplate} onSkip={() => onAddShot?.()} />
+        ) : onAddShot ? (
           <button
             onClick={onAddShot}
             className="inline-flex items-center gap-2 rounded-full bg-[hsl(var(--design-accent))] px-5 py-2 text-[13px] font-medium text-white shadow-sm transition hover:opacity-90"
           >
             <Plus className="h-4 w-4" /> Create a shot
           </button>
-        )}
-        <div className="mt-2 text-[11px] text-muted-foreground">
-          or ask Engine AI on the right to propose directions
-        </div>
+        ) : null}
       </div>
     );
   }
@@ -349,6 +355,26 @@ export function CanvasStage({
                 <>Commit to timeline</>
               )}
             </button>
+            {/* Export current version */}
+            {(() => {
+              const cur = shot.versions.find((v) => v.id === shot.currentVersionId) || shot.versions[shot.versions.length - 1];
+              if (!cur?.assetUrl) return null;
+              const isVideo = cur.assetType === "video" || cur.assetType === "artlist_video";
+              const ext = isVideo ? "mp4" : "png";
+              const safeTitle = shot.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+              const filename = `${safeTitle || "shot"}-s${String(shot.idx).padStart(2, "0")}-v${cur.idx}.${ext}`;
+              return (
+                <a
+                  href={cur.assetUrl}
+                  download={filename}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-[12px] font-medium transition-colors hover:bg-[hsl(var(--design-bg))]"
+                  style={{ borderColor: "hsl(var(--design-border))" }}
+                  title={`Download ${filename}`}
+                >
+                  <Download className="h-3.5 w-3.5" /> Download
+                </a>
+              );
+            })()}
           </div>
         </aside>
       </div>

@@ -27,10 +27,56 @@ type ProposalCard = { tag: string; summary: string };
 type ResultCard = { source: "Artlist" | "Higgsfield" | "Runway"; title: string; thumbHue: number; url?: string };
 
 type Turn =
-  | { id: string; from: "ai"; kind: "text"; text: string; status?: string }
+  | { id: string; from: "ai"; kind: "text"; text: string; status?: string; proposals?: ProposalCard[] }
   | { id: string; from: "you"; kind: "text"; text: string }
   | { id: string; from: "ai"; kind: "proposal"; proposals: ProposalCard[] }
   | { id: string; from: "ai"; kind: "results"; results: ResultCard[] };
+
+/**
+ * Heuristic parser for Claude's "three directions" pattern. Looks for 3+
+ * structured options in the message — typically:
+ *   - **A · Foundation-led**: opening landscape...
+ *   - **B · Conviction-led**: chairman first...
+ *   - **C · Horizon-led**: port opening...
+ *
+ * Returns null when the text doesn't match (most messages).
+ */
+function parseProposals(text: string): ProposalCard[] | null {
+  if (!text) return null;
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const proposals: ProposalCard[] = [];
+
+  // Match patterns like:
+  //   **A · Foundation-led**: summary   |  **A. Foundation-led:** summary
+  //   1. **Foundation-led** — summary   |  2. Foundation-led: summary
+  //   - **Foundation-led**: summary
+  const patterns: RegExp[] = [
+    /^[-*]?\s*\*\*([A-Z][\w ·\-·]+?)\*\*\s*[:—\-—–]\s*(.+)$/,
+    /^[-*]?\s*\*\*([^*]+?)\*\*\s*[:—\-—–]\s*(.+)$/,
+    /^([A-Z])\s*[\.)·:]\s+(.+)$/,
+    /^(\d+)\s*[\.)—\-—:]\s+(.+)$/,
+  ];
+
+  for (const line of lines) {
+    for (const p of patterns) {
+      const m = p.exec(line);
+      if (m) {
+        const tag = m[1].trim();
+        // Skip section headers like 'Brief:' or 'Brand:' — they're not proposals
+        if (/^(brief|brand|context|summary|note|tip|warning)$/i.test(tag)) break;
+        const summary = m[2].trim().replace(/^\*\*|\*\*$/g, "").trim();
+        if (summary.length > 8) {
+          proposals.push({ tag, summary });
+        }
+        break;
+      }
+    }
+  }
+
+  // Need at least 3 to render as proposal cards (otherwise it might just be a numbered list)
+  if (proposals.length < 3) return null;
+  return proposals.slice(0, 5);
+}
 
 const SUGGESTIONS = [
   { label: "Animate this still",     icon: <Wand2 className="h-3 w-3" /> },
@@ -141,6 +187,12 @@ export function AIRailSide({ currentShot, workspaceId, clientId, contentId, desi
     } finally {
       setStreaming(false);
       setStatusLabel(null);
+      // After streaming completes, run the proposal parser on the last AI text turn
+      setTurns((prev) => prev.map((t) => {
+        if (t.id !== aiTurn.id || t.kind !== "text") return t;
+        const proposals = parseProposals(t.text);
+        return proposals ? { ...t, proposals } : t;
+      }));
     }
   // handleEvent is a closure over setTurns/setStatusLabel/onAssetReady — those are stable.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -236,7 +288,7 @@ export function AIRailSide({ currentShot, workspaceId, clientId, contentId, desi
             </div>
           </div>
         )}
-        {turns.map((t) => <TurnView key={t.id} turn={t} />)}
+        {turns.map((t) => <TurnView key={t.id} turn={t} onPickProposal={(tag) => send(`Let's go with ${tag}. Run with it.`)} />)}
         {streaming && statusLabel && (
           <div className="flex items-center gap-1.5 px-2 text-[10.5px] text-muted-foreground">
             <Loader2 className="h-3 w-3 animate-spin" />
@@ -311,7 +363,7 @@ function ContextChip({ children }: { children: React.ReactNode }) {
   );
 }
 
-function TurnView({ turn }: { turn: Turn }) {
+function TurnView({ turn, onPickProposal }: { turn: Turn; onPickProposal?: (tag: string) => void }) {
   if (turn.from === "you") {
     return (
       <div className="flex justify-end">
@@ -335,7 +387,28 @@ function TurnView({ turn }: { turn: Turn }) {
       </div>
       <div className="min-w-0 flex-1">
         {turn.kind === "text" && (
-          <Bubble>{turn.text || <span className="text-muted-foreground">…</span>}</Bubble>
+          <>
+            <Bubble>{turn.text || <span className="text-muted-foreground">…</span>}</Bubble>
+            {turn.proposals && turn.proposals.length > 0 && onPickProposal && (
+              <div className="mt-1.5 space-y-1.5">
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Pick a direction</div>
+                {turn.proposals.map((p, i) => (
+                  <button
+                    key={i}
+                    onClick={() => onPickProposal(p.tag)}
+                    className="design-tile flex w-full flex-col items-start gap-0.5 rounded-md border px-2.5 py-2 text-left transition-colors hover:border-[hsl(var(--design-accent))]/40"
+                    style={{ borderColor: "hsl(var(--design-border))", background: "hsl(var(--design-bg))" }}
+                  >
+                    <span className="text-[10px] font-semibold uppercase tracking-wider"
+                          style={{ color: "hsl(var(--design-accent))" }}>
+                      {p.tag}
+                    </span>
+                    <span className="text-[11.5px] leading-snug line-clamp-2">{p.summary}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
         )}
         {turn.kind === "proposal" && (
           <Bubble>

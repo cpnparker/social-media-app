@@ -249,6 +249,24 @@ export default function DesignModePage() {
     }
   }, [sessionId, currentShotId, refreshSession]);
 
+  const handleApplyTemplate = useCallback(async (templateId: string) => {
+    if (!sessionId) return;
+    const res = await fetch(`/api/design/sessions/${sessionId}/apply-template`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ templateId }),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      toast.error(j?.error || "Couldn't apply template");
+      return;
+    }
+    const j = await res.json();
+    toast.success(`Applied ${j.templateName} (${j.shotsCreated} shots)`);
+    await refreshSession();
+    if (j.firstShotId) setCurrentShotId(j.firstShotId);
+  }, [sessionId, refreshSession]);
+
   const handleAddShot = useCallback(async () => {
     if (!sessionId) return;
     const res = await fetch(`/api/design/sessions/${sessionId}/shots`, {
@@ -735,6 +753,7 @@ export default function DesignModePage() {
                 onBeatSave={(beat) => currentShot && handleShotBeatSave(currentShot.id, beat)}
                 onDurationSave={(duration) => currentShot && handleShotDurationSave(currentShot.id, duration)}
                 onDelete={() => currentShot && handleDeleteShot(currentShot.id)}
+                onApplyTemplate={handleApplyTemplate}
                 onUploadReference={handleUploadReference}
                 onPickReferenceAsset={handlePickReferenceAsset}
                 onRemoveReference={handleRemoveReference}
