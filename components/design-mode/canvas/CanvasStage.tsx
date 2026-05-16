@@ -21,8 +21,10 @@ interface CanvasStageProps {
   onDelete?: () => void;
   onUploadReference?: (file: File) => void;
   onRemoveReference?: (refId: string) => void;
+  onAnimateImage?: () => void;
   activeFormat?: string;
   generating?: boolean;
+  animating?: boolean;
 }
 
 const STATUS_PILL: Record<string, { label: string; className: string }> = {
@@ -47,8 +49,10 @@ export function CanvasStage({
   onDelete,
   onUploadReference,
   onRemoveReference,
+  onAnimateImage,
   activeFormat = "16:9",
   generating = false,
+  animating = false,
 }: CanvasStageProps) {
   const [playing, setPlaying] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -285,11 +289,28 @@ export function CanvasStage({
             </div>
             <button
               onClick={onRegenerate}
-              disabled={generating || !shot.prompt?.trim()}
+              disabled={generating || animating || !shot.prompt?.trim()}
               className="mt-2 w-full rounded-lg bg-[hsl(var(--design-accent))] px-3 py-2 text-[12px] font-medium text-white shadow-sm transition hover:opacity-90 disabled:opacity-50"
             >
               {generating ? "Generating…" : shot.versions.length === 0 ? "Generate · v1" : "Regenerate · new version"}
             </button>
+            {/* Animate-this-image shortcut — only when current version is an image */}
+            {onAnimateImage && (() => {
+              const cur = shot.versions.find((v) => v.id === shot.currentVersionId) || shot.versions[shot.versions.length - 1];
+              if (!cur || cur.assetType !== "image") return null;
+              return (
+                <button
+                  onClick={onAnimateImage}
+                  disabled={generating || animating}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-[12px] font-medium transition-colors hover:border-[hsl(var(--design-accent))] hover:text-[hsl(var(--design-accent))] disabled:opacity-50"
+                  style={{ borderColor: "hsl(var(--design-border))" }}
+                  title="Use this still as a Runway image-to-video seed"
+                >
+                  <Wand2 className="h-3.5 w-3.5" />
+                  {animating ? "Animating…" : "Animate this image"}
+                </button>
+              );
+            })()}
             <button
               onClick={onCommit}
               disabled={shot.versions.length === 0}

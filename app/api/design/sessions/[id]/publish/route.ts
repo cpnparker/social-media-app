@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { put } from "@vercel/blob";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { checkSessionAccess } from "@/lib/ai/access";
+import { fetchBlobContent } from "@/lib/ai/blob-utils";
+import { reframeImage, ratioSupported, type DerivativeRatio } from "@/lib/design/reframe";
+import { persistDesignAsset } from "@/lib/ai/providers";
 
 /**
  * POST /api/design/sessions/[id]/publish
@@ -96,12 +100,76 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }, { status: 400 });
   }
 
-  // ── Stamp id_content on those ai_design_assets ──
+  // Pull asset rows so we can decide image-vs-video for reframing
+  const { data: assetRows } = await intelligenceDb
+    .from("ai_design_assets")
+    .select("id_asset, type_asset, blob_url")
+    .in("id_asset", assetIds);
+  const assetById = new Map<string, any>((assetRows || []).map((a: any) => [a.id_asset, a]));
+
+  // ── Stamp id_content on source ai_design_assets ──
   const { error: stampErr, count: stampedCount } = await intelligenceDb
     .from("ai_design_assets")
     .update({ id_content: contentId }, { count: "exact" })
     .in("id_asset", assetIds);
   if (stampErr) return NextResponse.json({ error: stampErr.message }, { status: 500 });
+
+  // ── Reframe images to requested ratios + persist as new assets ──
+  // Each shot's image asset becomes a set of derivatives (one per ratio).
+  // Video reframing requires ffmpeg and is tracked separately — for now
+  // videos publish as-is.
+  const requestedRatios: DerivativeRatio[] = (Array.isArray(body.formats) ? body.formats : [
+    { ratio: "9:16" }, { ratio: "1:1" }, { ratio: "16:9" },
+  ])
+    .map((f: any) => f.ratio)
+    .filter(ratioSupported);
+
+  const derivativeAssetIds: string[] = [];
+  for (const v of versions || []) {
+    const src = assetById.get(v.id_asset);
+    if (!src || src.type_asset !== "image") continue; // skip non-images for v1
+
+    // Fetch the source bytes once
+    let sourceBuffer: Buffer;
+    try {
+      const got = await fetchBlobContent(src.blob_url);
+      sourceBuffer = got.buffer;
+    } catch (err: any) {
+      console.warn("[Publish] fetch source failed:", err?.message);
+      continue;
+    }
+
+    for (const ratio of requestedRatios) {
+      try {
+        const { buffer, width, height, contentType: ct } = await reframeImage(sourceBuffer, ratio);
+        const tag = ratio.replace(":", "x");
+        const filename = `design/publish/${sessionId.slice(0, 8)}/${v.id_version}-${tag}.png`;
+        const blob = await put(filename, buffer, { access: "private", contentType: ct });
+        const derivativeUrl = `/api/media/file?path=${encodeURIComponent(blob.pathname)}`;
+        const derivativeId = await persistDesignAsset({
+          workspaceId: (sessionRow as any).id_workspace,
+          clientId: (sessionRow as any).id_client ?? null,
+          contentId,
+          userId,
+          type: "image",
+          source: "dalle",
+          blobUrl: derivativeUrl,
+          prompt: `Reframed to ${ratio} from version ${v.id_version}`,
+          parentId: v.id_asset,
+          metadata: {
+            reframed_from_version: v.id_version,
+            ratio,
+            width,
+            height,
+            published_at: new Date().toISOString(),
+          },
+        });
+        if (derivativeId) derivativeAssetIds.push(derivativeId);
+      } catch (err: any) {
+        console.warn(`[Publish] reframe ${ratio} failed for version ${v.id_version}:`, err?.message);
+      }
+    }
+  }
 
   // ── Record the job ──
   const formats = Array.isArray(body.formats) && body.formats.length > 0
@@ -141,12 +209,16 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     .single();
   if (jobErr) return NextResponse.json({ error: jobErr.message }, { status: 500 });
 
+  const totalPublished = (stampedCount || assetIds.length) + derivativeAssetIds.length;
+  const note = derivativeAssetIds.length > 0
+    ? `Published ${totalPublished} assets to the content piece (${stampedCount || assetIds.length} source + ${derivativeAssetIds.length} reframed derivatives). Video reframing is queued for a follow-up — videos publish as-is for now.`
+    : `Published ${totalPublished} source assets to the content piece. (No image reframing — only source images can be reframed today.)`;
+
   return NextResponse.json({
     jobId: (job as any)?.id_job,
-    publishedAssetCount: stampedCount || assetIds.length,
+    publishedAssetCount: totalPublished,
+    derivativeCount: derivativeAssetIds.length,
     contentId,
-    note: formats.length > 1
-      ? `Published ${stampedCount || assetIds.length} assets to content ${contentId}. Format conversion (9:16 / 1:1 / 16:9) ships in a follow-up — for now the source assets are attached as-is.`
-      : `Published ${stampedCount || assetIds.length} assets to content ${contentId}.`,
+    note,
   });
 }

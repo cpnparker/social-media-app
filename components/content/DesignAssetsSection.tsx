@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import Link from "next/link";
 import { Palette, Sparkles, ExternalLink, Download } from "lucide-react";
 import { getSubdomainUrl } from "@/lib/subdomain";
 

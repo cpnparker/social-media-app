@@ -48,6 +48,8 @@ export default function DesignModePage() {
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [activeFormat, setActiveFormat] = useState("16:9");
+  const [generating, setGenerating] = useState(false);
+  const [animating, setAnimating] = useState(false);
 
   // ── auto-create session on first visit ────────────────────────────────────
   const createSession = useCallback(async (opts: { isIncognito?: boolean; visibility?: "private" | "team" } = {}) => {
@@ -289,6 +291,31 @@ export default function DesignModePage() {
     if (res.ok) refreshSession();
   }, [sessionId, currentShotId, refreshSession]);
 
+  const handleAnimateImage = useCallback(async () => {
+    if (!sessionId || !currentShotId || animating) return;
+    setAnimating(true);
+    try {
+      const res = await fetch(`/api/design/sessions/${sessionId}/shots/${currentShotId}/animate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ duration: 5, format: activeFormat === "9:16" ? "portrait" : activeFormat === "1:1" ? "square" : "landscape" }),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        const j = JSON.parse(text || "{}");
+        throw new Error(j?.error || `HTTP ${res.status}`);
+      }
+      const j = JSON.parse(text);
+      toast.success(`Animated to S${(data?.shots.length || 0) + 1} (${j.durationSec}s)`);
+      await refreshSession();
+      if (j.shotId) setCurrentShotId(j.shotId);
+    } catch (err: any) {
+      toast.error(err?.message || "Animate failed");
+    } finally {
+      setAnimating(false);
+    }
+  }, [sessionId, currentShotId, animating, activeFormat, data?.shots.length, refreshSession]);
+
   const handleSelectVersion = useCallback(async (versionId: string) => {
     if (!sessionId || !currentShotId) return;
     // Optimistic
@@ -322,8 +349,6 @@ export default function DesignModePage() {
       toast.success("Prompt saved");
     }
   }, [sessionId, currentShotId, refreshSession]);
-
-  const [generating, setGenerating] = useState(false);
 
   const handleRegenerate = useCallback(async () => {
     if (!sessionId || !currentShotId || generating) return;
@@ -480,6 +505,8 @@ export default function DesignModePage() {
                 onDelete={() => currentShot && handleDeleteShot(currentShot.id)}
                 onUploadReference={handleUploadReference}
                 onRemoveReference={handleRemoveReference}
+                onAnimateImage={handleAnimateImage}
+                animating={animating}
                 activeFormat={activeFormat}
                 generating={generating}
               />

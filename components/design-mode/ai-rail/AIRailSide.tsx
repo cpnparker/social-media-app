@@ -174,6 +174,8 @@ export function AIRailSide({ currentShot, workspaceId, clientId, contentId, desi
           url: ready.url,
         }],
       }]);
+    } else if (data.design_shot_created || data.design_shot_updated || data.design_shot_generating || data.design_shot_committed) {
+      onAssetReady?.();
     } else if (data.artlist_results) {
       const items: ResultCard[] = (data.artlist_results.items || []).slice(0, 4).map((it: any) => ({
         source: "Artlist" as const,
