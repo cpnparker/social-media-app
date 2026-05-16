@@ -38,6 +38,7 @@ interface HeaderProps {
   onChangeVisibility: (v: "private" | "team") => void;
   onPublish: () => void;
   onBack: () => void;
+  onOpenPalette?: () => void;
 }
 
 export function Header({
@@ -53,6 +54,7 @@ export function Header({
   onChangeVisibility,
   onPublish,
   onBack,
+  onOpenPalette,
 }: HeaderProps) {
   const beats = useMemo(() => {
     if (!content?.brief) return 0;
@@ -97,11 +99,14 @@ export function Header({
 
         <div className="flex-1" />
 
-        <div className="hidden items-center gap-1.5 rounded-full border border-[hsl(var(--design-border))] bg-[hsl(var(--design-bg))] px-2.5 py-1 text-[11.5px] text-muted-foreground md:flex">
+        <button
+          onClick={onOpenPalette}
+          className="hidden items-center gap-1.5 rounded-full border border-[hsl(var(--design-border))] bg-[hsl(var(--design-bg))] px-2.5 py-1 text-[11.5px] text-muted-foreground transition-colors hover:border-[hsl(var(--design-accent))]/40 hover:text-foreground md:flex"
+        >
           <Search className="h-3 w-3" />
           <span>Search shots, refs</span>
           <kbd className="ml-1 rounded bg-[hsl(var(--design-border))]/60 px-1 text-[10px]">⌘K</kbd>
-        </div>
+        </button>
 
         <DropdownMenu onOpenChange={(open) => open && onLoadSessions()}>
           <DropdownMenuTrigger asChild>

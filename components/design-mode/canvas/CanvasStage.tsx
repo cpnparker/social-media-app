@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { Play, Pause, SkipBack, SkipForward, ChevronDown, Upload, Sparkles, Check, AlertTriangle, BadgeCheck, Pencil, Plus, Wand2, MoreVertical, Trash2 } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Play, Pause, SkipBack, SkipForward, ChevronDown, Sparkles, Check, AlertTriangle, BadgeCheck, Pencil, Plus, Wand2, MoreVertical, Trash2 } from "lucide-react";
+import { ReferencePicker } from "./ReferencePicker";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { DesignShot } from "@/lib/design/types";
@@ -9,6 +10,8 @@ import { DESIGN_MODELS, LEGACY_MODEL_ALIASES } from "@/lib/design/types";
 
 interface CanvasStageProps {
   shot: DesignShot | null;
+  /** All shots in the session — used by the references picker to surface candidate canvas assets. */
+  allShots?: DesignShot[];
   onRegenerate: () => void;
   onCommit: () => void;
   onModelChange: (modelId: string) => void;
@@ -21,6 +24,7 @@ interface CanvasStageProps {
   onDurationSave?: (duration: number) => void;
   onDelete?: () => void;
   onUploadReference?: (file: File) => void;
+  onPickReferenceAsset?: (assetId: string, blobUrl: string) => void;
   onRemoveReference?: (refId: string) => void;
   onAnimateImage?: () => void;
   activeFormat?: string;
@@ -38,6 +42,7 @@ const STATUS_PILL: Record<string, { label: string; className: string }> = {
 
 export function CanvasStage({
   shot,
+  allShots,
   onRegenerate,
   onCommit,
   onModelChange,
@@ -50,6 +55,7 @@ export function CanvasStage({
   onDurationSave,
   onDelete,
   onUploadReference,
+  onPickReferenceAsset,
   onRemoveReference,
   onAnimateImage,
   activeFormat = "16:9",
@@ -60,7 +66,6 @@ export function CanvasStage({
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [editingPrompt, setEditingPrompt] = useState(false);
   const [promptDraft, setPromptDraft] = useState(shot?.prompt || "");
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Reset prompt draft when the shot changes
   useEffect(() => {
@@ -253,27 +258,15 @@ export function CanvasStage({
                   </div>
                 );
               })}
-              {/* Upload affordance */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f && onUploadReference) onUploadReference(f);
-                  if (fileInputRef.current) fileInputRef.current.value = "";
-                }}
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!onUploadReference}
-                className="flex aspect-square items-center justify-center rounded-md border border-dashed text-muted-foreground transition-colors hover:text-[hsl(var(--design-accent))] hover:border-[hsl(var(--design-accent))]"
-                style={{ borderColor: "hsl(var(--design-border-strong))" }}
-                title="Upload reference image"
-              >
-                <Upload className="h-3.5 w-3.5" />
-              </button>
+              {/* Upload / pick affordance */}
+              {onUploadReference && (
+                <ReferencePicker
+                  shots={allShots || []}
+                  excludeShotId={shot.id}
+                  onUpload={onUploadReference}
+                  onPickAsset={(assetId, blobUrl) => onPickReferenceAsset?.(assetId, blobUrl)}
+                />
+              )}
             </div>
             {shot.refs.some((r) => r.seedLocked) && (
               <div className="text-[10px] italic text-muted-foreground">

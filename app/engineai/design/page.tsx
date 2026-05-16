@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
@@ -14,6 +14,7 @@ import { Timeline } from "@/components/design-mode/timeline/Timeline";
 import { AIRailWrapper } from "@/components/design-mode/ai-rail/AIRailWrapper";
 import { PublishSheet } from "@/components/design-mode/publish/PublishSheet";
 import { OnboardingHint } from "@/components/design-mode/OnboardingHint";
+import { CommandPalette } from "@/components/design-mode/CommandPalette";
 
 import type { DesignSessionFull, DesignShot } from "@/lib/design/types";
 
@@ -50,6 +51,7 @@ export default function DesignModePage() {
   const [activeFormat, setActiveFormat] = useState("16:9");
   const [generating, setGenerating] = useState(false);
   const [animating, setAnimating] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   // ── auto-create session on first visit ────────────────────────────────────
   const createSession = useCallback(async (opts: { isIncognito?: boolean; visibility?: "private" | "team" } = {}) => {
@@ -106,6 +108,71 @@ export default function DesignModePage() {
   }, [sessionId, currentShotId]);
 
   useEffect(() => { refreshSession(); }, [refreshSession]);
+
+  // ── Global keyboard shortcuts ──
+  // ⌘K / Ctrl+K — open command palette
+  // N — new shot
+  // G — regenerate current shot
+  // ⌘D / Ctrl+D — duplicate current shot
+  // J / L — prev / next shot (Premiere convention)
+  // We ignore key events fired inside text inputs to keep editing untouched.
+  useEffect(() => {
+    function isEditable(target: EventTarget | null): boolean {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable;
+    }
+
+    function onKey(e: KeyboardEvent) {
+      const meta = e.metaKey || e.ctrlKey;
+      // ⌘K — always open palette (even inside inputs)
+      if (meta && e.key === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+        return;
+      }
+      // The rest only fire when not typing
+      if (isEditable(e.target)) return;
+
+      if (e.key === "n" || e.key === "N") {
+        e.preventDefault();
+        // handleAddShot is defined later; use a setter ref to call latest version.
+        // For simplicity we re-look up the handler via the closure trick:
+        addShotRef.current?.();
+        return;
+      }
+      if (e.key === "g" || e.key === "G") {
+        e.preventDefault();
+        regenerateRef.current?.();
+        return;
+      }
+      if (meta && (e.key === "d" || e.key === "D")) {
+        e.preventDefault();
+        duplicateRef.current?.();
+        return;
+      }
+      if (e.key === "j" || e.key === "J") {
+        e.preventDefault();
+        prevShotRef.current?.();
+        return;
+      }
+      if (e.key === "l" || e.key === "L") {
+        e.preventDefault();
+        nextShotRef.current?.();
+        return;
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Refs holding the latest action handlers — populated by effects below so
+  // the shortcuts don't re-bind every render.
+  const addShotRef = useRef<(() => void) | null>(null);
+  const regenerateRef = useRef<(() => void) | null>(null);
+  const duplicateRef = useRef<(() => void) | null>(null);
+  const prevShotRef = useRef<(() => void) | null>(null);
+  const nextShotRef = useRef<(() => void) | null>(null);
 
   // ── sessions list (header dropdown) ───────────────────────────────────────
   const loadSessions = useCallback(async () => {
@@ -164,6 +231,21 @@ export default function DesignModePage() {
       body: JSON.stringify({ currentShotId: shotId }),
     }).catch(() => {});
   }, [sessionId]);
+
+  const handleDuplicateShot = useCallback(async () => {
+    if (!sessionId || !currentShotId) return;
+    const res = await fetch(`/api/design/sessions/${sessionId}/shots/${currentShotId}/duplicate`, {
+      method: "POST",
+    });
+    if (res.ok) {
+      const j = await res.json();
+      await refreshSession();
+      if (j?.shot?.id) setCurrentShotId(j.shot.id);
+      toast.success(`Duplicated to S${j?.shot?.idx}`);
+    } else {
+      toast.error("Duplicate failed");
+    }
+  }, [sessionId, currentShotId, refreshSession]);
 
   const handleAddShot = useCallback(async () => {
     if (!sessionId) return;
@@ -321,6 +403,22 @@ export default function DesignModePage() {
     if (res.ok) refreshSession();
   }, [sessionId, currentShotId, refreshSession]);
 
+  const handlePickReferenceAsset = useCallback(async (assetId: string, _blobUrl: string) => {
+    if (!sessionId || !currentShotId) return;
+    const res = await fetch(`/api/design/sessions/${sessionId}/shots/${currentShotId}/refs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ assetId }),
+    });
+    if (res.ok) {
+      toast.success("Reference added");
+      refreshSession();
+    } else {
+      const j = await res.json().catch(() => ({}));
+      toast.error(j?.error || "Failed to add reference");
+    }
+  }, [sessionId, currentShotId, refreshSession]);
+
   const handleAnimateImage = useCallback(async () => {
     if (!sessionId || !currentShotId || animating) return;
     setAnimating(true);
@@ -416,6 +514,28 @@ export default function DesignModePage() {
     }
   }, [sessionId, currentShotId, generating, activeFormat, refreshSession]);
 
+  // Prev / next shot navigation (J / L keys)
+  const handlePrevShot = useCallback(() => {
+    if (!data || data.shots.length === 0) return;
+    const idx = data.shots.findIndex((s) => s.id === currentShotId);
+    if (idx <= 0) return;
+    setCurrentShotId(data.shots[idx - 1].id);
+  }, [data, currentShotId]);
+  const handleNextShot = useCallback(() => {
+    if (!data || data.shots.length === 0) return;
+    const idx = data.shots.findIndex((s) => s.id === currentShotId);
+    if (idx < 0) { setCurrentShotId(data.shots[0].id); return; }
+    if (idx >= data.shots.length - 1) return;
+    setCurrentShotId(data.shots[idx + 1].id);
+  }, [data, currentShotId]);
+
+  // Keep keyboard-shortcut refs pointing at the latest handler closures
+  useEffect(() => { addShotRef.current = handleAddShot; }, [handleAddShot]);
+  useEffect(() => { regenerateRef.current = handleRegenerate; }, [handleRegenerate]);
+  useEffect(() => { duplicateRef.current = handleDuplicateShot; }, [handleDuplicateShot]);
+  useEffect(() => { prevShotRef.current = handlePrevShot; }, [handlePrevShot]);
+  useEffect(() => { nextShotRef.current = handleNextShot; }, [handleNextShot]);
+
   const handlePublish = useCallback(async (opts: { formats: string[]; caption: string }) => {
     if (!sessionId) return;
     const res = await fetch(`/api/design/sessions/${sessionId}/publish`, {
@@ -490,6 +610,7 @@ export default function DesignModePage() {
           onChangeVisibility={handleVisibilityChange}
           onPublish={() => setPublishOpen(true)}
           onBack={() => router.push("/engineai")}
+          onOpenPalette={() => setPaletteOpen(true)}
         />
 
         {/* Body — brand kit | center stack (canvas + timeline) | AI rail */}
@@ -556,6 +677,7 @@ export default function DesignModePage() {
             <div className="min-h-0 flex-1">
               <CanvasStage
                 shot={currentShot}
+                allShots={data.shots}
                 onRegenerate={handleRegenerate}
                 onCommit={handleCommit}
                 onModelChange={handleModelChange}
@@ -568,6 +690,7 @@ export default function DesignModePage() {
                 onDurationSave={(duration) => currentShot && handleShotDurationSave(currentShot.id, duration)}
                 onDelete={() => currentShot && handleDeleteShot(currentShot.id)}
                 onUploadReference={handleUploadReference}
+                onPickReferenceAsset={handlePickReferenceAsset}
                 onRemoveReference={handleRemoveReference}
                 onAnimateImage={handleAnimateImage}
                 animating={animating}
@@ -620,6 +743,22 @@ export default function DesignModePage() {
         shots={data.shots}
         sessionId={sessionId}
         onPublish={handlePublish}
+      />
+
+      {/* ⌘K command palette */}
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        shots={data.shots}
+        currentShotId={currentShotId}
+        onSelectShot={handleSelectShot}
+        onAddShot={handleAddShot}
+        onRegenerate={handleRegenerate}
+        onAnimate={handleAnimateImage}
+        onCommit={handleCommit}
+        onDuplicate={handleDuplicateShot}
+        onDelete={() => currentShotId && handleDeleteShot(currentShotId)}
+        onChangeModel={(modelId) => handleModelChange(modelId)}
       />
     </div>
   );
