@@ -187,9 +187,63 @@ export default function DesignModePage() {
     refreshSession();
   }, [sessionId, currentShotId, refreshSession]);
 
-  const handleRegenerate = useCallback(() => {
-    toast.info("Generation flow ships in Phase 2b — wiring the Anthropic streamer + shot context next.");
-  }, []);
+  const handlePromptSave = useCallback(async (prompt: string) => {
+    if (!sessionId || !currentShotId) return;
+    // Optimistic UI update
+    setData((prev) => prev ? {
+      ...prev,
+      shots: prev.shots.map((s) => s.id === currentShotId ? { ...s, prompt } : s),
+    } : prev);
+    const res = await fetch(`/api/design/sessions/${sessionId}/shots/${currentShotId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+    if (!res.ok) {
+      toast.error("Failed to save prompt");
+      refreshSession();
+    } else {
+      toast.success("Prompt saved");
+    }
+  }, [sessionId, currentShotId, refreshSession]);
+
+  const [generating, setGenerating] = useState(false);
+
+  const handleRegenerate = useCallback(async () => {
+    if (!sessionId || !currentShotId || generating) return;
+    setGenerating(true);
+    // Optimistic: flip status pill to 'generating' immediately
+    setData((prev) => prev ? {
+      ...prev,
+      shots: prev.shots.map((s) => s.id === currentShotId ? { ...s, status: "generating" } : s),
+    } : prev);
+
+    try {
+      const res = await fetch(`/api/design/sessions/${sessionId}/shots/${currentShotId}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ format: activeFormat === "9:16" ? "portrait" : activeFormat === "1:1" ? "square" : "landscape" }),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        const j = JSON.parse(text || "{}");
+        throw new Error(j?.error || `HTTP ${res.status}`);
+      }
+      const j = JSON.parse(text);
+      toast.success(`Generated v${j.version.idx} (${j.version.metadata?.model_id || "model"})`);
+      await refreshSession();
+    } catch (err: any) {
+      const msg = err?.message || "Generation failed";
+      toast.error(msg);
+      // Roll back the optimistic 'generating' status
+      setData((prev) => prev ? {
+        ...prev,
+        shots: prev.shots.map((s) => s.id === currentShotId ? { ...s, status: "review" } : s),
+      } : prev);
+    } finally {
+      setGenerating(false);
+    }
+  }, [sessionId, currentShotId, generating, activeFormat, refreshSession]);
 
   const handlePublish = useCallback(async (_opts: { formats: string[]; caption: string }) => {
     toast.info("Publish worker (Creatomate) ships in Phase 2d.");
@@ -266,9 +320,10 @@ export default function DesignModePage() {
                 onRegenerate={handleRegenerate}
                 onCommit={() => toast.info("Commit to timeline ships in 2c")}
                 onModelChange={handleModelChange}
-                onPromptEdit={() => toast.info("Prompt refine UI coming in 2b")}
+                onPromptSave={handlePromptSave}
                 onFormatChange={setActiveFormat}
                 activeFormat={activeFormat}
+                generating={generating}
               />
             </div>
             <div className="h-[270px] flex-shrink-0">

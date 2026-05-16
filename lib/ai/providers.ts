@@ -1707,7 +1707,7 @@ type ImageProvider = "openai" | "xai" | "anthropic" | "gemini";
  *   - anthropic: delegates to openai (DALL-E 3)
  *   - gemini: delegates to openai (DALL-E 3)
  */
-async function generateImage(
+export async function generateImage(
   prompt: string,
   size: "1024x1024" | "1792x1024" | "1024x1792" = "1024x1024",
   provider: ImageProvider = "openai",
@@ -1845,7 +1845,7 @@ async function generateImage(
  * Run a Runway video generation, mirror the result to Vercel Blob, return the
  * proxy URL. Mirrors generateImage's contract.
  */
-async function generateVideo(
+export async function generateVideo(
   prompt: string,
   options: {
     duration?: 5 | 10;
@@ -1960,7 +1960,7 @@ async function licenseArtlistAndMirror(assetId: string): Promise<{ videoUrl: str
  * no client is loaded or no context exists yet (so we cleanly fall back to a raw
  * prompt). Lightweight: one DB read.
  */
-async function loadBrandContext(
+export async function loadBrandContext(
   workspaceId: string | undefined,
   clientId: number | undefined
 ): Promise<import("./branded-prompt").BrandContext | null> {
@@ -1994,7 +1994,7 @@ async function loadBrandContext(
 
 /* ─────────────── Design Mode: Asset Persistence ─────────────── */
 
-interface PersistAssetInput {
+export interface PersistAssetInput {
   conversationId?: string | null;
   workspaceId: string;
   clientId?: number | null;
@@ -2009,7 +2009,7 @@ interface PersistAssetInput {
 }
 
 /** Insert a row into ai_design_assets. Fire-and-forget; failures only log. */
-async function persistDesignAsset(input: PersistAssetInput): Promise<string | null> {
+export async function persistDesignAsset(input: PersistAssetInput): Promise<string | null> {
   try {
     const { intelligenceDb } = await import("@/lib/supabase-intelligence");
     // Extract blob_path from the proxy URL.

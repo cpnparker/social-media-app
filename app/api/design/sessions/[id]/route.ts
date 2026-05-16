@@ -58,6 +58,34 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       : Promise.resolve({ data: null }),
   ]);
 
+  // Resolve asset blob URLs for the versions (needed so the canvas can render them)
+  const assetIds = Array.from(new Set(
+    (versionsRaw || []).map((v: any) => v.id_asset).filter(Boolean)
+  ));
+  let assetMap = new Map<string, { url: string; type: string }>();
+  if (assetIds.length > 0) {
+    const { data: assets } = await intelligenceDb
+      .from("ai_design_assets")
+      .select("id_asset, blob_url, type_asset")
+      .in("id_asset", assetIds);
+    assetMap = new Map(
+      (assets || []).map((a: any) => [a.id_asset, { url: a.blob_url, type: a.type_asset }])
+    );
+  }
+
+  // Also resolve URLs for any reference assets
+  const refAssetIds = Array.from(new Set(
+    (refsRaw || []).map((r: any) => r.id_asset).filter(Boolean)
+  ));
+  let refAssetMap = new Map<string, string>();
+  if (refAssetIds.length > 0) {
+    const { data: refAssets } = await intelligenceDb
+      .from("ai_design_assets")
+      .select("id_asset, blob_url")
+      .in("id_asset", refAssetIds);
+    refAssetMap = new Map((refAssets || []).map((a: any) => [a.id_asset, a.blob_url]));
+  }
+
   const session_payload = {
     id: (row as any).id_session,
     workspaceId: (row as any).id_workspace,
@@ -83,10 +111,13 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const versionsByShot = new Map<string, any[]>();
   (versionsRaw || []).forEach((v: any) => {
     const arr = versionsByShot.get(v.id_shot) || [];
+    const asset = v.id_asset ? assetMap.get(v.id_asset) : null;
     arr.push({
       id: v.id_version,
       idx: v.idx,
       assetId: v.id_asset,
+      assetUrl: asset?.url || null,
+      assetType: asset?.type || null,
       promptUsed: v.prompt_used,
       modelId: v.model_id,
       metadata: v.metadata,
@@ -102,6 +133,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       id: r.id_reference,
       idx: r.idx,
       assetId: r.id_asset,
+      assetUrl: r.id_asset ? refAssetMap.get(r.id_asset) || null : null,
       externalUrl: r.external_url,
       seedLocked: !!r.seed_locked,
       caption: r.caption,

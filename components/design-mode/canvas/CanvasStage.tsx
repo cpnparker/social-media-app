@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Play, Pause, SkipBack, SkipForward, ChevronDown, Upload, Sparkles, Check, AlertTriangle, BadgeCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DesignShot } from "@/lib/design/types";
@@ -11,9 +11,10 @@ interface CanvasStageProps {
   onRegenerate: () => void;
   onCommit: () => void;
   onModelChange: (modelId: string) => void;
-  onPromptEdit: () => void;
+  onPromptSave: (prompt: string) => void;
   onFormatChange: (ratio: string) => void;
   activeFormat?: string;
+  generating?: boolean;
 }
 
 const STATUS_PILL: Record<string, { label: string; className: string }> = {
@@ -29,12 +30,21 @@ export function CanvasStage({
   onRegenerate,
   onCommit,
   onModelChange,
-  onPromptEdit,
+  onPromptSave,
   onFormatChange,
   activeFormat = "16:9",
+  generating = false,
 }: CanvasStageProps) {
   const [playing, setPlaying] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [editingPrompt, setEditingPrompt] = useState(false);
+  const [promptDraft, setPromptDraft] = useState(shot?.prompt || "");
+
+  // Reset prompt draft when the shot changes
+  useEffect(() => {
+    setPromptDraft(shot?.prompt || "");
+    setEditingPrompt(false);
+  }, [shot?.id, shot?.prompt]);
 
   if (!shot) {
     return (
@@ -117,38 +127,83 @@ export function CanvasStage({
             </div>
           </div>
 
-          {/* Prompt */}
+          {/* Prompt — inline editable */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
               <div className="section-label muted">Prompt</div>
-              <button onClick={onPromptEdit} className="text-[10.5px] underline" style={{ color: "hsl(var(--design-accent))" }}>
-                Refine
-              </button>
+              {editingPrompt ? (
+                <button
+                  onClick={() => {
+                    onPromptSave(promptDraft);
+                    setEditingPrompt(false);
+                  }}
+                  className="text-[10.5px] font-semibold"
+                  style={{ color: "hsl(var(--design-accent))" }}
+                >
+                  Save
+                </button>
+              ) : (
+                <button
+                  onClick={() => setEditingPrompt(true)}
+                  className="text-[10.5px] underline"
+                  style={{ color: "hsl(var(--design-accent))" }}
+                >
+                  Refine
+                </button>
+              )}
             </div>
-            <div className="rounded-lg border p-2.5 font-mono text-[11px] leading-relaxed"
-                 style={{ borderColor: "hsl(var(--design-border))", background: "hsl(var(--design-bg))" }}>
-              {shot.prompt || <span className="italic text-muted-foreground">No prompt yet</span>}
-            </div>
+            {editingPrompt ? (
+              <textarea
+                value={promptDraft}
+                onChange={(e) => setPromptDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setPromptDraft(shot.prompt || "");
+                    setEditingPrompt(false);
+                  }
+                  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                    onPromptSave(promptDraft);
+                    setEditingPrompt(false);
+                  }
+                }}
+                rows={6}
+                autoFocus
+                className="w-full resize-none rounded-lg border p-2.5 font-mono text-[11px] leading-relaxed focus:border-[hsl(var(--design-accent))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--design-accent))]/20"
+                style={{ borderColor: "hsl(var(--design-border))", background: "hsl(var(--design-bg))" }}
+                placeholder="Describe the shot — composition, lighting, motion, mood…"
+              />
+            ) : (
+              <div
+                onClick={() => setEditingPrompt(true)}
+                className="cursor-text rounded-lg border p-2.5 font-mono text-[11px] leading-relaxed hover:border-[hsl(var(--design-accent))]/40"
+                style={{ borderColor: "hsl(var(--design-border))", background: "hsl(var(--design-bg))" }}
+              >
+                {shot.prompt || <span className="italic text-muted-foreground">Click to add a prompt</span>}
+              </div>
+            )}
           </div>
 
           {/* References */}
           <div className="space-y-1.5">
             <div className="section-label muted">References</div>
             <div className="grid grid-cols-3 gap-1.5">
-              {shot.refs.slice(0, 11).map((r) => (
-                <div key={r.id} className="relative aspect-square overflow-hidden rounded-md border"
-                     style={{ borderColor: "hsl(var(--design-border))" }}>
-                  {r.externalUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={r.externalUrl} alt={r.caption || ""} className="h-full w-full object-cover" />
-                  ) : (
-                    <div className="thumb thumb-stripe h-full w-full" style={{ ['--th' as any]: "30" }} />
-                  )}
-                  {r.seedLocked && (
-                    <span className="absolute right-0.5 top-0.5 rounded bg-[hsl(var(--design-pin))] px-1 text-[9px] font-bold text-white">S</span>
-                  )}
-                </div>
-              ))}
+              {shot.refs.slice(0, 11).map((r) => {
+                const url = r.assetUrl || r.externalUrl;
+                return (
+                  <div key={r.id} className="relative aspect-square overflow-hidden rounded-md border"
+                       style={{ borderColor: "hsl(var(--design-border))" }}>
+                    {url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={url} alt={r.caption || ""} className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="thumb thumb-stripe h-full w-full" style={{ ['--th' as any]: "30" }} />
+                    )}
+                    {r.seedLocked && (
+                      <span className="absolute right-0.5 top-0.5 rounded bg-[hsl(var(--design-pin))] px-1 text-[9px] font-bold text-white">S</span>
+                    )}
+                  </div>
+                );
+              })}
               {/* Upload affordance */}
               <button className="flex aspect-square items-center justify-center rounded-md border border-dashed text-muted-foreground hover:text-foreground hover:border-[hsl(var(--design-accent))]"
                       style={{ borderColor: "hsl(var(--design-border-strong))" }}
@@ -173,9 +228,10 @@ export function CanvasStage({
             </div>
             <button
               onClick={onRegenerate}
-              className="mt-2 w-full rounded-lg bg-[hsl(var(--design-accent))] px-3 py-2 text-[12px] font-medium text-white shadow-sm hover:opacity-90"
+              disabled={generating || !shot.prompt?.trim()}
+              className="mt-2 w-full rounded-lg bg-[hsl(var(--design-accent))] px-3 py-2 text-[12px] font-medium text-white shadow-sm transition hover:opacity-90 disabled:opacity-50"
             >
-              Regenerate · 3 variations
+              {generating ? "Generating…" : shot.versions.length === 0 ? "Generate · v1" : "Regenerate · new version"}
             </button>
             <button
               onClick={onCommit}
@@ -193,17 +249,38 @@ export function CanvasStage({
 
 function ShotPreview({ shot, status }: { shot: DesignShot; status: { label: string; className: string } }) {
   const hue = shot.thumbHue ?? 215;
+  const currentVersion = shot.versions.find((v) => v.id === shot.currentVersionId) || shot.versions[shot.versions.length - 1];
+  const hasAsset = currentVersion?.assetUrl;
+  const isVideo = currentVersion?.assetType === "video" || currentVersion?.assetType === "artlist_video";
+
   return (
     <div
-      className="thumb thumb-stripe relative flex-1 overflow-hidden rounded-xl"
+      className={cn(
+        "relative flex-1 overflow-hidden rounded-xl",
+        !hasAsset && "thumb thumb-stripe",
+        hasAsset && "bg-black",
+      )}
       style={{ ['--th' as any]: String(hue), minHeight: 320, aspectRatio: "16/9" }}
     >
-      {/* Safe area guides */}
-      <div className="pointer-events-none absolute inset-[5%] border border-dashed border-white/20" />
-      <div className="pointer-events-none absolute inset-[12%] border border-dashed border-white/10" />
+      {/* Real asset render */}
+      {hasAsset && isVideo && (
+        <video src={currentVersion!.assetUrl!} controls className="h-full w-full object-contain" />
+      )}
+      {hasAsset && !isVideo && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={currentVersion!.assetUrl!} alt={shot.title} className="h-full w-full object-contain" />
+      )}
+
+      {/* Safe area guides — only show on placeholder/video */}
+      {!hasAsset && (
+        <>
+          <div className="pointer-events-none absolute inset-[5%] border border-dashed border-white/20" />
+          <div className="pointer-events-none absolute inset-[12%] border border-dashed border-white/10" />
+        </>
+      )}
 
       {shot.status === "generating" ? (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/55 backdrop-blur-sm">
           <div className="h-7 w-7 animate-spin rounded-full border-2 border-white/30 border-t-white" />
           <div className="text-[11px] font-mono uppercase tracking-wider text-white/90">
             {DESIGN_MODELS.find((m) => m.id === shot.modelId)?.name || "Generating"} · streaming
@@ -212,7 +289,7 @@ function ShotPreview({ shot, status }: { shot: DesignShot; status: { label: stri
             <div className="anim-shimmer h-full w-3/5" />
           </div>
         </div>
-      ) : (
+      ) : !hasAsset ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center text-center text-white/85">
           <div className="text-[10.5px] font-mono tracking-wider opacity-80">
             SHOT {String(shot.idx).padStart(2, "0")}{shot.beat ? ` · ${shot.beat.toUpperCase()}` : ""}
@@ -222,17 +299,19 @@ function ShotPreview({ shot, status }: { shot: DesignShot; status: { label: stri
             <div className="mt-2 text-[10px] font-mono opacity-70">{shot.thumbLabel}</div>
           )}
         </div>
-      )}
+      ) : null}
 
       {/* Top-left status pill */}
       <span className={cn("pill", status.className, "absolute left-3 top-3")}>{status.label}</span>
 
       {/* Top-right format chips */}
-      <div className="absolute right-3 top-3 flex gap-1">
-        {["16:9", "9:16", "1:1"].map((f) => (
-          <span key={f} className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-[9px] text-white/80 backdrop-blur">{f}</span>
-        ))}
-      </div>
+      {!hasAsset && (
+        <div className="absolute right-3 top-3 flex gap-1">
+          {["16:9", "9:16", "1:1"].map((f) => (
+            <span key={f} className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-[9px] text-white/80 backdrop-blur">{f}</span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -275,28 +354,43 @@ function VersionsStrip({ versions, current, onVary }: { versions: DesignShot["ve
     return (
       <div className="flex items-center gap-1.5 rounded-lg border border-dashed p-2 text-[10.5px] text-muted-foreground"
            style={{ borderColor: "hsl(var(--design-border-strong))" }}>
-        No versions yet — Regenerate to create v1.
+        No versions yet — Generate to create v1.
       </div>
     );
   }
   return (
     <div className="flex items-center gap-1.5 overflow-x-auto rounded-lg border bg-[hsl(var(--design-bg-elev))] p-1.5"
          style={{ borderColor: "hsl(var(--design-border))" }}>
-      {versions.map((v) => (
-        <div
-          key={v.id}
-          className={cn(
-            "thumb thumb-stripe flex h-12 w-16 flex-shrink-0 items-center justify-center rounded",
-            v.id === current && "ring-2 ring-offset-1",
-          )}
-          style={{
-            ['--th' as any]: String(((v.idx * 37) % 360)),
-            ...(v.id === current ? { ['--tw-ring-color' as any]: "hsl(var(--design-accent))" } : {}),
-          }}
-        >
-          <span className="font-mono text-[9px] text-white/85">v{v.idx}</span>
-        </div>
-      ))}
+      {versions.map((v) => {
+        const isVideo = v.assetType === "video" || v.assetType === "artlist_video";
+        const isActive = v.id === current;
+        return (
+          <div
+            key={v.id}
+            className={cn(
+              "relative flex h-12 w-16 flex-shrink-0 items-center justify-center overflow-hidden rounded",
+              !v.assetUrl && "thumb thumb-stripe",
+              isActive && "ring-2 ring-offset-1",
+            )}
+            style={{
+              ['--th' as any]: String(((v.idx * 37) % 360)),
+              ...(isActive ? { ['--tw-ring-color' as any]: "hsl(var(--design-accent))" } : {}),
+            }}
+            title={v.promptUsed || `v${v.idx}`}
+          >
+            {v.assetUrl && !isVideo && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={v.assetUrl} alt={`v${v.idx}`} className="h-full w-full object-cover" />
+            )}
+            {v.assetUrl && isVideo && (
+              <video src={v.assetUrl} className="h-full w-full object-cover" muted />
+            )}
+            <span className="absolute bottom-0.5 right-0.5 rounded bg-black/60 px-1 font-mono text-[9px] text-white/95">
+              v{v.idx}
+            </span>
+          </div>
+        );
+      })}
       <button
         onClick={onVary}
         className="flex h-12 flex-shrink-0 items-center justify-center rounded border border-dashed px-3 text-[10.5px] font-medium text-muted-foreground hover:text-foreground"

@@ -52,6 +52,8 @@ export interface DesignShotVersion {
   id: string;
   idx: number;
   assetId: string | null;
+  assetUrl: string | null;
+  assetType: "image" | "video" | "document" | "artlist_video" | null;
   promptUsed: string | null;
   modelId: string | null;
   metadata: Record<string, any>;
@@ -62,6 +64,7 @@ export interface DesignShotReference {
   id: string;
   idx: number;
   assetId: string | null;
+  assetUrl: string | null;
   externalUrl: string | null;
   seedLocked: boolean;
   caption: string | null;
