@@ -147,18 +147,38 @@ export interface VideoModelDescriptor {
   strength: string;
   weakness: string;
   status: "live" | "coming-soon";
+  /** Which integration handles this. Most video models route through Runway's
+   *  unified API now (Veo / Kling / Seedance / Gen-4.5 are all there). */
+  provider: "runway" | "openai-image" | "xai-image" | "higgsfield" | "sora";
+  /** When provider="runway", the model string passed to the Runway API. */
+  runwayModel?: string;
 }
 
 export const DESIGN_MODELS: VideoModelDescriptor[] = [
-  { id: "higgsfield", name: "Higgsfield",   tag: "Cinematic motion · character lock", strength: "Camera moves, character consistency", weakness: "Slower · 24s/shot", status: "coming-soon" },
-  { id: "runway-g4",  name: "Runway Gen-4", tag: "Image-to-video · text-to-video",     strength: "Tight prompt control",          weakness: "Camera less filmic", status: "live" },
-  { id: "veo-3",      name: "Veo 3",        tag: "Long takes, ambient motion",         strength: "Long coherent takes",            weakness: "Limited stylization", status: "coming-soon" },
-  { id: "kling-2",    name: "Kling 2",      tag: "Stylized motion · physics",          strength: "Physics, water, fabric",         weakness: "Faces drift", status: "coming-soon" },
-  { id: "sora-2",     name: "Sora 2",       tag: "Reference scenes · narrative",       strength: "Story-aware composition",        weakness: "Quota limited", status: "coming-soon" },
-  { id: "dalle-3",    name: "DALL·E 3",     tag: "Stills",                              strength: "Type & graphic stills",          weakness: "No motion", status: "live" },
-  { id: "gpt-img-1",  name: "gpt-image-1",  tag: "Stills · reference matching",        strength: "Match brand references",         weakness: "No motion", status: "live" },
-  { id: "grok-img",   name: "Grok Imagine", tag: "Stills · loose",                      strength: "Fast iteration",                 weakness: "Less brand-faithful", status: "live" },
+  // ── Video — all routed through Runway's unified API ──
+  { id: "runway-g4-5",        name: "Runway Gen-4.5", tag: "Image-to-video · text-to-video",      strength: "Tight prompt control",         weakness: "Camera less filmic",         status: "live", provider: "runway", runwayModel: "gen4.5" },
+  { id: "runway-g3a",         name: "Runway Gen-3 Alpha", tag: "Earlier Runway · faster",         strength: "Quicker iterations",           weakness: "Lower fidelity",             status: "live", provider: "runway", runwayModel: "gen3a_turbo" },
+  { id: "veo-3-1",            name: "Veo 3.1",        tag: "Google Veo · long takes",              strength: "Long coherent takes, audio",   weakness: "Pricier per second",         status: "live", provider: "runway", runwayModel: "veo3.1" },
+  { id: "veo-3-1-fast",       name: "Veo 3.1 Fast",   tag: "Veo · faster, slightly lower fidelity", strength: "Speed / cost balance",        weakness: "Less detail than full Veo",  status: "live", provider: "runway", runwayModel: "veo3.1_fast" },
+  { id: "kling-3-pro",        name: "Kling 3 Pro",    tag: "Stylized motion · physics",            strength: "Water, fabric, physics",       weakness: "Faces can drift",            status: "live", provider: "runway", runwayModel: "kling3.0_pro" },
+  { id: "kling-2-5-turbo",    name: "Kling 2.5 Turbo Pro", tag: "Kling · fast & cheap",            strength: "Speed / motion balance",       weakness: "Less photoreal",             status: "live", provider: "runway", runwayModel: "kling2.5_turbo_pro" },
+  { id: "seedance-2",         name: "Seedance 2",     tag: "ByteDance · reference scenes",         strength: "Composition control",          weakness: "Newer · less battle-tested", status: "live", provider: "runway", runwayModel: "seedance2" },
+  // Models not yet routable through Runway
+  { id: "higgsfield",         name: "Higgsfield",     tag: "Cinematic · character lock · lip-sync", strength: "Character carry, lip-sync",   weakness: "Direct API, separate key",   status: "coming-soon", provider: "higgsfield" },
+  { id: "sora-2",             name: "Sora 2",         tag: "Reference scenes · narrative",         strength: "Story-aware composition",      weakness: "OpenAI direct, quota-gated",  status: "coming-soon", provider: "sora" },
+  // ── Image ──
+  { id: "dalle-3",            name: "DALL·E 3",       tag: "Stills · classic",                     strength: "Type & graphic stills",        weakness: "No motion",                  status: "live", provider: "openai-image" },
+  { id: "gpt-img-1",          name: "gpt-image-1",    tag: "Stills · reference matching",          strength: "Match brand references",       weakness: "No motion",                  status: "live", provider: "openai-image" },
+  { id: "grok-img",           name: "Grok Imagine",   tag: "Stills · loose",                       strength: "Fast iteration",               weakness: "Less brand-faithful",        status: "live", provider: "xai-image" },
 ];
+
+/** Backwards-compat alias — existing shots may have `runway-g4` set. */
+export const LEGACY_MODEL_ALIASES: Record<string, string> = {
+  "runway-g4": "runway-g4-5",
+  "runway-g3-alpha": "runway-g3a",
+  "veo-3": "veo-3-1",
+  "kling-2": "kling-2-5-turbo",
+};
 
 /** Beat helpers for the storyboard view */
 export const DEFAULT_BEATS = ["Foundation", "Conviction", "Horizon", "Return"];

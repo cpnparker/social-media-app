@@ -4,6 +4,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { checkSessionAccess } from "@/lib/ai/access";
 import { generateImage, generateVideo, persistDesignAsset } from "@/lib/ai/providers";
 import type { BrandContext } from "@/lib/ai/branded-prompt";
+import { DESIGN_MODELS, LEGACY_MODEL_ALIASES } from "@/lib/design/types";
 
 /**
  * POST /api/design/sessions/[id]/shots/[shotId]/generate
@@ -56,7 +57,10 @@ export async function POST(
     .maybeSingle();
   if (!shot) return NextResponse.json({ error: "Shot not found" }, { status: 404 });
 
-  const modelId: string = body.modelId || (shot as any).model_id || "runway-g4";
+  let modelId: string = body.modelId || (shot as any).model_id || "runway-g4-5";
+  // Migrate legacy ids transparently
+  if (LEGACY_MODEL_ALIASES[modelId]) modelId = LEGACY_MODEL_ALIASES[modelId];
+  const model = DESIGN_MODELS.find((m) => m.id === modelId);
   const prompt: string = body.prompt || (shot as any).prompt || "";
   if (!prompt.trim()) {
     return NextResponse.json({ error: "Shot has no prompt — set one before generating" }, { status: 400 });
@@ -104,17 +108,9 @@ export async function POST(
   let source: "dalle" | "grok_imagine" | "runway" = "dalle";
 
   try {
-    if (modelId === "runway-g4" || modelId === "higgsfield" || modelId === "veo-3" || modelId === "kling-2" || modelId === "sora-2") {
-      // Video path — only Runway is wired today; others surface a clean error.
-      if (modelId !== "runway-g4") {
-        await intelligenceDb
-          .from("design_shots")
-          .update({ status: "review" })
-          .eq("id_shot", shotId);
-        return NextResponse.json({
-          error: `${modelId} integration is coming soon. Pick Runway Gen-4 for now.`,
-        }, { status: 501 });
-      }
+    // Route per the model registry.
+    if (model?.provider === "runway") {
+      // Video — Runway, Veo, Kling, Seedance all flow through Runway's unified API.
       type = "video";
       source = "runway";
       const duration: 5 | 10 = body.duration === 10 ? 10 : 5;
@@ -122,7 +118,8 @@ export async function POST(
       const result = await generateVideo(prompt, {
         duration,
         format,
-        model: "gen4_turbo",
+        // Pass the actual Runway model string (e.g. "gen4.5", "veo3.1", "kling3.0_pro")
+        model: (model.runwayModel as any) || "gen4.5",
         brand,
       });
       blobUrl = result.videoUrl;
@@ -133,8 +130,17 @@ export async function POST(
         format: format || "landscape",
         brand_applied: !!brand,
       };
+    } else if (model?.provider === "higgsfield" || model?.provider === "sora") {
+      // Not yet wired — clean error so the UI can surface "coming soon".
+      await intelligenceDb
+        .from("design_shots")
+        .update({ status: "review" })
+        .eq("id_shot", shotId);
+      return NextResponse.json({
+        error: `${model.name} isn't wired yet — pick one of the Runway-hosted video models for now (Gen-4.5, Veo 3.1, Kling 3 Pro, or Seedance 2).`,
+      }, { status: 501 });
     } else {
-      // Image path — dalle-3 / gpt-img-1 / grok-img
+      // Image — dalle-3 / gpt-img-1 / grok-img
       type = "image";
       source = modelId === "grok-img" ? "grok_imagine" : "dalle";
       const provider: "openai" | "xai" | "anthropic" = modelId === "grok-img" ? "xai" : "openai";

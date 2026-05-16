@@ -643,8 +643,8 @@ const VIDEO_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         },
         model: {
           type: "string",
-          enum: ["gen4_turbo", "gen3a_turbo"],
-          description: "Runway model. gen4_turbo (default) is best quality/cost; gen3a_turbo for higher fidelity at higher latency.",
+          enum: ["gen4.5", "gen3a_turbo", "veo3", "veo3.1", "veo3.1_fast", "kling2.5_turbo_pro", "kling3.0_pro", "kling3.0_standard", "seedance2"],
+          description: "Video model — Runway's unified API hosts Gen-4.5, Veo, Kling, and Seedance. gen4.5 is the default best quality/cost; veo3.1 for long cinematic takes; kling3.0_pro for physics-heavy scenes; seedance2 for reference-controlled composition.",
         },
       },
       required: ["prompt"],
@@ -1851,7 +1851,7 @@ export async function generateVideo(
     duration?: 5 | 10;
     format?: "landscape" | "portrait" | "square";
     imageUrl?: string;
-    model?: "gen4_turbo" | "gen3a_turbo";
+    model?: import("@/lib/integrations/runway").RunwayModel;
     brand?: import("./branded-prompt").BrandContext | null;
     onProgress?: (progress: number) => void;
   } = {}
@@ -1891,7 +1891,7 @@ export async function generateVideo(
     imageUrl: publicImageUrl,
     duration: options.duration ?? 5,
     ratio: ratioForFormat(options.format),
-    model: options.model ?? "gen4_turbo",
+    model: options.model ?? "gen4.5",
     onProgress: options.onProgress ? (p) => options.onProgress!(p) : undefined,
   });
 
@@ -3465,7 +3465,7 @@ async function streamAnthropic(
           const duration: 5 | 10 = tool.input.duration === 10 ? 10 : 5;
           const format = tool.input.format as "landscape" | "portrait" | "square" | undefined;
           const imageUrlInput: string | undefined = tool.input.image_url;
-          const model = tool.input.model as "gen4_turbo" | "gen3a_turbo" | undefined;
+          const model = tool.input.model as import("@/lib/integrations/runway").RunwayModel | undefined;
           const brand = config.designMode ? await loadBrandContext(config.workspaceId, config.selectedClientId) : null;
 
           // Heartbeat so the UI can show a progress indicator.

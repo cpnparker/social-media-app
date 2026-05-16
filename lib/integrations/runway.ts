@@ -12,7 +12,27 @@
 const RUNWAY_BASE_URL = "https://api.dev.runwayml.com/v1";
 const RUNWAY_API_VERSION = "2024-11-06"; // header X-Runway-Version
 
-export type RunwayModel = "gen4_turbo" | "gen3a_turbo";
+/**
+ * Runway hosts a unified set of video models through their API — recent
+ * additions include Veo, Kling, and Seedance alongside the original Gen
+ * series. As of Q1 2026 the valid model strings are:
+ *   - gen4.5, gen3a_turbo (Runway native)
+ *   - veo3, veo3.1, veo3.1_fast (Google Veo)
+ *   - kling2.5_turbo_pro, kling3.0_pro, kling3.0_standard, klingO3_pro, klingO3_standard
+ *   - seedance2 (ByteDance)
+ */
+export type RunwayModel =
+  | "gen4.5"
+  | "gen3a_turbo"
+  | "veo3"
+  | "veo3.1"
+  | "veo3.1_fast"
+  | "kling2.5_turbo_pro"
+  | "kling3.0_pro"
+  | "kling3.0_standard"
+  | "klingO3_pro"
+  | "klingO3_standard"
+  | "seedance2";
 export type RunwayRatio =
   | "1280:720"
   | "720:1280"
@@ -38,7 +58,7 @@ export interface RunwayGenerateOptions {
   duration?: 5 | 10;
   /** Output aspect ratio. Default 1280:720. */
   ratio?: RunwayRatio;
-  /** Model variant. Default gen4_turbo. */
+  /** Model variant. Default gen4.5. */
   model?: RunwayModel;
   /** Random seed for reproducibility. */
   seed?: number;
@@ -72,7 +92,7 @@ function runwayHeaders(): Record<string, string> {
 export async function generateRunwayVideo(
   opts: RunwayGenerateOptions
 ): Promise<{ videoUrl: string; durationSec: number; model: RunwayModel; ratio: RunwayRatio; runwayTaskId: string }> {
-  const model: RunwayModel = opts.model ?? "gen4_turbo";
+  const model: RunwayModel = opts.model ?? "gen4.5";
   const ratio: RunwayRatio = opts.ratio ?? "1280:720";
   const duration: 5 | 10 = opts.duration ?? 5;
 
