@@ -19,6 +19,7 @@ export async function GET(req: NextRequest) {
   const contentObjectId = searchParams.get("contentObjectId");
   const customerId = searchParams.get("customerId");
   const search = searchParams.get("search");
+  const mode = searchParams.get("mode"); // 'general' | 'design' — filter by conversation mode
   const limit = parseInt(searchParams.get("limit") || "100", 10);
 
   if (!workspaceId) {
@@ -85,6 +86,14 @@ export async function GET(req: NextRequest) {
       // "General" = show ALL threads across all clients (no client filter)
     } else if (customerId) {
       query = query.eq("id_client", parseInt(customerId, 10));
+    }
+
+    if (mode === "design") {
+      query = query.eq("type_conversation_mode", "design");
+    } else if (mode === "general") {
+      // Default chat surface — exclude design sessions so they don't pollute the
+      // main EngineAI list. Use neq to also catch legacy null rows pre-migration.
+      query = query.neq("type_conversation_mode", "design");
     }
 
     if (search) {

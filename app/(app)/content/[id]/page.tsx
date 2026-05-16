@@ -356,7 +356,7 @@ export default function ContentDetailPage() {
     setChatLoading(true);
     try {
       const res = await fetch(
-        `/api/ai/conversations?workspaceId=${workspaceId}&contentObjectId=${contentId}`
+        `/api/ai/conversations?workspaceId=${workspaceId}&contentObjectId=${contentId}&mode=general`
       );
       if (res.ok) {
         const data = await res.json();

@@ -4,8 +4,11 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
-import { ArrowLeft, Plus, Sparkles, BadgeCheck, FileText } from "lucide-react";
+import { ArrowLeft, Plus, Sparkles, BadgeCheck, FileText, Lock, Users, EyeOff, ChevronDown, History } from "lucide-react";
 import Link from "next/link";
+import { toast } from "sonner";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
 import { DesignChat, type DesignMessage } from "@/components/design-mode/DesignChat";
 import { Canvas } from "@/components/design-mode/Canvas";
 import { ArtlistBrowser } from "@/components/design-mode/ArtlistBrowser";
@@ -17,6 +20,25 @@ interface ContentScope {
   workingTitle: string | null;
   contentType: string | null;
 }
+
+interface DesignSession {
+  id: string;
+  title: string;
+  visibility: "private" | "team";
+  isIncognito?: boolean;
+  customerName?: string | null;
+  customerId?: string | null;
+  contentId?: number | null;
+  updatedAt: string;
+  myPermission?: "owner" | "view" | "collaborate";
+  sharedWithMe?: boolean;
+}
+
+type ConversationMeta = {
+  visibility: "private" | "team";
+  isIncognito: boolean;
+  myPermission: "owner" | "view" | "collaborate";
+};
 
 export default function DesignModePage() {
   const router = useRouter();
@@ -38,6 +60,8 @@ export default function DesignModePage() {
   const [animatePrompt, setAnimatePrompt] = useState<string | undefined>();
   const [contentScope, setContentScope] = useState<ContentScope | null>(null);
   const [selectedAsset, setSelectedAsset] = useState<DesignAsset | null>(null);
+  const [conversationMeta, setConversationMeta] = useState<ConversationMeta | null>(null);
+  const [sessions, setSessions] = useState<DesignSession[] | null>(null);
 
   // Fetch content metadata when scoped to a content piece.
   useEffect(() => {
@@ -52,7 +76,7 @@ export default function DesignModePage() {
   }, [contentId, workspaceId]);
 
   // Auto-create a design session on first load if none exists.
-  const createSession = useCallback(async () => {
+  const createSession = useCallback(async (opts: { isIncognito?: boolean; visibility?: "private" | "team" } = {}) => {
     if (!workspaceId) return;
     setCreating(true);
     setCreateError(null);
@@ -63,7 +87,8 @@ export default function DesignModePage() {
         body: JSON.stringify({
           workspaceId,
           mode: "design",
-          visibility: "private",
+          visibility: opts.visibility ?? "private",
+          isIncognito: opts.isIncognito ?? false,
           customerId: customer?.id ?? undefined,
           contentObjectId: contentId ?? undefined,
         }),
@@ -77,6 +102,11 @@ export default function DesignModePage() {
         throw new Error(`Unexpected response shape: ${text.slice(0, 200)}`);
       }
       setConversationId(json.conversation.id);
+      setConversationMeta({
+        visibility: (json.conversation.visibility as "private" | "team") || "private",
+        isIncognito: !!json.conversation.isIncognito,
+        myPermission: "owner",
+      });
       const currentPath = typeof window !== "undefined" ? window.location.pathname : "/engineai/design";
       const contentQs = contentId ? `&content=${contentId}` : "";
       router.replace(`${currentPath}?thread=${json.conversation.id}${contentQs}`);
@@ -88,6 +118,72 @@ export default function DesignModePage() {
       setCreating(false);
     }
   }, [workspaceId, customer?.id, router, contentId]);
+
+  // Load existing conversation's metadata (visibility, incognito, my permission).
+  useEffect(() => {
+    if (!conversationId) { setConversationMeta(null); return; }
+    fetch(`/api/ai/conversations/${conversationId}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(r))
+      .then((j) => {
+        const c = j?.conversation;
+        if (c) setConversationMeta({
+          visibility: c.visibility,
+          isIncognito: !!c.isIncognito,
+          myPermission: c.myPermission || "owner",
+        });
+      })
+      .catch(() => { /* non-fatal */ });
+  }, [conversationId]);
+
+  // Load past design sessions for the workspace (respects privacy server-side).
+  const loadSessions = useCallback(async () => {
+    if (!workspaceId) return;
+    try {
+      const res = await fetch(`/api/ai/conversations?workspaceId=${workspaceId}&mode=design&limit=50`);
+      if (!res.ok) return;
+      const j = await res.json();
+      setSessions((j.conversations || []).map((c: any) => ({
+        id: c.id,
+        title: c.title || "Untitled session",
+        visibility: c.visibility,
+        isIncognito: !!c.isIncognito,
+        customerName: c.customerName,
+        customerId: c.customerId,
+        contentId: c.contentObjectId ?? null,
+        updatedAt: c.updatedAt,
+        myPermission: c.myPermission,
+        sharedWithMe: c.sharedWithMe,
+      })));
+    } catch { /* non-fatal */ }
+  }, [workspaceId]);
+
+  const handleVisibilityChange = useCallback(async (next: "private" | "team") => {
+    if (!conversationId || !conversationMeta) return;
+    if (conversationMeta.myPermission !== "owner") {
+      toast.error("Only the owner can change visibility");
+      return;
+    }
+    if (conversationMeta.isIncognito) {
+      toast.error("Incognito sessions can't be shared");
+      return;
+    }
+    try {
+      const res = await fetch(`/api/ai/conversations/${conversationId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ visibility: next }),
+      });
+      if (res.ok) {
+        setConversationMeta((m) => m ? { ...m, visibility: next } : m);
+        toast.success(`Changed to ${next === "private" ? "Private" : "Team"}`);
+      } else {
+        const j = await res.json().catch(() => ({}));
+        toast.error(j?.error || "Failed to change visibility");
+      }
+    } catch {
+      toast.error("Failed to change visibility");
+    }
+  }, [conversationId, conversationMeta]);
 
   useEffect(() => {
     if (conversationId || !workspaceId || creating || createError) return;
@@ -174,7 +270,7 @@ export default function DesignModePage() {
     ));
   }, [contentScope]);
 
-  const newSession = useCallback(async () => {
+  const newSession = useCallback(async (opts: { isIncognito?: boolean } = {}) => {
     if (!workspaceId) return;
     const res = await fetch("/api/ai/conversations", {
       method: "POST",
@@ -183,19 +279,36 @@ export default function DesignModePage() {
         workspaceId,
         mode: "design",
         visibility: "private",
+        isIncognito: opts.isIncognito ?? false,
         customerId: customer?.id ?? undefined,
         contentObjectId: contentId ?? undefined,
       }),
     });
     const json = await res.json();
     setConversationId(json.conversation.id);
+    setConversationMeta({
+      visibility: "private",
+      isIncognito: !!opts.isIncognito,
+      myPermission: "owner",
+    });
     setMessages([]);
     setAssets([]);
     setAnimatePrompt(undefined);
     const currentPath = typeof window !== "undefined" ? window.location.pathname : "/engineai/design";
     const contentQs = contentId ? `&content=${contentId}` : "";
     router.replace(`${currentPath}?thread=${json.conversation.id}${contentQs}`);
-  }, [workspaceId, customer?.id, router, contentId]);
+    loadSessions();
+  }, [workspaceId, customer?.id, router, contentId, loadSessions]);
+
+  const switchSession = useCallback((sessionId: string) => {
+    setConversationId(sessionId);
+    setMessages([]);
+    setAssets([]);
+    setAnimatePrompt(undefined);
+    const currentPath = typeof window !== "undefined" ? window.location.pathname : "/engineai/design";
+    const contentQs = contentId ? `&content=${contentId}` : "";
+    router.replace(`${currentPath}?thread=${sessionId}${contentQs}`);
+  }, [router, contentId]);
 
   const brandBadge = useMemo(() => {
     if (!customer) return null;
@@ -243,13 +356,132 @@ export default function DesignModePage() {
         </div>
         {contentBadge}
         {brandBadge}
+
+        {/* Visibility badge / dropdown — only when a session is loaded */}
+        {conversationId && conversationMeta && !conversationMeta.isIncognito && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium",
+                  conversationMeta.visibility === "private"
+                    ? "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+                    : "border-purple-300 bg-purple-50 text-purple-700 dark:border-purple-700 dark:bg-purple-950 dark:text-purple-300",
+                  conversationMeta.myPermission !== "owner" && "opacity-70 cursor-default",
+                )}
+                disabled={conversationMeta.myPermission !== "owner"}
+              >
+                {conversationMeta.visibility === "private" ? <Lock className="h-3 w-3" /> : <Users className="h-3 w-3" />}
+                {conversationMeta.visibility === "private" ? "Private" : "Team"}
+                {conversationMeta.myPermission === "owner" && <ChevronDown className="h-2.5 w-2.5" />}
+              </button>
+            </DropdownMenuTrigger>
+            {conversationMeta.myPermission === "owner" && (
+              <DropdownMenuContent align="start" className="w-44">
+                <DropdownMenuItem
+                  onClick={() => handleVisibilityChange("private")}
+                  className={cn("text-xs gap-2", conversationMeta.visibility === "private" && "bg-muted font-medium")}
+                >
+                  <Lock className="h-3 w-3" />
+                  <span className="flex-1">Private</span>
+                  {conversationMeta.visibility === "private" && <span className="text-primary text-xs">✓</span>}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => handleVisibilityChange("team")}
+                  className={cn("text-xs gap-2", conversationMeta.visibility === "team" && "bg-muted font-medium")}
+                >
+                  <Users className="h-3 w-3" />
+                  <span className="flex-1">Team</span>
+                  {conversationMeta.visibility === "team" && <span className="text-primary text-xs">✓</span>}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            )}
+          </DropdownMenu>
+        )}
+
+        {/* Incognito badge */}
+        {conversationMeta?.isIncognito && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300">
+            <EyeOff className="h-3 w-3" />
+            Incognito
+          </span>
+        )}
+
+        {/* View-only badge */}
+        {conversationMeta && conversationMeta.myPermission === "view" && (
+          <span className="inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+            View only
+          </span>
+        )}
+
         <div className="flex-1" />
-        <button
-          onClick={newSession}
-          className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted"
-        >
-          <Plus className="h-3 w-3" /> New session
-        </button>
+
+        {/* Past sessions */}
+        <DropdownMenu onOpenChange={(open) => open && loadSessions()}>
+          <DropdownMenuTrigger asChild>
+            <button className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted">
+              <History className="h-3 w-3" /> Sessions
+              <ChevronDown className="h-2.5 w-2.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-80">
+            <DropdownMenuLabel className="text-[11px] uppercase tracking-wide text-muted-foreground">Recent design sessions</DropdownMenuLabel>
+            <div className="max-h-96 overflow-y-auto">
+              {sessions === null ? (
+                <DropdownMenuItem disabled className="text-xs text-muted-foreground">Loading…</DropdownMenuItem>
+              ) : sessions.length === 0 ? (
+                <DropdownMenuItem disabled className="text-xs text-muted-foreground">No past sessions in this workspace.</DropdownMenuItem>
+              ) : (
+                sessions.map((s) => (
+                  <DropdownMenuItem
+                    key={s.id}
+                    onClick={() => switchSession(s.id)}
+                    className={cn("flex flex-col items-start gap-0.5 text-xs", s.id === conversationId && "bg-muted")}
+                  >
+                    <div className="flex w-full items-center gap-1.5">
+                      {s.isIncognito ? <EyeOff className="h-2.5 w-2.5 text-amber-600" /> :
+                        s.visibility === "team" ? <Users className="h-2.5 w-2.5 text-purple-600" /> :
+                        <Lock className="h-2.5 w-2.5 text-zinc-500" />}
+                      <span className="flex-1 truncate font-medium">{s.title}</span>
+                      {s.sharedWithMe && <span className="text-[9px] text-muted-foreground">shared</span>}
+                    </div>
+                    <div className="flex w-full items-center gap-1 text-[10px] text-muted-foreground">
+                      {s.customerName && <span>{s.customerName}</span>}
+                      {s.customerName && s.updatedAt && <span>·</span>}
+                      {s.updatedAt && <span>{new Date(s.updatedAt).toLocaleDateString()}</span>}
+                    </div>
+                  </DropdownMenuItem>
+                ))
+              )}
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {/* New session menu (Plus button with dropdown for incognito option) */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted">
+              <Plus className="h-3 w-3" /> New
+              <ChevronDown className="h-2.5 w-2.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuItem onClick={() => newSession()} className="gap-2 text-xs">
+              <Lock className="h-3 w-3" />
+              <span className="flex-1">New session</span>
+              <span className="text-[10px] text-muted-foreground">private</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => newSession({ isIncognito: true })} className="gap-2 text-xs">
+              <EyeOff className="h-3 w-3 text-amber-600" />
+              <span className="flex-1">New incognito session</span>
+              <span className="text-[10px] text-muted-foreground">no save</span>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <div className="px-2 py-1 text-[10px] leading-relaxed text-muted-foreground">
+              Incognito sessions don&apos;t save messages or canvas assets. You can still generate and download, but nothing is persisted.
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {/* Three-column body */}

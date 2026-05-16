@@ -43,6 +43,10 @@ export interface AIProviderConfig {
   /** When true, enables Design mode tools (generate_video, search_artlist, license_artlist_asset)
    *  and auto-injects client brand context into image/video prompts. */
   designMode?: boolean;
+  /** When true, skip writing any persistence row (ai_design_assets, etc). Mirrors the
+   *  ai_messages incognito behaviour. The Blob upload still happens so the asset is
+   *  displayed inline this turn — it just never gets indexed/listed afterwards. */
+  incognito?: boolean;
 }
 
 /** Default temperature for user-facing chat. Lower than model defaults (~0.7-1.0)
@@ -3408,7 +3412,7 @@ async function streamAnthropic(
 
           // Persist to ai_design_assets in design mode.
           let designAssetId: string | null = null;
-          if (config.designMode && config.workspaceId && config.userId) {
+          if (config.designMode && !config.incognito && config.workspaceId && config.userId) {
             designAssetId = await persistDesignAsset({
               conversationId: config.conversationId || null,
               workspaceId: config.workspaceId,
@@ -3495,7 +3499,7 @@ async function streamAnthropic(
           }
 
           let designAssetId: string | null = null;
-          if (config.designMode && config.workspaceId && config.userId) {
+          if (config.designMode && !config.incognito && config.workspaceId && config.userId) {
             designAssetId = await persistDesignAsset({
               conversationId: config.conversationId || null,
               workspaceId: config.workspaceId,
@@ -3549,7 +3553,7 @@ async function streamAnthropic(
           const { videoUrl, licenseTerms } = await licenseArtlistAndMirror(assetId);
 
           let designAssetId: string | null = null;
-          if (config.designMode && config.workspaceId && config.userId) {
+          if (config.designMode && !config.incognito && config.workspaceId && config.userId) {
             designAssetId = await persistDesignAsset({
               conversationId: config.conversationId || null,
               workspaceId: config.workspaceId,

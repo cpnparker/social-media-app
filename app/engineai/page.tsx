@@ -328,7 +328,8 @@ function EngineAIContent() {
     if (!workspaceId) return;
     setLoading(true);
     try {
-      let url = `/api/ai/conversations?workspaceId=${workspaceId}`;
+      // Exclude design-mode sessions — they live in /engineai/design.
+      let url = `/api/ai/conversations?workspaceId=${workspaceId}&mode=general`;
       if (customerId) url += `&customerId=${customerId}`;
       const res = await fetch(url);
       if (!res.ok) return;
