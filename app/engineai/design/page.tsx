@@ -313,9 +313,9 @@ export default function DesignModePage() {
   const brandBadge = useMemo(() => {
     if (!customer) return null;
     return (
-      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+      <span className="pill pill-success">
         <BadgeCheck className="h-3 w-3" />
-        Brand: {customer.name}
+        {customer.name}
       </span>
     );
   }, [customer]);
@@ -323,11 +323,11 @@ export default function DesignModePage() {
   const contentBadge = useMemo(() => {
     if (!contentScope) return null;
     const label = contentScope.workingTitle || `Content #${contentScope.id}`;
-    const trimmed = label.length > 40 ? label.slice(0, 38) + "…" : label;
+    const trimmed = label.length > 36 ? label.slice(0, 34) + "…" : label;
     return (
       <Link
         href={`/content/${contentScope.id}`}
-        className="inline-flex items-center gap-1 rounded-full border border-blue-300 bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300"
+        className="pill pill-accent hover:opacity-80"
         title={`Designing for: ${label}`}
       >
         <FileText className="h-3 w-3" />
@@ -337,22 +337,19 @@ export default function DesignModePage() {
   }, [contentScope]);
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] flex-col">
+    <div className="design-mode flex h-[calc(100vh-3.5rem)] flex-col">
       {/* Header */}
-      <div className="flex items-center gap-3 border-b bg-background px-4 py-2">
+      <div className="flex items-center gap-3 border-b border-[hsl(var(--design-border))] bg-[hsl(var(--design-bg-elev))] px-5 py-3">
         <button
           onClick={() => router.push("/engineai")}
-          className="rounded p-1 hover:bg-muted"
+          className="rounded-full p-1.5 text-muted-foreground hover:bg-[hsl(var(--design-border))]/30 hover:text-foreground"
           aria-label="Back to EngineAI"
         >
           <ArrowLeft className="h-4 w-4" />
         </button>
-        <div className="flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-primary" />
-          <h1 className="text-sm font-semibold">Design</h1>
-          <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
-            Beta
-          </span>
+        <div className="flex items-baseline gap-2">
+          <h1 className="editorial-display text-xl tracking-tight">Design</h1>
+          <span className="section-label">Studio</span>
         </div>
         {contentBadge}
         {brandBadge}
@@ -363,10 +360,8 @@ export default function DesignModePage() {
             <DropdownMenuTrigger asChild>
               <button
                 className={cn(
-                  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium",
-                  conversationMeta.visibility === "private"
-                    ? "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
-                    : "border-purple-300 bg-purple-50 text-purple-700 dark:border-purple-700 dark:bg-purple-950 dark:text-purple-300",
+                  "pill",
+                  conversationMeta.visibility === "private" ? "pill-neutral" : "pill-runway",
                   conversationMeta.myPermission !== "owner" && "opacity-70 cursor-default",
                 )}
                 disabled={conversationMeta.myPermission !== "owner"}
@@ -401,7 +396,7 @@ export default function DesignModePage() {
 
         {/* Incognito badge */}
         {conversationMeta?.isIncognito && (
-          <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300">
+          <span className="pill pill-warning">
             <EyeOff className="h-3 w-3" />
             Incognito
           </span>
@@ -409,9 +404,7 @@ export default function DesignModePage() {
 
         {/* View-only badge */}
         {conversationMeta && conversationMeta.myPermission === "view" && (
-          <span className="inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-            View only
-          </span>
+          <span className="pill pill-neutral">View only</span>
         )}
 
         <div className="flex-1" />
@@ -419,8 +412,8 @@ export default function DesignModePage() {
         {/* Past sessions */}
         <DropdownMenu onOpenChange={(open) => open && loadSessions()}>
           <DropdownMenuTrigger asChild>
-            <button className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted">
-              <History className="h-3 w-3" /> Sessions
+            <button className="inline-flex items-center gap-1.5 rounded-full border border-[hsl(var(--design-border))] bg-[hsl(var(--design-bg-elev))] px-3 py-1.5 text-xs font-medium hover:border-[hsl(var(--design-accent))]/40 hover:bg-[hsl(var(--design-accent-soft))]/50">
+              <History className="h-3.5 w-3.5" /> Sessions
               <ChevronDown className="h-2.5 w-2.5" />
             </button>
           </DropdownMenuTrigger>
@@ -460,8 +453,8 @@ export default function DesignModePage() {
         {/* New session menu (Plus button with dropdown for incognito option) */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted">
-              <Plus className="h-3 w-3" /> New
+            <button className="inline-flex items-center gap-1.5 rounded-full bg-[hsl(var(--design-accent))] px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:opacity-90">
+              <Plus className="h-3.5 w-3.5" /> New session
               <ChevronDown className="h-2.5 w-2.5" />
             </button>
           </DropdownMenuTrigger>
@@ -485,9 +478,9 @@ export default function DesignModePage() {
       </div>
 
       {/* Three-column body */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden bg-[hsl(var(--design-bg))]">
         {/* Chat */}
-        <div className="flex w-[35%] min-w-[320px] flex-col border-r">
+        <div className="flex w-[35%] min-w-[320px] flex-col border-r border-[hsl(var(--design-border))] bg-[hsl(var(--design-bg-elev))]">
           {conversationId ? (
             <DesignChat
               conversationId={conversationId}
@@ -500,29 +493,41 @@ export default function DesignModePage() {
             />
           ) : createError ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
-              <div className="text-sm font-medium text-destructive">Couldn&apos;t start a design session</div>
-              <div className="max-w-md whitespace-pre-wrap break-words rounded border bg-muted p-3 text-left text-xs text-muted-foreground">
+              <h3 className="editorial-display text-xl text-[hsl(var(--design-danger))]">Couldn&apos;t start a design session</h3>
+              <div className="design-card max-w-md p-3 text-left text-[11.5px] leading-relaxed text-muted-foreground whitespace-pre-wrap break-words">
                 {createError}
               </div>
               <button
                 onClick={() => { setCreateError(null); createSession(); }}
-                className="rounded border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                className="rounded-full bg-[hsl(var(--design-accent))] px-4 py-1.5 text-[12px] font-medium text-white shadow-sm hover:opacity-90"
               >
                 Retry
               </button>
             </div>
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              {creating ? "Starting your design session…" : !workspaceId ? "Pick a workspace to begin." : "Loading…"}
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+              {creating ? (
+                <>
+                  <Sparkles className="h-5 w-5 animate-pulse text-[hsl(var(--design-accent))]" />
+                  <span className="text-[12px]">Starting your design session…</span>
+                </>
+              ) : !workspaceId ? (
+                <span className="text-[12px]">Pick a workspace to begin.</span>
+              ) : (
+                <span className="text-[12px]">Loading…</span>
+              )}
             </div>
           )}
         </div>
 
         {/* Canvas */}
         <div className="flex flex-1 flex-col">
-          <div className="flex items-center justify-between border-b px-3 py-1.5">
-            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Canvas</div>
-            <div className="text-[11px] text-muted-foreground">{assets.length} {assets.length === 1 ? "asset" : "assets"}</div>
+          <div className="flex items-center justify-between border-b border-[hsl(var(--design-border))] bg-[hsl(var(--design-bg-elev))]/50 px-5 py-2.5">
+            <div className="flex items-baseline gap-3">
+              <div className="section-label">Canvas</div>
+              <div className="editorial-numeric text-2xl text-foreground">{assets.length}</div>
+              <div className="text-[11px] text-muted-foreground">{assets.length === 1 ? "asset" : "assets"} in session</div>
+            </div>
           </div>
           <Canvas
             assets={assets}
@@ -535,7 +540,7 @@ export default function DesignModePage() {
         </div>
 
         {/* Library */}
-        <div className="flex w-[22%] min-w-[260px] flex-col border-l">
+        <div className="flex w-[22%] min-w-[260px] flex-col border-l border-[hsl(var(--design-border))] bg-[hsl(var(--design-bg-elev))]">
           <div className="flex border-b">
             <TabButton active={activeTab === "library"} onClick={() => setActiveTab("library")}>Artlist</TabButton>
             <TabButton active={activeTab === "canvas"} onClick={() => setActiveTab("canvas")}>Past assets</TabButton>
@@ -578,7 +583,9 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   return (
     <button
       onClick={onClick}
-      className={`flex-1 px-3 py-2 text-xs font-medium ${active ? "border-b-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+      className={`flex-1 px-3 py-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] transition-colors ${
+        active ? "border-b-2 border-[hsl(var(--design-accent))] text-[hsl(var(--design-accent))]" : "text-muted-foreground hover:text-foreground"
+      }`}
     >
       {children}
     </button>
@@ -602,8 +609,15 @@ function PastAssets({ workspaceId, clientId, onAdd }: { workspaceId?: string; cl
       .finally(() => setLoading(false));
   }, [workspaceId, clientId]);
 
-  if (loading) return <div className="p-4 text-xs text-muted-foreground">Loading…</div>;
-  if (items.length === 0) return <div className="p-4 text-xs text-muted-foreground">No past assets yet.</div>;
+  if (loading) return <div className="p-4 text-[11px] text-muted-foreground">Loading…</div>;
+  if (items.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-1.5 px-4 py-10 text-center">
+        <div className="text-[12px] font-medium text-muted-foreground">No past assets yet</div>
+        <div className="text-[11px] text-muted-foreground/80">Generated and licensed assets from earlier sessions will appear here.</div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-1.5">
@@ -611,7 +625,7 @@ function PastAssets({ workspaceId, clientId, onAdd }: { workspaceId?: string; cl
         <button
           key={a.id_asset}
           onClick={() => onAdd(a)}
-          className="flex w-full gap-2 rounded border p-1.5 text-left hover:border-primary"
+          className="design-card design-tile flex w-full gap-2 p-2 text-left hover:border-[hsl(var(--design-accent))]/40"
         >
           {a.type_asset === "video" || a.type_asset === "artlist_video" ? (
             // eslint-disable-next-line jsx-a11y/media-has-caption
@@ -621,8 +635,12 @@ function PastAssets({ workspaceId, clientId, onAdd }: { workspaceId?: string; cl
             <img src={a.blob_url} alt="" className="h-12 w-16 flex-shrink-0 rounded object-cover" loading="lazy" />
           )}
           <div className="min-w-0 flex-1">
-            <div className="truncate text-xs">{a.prompt || a.metadata?.title || a.source}</div>
-            <div className="text-[10px] text-muted-foreground">{a.source} · {new Date(a.date_created).toLocaleDateString()}</div>
+            <div className="truncate text-[12px] font-medium leading-tight">{a.prompt || a.metadata?.title || a.source}</div>
+            <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <span className="capitalize">{a.source}</span>
+              <span>·</span>
+              <span>{new Date(a.date_created).toLocaleDateString()}</span>
+            </div>
           </div>
         </button>
       ))}

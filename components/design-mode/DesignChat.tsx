@@ -199,26 +199,36 @@ export function DesignChat({
     <div className={`flex h-full flex-col ${className || ""}`}>
       <div ref={scrollerRef} className="flex-1 space-y-3 overflow-y-auto p-3">
         {messages.length === 0 && (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground">
-            <Sparkles className="h-7 w-7" />
-            <div className="font-medium">Design mode</div>
-            <div className="max-w-xs text-xs">
-              Describe what you want to create. I&apos;ll propose directions, then generate images and videos that match your client&apos;s brand.
+          <div className="flex h-full flex-col items-center justify-center gap-5 px-4 py-8 text-center">
+            <div className="relative">
+              <div className="absolute inset-0 -m-3 rounded-full bg-[hsl(var(--design-accent-soft))] blur-2xl opacity-70" />
+              <Sparkles className="relative h-8 w-8 text-[hsl(var(--design-accent))]" />
             </div>
-            <div className="mt-1 flex flex-wrap justify-center gap-1.5">
-              {PRESETS.map((p) => (
-                <button
-                  key={p.label}
-                  onClick={() => setInput(p.prompt)}
-                  className="inline-flex items-center gap-1 rounded-full border bg-background px-2.5 py-1 text-[11px] text-foreground hover:border-primary hover:bg-primary/5"
-                  title={p.prompt}
-                >
-                  {p.icon} {p.label}
-                </button>
-              ))}
+            <div className="space-y-1.5 max-w-xs">
+              <h2 className="editorial-display text-2xl text-foreground leading-tight">
+                What are we making today?
+              </h2>
+              <p className="text-[13px] text-muted-foreground leading-relaxed">
+                Describe what you want to create. I&apos;ll propose directions, then generate images and videos that match your client&apos;s brand.
+              </p>
             </div>
-            <div className="text-[11px] text-muted-foreground/70">
-              Tap a preset to start, or type your own brief.
+            <div className="flex w-full max-w-sm flex-col gap-2">
+              <div className="section-label text-left">Quick briefs</div>
+              <div className="grid grid-cols-1 gap-1.5">
+                {PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    onClick={() => setInput(p.prompt)}
+                    className="design-tile design-card flex items-center gap-2 px-3 py-2 text-left text-[12px] font-medium hover:border-[hsl(var(--design-accent))]/40"
+                    title={p.prompt}
+                  >
+                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[hsl(var(--design-accent-soft))] text-[hsl(var(--design-accent))]">
+                      {p.icon}
+                    </span>
+                    <span className="flex-1 text-foreground">{p.label}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         )}
@@ -233,7 +243,7 @@ export function DesignChat({
       </div>
 
       <form
-        className="border-t p-3"
+        className="border-t border-[hsl(var(--design-border))] bg-[hsl(var(--design-bg-elev))] p-3"
         onSubmit={(e) => { e.preventDefault(); send(); }}
       >
         <div className="flex gap-2">
@@ -243,13 +253,13 @@ export function DesignChat({
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
             placeholder="Describe the visual or video you want…"
             rows={2}
-            className="flex-1 resize-none rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+            className="flex-1 resize-none rounded-lg border border-[hsl(var(--design-border))] bg-[hsl(var(--design-card))] px-3 py-2 text-[13px] leading-relaxed focus:border-[hsl(var(--design-accent))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--design-accent))]/20"
             disabled={streaming}
           />
           <button
             type="submit"
             disabled={streaming || !input.trim()}
-            className="self-end rounded-md bg-primary p-2 text-primary-foreground disabled:opacity-40"
+            className="self-end rounded-full bg-[hsl(var(--design-accent))] p-2.5 text-white shadow-sm disabled:opacity-40"
             aria-label="Send"
           >
             {streaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
@@ -275,7 +285,7 @@ function MessageRow({ msg, streaming }: { msg: DesignMessage; streaming: boolean
   if (msg.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground whitespace-pre-wrap leading-relaxed">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-[hsl(var(--design-accent))] px-3.5 py-2 text-[13.5px] leading-relaxed text-white whitespace-pre-wrap shadow-sm">
           {msg.content}
         </div>
       </div>
@@ -284,7 +294,7 @@ function MessageRow({ msg, streaming }: { msg: DesignMessage; streaming: boolean
 
   return (
     <div className="flex justify-start">
-      <div className="max-w-[95%] space-y-2 rounded-2xl rounded-bl-sm bg-muted px-3 py-2 text-sm">
+      <div className="max-w-[95%] space-y-2 rounded-2xl rounded-bl-md border border-[hsl(var(--design-border))] bg-[hsl(var(--design-card))] px-3.5 py-2.5 text-[13.5px] shadow-sm">
         {(!msg.content && streaming) && <span className="text-muted-foreground">…</span>}
         {parsed?.map((part, i) => {
           if (part.kind === "text") {

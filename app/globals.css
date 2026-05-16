@@ -98,6 +98,112 @@
   }
 }
 
+/* ─── Design Mode theme — editorial / premium creative workspace ─── */
+.design-mode {
+  /* Warm parchment background, soft indigo accent. Overrides the global tokens
+     only within this subtree so we don't affect the rest of the app. */
+  --design-bg: 42 40% 96%;          /* #FAF6EC */
+  --design-bg-elev: 0 0% 100%;
+  --design-fg: 222 47% 11%;
+  --design-muted: 38 18% 70%;
+  --design-border: 36 22% 86%;
+  --design-card: 0 0% 100%;
+  --design-accent: 235 60% 52%;     /* indigo */
+  --design-accent-soft: 235 80% 96%;
+  --design-pin: 35 92% 50%;
+  --design-success: 158 50% 38%;
+  --design-warning: 25 92% 58%;
+  --design-danger: 0 72% 50%;
+
+  background: hsl(var(--design-bg));
+  color: hsl(var(--design-fg));
+}
+.dark .design-mode {
+  --design-bg: 222 30% 7%;
+  --design-bg-elev: 222 30% 10%;
+  --design-fg: 220 14% 96%;
+  --design-muted: 218 11% 50%;
+  --design-border: 222 20% 18%;
+  --design-card: 222 25% 12%;
+  --design-accent: 235 70% 65%;
+  --design-accent-soft: 235 60% 18%;
+}
+
+/* Editorial labels — uppercase tracked indigo, used as section markers */
+.design-mode .section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: hsl(var(--design-accent));
+}
+
+/* Editorial display numerics — serif, hairline weight, generous tracking */
+.design-mode .editorial-numeric {
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  font-weight: 400;
+  font-feature-settings: "lnum", "tnum";
+  letter-spacing: -0.02em;
+}
+
+/* Editorial display heading */
+.design-mode .editorial-display {
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+
+/* Premium card */
+.design-mode .design-card {
+  background: hsl(var(--design-card));
+  border: 1px solid hsl(var(--design-border));
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.02), 0 1px 12px rgba(15,12,40,0.04);
+}
+
+/* Status pills */
+.design-mode .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  border: 1px solid transparent;
+}
+.design-mode .pill-neutral { background: hsl(40 30% 95%); color: hsl(35 30% 35%); border-color: hsl(36 25% 86%); }
+.design-mode .pill-success { background: hsl(158 60% 94%); color: hsl(158 50% 28%); border-color: hsl(158 50% 80%); }
+.design-mode .pill-warning { background: hsl(38 85% 92%); color: hsl(25 70% 35%); border-color: hsl(35 70% 78%); }
+.design-mode .pill-danger  { background: hsl(0 85% 95%); color: hsl(0 65% 38%); border-color: hsl(0 60% 85%); }
+.design-mode .pill-accent  { background: hsl(var(--design-accent-soft)); color: hsl(var(--design-accent)); border-color: hsl(235 50% 88%); }
+.design-mode .pill-runway  { background: hsl(275 75% 95%); color: hsl(270 60% 38%); border-color: hsl(275 55% 88%); }
+.design-mode .pill-artlist { background: hsl(158 60% 94%); color: hsl(158 50% 28%); border-color: hsl(158 50% 80%); }
+.dark .design-mode .pill-neutral { background: hsl(40 10% 18%); color: hsl(40 20% 75%); border-color: hsl(40 10% 25%); }
+.dark .design-mode .pill-success { background: hsl(158 30% 18%); color: hsl(158 50% 75%); border-color: hsl(158 30% 28%); }
+.dark .design-mode .pill-warning { background: hsl(30 30% 18%); color: hsl(30 70% 75%); border-color: hsl(30 30% 28%); }
+.dark .design-mode .pill-danger  { background: hsl(0 30% 20%); color: hsl(0 60% 80%); border-color: hsl(0 30% 30%); }
+.dark .design-mode .pill-accent  { background: hsl(235 30% 22%); color: hsl(235 60% 80%); border-color: hsl(235 30% 32%); }
+.dark .design-mode .pill-runway  { background: hsl(270 30% 22%); color: hsl(275 60% 80%); border-color: hsl(270 30% 32%); }
+.dark .design-mode .pill-artlist { background: hsl(158 30% 18%); color: hsl(158 50% 75%); border-color: hsl(158 30% 28%); }
+
+/* Thin divider */
+.design-mode .editorial-divider {
+  height: 1px;
+  background: linear-gradient(to right, transparent, hsl(var(--design-border)), transparent);
+}
+
+/* Hover affordance on asset tiles */
+.design-mode .design-tile {
+  transition: box-shadow 0.18s ease, transform 0.18s ease;
+}
+.design-mode .design-tile:hover {
+  box-shadow: 0 6px 24px rgba(15, 12, 40, 0.08), 0 1px 2px rgba(0,0,0,0.03);
+  transform: translateY(-1px);
+}
+
 /* ─── AI Response Formatting ─── */
 .ai-response {
   font-size: 0.9375rem;

@@ -22,25 +22,31 @@ export function Canvas({ assets, onAnimate, onPin, onArchive, onSelect, classNam
 
   if (assets.length === 0) {
     return (
-      <div className={`flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-muted-foreground ${className || ""}`}>
-        <Sparkles className="h-8 w-8" />
-        <div className="space-y-1">
-          <div className="text-sm font-medium">Canvas is empty</div>
-          <div className="text-xs">Generated images, videos, and licensed Artlist clips will appear here as you create them.</div>
+      <div className={`flex h-full flex-col items-center justify-center gap-4 p-8 text-center ${className || ""}`}>
+        <div className="relative">
+          <div className="absolute inset-0 -m-4 rounded-full bg-[hsl(var(--design-accent-soft))] blur-2xl opacity-60" />
+          <Sparkles className="relative h-10 w-10 text-[hsl(var(--design-accent))]" />
+        </div>
+        <div className="space-y-2 max-w-sm">
+          <h3 className="editorial-display text-2xl text-foreground">A blank canvas.</h3>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            Generated images, animated videos, and licensed Artlist clips will land here as you create them. Pin your favourites to build a storyboard.
+          </p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className={`flex flex-col gap-4 overflow-y-auto p-4 ${className || ""}`}>
+    <div className={`flex flex-col gap-6 overflow-y-auto p-5 ${className || ""}`}>
       {pinned.length > 0 && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            <Pin className="h-3 w-3" />
-            Storyboard
+        <section className="space-y-2.5">
+          <div className="flex items-baseline gap-2">
+            <Pin className="h-3 w-3 text-[hsl(var(--design-pin))]" />
+            <div className="section-label" style={{ color: "hsl(var(--design-pin))" }}>Storyboard</div>
+            <div className="editorial-numeric text-base text-foreground">{pinned.length}</div>
           </div>
-          <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
             {pinned.map((a) => (
               <AssetTile
                 key={a.id_asset}
@@ -52,14 +58,16 @@ export function Canvas({ assets, onAnimate, onPin, onArchive, onSelect, classNam
               />
             ))}
           </div>
-        </div>
+        </section>
       )}
 
-      <div className="space-y-2">
-        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Session ({rest.length})
+      <section className="space-y-2.5">
+        <div className="flex items-baseline gap-2">
+          <div className="section-label">Session</div>
+          <div className="editorial-numeric text-base text-foreground">{rest.length}</div>
+          <div className="editorial-divider flex-1 ml-2" />
         </div>
-        <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
           {rest.map((a) => (
             <AssetTile
               key={a.id_asset}
@@ -71,7 +79,7 @@ export function Canvas({ assets, onAnimate, onPin, onArchive, onSelect, classNam
             />
           ))}
         </div>
-      </div>
+      </section>
     </div>
   );
 }
