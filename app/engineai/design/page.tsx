@@ -13,6 +13,7 @@ import { CanvasStage } from "@/components/design-mode/canvas/CanvasStage";
 import { Timeline } from "@/components/design-mode/timeline/Timeline";
 import { AIRailWrapper } from "@/components/design-mode/ai-rail/AIRailWrapper";
 import { PublishSheet } from "@/components/design-mode/publish/PublishSheet";
+import { OnboardingHint } from "@/components/design-mode/OnboardingHint";
 
 import type { DesignSessionFull, DesignShot } from "@/lib/design/types";
 
@@ -446,7 +447,24 @@ export default function DesignModePage() {
             defaultCollapsed={true}
           />
 
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div className="relative flex min-w-0 flex-1 flex-col">
+            {/* First-run onboarding hint — only shown when the session is empty */}
+            {data.shots.length === 0 && (
+              <div className="pointer-events-none absolute right-4 top-4 z-20">
+                <OnboardingHint
+                  id="empty-session-tip"
+                  title="Start by creating a shot"
+                  body={
+                    <>
+                      Click <span className="font-medium">Create a shot</span> below, write a prompt,
+                      pick a model, and we&apos;ll generate it on-brand for{" "}
+                      {data.client?.name ? <span className="font-medium">{data.client.name}</span> : "your client"}.
+                    </>
+                  }
+                  visible={true}
+                />
+              </div>
+            )}
             <div className="min-h-0 flex-1">
               <CanvasStage
                 shot={currentShot}
@@ -493,6 +511,7 @@ export default function DesignModePage() {
             workspaceId={workspaceId || null}
             clientId={data.session.clientId}
             contentId={data.session.contentId}
+            designSessionId={sessionId}
             allShots={data.shots}
             briefExcerpt={data.content?.brief || null}
             brandSummary={data.brandKit?.visualIdentity?.voice || data.brandKit?.versionTag || (data.client?.name ? `Client: ${data.client.name}` : null)}

@@ -10,6 +10,8 @@ interface AIRailSideProps {
   workspaceId: string | null;
   clientId: number | null;
   contentId: number | null;
+  /** Design session id — when set, generated assets attach to the focused shot. */
+  designSessionId?: string | null;
   /** All shots in the session — used to compose richer studio context. */
   allShots?: DesignShot[];
   /** Content brief excerpt for context. */
@@ -37,7 +39,7 @@ const SUGGESTIONS = [
   { label: "Tighten to 28s",         icon: <Search className="h-3 w-3" /> },
 ];
 
-export function AIRailSide({ currentShot, workspaceId, clientId, contentId, allShots, briefExcerpt, brandSummary, onAssetReady, onClose }: AIRailSideProps) {
+export function AIRailSide({ currentShot, workspaceId, clientId, contentId, designSessionId, allShots, briefExcerpt, brandSummary, onAssetReady, onClose }: AIRailSideProps) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
@@ -98,7 +100,11 @@ export function AIRailSide({ currentShot, workspaceId, clientId, contentId, allS
       const res = await fetch(`/api/ai/conversations/${convId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: v + studioContext }),
+        body: JSON.stringify({
+          content: v + studioContext,
+          designSessionId: designSessionId ?? undefined,
+          designFocusedShotId: currentShot?.id ?? undefined,
+        }),
         signal: abortRef.current.signal,
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -138,7 +144,7 @@ export function AIRailSide({ currentShot, workspaceId, clientId, contentId, allS
     }
   // handleEvent is a closure over setTurns/setStatusLabel/onAssetReady — those are stable.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streaming, ensureConversation, currentShot, allShots, briefExcerpt, brandSummary, onAssetReady]);
+  }, [streaming, ensureConversation, currentShot, allShots, briefExcerpt, brandSummary, designSessionId, onAssetReady]);
 
   function handleEvent(data: any, aiTurnId: string) {
     if (typeof data.token === "string") {

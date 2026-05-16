@@ -559,6 +559,10 @@ export async function POST(
     const body = await req.json();
     const userContent = body.content;
     const userAttachments: Attachment[] | undefined = body.attachments;
+    // Studio mode (Design v2): attach generated assets to a specific shot in
+    // a design session. Provided per-message by the Design Mode AI rail.
+    const designSessionId: string | undefined = body.designSessionId;
+    const designFocusedShotId: string | undefined = body.designFocusedShotId;
 
     if (!userContent?.trim() && (!userAttachments || userAttachments.length === 0)) {
       return new Response(JSON.stringify({ error: "Message content is required" }), {
@@ -1128,7 +1132,7 @@ export async function POST(
     // the "user navigated away mid-stream and lost their response" bug.
     const aiStream = createStreamingResponse(
       messages,
-      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: isTeamThread ? undefined : (session.user?.email || undefined), selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1 },
+      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: isTeamThread ? undefined : (session.user?.email || undefined), selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId },
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {

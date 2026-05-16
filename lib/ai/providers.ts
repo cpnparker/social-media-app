@@ -43,6 +43,12 @@ export interface AIProviderConfig {
   /** When true, enables Design mode tools (generate_video, search_artlist, license_artlist_asset)
    *  and auto-injects client brand context into image/video prompts. */
   designMode?: boolean;
+  /** Studio mode: the v2 Design Mode session this conversation is anchored to. When set,
+   *  generated assets also auto-attach to design_shots + create design_shot_versions. */
+  designSessionId?: string;
+  /** The shot currently focused in the v2 canvas. New generations from chat attach here.
+   *  If unset and designSessionId is set, the streamer will create a new shot per generation. */
+  designFocusedShotId?: string;
   /** When true, skip writing any persistence row (ai_design_assets, etc). Mirrors the
    *  ai_messages incognito behaviour. The Blob upload still happens so the asset is
    *  displayed inline this turn — it just never gets indexed/listed afterwards. */
@@ -2009,6 +2015,101 @@ export interface PersistAssetInput {
 }
 
 /** Insert a row into ai_design_assets. Fire-and-forget; failures only log. */
+/**
+ * Studio mode: link a freshly generated asset to a design_shot.
+ *
+ * If `focusedShotId` is set, the asset becomes a new version of that shot.
+ * Otherwise a new shot is created in the session and the asset becomes v1.
+ *
+ * Returns the shot id + version id so the caller can surface them to the
+ * client (e.g. so a refresh of the session picks them up).
+ *
+ * Best-effort: errors are logged and the function returns null shotId/versionId
+ * so the asset still exists in the canvas via id_workspace + id_content.
+ */
+export async function linkAssetToShot(opts: {
+  sessionId: string;
+  focusedShotId?: string;
+  assetId: string;
+  prompt: string;
+  modelId: string;
+  metadata: Record<string, unknown>;
+}): Promise<{ shotId: string | null; versionId: string | null }> {
+  try {
+    const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+    let shotId = opts.focusedShotId || null;
+
+    if (!shotId) {
+      // Create a new shot at the end of the session
+      const { count } = await intelligenceDb
+        .from("design_shots")
+        .select("id_shot", { count: "exact", head: true })
+        .eq("id_session", opts.sessionId);
+      const nextIdx = (count || 0) + 1;
+      const { data: created } = await intelligenceDb
+        .from("design_shots")
+        .insert({
+          id_session: opts.sessionId,
+          idx: nextIdx,
+          name_shot: opts.prompt.slice(0, 60) || `Shot ${nextIdx}`,
+          duration_sec: 5,
+          model_id: opts.modelId,
+          status: "review",
+          flag_on_brand: 1,
+          prompt: opts.prompt,
+        })
+        .select("id_shot")
+        .single();
+      shotId = (created as any)?.id_shot || null;
+    }
+
+    if (!shotId) return { shotId: null, versionId: null };
+
+    // Append a new version
+    const { data: maxRow } = await intelligenceDb
+      .from("design_shot_versions")
+      .select("idx")
+      .eq("id_shot", shotId)
+      .order("idx", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const nextVerIdx = ((maxRow as any)?.idx || 0) + 1;
+
+    const { data: ver } = await intelligenceDb
+      .from("design_shot_versions")
+      .insert({
+        id_shot: shotId,
+        idx: nextVerIdx,
+        id_asset: opts.assetId,
+        prompt_used: opts.prompt,
+        model_id: opts.modelId,
+        metadata: opts.metadata,
+      })
+      .select("id_version")
+      .single();
+    const versionId = (ver as any)?.id_version || null;
+
+    if (versionId) {
+      // Update the shot's current_version + bump the timestamp
+      await intelligenceDb
+        .from("design_shots")
+        .update({ current_version_id: versionId, date_updated: new Date().toISOString() })
+        .eq("id_shot", shotId);
+
+      // Stamp the version + shot links on the asset row
+      await intelligenceDb
+        .from("ai_design_assets")
+        .update({ id_shot: shotId, id_version: versionId })
+        .eq("id_asset", opts.assetId);
+    }
+
+    return { shotId, versionId };
+  } catch (err: any) {
+    console.warn("[StudioMode] linkAssetToShot failed:", err?.message);
+    return { shotId: null, versionId: null };
+  }
+}
+
 export async function persistDesignAsset(input: PersistAssetInput): Promise<string | null> {
   try {
     const { intelligenceDb } = await import("@/lib/supabase-intelligence");
@@ -3412,6 +3513,7 @@ async function streamAnthropic(
 
           // Persist to ai_design_assets in design mode.
           let designAssetId: string | null = null;
+          let studioShotId: string | null = null;
           if (config.designMode && !config.incognito && config.workspaceId && config.userId) {
             designAssetId = await persistDesignAsset({
               conversationId: config.conversationId || null,
@@ -3425,12 +3527,24 @@ async function streamAnthropic(
               prompt,
               metadata: { size, model: "dall-e-3", brand_applied: !!brand },
             });
+            // Studio mode: link to a shot
+            if (designAssetId && config.designSessionId) {
+              const linked = await linkAssetToShot({
+                sessionId: config.designSessionId,
+                focusedShotId: config.designFocusedShotId,
+                assetId: designAssetId,
+                prompt,
+                modelId: "dalle-3",
+                metadata: { size, brand_applied: !!brand },
+              });
+              studioShotId = linked.shotId;
+            }
           }
 
           // Notify client with the generated image URL
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ image_ready: { url: imageUrl, prompt, asset_id: designAssetId } })}\n\n`
+              `data: ${JSON.stringify({ image_ready: { url: imageUrl, prompt, asset_id: designAssetId, shot_id: studioShotId } })}\n\n`
             )
           );
 
@@ -3499,6 +3613,7 @@ async function streamAnthropic(
           }
 
           let designAssetId: string | null = null;
+          let studioShotIdVideo: string | null = null;
           if (config.designMode && !config.incognito && config.workspaceId && config.userId) {
             designAssetId = await persistDesignAsset({
               conversationId: config.conversationId || null,
@@ -3513,10 +3628,21 @@ async function streamAnthropic(
               parentId,
               metadata: { duration_sec: durationSec, model: usedModel, format: format || "landscape", brand_applied: !!brand },
             });
+            if (designAssetId && config.designSessionId) {
+              const linked = await linkAssetToShot({
+                sessionId: config.designSessionId,
+                focusedShotId: config.designFocusedShotId,
+                assetId: designAssetId,
+                prompt,
+                modelId: usedModel,
+                metadata: { duration_sec: durationSec, format: format || "landscape", brand_applied: !!brand },
+              });
+              studioShotIdVideo = linked.shotId;
+            }
           }
 
           controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ video_ready: { url: videoUrl, prompt, duration: durationSec, source: "runway", asset_id: designAssetId } })}\n\n`)
+            encoder.encode(`data: ${JSON.stringify({ video_ready: { url: videoUrl, prompt, duration: durationSec, source: "runway", asset_id: designAssetId, shot_id: studioShotIdVideo } })}\n\n`)
           );
 
           fullText += `\n\n🎬 [Generated video](${videoUrl})\n\n`;
@@ -3553,6 +3679,7 @@ async function streamAnthropic(
           const { videoUrl, licenseTerms } = await licenseArtlistAndMirror(assetId);
 
           let designAssetId: string | null = null;
+          let studioShotIdArtlist: string | null = null;
           if (config.designMode && !config.incognito && config.workspaceId && config.userId) {
             designAssetId = await persistDesignAsset({
               conversationId: config.conversationId || null,
@@ -3566,9 +3693,20 @@ async function streamAnthropic(
               prompt: title,
               metadata: { artlist_asset_id: assetId, license_terms: licenseTerms, title },
             });
+            if (designAssetId && config.designSessionId) {
+              const linked = await linkAssetToShot({
+                sessionId: config.designSessionId,
+                focusedShotId: config.designFocusedShotId,
+                assetId: designAssetId,
+                prompt: title,
+                modelId: "artlist",
+                metadata: { artlist_asset_id: assetId, license_terms: licenseTerms },
+              });
+              studioShotIdArtlist = linked.shotId;
+            }
           }
 
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ video_ready: { url: videoUrl, prompt: title, source: "artlist", asset_id: designAssetId, license_terms: licenseTerms } })}\n\n`));
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ video_ready: { url: videoUrl, prompt: title, source: "artlist", asset_id: designAssetId, shot_id: studioShotIdArtlist, license_terms: licenseTerms } })}\n\n`));
           fullText += `\n\n🎬 [${title} (Artlist)](${videoUrl})\n\n`;
           toolResults.push({
             type: "tool_result",

@@ -48,6 +48,7 @@ import { cn } from "@/lib/utils";
 import { getSubdomainUrl } from "@/lib/subdomain";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import PromoDraftsSection from "@/components/content/PromoDraftsSection";
+import { DesignAssetsSection } from "@/components/content/DesignAssetsSection";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
 import ContentChatSelector from "@/components/ai-writer/ContentChatSelector";
 import type { AIConversation } from "@/lib/types/ai";
@@ -1130,6 +1131,12 @@ export default function ContentDetailPage() {
                 </a>
               </CardContent>
             </Card>
+
+            {/* Design assets (published from Design Mode) */}
+            <DesignAssetsSection
+              workspaceId={obj.workspaceId}
+              contentId={contentId}
+            />
 
             {/* Promo Drafts */}
             <PromoDraftsSection

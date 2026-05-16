@@ -10,6 +10,7 @@ interface AIRailWrapperProps {
   workspaceId: string | null;
   clientId: number | null;
   contentId: number | null;
+  designSessionId?: string | null;
   allShots?: DesignShot[];
   briefExcerpt?: string | null;
   brandSummary?: string | null;
