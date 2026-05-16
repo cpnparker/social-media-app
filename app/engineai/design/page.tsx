@@ -337,7 +337,13 @@ export default function DesignModePage() {
             </div>
           </div>
 
-          <AIRailSide currentShot={currentShot} />
+          <AIRailSide
+            currentShot={currentShot}
+            workspaceId={workspaceId || null}
+            clientId={data.session.clientId}
+            contentId={data.session.contentId}
+            onAssetReady={refreshSession}
+          />
         </div>
       </div>
 
