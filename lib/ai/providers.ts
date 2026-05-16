@@ -1743,22 +1743,77 @@ async function generateImage(
       throw new Error("Grok image generation returned no image data");
     }
   } else {
-    // OpenAI (DALL-E 3) — used by openai, anthropic, and gemini providers
+    // OpenAI — used by openai, anthropic, and gemini providers.
+    // Prefer gpt-image-1 (current flagship, returns base64) and fall back to
+    // dall-e-3 (URL) if the account hasn't been verified for gpt-image-1 yet.
     const openai = getOpenAIClient();
-    const response = await openai.images.generate({
-      model: "dall-e-3",
-      prompt,
-      n: 1,
-      size,
-      quality: "standard",
-    });
 
-    const tempUrl = response.data?.[0]?.url;
-    if (!tempUrl) throw new Error("DALL-E returned no image URL");
+    // gpt-image-1 sizes: 1024x1024 | 1536x1024 | 1024x1536 | auto
+    // dall-e-3   sizes: 1024x1024 | 1792x1024 | 1024x1792
+    const gptImageSize: "1024x1024" | "1536x1024" | "1024x1536" =
+      size === "1792x1024" ? "1536x1024" :
+      size === "1024x1792" ? "1024x1536" :
+      "1024x1024";
 
-    const imageRes = await fetch(tempUrl);
-    if (!imageRes.ok) throw new Error("Failed to download generated image");
-    imageBuffer = Buffer.from(await imageRes.arrayBuffer());
+    const generateWithGptImage1 = async (): Promise<Buffer> => {
+      const res = await openai.images.generate({
+        model: "gpt-image-1",
+        prompt,
+        n: 1,
+        size: gptImageSize,
+        quality: "high",
+      } as any);
+      const data = res.data?.[0];
+      if (data && (data as any).b64_json) {
+        return Buffer.from((data as any).b64_json, "base64");
+      }
+      if (data?.url) {
+        const r = await fetch(data.url);
+        if (!r.ok) throw new Error("Failed to download gpt-image-1 result");
+        return Buffer.from(await r.arrayBuffer());
+      }
+      throw new Error("gpt-image-1 returned no image data");
+    };
+
+    const generateWithDallE3 = async (): Promise<Buffer> => {
+      const res = await openai.images.generate({
+        model: "dall-e-3",
+        prompt,
+        n: 1,
+        size,
+        quality: "standard",
+      });
+      const tempUrl = res.data?.[0]?.url;
+      if (!tempUrl) throw new Error("DALL-E returned no image URL");
+      const imageRes = await fetch(tempUrl);
+      if (!imageRes.ok) throw new Error("Failed to download generated image");
+      return Buffer.from(await imageRes.arrayBuffer());
+    };
+
+    try {
+      imageBuffer = await generateWithGptImage1();
+      console.log(`[Image Gen] gpt-image-1 (${gptImageSize})`);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      const status = err?.status || err?.response?.status;
+      // Fall back to DALL-E 3 only on "model not available" type errors —
+      // not on content-policy violations or bad-input errors.
+      const isModelUnavailable =
+        status === 404 ||
+        /does not exist|model.*not.*found|verify your organization|access.*denied/i.test(msg);
+      if (!isModelUnavailable) throw err;
+      console.warn(`[Image Gen] gpt-image-1 unavailable (${msg}); falling back to dall-e-3`);
+      try {
+        imageBuffer = await generateWithDallE3();
+        console.log(`[Image Gen] dall-e-3 (${size})`);
+      } catch (fallbackErr: any) {
+        const fmsg = fallbackErr?.message || String(fallbackErr);
+        throw new Error(
+          `Image generation failed on both gpt-image-1 (${msg}) and dall-e-3 (${fmsg}). ` +
+            `Verify your OpenAI organization at https://platform.openai.com/settings/organization/general and enable image generation.`
+        );
+      }
+    }
   }
 
   // Upload to Vercel Blob for permanent storage
