@@ -15,6 +15,7 @@ import { AIRailWrapper } from "@/components/design-mode/ai-rail/AIRailWrapper";
 import { PublishSheet } from "@/components/design-mode/publish/PublishSheet";
 import { OnboardingHint } from "@/components/design-mode/OnboardingHint";
 import { CommandPalette } from "@/components/design-mode/CommandPalette";
+import { ShareDialog } from "@/components/design-mode/ShareDialog";
 
 import type { DesignSessionFull, DesignShot } from "@/lib/design/types";
 
@@ -52,6 +53,7 @@ export default function DesignModePage() {
   const [generating, setGenerating] = useState(false);
   const [animating, setAnimating] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
 
   // ── auto-create session on first visit ────────────────────────────────────
   const createSession = useCallback(async (opts: { isIncognito?: boolean; visibility?: "private" | "team" } = {}) => {
@@ -271,6 +273,49 @@ export default function DesignModePage() {
     });
     refreshSession();
   }, [sessionId, currentShotId, refreshSession]);
+
+  const handleCommitAll = useCallback(async () => {
+    if (!sessionId || !data) return;
+    const candidates = data.shots.filter((s) => s.status === "review" && s.versions.length > 0);
+    if (candidates.length === 0) {
+      toast.info("Nothing to commit — no shots in review status.");
+      return;
+    }
+    toast.info(`Committing ${candidates.length} shot${candidates.length === 1 ? "" : "s"}…`);
+    const results = await Promise.allSettled(
+      candidates.map((s) =>
+        fetch(`/api/design/sessions/${sessionId}/shots/${s.id}/commit`, { method: "POST" })
+      ),
+    );
+    const ok = results.filter((r) => r.status === "fulfilled" && (r.value as Response).ok).length;
+    toast.success(`Committed ${ok}/${candidates.length} shots`);
+    refreshSession();
+  }, [sessionId, data, refreshSession]);
+
+  const handleGeneratePending = useCallback(async () => {
+    if (!sessionId || !data) return;
+    const candidates = data.shots.filter((s) => s.versions.length === 0 && s.prompt?.trim());
+    if (candidates.length === 0) {
+      toast.info("Nothing pending — all shots either have a version or no prompt.");
+      return;
+    }
+    toast.info(`Generating v1 for ${candidates.length} shot${candidates.length === 1 ? "" : "s"}…`);
+    // Sequential to avoid Runway rate limits + heavy parallel video gen costs
+    let ok = 0;
+    for (const s of candidates) {
+      try {
+        const res = await fetch(`/api/design/sessions/${sessionId}/shots/${s.id}/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: activeFormat === "9:16" ? "portrait" : activeFormat === "1:1" ? "square" : "landscape" }),
+        });
+        if (res.ok) ok++;
+      } catch { /* keep going */ }
+      // Refresh after each so the storyboard fills live
+      refreshSession();
+    }
+    toast.success(`Generated v1 for ${ok}/${candidates.length} shots`);
+  }, [sessionId, data, activeFormat, refreshSession]);
 
   const handleCommit = useCallback(async () => {
     if (!sessionId || !currentShotId) return;
@@ -611,6 +656,7 @@ export default function DesignModePage() {
           onPublish={() => setPublishOpen(true)}
           onBack={() => router.push("/engineai")}
           onOpenPalette={() => setPaletteOpen(true)}
+          onOpenShare={() => setShareOpen(true)}
         />
 
         {/* Body — brand kit | center stack (canvas + timeline) | AI rail */}
@@ -745,6 +791,16 @@ export default function DesignModePage() {
         onPublish={handlePublish}
       />
 
+      {/* Share dialog */}
+      {sessionId && (
+        <ShareDialog
+          open={shareOpen}
+          onClose={() => setShareOpen(false)}
+          sessionId={sessionId}
+          onMakeTeam={() => handleVisibilityChange("team")}
+        />
+      )}
+
       {/* ⌘K command palette */}
       <CommandPalette
         open={paletteOpen}
@@ -759,6 +815,19 @@ export default function DesignModePage() {
         onDuplicate={handleDuplicateShot}
         onDelete={() => currentShotId && handleDeleteShot(currentShotId)}
         onChangeModel={(modelId) => handleModelChange(modelId)}
+        onCommitAll={handleCommitAll}
+        onGeneratePending={handleGeneratePending}
+        onSwitchTimeline={async (shape) => {
+          if (!sessionId) return;
+          await fetch(`/api/design/sessions/${sessionId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ timelineShape: shape }),
+          });
+          refreshSession();
+        }}
+        onPublish={() => setPublishOpen(true)}
+        onShare={data.session.myPermission === "owner" && !data.session.isIncognito ? () => setShareOpen(true) : undefined}
       />
     </div>
   );

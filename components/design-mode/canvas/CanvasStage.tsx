@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Play, Pause, SkipBack, SkipForward, ChevronDown, Sparkles, Check, AlertTriangle, BadgeCheck, Pencil, Plus, Wand2, MoreVertical, Trash2 } from "lucide-react";
 import { ReferencePicker } from "./ReferencePicker";
+import { VersionDetailDialog } from "./VersionDetailDialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { DesignShot } from "@/lib/design/types";
@@ -66,6 +67,7 @@ export function CanvasStage({
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [editingPrompt, setEditingPrompt] = useState(false);
   const [promptDraft, setPromptDraft] = useState(shot?.prompt || "");
+  const [detailVersionId, setDetailVersionId] = useState<string | null>(null);
 
   // Reset prompt draft when the shot changes
   useEffect(() => {
@@ -130,8 +132,32 @@ export function CanvasStage({
             versions={shot.versions}
             current={shot.currentVersionId}
             onSelect={onSelectVersion || (() => {})}
+            onOpenDetail={setDetailVersionId}
             onVary={onRegenerate}
           />
+
+          {/* Version detail dialog */}
+          {detailVersionId && (() => {
+            const v = shot.versions.find((x) => x.id === detailVersionId);
+            if (!v) return null;
+            return (
+              <VersionDetailDialog
+                open={true}
+                onClose={() => setDetailVersionId(null)}
+                shot={shot}
+                version={v}
+                isCurrent={v.id === shot.currentVersionId}
+                onSetCurrent={() => {
+                  onSelectVersion?.(v.id);
+                  setDetailVersionId(null);
+                }}
+                onAnimate={onAnimateImage ? () => {
+                  onAnimateImage();
+                  setDetailVersionId(null);
+                } : undefined}
+              />
+            );
+          })()}
         </div>
 
         {/* Inspector */}
@@ -581,7 +607,7 @@ function Transport({ playing, onToggle, duration }: { playing: boolean; onToggle
   );
 }
 
-function VersionsStrip({ versions, current, onSelect, onVary }: { versions: DesignShot["versions"]; current: string | null; onSelect: (id: string) => void; onVary: () => void }) {
+function VersionsStrip({ versions, current, onSelect, onOpenDetail, onVary }: { versions: DesignShot["versions"]; current: string | null; onSelect: (id: string) => void; onOpenDetail: (id: string) => void; onVary: () => void }) {
   if (versions.length === 0) {
     return (
       <div className="flex items-center gap-1.5 rounded-lg border border-dashed p-2 text-[10.5px] text-muted-foreground"
@@ -597,11 +623,10 @@ function VersionsStrip({ versions, current, onSelect, onVary }: { versions: Desi
         const isVideo = v.assetType === "video" || v.assetType === "artlist_video";
         const isActive = v.id === current;
         return (
-          <button
+          <div
             key={v.id}
-            onClick={() => onSelect(v.id)}
             className={cn(
-              "relative flex h-12 w-16 flex-shrink-0 items-center justify-center overflow-hidden rounded transition-transform hover:scale-105",
+              "group relative flex h-12 w-16 flex-shrink-0 items-center justify-center overflow-hidden rounded transition-transform hover:scale-105",
               !v.assetUrl && "thumb thumb-stripe",
               isActive && "ring-2 ring-offset-1",
             )}
@@ -609,19 +634,33 @@ function VersionsStrip({ versions, current, onSelect, onVary }: { versions: Desi
               ['--th' as any]: String(((v.idx * 37) % 360)),
               ...(isActive ? { ['--tw-ring-color' as any]: "hsl(var(--design-accent))" } : {}),
             }}
-            title={v.promptUsed || `v${v.idx}`}
           >
-            {v.assetUrl && !isVideo && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={v.assetUrl} alt={`v${v.idx}`} className="h-full w-full object-cover" />
-            )}
-            {v.assetUrl && isVideo && (
-              <video src={v.assetUrl} className="h-full w-full object-cover" muted />
-            )}
-            <span className="absolute bottom-0.5 right-0.5 rounded bg-black/60 px-1 font-mono text-[9px] text-white/95">
+            <button
+              onClick={() => onSelect(v.id)}
+              onDoubleClick={() => onOpenDetail(v.id)}
+              className="block h-full w-full"
+              title={`${isActive ? "Current · " : ""}Click to select · Double-click to expand`}
+            >
+              {v.assetUrl && !isVideo && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={v.assetUrl} alt={`v${v.idx}`} className="h-full w-full object-cover" />
+              )}
+              {v.assetUrl && isVideo && (
+                <video src={v.assetUrl} className="h-full w-full object-cover" muted />
+              )}
+            </button>
+            <span className="pointer-events-none absolute bottom-0.5 right-0.5 rounded bg-black/60 px-1 font-mono text-[9px] text-white/95">
               v{v.idx}
             </span>
-          </button>
+            {/* Hover-only expand button */}
+            <button
+              onClick={(e) => { e.stopPropagation(); onOpenDetail(v.id); }}
+              className="absolute right-0.5 top-0.5 rounded-full bg-black/60 p-0.5 text-white opacity-0 backdrop-blur transition-opacity group-hover:opacity-100"
+              title="Open detail"
+            >
+              <Plus className="h-2.5 w-2.5" />
+            </button>
+          </div>
         );
       })}
       <button

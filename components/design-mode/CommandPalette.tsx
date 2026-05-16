@@ -11,7 +11,7 @@ import {
   CommandSeparator,
   CommandShortcut,
 } from "@/components/ui/command";
-import { Plus, Wand2, BadgeCheck, Trash2, Film, Image as ImageIcon, ArrowRight, Copy } from "lucide-react";
+import { Plus, Wand2, BadgeCheck, Trash2, Film, Image as ImageIcon, ArrowRight, Copy, Share2, Sparkles, LayoutGrid, Rows3 } from "lucide-react";
 import type { DesignShot } from "@/lib/design/types";
 import { DESIGN_MODELS, LEGACY_MODEL_ALIASES } from "@/lib/design/types";
 
@@ -28,6 +28,12 @@ interface CommandPaletteProps {
   onDuplicate: () => void;
   onDelete: () => void;
   onChangeModel: (modelId: string) => void;
+  /** Bulk actions */
+  onCommitAll?: () => void;
+  onGeneratePending?: () => void;
+  onSwitchTimeline?: (shape: "storyboard" | "tracks") => void;
+  onPublish?: () => void;
+  onShare?: () => void;
 }
 
 /**
@@ -48,6 +54,11 @@ export function CommandPalette({
   onDuplicate,
   onDelete,
   onChangeModel,
+  onCommitAll,
+  onGeneratePending,
+  onSwitchTimeline,
+  onPublish,
+  onShare,
 }: CommandPaletteProps) {
   // ESC handled by CommandDialog automatically; we still listen for /esc on the global ⌘K listener.
   useEffect(() => {
@@ -111,6 +122,57 @@ export function CommandPalette({
             </>
           )}
         </CommandGroup>
+
+        {/* Bulk + global actions */}
+        {(onCommitAll || onGeneratePending || onSwitchTimeline || onPublish || onShare) && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Session">
+              {onGeneratePending && shots.some((s) => s.versions.length === 0 && s.prompt?.trim()) && (
+                <CommandItem onSelect={() => pickAction(onGeneratePending)}>
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  Generate v1 for all queued shots
+                  <span className="ml-auto text-[10px] text-muted-foreground">
+                    {shots.filter((s) => s.versions.length === 0 && s.prompt?.trim()).length} pending
+                  </span>
+                </CommandItem>
+              )}
+              {onCommitAll && shots.some((s) => s.status === "review" && s.versions.length > 0) && (
+                <CommandItem onSelect={() => pickAction(onCommitAll)}>
+                  <BadgeCheck className="mr-2 h-4 w-4 text-[hsl(var(--design-success))]" />
+                  Commit all reviewed shots to timeline
+                  <span className="ml-auto text-[10px] text-muted-foreground">
+                    {shots.filter((s) => s.status === "review" && s.versions.length > 0).length} ready
+                  </span>
+                </CommandItem>
+              )}
+              {onSwitchTimeline && (
+                <>
+                  <CommandItem onSelect={() => pickAction(() => onSwitchTimeline("storyboard"))}>
+                    <LayoutGrid className="mr-2 h-4 w-4" />
+                    Switch to Storyboard view
+                  </CommandItem>
+                  <CommandItem onSelect={() => pickAction(() => onSwitchTimeline("tracks"))}>
+                    <Rows3 className="mr-2 h-4 w-4" />
+                    Switch to Tracks view
+                  </CommandItem>
+                </>
+              )}
+              {onShare && (
+                <CommandItem onSelect={() => pickAction(onShare)}>
+                  <Share2 className="mr-2 h-4 w-4" />
+                  Share this session
+                </CommandItem>
+              )}
+              {onPublish && (
+                <CommandItem onSelect={() => pickAction(onPublish)}>
+                  <ArrowRight className="mr-2 h-4 w-4 text-[hsl(var(--design-accent))]" />
+                  Publish to Engine
+                </CommandItem>
+              )}
+            </CommandGroup>
+          </>
+        )}
 
         {/* Shots */}
         {shots.length > 0 && (

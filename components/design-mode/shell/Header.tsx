@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { ArrowLeft, Search, ChevronDown, History, Lock, Users, EyeOff, FileText, BadgeCheck, Calendar, Info } from "lucide-react";
+import { ArrowLeft, Search, ChevronDown, History, Lock, Users, EyeOff, FileText, BadgeCheck, Calendar, Info, Share2 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   DropdownMenu,
@@ -39,6 +39,7 @@ interface HeaderProps {
   onPublish: () => void;
   onBack: () => void;
   onOpenPalette?: () => void;
+  onOpenShare?: () => void;
 }
 
 export function Header({
@@ -55,6 +56,7 @@ export function Header({
   onPublish,
   onBack,
   onOpenPalette,
+  onOpenShare,
 }: HeaderProps) {
   const beats = useMemo(() => {
     if (!content?.brief) return 0;
@@ -170,6 +172,17 @@ export function Header({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* Share — owner-only on non-incognito sessions */}
+        {onOpenShare && session?.myPermission === "owner" && !session?.isIncognito && (
+          <button
+            onClick={onOpenShare}
+            className="inline-flex items-center gap-1.5 rounded-full border border-[hsl(var(--design-border))] bg-[hsl(var(--design-bg-elev))] px-3 py-1.5 text-xs font-medium hover:border-[hsl(var(--design-accent))]/40"
+            title="Share session"
+          >
+            <Share2 className="h-3.5 w-3.5" /> Share
+          </button>
+        )}
 
         <button
           onClick={onPublish}
