@@ -106,7 +106,9 @@
   --design-bg-elev: 0 0% 100%;
   --design-fg: 222 47% 11%;
   --design-muted: 38 18% 70%;
+  --design-muted-strong: 35 18% 45%;
   --design-border: 36 22% 86%;
+  --design-border-strong: 36 18% 72%;
   --design-card: 0 0% 100%;
   --design-accent: 235 60% 52%;     /* indigo */
   --design-accent-soft: 235 80% 96%;
@@ -114,6 +116,19 @@
   --design-success: 158 50% 38%;
   --design-warning: 25 92% 58%;
   --design-danger: 0 72% 50%;
+
+  /* Slate left rail (matches the outer EngineAI nav) */
+  --slate-1: 224 24% 12%;
+  --slate-2: 222 22% 16%;
+  --slate-3: 222 20% 22%;
+  --slate-text-1: 220 14% 96%;
+  --slate-text-2: 220 10% 75%;
+  --slate-text-3: 218 10% 55%;
+  --slate-divider: 222 16% 26%;
+
+  --shadow-card: 0 1px 2px rgba(0,0,0,0.02), 0 1px 12px rgba(15,12,40,0.04);
+  --shadow-pop: 0 6px 24px rgba(15,12,40,0.08), 0 1px 2px rgba(0,0,0,0.03);
+  --shadow-modal: 0 24px 80px -20px rgba(14,17,23,0.45);
 
   background: hsl(var(--design-bg));
   color: hsl(var(--design-fg));
@@ -202,6 +217,65 @@
 .design-mode .design-tile:hover {
   box-shadow: 0 6px 24px rgba(15, 12, 40, 0.08), 0 1px 2px rgba(0,0,0,0.03);
   transform: translateY(-1px);
+}
+
+/* Section label variants (v2) */
+.design-mode .section-label.muted { color: hsl(var(--design-muted-strong)); }
+.design-mode .section-label.pin   { color: hsl(var(--design-pin)); }
+
+/* Pill — ink variant for dark chips */
+.design-mode .pill-ink { background: hsl(220 14% 96%); color: hsl(224 50% 18%); border-color: hsl(220 13% 88%); }
+.design-mode .pill.ghost {
+  background: transparent;
+  border-color: hsl(var(--design-border));
+  color: hsl(var(--design-muted-strong));
+}
+
+/* Thumbnail placeholders (used while generating, and for the prototype's gradient tiles) */
+.design-mode .thumb {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+  background: linear-gradient(135deg, hsl(var(--th, 220) 40% 35%), hsl(var(--th, 220) 35% 18%));
+  color: rgba(255,255,255,0.85);
+  font-family: ui-monospace, "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+.design-mode .thumb-stripe {
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgba(255,255,255,0.10) 0 18px,
+    rgba(255,255,255,0.04) 18px 36px
+  );
+}
+
+/* Dotted ring (logo motif / brand mark) */
+.design-mode .dot-ring {
+  border-radius: 50%;
+  border: 1.25px dashed currentColor;
+}
+
+/* Extremely subtle parchment grain (applied to canvas backgrounds) */
+.design-mode .parchment-grain {
+  background-image:
+    radial-gradient(rgba(60,40,20,0.020) 1px, transparent 1px),
+    radial-gradient(rgba(60,40,20,0.012) 1px, transparent 1.5px);
+  background-size: 28px 28px, 13px 13px;
+  background-position: 0 0, 7px 7px;
+}
+
+/* Animations */
+@keyframes design-mode-blink { 50% { opacity: 0.35; } }
+.design-mode .anim-blink { animation: design-mode-blink 1.6s ease-in-out infinite; }
+@keyframes design-mode-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.design-mode .anim-shimmer {
+  background: linear-gradient(90deg, hsl(var(--design-accent-soft)) 0%, hsl(var(--design-card)) 50%, hsl(var(--design-accent-soft)) 100%);
+  background-size: 200% 100%;
+  animation: design-mode-shimmer 1.8s ease-in-out infinite;
 }
 
 /* ─── AI Response Formatting ─── */
