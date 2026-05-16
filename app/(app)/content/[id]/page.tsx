@@ -45,6 +45,7 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { getSubdomainUrl } from "@/lib/subdomain";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import PromoDraftsSection from "@/components/content/PromoDraftsSection";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
@@ -1122,6 +1123,11 @@ export default function ContentDetailPage() {
                     <Send className="h-2.5 w-2.5" /> Create Social Post
                   </Button>
                 </Link>
+                <a href={getSubdomainUrl("ai", `/design?content=${contentId}`)} target="_blank" rel="noopener noreferrer">
+                  <Button variant="outline" size="sm" className="w-full h-7 gap-1 text-[11px]">
+                    <Palette className="h-2.5 w-2.5" /> Design Assets
+                  </Button>
+                </a>
               </CardContent>
             </Card>
 

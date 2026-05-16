@@ -1128,7 +1128,7 @@ export async function POST(
     // the "user navigated away mid-stream and lost their response" bug.
     const aiStream = createStreamingResponse(
       messages,
-      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: isTeamThread ? undefined : (session.user?.email || undefined), selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId },
+      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: isTeamThread ? undefined : (session.user?.email || undefined), selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined },
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {

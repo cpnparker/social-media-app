@@ -38,6 +38,8 @@ export interface AIProviderConfig {
   source?: string;
   /** Conversation id — needed for persisting design-mode assets to ai_design_assets. */
   conversationId?: string;
+  /** Content id (public.content) — when set, design assets auto-attach to that content piece. */
+  contentId?: number;
   /** When true, enables Design mode tools (generate_video, search_artlist, license_artlist_asset)
    *  and auto-injects client brand context into image/video prompts. */
   designMode?: boolean;
@@ -1992,6 +1994,7 @@ interface PersistAssetInput {
   conversationId?: string | null;
   workspaceId: string;
   clientId?: number | null;
+  contentId?: number | null;
   userId: number;
   type: "image" | "video" | "document" | "artlist_video";
   source: "dalle" | "grok_imagine" | "runway" | "artlist" | "upload" | "chart";
@@ -2008,23 +2011,36 @@ async function persistDesignAsset(input: PersistAssetInput): Promise<string | nu
     // Extract blob_path from the proxy URL.
     const m = input.blobUrl.match(/\/api\/media\/file\?path=([^&]+)/);
     const blobPath = m ? decodeURIComponent(m[1]) : input.blobUrl;
-    const { data, error } = await intelligenceDb
+    const insertPayload: Record<string, unknown> = {
+      id_conversation: input.conversationId || null,
+      id_workspace: input.workspaceId,
+      id_client: input.clientId ?? null,
+      id_content: input.contentId ?? null,
+      user_created: input.userId,
+      type_asset: input.type,
+      source: input.source,
+      blob_path: blobPath,
+      blob_url: input.blobUrl,
+      prompt: input.prompt ?? null,
+      parent_id: input.parentId || null,
+      metadata: input.metadata || {},
+    };
+    let { data, error } = await intelligenceDb
       .from("ai_design_assets")
-      .insert({
-        id_conversation: input.conversationId || null,
-        id_workspace: input.workspaceId,
-        id_client: input.clientId ?? null,
-        user_created: input.userId,
-        type_asset: input.type,
-        source: input.source,
-        blob_path: blobPath,
-        blob_url: input.blobUrl,
-        prompt: input.prompt ?? null,
-        parent_id: input.parentId || null,
-        metadata: input.metadata || {},
-      })
+      .insert(insertPayload)
       .select("id_asset")
       .single();
+    // Backwards-compat fallback if the id_content column hasn't been migrated yet.
+    if (error?.code === "42703") {
+      const { id_content, ...legacy } = insertPayload;
+      const retry = await intelligenceDb
+        .from("ai_design_assets")
+        .insert(legacy)
+        .select("id_asset")
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
     if (error) {
       console.warn("[DesignAssets] persist failed:", error.message);
       return null;
@@ -3397,6 +3413,7 @@ async function streamAnthropic(
               conversationId: config.conversationId || null,
               workspaceId: config.workspaceId,
               clientId: config.selectedClientId || null,
+              contentId: config.contentId || null,
               userId: config.userId,
               type: "image",
               source: "dalle",
@@ -3483,6 +3500,7 @@ async function streamAnthropic(
               conversationId: config.conversationId || null,
               workspaceId: config.workspaceId,
               clientId: config.selectedClientId || null,
+              contentId: config.contentId || null,
               userId: config.userId,
               type: "video",
               source: "runway",
@@ -3536,6 +3554,7 @@ async function streamAnthropic(
               conversationId: config.conversationId || null,
               workspaceId: config.workspaceId,
               clientId: config.selectedClientId || null,
+              contentId: config.contentId || null,
               userId: config.userId,
               type: "artlist_video",
               source: "artlist",

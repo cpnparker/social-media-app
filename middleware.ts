@@ -93,11 +93,16 @@ export function middleware(req: NextRequest) {
       return NextResponse.next();
     }
 
-    // Block /engineai on the engine subdomain — redirect to AI subdomain
+    // Block /engineai on the engine subdomain — redirect to AI subdomain.
+    // Preserve the sub-path (e.g. /engineai/design) and query string so deep links
+    // from content/idea pages survive the cross-subdomain hop.
     if (pathname === "/engineai" || pathname.startsWith("/engineai/")) {
       const url = req.nextUrl.clone();
       url.hostname = "ai.thecontentengine.com";
-      url.pathname = "/";
+      // /engineai           → /
+      // /engineai/design    → /design   (ai subdomain rewrites /design back to /engineai/design)
+      // /engineai/design/x  → /design/x
+      url.pathname = pathname === "/engineai" ? "/" : pathname.replace(/^\/engineai/, "");
       url.port = "";
       return NextResponse.redirect(url);
     }

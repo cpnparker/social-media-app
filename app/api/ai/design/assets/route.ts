@@ -24,6 +24,7 @@ export async function GET(req: NextRequest) {
   const workspaceId = searchParams.get("workspaceId");
   const conversationId = searchParams.get("conversationId");
   const clientId = searchParams.get("clientId");
+  const contentId = searchParams.get("contentId");
   const limit = Math.min(parseInt(searchParams.get("limit") || "100", 10), 200);
 
   if (!workspaceId) {
@@ -45,6 +46,7 @@ export async function GET(req: NextRequest) {
 
   if (conversationId) query = query.eq("id_conversation", conversationId);
   if (clientId) query = query.eq("id_client", parseInt(clientId, 10));
+  if (contentId) query = query.eq("id_content", parseInt(contentId, 10));
 
   const { data, error } = await query;
   if (error) {
@@ -65,7 +67,7 @@ export async function PATCH(req: NextRequest) {
   const userId = parseInt(session.user.id, 10);
 
   const body = await req.json();
-  const { id_asset, flag_pinned, flag_archived } = body;
+  const { id_asset, flag_pinned, flag_archived, id_content } = body;
   if (!id_asset) {
     return NextResponse.json({ error: "id_asset is required" }, { status: 400 });
   }
@@ -85,6 +87,9 @@ export async function PATCH(req: NextRequest) {
   const patch: Record<string, unknown> = {};
   if (typeof flag_pinned === "number") patch.flag_pinned = flag_pinned ? 1 : 0;
   if (typeof flag_archived === "number") patch.flag_archived = flag_archived ? 1 : 0;
+  // id_content: null clears the link, number sets it.
+  if (id_content === null) patch.id_content = null;
+  else if (typeof id_content === "number") patch.id_content = id_content;
   if (Object.keys(patch).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
   }

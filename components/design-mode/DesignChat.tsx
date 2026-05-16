@@ -1,8 +1,19 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import DOMPurify from "dompurify";
 import { Send, Loader2, Sparkles, Image as ImageIcon, Film, Search } from "lucide-react";
+import { renderLightMarkdown } from "@/lib/ai/lightweight-markdown";
 import type { DesignAsset } from "./AssetTile";
+
+/** Quick-brief presets surfaced in the empty state. Each click pre-fills the input. */
+const PRESETS: Array<{ label: string; icon: React.ReactNode; prompt: string }> = [
+  { label: "Hero image", icon: <ImageIcon className="h-3 w-3" />, prompt: "Generate a hero image for this content piece. Editorial mood, high-contrast, single strong focal point. Landscape." },
+  { label: "Carousel set", icon: <ImageIcon className="h-3 w-3" />, prompt: "Generate a 5-tile carousel for LinkedIn. Tile 1 = bold opening claim, tiles 2-4 = supporting points, tile 5 = call to action. Consistent visual style across all tiles." },
+  { label: "Social tile", icon: <ImageIcon className="h-3 w-3" />, prompt: "Generate a 1:1 social media tile. Strong typography, on-brand colours, one compelling visual element. Suitable for Instagram and LinkedIn." },
+  { label: "Reel intro", icon: <Film className="h-3 w-3" />, prompt: "Generate a 5-second cinematic intro video, portrait 9:16, that grabs attention in the first second. Suggest the motion brief, then generate." },
+  { label: "Find b-roll", icon: <Search className="h-3 w-3" />, prompt: "Search Artlist for 3-5 cinematic b-roll clips matching this content. Landscape, 5-10s, modern editorial feel. Show me thumbnails to pick from." },
+];
 
 export type DesignMessage =
   | { role: "user"; content: string; id: string }
@@ -188,34 +199,31 @@ export function DesignChat({
     <div className={`flex h-full flex-col ${className || ""}`}>
       <div ref={scrollerRef} className="flex-1 space-y-3 overflow-y-auto p-3">
         {messages.length === 0 && (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground">
             <Sparkles className="h-7 w-7" />
             <div className="font-medium">Design mode</div>
             <div className="max-w-xs text-xs">
               Describe what you want to create. I&apos;ll propose directions, then generate images and videos that match your client&apos;s brand.
             </div>
-            <div className="mt-2 flex flex-wrap justify-center gap-1.5">
-              <Hint icon={<ImageIcon className="h-3 w-3" />}>Generate hero images</Hint>
-              <Hint icon={<Film className="h-3 w-3" />}>Animate stills</Hint>
-              <Hint icon={<Search className="h-3 w-3" />}>Search Artlist b-roll</Hint>
+            <div className="mt-1 flex flex-wrap justify-center gap-1.5">
+              {PRESETS.map((p) => (
+                <button
+                  key={p.label}
+                  onClick={() => setInput(p.prompt)}
+                  className="inline-flex items-center gap-1 rounded-full border bg-background px-2.5 py-1 text-[11px] text-foreground hover:border-primary hover:bg-primary/5"
+                  title={p.prompt}
+                >
+                  {p.icon} {p.label}
+                </button>
+              ))}
+            </div>
+            <div className="text-[11px] text-muted-foreground/70">
+              Tap a preset to start, or type your own brief.
             </div>
           </div>
         )}
         {messages.map((msg) => (
-          <div key={msg.id} className={msg.role === "user" ? "flex justify-end" : "flex justify-start"}>
-            <div
-              className={
-                msg.role === "user"
-                  ? "max-w-[85%] rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground"
-                  : "max-w-[95%] space-y-2 rounded-2xl rounded-bl-sm bg-muted px-3 py-2 text-sm"
-              }
-            >
-              <div className="whitespace-pre-wrap leading-relaxed">{msg.content || (streaming ? "…" : "")}</div>
-              {msg.role === "assistant" && msg.artlistResults?.map((res, i) => (
-                <ArtlistResultStrip key={i} result={res} />
-              ))}
-            </div>
-          </div>
+          <MessageRow key={msg.id} msg={msg} streaming={streaming} />
         ))}
         {streaming && statusLabel && (
           <div className="flex items-center gap-2 px-2 text-xs text-muted-foreground">
@@ -252,12 +260,88 @@ export function DesignChat({
   );
 }
 
-function Hint({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
+/**
+ * Render a single chat row. Splits assistant content on inline media markdown
+ * (![alt](url), 🎬 [label](url)) so we can show images/videos inline AS WELL AS
+ * have them in the canvas. The text between media blocks gets the lightweight
+ * markdown renderer for proper formatting.
+ */
+function MessageRow({ msg, streaming }: { msg: DesignMessage; streaming: boolean }) {
+  const parsed = useMemo(() => {
+    if (msg.role !== "assistant") return null;
+    return splitContent(msg.content || "");
+  }, [msg.role, msg.content]);
+
+  if (msg.role === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground whitespace-pre-wrap leading-relaxed">
+          {msg.content}
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
-      {icon} {children}
-    </span>
+    <div className="flex justify-start">
+      <div className="max-w-[95%] space-y-2 rounded-2xl rounded-bl-sm bg-muted px-3 py-2 text-sm">
+        {(!msg.content && streaming) && <span className="text-muted-foreground">…</span>}
+        {parsed?.map((part, i) => {
+          if (part.kind === "text") {
+            const html = DOMPurify.sanitize(renderLightMarkdown(part.value));
+            return <div key={i} className="ai-prose leading-relaxed" dangerouslySetInnerHTML={{ __html: html }} />;
+          }
+          if (part.kind === "image") {
+            return (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img key={i} src={part.url} alt={part.alt} className="my-1 max-h-80 w-auto rounded-md border" loading="lazy" />
+            );
+          }
+          if (part.kind === "video") {
+            return (
+              <video key={i} src={part.url} controls className="my-1 max-h-80 w-auto rounded-md border" />
+            );
+          }
+          return null;
+        })}
+        {msg.artlistResults?.map((res, i) => (
+          <ArtlistResultStrip key={`al-${i}`} result={res} />
+        ))}
+      </div>
+    </div>
   );
+}
+
+/** Split assistant message content into ordered text / image / video chunks. */
+type ContentPart =
+  | { kind: "text"; value: string }
+  | { kind: "image"; url: string; alt: string }
+  | { kind: "video"; url: string; alt: string };
+
+function splitContent(text: string): ContentPart[] {
+  if (!text) return [];
+  // ![alt](url) for images, 🎬 [label](url) for videos.
+  const re = /!\[([^\]]*)\]\(([^)]+)\)|🎬\s*\[([^\]]+)\]\(([^)]+)\)/g;
+  const parts: ContentPart[] = [];
+  let lastIdx = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > lastIdx) {
+      const slice = text.slice(lastIdx, m.index).trim();
+      if (slice) parts.push({ kind: "text", value: slice });
+    }
+    if (m[2]) {
+      parts.push({ kind: "image", url: m[2], alt: m[1] || "" });
+    } else if (m[4]) {
+      parts.push({ kind: "video", url: m[4], alt: m[3] || "" });
+    }
+    lastIdx = m.index + m[0].length;
+  }
+  if (lastIdx < text.length) {
+    const rest = text.slice(lastIdx).trim();
+    if (rest) parts.push({ kind: "text", value: rest });
+  }
+  return parts.length ? parts : [{ kind: "text", value: text }];
 }
 
 function ArtlistResultStrip({ result }: { result: ArtlistResult }) {

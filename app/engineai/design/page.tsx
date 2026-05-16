@@ -4,11 +4,19 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
-import { ArrowLeft, Plus, Sparkles, BadgeCheck } from "lucide-react";
+import { ArrowLeft, Plus, Sparkles, BadgeCheck, FileText } from "lucide-react";
+import Link from "next/link";
 import { DesignChat, type DesignMessage } from "@/components/design-mode/DesignChat";
 import { Canvas } from "@/components/design-mode/Canvas";
 import { ArtlistBrowser } from "@/components/design-mode/ArtlistBrowser";
+import { AssetDrawer } from "@/components/design-mode/AssetDrawer";
 import type { DesignAsset } from "@/components/design-mode/AssetTile";
+
+interface ContentScope {
+  id: number;
+  workingTitle: string | null;
+  contentType: string | null;
+}
 
 export default function DesignModePage() {
   const router = useRouter();
@@ -18,6 +26,9 @@ export default function DesignModePage() {
   const customerCtx = useCustomerSafe();
   const customer = customerCtx?.selectedCustomer;
 
+  const contentIdParam = searchParams.get("content");
+  const contentId = contentIdParam ? parseInt(contentIdParam, 10) : null;
+
   const [conversationId, setConversationId] = useState<string | null>(searchParams.get("thread"));
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -25,6 +36,20 @@ export default function DesignModePage() {
   const [assets, setAssets] = useState<DesignAsset[]>([]);
   const [activeTab, setActiveTab] = useState<"canvas" | "library">("canvas");
   const [animatePrompt, setAnimatePrompt] = useState<string | undefined>();
+  const [contentScope, setContentScope] = useState<ContentScope | null>(null);
+  const [selectedAsset, setSelectedAsset] = useState<DesignAsset | null>(null);
+
+  // Fetch content metadata when scoped to a content piece.
+  useEffect(() => {
+    if (!contentId || !workspaceId) { setContentScope(null); return; }
+    fetch(`/api/content-objects/${contentId}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(r))
+      .then((j) => {
+        const c = j?.contentObject;
+        if (c) setContentScope({ id: contentId, workingTitle: c.workingTitle || null, contentType: c.contentType || null });
+      })
+      .catch(() => { /* non-fatal — designer can still work without the title */ });
+  }, [contentId, workspaceId]);
 
   // Auto-create a design session on first load if none exists.
   const createSession = useCallback(async () => {
@@ -40,6 +65,7 @@ export default function DesignModePage() {
           mode: "design",
           visibility: "private",
           customerId: customer?.id ?? undefined,
+          contentObjectId: contentId ?? undefined,
         }),
       });
       const text = await res.text();
@@ -52,7 +78,8 @@ export default function DesignModePage() {
       }
       setConversationId(json.conversation.id);
       const currentPath = typeof window !== "undefined" ? window.location.pathname : "/engineai/design";
-      router.replace(`${currentPath}?thread=${json.conversation.id}`);
+      const contentQs = contentId ? `&content=${contentId}` : "";
+      router.replace(`${currentPath}?thread=${json.conversation.id}${contentQs}`);
     } catch (err: any) {
       const msg = err?.message || String(err) || "Unknown error";
       console.error("Failed to create design session:", msg);
@@ -60,7 +87,7 @@ export default function DesignModePage() {
     } finally {
       setCreating(false);
     }
-  }, [workspaceId, customer?.id, router]);
+  }, [workspaceId, customer?.id, router, contentId]);
 
   useEffect(() => {
     if (conversationId || !workspaceId || creating || createError) return;
@@ -120,14 +147,45 @@ export default function DesignModePage() {
     // so the AI calls generate_video with image_url set.
     const prompt = `Animate this image with a slow cinematic camera push and natural ambient motion. Use the existing scene as-is. Source image: ${asset.blob_url}`;
     setAnimatePrompt(prompt);
+    setSelectedAsset(null);
   }, []);
+
+  const onRegenerate = useCallback((asset: DesignAsset) => {
+    // Pre-fill chat with the original prompt + a "try variations" instruction.
+    const base = asset.prompt || "this asset";
+    setAnimatePrompt(
+      asset.type_asset === "image"
+        ? `Generate 3 variations of: ${base}\nKeep the same brand context and composition; vary the lighting, mood, or angle.`
+        : `Regenerate this video with the same brief but try a different motion: ${base}`
+    );
+    setSelectedAsset(null);
+  }, []);
+
+  const attachAssetToContent = useCallback(async (asset: DesignAsset): Promise<void> => {
+    if (!contentScope) return;
+    const res = await fetch("/api/ai/design/assets", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id_asset: asset.id_asset, id_content: contentScope.id }),
+    });
+    if (!res.ok) throw new Error(`Attach failed: ${res.status}`);
+    setAssets((prev) => prev.map((a) =>
+      a.id_asset === asset.id_asset ? ({ ...a, ...(({ id_content: contentScope.id } as unknown) as Partial<DesignAsset>) }) : a
+    ));
+  }, [contentScope]);
 
   const newSession = useCallback(async () => {
     if (!workspaceId) return;
     const res = await fetch("/api/ai/conversations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ workspaceId, mode: "design", visibility: "private", customerId: customer?.id ?? undefined }),
+      body: JSON.stringify({
+        workspaceId,
+        mode: "design",
+        visibility: "private",
+        customerId: customer?.id ?? undefined,
+        contentObjectId: contentId ?? undefined,
+      }),
     });
     const json = await res.json();
     setConversationId(json.conversation.id);
@@ -135,8 +193,9 @@ export default function DesignModePage() {
     setAssets([]);
     setAnimatePrompt(undefined);
     const currentPath = typeof window !== "undefined" ? window.location.pathname : "/engineai/design";
-    router.replace(`${currentPath}?thread=${json.conversation.id}`);
-  }, [workspaceId, customer?.id, router]);
+    const contentQs = contentId ? `&content=${contentId}` : "";
+    router.replace(`${currentPath}?thread=${json.conversation.id}${contentQs}`);
+  }, [workspaceId, customer?.id, router, contentId]);
 
   const brandBadge = useMemo(() => {
     if (!customer) return null;
@@ -147,6 +206,22 @@ export default function DesignModePage() {
       </span>
     );
   }, [customer]);
+
+  const contentBadge = useMemo(() => {
+    if (!contentScope) return null;
+    const label = contentScope.workingTitle || `Content #${contentScope.id}`;
+    const trimmed = label.length > 40 ? label.slice(0, 38) + "…" : label;
+    return (
+      <Link
+        href={`/content/${contentScope.id}`}
+        className="inline-flex items-center gap-1 rounded-full border border-blue-300 bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300"
+        title={`Designing for: ${label}`}
+      >
+        <FileText className="h-3 w-3" />
+        {contentScope.contentType ? `${contentScope.contentType}: ` : ""}{trimmed}
+      </Link>
+    );
+  }, [contentScope]);
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] flex-col">
@@ -166,6 +241,7 @@ export default function DesignModePage() {
             Beta
           </span>
         </div>
+        {contentBadge}
         {brandBadge}
         <div className="flex-1" />
         <button
@@ -221,6 +297,7 @@ export default function DesignModePage() {
             onAnimate={onAnimate}
             onPin={onPin}
             onArchive={onArchive}
+            onSelect={setSelectedAsset}
             className="flex-1"
           />
         </div>
@@ -248,6 +325,19 @@ export default function DesignModePage() {
           )}
         </div>
       </div>
+
+      {/* Asset detail drawer */}
+      <AssetDrawer
+        asset={selectedAsset}
+        contentScopeId={contentScope?.id ?? null}
+        contentScopeTitle={contentScope?.workingTitle ?? null}
+        onClose={() => setSelectedAsset(null)}
+        onPin={(a) => onPin(a)}
+        onArchive={(a) => { onArchive(a); setSelectedAsset(null); }}
+        onAnimate={onAnimate}
+        onRegenerate={onRegenerate}
+        onAttachToContent={contentScope ? attachAssetToContent : undefined}
+      />
     </div>
   );
 }
