@@ -262,6 +262,32 @@ export default function DesignModePage() {
     ));
   }, [sessionId]);
 
+  const handleUploadReference = useCallback(async (file: File) => {
+    if (!sessionId || !currentShotId) return;
+    const form = new FormData();
+    form.set("file", file);
+    form.set("caption", file.name);
+    const res = await fetch(`/api/design/sessions/${sessionId}/shots/${currentShotId}/refs`, {
+      method: "POST",
+      body: form,
+    });
+    if (res.ok) {
+      toast.success("Reference added");
+      refreshSession();
+    } else {
+      const j = await res.json().catch(() => ({}));
+      toast.error(j?.error || "Upload failed");
+    }
+  }, [sessionId, currentShotId, refreshSession]);
+
+  const handleRemoveReference = useCallback(async (refId: string) => {
+    if (!sessionId || !currentShotId) return;
+    const res = await fetch(`/api/design/sessions/${sessionId}/shots/${currentShotId}/refs?refId=${refId}`, {
+      method: "DELETE",
+    });
+    if (res.ok) refreshSession();
+  }, [sessionId, currentShotId, refreshSession]);
+
   const handleSelectVersion = useCallback(async (versionId: string) => {
     if (!sessionId || !currentShotId) return;
     // Optimistic
@@ -334,10 +360,27 @@ export default function DesignModePage() {
     }
   }, [sessionId, currentShotId, generating, activeFormat, refreshSession]);
 
-  const handlePublish = useCallback(async (_opts: { formats: string[]; caption: string }) => {
-    toast.info("Publish worker (Creatomate) ships in Phase 2d.");
+  const handlePublish = useCallback(async (opts: { formats: string[]; caption: string }) => {
+    if (!sessionId) return;
+    const res = await fetch(`/api/design/sessions/${sessionId}/publish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        formats: opts.formats.map((ratio) => ({ ratio })),
+        caption: opts.caption,
+      }),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      const j = JSON.parse(text || "{}");
+      toast.error(j?.error || `Publish failed (${res.status})`);
+      return;
+    }
+    const j = JSON.parse(text);
+    toast.success(j.note || `Published ${j.publishedAssetCount} assets to the Engine`);
     setPublishOpen(false);
-  }, []);
+    refreshSession();
+  }, [sessionId, refreshSession]);
 
   const switchSession = useCallback((id: string) => {
     setSessionId(id);
@@ -417,6 +460,8 @@ export default function DesignModePage() {
                 onTitleSave={(title) => currentShot && handleShotTitleSave(currentShot.id, title)}
                 onBeatSave={(beat) => currentShot && handleShotBeatSave(currentShot.id, beat)}
                 onDelete={() => currentShot && handleDeleteShot(currentShot.id)}
+                onUploadReference={handleUploadReference}
+                onRemoveReference={handleRemoveReference}
                 activeFormat={activeFormat}
                 generating={generating}
               />

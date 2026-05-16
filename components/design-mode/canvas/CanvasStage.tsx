@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Play, Pause, SkipBack, SkipForward, ChevronDown, Upload, Sparkles, Check, AlertTriangle, BadgeCheck, Pencil, Plus, Wand2, MoreVertical, Trash2 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
@@ -19,6 +19,8 @@ interface CanvasStageProps {
   onTitleSave?: (title: string) => void;
   onBeatSave?: (beat: string | null) => void;
   onDelete?: () => void;
+  onUploadReference?: (file: File) => void;
+  onRemoveReference?: (refId: string) => void;
   activeFormat?: string;
   generating?: boolean;
 }
@@ -43,6 +45,8 @@ export function CanvasStage({
   onTitleSave,
   onBeatSave,
   onDelete,
+  onUploadReference,
+  onRemoveReference,
   activeFormat = "16:9",
   generating = false,
 }: CanvasStageProps) {
@@ -50,6 +54,7 @@ export function CanvasStage({
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [editingPrompt, setEditingPrompt] = useState(false);
   const [promptDraft, setPromptDraft] = useState(shot?.prompt || "");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Reset prompt draft when the shot changes
   useEffect(() => {
@@ -217,8 +222,9 @@ export function CanvasStage({
               {shot.refs.slice(0, 11).map((r) => {
                 const url = r.assetUrl || r.externalUrl;
                 return (
-                  <div key={r.id} className="relative aspect-square overflow-hidden rounded-md border"
-                       style={{ borderColor: "hsl(var(--design-border))" }}>
+                  <div key={r.id} className="group relative aspect-square overflow-hidden rounded-md border"
+                       style={{ borderColor: "hsl(var(--design-border))" }}
+                       title={r.caption || "Reference"}>
                     {url ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={url} alt={r.caption || ""} className="h-full w-full object-cover" />
@@ -228,13 +234,37 @@ export function CanvasStage({
                     {r.seedLocked && (
                       <span className="absolute right-0.5 top-0.5 rounded bg-[hsl(var(--design-pin))] px-1 text-[9px] font-bold text-white">S</span>
                     )}
+                    {onRemoveReference && (
+                      <button
+                        onClick={() => onRemoveReference(r.id)}
+                        className="absolute right-0.5 bottom-0.5 rounded-full bg-black/55 p-0.5 text-white opacity-0 transition-opacity hover:bg-[hsl(var(--design-danger))] group-hover:opacity-100"
+                        title="Remove reference"
+                      >
+                        <Trash2 className="h-2.5 w-2.5" />
+                      </button>
+                    )}
                   </div>
                 );
               })}
               {/* Upload affordance */}
-              <button className="flex aspect-square items-center justify-center rounded-md border border-dashed text-muted-foreground hover:text-foreground hover:border-[hsl(var(--design-accent))]"
-                      style={{ borderColor: "hsl(var(--design-border-strong))" }}
-                      title="Upload reference">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f && onUploadReference) onUploadReference(f);
+                  if (fileInputRef.current) fileInputRef.current.value = "";
+                }}
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={!onUploadReference}
+                className="flex aspect-square items-center justify-center rounded-md border border-dashed text-muted-foreground transition-colors hover:text-[hsl(var(--design-accent))] hover:border-[hsl(var(--design-accent))]"
+                style={{ borderColor: "hsl(var(--design-border-strong))" }}
+                title="Upload reference image"
+              >
                 <Upload className="h-3.5 w-3.5" />
               </button>
             </div>

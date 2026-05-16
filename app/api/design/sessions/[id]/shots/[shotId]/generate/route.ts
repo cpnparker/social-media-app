@@ -5,6 +5,8 @@ import { checkSessionAccess } from "@/lib/ai/access";
 import { generateImage, generateVideo, persistDesignAsset } from "@/lib/ai/providers";
 import type { BrandContext } from "@/lib/ai/branded-prompt";
 import { DESIGN_MODELS, LEGACY_MODEL_ALIASES } from "@/lib/design/types";
+import { evaluateImageAgainstBrand, paletteFromVisualIdentity, defaultRulesFromVisualIdentity, type CertResult } from "@/lib/design/brand-check";
+import { fetchBlobContent } from "@/lib/ai/blob-utils";
 
 /**
  * POST /api/design/sessions/[id]/shots/[shotId]/generate
@@ -225,12 +227,65 @@ export async function POST(
     }
   }
 
-  // ── Brand-check stub: flag drift if shot was marked drift previously, else on-brand ──
-  // (Real implementation in lib/design/brand-check.ts — sandstone histogram + vision grading.)
-  const onBrand = (shot as any).flag_on_brand === 1;
+  // ── Real brand-check (palette histogram) ──
+  // Runs only on still images for v1; videos get a placeholder pass until we
+  // wire poster-frame extraction.
+  let onBrand = true;
+  let brandResults: CertResult[] = [];
+  let brandHistogram: Record<string, number> = {};
+  if (type === "image" && brand?.visualIdentity) {
+    try {
+      const palette = paletteFromVisualIdentity(brand.visualIdentity);
+      const rules = defaultRulesFromVisualIdentity(brand.visualIdentity);
+      if (palette.length > 0 && rules.length > 0) {
+        const { buffer } = await fetchBlobContent(blobUrl);
+        const outcome = await evaluateImageAgainstBrand(buffer, palette, rules);
+        onBrand = outcome.onBrand;
+        brandResults = outcome.results;
+        brandHistogram = outcome.histogram;
+        console.log(`[BrandCheck] shot=${shotId} on_brand=${onBrand} results=${JSON.stringify(brandResults.map(r => ({ rule: r.rule, status: r.status, value: r.value })))}`);
+      }
+    } catch (e: any) {
+      console.warn("[BrandCheck] failed (non-fatal):", e?.message);
+    }
+  } else if (type === "video") {
+    // Video poster-frame extraction is queued; assume on-brand for now.
+    onBrand = true;
+  }
   const status = onBrand ? "review" : "drift";
 
-  // ── Update shot: status + current_version_id + model + prompt ──
+  // Persist the brand certificate alongside the version
+  if (!incognito && versionId && brandResults.length > 0) {
+    try {
+      await intelligenceDb
+        .from("design_brand_certificates")
+        .insert({
+          id_session: sessionId,
+          id_version: versionId,
+          results: brandResults,
+        });
+      // Stash the headline metric in the version metadata so the
+      // sandstone-cap meter can read it without a join.
+      const sandstoneResult = brandResults.find((r) => /sandstone|gold/i.test(r.rule));
+      if (sandstoneResult) {
+        await intelligenceDb
+          .from("design_shot_versions")
+          .update({
+            metadata: {
+              ...metadata,
+              brand_check: brandResults,
+              brand_histogram: brandHistogram,
+              sandstone_pct: sandstoneResult.value,
+            },
+          })
+          .eq("id_version", versionId);
+      }
+    } catch (e: any) {
+      console.warn("[BrandCheck] persist failed:", e?.message);
+    }
+  }
+
+  // ── Update shot: status + current_version_id + model + prompt + flag_on_brand ──
   if (!incognito && versionId) {
     await intelligenceDb
       .from("design_shots")
@@ -239,6 +294,8 @@ export async function POST(
         current_version_id: versionId,
         model_id: modelId,
         prompt,
+        flag_on_brand: onBrand ? 1 : 0,
+        note: !onBrand && brandResults.length > 0 ? brandResults.find((r) => r.status === "fail")?.detail || null : null,
         date_updated: new Date().toISOString(),
       })
       .eq("id_shot", shotId);

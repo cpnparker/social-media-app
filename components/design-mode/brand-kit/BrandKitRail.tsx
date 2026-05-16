@@ -321,41 +321,55 @@ function TypeRow({ role, face }: { role: string; face: string }) {
  */
 function SandstoneCapMeter({ currentShot }: { currentShot: DesignShot | null }) {
   const value = useMemo(() => {
-    if (!currentShot) return 9.2;
-    // Read from brand cert metadata if present; otherwise use a deterministic
-    // pseudo-value derived from the shot id (purely visual until we wire the
-    // real brand-check engine).
-    const meta = currentShot.versions[currentShot.versions.length - 1]?.metadata;
+    if (!currentShot) return null;
+    // Prefer the CURRENT version's brand-check result; fall back to the last
+    // version in the strip.
+    const currentVer = currentShot.versions.find((v) => v.id === currentShot.currentVersionId)
+      || currentShot.versions[currentShot.versions.length - 1];
+    const meta = currentVer?.metadata;
     if (meta?.sandstone_pct != null) return Number(meta.sandstone_pct);
-    if (!currentShot.onBrand) return 18;
-    return 9.2;
+    return null;
   }, [currentShot]);
 
   const cap = 14;
-  const over = value > cap;
-  const widthPct = Math.min((value / 20) * 100, 100);
 
   return (
     <Section label="Sandstone cap">
       <div className="space-y-1.5 rounded-lg border p-2.5"
            style={{ borderColor: "hsl(var(--design-border))" }}>
-        <div className="flex items-baseline justify-between">
-          <span className="editorial-numeric text-[16px]" style={{ color: over ? "hsl(var(--design-danger))" : "hsl(var(--design-fg))" }}>
-            {value.toFixed(1)}<span className="ml-0.5 text-[9px] uppercase text-muted-foreground">%</span>
-          </span>
-          <span className="text-[10px] text-muted-foreground">cap {cap}%</span>
-        </div>
-        <div className="relative h-1.5 overflow-hidden rounded-full" style={{ background: "hsl(var(--design-border))" }}>
-          <div
-            className="absolute inset-y-0 left-0 rounded-full"
-            style={{ width: `${widthPct}%`, background: over ? "hsl(var(--design-danger))" : "hsl(var(--design-success))" }}
-          />
-          {/* Cap marker */}
-          <div className="absolute top-0 h-full w-px"
-               style={{ left: `${(cap / 20) * 100}%`, background: "hsl(var(--design-fg) / 0.6)" }}
-          />
-        </div>
-        <div className="text-[10px] text-muted-foreground">Sandstone never exceeds {cap}% of frame.</div>
+        {value === null ? (
+          <>
+            <div className="text-[11px] text-muted-foreground">Not measured yet</div>
+            <div className="text-[10px] text-muted-foreground">Generate a shot to run the palette check.</div>
+          </>
+        ) : (
+          <>
+            {(() => {
+              const over = value > cap;
+              const widthPct = Math.min((value / 20) * 100, 100);
+              return (
+                <>
+                  <div className="flex items-baseline justify-between">
+                    <span className="editorial-numeric text-[16px]" style={{ color: over ? "hsl(var(--design-danger))" : "hsl(var(--design-fg))" }}>
+                      {value.toFixed(1)}<span className="ml-0.5 text-[9px] uppercase text-muted-foreground">%</span>
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">cap {cap}%</span>
+                  </div>
+                  <div className="relative h-1.5 overflow-hidden rounded-full" style={{ background: "hsl(var(--design-border))" }}>
+                    <div
+                      className="absolute inset-y-0 left-0 rounded-full"
+                      style={{ width: `${widthPct}%`, background: over ? "hsl(var(--design-danger))" : "hsl(var(--design-success))" }}
+                    />
+                    <div className="absolute top-0 h-full w-px"
+                         style={{ left: `${(cap / 20) * 100}%`, background: "hsl(var(--design-fg) / 0.6)" }}
+                    />
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">Sandstone never exceeds {cap}% of frame.</div>
+                </>
+              );
+            })()}
+          </>
+        )}
       </div>
     </Section>
   );
