@@ -1063,6 +1063,7 @@ export async function POST(
       userEmail: session.user?.email || null,
       userEngineId: userId,
       designMode: conversation.type_conversation_mode === "design",
+      studioMode: conversation.type_conversation_mode === "design" && !!designSessionId,
     });
 
     // Append query router hints to system prompt as required tool calls

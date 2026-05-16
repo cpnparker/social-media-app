@@ -258,6 +258,23 @@ export default function DesignModePage() {
     });
   }, [sessionId]);
 
+  const handleTrimClip = useCallback(async (clipId: string, patch: { startSec?: number; durationSec?: number }) => {
+    if (!sessionId) return;
+    // Optimistic: update the clip in local state
+    setData((prev) => prev ? {
+      ...prev,
+      tracks: prev.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) => c.id === clipId ? { ...c, ...(patch.startSec != null ? { startSec: patch.startSec } : {}), ...(patch.durationSec != null ? { durationSec: patch.durationSec } : {}) } : c),
+      })),
+    } : prev);
+    await fetch(`/api/design/sessions/${sessionId}/clips/${clipId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+  }, [sessionId]);
+
   const handleReorderShots = useCallback(async (orderedIds: string[]) => {
     if (!sessionId) return;
     // Optimistic: re-order in place, reassign idx
@@ -486,17 +503,50 @@ export default function DesignModePage() {
           />
 
           <div className="relative flex min-w-0 flex-1 flex-col">
-            {/* First-run onboarding hint — only shown when the session is empty */}
+            {/* First-run hints — only shown for new sessions */}
             {data.shots.length === 0 && (
-              <div className="pointer-events-none absolute right-4 top-4 z-20">
+              <div className="absolute right-4 top-4 z-20 space-y-2 pointer-events-auto">
+                <div>
+                  <OnboardingHint
+                    id="empty-session-tip"
+                    title="Start by creating a shot"
+                    body={
+                      <>
+                        Click <span className="font-medium">Create a shot</span> below, write a prompt,
+                        pick a model, and we&apos;ll generate it on-brand
+                        {data.client?.name ? <> for <span className="font-medium">{data.client.name}</span></> : null}.
+                      </>
+                    }
+                    visible={true}
+                  />
+                </div>
+                {!data.client && (
+                  <div>
+                    <OnboardingHint
+                      id="no-client-tip"
+                      title="Pick a client for brand auto-injection"
+                      body={
+                        <>
+                          With no client selected, generations are unbranded. Select a client from the
+                          customer dropdown to enable palette, typography, and drift detection.
+                        </>
+                      }
+                      visible={true}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+            {/* AI rail discovery hint — shown when session has 0 shots */}
+            {data.shots.length === 0 && (
+              <div className="pointer-events-auto absolute right-4 bottom-4 z-20">
                 <OnboardingHint
-                  id="empty-session-tip"
-                  title="Start by creating a shot"
+                  id="ai-rail-tip"
+                  title="Ask Engine AI for ideas"
                   body={
                     <>
-                      Click <span className="font-medium">Create a shot</span> below, write a prompt,
-                      pick a model, and we&apos;ll generate it on-brand for{" "}
-                      {data.client?.name ? <span className="font-medium">{data.client.name}</span> : "your client"}.
+                      Click the sparkle button on the right edge to open the AI rail.
+                      Try: <span className="italic">&ldquo;Build me a 4-shot sequence for this brief.&rdquo;</span>
                     </>
                   }
                   visible={true}
@@ -535,6 +585,7 @@ export default function DesignModePage() {
                 onAddShot={handleAddShot}
                 onDeleteShot={handleDeleteShot}
                 onReorder={handleReorderShots}
+                onTrimClip={handleTrimClip}
                 onShapeChange={async (shape) => {
                   if (!sessionId) return;
                   await fetch(`/api/design/sessions/${sessionId}`, {

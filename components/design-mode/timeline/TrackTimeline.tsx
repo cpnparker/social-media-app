@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState, useRef, useCallback } from "react";
 import { Type, Layers, Mic, Music, Volume2, AlertTriangle, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { DesignShot, DesignTrack } from "@/lib/design/types";
+import type { DesignShot, DesignTrack, DesignTrackClip } from "@/lib/design/types";
 
 interface TrackTimelineProps {
   tracks: DesignTrack[];
@@ -11,6 +11,8 @@ interface TrackTimelineProps {
   currentShotId: string | null;
   onSelectShot: (id: string) => void;
   onAddShot?: () => void;
+  /** Persist a clip's new timing (drag-to-trim). */
+  onTrimClip?: (clipId: string, patch: { startSec?: number; durationSec?: number }) => void;
 }
 
 const PIXELS_PER_SECOND = 24;
@@ -27,7 +29,7 @@ const TRACK_ICON: Record<string, React.ComponentType<{ className?: string }>> = 
   ambience: Volume2,
 };
 
-export function TrackTimeline({ tracks, shots, currentShotId, onSelectShot, onAddShot }: TrackTimelineProps) {
+export function TrackTimeline({ tracks, shots, currentShotId, onSelectShot, onAddShot, onTrimClip }: TrackTimelineProps) {
   // Build a fast lookup from shot id → shot, and from track id → shots in order
   const shotMap = useMemo(() => new Map(shots.map((s) => [s.id, s])), [shots]);
   const usedSec = useMemo(() => shots.reduce((a, s) => a + s.duration, 0), [shots]);
@@ -115,6 +117,7 @@ export function TrackTimeline({ tracks, shots, currentShotId, onSelectShot, onAd
               shotMap={shotMap}
               currentShotId={currentShotId}
               onSelectShot={onSelectShot}
+              onTrimClip={onTrimClip}
             />
           ))}
 
@@ -150,11 +153,13 @@ function TrackRow({
   shotMap,
   currentShotId,
   onSelectShot,
+  onTrimClip,
 }: {
   track: DesignTrack;
   shotMap: Map<string, DesignShot>;
   currentShotId: string | null;
   onSelectShot: (id: string) => void;
+  onTrimClip?: (clipId: string, patch: { startSec?: number; durationSec?: number }) => void;
 }) {
   const Icon = TRACK_ICON[track.kind] || Layers;
   const isPrimary = track.kind === "video";
@@ -208,16 +213,20 @@ function TrackRow({
                 </ClipBox>
               );
             }
-            // Video shot clip — tinted gradient + status dot + alert
+            // Video shot clip — tinted gradient + status dot + alert + trim handles
             const hue = shot?.thumbHue ?? 215;
             const isActive = shot?.id === currentShotId;
+            const isAutoPlaced = c.id.startsWith("auto-"); // can't be trimmed (no DB row)
             return (
-              <ClipBox
+              <TrimmableClip
                 key={c.id}
+                clip={c}
                 left={left}
                 width={width}
                 top={6}
                 height={rowHeight - 12}
+                trimmable={!isAutoPlaced && !!onTrimClip}
+                onTrim={onTrimClip}
                 onClick={() => shot && onSelectShot(shot.id)}
                 style={{
                   background: `linear-gradient(135deg, hsl(${hue} 40% 35%), hsl(${hue} 35% 18%))`,
@@ -239,11 +248,131 @@ function TrackRow({
                     <span className="line-clamp-1 text-[10px] font-semibold">{shot.title}</span>
                   </div>
                 )}
-              </ClipBox>
+              </TrimmableClip>
             );
           })}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * A clip with optional drag-to-trim handles on both edges.
+ * - Drag left handle: adjusts start_sec (clip's start position) while shrinking duration accordingly
+ * - Drag right handle: adjusts duration_sec (clip's end position)
+ */
+function TrimmableClip({
+  clip,
+  left,
+  width,
+  top,
+  height,
+  trimmable,
+  onTrim,
+  style,
+  onClick,
+  children,
+}: {
+  clip: DesignTrackClip;
+  left: number;
+  width: number;
+  top: number;
+  height: number;
+  trimmable: boolean;
+  onTrim?: (clipId: string, patch: { startSec?: number; durationSec?: number }) => void;
+  style?: React.CSSProperties;
+  onClick?: () => void;
+  children?: React.ReactNode;
+}) {
+  const [dragLeft, setDragLeft] = useState<number | null>(null);
+  const [dragWidth, setDragWidth] = useState<number | null>(null);
+  const isDraggingRef = useRef<"left" | "right" | null>(null);
+  const startStateRef = useRef<{ left: number; width: number; mouseX: number } | null>(null);
+
+  const startTrim = useCallback((side: "left" | "right", e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    isDraggingRef.current = side;
+    startStateRef.current = { left, width, mouseX: e.clientX };
+    setDragLeft(left);
+    setDragWidth(width);
+
+    function onMove(ev: MouseEvent) {
+      if (!startStateRef.current || !isDraggingRef.current) return;
+      const dx = ev.clientX - startStateRef.current.mouseX;
+      if (isDraggingRef.current === "left") {
+        const nextLeft = Math.max(0, startStateRef.current.left + dx);
+        const widthDelta = nextLeft - startStateRef.current.left;
+        const nextWidth = Math.max(12, startStateRef.current.width - widthDelta);
+        setDragLeft(nextLeft);
+        setDragWidth(nextWidth);
+      } else {
+        const nextWidth = Math.max(12, startStateRef.current.width + dx);
+        setDragWidth(nextWidth);
+      }
+    }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      if (!startStateRef.current || !isDraggingRef.current || !onTrim) {
+        isDraggingRef.current = null;
+        startStateRef.current = null;
+        setDragLeft(null);
+        setDragWidth(null);
+        return;
+      }
+      const finalLeft = dragLeft ?? startStateRef.current.left;
+      const finalWidth = dragWidth ?? startStateRef.current.width;
+      // Convert px → seconds. (PIXELS_PER_SECOND mirrored from the constant above.)
+      const PIXELS_PER_SECOND = 24;
+      const patch: { startSec?: number; durationSec?: number } = {};
+      if (isDraggingRef.current === "left") {
+        patch.startSec = Math.max(0, finalLeft / PIXELS_PER_SECOND);
+        patch.durationSec = Math.max(0.5, finalWidth / PIXELS_PER_SECOND);
+      } else {
+        patch.durationSec = Math.max(0.5, finalWidth / PIXELS_PER_SECOND);
+      }
+      onTrim(clip.id, patch);
+      isDraggingRef.current = null;
+      startStateRef.current = null;
+      setDragLeft(null);
+      setDragWidth(null);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [left, width, dragLeft, dragWidth, onTrim, clip.id]);
+
+  const renderLeft = dragLeft ?? left;
+  const renderWidth = dragWidth ?? width;
+
+  return (
+    <div
+      onClick={onClick}
+      className={cn(
+        "absolute overflow-hidden rounded-md border",
+        onClick && "cursor-pointer transition-transform hover:-translate-y-px",
+        isDraggingRef.current && "transition-none cursor-ew-resize",
+      )}
+      style={{ left: renderLeft, width: renderWidth, top, height, ...style }}
+    >
+      <div className="flex h-full items-center justify-start px-1.5">{children}</div>
+
+      {/* Trim handles */}
+      {trimmable && (
+        <>
+          <div
+            onMouseDown={(e) => startTrim("left", e)}
+            className="absolute left-0 top-0 h-full w-1.5 cursor-ew-resize bg-transparent hover:bg-white/30"
+            title="Drag to trim start"
+          />
+          <div
+            onMouseDown={(e) => startTrim("right", e)}
+            className="absolute right-0 top-0 h-full w-1.5 cursor-ew-resize bg-transparent hover:bg-white/30"
+            title="Drag to trim end"
+          />
+        </>
+      )}
     </div>
   );
 }
