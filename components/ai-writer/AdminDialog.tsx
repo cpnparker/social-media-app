@@ -194,6 +194,9 @@ const PROVIDER_LABELS: Record<string, string> = {
   openai: "OpenAI",
   xai: "xAI (Grok)",
   google: "Google",
+  gemini: "Google",
+  deepseek: "DeepSeek",
+  perplexity: "Perplexity",
 };
 
 const SOURCE_LABELS: Record<string, string> = {

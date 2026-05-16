@@ -35,8 +35,8 @@ export function middleware(req: NextRequest) {
       return NextResponse.next();
     }
 
-    // Already on /engineai — pass through
-    if (pathname === "/engineai") {
+    // Already on /engineai or any /engineai/* sub-route (e.g. /engineai/design) — pass through
+    if (pathname === "/engineai" || pathname.startsWith("/engineai/")) {
       return NextResponse.next();
     }
 
@@ -44,6 +44,13 @@ export function middleware(req: NextRequest) {
     if (pathname === "/") {
       const url = req.nextUrl.clone();
       url.pathname = "/engineai";
+      return NextResponse.rewrite(url);
+    }
+
+    // Clean URL: /design → /engineai/design (URL bar stays "/design")
+    if (pathname === "/design" || pathname.startsWith("/design/")) {
+      const url = req.nextUrl.clone();
+      url.pathname = "/engineai" + pathname;
       return NextResponse.rewrite(url);
     }
 

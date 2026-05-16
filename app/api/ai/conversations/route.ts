@@ -218,7 +218,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workspaceId, title, visibility, contentObjectId, customerId, model, isIncognito } = body;
+    const { workspaceId, title, visibility, contentObjectId, customerId, model, isIncognito, mode } = body;
 
     if (!workspaceId) {
       return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
@@ -251,13 +251,18 @@ export async function POST(req: NextRequest) {
         .maybeSingle();
       aiModel = settings?.name_model || "claude-sonnet-4-6";
     }
+    // Design mode: pin to Anthropic for v1 (only streamer with the design tools wired).
+    const conversationMode = mode === "design" ? "design" : "general";
+    if (conversationMode === "design" && !aiModel.startsWith("claude-")) {
+      aiModel = "claude-sonnet-4-6";
+    }
 
     const { data: conversation, error } = await intelligenceDb
       .from("ai_conversations")
       .insert({
         id_workspace: workspaceId,
         user_created: userId,
-        name_conversation: title || "New Conversation",
+        name_conversation: title || (conversationMode === "design" ? "New Design Session" : "New Conversation"),
         type_visibility: visibility || "private",
         id_content: contentObjectId
           ? parseInt(String(contentObjectId), 10)
@@ -267,6 +272,7 @@ export async function POST(req: NextRequest) {
           : null,
         name_model: aiModel,
         flag_incognito: isIncognito ? 1 : 0,
+        type_conversation_mode: conversationMode,
       })
       .select()
       .single();

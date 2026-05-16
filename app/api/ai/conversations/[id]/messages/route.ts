@@ -37,6 +37,7 @@ const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> =
   "gemini-2.5-pro": { inputPer1M: 125, outputPer1M: 1000 },          // $1.25/$10
   "gemini-3-flash": { inputPer1M: 50, outputPer1M: 300 },            // $0.50/$3
   "gemini-3.1-flash-lite": { inputPer1M: 25, outputPer1M: 150 },     // $0.25/$1.50
+  "deepseek-chat": { inputPer1M: 27, outputPer1M: 110 },             // $0.27/$1.10
   "sonar": { inputPer1M: 100, outputPer1M: 100 },                    // $1/$1
   "sonar-pro": { inputPer1M: 300, outputPer1M: 1500 },               // $3/$15
 };
@@ -1057,6 +1058,7 @@ export async function POST(
       userName: session.user?.name || null,
       userEmail: session.user?.email || null,
       userEngineId: userId,
+      designMode: conversation.type_conversation_mode === "design",
     });
 
     // Append query router hints to system prompt as required tool calls
@@ -1126,7 +1128,7 @@ export async function POST(
     // the "user navigated away mid-stream and lost their response" bug.
     const aiStream = createStreamingResponse(
       messages,
-      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: isTeamThread ? undefined : (session.user?.email || undefined), selectedClientId: conversation.id_client || undefined },
+      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: isTeamThread ? undefined : (session.user?.email || undefined), selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId },
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {

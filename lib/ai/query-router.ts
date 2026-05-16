@@ -34,7 +34,7 @@ export interface QueryRoute {
 // Step 1: Conversational — no search needed
 const GRATITUDE = /^(thanks|thank you|thx|ty|cheers|great|perfect|awesome|nice|cool|got it|ok|okay|noted|understood|will do)\b/i;
 const AFFIRMATIONS = /^(yes|no|yep|nope|sure|right|exactly|correct|agreed|absolutely|definitely)\b/i;
-const REPHRASE = /\b(rephrase|reword|rewrite|shorter|longer|simpler|more formal|more casual|bullet points|as a list|make it|format it|tone it|polish|clean up|tidy up)\b/i;
+const REPHRASE = /\b(rephrase|reword|rewrite|summarise|summarize|summary of (this|that|the (text|following|above))|tl;?dr|shorter|longer|simpler|more formal|more casual|bullet points|as a list|make it|format it|tone it|polish|clean up|tidy up|translate (this|that|the (text|following|above))|translate to)\b/i;
 const FOLLOW_UP_SHORT = /^(and |also |what about |how about |can you also |and the |what if )/i;
 const CLARIFICATION = /^(what do you mean|i meant|i was asking|no i mean|i'm asking|sorry i meant)\b/i;
 const GREETING_SHORT = /^(hi|hello|hey|good morning|good afternoon|good evening|howdy)\b/i;

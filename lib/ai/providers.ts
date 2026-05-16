@@ -36,6 +36,11 @@ export interface AIProviderConfig {
    *  Defaults to "enginegpt" (the user-facing chat). Set to a different
    *  value when calling from RFP / memory / summary code paths. */
   source?: string;
+  /** Conversation id — needed for persisting design-mode assets to ai_design_assets. */
+  conversationId?: string;
+  /** When true, enables Design mode tools (generate_video, search_artlist, license_artlist_asset)
+   *  and auto-injects client brand context into image/video prompts. */
+  designMode?: boolean;
 }
 
 /** Default temperature for user-facing chat. Lower than model defaults (~0.7-1.0)
@@ -75,7 +80,7 @@ function formatMeetingBrainResult(report: string, result: { data: any; count: nu
 /* ─────────────── Model Registry ─────────────── */
 
 interface ModelInfo {
-  provider: "anthropic" | "xai" | "openai" | "gemini" | "perplexity";
+  provider: "anthropic" | "xai" | "openai" | "gemini" | "perplexity" | "deepseek";
   apiModel: string;
   label: string;
   description?: string;
@@ -137,6 +142,12 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     apiModel: "grok-4-1-fast-non-reasoning",
     label: "Grok 4 Fast",
     description: "Fast, affordable, web search",
+  },
+  "deepseek-chat": {
+    provider: "deepseek",
+    apiModel: "deepseek-chat",
+    label: "DeepSeek Chat",
+    description: "Fast & cost-effective open model",
   },
   "sonar": {
     provider: "perplexity",
@@ -234,6 +245,16 @@ function getGeminiClient() {
   return new OpenAI({
     apiKey: process.env.GEMINI_API_KEY,
     baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+  });
+}
+
+function getDeepSeekClient() {
+  if (!process.env.DEEPSEEK_API_KEY) {
+    throw new Error("DEEPSEEK_API_KEY environment variable is not set. Add it to use DeepSeek models.");
+  }
+  return new OpenAI({
+    apiKey: process.env.DEEPSEEK_API_KEY,
+    baseURL: "https://api.deepseek.com/v1",
   });
 }
 
@@ -580,6 +601,109 @@ const DOCUMENT_GEN_TOOL: Anthropic.Tool = {
   input_schema: {
     ...(DOCUMENT_GEN_OPENAI_TOOL.function.parameters as any),
   },
+};
+
+/* ─────────────── Video Generation Tool (Design Mode) ─────────────── */
+
+/** OpenAI-compatible tool definition for generate_video (Runway). */
+const VIDEO_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "generate_video",
+    description:
+      "Generate a short video clip (5 or 10 seconds) when the user asks for video, animation, motion, or a moving image. Powered by Runway Gen-4 Turbo. Supports text-to-video (just a prompt) and image-to-video (an existing image URL + motion prompt). Only use when the user explicitly asks for video.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description:
+            "Detailed prompt describing the scene, motion, camera movement, and aesthetic. Be specific about what should move and how. For image_to_video, focus on the motion/camera direction rather than re-describing the scene.",
+        },
+        duration: {
+          type: "number",
+          enum: [5, 10],
+          description: "Clip duration in seconds. 5 is faster + cheaper, 10 for richer scenes. Default 5.",
+        },
+        format: {
+          type: "string",
+          enum: ["landscape", "portrait", "square"],
+          description: "Output aspect ratio. landscape = 1280x720, portrait = 720x1280 (TikTok/Reels), square = 1024x1024.",
+        },
+        image_url: {
+          type: "string",
+          description:
+            "Optional source image URL — if provided, runs image-to-video (animates the image). Pass a URL from a prior generate_image result or an uploaded asset.",
+        },
+        model: {
+          type: "string",
+          enum: ["gen4_turbo", "gen3a_turbo"],
+          description: "Runway model. gen4_turbo (default) is best quality/cost; gen3a_turbo for higher fidelity at higher latency.",
+        },
+      },
+      required: ["prompt"],
+    },
+  },
+};
+
+const VIDEO_GEN_TOOL: Anthropic.Tool = {
+  name: "generate_video",
+  description: VIDEO_GEN_OPENAI_TOOL.function.description!,
+  input_schema: { ...(VIDEO_GEN_OPENAI_TOOL.function.parameters as any) },
+};
+
+/* ─────────────── Artlist Tools (Design Mode) ─────────────── */
+
+/** OpenAI-compatible tool definition for search_artlist (Artgrid stock footage). */
+const ARTLIST_SEARCH_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "search_artlist",
+    description:
+      "Search Artlist's Artgrid catalogue for licensed stock video footage. Use when the user wants to find existing footage (drone shots, b-roll, lifestyle, abstract, etc.) rather than generate something from scratch. Returns thumbnails and previews; user must explicitly select an asset before licensing.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search keywords — be descriptive. e.g. 'cinematic drone shot of snowy mountains', 'busy city street at night'." },
+        duration_min: { type: "number", description: "Minimum clip duration in seconds." },
+        duration_max: { type: "number", description: "Maximum clip duration in seconds." },
+        orientation: { type: "string", enum: ["landscape", "portrait", "square"], description: "Aspect ratio filter." },
+        mood: { type: "string", description: "Mood/vibe filter — e.g. 'cinematic', 'uplifting', 'tense', 'corporate'." },
+        page: { type: "number", description: "Page number for pagination (default 1)." },
+      },
+      required: ["query"],
+    },
+  },
+};
+
+const ARTLIST_SEARCH_TOOL: Anthropic.Tool = {
+  name: "search_artlist",
+  description: ARTLIST_SEARCH_OPENAI_TOOL.function.description!,
+  input_schema: { ...(ARTLIST_SEARCH_OPENAI_TOOL.function.parameters as any) },
+};
+
+/** OpenAI-compatible tool definition for license_artlist_asset. */
+const ARTLIST_LICENSE_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "license_artlist_asset",
+    description:
+      "License an Artlist asset (use after the user picks one from search_artlist results). Triggers the licensed download, mirrors the clip to our storage, and adds it to the design canvas. Always confirm with the user before calling — licensing may consume credits.",
+    parameters: {
+      type: "object",
+      properties: {
+        asset_id: { type: "string", description: "Artlist asset id from a prior search_artlist result." },
+        title: { type: "string", description: "Asset title (for the canvas tile label)." },
+      },
+      required: ["asset_id"],
+    },
+  },
+};
+
+const ARTLIST_LICENSE_TOOL: Anthropic.Tool = {
+  name: "license_artlist_asset",
+  description: ARTLIST_LICENSE_OPENAI_TOOL.function.description!,
+  input_schema: { ...(ARTLIST_LICENSE_OPENAI_TOOL.function.parameters as any) },
 };
 
 /* ─────────────── Chart Generation Tool ─────────────── */
@@ -1580,8 +1704,19 @@ type ImageProvider = "openai" | "xai" | "anthropic" | "gemini";
 async function generateImage(
   prompt: string,
   size: "1024x1024" | "1792x1024" | "1024x1792" = "1024x1024",
-  provider: ImageProvider = "openai"
+  provider: ImageProvider = "openai",
+  brand?: import("./branded-prompt").BrandContext | null
 ): Promise<string> {
+  // Apply client brand context when one is loaded (auto-on in Design mode).
+  if (brand) {
+    const { buildBrandedImagePrompt, brandPromptApplied } = await import("./branded-prompt");
+    const augmented = buildBrandedImagePrompt(prompt, brand, { includeDocumentContext: true });
+    if (brandPromptApplied(prompt, augmented)) {
+      console.log(`[BrandPrompt] augmented image prompt for client=${brand.clientName || "?"} (+${augmented.length - prompt.length} chars)`);
+      prompt = augmented;
+    }
+  }
+
   let imageBuffer: Buffer;
 
   if (provider === "xai") {
@@ -1641,6 +1776,209 @@ async function generateImage(
 
   // Serve through auth proxy for access control
   return `/api/media/file?path=${encodeURIComponent(blob.pathname)}`;
+}
+
+/* ─────────────── Video Generation (Runway) ─────────────── */
+
+/**
+ * Run a Runway video generation, mirror the result to Vercel Blob, return the
+ * proxy URL. Mirrors generateImage's contract.
+ */
+async function generateVideo(
+  prompt: string,
+  options: {
+    duration?: 5 | 10;
+    format?: "landscape" | "portrait" | "square";
+    imageUrl?: string;
+    model?: "gen4_turbo" | "gen3a_turbo";
+    brand?: import("./branded-prompt").BrandContext | null;
+    onProgress?: (progress: number) => void;
+  } = {}
+): Promise<{ videoUrl: string; durationSec: number; model: string; thumbnailUrl?: string }> {
+  const { generateRunwayVideo, ratioForFormat } = await import("@/lib/integrations/runway");
+
+  // Brand-aware prompt augmentation (same path as images).
+  let finalPrompt = prompt;
+  if (options.brand) {
+    const { buildBrandedImagePrompt, brandPromptApplied } = await import("./branded-prompt");
+    const augmented = buildBrandedImagePrompt(prompt, options.brand);
+    if (brandPromptApplied(prompt, augmented)) {
+      console.log(`[BrandPrompt] augmented video prompt for client=${options.brand.clientName || "?"} (+${augmented.length - prompt.length} chars)`);
+      finalPrompt = augmented;
+    }
+  }
+
+  // Resolve image URL: if it's our auth-proxy URL, fetch via blob-utils and re-host
+  // publicly so Runway can read it. (Runway can't see /api/media/file.)
+  let publicImageUrl: string | undefined;
+  if (options.imageUrl) {
+    if (/^https?:\/\//i.test(options.imageUrl) && !options.imageUrl.includes("/api/media/file")) {
+      publicImageUrl = options.imageUrl;
+    } else {
+      // Internal proxy URL — fetch buffer and put it on Blob with public access so Runway can grab it.
+      const { fetchBlobContent } = await import("./blob-utils");
+      const { buffer, contentType } = await fetchBlobContent(options.imageUrl);
+      const tempName = `runway-src/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
+      const tempBlob = await put(tempName, buffer, { access: "public", contentType: contentType || "image/png" });
+      publicImageUrl = tempBlob.url;
+    }
+  }
+
+  // Generate via Runway
+  const { videoUrl, durationSec, model } = await generateRunwayVideo({
+    prompt: finalPrompt,
+    imageUrl: publicImageUrl,
+    duration: options.duration ?? 5,
+    ratio: ratioForFormat(options.format),
+    model: options.model ?? "gen4_turbo",
+    onProgress: options.onProgress ? (p) => options.onProgress!(p) : undefined,
+  });
+
+  // Download mp4 and mirror to private Blob
+  const dlRes = await fetch(videoUrl);
+  if (!dlRes.ok) throw new Error(`Failed to download Runway video (${dlRes.status})`);
+  const videoBuffer = Buffer.from(await dlRes.arrayBuffer());
+
+  const filename = `design/video/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`;
+  const blob = await put(filename, videoBuffer, { access: "private", contentType: "video/mp4" });
+
+  return {
+    videoUrl: `/api/media/file?path=${encodeURIComponent(blob.pathname)}`,
+    durationSec,
+    model,
+  };
+}
+
+/* ─────────────── Artlist Helpers (Design Mode) ─────────────── */
+
+/** Search Artlist and surface results to the AI as a structured tool_result. */
+async function searchArtlistCatalogue(input: {
+  query: string;
+  duration_min?: number;
+  duration_max?: number;
+  orientation?: "landscape" | "portrait" | "square";
+  mood?: string;
+  page?: number;
+}): Promise<{ items: Array<{ id: string; title: string; previewUrl: string; thumbnailUrl: string; durationSec: number; orientation: string; tags: string[] }>; totalCount: number; hasMore: boolean }> {
+  const { searchArtlist } = await import("@/lib/integrations/artlist");
+  const res = await searchArtlist({
+    query: input.query,
+    durationMin: input.duration_min,
+    durationMax: input.duration_max,
+    orientation: input.orientation,
+    mood: input.mood,
+    page: input.page,
+  });
+  return {
+    items: res.items.map((a) => ({
+      id: a.id, title: a.title, previewUrl: a.previewUrl, thumbnailUrl: a.thumbnailUrl,
+      durationSec: a.durationSec, orientation: a.orientation, tags: a.tags || [],
+    })),
+    totalCount: res.totalCount,
+    hasMore: res.hasMore,
+  };
+}
+
+/** License an Artlist asset and mirror it to private Blob. */
+async function licenseArtlistAndMirror(assetId: string): Promise<{ videoUrl: string; licenseTerms: string; durationSec?: number }> {
+  const { licenseArtlistAsset, downloadArtlistAsset } = await import("@/lib/integrations/artlist");
+  const { downloadUrl, licenseTerms } = await licenseArtlistAsset(assetId);
+  const buffer = await downloadArtlistAsset(downloadUrl);
+  const filename = `design/artlist/${assetId}-${Date.now()}.mp4`;
+  const blob = await put(filename, buffer, { access: "private", contentType: "video/mp4" });
+  return {
+    videoUrl: `/api/media/file?path=${encodeURIComponent(blob.pathname)}`,
+    licenseTerms,
+  };
+}
+
+/* ─────────────── Design Mode: Brand Context Loader ─────────────── */
+
+/**
+ * Load the client's brand context for a Design mode generation. Returns null if
+ * no client is loaded or no context exists yet (so we cleanly fall back to a raw
+ * prompt). Lightweight: one DB read.
+ */
+async function loadBrandContext(
+  workspaceId: string | undefined,
+  clientId: number | undefined
+): Promise<import("./branded-prompt").BrandContext | null> {
+  if (!workspaceId || !clientId) return null;
+  try {
+    const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+    const [{ data: ctx }, { data: client }] = await Promise.all([
+      intelligenceDb
+        .from("ai_client_context")
+        .select("document_context, visual_identity")
+        .eq("id_workspace", workspaceId)
+        .eq("id_client", clientId)
+        .maybeSingle(),
+      supabase
+        .from("app_clients")
+        .select("name_client")
+        .eq("id_client", clientId)
+        .maybeSingle(),
+    ]);
+    if (!ctx && !client) return null;
+    return {
+      clientName: (client as any)?.name_client || undefined,
+      documentContext: (ctx as any)?.document_context || null,
+      visualIdentity: (ctx as any)?.visual_identity || null,
+    };
+  } catch (err: any) {
+    console.warn("[BrandContext] load failed:", err?.message);
+    return null;
+  }
+}
+
+/* ─────────────── Design Mode: Asset Persistence ─────────────── */
+
+interface PersistAssetInput {
+  conversationId?: string | null;
+  workspaceId: string;
+  clientId?: number | null;
+  userId: number;
+  type: "image" | "video" | "document" | "artlist_video";
+  source: "dalle" | "grok_imagine" | "runway" | "artlist" | "upload" | "chart";
+  blobUrl: string;          // /api/media/file?path=...
+  prompt?: string | null;
+  parentId?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+/** Insert a row into ai_design_assets. Fire-and-forget; failures only log. */
+async function persistDesignAsset(input: PersistAssetInput): Promise<string | null> {
+  try {
+    const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+    // Extract blob_path from the proxy URL.
+    const m = input.blobUrl.match(/\/api\/media\/file\?path=([^&]+)/);
+    const blobPath = m ? decodeURIComponent(m[1]) : input.blobUrl;
+    const { data, error } = await intelligenceDb
+      .from("ai_design_assets")
+      .insert({
+        id_conversation: input.conversationId || null,
+        id_workspace: input.workspaceId,
+        id_client: input.clientId ?? null,
+        user_created: input.userId,
+        type_asset: input.type,
+        source: input.source,
+        blob_path: blobPath,
+        blob_url: input.blobUrl,
+        prompt: input.prompt ?? null,
+        parent_id: input.parentId || null,
+        metadata: input.metadata || {},
+      })
+      .select("id_asset")
+      .single();
+    if (error) {
+      console.warn("[DesignAssets] persist failed:", error.message);
+      return null;
+    }
+    return (data as any)?.id_asset || null;
+  } catch (err: any) {
+    console.warn("[DesignAssets] persist exception:", err?.message);
+    return null;
+  }
 }
 
 /* ─────────────── Document Generation (PPTX) ─────────────── */
@@ -2661,7 +2999,7 @@ export function createStreamingResponse(
       let finalProviderKey =
         modelInfo.provider === "anthropic" ? "claude" :
         modelInfo.provider === "xai" ? "grok-4" :
-        modelInfo.provider; // gemini / openai / perplexity already match
+        modelInfo.provider; // gemini / openai / perplexity / deepseek already match
       try {
         const { resolveModelOverride, isOverProviderCap, ServiceControlError } = await import(
           "@/lib/admin/service-control"
@@ -2715,6 +3053,17 @@ export function createStreamingResponse(
           result = await streamGemini(messages, config, modelInfo.apiModel, controller, encoder);
         } else if (modelInfo.provider === "openai") {
           result = await streamOpenAI(messages, config, modelInfo.apiModel, controller, encoder);
+        } else if (modelInfo.provider === "deepseek") {
+          // DeepSeek is OpenAI-compatible — reuse streamOpenAI with a different client.
+          // Image generation isn't supported, so force it off regardless of UI toggle.
+          result = await streamOpenAI(
+            messages,
+            { ...config, imageGeneration: false },
+            modelInfo.apiModel,
+            controller,
+            encoder,
+            { clientOverride: getDeepSeekClient(), providerLabel: "DeepSeek" },
+          );
         } else if (modelInfo.provider === "perplexity") {
           result = await streamPerplexity(messages, config, modelInfo.apiModel, controller, encoder);
         } else {
@@ -2827,6 +3176,13 @@ async function streamAnthropic(
     tools.push(DOCUMENT_GEN_TOOL);
     tools.push(CHART_GEN_TOOL);
   }
+  if (config.designMode) {
+    // Design mode also gets image gen (force-enable even if toggle is off) + video + artlist.
+    if (!config.imageGeneration) tools.push(IMAGE_GEN_TOOL);
+    tools.push(VIDEO_GEN_TOOL);
+    tools.push(ARTLIST_SEARCH_TOOL);
+    tools.push(ARTLIST_LICENSE_TOOL);
+  }
   if (config.workspaceClientIds?.length) {
     tools.push(QUERY_ENGINE_TOOL);
     tools.push(LOOKUP_CLIENT_CONTEXT_TOOL);
@@ -2839,7 +3195,7 @@ async function streamAnthropic(
     tools.push(SLACK_TOOL);
   }
 
-  console.log(`[Anthropic] Streaming with tools: [${tools.map(t => (t as any).name || (t as any).type).join(', ') || 'none'}], imageGeneration=${config.imageGeneration}`);
+  console.log(`[Anthropic] Streaming with tools: [${tools.map(t => (t as any).name || (t as any).type).join(', ') || 'none'}], imageGeneration=${config.imageGeneration}, designMode=${!!config.designMode}`);
 
   let fullText = "";
   let totalInputTokens = 0;
@@ -2976,12 +3332,29 @@ async function streamAnthropic(
         try {
           const prompt = tool.input.prompt || "Generate an image";
           const size = tool.input.size || "1024x1024";
-          const imageUrl = await generateImage(prompt, size, "anthropic");
+          const brand = config.designMode ? await loadBrandContext(config.workspaceId, config.selectedClientId) : null;
+          const imageUrl = await generateImage(prompt, size, "anthropic", brand);
+
+          // Persist to ai_design_assets in design mode.
+          let designAssetId: string | null = null;
+          if (config.designMode && config.workspaceId && config.userId) {
+            designAssetId = await persistDesignAsset({
+              conversationId: config.conversationId || null,
+              workspaceId: config.workspaceId,
+              clientId: config.selectedClientId || null,
+              userId: config.userId,
+              type: "image",
+              source: "dalle",
+              blobUrl: imageUrl,
+              prompt,
+              metadata: { size, model: "dall-e-3", brand_applied: !!brand },
+            });
+          }
 
           // Notify client with the generated image URL
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ image_ready: { url: imageUrl, prompt } })}\n\n`
+              `data: ${JSON.stringify({ image_ready: { url: imageUrl, prompt, asset_id: designAssetId } })}\n\n`
             )
           );
 
@@ -3009,6 +3382,125 @@ async function streamAnthropic(
             content: `Image generation failed: ${err.message}`,
             is_error: true,
           });
+        }
+      } else if (tool.name === "generate_video") {
+        try {
+          const prompt: string = tool.input.prompt || "Generate a video";
+          const duration: 5 | 10 = tool.input.duration === 10 ? 10 : 5;
+          const format = tool.input.format as "landscape" | "portrait" | "square" | undefined;
+          const imageUrlInput: string | undefined = tool.input.image_url;
+          const model = tool.input.model as "gen4_turbo" | "gen3a_turbo" | undefined;
+          const brand = config.designMode ? await loadBrandContext(config.workspaceId, config.selectedClientId) : null;
+
+          // Heartbeat so the UI can show a progress indicator.
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ generating_video: true })}\n\n`));
+
+          const { videoUrl, durationSec, model: usedModel } = await generateVideo(prompt, {
+            duration,
+            format,
+            imageUrl: imageUrlInput,
+            model,
+            brand,
+            onProgress: (p) => {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ video_progress: { percent: Math.round(p * 100) } })}\n\n`));
+            },
+          });
+
+          // Optionally link to parent asset (image_to_video)
+          let parentId: string | null = null;
+          if (imageUrlInput && config.designMode && config.workspaceId) {
+            try {
+              const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+              const m = imageUrlInput.match(/\/api\/media\/file\?path=([^&]+)/);
+              if (m) {
+                const path = decodeURIComponent(m[1]);
+                const { data } = await intelligenceDb
+                  .from("ai_design_assets")
+                  .select("id_asset").eq("blob_path", path).maybeSingle();
+                parentId = (data as any)?.id_asset || null;
+              }
+            } catch { /* non-fatal */ }
+          }
+
+          let designAssetId: string | null = null;
+          if (config.designMode && config.workspaceId && config.userId) {
+            designAssetId = await persistDesignAsset({
+              conversationId: config.conversationId || null,
+              workspaceId: config.workspaceId,
+              clientId: config.selectedClientId || null,
+              userId: config.userId,
+              type: "video",
+              source: "runway",
+              blobUrl: videoUrl,
+              prompt,
+              parentId,
+              metadata: { duration_sec: durationSec, model: usedModel, format: format || "landscape", brand_applied: !!brand },
+            });
+          }
+
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ video_ready: { url: videoUrl, prompt, duration: durationSec, source: "runway", asset_id: designAssetId } })}\n\n`)
+          );
+
+          fullText += `\n\n🎬 [Generated video](${videoUrl})\n\n`;
+
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: `Video generated successfully (${durationSec}s, ${usedModel}). URL: ${videoUrl} — Do NOT write this URL again in your response. The video is already displayed to the user.`,
+          });
+        } catch (err: any) {
+          console.error("[VideoGen] Failed:", err.message);
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ video_error: err.message })}\n\n`));
+          toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Video generation failed: ${err.message}`, is_error: true });
+        }
+      } else if (tool.name === "search_artlist") {
+        try {
+          const result = await searchArtlistCatalogue(tool.input as any);
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ artlist_results: { query: tool.input.query, items: result.items } })}\n\n`));
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: `Found ${result.items.length} Artlist clips. Present the titles and durations to the user as numbered options; instruct them to pick one for licensing. Do NOT auto-license. Clip IDs: ${result.items.map((i: any) => i.id).join(", ")}.\n\n${JSON.stringify(result.items.slice(0, 8), null, 2)}`,
+          });
+        } catch (err: any) {
+          console.error("[Artlist] Search failed:", err.message);
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ artlist_error: err.message })}\n\n`));
+          toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Artlist search failed: ${err.message}`, is_error: true });
+        }
+      } else if (tool.name === "license_artlist_asset") {
+        try {
+          const assetId: string = tool.input.asset_id;
+          const title: string = tool.input.title || `Artlist clip ${assetId}`;
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ artlist_licensing: { asset_id: assetId } })}\n\n`));
+          const { videoUrl, licenseTerms } = await licenseArtlistAndMirror(assetId);
+
+          let designAssetId: string | null = null;
+          if (config.designMode && config.workspaceId && config.userId) {
+            designAssetId = await persistDesignAsset({
+              conversationId: config.conversationId || null,
+              workspaceId: config.workspaceId,
+              clientId: config.selectedClientId || null,
+              userId: config.userId,
+              type: "artlist_video",
+              source: "artlist",
+              blobUrl: videoUrl,
+              prompt: title,
+              metadata: { artlist_asset_id: assetId, license_terms: licenseTerms, title },
+            });
+          }
+
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ video_ready: { url: videoUrl, prompt: title, source: "artlist", asset_id: designAssetId, license_terms: licenseTerms } })}\n\n`));
+          fullText += `\n\n🎬 [${title} (Artlist)](${videoUrl})\n\n`;
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: `Artlist clip licensed and added to canvas. URL: ${videoUrl}. License terms: ${licenseTerms} — surface this to the user.`,
+          });
+        } catch (err: any) {
+          console.error("[Artlist] License failed:", err.message);
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ artlist_error: err.message })}\n\n`));
+          toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Artlist licensing failed: ${err.message}`, is_error: true });
         }
       } else if (tool.name === "generate_document") {
         try {
@@ -4205,9 +4697,10 @@ async function streamOpenAI(
   config: AIProviderConfig,
   apiModel: string,
   controller: ReadableStreamDefaultController,
-  encoder: TextEncoder
+  encoder: TextEncoder,
+  options?: { clientOverride?: OpenAI; providerLabel?: string }
 ): Promise<StreamResult> {
-  const client = getOpenAIClient();
+  const client = options?.clientOverride ?? getOpenAIClient();
 
   const openaiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
@@ -4579,7 +5072,7 @@ async function streamOpenAI(
   // If the loop exhausted all rounds without generating text, do one final
   // round with tools disabled to force a text response.
   if (!fullText.trim() && openaiMessages.length > 1) {
-    console.log(`[OpenAI] Tool loop produced no text after ${MAX_TOOL_ROUNDS} rounds — forcing final response`);
+    console.log(`[${options?.providerLabel ?? "OpenAI"}] Tool loop produced no text after ${MAX_TOOL_ROUNDS} rounds — forcing final response`);
     try {
       const finalStream = await client.chat.completions.create({
         model: apiModel,
@@ -4595,9 +5088,9 @@ async function streamOpenAI(
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
         }
       }
-      console.log(`[OpenAI] Forced final response: ${fullText.length} chars`);
+      console.log(`[${options?.providerLabel ?? "OpenAI"}] Forced final response: ${fullText.length} chars`);
     } catch (err: any) {
-      console.error(`[OpenAI] Forced final response failed:`, err.message);
+      console.error(`[${options?.providerLabel ?? "OpenAI"}] Forced final response failed:`, err.message);
     }
   }
 

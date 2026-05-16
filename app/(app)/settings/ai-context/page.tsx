@@ -48,6 +48,9 @@ const PROVIDER_LABELS: Record<string, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   xai: "xAI (Grok)",
+  gemini: "Google",
+  deepseek: "DeepSeek",
+  perplexity: "Perplexity",
 };
 
 /* ─────────────── Component ─────────────── */

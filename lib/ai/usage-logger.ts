@@ -15,6 +15,7 @@ const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> =
   "gemini-2.5-flash": { inputPer1M: 15, outputPer1M: 60 },
   "gemini-3-flash": { inputPer1M: 50, outputPer1M: 300 },
   "gemini-3.1-flash-lite": { inputPer1M: 25, outputPer1M: 150 },
+  "deepseek-chat": { inputPer1M: 27, outputPer1M: 110 },
 };
 
 function calculateCostTenths(model: string, inputTokens: number, outputTokens: number): number {

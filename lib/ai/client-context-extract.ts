@@ -464,6 +464,81 @@ interface SkippedFile {
 }
 
 /**
+ * Structured visual identity extracted from styleguide documents. Used by
+ * Design mode's buildBrandedImagePrompt to ground image/video generation in
+ * deterministic brand rules.
+ */
+async function extractVisualIdentity(
+  xai: OpenAI,
+  fileSummaries: FileSummary[],
+  clientName: string
+): Promise<Record<string, unknown> | null> {
+  // Heuristic: only run when at least one file's name or summary mentions styleguide-ish content.
+  const hasVisualContent = fileSummaries.some((f) =>
+    /style|brand|guide|visual|identity|logo|palette|color|colour|design|typograph|font/i.test(
+      `${f.name} ${f.summary}`
+    )
+  );
+  if (!hasVisualContent) return null;
+
+  const input = fileSummaries
+    .map((f) => `--- ${f.name} ---\n${f.summary}`)
+    .join("\n\n");
+
+  const response = await xai.chat.completions.create({
+    model: "grok-4-1-fast",
+    messages: [
+      {
+        role: "system",
+        content: `Extract the visual identity for "${clientName}" from the document summaries below. Return ONLY valid JSON matching this schema (no prose, no markdown):
+
+{
+  "primary_colors": [hex strings — only if explicitly stated],
+  "secondary_colors": [hex strings — only if explicitly stated],
+  "typography": { "headline": "...", "body": "..." } | null,
+  "tone_visual": [short adjectives describing the visual aesthetic, e.g. "editorial", "high-contrast"],
+  "do": [short visual rules from explicit DOs],
+  "dont": [short visual rules from explicit DON'Ts],
+  "logo_urls": [],
+  "reference_image_urls": []
+}
+
+Rules:
+- Only include fields you can populate from the documents — omit or null otherwise.
+- Never invent colours, fonts, or rules. If the documents don't specify them, leave the array empty.
+- Hex colours only ("#0033A0"). Convert RGB / Pantone to hex if you can; otherwise omit.
+- Return STRICT JSON. No comments, no trailing commas, no explanation outside the JSON.`,
+      },
+      { role: "user", content: input },
+    ],
+    max_completion_tokens: 800,
+    temperature: 0.1,
+    response_format: { type: "json_object" } as any,
+  });
+
+  logAiUsage({
+    model: "grok-4-1-fast",
+    source: "client-context",
+    inputTokens: response.usage?.prompt_tokens || 0,
+    outputTokens: response.usage?.completion_tokens || 0,
+  });
+
+  const content = response.choices?.[0]?.message?.content?.trim();
+  if (!content) return null;
+  try {
+    const parsed = JSON.parse(content);
+    // Reject if completely empty.
+    const hasAnything = Object.values(parsed).some(
+      (v) => v && (Array.isArray(v) ? v.length > 0 : typeof v === "object" ? Object.keys(v).length > 0 : true)
+    );
+    return hasAnything ? parsed : null;
+  } catch (err: any) {
+    console.warn(`[ClientContext] visual_identity JSON parse failed for ${clientName}:`, err?.message);
+    return null;
+  }
+}
+
+/**
  * Process all asset files for a client and store the consolidated profile.
  */
 export async function processClientContext(
@@ -604,6 +679,14 @@ export async function processClientContext(
       name
     );
 
+    // 3b. Extract structured visual identity for Design mode (best-effort).
+    let visualIdentity: Record<string, unknown> | null = null;
+    try {
+      visualIdentity = await extractVisualIdentity(xai, fileSummaries, name);
+    } catch (err: any) {
+      console.warn(`[ClientContext] visual_identity extraction failed for ${name}:`, err?.message);
+    }
+
     // 4. Upsert into ai_client_context (try with new columns, fall back without)
     const fullPayload = {
       id_workspace: workspaceId,
@@ -613,6 +696,7 @@ export async function processClientContext(
       document_skipped_files: skippedFiles,
       units_asset_count: fileSummaries.length,
       units_asset_total: assets.length,
+      visual_identity: visualIdentity,
       date_last_processed: new Date().toISOString(),
     };
 
@@ -622,8 +706,8 @@ export async function processClientContext(
 
     // Fallback: if new columns don't exist yet, upsert without them
     if (upsertErr?.code === "42703") {
-      console.warn("[ClientContext] New columns not yet migrated, upserting without skipped_files/asset_total");
-      const { document_skipped_files, units_asset_total, ...legacyPayload } = fullPayload;
+      console.warn("[ClientContext] New columns not yet migrated, upserting without skipped_files/asset_total/visual_identity");
+      const { document_skipped_files, units_asset_total, visual_identity, ...legacyPayload } = fullPayload;
       const fallback = await intelligenceDb
         .from("ai_client_context")
         .upsert(legacyPayload, { onConflict: "id_workspace,id_client" });
