@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { X, Check, Copy, Download, Wand2, Star, BadgeCheck, AlertTriangle, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DesignShot, DesignShotVersion } from "@/lib/design/types";
@@ -61,6 +61,10 @@ export function VersionDetailDialog({
         className="design-mode max-w-[1100px] gap-0 overflow-hidden border p-0"
         style={{ borderColor: "hsl(var(--design-border))", background: "hsl(var(--design-bg))" }}
       >
+        <DialogTitle className="sr-only">{shot.title} — version v{version.idx}</DialogTitle>
+        <DialogDescription className="sr-only">
+          Detail view for shot {shot.idx} version {version.idx} — preview, metadata, and actions.
+        </DialogDescription>
         <div className="grid grid-cols-[1fr_320px]">
           {/* Preview pane */}
           <div className="relative flex items-center justify-center bg-black" style={{ minHeight: 480 }}>

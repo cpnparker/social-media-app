@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { X, Star, BadgeCheck, AlertTriangle, ArrowLeftRight, Eye, Columns2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DesignShot, DesignShotVersion } from "@/lib/design/types";
@@ -80,6 +80,10 @@ export function VersionCompareDialog({
         className="design-mode max-w-[1280px] gap-0 overflow-hidden border p-0"
         style={{ borderColor: "hsl(var(--design-border))", background: "hsl(var(--design-bg))" }}
       >
+        <DialogTitle className="sr-only">Compare versions for {shot.title}</DialogTitle>
+        <DialogDescription className="sr-only">
+          Side-by-side or swipe comparison of two versions of shot {shot.idx}.
+        </DialogDescription>
         {/* Header — shot title + view mode toggle */}
         <header className="flex items-center justify-between gap-3 border-b px-4 py-3"
                 style={{ borderColor: "hsl(var(--design-border))" }}>
