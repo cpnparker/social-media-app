@@ -561,7 +561,11 @@ function ShotMetaStrip({
           <span className="text-[10px] text-muted-foreground">·</span>
           <span className="text-[11px] text-muted-foreground">v{shot.versions.length || 0}</span>
         </div>
-        {shot.onBrand ? (
+        {/* Brand badge — only meaningful once a version has been generated.
+            Before then there's nothing to check against. */}
+        {shot.versions.length === 0 ? (
+          <span className="pill pill-neutral">Not generated</span>
+        ) : shot.onBrand ? (
           <span className="pill pill-success">
             <BadgeCheck className="h-3 w-3" /> On brand
           </span>

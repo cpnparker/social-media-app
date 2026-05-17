@@ -265,7 +265,7 @@ export default function DesignModePage() {
       return;
     }
     const j = await res.json();
-    toast.success(`Applied ${j.templateName} (${j.shotsCreated} shots)`);
+    toast.success(`Applied ${j.templateName} (${j.shotsCreated} shot${j.shotsCreated === 1 ? "" : "s"})`);
     await refreshSession();
     if (j.firstShotId) setCurrentShotId(j.firstShotId);
   }, [sessionId, refreshSession]);
