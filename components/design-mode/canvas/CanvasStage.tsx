@@ -356,13 +356,11 @@ export function CanvasStage({
               Stays in view even when prompt/refs scroll. */}
           <div className="flex-shrink-0 space-y-1.5 border-t p-3"
                style={{ borderColor: "hsl(var(--design-border))" }}>
-            <div className="flex items-center justify-between">
-              <div className="section-label muted">Output</div>
-              <div className="flex flex-wrap gap-1">
-                {["16:9", "9:16", "1:1", "4:5"].map((f) => (
-                  <FormatChip key={f} ratio={f} active={f === activeFormat} onClick={() => onFormatChange(f)} />
-                ))}
-              </div>
+            <div className="section-label muted">Output</div>
+            <div className="flex flex-wrap gap-1">
+              {["16:9", "9:16", "1:1", "4:5"].map((f) => (
+                <FormatChip key={f} ratio={f} active={f === activeFormat} onClick={() => onFormatChange(f)} />
+              ))}
             </div>
             <button
               onClick={onRegenerate}
