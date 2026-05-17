@@ -80,9 +80,10 @@ export default function DesignModePage() {
       const json = JSON.parse(text);
       if (!json?.session?.id) throw new Error("Unexpected response shape");
       setSessionId(json.session.id);
-      const currentPath = typeof window !== "undefined" ? window.location.pathname : "/engineai/design";
-      const contentQs = contentIdFromUrl ? `&content=${contentIdFromUrl}` : "";
-      router.replace(`${currentPath}?session=${json.session.id}${contentQs}`);
+      if (typeof window !== "undefined") {
+        const contentQs = contentIdFromUrl ? `&content=${contentIdFromUrl}` : "";
+        window.history.replaceState({}, "", `${window.location.pathname}?session=${json.session.id}${contentQs}`);
+      }
     } catch (err: any) {
       console.error("Failed to create session:", err);
       setCreateError(err?.message || "Unknown error");
@@ -707,10 +708,14 @@ export default function DesignModePage() {
     setSessionId(id);
     setData(null);
     setCurrentShotId(null);
-    const currentPath = typeof window !== "undefined" ? window.location.pathname : "/engineai/design";
-    const contentQs = contentIdFromUrl ? `&content=${contentIdFromUrl}` : "";
-    router.replace(`${currentPath}?session=${id}${contentQs}`);
-  }, [router, contentIdFromUrl]);
+    // Use history.replaceState so the clean '/design' URL stays in the bar
+    // (Next.js router.replace tries to match '/design' against app routes
+    // and silently no-ops because the file lives at '/engineai/design').
+    if (typeof window !== "undefined") {
+      const contentQs = contentIdFromUrl ? `&content=${contentIdFromUrl}` : "";
+      window.history.replaceState({}, "", `${window.location.pathname}?session=${id}${contentQs}`);
+    }
+  }, [contentIdFromUrl]);
 
   // ── render ────────────────────────────────────────────────────────────────
   if (createError) {
