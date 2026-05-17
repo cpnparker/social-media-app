@@ -188,9 +188,10 @@ export function CanvasStage({
           )}
         </div>
 
-        {/* Inspector */}
-        <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto rounded-lg border bg-[hsl(var(--design-bg-elev))] p-3"
+        {/* Inspector — scrolling content above + pinned action footer below */}
+        <aside className="flex min-h-0 flex-col rounded-lg border bg-[hsl(var(--design-bg-elev))]"
                style={{ borderColor: "hsl(var(--design-border))" }}>
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
           {/* Generator */}
           <div className="space-y-1.5">
             <div className="section-label muted">Generator</div>
@@ -349,14 +350,19 @@ export function CanvasStage({
               </div>
             )}
           </div>
+          </div>
 
-          {/* Output */}
-          <div className="space-y-1.5">
-            <div className="section-label muted">Output</div>
-            <div className="flex flex-wrap gap-1">
-              {["16:9", "9:16", "1:1", "4:5"].map((f) => (
-                <FormatChip key={f} ratio={f} active={f === activeFormat} onClick={() => onFormatChange(f)} />
-              ))}
+          {/* Pinned action footer — format chips + primary CTAs.
+              Stays in view even when prompt/refs scroll. */}
+          <div className="flex-shrink-0 space-y-1.5 border-t p-3"
+               style={{ borderColor: "hsl(var(--design-border))" }}>
+            <div className="flex items-center justify-between">
+              <div className="section-label muted">Output</div>
+              <div className="flex flex-wrap gap-1">
+                {["16:9", "9:16", "1:1", "4:5"].map((f) => (
+                  <FormatChip key={f} ratio={f} active={f === activeFormat} onClick={() => onFormatChange(f)} />
+                ))}
+              </div>
             </div>
             <button
               onClick={onRegenerate}
