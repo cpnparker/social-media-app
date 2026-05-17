@@ -187,7 +187,10 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
           <Bookmark className="h-3 w-3" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-[360px] p-0">
+      {/* design-mode class on the portal-rendered content so the CSS
+          custom properties (--design-accent etc.) actually resolve here —
+          Radix renders this in a portal outside the .design-mode scope. */}
+      <PopoverContent align="end" className="design-mode w-[360px] p-0">
         <div className="flex border-b" style={{ borderColor: "hsl(var(--design-border))" }}>
           <TabButton active={tab === "pick"} onClick={() => setTab("pick")}>
             <Bookmark className="mr-1 h-3 w-3" /> Pick saved

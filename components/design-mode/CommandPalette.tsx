@@ -89,7 +89,7 @@ export function CommandPalette({
   }
 
   return (
-    <CommandDialog open={open} onOpenChange={(o) => !o && onClose()}>
+    <CommandDialog open={open} onOpenChange={(o) => !o && onClose()} contentClassName="design-mode">
       <CommandInput placeholder="Search shots, jump to a model, run an action…" />
       <CommandList>
         <CommandEmpty>No matches.</CommandEmpty>

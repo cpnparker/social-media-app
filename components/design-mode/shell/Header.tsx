@@ -119,7 +119,7 @@ export function Header({
               <ChevronDown className="h-2.5 w-2.5" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-80">
+          <DropdownMenuContent align="end" className="design-mode w-80">
             <DropdownMenuLabel className="text-[11px] uppercase tracking-wide text-muted-foreground">
               Design sessions
             </DropdownMenuLabel>
@@ -161,7 +161,7 @@ export function Header({
               <ChevronDown className="h-2.5 w-2.5" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
+          <DropdownMenuContent align="end" className="design-mode w-52">
             <DropdownMenuItem onClick={() => onNewSession()} className="gap-2 text-xs">
               <Lock className="h-3 w-3" />
               <span className="flex-1">New session</span>
@@ -277,7 +277,7 @@ function ScopeSummary({
           <ChevronDown className="h-2.5 w-2.5 text-muted-foreground" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 p-3">
+      <PopoverContent align="start" className="design-mode w-72 p-3">
         <div className="space-y-3">
           {content && (
             <div>

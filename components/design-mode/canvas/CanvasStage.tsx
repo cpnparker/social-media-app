@@ -581,7 +581,7 @@ function ShotMetaStrip({
                 <MoreVertical className="h-3.5 w-3.5" />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuContent align="end" className="design-mode w-44">
               <DropdownMenuItem onClick={onDelete} className="text-xs gap-2 text-[hsl(var(--design-danger))]">
                 <Trash2 className="h-3 w-3" />
                 Delete shot

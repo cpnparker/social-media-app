@@ -62,7 +62,7 @@ export function ReferencePicker({ shots, excludeShotId, onUpload, onPickAsset }:
           <Upload className="h-3.5 w-3.5" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" side="top" className="w-80 p-0">
+      <PopoverContent align="start" side="top" className="design-mode w-80 p-0">
         <div className="flex border-b" style={{ borderColor: "hsl(var(--design-border))" }}>
           <TabButton active={tab === "upload"} onClick={() => setTab("upload")}>
             <Upload className="mr-1 h-3 w-3" /> Upload
