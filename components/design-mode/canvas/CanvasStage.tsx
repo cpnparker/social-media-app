@@ -34,6 +34,8 @@ interface CanvasStageProps {
   onPickReferenceAsset?: (assetId: string, blobUrl: string) => void;
   onRemoveReference?: (refId: string) => void;
   onAnimateImage?: () => void;
+  /** Re-generate the focused shot with brand-correction guidance appended. */
+  onFixDrift?: () => void;
   activeFormat?: string;
   generating?: boolean;
   animating?: boolean;
@@ -67,6 +69,7 @@ export function CanvasStage({
   onPickReferenceAsset,
   onRemoveReference,
   onAnimateImage,
+  onFixDrift,
   activeFormat = "16:9",
   generating = false,
   animating = false,
@@ -362,6 +365,18 @@ export function CanvasStage({
             >
               {generating ? "Generating…" : shot.versions.length === 0 ? "Generate · v1" : "Regenerate · new version"}
             </button>
+            {/* Drift recovery — only when the current version failed brand check */}
+            {onFixDrift && shot.status === "drift" && !generating && !animating && (
+              <button
+                onClick={onFixDrift}
+                disabled={!shot.prompt?.trim()}
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[hsl(var(--design-warning))]/50 bg-[hsl(38_85%_96%)] px-3 py-2 text-[12px] font-medium text-[hsl(25_70%_40%)] transition-colors hover:bg-[hsl(38_85%_92%)] disabled:opacity-50"
+                title="Re-generate with explicit brand-correction guidance"
+              >
+                <AlertTriangle className="h-3.5 w-3.5" />
+                Fix drift
+              </button>
+            )}
             {/* Animate-this-image shortcut — only when current version is an image */}
             {onAnimateImage && (() => {
               const cur = shot.versions.find((v) => v.id === shot.currentVersionId) || shot.versions[shot.versions.length - 1];

@@ -589,7 +589,7 @@ export default function DesignModePage() {
     }
   }, [sessionId, currentShotId, refreshSession]);
 
-  const handleRegenerate = useCallback(async () => {
+  const handleRegenerate = useCallback(async (override?: { prompt?: string; toastLabel?: string }) => {
     if (!sessionId || !currentShotId || generating) return;
     setGenerating(true);
     // Optimistic: flip status pill to 'generating' immediately
@@ -599,10 +599,14 @@ export default function DesignModePage() {
     } : prev);
 
     try {
+      const body: Record<string, unknown> = {
+        format: activeFormat === "9:16" ? "portrait" : activeFormat === "1:1" ? "square" : "landscape",
+      };
+      if (override?.prompt) body.prompt = override.prompt;
       const res = await fetch(`/api/design/sessions/${sessionId}/shots/${currentShotId}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ format: activeFormat === "9:16" ? "portrait" : activeFormat === "1:1" ? "square" : "landscape" }),
+        body: JSON.stringify(body),
       });
       const text = await res.text();
       if (!res.ok) {
@@ -610,7 +614,8 @@ export default function DesignModePage() {
         throw new Error(j?.error || `HTTP ${res.status}`);
       }
       const j = JSON.parse(text);
-      toast.success(`Generated v${j.version.idx} (${j.version.metadata?.model_id || "model"})`);
+      const label = override?.toastLabel || `Generated v${j.version.idx} (${j.version.metadata?.model_id || "model"})`;
+      toast.success(label);
       await refreshSession();
     } catch (err: any) {
       const msg = err?.message || "Generation failed";
@@ -624,6 +629,35 @@ export default function DesignModePage() {
       setGenerating(false);
     }
   }, [sessionId, currentShotId, generating, activeFormat, refreshSession]);
+
+  /**
+   * Drift recovery — re-generate the current shot with corrective guidance
+   * derived from the failed brand-check rules on the current version.
+   */
+  const handleFixDrift = useCallback(() => {
+    if (!data || !currentShot) return;
+    const cur = currentShot.versions.find((v) => v.id === currentShot.currentVersionId)
+      || currentShot.versions[currentShot.versions.length - 1];
+    if (!cur) return;
+    const fails: any[] = Array.isArray(cur.metadata?.brand_check)
+      ? (cur.metadata!.brand_check as any[]).filter((c) => c?.status === "fail" || c?.status === "warn")
+      : [];
+    if (fails.length === 0) {
+      toast.info("No drift to fix on this version.");
+      return;
+    }
+    const base = (currentShot.prompt || "").trim();
+    const guidance = fails.map((f) => {
+      if (typeof f.value === "number" && typeof f.threshold === "number") {
+        return `${f.rule}: keep the value under ${f.threshold}% of the frame (last attempt was ${f.value}%)`;
+      }
+      return `${f.rule}: ${f.detail || "respect the brand rule"}`;
+    }).join("; ");
+    const corrective = base
+      ? `${base}\n\nBrand correction: ${guidance}.`
+      : `Brand correction: ${guidance}.`;
+    handleRegenerate({ prompt: corrective, toastLabel: "Drift fix sent — regenerating" });
+  }, [data, currentShot, handleRegenerate]);
 
   // Prev / next shot navigation (J / L keys)
   const handlePrevShot = useCallback(() => {
@@ -848,6 +882,7 @@ export default function DesignModePage() {
                 onPickReferenceAsset={handlePickReferenceAsset}
                 onRemoveReference={handleRemoveReference}
                 onAnimateImage={handleAnimateImage}
+                onFixDrift={handleFixDrift}
                 animating={animating}
                 activeFormat={activeFormat}
                 generating={generating}
