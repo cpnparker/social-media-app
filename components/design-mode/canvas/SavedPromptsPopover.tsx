@@ -63,10 +63,12 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
   const [saveTags, setSaveTags] = useState<string[]>([]);
   const [saveTagInput, setSaveTagInput] = useState("");
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!open || !workspaceId) return;
     setPrompts(null);
+    setLoadError(null);
     const params = new URLSearchParams({ workspaceId });
     if (search.trim()) params.set("q", search.trim());
     try {
@@ -74,8 +76,16 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
       if (res.ok) {
         const j = await res.json();
         setPrompts(j.prompts || []);
+      } else {
+        // Surface the failure so the UI doesn't sit on 'Loading…' forever.
+        const j = await res.json().catch(() => ({}));
+        setPrompts([]);
+        setLoadError(j?.error || `HTTP ${res.status}`);
       }
-    } catch { /* non-fatal */ }
+    } catch (err: any) {
+      setPrompts([]);
+      setLoadError(err?.message || "Network error");
+    }
   }, [open, workspaceId, search]);
 
   useEffect(() => {
@@ -231,6 +241,15 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
               {prompts === null ? (
                 <div className="flex items-center justify-center gap-1.5 py-6 text-[11px] text-muted-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" /> Loading…
+                </div>
+              ) : loadError ? (
+                <div className="flex flex-col items-center gap-1 px-2 py-6 text-center text-[11px] text-muted-foreground">
+                  <Bookmark className="h-4 w-4 opacity-50" />
+                  <span>Couldn&apos;t load saved prompts</span>
+                  <span className="text-[10px] opacity-80">{loadError}</span>
+                  <span className="mt-1 text-[10px] italic">
+                    The <code>design_saved_prompts</code> migration may not be applied yet.
+                  </span>
                 </div>
               ) : (filteredPrompts && filteredPrompts.length === 0) ? (
                 <div className="flex flex-col items-center gap-1 px-2 py-6 text-center text-[11px] text-muted-foreground">

@@ -32,7 +32,17 @@ export async function GET(req: NextRequest) {
   }
 
   const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    // If the migration hasn't run yet, return an empty list with a header
+    // rather than a 500. The popover surfaces the warning in its empty state.
+    if (/relation .* does not exist|schema cache/i.test(error.message)) {
+      return NextResponse.json(
+        { prompts: [], warning: "design_saved_prompts table not migrated yet" },
+        { status: 200, headers: { "x-migration-pending": "design_saved_prompts" } },
+      );
+    }
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 
   return NextResponse.json({
     prompts: (data || []).map((p: any) => ({
