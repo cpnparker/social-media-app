@@ -715,7 +715,7 @@ export default function DesignModePage() {
   // ── render ────────────────────────────────────────────────────────────────
   if (createError) {
     return (
-      <div className="design-mode flex h-[100vh] flex-col items-center justify-center gap-3 p-6 text-center">
+      <div className="design-mode flex h-[100vh] w-full flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
         <h3 className="editorial-display text-2xl text-[hsl(var(--design-danger))]">Couldn&apos;t start a design session</h3>
         <div className="design-card max-w-md p-3 text-left text-[11.5px] leading-relaxed text-muted-foreground whitespace-pre-wrap break-words">
           {createError}
@@ -732,7 +732,7 @@ export default function DesignModePage() {
 
   if (creating || !data) {
     return (
-      <div className="design-mode flex h-[100vh] items-center justify-center text-sm text-muted-foreground">
+      <div className="design-mode flex h-[100vh] w-full flex-1 items-center justify-center text-sm text-muted-foreground">
         Starting Design Mode…
       </div>
     );
@@ -740,7 +740,7 @@ export default function DesignModePage() {
 
   return (
     <div
-      className="design-mode relative flex h-[100vh] overflow-hidden"
+      className="design-mode relative flex h-[100vh] w-full flex-1 overflow-hidden"
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("Files")) {
           e.preventDefault();
@@ -811,38 +811,25 @@ export default function DesignModePage() {
           />
 
           <div className="relative flex min-w-0 flex-1 flex-col">
-            {/* First-run hints — only shown for new sessions */}
-            {data.shots.length === 0 && (
-              <div className="pointer-events-none absolute right-4 top-4 z-20 flex flex-col gap-2">
+            {/* First-run hints — only shown once a session has shots to
+                 avoid competing with the Quick-Start picker. The picker
+                 itself is the onboarding cue for the empty state. */}
+            {data.shots.length > 0 && !data.client && (
+              <div className="pointer-events-none absolute right-4 top-4 z-20">
                 <OnboardingHint
-                  id="empty-session-tip"
-                  title="Start by creating a shot"
+                  id="no-client-tip"
+                  title="Pick a client for brand auto-injection"
                   body={
                     <>
-                      Click <span className="font-medium">Create a shot</span> below, write a prompt,
-                      pick a model, and we&apos;ll generate it on-brand
-                      {data.client?.name ? <> for <span className="font-medium">{data.client.name}</span></> : null}.
+                      With no client selected, generations are unbranded. Select a client from the
+                      customer dropdown to enable palette, typography, and drift detection.
                     </>
                   }
                   visible={true}
                 />
-                {!data.client && (
-                  <OnboardingHint
-                    id="no-client-tip"
-                    title="Pick a client for brand auto-injection"
-                    body={
-                      <>
-                        With no client selected, generations are unbranded. Select a client from the
-                        customer dropdown to enable palette, typography, and drift detection.
-                      </>
-                    }
-                    visible={true}
-                  />
-                )}
               </div>
             )}
-            {/* AI rail discovery hint — shown when session has 0 shots */}
-            {data.shots.length === 0 && (
+            {data.shots.length > 0 && (
               <div className="pointer-events-none absolute right-4 bottom-4 z-20">
                 <OnboardingHint
                   id="ai-rail-tip"
