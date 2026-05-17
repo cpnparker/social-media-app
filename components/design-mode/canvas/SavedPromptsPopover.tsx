@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Bookmark, BookmarkPlus, Search, Loader2, Users, Trash2, Sparkles } from "lucide-react";
+import { Bookmark, BookmarkPlus, Search, Loader2, Users, Trash2, Sparkles, Tag, X } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { DESIGN_MODELS } from "@/lib/design/types";
 
 interface SavedPrompt {
   id: string;
@@ -16,6 +17,23 @@ interface SavedPrompt {
   lastUsedAt: string | null;
   isTeam: boolean;
   isMine: boolean;
+}
+
+function relativeTime(iso: string | null): string {
+  if (!iso) return "";
+  const ms = Date.now() - new Date(iso).getTime();
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 14) return `${d}d ago`;
+  const w = Math.floor(d / 7);
+  if (w < 8) return `${w}w ago`;
+  const mo = Math.floor(d / 30);
+  return `${mo}mo ago`;
 }
 
 interface SavedPromptsPopoverProps {
@@ -38,8 +56,12 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
   const [tab, setTab] = useState<"pick" | "save">("pick");
   const [prompts, setPrompts] = useState<SavedPrompt[] | null>(null);
   const [search, setSearch] = useState("");
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [saveName, setSaveName] = useState("");
   const [saveTeam, setSaveTeam] = useState(false);
+  const [saveModelHint, setSaveModelHint] = useState<string>("");
+  const [saveTags, setSaveTags] = useState<string[]>([]);
+  const [saveTagInput, setSaveTagInput] = useState("");
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -85,12 +107,22 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
       const res = await fetch("/api/design/saved-prompts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspaceId, name, prompt, team: saveTeam }),
+        body: JSON.stringify({
+          workspaceId,
+          name,
+          prompt,
+          team: saveTeam,
+          modelHint: saveModelHint || null,
+          tags: saveTags.length > 0 ? saveTags : null,
+        }),
       });
       if (res.ok) {
         toast.success(`Saved as "${name}"`);
         setSaveName("");
         setSaveTeam(false);
+        setSaveModelHint("");
+        setSaveTags([]);
+        setSaveTagInput("");
         setTab("pick");
         load();
       } else {
@@ -100,6 +132,30 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
     } finally {
       setSaving(false);
     }
+  }
+
+  // Distinct tag set across all prompts, for the filter chips
+  const allTags = useMemo(() => {
+    if (!prompts) return [] as string[];
+    const s = new Set<string>();
+    prompts.forEach((p) => p.tags?.forEach((t) => s.add(t)));
+    return Array.from(s).sort();
+  }, [prompts]);
+
+  const filteredPrompts = useMemo(() => {
+    if (!prompts) return null;
+    if (!tagFilter) return prompts;
+    return prompts.filter((p) => p.tags?.includes(tagFilter));
+  }, [prompts, tagFilter]);
+
+  function addTag() {
+    const t = saveTagInput.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+    if (!t || saveTags.includes(t) || saveTags.length >= 6) {
+      setSaveTagInput("");
+      return;
+    }
+    setSaveTags([...saveTags, t]);
+    setSaveTagInput("");
   }
 
   async function deletePrompt(p: SavedPrompt) {
@@ -132,7 +188,7 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
         </div>
 
         {tab === "pick" ? (
-          <div className="flex max-h-[420px] flex-col">
+          <div className="flex max-h-[460px] flex-col">
             <div className="border-b p-2" style={{ borderColor: "hsl(var(--design-border))" }}>
               <div className="relative">
                 <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
@@ -144,17 +200,43 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
                   style={{ borderColor: "hsl(var(--design-border))" }}
                 />
               </div>
+              {allTags.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {allTags.map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTagFilter(tagFilter === t ? null : t)}
+                      className={cn(
+                        "inline-flex items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[9.5px] font-medium transition-colors",
+                        tagFilter === t
+                          ? "border-[hsl(var(--design-accent))] bg-[hsl(var(--design-accent-soft))] text-[hsl(var(--design-accent))]"
+                          : "border-[hsl(var(--design-border))] text-muted-foreground hover:border-[hsl(var(--design-accent))]/40",
+                      )}
+                    >
+                      <Tag className="h-2 w-2" /> {t}
+                    </button>
+                  ))}
+                  {tagFilter && (
+                    <button
+                      onClick={() => setTagFilter(null)}
+                      className="text-[9.5px] text-muted-foreground underline"
+                    >
+                      clear
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
             <div className="flex-1 overflow-y-auto p-1.5">
               {prompts === null ? (
                 <div className="flex items-center justify-center gap-1.5 py-6 text-[11px] text-muted-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" /> Loading…
                 </div>
-              ) : prompts.length === 0 ? (
+              ) : (filteredPrompts && filteredPrompts.length === 0) ? (
                 <div className="flex flex-col items-center gap-1 px-2 py-6 text-center text-[11px] text-muted-foreground">
                   <Bookmark className="h-4 w-4 opacity-50" />
-                  <span>{search ? "No matches" : "No saved prompts yet"}</span>
-                  {!search && (
+                  <span>{search || tagFilter ? "No matches" : "No saved prompts yet"}</span>
+                  {!search && !tagFilter && (
                     <button onClick={() => setTab("save")} className="text-[10.5px] underline" style={{ color: "hsl(var(--design-accent))" }}>
                       Save the current prompt
                     </button>
@@ -162,7 +244,7 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
                 </div>
               ) : (
                 <div className="space-y-1">
-                  {prompts.map((p) => (
+                  {(filteredPrompts || []).map((p) => (
                     <div key={p.id} className="design-tile group rounded-md border p-2"
                          style={{ borderColor: "hsl(var(--design-border))", background: "hsl(var(--design-bg-elev))" }}>
                       <div className="flex items-start gap-2">
@@ -174,9 +256,19 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
                           <p className="mt-0.5 line-clamp-2 font-mono text-[10px] text-muted-foreground">
                             {p.prompt}
                           </p>
-                          <div className="mt-1 flex items-center gap-1.5 text-[9px] text-muted-foreground">
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[9px] text-muted-foreground">
                             {p.modelHint && <span>{p.modelHint}</span>}
                             {p.useCount > 0 && <span>·  used {p.useCount}×</span>}
+                            {p.lastUsedAt && <span>·  {relativeTime(p.lastUsedAt)}</span>}
+                            {p.tags && p.tags.length > 0 && (
+                              <span className="flex flex-wrap gap-0.5">
+                                {p.tags.slice(0, 4).map((t) => (
+                                  <span key={t} className="rounded-full bg-[hsl(var(--design-bg))] px-1 py-0 text-[8.5px]">
+                                    #{t}
+                                  </span>
+                                ))}
+                              </span>
+                            )}
                           </div>
                         </button>
                         {p.isMine && (
@@ -196,7 +288,7 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
             </div>
           </div>
         ) : (
-          <div className="space-y-2 p-3">
+          <div className="max-h-[460px] space-y-2 overflow-y-auto p-3">
             <div>
               <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Name</label>
               <input
@@ -214,6 +306,62 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
                    style={{ borderColor: "hsl(var(--design-border))" }}>
                 {currentPrompt || <span className="italic text-muted-foreground">No prompt to save yet</span>}
               </div>
+            </div>
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Tuned for (optional)
+              </label>
+              <select
+                value={saveModelHint}
+                onChange={(e) => setSaveModelHint(e.target.value)}
+                className="mt-0.5 w-full rounded-md border bg-[hsl(var(--design-bg-elev))] px-2 py-1.5 text-[12px] focus:border-[hsl(var(--design-accent))] focus:outline-none"
+                style={{ borderColor: "hsl(var(--design-border))" }}
+              >
+                <option value="">No model hint</option>
+                {DESIGN_MODELS.filter((m) => m.status === "live").map((m) => (
+                  <option key={m.id} value={m.id}>{m.name} · {m.tag}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Tags (optional)
+              </label>
+              <div className="mt-0.5 flex flex-wrap items-center gap-1 rounded-md border bg-[hsl(var(--design-bg-elev))] px-1.5 py-1"
+                   style={{ borderColor: "hsl(var(--design-border))" }}>
+                {saveTags.map((t) => (
+                  <span key={t} className="inline-flex items-center gap-0.5 rounded-full bg-[hsl(var(--design-accent-soft))] px-1.5 py-0.5 text-[10px] font-medium" style={{ color: "hsl(var(--design-accent))" }}>
+                    #{t}
+                    <button
+                      onClick={() => setSaveTags(saveTags.filter((x) => x !== t))}
+                      className="rounded-full hover:bg-[hsl(var(--design-accent))]/15"
+                      title="Remove tag"
+                    >
+                      <X className="h-2.5 w-2.5" />
+                    </button>
+                  </span>
+                ))}
+                <input
+                  value={saveTagInput}
+                  onChange={(e) => setSaveTagInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === ",") {
+                      e.preventDefault();
+                      addTag();
+                    } else if (e.key === "Backspace" && !saveTagInput && saveTags.length > 0) {
+                      setSaveTags(saveTags.slice(0, -1));
+                    }
+                  }}
+                  onBlur={() => saveTagInput.trim() && addTag()}
+                  placeholder={saveTags.length === 0 ? "portrait, hero, b-roll…" : ""}
+                  className="min-w-[80px] flex-1 bg-transparent text-[11px] outline-none placeholder:text-muted-foreground"
+                  maxLength={20}
+                  disabled={saveTags.length >= 6}
+                />
+              </div>
+              {saveTags.length >= 6 && (
+                <p className="mt-0.5 text-[9px] text-muted-foreground">Max 6 tags</p>
+              )}
             </div>
             <label className="flex items-center gap-2 rounded-md px-1 py-1 text-[11px] hover:bg-[hsl(var(--design-bg-elev))]">
               <input
