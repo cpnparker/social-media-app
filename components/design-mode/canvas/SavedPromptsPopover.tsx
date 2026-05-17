@@ -64,6 +64,7 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
   const [saveTagInput, setSaveTagInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!open || !workspaceId) return;
@@ -170,11 +171,13 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
   }
 
   async function deletePrompt(p: SavedPrompt) {
-    if (!confirm(`Delete "${p.name}"?`)) return;
+    setConfirmDeleteId(null);
     const res = await fetch(`/api/design/saved-prompts?id=${p.id}`, { method: "DELETE" });
     if (res.ok) {
-      toast.success("Deleted");
+      toast.success(`Deleted "${p.name}"`);
       load();
+    } else {
+      toast.error("Couldn't delete");
     }
   }
 
@@ -303,13 +306,33 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
                           </div>
                         </button>
                         {p.isMine && (
-                          <button
-                            onClick={() => deletePrompt(p)}
-                            className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-[hsl(var(--design-danger))] group-hover:opacity-100"
-                            title="Delete"
-                          >
-                            <Trash2 className="h-2.5 w-2.5" />
-                          </button>
+                          confirmDeleteId === p.id ? (
+                            <div className="flex items-center gap-0.5">
+                              <button
+                                onClick={() => deletePrompt(p)}
+                                className="rounded px-1.5 py-0.5 text-[9.5px] font-semibold text-white"
+                                style={{ background: "hsl(var(--design-danger))" }}
+                                title={`Confirm delete "${p.name}"`}
+                              >
+                                Delete
+                              </button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(null); }}
+                                className="rounded p-0.5 text-muted-foreground hover:bg-[hsl(var(--design-border))]/40 hover:text-foreground"
+                                title="Cancel"
+                              >
+                                <X className="h-2.5 w-2.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(p.id); }}
+                              className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-[hsl(var(--design-danger))] group-hover:opacity-100"
+                              title="Delete"
+                            >
+                              <Trash2 className="h-2.5 w-2.5" />
+                            </button>
+                          )
                         )}
                       </div>
                     </div>
