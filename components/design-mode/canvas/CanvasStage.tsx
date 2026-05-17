@@ -134,9 +134,9 @@ export function CanvasStage({
       />
 
       {/* Preview + inspector */}
-      <div className="grid flex-1 gap-3 lg:grid-cols-[1fr_280px]">
+      <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[1fr_280px]">
         {/* Preview */}
-        <div className="flex flex-col gap-2">
+        <div className="flex min-h-0 flex-col gap-2">
           <ShotPreview shot={shot} status={statusInfo} />
           <Transport
             playing={playing}
@@ -189,7 +189,7 @@ export function CanvasStage({
         </div>
 
         {/* Inspector */}
-        <aside className="flex flex-col gap-3 overflow-y-auto rounded-lg border bg-[hsl(var(--design-bg-elev))] p-3"
+        <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto rounded-lg border bg-[hsl(var(--design-bg-elev))] p-3"
                style={{ borderColor: "hsl(var(--design-border))" }}>
           {/* Generator */}
           <div className="space-y-1.5">
