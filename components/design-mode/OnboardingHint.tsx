@@ -13,8 +13,9 @@ interface OnboardingHintProps {
 }
 
 /**
- * A discreet, dismissible onboarding tooltip card. Anchored by the parent's
- * `relative` positioning — drop it inside any container.
+ * A discreet, dismissible onboarding tooltip card. Renders as a 280px-wide
+ * block — drop it inside any container that knows where to put it (e.g. an
+ * absolutely-positioned wrapper at top-right of the canvas).
  *
  * Local-storage backed: once a hint is dismissed it stays dismissed across
  * sessions. Per-user, but that's fine for onboarding.
@@ -32,7 +33,7 @@ export function OnboardingHint({ id, title, body, visible = true }: OnboardingHi
 
   return (
     <div
-      className="pointer-events-auto absolute z-30 max-w-[280px] rounded-xl border bg-[hsl(var(--design-card))] p-3 shadow-xl"
+      className="pointer-events-auto w-[280px] rounded-xl border bg-[hsl(var(--design-card))] p-3 shadow-xl"
       style={{
         borderColor: "hsl(var(--design-accent))",
         boxShadow: "var(--shadow-pop)",
