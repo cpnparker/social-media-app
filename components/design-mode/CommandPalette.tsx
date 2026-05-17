@@ -14,6 +14,7 @@ import {
 import { Plus, Wand2, BadgeCheck, Trash2, Film, Image as ImageIcon, ArrowRight, Copy, Share2, Sparkles, LayoutGrid, Rows3 } from "lucide-react";
 import type { DesignShot } from "@/lib/design/types";
 import { DESIGN_MODELS, LEGACY_MODEL_ALIASES } from "@/lib/design/types";
+import { SESSION_TEMPLATES } from "@/lib/design/templates";
 
 interface CommandPaletteProps {
   open: boolean;
@@ -34,6 +35,8 @@ interface CommandPaletteProps {
   onSwitchTimeline?: (shape: "storyboard" | "tracks") => void;
   onPublish?: () => void;
   onShare?: () => void;
+  onOpenLibrary?: () => void;
+  onApplyTemplate?: (templateId: string) => void;
 }
 
 /**
@@ -59,6 +62,8 @@ export function CommandPalette({
   onSwitchTimeline,
   onPublish,
   onShare,
+  onOpenLibrary,
+  onApplyTemplate,
 }: CommandPaletteProps) {
   // ESC handled by CommandDialog automatically; we still listen for /esc on the global ⌘K listener.
   useEffect(() => {
@@ -158,6 +163,12 @@ export function CommandPalette({
                   </CommandItem>
                 </>
               )}
+              {onOpenLibrary && (
+                <CommandItem onSelect={() => pickAction(onOpenLibrary)}>
+                  <ImageIcon className="mr-2 h-4 w-4" />
+                  Open asset library
+                </CommandItem>
+              )}
               {onShare && (
                 <CommandItem onSelect={() => pickAction(onShare)}>
                   <Share2 className="mr-2 h-4 w-4" />
@@ -170,6 +181,26 @@ export function CommandPalette({
                   Publish to Engine
                 </CommandItem>
               )}
+            </CommandGroup>
+          </>
+        )}
+
+        {/* Templates — add a pre-built sequence anytime */}
+        {onApplyTemplate && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Add template">
+              {SESSION_TEMPLATES.map((t) => (
+                <CommandItem
+                  key={t.id}
+                  value={`template ${t.name} ${t.description}`}
+                  onSelect={() => pickAction(() => onApplyTemplate(t.id))}
+                >
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  <span className="flex-1">{t.name}</span>
+                  <span className="ml-2 text-[10px] text-muted-foreground">+{t.shots.length} shots</span>
+                </CommandItem>
+              ))}
             </CommandGroup>
           </>
         )}

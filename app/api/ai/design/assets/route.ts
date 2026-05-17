@@ -29,6 +29,10 @@ export async function GET(req: NextRequest) {
   const conversationId = searchParams.get("conversationId");
   const clientId = searchParams.get("clientId");
   const contentId = searchParams.get("contentId");
+  const sessionId = searchParams.get("sessionId");  // design session filter
+  const search = searchParams.get("q");  // full-text on prompt
+  const typeFilter = searchParams.get("type");  // 'image' | 'video' | 'document' | 'artlist_video'
+  const sourceFilter = searchParams.get("source");  // 'dalle' | 'grok_imagine' | 'runway' | 'artlist'
   const limit = Math.min(parseInt(searchParams.get("limit") || "100", 10), 200);
 
   if (!workspaceId) {
@@ -93,6 +97,24 @@ export async function GET(req: NextRequest) {
 
   if (clientId) query = query.eq("id_client", parseInt(clientId, 10));
   if (contentId) query = query.eq("id_content", parseInt(contentId, 10));
+  if (sessionId) {
+    // Filter to ai_design_assets associated with shots in this design session.
+    // We don't have a direct id_session column — assets link via id_shot.
+    const { data: shotIds } = await intelligenceDb
+      .from("design_shots")
+      .select("id_shot")
+      .eq("id_session", sessionId);
+    const ids = (shotIds || []).map((r: any) => r.id_shot);
+    if (ids.length === 0) {
+      return NextResponse.json({ assets: [] });
+    }
+    query = query.in("id_shot", ids);
+  }
+  if (typeFilter) query = query.eq("type_asset", typeFilter);
+  if (sourceFilter) query = query.eq("source", sourceFilter);
+  if (search && search.trim()) {
+    query = query.ilike("prompt", `%${search.trim()}%`);
+  }
 
   // Constrain to accessible conversations OR session-less assets owned by the user.
   // (Assets without a conversation can't have visibility — fall back to creator-only.)

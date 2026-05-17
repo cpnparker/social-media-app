@@ -16,6 +16,7 @@ import { PublishSheet } from "@/components/design-mode/publish/PublishSheet";
 import { OnboardingHint } from "@/components/design-mode/OnboardingHint";
 import { CommandPalette } from "@/components/design-mode/CommandPalette";
 import { ShareDialog } from "@/components/design-mode/ShareDialog";
+import { AssetLibrary } from "@/components/design-mode/AssetLibrary";
 
 import type { DesignSessionFull, DesignShot } from "@/lib/design/types";
 
@@ -54,6 +55,8 @@ export default function DesignModePage() {
   const [animating, setAnimating] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
 
   // ── auto-create session on first visit ────────────────────────────────────
   const createSession = useCallback(async (opts: { isIncognito?: boolean; visibility?: "private" | "team" } = {}) => {
@@ -458,6 +461,51 @@ export default function DesignModePage() {
     }
   }, [sessionId, currentShotId, refreshSession]);
 
+  /**
+   * Drag-and-drop handler — accepts dropped image files anywhere on the page.
+   * If a shot is focused, adds the file as a reference. Otherwise creates a
+   * new shot and adds the file as its first reference.
+   */
+  const handleDroppedFile = useCallback(async (file: File) => {
+    if (!sessionId) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("Drop an image file");
+      return;
+    }
+    // If no shot focused, create one first
+    let targetShotId = currentShotId;
+    if (!targetShotId) {
+      const created = await fetch(`/api/design/sessions/${sessionId}/shots`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: file.name.replace(/\.[^.]+$/, "") || "Dropped reference" }),
+      });
+      if (!created.ok) {
+        toast.error("Couldn't create shot");
+        return;
+      }
+      const j = await created.json();
+      targetShotId = j?.shot?.id || null;
+      if (targetShotId) setCurrentShotId(targetShotId);
+    }
+    if (!targetShotId) return;
+
+    const form = new FormData();
+    form.set("file", file);
+    form.set("caption", file.name);
+    const res = await fetch(`/api/design/sessions/${sessionId}/shots/${targetShotId}/refs`, {
+      method: "POST",
+      body: form,
+    });
+    if (res.ok) {
+      toast.success(`Reference added · ${file.name}`);
+      refreshSession();
+    } else {
+      const j = await res.json().catch(() => ({}));
+      toast.error(j?.error || "Upload failed");
+    }
+  }, [sessionId, currentShotId, refreshSession]);
+
   const handleRemoveReference = useCallback(async (refId: string) => {
     if (!sessionId || !currentShotId) return;
     const res = await fetch(`/api/design/sessions/${sessionId}/shots/${currentShotId}/refs?refId=${refId}`, {
@@ -657,7 +705,47 @@ export default function DesignModePage() {
   }
 
   return (
-    <div className="design-mode flex h-[100vh] overflow-hidden">
+    <div
+      className="design-mode relative flex h-[100vh] overflow-hidden"
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("Files")) {
+          e.preventDefault();
+          if (!dragOver) setDragOver(true);
+        }
+      }}
+      onDragLeave={(e) => {
+        // Only clear when leaving the page entirely
+        if (e.currentTarget === e.target) setDragOver(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        const files = Array.from(e.dataTransfer.files || []);
+        for (const f of files) {
+          handleDroppedFile(f);
+        }
+      }}
+    >
+      {/* Drop overlay */}
+      {dragOver && (
+        <div
+          className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center"
+          style={{ background: "hsl(var(--design-accent) / 0.08)", backdropFilter: "blur(2px)" }}
+        >
+          <div
+            className="rounded-2xl border-2 border-dashed bg-[hsl(var(--design-bg-elev))] p-8 text-center shadow-xl"
+            style={{ borderColor: "hsl(var(--design-accent))" }}
+          >
+            <div className="editorial-display text-2xl">Drop to add reference</div>
+            <p className="mt-1 text-[12px] text-muted-foreground">
+              {currentShotId
+                ? `Will be added to the focused shot's references.`
+                : `Will create a new shot with the image as its reference.`}
+            </p>
+          </div>
+        </div>
+      )}
+
       <LeftNavRail active="design" userInitial={(customer?.name || "U").slice(0, 1).toUpperCase()} />
       <div className="flex min-w-0 flex-1 flex-col">
         <Header
@@ -675,6 +763,7 @@ export default function DesignModePage() {
           onBack={() => router.push("/engineai")}
           onOpenPalette={() => setPaletteOpen(true)}
           onOpenShare={() => setShareOpen(true)}
+          onOpenLibrary={() => setLibraryOpen(true)}
         />
 
         {/* Body — brand kit | center stack (canvas + timeline) | AI rail */}
@@ -820,6 +909,19 @@ export default function DesignModePage() {
         />
       )}
 
+      {/* Asset library — workspace-wide */}
+      {workspaceId && (
+        <AssetLibrary
+          open={libraryOpen}
+          onClose={() => setLibraryOpen(false)}
+          workspaceId={workspaceId}
+          onAddToRefs={currentShotId ? (assetId) => {
+            handlePickReferenceAsset(assetId, "");
+            setLibraryOpen(false);
+          } : undefined}
+        />
+      )}
+
       {/* ⌘K command palette */}
       <CommandPalette
         open={paletteOpen}
@@ -847,6 +949,8 @@ export default function DesignModePage() {
         }}
         onPublish={() => setPublishOpen(true)}
         onShare={data.session.myPermission === "owner" && !data.session.isIncognito ? () => setShareOpen(true) : undefined}
+        onOpenLibrary={() => setLibraryOpen(true)}
+        onApplyTemplate={handleApplyTemplate}
       />
     </div>
   );

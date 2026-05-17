@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { ArrowLeft, Search, ChevronDown, History, Lock, Users, EyeOff, FileText, BadgeCheck, Calendar, Info, Share2 } from "lucide-react";
+import { ArrowLeft, Search, ChevronDown, History, Lock, Users, EyeOff, FileText, BadgeCheck, Calendar, Info, Share2, Library } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   DropdownMenu,
@@ -40,6 +40,7 @@ interface HeaderProps {
   onBack: () => void;
   onOpenPalette?: () => void;
   onOpenShare?: () => void;
+  onOpenLibrary?: () => void;
 }
 
 export function Header({
@@ -57,6 +58,7 @@ export function Header({
   onBack,
   onOpenPalette,
   onOpenShare,
+  onOpenLibrary,
 }: HeaderProps) {
   const beats = useMemo(() => {
     if (!content?.brief) return 0;
@@ -172,6 +174,17 @@ export function Header({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* Asset library */}
+        {onOpenLibrary && (
+          <button
+            onClick={onOpenLibrary}
+            className="inline-flex items-center gap-1.5 rounded-full border border-[hsl(var(--design-border))] bg-[hsl(var(--design-bg-elev))] px-3 py-1.5 text-xs font-medium hover:border-[hsl(var(--design-accent))]/40"
+            title="Asset library"
+          >
+            <Library className="h-3.5 w-3.5" /> Library
+          </button>
+        )}
 
         {/* Share — owner-only on non-incognito sessions */}
         {onOpenShare && session?.myPermission === "owner" && !session?.isIncognito && (
