@@ -475,6 +475,7 @@ function ShotMetaStrip({
           <input
             value={titleDraft}
             autoFocus
+            onFocus={(e) => e.currentTarget.select()}
             onChange={(e) => setTitleDraft(e.target.value)}
             onBlur={() => { onTitleSave(titleDraft.trim() || shot.title); setEditingTitle(false); }}
             onKeyDown={(e) => {
@@ -500,6 +501,7 @@ function ShotMetaStrip({
           <input
             value={beatDraft}
             autoFocus
+            onFocus={(e) => e.currentTarget.select()}
             onChange={(e) => setBeatDraft(e.target.value)}
             onBlur={() => { onBeatSave(beatDraft.trim() || null); setEditingBeat(false); }}
             onKeyDown={(e) => {
@@ -533,6 +535,7 @@ function ShotMetaStrip({
               max="30"
               value={durationDraft}
               autoFocus
+              onFocus={(e) => e.currentTarget.select()}
               onChange={(e) => setDurationDraft(parseFloat(e.target.value) || 0)}
               onBlur={() => {
                 if (durationDraft > 0 && durationDraft <= 30) onDurationSave(durationDraft);
