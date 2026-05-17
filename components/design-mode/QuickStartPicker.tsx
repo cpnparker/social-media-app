@@ -82,13 +82,14 @@ export function QuickStartPicker({ onPick, onSkip }: QuickStartPickerProps) {
         })}
       </div>
 
-      <div className="pt-1 text-center">
+      <div className="flex items-center justify-center pt-1">
         <button
           onClick={onSkip}
           disabled={!!applying}
-          className="text-[11.5px] text-muted-foreground underline-offset-2 hover:underline disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[11.5px] font-medium text-muted-foreground transition-colors hover:border-[hsl(var(--design-accent))]/50 hover:text-foreground disabled:opacity-50"
+          style={{ borderColor: "hsl(var(--design-border))" }}
         >
-          Skip — start from scratch
+          Or start from scratch →
         </button>
       </div>
     </div>

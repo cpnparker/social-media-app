@@ -884,27 +884,38 @@ export default function DesignModePage() {
                 generating={generating}
               />
             </div>
-            <div className="h-[270px] flex-shrink-0">
-              <Timeline
-                tracks={data.tracks}
-                shots={data.shots}
-                currentShotId={currentShotId}
-                defaultShape={(data.session.timelineShape as "storyboard" | "tracks") || "storyboard"}
-                onSelectShot={handleSelectShot}
-                onAddShot={handleAddShot}
-                onDeleteShot={handleDeleteShot}
-                onReorder={handleReorderShots}
-                onTrimClip={handleTrimClip}
-                onShapeChange={async (shape) => {
-                  if (!sessionId) return;
-                  await fetch(`/api/design/sessions/${sessionId}`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ timelineShape: shape }),
-                  });
-                }}
-              />
-            </div>
+            {data.shots.length === 0 ? (
+              // Empty state — keep the timeline area as a slim cue, not a
+              // wall of empty tracks. Reclaims vertical space for the
+              // quick-start picker.
+              <div className="flex-shrink-0 border-t bg-[hsl(var(--design-bg-elev))] px-4 py-2 text-center"
+                   style={{ borderColor: "hsl(var(--design-border))" }}>
+                <span className="section-label">Timeline</span>
+                <span className="ml-2 text-[11px] text-muted-foreground">empty — add shots above to start arranging</span>
+              </div>
+            ) : (
+              <div className="h-[270px] flex-shrink-0">
+                <Timeline
+                  tracks={data.tracks}
+                  shots={data.shots}
+                  currentShotId={currentShotId}
+                  defaultShape={(data.session.timelineShape as "storyboard" | "tracks") || "storyboard"}
+                  onSelectShot={handleSelectShot}
+                  onAddShot={handleAddShot}
+                  onDeleteShot={handleDeleteShot}
+                  onReorder={handleReorderShots}
+                  onTrimClip={handleTrimClip}
+                  onShapeChange={async (shape) => {
+                    if (!sessionId) return;
+                    await fetch(`/api/design/sessions/${sessionId}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ timelineShape: shape }),
+                    });
+                  }}
+                />
+              </div>
+            )}
           </div>
 
           <AIRailWrapper
