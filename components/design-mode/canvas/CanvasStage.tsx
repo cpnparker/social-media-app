@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Play, Pause, SkipBack, SkipForward, ChevronDown, Sparkles, Check, AlertTriangle, BadgeCheck, Pencil, Plus, Wand2, MoreVertical, Trash2, Download } from "lucide-react";
+import { Play, Pause, SkipBack, SkipForward, ChevronDown, Sparkles, Check, AlertTriangle, BadgeCheck, Pencil, Plus, Wand2, MoreVertical, Trash2, Download, Columns2 } from "lucide-react";
 import { ReferencePicker } from "./ReferencePicker";
 import { VersionDetailDialog } from "./VersionDetailDialog";
+import { VersionCompareDialog } from "./VersionCompareDialog";
+import { SavedPromptsPopover } from "./SavedPromptsPopover";
 import { QuickStartPicker } from "../QuickStartPicker";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
@@ -14,6 +16,8 @@ interface CanvasStageProps {
   shot: DesignShot | null;
   /** All shots in the session — used by the references picker to surface candidate canvas assets. */
   allShots?: DesignShot[];
+  /** Workspace id — needed for the saved prompts library scope. */
+  workspaceId?: string;
   onRegenerate: () => void;
   onCommit: () => void;
   onModelChange: (modelId: string) => void;
@@ -46,6 +50,7 @@ const STATUS_PILL: Record<string, { label: string; className: string }> = {
 export function CanvasStage({
   shot,
   allShots,
+  workspaceId,
   onRegenerate,
   onCommit,
   onModelChange,
@@ -71,6 +76,7 @@ export function CanvasStage({
   const [editingPrompt, setEditingPrompt] = useState(false);
   const [promptDraft, setPromptDraft] = useState(shot?.prompt || "");
   const [detailVersionId, setDetailVersionId] = useState<string | null>(null);
+  const [compareOpen, setCompareOpen] = useState(false);
 
   // Reset prompt draft when the shot changes
   useEffect(() => {
@@ -140,6 +146,7 @@ export function CanvasStage({
             onSelect={onSelectVersion || (() => {})}
             onOpenDetail={setDetailVersionId}
             onVary={onRegenerate}
+            onCompare={shot.versions.length >= 2 ? () => setCompareOpen(true) : undefined}
           />
 
           {/* Version detail dialog */}
@@ -164,6 +171,18 @@ export function CanvasStage({
               />
             );
           })()}
+
+          {/* Version compare dialog */}
+          {compareOpen && (
+            <VersionCompareDialog
+              open={compareOpen}
+              onClose={() => setCompareOpen(false)}
+              shot={shot}
+              onSetCurrent={(versionId) => {
+                onSelectVersion?.(versionId);
+              }}
+            />
+          )}
         </div>
 
         {/* Inspector */}
@@ -198,26 +217,47 @@ export function CanvasStage({
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
               <div className="section-label muted">Prompt</div>
-              {editingPrompt ? (
-                <button
-                  onClick={() => {
-                    onPromptSave(promptDraft);
-                    setEditingPrompt(false);
-                  }}
-                  className="text-[10.5px] font-semibold"
-                  style={{ color: "hsl(var(--design-accent))" }}
-                >
-                  Save
-                </button>
-              ) : (
-                <button
-                  onClick={() => setEditingPrompt(true)}
-                  className="text-[10.5px] underline"
-                  style={{ color: "hsl(var(--design-accent))" }}
-                >
-                  Refine
-                </button>
-              )}
+              <div className="flex items-center gap-1.5">
+                {workspaceId && (
+                  <SavedPromptsPopover
+                    workspaceId={workspaceId}
+                    currentPrompt={editingPrompt ? promptDraft : (shot.prompt || "")}
+                    onApply={(prompt, modelHint) => {
+                      // Apply the saved prompt — overwrite the draft and persist.
+                      setPromptDraft(prompt);
+                      onPromptSave(prompt);
+                      setEditingPrompt(false);
+                      // Optional model hint — switch the generator if it's a real model id.
+                      if (modelHint) {
+                        const resolved = LEGACY_MODEL_ALIASES[modelHint] || modelHint;
+                        if (DESIGN_MODELS.some((m) => m.id === resolved && m.status === "live")) {
+                          onModelChange(resolved);
+                        }
+                      }
+                    }}
+                  />
+                )}
+                {editingPrompt ? (
+                  <button
+                    onClick={() => {
+                      onPromptSave(promptDraft);
+                      setEditingPrompt(false);
+                    }}
+                    className="text-[10.5px] font-semibold"
+                    style={{ color: "hsl(var(--design-accent))" }}
+                  >
+                    Save
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setEditingPrompt(true)}
+                    className="text-[10.5px] underline"
+                    style={{ color: "hsl(var(--design-accent))" }}
+                  >
+                    Refine
+                  </button>
+                )}
+              </div>
             </div>
             {editingPrompt ? (
               <textarea
@@ -633,7 +673,7 @@ function Transport({ playing, onToggle, duration }: { playing: boolean; onToggle
   );
 }
 
-function VersionsStrip({ versions, current, onSelect, onOpenDetail, onVary }: { versions: DesignShot["versions"]; current: string | null; onSelect: (id: string) => void; onOpenDetail: (id: string) => void; onVary: () => void }) {
+function VersionsStrip({ versions, current, onSelect, onOpenDetail, onVary, onCompare }: { versions: DesignShot["versions"]; current: string | null; onSelect: (id: string) => void; onOpenDetail: (id: string) => void; onVary: () => void; onCompare?: () => void }) {
   if (versions.length === 0) {
     return (
       <div className="flex items-center gap-1.5 rounded-lg border border-dashed p-2 text-[10.5px] text-muted-foreground"
@@ -698,6 +738,17 @@ function VersionsStrip({ versions, current, onSelect, onOpenDetail, onVary }: { 
         <Wand2 className="h-3 w-3" />
         Vary
       </button>
+      {onCompare && (
+        <button
+          onClick={onCompare}
+          className="flex h-12 flex-shrink-0 items-center justify-center gap-1 rounded border px-3 text-[10.5px] font-medium text-muted-foreground transition-colors hover:border-[hsl(var(--design-accent))] hover:text-[hsl(var(--design-accent))]"
+          style={{ borderColor: "hsl(var(--design-border))" }}
+          title="Compare two versions side by side"
+        >
+          <Columns2 className="h-3 w-3" />
+          Compare
+        </button>
+      )}
     </div>
   );
 }

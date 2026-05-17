@@ -831,6 +831,7 @@ export default function DesignModePage() {
               <CanvasStage
                 shot={currentShot}
                 allShots={data.shots}
+                workspaceId={workspaceId}
                 onRegenerate={handleRegenerate}
                 onCommit={handleCommit}
                 onModelChange={handleModelChange}
