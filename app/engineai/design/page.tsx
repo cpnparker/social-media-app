@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { toast } from "sonner";
+import { AlertTriangle, X as XIcon } from "lucide-react";
 
 import { LeftNavRail } from "@/components/design-mode/shell/LeftNavRail";
 import { Header } from "@/components/design-mode/shell/Header";
@@ -13,7 +14,6 @@ import { CanvasStage } from "@/components/design-mode/canvas/CanvasStage";
 import { Timeline } from "@/components/design-mode/timeline/Timeline";
 import { AIRailWrapper } from "@/components/design-mode/ai-rail/AIRailWrapper";
 import { PublishSheet } from "@/components/design-mode/publish/PublishSheet";
-import { OnboardingHint } from "@/components/design-mode/OnboardingHint";
 import { CommandPalette } from "@/components/design-mode/CommandPalette";
 import { ShareDialog } from "@/components/design-mode/ShareDialog";
 import { AssetLibrary } from "@/components/design-mode/AssetLibrary";
@@ -811,38 +811,13 @@ export default function DesignModePage() {
           />
 
           <div className="relative flex min-w-0 flex-1 flex-col">
-            {/* First-run hints — only shown once a session has shots to
-                 avoid competing with the Quick-Start picker. The picker
-                 itself is the onboarding cue for the empty state. */}
+            {/* First-run banner — only the no-client warning is worth
+                 surfacing now that the QuickStartPicker handles the
+                 empty-state onboarding and the AI rail has its own
+                 discoverable label. Rendered as a slim banner above the
+                 canvas so it doesn't fight with the inspector. */}
             {data.shots.length > 0 && !data.client && (
-              <div className="pointer-events-none absolute right-4 top-4 z-20">
-                <OnboardingHint
-                  id="no-client-tip"
-                  title="Pick a client for brand auto-injection"
-                  body={
-                    <>
-                      With no client selected, generations are unbranded. Select a client from the
-                      customer dropdown to enable palette, typography, and drift detection.
-                    </>
-                  }
-                  visible={true}
-                />
-              </div>
-            )}
-            {data.shots.length > 0 && (
-              <div className="pointer-events-none absolute right-4 bottom-4 z-20">
-                <OnboardingHint
-                  id="ai-rail-tip"
-                  title="Ask Engine AI for ideas"
-                  body={
-                    <>
-                      Click the sparkle button on the right edge to open the AI rail.
-                      Try: <span className="italic">&ldquo;Build me a 4-shot sequence for this brief.&rdquo;</span>
-                    </>
-                  }
-                  visible={true}
-                />
-              </div>
+              <NoClientBanner />
             )}
             <div className="min-h-0 flex-1">
               <CanvasStage
@@ -982,6 +957,47 @@ export default function DesignModePage() {
         onOpenLibrary={() => setLibraryOpen(true)}
         onApplyTemplate={handleApplyTemplate}
       />
+    </div>
+  );
+}
+
+/**
+ * Slim amber banner shown above the canvas when the session has shots but
+ * no client selected. Renders as a normal block element (not floating) so
+ * it doesn't fight with the inspector or the brand-kit rail. Dismissable
+ * via localStorage.
+ */
+function NoClientBanner() {
+  const [dismissed, setDismissed] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setDismissed(window.localStorage.getItem("design-onboarding:no-client-tip") === "1");
+  }, []);
+  if (dismissed !== false) return null;
+  return (
+    <div
+      className="flex items-center gap-2 border-b px-4 py-1.5 text-[11.5px]"
+      style={{
+        borderColor: "hsl(38 85% 80%)",
+        background: "hsl(38 85% 96%)",
+        color: "hsl(25 70% 30%)",
+      }}
+    >
+      <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+      <span className="flex-1">
+        <span className="font-semibold">No client selected.</span>{" "}
+        Generations are unbranded — pick a client from the customer dropdown to enable palette, typography, and drift detection.
+      </span>
+      <button
+        onClick={() => {
+          window.localStorage.setItem("design-onboarding:no-client-tip", "1");
+          setDismissed(true);
+        }}
+        className="rounded p-0.5 hover:bg-[hsl(38_85%_88%)]"
+        aria-label="Dismiss"
+      >
+        <XIcon className="h-3 w-3" />
+      </button>
     </div>
   );
 }
