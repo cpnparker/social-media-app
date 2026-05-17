@@ -147,6 +147,18 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Default session name — date-stamped so the sessions list isn't a wall
+  // of identical "New design session" rows. Users can rename later.
+  const defaultName = (() => {
+    const d = new Date();
+    const month = d.toLocaleString("en-US", { month: "short" });
+    const day = d.getDate();
+    // e.g. "Untitled · May 17 · 14:32"
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `Untitled · ${month} ${day} · ${hh}:${mm}`;
+  })();
+
   const { data: created, error } = await intelligenceDb
     .from("design_sessions")
     .insert({
@@ -154,7 +166,7 @@ export async function POST(req: NextRequest) {
       id_client: clientId ? parseInt(String(clientId), 10) : null,
       id_content: contentId ? parseInt(String(contentId), 10) : null,
       user_created: userId,
-      name_session: name || "New design session",
+      name_session: (name && name.trim()) || defaultName,
       type_visibility: visibility === "team" ? "team" : "private",
       flag_incognito: isIncognito ? 1 : 0,
       type_timeline_shape: "tracks",

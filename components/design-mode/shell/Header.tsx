@@ -145,7 +145,7 @@ export function Header({
                     <div className="flex w-full items-center gap-1 text-[10px] text-muted-foreground">
                       {s.clientName && <span>{s.clientName}</span>}
                       {s.clientName && s.updatedAt && <span>·</span>}
-                      {s.updatedAt && <span>{new Date(s.updatedAt).toLocaleDateString()}</span>}
+                      {s.updatedAt && <span>{formatSessionTime(s.updatedAt)}</span>}
                     </div>
                   </DropdownMenuItem>
                 ))
@@ -361,4 +361,34 @@ function formatDuration(secs: number): string {
 
 function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+/**
+ * Friendly relative time for the Sessions dropdown — keeps the row scannable.
+ * "2 min ago" / "Today, 14:32" / "Yesterday" / "May 14" / "Apr 2024"
+ */
+function formatSessionTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMin = Math.floor(diffMs / 60_000);
+  if (diffMin < 1) return "just now";
+  if (diffMin < 60) return `${diffMin} min ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 6) return `${diffHr}h ago`;
+  const isToday = d.toDateString() === now.toDateString();
+  if (isToday) {
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `Today, ${hh}:${mm}`;
+  }
+  const yest = new Date(now);
+  yest.setDate(now.getDate() - 1);
+  if (d.toDateString() === yest.toDateString()) return "Yesterday";
+  // Within current year — month + day. Older — month + year.
+  if (d.getFullYear() === now.getFullYear()) {
+    return d.toLocaleString("en-US", { month: "short", day: "numeric" });
+  }
+  return d.toLocaleString("en-US", { month: "short", year: "numeric" });
 }
