@@ -811,6 +811,52 @@ const DESIGN_COMMIT_SHOT_TOOL: Anthropic.Tool = {
   input_schema: { ...(DESIGN_COMMIT_SHOT_OPENAI_TOOL.function.parameters as any) },
 };
 
+const DESIGN_SAVE_PROMPT_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "design_save_prompt",
+    description:
+      "Save a prompt to the workspace prompt library so the user can reuse it on future shots. Use when a prompt produced a great result and the user asks to keep / bookmark / remember it, or when you proactively want to capture a reusable pattern. The prompt is then available via the bookmark icon next to the prompt block in the canvas inspector.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Short label, e.g. 'Editorial landscape · golden hour' or 'Chairman portrait — line one'." },
+        prompt: { type: "string", description: "The full prompt to save. If omitted, the current focused shot's prompt is used." },
+        model_hint: { type: "string", description: "Optional model id this prompt was tuned for (e.g. 'runway-g4-5')." },
+        team: { type: "boolean", description: "Share with the whole workspace. Default false (keeps it personal)." },
+      },
+      required: ["name"],
+    },
+  },
+};
+const DESIGN_SAVE_PROMPT_TOOL: Anthropic.Tool = {
+  name: "design_save_prompt",
+  description: DESIGN_SAVE_PROMPT_OPENAI_TOOL.function.description!,
+  input_schema: { ...(DESIGN_SAVE_PROMPT_OPENAI_TOOL.function.parameters as any) },
+};
+
+const DESIGN_RECALL_PROMPTS_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "design_recall_prompts",
+    description:
+      "Search the workspace's saved prompt library. Use when the user says 'use my editorial landscape prompt' / 'find my chairman portrait prompt' / 'what prompts have I saved' so you can match a name and then apply that prompt to a shot via design_update_shot.",
+    parameters: {
+      type: "object",
+      properties: {
+        q: { type: "string", description: "Search query, matched against prompt names and prompt body. Leave empty to list the most recently used." },
+        limit: { type: "number", description: "Max prompts to return. Default 8." },
+      },
+      required: [],
+    },
+  },
+};
+const DESIGN_RECALL_PROMPTS_TOOL: Anthropic.Tool = {
+  name: "design_recall_prompts",
+  description: DESIGN_RECALL_PROMPTS_OPENAI_TOOL.function.description!,
+  input_schema: { ...(DESIGN_RECALL_PROMPTS_OPENAI_TOOL.function.parameters as any) },
+};
+
 const ARTLIST_LICENSE_TOOL: Anthropic.Tool = {
   name: "license_artlist_asset",
   description: ARTLIST_LICENSE_OPENAI_TOOL.function.description!,
@@ -3464,6 +3510,11 @@ async function streamAnthropic(
       tools.push(DESIGN_GENERATE_SHOT_TOOL);
       tools.push(DESIGN_COMMIT_SHOT_TOOL);
     }
+    // Saved-prompt library — workspace-scoped, available whenever we know the workspace.
+    if (config.workspaceId) {
+      tools.push(DESIGN_SAVE_PROMPT_TOOL);
+      tools.push(DESIGN_RECALL_PROMPTS_TOOL);
+    }
   }
   if (config.workspaceClientIds?.length) {
     tools.push(QUERY_ENGINE_TOOL);
@@ -4030,6 +4081,87 @@ async function streamAnthropic(
         } catch (err: any) {
           console.error("[design_commit_shot]", err?.message);
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Commit failed: ${err?.message}`, is_error: true });
+        }
+      } else if (tool.name === "design_save_prompt") {
+        try {
+          if (!config.workspaceId || !config.userId) throw new Error("Workspace + user required");
+          const name = String(tool.input.name || "").trim();
+          if (!name) throw new Error("name required");
+          let prompt = String(tool.input.prompt || "").trim();
+          // Fall back to the focused shot's prompt if the model didn't include one inline.
+          if (!prompt && config.designFocusedShotId) {
+            const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+            const { data: focused } = await intelligenceDb
+              .from("design_shots")
+              .select("prompt")
+              .eq("id_shot", config.designFocusedShotId)
+              .maybeSingle();
+            prompt = String((focused as any)?.prompt || "").trim();
+          }
+          if (!prompt) throw new Error("Nothing to save — no prompt on the focused shot.");
+          const modelHint = tool.input.model_hint ? String(tool.input.model_hint) : null;
+          const team = tool.input.team === true;
+          const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+          const { data: created, error } = await intelligenceDb
+            .from("design_saved_prompts")
+            .insert({
+              id_workspace: config.workspaceId,
+              user_created: config.userId,
+              name_prompt: name.slice(0, 120),
+              prompt_text: prompt,
+              model_hint: modelHint,
+              flag_team: team ? 1 : 0,
+            })
+            .select("id_prompt")
+            .single();
+          if (error) throw new Error(error.message);
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ design_prompt_saved: { id: (created as any).id_prompt, name, team } })}\n\n`));
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: `Saved as "${name}"${team ? " (shared with team)" : ""}. Available under the bookmark icon next to the prompt block.`,
+          });
+        } catch (err: any) {
+          console.error("[design_save_prompt]", err?.message);
+          toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Save failed: ${err?.message}`, is_error: true });
+        }
+      } else if (tool.name === "design_recall_prompts") {
+        try {
+          if (!config.workspaceId || !config.userId) throw new Error("Workspace + user required");
+          const q = String(tool.input.q || "").trim();
+          const limit = Math.max(1, Math.min(Number(tool.input.limit) || 8, 25));
+          const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+          let query = intelligenceDb
+            .from("design_saved_prompts")
+            .select("id_prompt,name_prompt,prompt_text,model_hint,use_count,flag_team,last_used_at")
+            .eq("id_workspace", config.workspaceId)
+            .or(`user_created.eq.${config.userId},flag_team.eq.1`)
+            .order("last_used_at", { ascending: false, nullsFirst: false })
+            .limit(limit);
+          if (q) query = query.or(`name_prompt.ilike.%${q}%,prompt_text.ilike.%${q}%`);
+          const { data, error } = await query;
+          if (error) throw new Error(error.message);
+          const rows = data || [];
+          if (rows.length === 0) {
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: tool.id,
+              content: q ? `No saved prompts match "${q}".` : `No saved prompts in this workspace yet.`,
+            });
+          } else {
+            const summary = rows.map((r: any) => {
+              const trimmed = r.prompt_text.length > 220 ? r.prompt_text.slice(0, 220) + "…" : r.prompt_text;
+              return `• "${r.name_prompt}"${r.flag_team ? " (team)" : ""}${r.model_hint ? ` · ${r.model_hint}` : ""}${r.use_count ? ` · used ${r.use_count}×` : ""}\n  ${trimmed}`;
+            }).join("\n\n");
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: tool.id,
+              content: `${rows.length} saved prompt${rows.length === 1 ? "" : "s"}${q ? ` for "${q}"` : ""}:\n\n${summary}\n\nTo apply one, call design_update_shot with the chosen prompt text.`,
+            });
+          }
+        } catch (err: any) {
+          console.error("[design_recall_prompts]", err?.message);
+          toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Recall failed: ${err?.message}`, is_error: true });
         }
       } else if (tool.name === "generate_chart") {
         try {
