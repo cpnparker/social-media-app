@@ -569,7 +569,7 @@ export default function DesignModePage() {
     }).catch(() => refreshSession());
   }, [sessionId, currentShotId, refreshSession]);
 
-  const handlePromptSave = useCallback(async (prompt: string) => {
+  const handlePromptSave = useCallback(async (prompt: string, opts?: { silent?: boolean }) => {
     if (!sessionId || !currentShotId) return;
     // Optimistic UI update
     setData((prev) => prev ? {
@@ -584,7 +584,7 @@ export default function DesignModePage() {
     if (!res.ok) {
       toast.error("Failed to save prompt");
       refreshSession();
-    } else {
+    } else if (!opts?.silent) {
       toast.success("Prompt saved");
     }
   }, [sessionId, currentShotId, refreshSession]);

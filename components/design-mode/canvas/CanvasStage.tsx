@@ -21,7 +21,7 @@ interface CanvasStageProps {
   onRegenerate: () => void;
   onCommit: () => void;
   onModelChange: (modelId: string) => void;
-  onPromptSave: (prompt: string) => void;
+  onPromptSave: (prompt: string, opts?: { silent?: boolean }) => void;
   onFormatChange: (ratio: string) => void;
   onSelectVersion?: (versionId: string) => void;
   onAddShot?: () => void;
@@ -228,8 +228,9 @@ export function CanvasStage({
                     currentPrompt={editingPrompt ? promptDraft : (shot.prompt || "")}
                     onApply={(prompt, modelHint) => {
                       // Apply the saved prompt — overwrite the draft and persist.
+                      // Silent: the popover already shows 'Applied "<name>"'.
                       setPromptDraft(prompt);
-                      onPromptSave(prompt);
+                      onPromptSave(prompt, { silent: true });
                       setEditingPrompt(false);
                       // Optional model hint — switch the generator if it's a real model id.
                       if (modelHint) {

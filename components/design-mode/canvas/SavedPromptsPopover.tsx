@@ -97,6 +97,7 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
   async function applyPrompt(p: SavedPrompt) {
     onApply(p.prompt, p.modelHint);
     setOpen(false);
+    toast.success(`Applied "${p.name}"`);
     // Bump use count async (don't block UI)
     fetch(`/api/design/saved-prompts`, {
       method: "PATCH",
@@ -279,9 +280,17 @@ export function SavedPromptsPopover({ workspaceId, currentPrompt, onApply }: Sav
                             {p.prompt}
                           </p>
                           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[9px] text-muted-foreground">
-                            {p.modelHint && <span>{p.modelHint}</span>}
-                            {p.useCount > 0 && <span>·  used {p.useCount}×</span>}
-                            {p.lastUsedAt && <span>·  {relativeTime(p.lastUsedAt)}</span>}
+                            {(() => {
+                              // Join meta items with bullets only between
+                              // present items — no dangling leading "·".
+                              const items: React.ReactNode[] = [];
+                              if (p.modelHint) items.push(<span key="m">{p.modelHint}</span>);
+                              if (p.useCount > 0) items.push(<span key="u">used {p.useCount}×</span>);
+                              if (p.lastUsedAt) items.push(<span key="t">{relativeTime(p.lastUsedAt)}</span>);
+                              return items.flatMap((node, i) =>
+                                i === 0 ? [node] : [<span key={`s${i}`} aria-hidden>·</span>, node],
+                              );
+                            })()}
                             {p.tags && p.tags.length > 0 && (
                               <span className="flex flex-wrap gap-0.5">
                                 {p.tags.slice(0, 4).map((t) => (
