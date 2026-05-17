@@ -326,7 +326,7 @@ export function AIRailSide({ currentShot, workspaceId, clientId, contentId, desi
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(input); } }}
-            placeholder="Ask Engine AI · ⌘K to summon"
+            placeholder="Ask Engine AI…"
             rows={2}
             disabled={streaming}
             className="block w-full resize-none border-0 bg-transparent text-[12.5px] leading-relaxed outline-none placeholder:text-muted-foreground disabled:opacity-60"
@@ -347,7 +347,7 @@ export function AIRailSide({ currentShot, workspaceId, clientId, contentId, desi
           </div>
         </div>
         <div className="mt-1 px-1 text-[10px] text-muted-foreground">
-          ⌘K to summon · Enter to send · ⇧Enter newline
+          Enter to send · ⇧Enter for newline · ⌘K for command palette
         </div>
       </form>
     </aside>

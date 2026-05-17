@@ -82,7 +82,7 @@ export function AssetLibrary({ open, onClose, workspaceId, onAddToRefs }: AssetL
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search prompts…"
+                placeholder="Search assets by prompt…"
                 className="w-full rounded-md border bg-[hsl(var(--design-bg-elev))] py-1.5 pl-8 pr-3 text-[12.5px] focus:border-[hsl(var(--design-accent))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--design-accent))]/20"
                 style={{ borderColor: "hsl(var(--design-border))" }}
               />
