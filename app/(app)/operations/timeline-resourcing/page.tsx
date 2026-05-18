@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 import { categorizeContentType, CATEGORY_ORDER, CATEGORY_ICONS } from "@/lib/content-type-utils";
 import { TEAMS, getLeafIds, type TeamNode } from "@/lib/teams";
 import {
@@ -599,7 +600,11 @@ export default function TimelineResourcingPage() {
 
       {/* Controls */}
       <Card className="border-0 shadow-sm">
-        <CardContent className="p-3 flex flex-wrap items-center gap-3">
+        <CardContent className="p-3 space-y-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <CustomerDropdownFilter />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
           {/* View toggle */}
           <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-0.5">
             {(["customer", "contentType"] as ViewMode[]).map((m) => (
@@ -748,6 +753,7 @@ export default function TimelineResourcingPage() {
             <input type="checkbox" checked={excludeTestClients} onChange={(e) => setExcludeTestClients(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
             Hide TCE &amp; test
           </label>
+          </div>
         </CardContent>
       </Card>
 

@@ -19,6 +19,7 @@ import {
 import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 
 /* ─────────────── Types ─────────────── */
 
@@ -258,7 +259,8 @@ export default function ContractsGridPage() {
       <Card className="border-0 shadow-sm">
         <CardContent className="p-4">
           <div className="flex flex-col lg:flex-row lg:items-end gap-4">
-            <div className="flex items-end gap-2.5">
+            <div className="flex items-end gap-2.5 flex-wrap">
+              <CustomerDropdownFilter />
               <div className="w-[200px]">
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">
                   Contracts ending after

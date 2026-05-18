@@ -33,6 +33,7 @@ import {
   Legend,
 } from "recharts";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 
 /* ─────────────── Types ─────────────── */
 
@@ -282,6 +283,7 @@ export default function ProfitabilityPage() {
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap items-end gap-4">
+            <CustomerDropdownFilter />
             <div>
               <label className="text-xs font-medium text-muted-foreground block mb-1">From</label>
               <Input

@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { MultiSelectFilter, type MultiSelectOption } from "@/components/operations/MultiSelectFilter";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 import {
   categorizeContentType,
   getCategoryFilterOptions,
@@ -556,6 +557,7 @@ export default function AllContentPage() {
 
           {/* Row 2: Multi-selects + CU range */}
           <div className="flex flex-wrap items-end gap-3">
+            <CustomerDropdownFilter />
             <MultiSelectFilter label="Customer" options={customerOptions} selected={selectedCustomers} onChange={setSelectedCustomers} allLabel="All customers" />
             <MultiSelectFilter label="Category" options={categoryOptions} selected={selectedCategories} onChange={setSelectedCategories} allLabel="All categories" />
             <MultiSelectFilter label="Format" options={formatOptions} selected={selectedFormats} onChange={setSelectedFormats} allLabel="All formats" />

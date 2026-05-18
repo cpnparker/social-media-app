@@ -21,6 +21,7 @@ import {
 import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 
 /* ─────────────── Team structure ─────────────── */
 
@@ -477,7 +478,11 @@ export default function TeamProductionPage() {
 
       {/* Controls bar — full width, matches other operations pages */}
       <Card className="border-0 shadow-sm">
-        <CardContent className="p-3 flex flex-wrap items-center gap-3">
+        <CardContent className="p-3 space-y-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <CustomerDropdownFilter />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
           {/* Date presets */}
           <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-0.5">
             {presets.map((p) => (
@@ -542,6 +547,7 @@ export default function TeamProductionPage() {
               </span>
             )}
           </button>
+          </div>
         </CardContent>
       </Card>
 

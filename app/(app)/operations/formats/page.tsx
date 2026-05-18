@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 import {
   categorizeContentType,
   CATEGORY_ORDER,
@@ -529,6 +530,9 @@ export default function FormatsPage() {
                 Hide TCE and test clients
               </label>
             </div>
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <CustomerDropdownFilter />
           </div>
         </CardContent>
       </Card>

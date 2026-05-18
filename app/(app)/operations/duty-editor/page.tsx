@@ -20,6 +20,7 @@ import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { getSubdomainUrl } from "@/lib/subdomain";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 
 /** Match writing-style task types: write/writing/writer/draft/copy/rewrite/etc. */
 function isWritingTask(taskType: string | null | undefined): boolean {
@@ -218,7 +219,11 @@ export default function DutyEditorPage() {
 
       {/* Controls bar — consistent with other operations pages */}
       <Card className="border-0 shadow-sm">
-        <CardContent className="p-3 flex flex-wrap items-center gap-3">
+        <CardContent className="p-3 space-y-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <CustomerDropdownFilter />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
           {/* Quick stat pills */}
           <div className="flex items-center gap-2 flex-wrap">
             <div className={cn(
@@ -248,6 +253,7 @@ export default function DutyEditorPage() {
           <div className="relative w-[180px]">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
             <Input type="text" placeholder="Search..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="h-7 text-xs pl-7" />
+          </div>
           </div>
         </CardContent>
       </Card>

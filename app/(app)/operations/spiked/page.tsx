@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { MultiSelectFilter } from "@/components/operations/MultiSelectFilter";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 import {
   categorizeContentType,
   getCategoryFilterOptions,
@@ -478,8 +479,9 @@ export default function SpikedPage() {
             </span>
           </div>
 
-          {/* Category + Format filters */}
+          {/* Customer + Category + Format filters */}
           <div className="flex flex-wrap items-end gap-3">
+            <CustomerDropdownFilter />
             <MultiSelectFilter label="Category" options={categoryOptions} selected={selectedCategories} onChange={setSelectedCategories} allLabel="All categories" />
             <MultiSelectFilter label="Format" options={formatOptions} selected={selectedFormats} onChange={setSelectedFormats} allLabel="All formats" />
           </div>
