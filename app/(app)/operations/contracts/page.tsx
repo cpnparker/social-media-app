@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import {
   getTypeHex,
   typeColors,
@@ -170,6 +171,17 @@ export default function ContractsPage() {
   const [clientDropdownOpen, setClientDropdownOpen] = useState(false);
   const clientDropdownRef = useRef<HTMLDivElement>(null);
   const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
+
+  // Global customer filter from the TopBar selector — overrides the page's
+  // own client picker so the two stay in sync.
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
+  useEffect(() => {
+    if (globalCustomerId && globalCustomerId !== selectedClientId) {
+      setSelectedClientId(globalCustomerId);
+    }
+    // When the TopBar resets to All Customers we leave selectedClientId alone
+    // so the user's last in-page choice is preserved.
+  }, [globalCustomerId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Data
   const [clients, setClients] = useState<Client[]>([]);

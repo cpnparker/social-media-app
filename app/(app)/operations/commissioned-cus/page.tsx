@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { MultiSelectFilter } from "@/components/operations/MultiSelectFilter";
 import {
   categorizeContentType,
@@ -205,6 +206,9 @@ export default function CommissionedCUsPage() {
   const [excludeTestClients, setExcludeTestClients] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
 
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
+
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
   const [selectedFormats, setSelectedFormats] = useState<Set<string>>(new Set());
@@ -289,6 +293,8 @@ export default function CommissionedCUsPage() {
   const filtered = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return tasks.filter((t) => {
+      // Global customer scope (from the TopBar selector)
+      if (globalCustomerId && t.customerId !== globalCustomerId) return false;
       // Category
       const cat = categorizeContentType(t.contentType || "");
       if (!selectedCategories.has(cat)) return false;
@@ -307,7 +313,7 @@ export default function CommissionedCUsPage() {
       }
       return true;
     });
-  }, [tasks, searchQuery, selectedCategories, selectedFormats]);
+  }, [tasks, searchQuery, selectedCategories, selectedFormats, globalCustomerId]);
 
   /* ─── Totals ─── */
   const totals = useMemo(() => {
@@ -351,6 +357,17 @@ export default function CommissionedCUsPage() {
       autoSelectedRef.current = true;
     }
   }, [customerList]);
+
+  // When the TopBar's customer filter changes, override the per-page
+  // customer multi-select so derived stats and contracts stay in sync.
+  useEffect(() => {
+    if (globalCustomerId) {
+      setSelectedCustomerIds(new Set([globalCustomerId]));
+    } else {
+      // Allow auto-select-all to re-run when the global filter is cleared
+      autoSelectedRef.current = false;
+    }
+  }, [globalCustomerId]);
 
   const selectAllCustomers = useCallback(() => {
     setSelectedCustomerIds(new Set(customerList.map((c) => c.id)));

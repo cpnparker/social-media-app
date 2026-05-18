@@ -17,6 +17,7 @@ import {
   Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import {
   categorizeContentType,
   CATEGORY_ORDER,
@@ -192,6 +193,9 @@ export default function FormatsPage() {
   const [excludeTestClients, setExcludeTestClients] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
 
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
+
   // Tab 1 state
   const [selectedFormat, setSelectedFormat] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<"daily" | "weekly" | "monthly">("weekly");
@@ -244,16 +248,19 @@ export default function FormatsPage() {
 
   /* ─── Filtered tasks ─── */
   const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return tasks;
-    const q = searchQuery.toLowerCase();
-    return tasks.filter(
-      (t) =>
+    const q = searchQuery.trim().toLowerCase();
+    return tasks.filter((t) => {
+      // Global customer scope (from the TopBar selector)
+      if (globalCustomerId && t.clientId !== globalCustomerId) return false;
+      if (!q) return true;
+      return (
         t.contentName.toLowerCase().includes(q) ||
         t.clientName.toLowerCase().includes(q) ||
         t.contentType.toLowerCase().includes(q) ||
         t.taskType.toLowerCase().includes(q)
-    );
-  }, [tasks, searchQuery]);
+      );
+    });
+  }, [tasks, searchQuery, globalCustomerId]);
 
   /* ─── Category summaries ─── */
   const categorySummary = useMemo(() => {

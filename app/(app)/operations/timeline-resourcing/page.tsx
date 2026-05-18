@@ -21,6 +21,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { categorizeContentType, CATEGORY_ORDER, CATEGORY_ICONS } from "@/lib/content-type-utils";
 import {
   addDays,
@@ -148,6 +149,9 @@ export default function TimelineResourcingPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [assigneeFilter, setAssigneeFilter] = useState("all");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
+
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
   const EXCLUDE_CLIENT_IDS = "1,2";
 
   // Custom date pickers
@@ -236,6 +240,9 @@ export default function TimelineResourcingPage() {
   /* ─── Filtered tasks ─── */
   const filtered = useMemo(() => {
     let t = tasks;
+    if (globalCustomerId) {
+      t = t.filter((r) => r.customerId === globalCustomerId);
+    }
     if (assigneeFilter !== "all") {
       t = t.filter((r) => r.assigneeName === assigneeFilter);
     }
@@ -250,7 +257,7 @@ export default function TimelineResourcingPage() {
       );
     }
     return t;
-  }, [tasks, assigneeFilter, searchQuery]);
+  }, [tasks, assigneeFilter, searchQuery, globalCustomerId]);
 
   /* ─── Assignee list for filter ─── */
   const assignees = useMemo(() => {

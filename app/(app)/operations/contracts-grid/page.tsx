@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 
 /* ─────────────── Types ─────────────── */
 
@@ -176,6 +177,9 @@ export default function ContractsGridPage() {
   const [excludeTestClients, setExcludeTestClients] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
 
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
+
   const gridSort = useSort("gapCommission", false);
 
   /* ─── Fetch ─── */
@@ -202,14 +206,17 @@ export default function ContractsGridPage() {
 
   /* ─── Filtered contracts ─── */
   const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return contracts;
-    const q = searchQuery.toLowerCase();
-    return contracts.filter(
-      (c) =>
+    const q = searchQuery.trim().toLowerCase();
+    return contracts.filter((c) => {
+      // Global customer scope (from the TopBar selector)
+      if (globalCustomerId && c.clientId !== globalCustomerId) return false;
+      if (!q) return true;
+      return (
         c.clientName.toLowerCase().includes(q) ||
         c.contractName.toLowerCase().includes(q)
-    );
-  }, [contracts, searchQuery]);
+      );
+    });
+  }, [contracts, searchQuery, globalCustomerId]);
 
   /* ─── Sorted contracts ─── */
   const sorted = useMemo(

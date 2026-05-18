@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Loader2, Clock, AlertTriangle, CheckCircle2, ArrowRight, User, Search } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 
 interface ContentItem {
   id: string;
@@ -30,6 +31,9 @@ export default function WorkInProgressPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "overdue" | "fast">("all");
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
 
   useEffect(() => {
     const fetchAll = async () => {
@@ -60,6 +64,11 @@ export default function WorkInProgressPage() {
 
   const filtered = useMemo(() => {
     let list = [...items];
+
+    // Global customer scope (from the TopBar selector)
+    if (globalCustomerId) {
+      list = list.filter((i) => i.customerId === globalCustomerId);
+    }
 
     // Apply search filter
     if (searchQuery.trim()) {
@@ -95,7 +104,7 @@ export default function WorkInProgressPage() {
       if (deadlineB) return 1;
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
-  }, [items, filter, searchQuery]);
+  }, [items, filter, searchQuery, globalCustomerId]);
 
   // Group by current task type
   const byCurrentStep = useMemo(() => {

@@ -18,12 +18,14 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 
 interface ContentItem {
   id: string;
   workingTitle: string;
   contentType: string;
   customerName: string;
+  customerId: string;
   status: string;
   createdAt: string;
   deadlineProduction: string | null;
@@ -40,6 +42,9 @@ export default function DutyEditorPage() {
   const [items, setItems] = useState<ContentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
 
   useEffect(() => {
     const fetchAll = async () => {
@@ -104,8 +109,10 @@ export default function DutyEditorPage() {
       .sort((a, b) => new Date(b.completedAt!).getTime() - new Date(a.completedAt!).getTime());
   }, [items]);
 
-  // Search filter for content rows
+  // Search + global customer filter for content rows
   const matchesSearch = (item: ContentItem) => {
+    // Global customer scope (from the TopBar selector)
+    if (globalCustomerId && item.customerId !== globalCustomerId) return false;
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     return (

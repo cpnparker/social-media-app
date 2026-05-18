@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { MultiSelectFilter, type MultiSelectOption } from "@/components/operations/MultiSelectFilter";
 import {
   categorizeContentType,
@@ -199,6 +200,9 @@ export default function AllContentPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
+
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
 
   const [selectedCustomers, setSelectedCustomers] = useState<Set<string>>(new Set());
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
@@ -390,6 +394,8 @@ export default function AllContentPage() {
     const minCU = cuMin.trim() === "" ? -Infinity : parseFloat(cuMin);
     const maxCU = cuMax.trim() === "" ? Infinity : parseFloat(cuMax);
     return contentRows.filter((r) => {
+      // Global customer scope (from the TopBar selector)
+      if (globalCustomerId && r.customerId !== globalCustomerId) return false;
       // Status
       if (statusFilter !== "all" && r.status !== statusFilter) return false;
       // Customer
@@ -424,7 +430,7 @@ export default function AllContentPage() {
       }
       return true;
     });
-  }, [contentRows, searchQuery, cuMin, cuMax, statusFilter, selectedCustomers, selectedCategories, selectedFormats, selectedAssignees]);
+  }, [contentRows, searchQuery, cuMin, cuMax, statusFilter, selectedCustomers, selectedCategories, selectedFormats, selectedAssignees, globalCustomerId]);
 
   const sorted = useMemo(() => sortRows(filtered, sortState.currentSort, sortState.currentAsc), [filtered, sortState.currentSort, sortState.currentAsc]);
 

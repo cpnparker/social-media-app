@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { MultiSelectFilter } from "@/components/operations/MultiSelectFilter";
 import {
   categorizeContentType,
@@ -194,6 +195,9 @@ export default function SpikedPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
 
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
+
   const [chargeFilter, setChargeFilter] = useState<ChargeFilter>("all");
 
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
@@ -282,6 +286,8 @@ export default function SpikedPage() {
   const filtered = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return tasks.filter((t) => {
+      // Global customer scope (from the TopBar selector)
+      if (globalCustomerId && t.customerId !== globalCustomerId) return false;
       const cat = categorizeContentType(t.contentType || "");
       if (!selectedCategories.has(cat)) return false;
       if (!selectedFormats.has(t.contentType || "unknown")) return false;
@@ -296,7 +302,7 @@ export default function SpikedPage() {
       }
       return true;
     });
-  }, [tasks, searchQuery, selectedCategories, selectedFormats]);
+  }, [tasks, searchQuery, selectedCategories, selectedFormats, globalCustomerId]);
 
   /* ─── Totals ─── */
   const totals = useMemo(() => {

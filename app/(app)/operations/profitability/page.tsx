@@ -32,6 +32,7 @@ import {
   CartesianGrid,
   Legend,
 } from "recharts";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 
 /* ─────────────── Types ─────────────── */
 
@@ -182,6 +183,9 @@ export default function ProfitabilityPage() {
   // Expanded client
   const [expandedClient, setExpandedClient] = useState<string | null>(null);
 
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
+
   // ── Fetch data ──
   const fetchData = async () => {
     setLoading(true);
@@ -223,7 +227,13 @@ export default function ProfitabilityPage() {
   };
 
   // ── Derived data ──
-  const sortedClients = useMemo(() => sortRows(clients, sortKey, sortDir), [clients, sortKey, sortDir]);
+  const scopedClients = useMemo(
+    () => (globalCustomerId
+      ? clients.filter((c) => c.supabaseClientId === globalCustomerId)
+      : clients),
+    [clients, globalCustomerId],
+  );
+  const sortedClients = useMemo(() => sortRows(scopedClients, sortKey, sortDir), [scopedClients, sortKey, sortDir]);
 
   // Activity pie chart data
   const activityPieData = useMemo(() => {

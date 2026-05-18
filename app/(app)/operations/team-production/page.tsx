@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 
 /* ─────────────── Team structure ─────────────── */
 
@@ -400,6 +401,9 @@ export default function TeamProductionPage() {
   const [activePreset, setActivePreset] = useState<string | null>("This Month");
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
+
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(["all"]));
 
@@ -468,17 +472,20 @@ export default function TeamProductionPage() {
 
   /* ─── Filter by search ─── */
   const filteredTasks = useMemo(() => {
-    if (!searchQuery.trim()) return tasks;
-    const q = searchQuery.toLowerCase();
-    return tasks.filter(
-      (t) =>
+    const q = searchQuery.trim().toLowerCase();
+    return tasks.filter((t) => {
+      // Global customer scope (from the TopBar selector)
+      if (globalCustomerId && t.customerId !== globalCustomerId) return false;
+      if (!q) return true;
+      return (
         t.contentTitle.toLowerCase().includes(q) ||
         t.customerName.toLowerCase().includes(q) ||
         (t.assigneeName || "").toLowerCase().includes(q) ||
         t.taskTitle.toLowerCase().includes(q) ||
         t.contentType.toLowerCase().includes(q)
-    );
-  }, [tasks, searchQuery]);
+      );
+    });
+  }, [tasks, searchQuery, globalCustomerId]);
 
   /* ─── Split tasks ─── */
   const assignedTasks = useMemo(() => {
