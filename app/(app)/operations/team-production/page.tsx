@@ -24,141 +24,10 @@ import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 
 /* ─────────────── Team structure ─────────────── */
 
-interface TeamNode {
-  label: string;
-  value: string;
-  children?: TeamNode[];
-}
+import { TEAMS as SHARED_TEAMS, getLeafIds as sharedGetLeafIds, isLeaf as sharedIsLeaf, type TeamNode } from "@/lib/teams";
 
-const TEAMS: TeamNode[] = [
-  {
-    label: "All Staff",
-    value: "all",
-    children: [
-      {
-        label: "Account Managers",
-        value: "accountmanagers",
-        children: [
-          { label: "Arne Dumez", value: "12" },
-          { label: "Catherine Allen", value: "14" },
-          { label: "Ceri Radford", value: "17" },
-          { label: "Charlie Filmer-Court", value: "172" },
-          { label: "Ed Brereton", value: "42" },
-          { label: "Jack Heslehurst", value: "62" },
-          { label: "Katie Roberts", value: "75" },
-          { label: "John Hills", value: "667" },
-          { label: "Amy White", value: "666" },
-        ],
-      },
-      {
-        label: "Hybrid",
-        value: "hybrid",
-        children: [{ label: "Charlie Avery", value: "191" }],
-      },
-      {
-        label: "Content Managers",
-        value: "content_managers",
-        children: [
-          { label: "Holly Goodall", value: "252" },
-          { label: "Marzia Daudzai", value: "61" },
-          { label: "Manali Bhutwala", value: "691" },
-        ],
-      },
-      {
-        label: "Video Team",
-        value: "video",
-        children: [
-          { label: "Carlota Caldeira da Silva", value: "92" },
-          { label: "Nathan Lomax-Cooke", value: "124" },
-        ],
-      },
-      {
-        label: "Video Freelancers",
-        value: "videofreelancers",
-        children: [
-          { label: "Espranza", value: "383" },
-          { label: "Hustle Media", value: "539" },
-          { label: "The Junxion (Agency User)", value: "648" },
-          { label: "The Junxion (Freelancer User)", value: "653" },
-          { label: "Kennedy Oduor", value: "79" },
-          { label: "Pearse Owens", value: "591" },
-          { label: "Nostro People", value: "697" },
-        ],
-      },
-      {
-        label: "Visuals Team",
-        value: "visuals",
-        children: [
-          { label: "Jessica Foley", value: "43" },
-          { label: "Katie Romvari", value: "164" },
-          { label: "Nell Prieto", value: "328" },
-        ],
-      },
-      {
-        label: "Visual Freelancers",
-        value: "visualfreelancers",
-        children: [
-          { label: "Jenny Amer", value: "46" },
-          { label: "Emily Waterfiled", value: "686" },
-          { label: "Nick Venables", value: "227" },
-          { label: "Harry Tate", value: "326" },
-          { label: "Emma Lansdown", value: "609" },
-          { label: "Fatma Al Mansoury", value: "650" },
-        ],
-      },
-      {
-        label: "Voiceover Artists",
-        value: "voiceover",
-        children: [
-          { label: "Alison Tilley", value: "166" },
-          { label: "David Gilbert", value: "435" },
-          { label: "Harriet Leitch", value: "535" },
-          { label: "Ally Ibach", value: "574" },
-          { label: "Sakshi Sharma", value: "418" },
-          { label: "Wanda Rush", value: "454" },
-        ],
-      },
-      {
-        label: "Writers Team",
-        value: "writers",
-        children: [{ label: "Farahnaz Mohammed", value: "387" }],
-      },
-      {
-        label: "Writers Freelance",
-        value: "writersfreelance",
-        children: [
-          { label: "Andrew Wright", value: "52" },
-          { label: "Si Brandon", value: "26" },
-          { label: "Hilary Lamb", value: "77" },
-          { label: "Andrew Pettie", value: "68" },
-          { label: "Kate Thomas", value: "468" },
-          { label: "Nick Walshe", value: "350" },
-          { label: "Stephanie Thomson", value: "467" },
-          { label: "Angela Wipperman", value: "44" },
-        ],
-      },
-      {
-        label: "Strategy Team",
-        value: "strategy_team",
-        children: [
-          { label: "Prachi Srivastava", value: "150" },
-          { label: "Edward Brydon", value: "253" },
-          { label: "Gabriella Beer", value: "13" },
-        ],
-      },
-      {
-        label: "Strategy Freelancers",
-        value: "strategy_freelance",
-        children: [{ label: "Sophia D'Cruz", value: "611" }],
-      },
-      {
-        label: "Analytics",
-        value: "analytics",
-        children: [{ label: "Edward Rycroft", value: "455" }],
-      },
-    ],
-  },
-];
+const TEAMS = SHARED_TEAMS;
+
 
 /* ─────────────── Helpers ─────────────── */
 
@@ -407,6 +276,55 @@ export default function TeamProductionPage() {
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(["all"]));
 
+  // All known user IDs across the engine, fetched once on mount. Users who
+  // aren't in the hardcoded TEAMS structure surface in a fallback "Other"
+  // group so they remain selectable here.
+  const [allUsers, setAllUsers] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/operations/team-members")
+      .then((r) => (r.ok ? r.json() : { users: [] }))
+      .then((data) => {
+        if (!cancelled) setAllUsers(data.users || []);
+      })
+      .catch(() => {
+        if (!cancelled) setAllUsers([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Build the tree shown in the picker — TEAMS + any users not already in it.
+  const teamTree: TeamNode[] = useMemo(() => {
+    if (allUsers.length === 0) return TEAMS;
+    const knownIds = new Set<string>();
+    const collect = (node: TeamNode) => {
+      if (isLeaf(node)) knownIds.add(node.value);
+      else node.children?.forEach(collect);
+    };
+    TEAMS.forEach(collect);
+    const others = allUsers
+      .filter((u) => !knownIds.has(u.id))
+      .map<TeamNode>((u) => ({ label: u.name, value: u.id }));
+    if (others.length === 0) return TEAMS;
+    // Insert "Other Team Members" as another child of the top "All Staff" node
+    return TEAMS.map((root) => {
+      if (root.value !== "all") return root;
+      return {
+        ...root,
+        children: [
+          ...(root.children || []),
+          {
+            label: "Other Team Members",
+            value: "other_team_members",
+            children: others.sort((a, b) => a.label.localeCompare(b.label)),
+          },
+        ],
+      };
+    });
+  }, [allUsers]);
+
   const [excludeTestClients, setExcludeTestClients] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
 
@@ -648,7 +566,7 @@ export default function TeamProductionPage() {
               <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider px-2 py-1 mb-1">
                 Select Team / Members
               </div>
-              {TEAMS.map((node) => (
+              {teamTree.map((node) => (
                 <TreeNode
                   key={node.value}
                   node={node}

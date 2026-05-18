@@ -19,6 +19,14 @@ import {
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { getSubdomainUrl } from "@/lib/subdomain";
+
+/** Match writing-style task types: write/writing/writer/draft/copy/rewrite/etc. */
+function isWritingTask(taskType: string | null | undefined): boolean {
+  if (!taskType) return false;
+  const t = taskType.toLowerCase();
+  return t.includes("writ") || t.includes("draft") || t.includes("copy");
+}
 
 interface ContentItem {
   id: string;
@@ -65,7 +73,19 @@ export default function DutyEditorPage() {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const weekFromNow = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-  const active = useMemo(() => items.filter((i) => i.status === "draft"), [items]);
+  // Active items where the CURRENT task is an unassigned writing task.
+  // This is what the duty editor needs to triage — pieces waiting for a writer.
+  const active = useMemo(
+    () =>
+      items.filter(
+        (i) =>
+          i.status === "draft" &&
+          i.currentTask &&
+          isWritingTask(i.currentTask.type) &&
+          !i.currentTask.assignee,
+      ),
+    [items],
+  );
 
   // Items needing attention: overdue deadlines
   const overdue = useMemo(() => {
@@ -138,8 +158,11 @@ export default function DutyEditorPage() {
 
   const ContentRow = ({ item, showDeadline = true }: { item: ContentItem; showDeadline?: boolean }) => {
     const deadline = item.deadlineProduction || item.deadlinePublication;
+    // On the operations subdomain, /content/[id] is rewritten to commissioned-cus
+    // by middleware. Send users to the engine subdomain where the page lives.
+    const href = getSubdomainUrl("engine", `/content/${item.id}`);
     return (
-      <Link href={`/content/${item.id}`} className="flex items-center gap-3 p-2 -mx-2 rounded-lg hover:bg-muted/50 transition-colors group">
+      <Link href={href} className="flex items-center gap-3 p-2 -mx-2 rounded-lg hover:bg-muted/50 transition-colors group">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="text-sm font-medium truncate group-hover:text-foreground">{item.workingTitle}</span>
@@ -189,7 +212,7 @@ export default function DutyEditorPage() {
         <h1 className="text-xl font-semibold tracking-tight">Duty Editor</h1>
         <p className="text-sm text-muted-foreground mt-0.5">
           {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
-          {" · "}{active.length} active items
+          {" · "}{active.length} writing task{active.length === 1 ? "" : "s"} waiting for an assignee
         </p>
       </div>
 

@@ -23,6 +23,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { categorizeContentType, CATEGORY_ORDER, CATEGORY_ICONS } from "@/lib/content-type-utils";
+import { TEAMS, getLeafIds, type TeamNode } from "@/lib/teams";
 import {
   addDays,
   subDays,
@@ -150,6 +151,23 @@ export default function TimelineResourcingPage() {
   const [assigneeFilter, setAssigneeFilter] = useState("all");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
 
+  // Team filter: a set of branch IDs from TEAMS (e.g. "writers", "video").
+  // Empty set = no team filter (all teams shown).
+  const [selectedTeamBranches, setSelectedTeamBranches] = useState<Set<string>>(new Set());
+  const selectedTeamUserIds = useMemo(() => {
+    if (selectedTeamBranches.size === 0) return null;
+    const ids = new Set<string>();
+    const walk = (node: TeamNode) => {
+      if (selectedTeamBranches.has(node.value)) {
+        getLeafIds(node).forEach((id) => ids.add(id));
+      } else if (node.children) {
+        node.children.forEach(walk);
+      }
+    };
+    TEAMS.forEach(walk);
+    return ids;
+  }, [selectedTeamBranches]);
+
   // Global customer filter from the TopBar selector
   const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
   const EXCLUDE_CLIENT_IDS = "1,2";
@@ -243,6 +261,9 @@ export default function TimelineResourcingPage() {
     if (globalCustomerId) {
       t = t.filter((r) => r.customerId === globalCustomerId);
     }
+    if (selectedTeamUserIds && selectedTeamUserIds.size > 0) {
+      t = t.filter((r) => r.assigneeId && selectedTeamUserIds.has(r.assigneeId));
+    }
     if (assigneeFilter !== "all") {
       t = t.filter((r) => r.assigneeName === assigneeFilter);
     }
@@ -257,7 +278,7 @@ export default function TimelineResourcingPage() {
       );
     }
     return t;
-  }, [tasks, assigneeFilter, searchQuery, globalCustomerId]);
+  }, [tasks, assigneeFilter, searchQuery, globalCustomerId, selectedTeamUserIds]);
 
   /* ─── Assignee list for filter ─── */
   const assignees = useMemo(() => {
@@ -655,15 +676,61 @@ export default function TimelineResourcingPage() {
 
           <div className="flex-1" />
 
-          {/* Team filter */}
+          {/* Team filter (branch-level multi-select) */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <button className="h-7 text-xs rounded-md border border-input bg-background px-2.5 flex items-center gap-1.5 hover:bg-muted/50 focus:outline-none">
+                <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+                {selectedTeamBranches.size === 0
+                  ? "All teams"
+                  : `${selectedTeamBranches.size} team${selectedTeamBranches.size === 1 ? "" : "s"}`}
+                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-56 p-1.5">
+              {TEAMS[0].children?.map((branch) => {
+                const checked = selectedTeamBranches.has(branch.value);
+                return (
+                  <label
+                    key={branch.value}
+                    className="flex items-center gap-2 px-2 py-1 rounded text-xs hover:bg-muted/50 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() =>
+                        setSelectedTeamBranches((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(branch.value)) next.delete(branch.value);
+                          else next.add(branch.value);
+                          return next;
+                        })
+                      }
+                      className="rounded border-muted-foreground/30 h-3.5 w-3.5"
+                    />
+                    <span>{branch.label}</span>
+                  </label>
+                );
+              })}
+              {selectedTeamBranches.size > 0 && (
+                <button
+                  onClick={() => setSelectedTeamBranches(new Set())}
+                  className="w-full mt-1 pt-1 border-t text-xs text-muted-foreground hover:text-foreground"
+                >
+                  Clear ({selectedTeamBranches.size})
+                </button>
+              )}
+            </PopoverContent>
+          </Popover>
+
+          {/* Individual filter */}
           <div className="flex items-center gap-1.5">
-            <Filter className="h-3.5 w-3.5 text-muted-foreground" />
             <select
               value={assigneeFilter}
               onChange={(e) => setAssigneeFilter(e.target.value)}
               className="h-7 text-xs rounded-md border border-input bg-background px-2 focus:outline-none"
             >
-              <option value="all">All Team Members</option>
+              <option value="all">All people</option>
               {assignees.map((a) => (
                 <option key={a} value={a}>{a}</option>
               ))}
