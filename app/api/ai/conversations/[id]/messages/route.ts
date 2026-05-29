@@ -22,7 +22,8 @@ export const maxDuration = 300; // 5 min — covers slow attachment extractions 
 
 // ── Cost calculation for usage tracking ──
 const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> = {
-  "claude-opus-4-7": { inputPer1M: 1500, outputPer1M: 7500 },        // $15/$75 — VERIFY current Anthropic pricing
+  "claude-opus-4-8": { inputPer1M: 500, outputPer1M: 2500 },         // $5/$25
+  "claude-opus-4-7": { inputPer1M: 500, outputPer1M: 2500 },         // $5/$25 (legacy → opus-4-8)
   "claude-sonnet-4-6": { inputPer1M: 300, outputPer1M: 1500 },       // $3/$15
   "claude-sonnet-4-20250514": { inputPer1M: 300, outputPer1M: 1500 },
   "claude-haiku-4-5": { inputPer1M: 100, outputPer1M: 500 },         // $1/$5 — VERIFY current Anthropic pricing

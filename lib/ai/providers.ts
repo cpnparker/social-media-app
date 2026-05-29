@@ -107,10 +107,10 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "EngineAI Auto",
     description: "Best model for each query",
   },
-  "claude-opus-4-7": {
+  "claude-opus-4-8": {
     provider: "anthropic",
-    apiModel: "claude-opus-4-7",
-    label: "Claude Opus 4.7",
+    apiModel: "claude-opus-4-8",
+    label: "Claude Opus 4.8",
     description: "Top-tier reasoning, code & long-form",
   },
   "claude-sonnet-4-6": {
@@ -176,6 +176,12 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     hidden: true,
   },
   // Legacy mappings for old conversations
+  "claude-opus-4-7": {
+    provider: "anthropic",
+    apiModel: "claude-opus-4-8",
+    label: "Claude Opus 4.8",
+    legacy: true,
+  },
   "gemini-2.5-pro": {
     provider: "gemini",
     apiModel: "gemini-3-flash",
