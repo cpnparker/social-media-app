@@ -2862,16 +2862,50 @@ async function queryMeetingBrain(
       case "client_meetings": {
         // Live query against the meetingbrain schema (same direct-connector
         // pattern as every other report) — no dependency on a synced copy
-        // that can go stale. A "client meeting" is any summarised meeting with
-        // an external attendee (domain != the workspace's internal domain).
+        // that can go stale.
+        //
+        // Privacy: a "client meeting" is gated on a REGISTERED client domain
+        // (from app_clients.link_website), exactly like the old synced table —
+        // so personal/vendor/non-client external meetings stay out of this
+        // workspace-shared report. We fetch the client-domain allowlist here
+        // (EngineAI owns app_clients) and pass it into the RPC.
         const internalDomain = userEmail.split("@")[1] || "";
         if (!internalDomain) return { data: [], count: 0, error: "Could not derive workspace domain from user email" };
+
+        // Build the registered-client domain allowlist from app_clients.
+        const { supabase: publicDb } = await import("@/lib/supabase");
+        const { data: clientRows } = await publicDb
+          .from("app_clients")
+          .select("link_website");
+        const normalizeDomain = (url: string | null): string | null => {
+          if (!url) return null;
+          let d = url.trim().toLowerCase();
+          d = d.replace(/^https?:\/\//, "").replace(/^www\./, "");
+          d = d.split("/")[0].split("?")[0].split("#")[0].trim();
+          return d.length > 3 && d.includes(".") ? d : null;
+        };
+        // Known client email domains that differ from their registered
+        // app_clients.link_website (or where the website is unset), so the
+        // privacy gate doesn't drop these real clients. Keep this list to
+        // CONFIRMED clients only — adding a non-client domain here would leak
+        // that org's meetings into the workspace-shared report.
+        const CLIENT_DOMAIN_ALIASES = [
+          "beonemed.com", // BeOne Medicines (registered as beonemedicines.com)
+          "hiscox.com",   // Hiscox Insurance (registered with no website)
+        ];
+        const clientDomains = Array.from(new Set([
+          ...(clientRows || [])
+            .map((c: any) => normalizeDomain(c.link_website))
+            .filter((d: string | null): d is string => !!d && d !== internalDomain),
+          ...CLIENT_DOMAIN_ALIASES,
+        ]));
 
         const since = new Date(); since.setDate(since.getDate() - 90);
         const twoWeeksBack = new Date(); twoWeeksBack.setDate(twoWeeksBack.getDate() - 14);
 
         const { data: meetings, error: mtgErr } = await mbDb.rpc("get_client_meetings", {
           p_internal_domain: internalDomain,
+          p_client_domains: clientDomains.length > 0 ? clientDomains : null,
           p_since: since.toISOString(),
           p_limit: 100,
         });
