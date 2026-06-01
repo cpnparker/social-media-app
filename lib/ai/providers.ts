@@ -2860,37 +2860,65 @@ async function queryMeetingBrain(
         return { data, count: 1 };
       }
       case "client_meetings": {
-        if (!options.workspaceId) return { data: [], count: 0, error: "Workspace ID required" };
-        const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+        // Live query against the meetingbrain schema (same direct-connector
+        // pattern as every other report) — no dependency on a synced copy
+        // that can go stale. A "client meeting" is any summarised meeting with
+        // an external attendee (domain != the workspace's internal domain).
+        const internalDomain = userEmail.split("@")[1] || "";
+        if (!internalDomain) return { data: [], count: 0, error: "Could not derive workspace domain from user email" };
 
-        // Fetch all client meetings — these are shared workspace data (privacy: only
-        // meetings with external/client domain attendees are in this table)
-        const { data: meetings, error: mtgErr } = await intelligenceDb
+        const since = new Date(); since.setDate(since.getDate() - 90);
+        const twoWeeksBack = new Date(); twoWeeksBack.setDate(twoWeeksBack.getDate() - 14);
+
+        const { data: meetings, error: mtgErr } = await mbDb.rpc("get_client_meetings", {
+          p_internal_domain: internalDomain,
+          p_since: since.toISOString(),
+          p_limit: 100,
+        });
+
+        if (!mtgErr) {
+          const data = (meetings || []).map((r: any) => {
+            const isRecent = new Date(r.meeting_date) >= twoWeeksBack;
+            return {
+              meeting_id: r.meeting_id,
+              title: r.meeting_title,
+              date: r.meeting_date?.slice(0, 10),
+              summary: isRecent ? r.summary?.slice(0, 400) : r.summary?.slice(0, 150),
+              key_topics: isRecent ? r.key_topics?.slice(0, 200) : r.key_topics?.slice(0, 100),
+              next_steps: isRecent ? (r.next_steps?.slice(0, 200) || null) : undefined,
+              attendees: isRecent ? r.external_attendees : undefined,
+            };
+          });
+          console.log(`[MeetingBrain] Client meetings: ${data.length} (live, domain=${internalDomain})`);
+          return { data, count: data.length };
+        }
+
+        // Fallback: RPC not present yet (deploy ordering) — read the synced
+        // table. The hourly sync-context cron keeps it reasonably fresh.
+        console.warn(`[MeetingBrain] get_client_meetings RPC failed (${mtgErr.message}), falling back to ai_client_meetings`);
+        if (!options.workspaceId) return { data: [], count: 0, error: mtgErr.message };
+        const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+        const { data: synced, error: syncErr } = await intelligenceDb
           .from("ai_client_meetings")
           .select("id_client, meeting_id, meeting_title, meeting_date, meeting_summary, key_topics, next_steps, attendees_external")
           .eq("id_workspace", options.workspaceId)
           .order("meeting_date", { ascending: false })
           .limit(100);
-        if (mtgErr) return { data: [], count: 0, error: mtgErr.message };
-
-        const twoWeeksBack = new Date(); twoWeeksBack.setDate(twoWeeksBack.getDate() - 14);
-        const threeMonthsBack = new Date(); threeMonthsBack.setDate(threeMonthsBack.getDate() - 90);
-        const data = (meetings || []).map((r: any) => {
-          const meetDate = new Date(r.meeting_date);
-          const isRecent = meetDate >= twoWeeksBack;
-          const isMedium = !isRecent && meetDate >= threeMonthsBack;
+        if (syncErr) return { data: [], count: 0, error: syncErr.message };
+        const data = (synced || []).map((r: any) => {
+          const isRecent = new Date(r.meeting_date) >= twoWeeksBack;
           return {
             client_id: r.id_client,
             meeting_id: r.meeting_id,
             title: r.meeting_title,
             date: r.meeting_date?.slice(0, 10),
-            summary: isRecent ? r.meeting_summary?.slice(0, 400) : isMedium ? r.meeting_summary?.slice(0, 150) : r.meeting_summary?.slice(0, 80),
+            summary: isRecent ? r.meeting_summary?.slice(0, 400) : r.meeting_summary?.slice(0, 150),
             key_topics: isRecent ? r.key_topics?.slice(0, 200) : r.key_topics?.slice(0, 100),
             next_steps: isRecent ? (r.next_steps?.slice(0, 200) || null) : undefined,
             attendees: isRecent ? r.attendees_external : undefined,
           };
         });
-        console.log(`[MeetingBrain] Client meetings: ${data.length} from ai_client_meetings`);
+        console.log(`[MeetingBrain] Client meetings: ${data.length} (synced fallback)`);
         return { data, count: data.length };
       }
       default: return { data: [], count: 0, error: `Unknown report: ${report}` };
