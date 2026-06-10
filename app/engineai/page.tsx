@@ -50,6 +50,7 @@ import {
   BookOpen,
   Trash2,
   Pencil,
+  AudioLines,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
@@ -82,6 +83,7 @@ import {
 } from "@/components/ui/dialog";
 import { AI_MODELS, DEFAULT_MODEL, getModelLabel } from "@/lib/ai/models";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
+import VoiceOverlay from "@/components/ai-writer/VoiceOverlay";
 import MemoryManager from "@/components/ai-writer/MemoryManager";
 import AdminDialog from "@/components/ai-writer/AdminDialog";
 import PersonaliseDialog from "@/components/ai-writer/PersonaliseDialog";
@@ -131,6 +133,8 @@ function EngineAIContent() {
   >();
   const [searchQuery, setSearchQuery] = useState("");
   const [deepSearchResults, setDeepSearchResults] = useState<AIConversation[]>([]);
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const [voiceSessionN, setVoiceSessionN] = useState(0);
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -563,6 +567,43 @@ function EngineAIContent() {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleQuickSend();
+    }
+  };
+
+  // Start an immersive voice session. From a chat: binds to that thread.
+  // From home: creates a fresh PRIVATE conversation first (voice is personal-
+  // scope — personal MeetingBrain/Slack tools are blocked in team threads).
+  const handleVoiceStart = async () => {
+    if (!workspaceId || sending) return;
+    if (selectedId) {
+      setVoiceOpen(true);
+      return;
+    }
+    setSending(true);
+    try {
+      const res = await fetch("/api/ai/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          visibility: "private",
+          model: selectedModel,
+          customerId: customerId || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        toast.error(errData.error || "Failed to start voice session");
+        return;
+      }
+      const data = await res.json();
+      setConversations((prev) => [data.conversation, ...prev]);
+      setSelectedId(data.conversation.id);
+      setVoiceOpen(true);
+    } catch {
+      toast.error("Failed to start voice session");
+    } finally {
+      setSending(false);
     }
   };
 
@@ -1496,7 +1537,7 @@ function EngineAIContent() {
           /* ─── Chat view ─── */
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
             <ChatPanel
-              key={selectedId}
+              key={`${selectedId}-v${voiceSessionN}`}
               conversationId={selectedId}
               onConversationDeleted={handleConversationDeleted}
               onConversationUpdated={handleConversationUpdated}
@@ -1510,6 +1551,14 @@ function EngineAIContent() {
               selectedCustomer={selectedCustomer ? { id: String(selectedCustomer.id), name: selectedCustomer.name } : null}
               onCustomerChange={(id) => customerCtx?.setSelectedCustomerId(id)}
               headerExtra={
+                <>
+                <button
+                  onClick={() => setVoiceOpen(true)}
+                  title="Voice conversation"
+                  className="flex h-8 w-8 rounded-full border bg-background hover:bg-muted items-center justify-center transition-colors shrink-0"
+                >
+                  <AudioLines className="h-3.5 w-3.5 text-muted-foreground" />
+                </button>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button className="hidden lg:flex h-8 w-8 rounded-full border bg-background hover:bg-muted items-center justify-center transition-colors shrink-0">
@@ -1539,6 +1588,7 @@ function EngineAIContent() {
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
+                </>
               }
               onCopyLink={() => {
                 const url = new URL(window.location.href);
@@ -2025,6 +2075,14 @@ function EngineAIContent() {
                       </DropdownMenuContent>
                     </DropdownMenu>
 
+                    <button
+                      onClick={handleVoiceStart}
+                      disabled={sending}
+                      title="Start a voice conversation"
+                      className="h-9 w-9 shrink-0 rounded-xl border bg-background hover:bg-muted flex items-center justify-center transition-colors disabled:opacity-50"
+                    >
+                      <AudioLines className="h-4 w-4 text-muted-foreground" />
+                    </button>
                     <Button
                       size="icon"
                       onClick={handleQuickSend}
@@ -2336,6 +2394,20 @@ function EngineAIContent() {
         open={clientContextOpen}
         onClose={() => setClientContextOpen(false)}
       />
+      {/* Immersive voice conversation */}
+      {workspaceId && selectedId && (
+        <VoiceOverlay
+          open={voiceOpen}
+          onClose={() => {
+            setVoiceOpen(false);
+            // Remount ChatPanel so the saved voice transcript appears
+            setVoiceSessionN((n) => n + 1);
+          }}
+          conversationId={selectedId}
+          workspaceId={workspaceId}
+          customerId={customerId}
+        />
+      )}
     </>
   );
 }

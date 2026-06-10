@@ -70,7 +70,7 @@ const MAX_TOOL_RESULT_ROWS = 100;
 const MAX_WEB_SEARCH_CHARS = 6000;
 
 /** Format query_engine results with optional truncation to reduce token usage */
-function formatToolResult(result: { data: any; count: number; total?: number; summary?: any; error?: string }): string {
+export function formatToolResult(result: { data: any; count: number; total?: number; summary?: any; error?: string }): string {
   if (result.error) return `Query failed: ${result.error}`;
   let content = `Query returned ${result.count} rows.`;
   if (result.summary) {
@@ -87,7 +87,7 @@ function formatToolResult(result: { data: any; count: number; total?: number; su
 }
 
 /** Format MeetingBrain results with truncation */
-function formatMeetingBrainResult(report: string, result: { data: any; count: number; error?: string; notice?: string }): string {
+export function formatMeetingBrainResult(report: string, result: { data: any; count: number; error?: string; notice?: string }): string {
   if (result.notice) return result.notice;
   if (result.error) {
     // Graceful degradation: don't let a backend hiccup read like "you have no
@@ -1109,7 +1109,7 @@ const DEFAULT_COLUMNS: Record<string, string[]> = {
 };
 
 /** OpenAI-compatible function calling tool definition for query_engine */
-const QUERY_ENGINE_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+export const QUERY_ENGINE_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   type: "function",
   function: {
     name: "query_engine",
@@ -1212,7 +1212,7 @@ const QUERY_ENGINE_TOOL: Anthropic.Tool = {
 
 /* ─────────────── Client Context Lookup Tool ─────────────── */
 
-const LOOKUP_CLIENT_CONTEXT_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+export const LOOKUP_CLIENT_CONTEXT_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   type: "function",
   function: {
     name: "lookup_client_context",
@@ -1242,7 +1242,7 @@ const LOOKUP_CLIENT_CONTEXT_TOOL = {
 /**
  * Look up a client's full context by name — brand guidelines, meetings, contracts.
  */
-async function lookupClientContext(
+export async function lookupClientContext(
   clientName: string,
   workspaceId: string
 ): Promise<string> {
@@ -1812,7 +1812,7 @@ interface QueryFilter {
  * Execute a safe, read-only database query against the Content Engine.
  * All inputs are validated against allowlists. Queries are workspace-scoped.
  */
-async function queryEngine(
+export async function queryEngine(
   table: string | undefined,
   columns?: string[],
   filters?: QueryFilter[],
@@ -2751,7 +2751,7 @@ async function executeWebSearch(
 
 /* ─────────────── MeetingBrain Query Tool ─────────────── */
 
-const MEETINGBRAIN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+export const MEETINGBRAIN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   type: "function",
   function: {
     name: "query_meetingbrain",
@@ -2796,7 +2796,7 @@ function getMeetingBrainDb() {
   return _mbDb;
 }
 
-async function queryMeetingBrain(
+export async function queryMeetingBrain(
   report: string,
   userEmail: string,
   options: { query?: string; status?: string; days?: number; workspaceId?: string; meetingId?: string; visibility?: "private" | "team" } = {}
@@ -3073,7 +3073,7 @@ async function queryMeetingBrain(
  * requesting user's own user-scope Slack token so Slack itself enforces the
  * access boundary (user only sees messages they could see in Slack).
  */
-const SLACK_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+export const SLACK_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   type: "function",
   function: {
     name: "query_slack",
@@ -3135,7 +3135,7 @@ const SLACK_TOOL: Anthropic.Tool = {
  * Server-to-server call from EngineAI to MeetingBrain's Slack query endpoint.
  * MeetingBrain holds the user's Slack OAuth token; EngineAI never touches it.
  */
-async function querySlack(
+export async function querySlack(
   report: string,
   userEmail: string,
   options: {
@@ -3204,7 +3204,7 @@ async function querySlack(
 }
 
 /** Format Slack results for AI tool_result (with truncation) */
-function formatSlackResult(
+export function formatSlackResult(
   report: string,
   result: { data: any; count: number; error?: string; needsReauth?: boolean; notice?: string }
 ): string {
@@ -3278,7 +3278,7 @@ function formatSlackResult(
 /* ─────────────── Memory Search Tool ─────────────── */
 
 /** OpenAI-compatible tool definition for search_memory */
-const SEARCH_MEMORY_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+export const SEARCH_MEMORY_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   type: "function",
   function: {
     name: "search_memory",
@@ -3314,7 +3314,7 @@ const SEARCH_MEMORY_TOOL: Anthropic.Tool = {
 /**
  * Search user's memories and conversation history for relevant information.
  */
-async function searchMemory(
+export async function searchMemory(
   query: string,
   scope: "memories" | "conversations" | "both" = "both",
   workspaceId: string,
