@@ -144,10 +144,16 @@ function fuzzyTolerance(len: number): number {
 const tokenize = (s: string): string[] =>
   (s || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length >= 3);
 
+/** Consonant skeleton — vowels carry most of the transcription error in
+ *  misheard names ("Amorite" for "Amrize"), consonant shape survives. */
+const skeleton = (w: string): string => w[0] + w.slice(1).replace(/[aeiouy]/g, "");
+
 /**
  * Does any meaningful word of `query` approximately match any token of `target`?
  * Built for voice: spoken proper nouns arrive phonetically misspelled
- * ("Gelderma" for "Galderma"), so exact/ilike search misses them.
+ * ("Gelderma" for "Galderma", "Amorite" for "Amrize"), so exact/ilike search
+ * misses them. Two layers: edit distance on the full word, then edit distance
+ * on the consonant skeleton (same first letter required).
  */
 export function fuzzyMatches(query: string, target: string): boolean {
   const qWords = tokenize(query).filter((w) => w.length >= 4);
@@ -158,7 +164,11 @@ export function fuzzyMatches(query: string, target: string): boolean {
       (t) =>
         t.includes(q) ||
         q.includes(t) ||
-        levenshtein(q, t) <= Math.min(fuzzyTolerance(q.length), fuzzyTolerance(t.length))
+        levenshtein(q, t) <= Math.min(fuzzyTolerance(q.length), fuzzyTolerance(t.length)) ||
+        (q.length >= 5 &&
+          t.length >= 5 &&
+          q[0] === t[0] &&
+          levenshtein(skeleton(q), skeleton(t)) <= 1)
     )
   );
 }
@@ -2995,30 +3005,46 @@ export async function queryMeetingBrain(
         });
         if (error) return { data: [], count: 0, error: error.message };
 
-        // Fuzzy fallback: voice transcription misspells proper nouns
-        // ("Gelderma" for "Galderma") and the RPC's literal match finds
-        // nothing. Pull the recent meeting list and match approximately
-        // against titles + attendees.
-        let meetings = exact;
+        // Fuzzy enrichment: voice transcription misspells proper nouns
+        // ("Gelderma" for "Galderma", "Amorite" for "Amrize") and the RPC's
+        // literal match misses them — or worse, full-text matches the word
+        // inside unrelated meeting TRANSCRIPTS (daily standups that mention
+        // a client) and drowns the actual meeting. So we ALWAYS also fuzzy-
+        // match the query against recent meeting titles + attendees and
+        // surface those matches first.
+        const sixMonthsAgo = new Date(); sixMonthsAgo.setDate(sixMonthsAgo.getDate() - 180);
+        // p_until bounds the window to past meetings — without it the
+        // newest-first sort fills the limit with future calendar entries.
+        const { data: recent } = await mbDb.rpc("search_meetings", {
+          p_user_email: userEmail,
+          p_since: sixMonthsAgo.toISOString(),
+          p_until: new Date().toISOString(),
+          p_limit: 100,
+        });
+        const near = (recent || []).filter((r: any) =>
+          fuzzyMatches(options.query!, `${r.meeting_title || ""} ${r.attendees || ""}`)
+        );
+        // Merge: fuzzy title/attendee matches first (most likely what the
+        // user named), then exact full-text results, deduped by id.
+        const seen = new Set<string>();
+        const merged: any[] = [];
+        for (const r of [...near, ...(exact || [])]) {
+          const id = String(r.id);
+          if (seen.has(id)) continue;
+          seen.add(id);
+          merged.push(r);
+        }
+        const meetings = merged.slice(0, 20);
         let fuzzyNote: string | undefined;
-        if (!meetings || meetings.length === 0) {
-          const sixMonthsAgo = new Date(); sixMonthsAgo.setDate(sixMonthsAgo.getDate() - 180);
-          // p_until bounds the window to past meetings — without it the
-          // newest-first sort fills the limit with future calendar entries.
-          const { data: recent } = await mbDb.rpc("search_meetings", {
-            p_user_email: userEmail,
-            p_since: sixMonthsAgo.toISOString(),
-            p_until: new Date().toISOString(),
-            p_limit: 100,
-          });
-          const near = (recent || []).filter((r: any) =>
-            fuzzyMatches(options.query!, `${r.meeting_title || ""} ${r.attendees || ""}`)
-          );
-          if (near.length > 0) {
-            meetings = near.slice(0, 20);
-            fuzzyNote = `No exact matches for "${options.query}" — these are CLOSE matches (the name was probably transcribed with a different spelling). Confirm naturally with the user, e.g. "I found your meeting with <actual title> — that's the one, right?"`;
-            console.log(`[MeetingBrain] Fuzzy fallback for "${options.query}": ${near.length} close matches`);
+        if (near.length > 0) {
+          const nearIds = new Set(near.map((r: any) => String(r.id)));
+          const topIsFuzzy = meetings.length > 0 && nearIds.has(String(meetings[0].id));
+          if ((exact || []).length === 0) {
+            fuzzyNote = `No exact matches for "${options.query}" — these are CLOSE matches by title/attendees (the name was probably transcribed with a different spelling). Confirm naturally with the user, e.g. "I found your meeting with <actual title> — that's the one, right?"`;
+          } else if (topIsFuzzy) {
+            fuzzyNote = `The first ${near.length} result(s) matched the meeting TITLE or attendees approximately — these are most likely what the user named (possibly transcribed with a different spelling). Later results only mention the search words somewhere in their content.`;
           }
+          console.log(`[MeetingBrain] Search "${options.query}": ${near.length} fuzzy title matches merged with ${(exact || []).length} exact`);
         }
 
         // search_meetings has no time bounds — it matches FUTURE (scheduled)
