@@ -74,8 +74,56 @@ and narrates the result — fast voice up front, deep reasoning behind a tool.
 
 - VAD threshold/eagerness tuning; filler acknowledgments while tools run.
 - Brand voice clone (xAI Custom Voices, or self-hosted Miso One).
-- Hands-free wake ("Hey Engine") while the tab is open.
 - Multilingual (Grok voice supports 20+ languages).
+
+### Phase 2.5 — Wake Phrase Mode ("Hey Engine") — PLANNED
+
+Hands-free activation with privacy as the design center.
+
+**Three states:**
+
+| State | Mic | What leaves the device |
+|---|---|---|
+| Disarmed | off | nothing |
+| Armed | on, LOCAL only | **nothing** — audio feeds an on-device WASM wake-word model in a ~2s ring buffer that is continuously discarded |
+| Engaged | on, streaming | audio streams to xAI (existing VoiceDock session) |
+
+**Privacy guarantees (armed state):**
+- Wake detection runs entirely in-browser (WASM/ONNX) — no audio, no
+  transcripts, no events leave the machine until the wake phrase fires.
+- Pre-wake ring buffer is never uploaded — the session starts AFTER the
+  chime, from silence.
+- Always-visible indicator while armed (pulsing dot) + explicit opt-in
+  toggle; first-use consent modal stating exactly what is local vs uploaded.
+- Arming is per-tab and per-user (localStorage preference), auto-disarms
+  when the tab closes.
+
+**Wake engine options:**
+- openWakeWord / Outspoken-trained ONNX model via onnxruntime-web — free,
+  open weights, custom "Hey Engine" trained from synthetic samples. DEFAULT.
+- Picovoice Porcupine Web — most mature, ~10s custom keyword training,
+  but enterprise pricing (~$6K/yr). Upgrade path if ONNX accuracy disappoints.
+
+**Flow:** armed → wake phrase detected locally → chime + visual transition →
+existing VoiceDock session opens (bound to current or new private
+conversation) → conversation until ended → auto-rearm.
+
+**Ending the conversation (three layers):**
+1. `end_conversation` tool exposed to the voice model — it understands
+   closing intent semantically ("OK thanks", "that's all for now",
+   "goodbye") and calls the tool; client closes the session after the
+   model's sign-off.
+2. Client-side hard phrases on the user transcript ("stop listening",
+   "end conversation") — immediate cut, no model round-trip.
+3. Silence timeout (~45s with no user speech) → polite auto-end → rearm.
+
+**Edge cases:** false-wake guard (require model confidence + show "did you
+call me?" pill for 3s before streaming if confidence is marginal); tab
+backgrounding (AudioWorklet keeps running while mic is granted; PWA install
+recommended for reliability); multi-tab (BroadcastChannel lock so only one
+tab arms); mobile Safari deferred to a later phase.
+
+**Cost:** armed mode = zero cloud cost; engaged = existing ~$0.05/min.
 
 ### Phase 3 — Meeting participant
 
