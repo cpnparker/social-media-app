@@ -84,6 +84,8 @@ export function buildVoiceInstructions(ctx: {
   clientName?: string | null;
   clientId?: number | null;
   isTeamThread: boolean;
+  /** Human-readable current date/time, e.g. "Wednesday, 10 June 2026, 14:32" */
+  now: string;
 }): string {
   const lines: string[] = [];
 
@@ -94,6 +96,10 @@ export function buildVoiceInstructions(ctx: {
   lines.push(`
 # Language — CRITICAL
 ALWAYS speak English (British English). Never switch languages, even if the audio is briefly unclear, accented, or contains a foreign word — stay in English. Only switch if the user explicitly asks you to speak another language.`);
+
+  lines.push(`
+# Current date & time — CRITICAL
+Right now it is ${ctx.now} (Europe/Zurich). Use THIS for every date calculation: "today", "yesterday", "this week", "this month" all derive from it — e.g. query_engine date_from/date_to. Never guess or assume the date.`);
 
   lines.push(`
 # Voice style — this defines you

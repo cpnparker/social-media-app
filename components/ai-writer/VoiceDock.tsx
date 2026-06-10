@@ -96,8 +96,13 @@ export default function VoiceDock({
   const pausedRef = useRef(false);
   const statusRef = useRef<VoiceStatus>("connecting");
   const prePauseStatusRef = useRef<VoiceStatus>("listening");
-  const turnsRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
-  const savedCountRef = useRef(0);
+  // Transcript items keyed by the realtime API's item_id. xAI re-emits the
+  // CUMULATIVE transcription of the same utterance as it refines ("So" →
+  // "So can you tell me" → …), so turns must be upserted by id, never
+  // appended per event — appending is what spammed partials into the thread.
+  const itemsRef = useRef<{ id: string; role: "user" | "assistant"; content: string; saved: boolean }[]>([]);
+  const activeUserItemRef = useRef<string | null>(null);
+  const utteranceCounterRef = useRef(0);
   const sessionStartRef = useRef(0);
   const pendingToolsRef = useRef(0);
   const closingRef = useRef(false);
@@ -117,24 +122,56 @@ export default function VoiceDock({
     if (audioCtxRef.current) playCursorRef.current = audioCtxRef.current.currentTime;
   }, []);
 
+  /** Upsert a transcript item. User items also merge prefix-refinements in
+   *  case the API assigns a fresh id to a re-emission of the same utterance. */
+  const upsertItem = useCallback((id: string, role: "user" | "assistant", content: string) => {
+    const items = itemsRef.current;
+    let item = items.find((i) => i.id === id);
+    if (!item && role === "user") {
+      item = items.find(
+        (i) =>
+          i.role === "user" &&
+          !i.saved &&
+          (content.startsWith(i.content) || i.content.startsWith(content))
+      );
+    }
+    if (item) {
+      if (!item.saved) item.content = content;
+    } else {
+      items.push({ id, role, content, saved: false });
+    }
+  }, []);
+
   const persistTranscript = useCallback(
     async (final: boolean) => {
-      const unsaved = turnsRef.current.slice(savedCountRef.current);
+      // The user item still being refined is held back until the assistant
+      // responds (or the session ends) — persisting earlier is what created
+      // duplicate partial messages.
+      const pending = itemsRef.current.filter(
+        (i) =>
+          !i.saved &&
+          i.content.trim() &&
+          (final || i.role === "assistant" || i.id !== activeUserItemRef.current)
+      );
       const durationSeconds = final
         ? Math.round((Date.now() - sessionStartRef.current) / 1000)
         : undefined;
-      if (unsaved.length === 0 && !durationSeconds) return;
-      savedCountRef.current = turnsRef.current.length;
+      if (pending.length === 0 && !durationSeconds) return;
+      pending.forEach((i) => { i.saved = true; });
       try {
         await fetch("/api/ai/voice/transcript", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ conversationId, turns: unsaved, durationSeconds }),
+          body: JSON.stringify({
+            conversationId,
+            turns: pending.map(({ role, content }) => ({ role, content: content.trim() })),
+            durationSeconds,
+          }),
           keepalive: final,
         });
-        if (unsaved.length > 0) onTranscriptSaved?.();
+        if (pending.length > 0) onTranscriptSaved?.();
       } catch {
-        savedCountRef.current -= unsaved.length;
+        pending.forEach((i) => { i.saved = false; });
       }
     },
     [conversationId, onTranscriptSaved]
@@ -161,8 +198,9 @@ export default function VoiceDock({
     if (!open) return;
     closingRef.current = false;
     pausedRef.current = false;
-    turnsRef.current = [];
-    savedCountRef.current = 0;
+    itemsRef.current = [];
+    activeUserItemRef.current = null;
+    utteranceCounterRef.current = 0;
     sessionStartRef.current = Date.now();
     setCaption("");
     setElapsed(0);
@@ -311,6 +349,9 @@ export default function VoiceDock({
             case "input_audio_buffer.speech_started":
             case "conversation.interrupted": {
               if (pausedRef.current) break;
+              // New utterance starting — give id-less transcription events a
+              // fresh fallback key so utterances never merge into each other.
+              utteranceCounterRef.current += 1;
               flushPlayback();
               setCaption("");
               setStatusBoth("listening");
@@ -332,23 +373,24 @@ export default function VoiceDock({
             case "response.output_audio_transcript.done":
             case "response.audio_transcript.done": {
               if (msg.transcript) {
-                turnsRef.current.push({ role: "assistant", content: msg.transcript });
-                // Flush eagerly so the thread fills in near-live
-                if (turnsRef.current.length - savedCountRef.current >= 2) persistTranscript(false);
+                const id = msg.item_id || msg.response_id || `a-${itemsRef.current.length}`;
+                upsertItem(id, "assistant", msg.transcript);
+                // The assistant replied — the user's utterance is final now.
+                activeUserItemRef.current = null;
+                persistTranscript(false);
               }
               break;
             }
-            case "conversation.item.input_audio_transcription.updated": {
-              const t = msg.transcript ?? msg.delta ?? "";
-              if (t && !pausedRef.current) setCaption(String(t).slice(-160));
-              break;
-            }
+            case "conversation.item.input_audio_transcription.updated":
             case "conversation.item.input_audio_transcription.completed": {
-              const t = msg.transcript || "";
-              if (t.trim()) {
-                turnsRef.current.push({ role: "user", content: t.trim() });
-                if (turnsRef.current.length - savedCountRef.current >= 2) persistTranscript(false);
-              }
+              // xAI sends the CUMULATIVE transcript for the same utterance,
+              // possibly multiple times with corrections — upsert, never append.
+              const t = String(msg.transcript ?? msg.delta ?? "").trim();
+              if (!t) break;
+              const id = msg.item_id || `u-${utteranceCounterRef.current}`;
+              activeUserItemRef.current = id;
+              upsertItem(id, "user", t);
+              if (!pausedRef.current) setCaption(t.slice(-160));
               break;
             }
 

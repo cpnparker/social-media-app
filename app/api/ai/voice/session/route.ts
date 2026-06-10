@@ -106,6 +106,15 @@ export async function POST(req: NextRequest) {
       clientName,
       clientId,
       isTeamThread,
+      now: new Date().toLocaleString("en-GB", {
+        timeZone: "Europe/Zurich",
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
     });
 
     return NextResponse.json({
