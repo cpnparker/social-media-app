@@ -62,17 +62,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Resolve client name for the instructions (optional)
+    // Resolve client name for the instructions (optional) + the full roster
+    // (lets the model normalize phonetic transcriptions before searching)
     const clientId = customerId ? parseInt(String(customerId), 10) : conversation.id_client || null;
-    let clientName: string | null = null;
-    if (clientId) {
-      const { data: client } = await supabase
-        .from("app_clients")
-        .select("name_client")
-        .eq("id_client", clientId)
-        .maybeSingle();
-      clientName = client?.name_client || null;
-    }
+    const { data: allClients } = await supabase
+      .from("app_clients")
+      .select("id_client, name_client")
+      .limit(300);
+    const clientRoster = (allClients || [])
+      .map((c: any) => c.name_client)
+      .filter(Boolean) as string[];
+    const clientName = clientId
+      ? (allClients || []).find((c: any) => c.id_client === clientId)?.name_client || null
+      : null;
 
     const isTeamThread = conversation.type_visibility === "team";
 
@@ -105,6 +107,7 @@ export async function POST(req: NextRequest) {
       workspaceName: null,
       clientName,
       clientId,
+      clientRoster,
       isTeamThread,
       now: new Date().toLocaleString("en-GB", {
         timeZone: "Europe/Zurich",

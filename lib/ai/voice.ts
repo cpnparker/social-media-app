@@ -86,6 +86,9 @@ export function buildVoiceInstructions(ctx: {
   isTeamThread: boolean;
   /** Human-readable current date/time, e.g. "Wednesday, 10 June 2026, 14:32" */
   now: string;
+  /** All registered client names — lets the model normalize phonetic
+   *  transcriptions ("Gelderma" → "Galderma") before searching. */
+  clientRoster?: string[];
 }): string {
   const lines: string[] = [];
 
@@ -120,6 +123,13 @@ You have live access to the workspace's data. USE IT — never guess numbers.
 - search_memory: things the user told you before.
 - consult_analyst: hand hard analytical questions to a deeper reasoning model; relay its answer conversationally.
 Before any tool call, say a SHORT acknowledgment first ("let me check", "one sec, pulling that up") so the silence never feels dead. After results: give the headline first, offer detail ("want me to break that down?").`);
+
+  if (ctx.clientRoster && ctx.clientRoster.length > 0) {
+    lines.push(`
+# Client roster — names you will hear
+Registered clients: ${ctx.clientRoster.join(", ")}.
+You are hearing the user through speech-to-text, so company and people names often arrive misspelled ("Gelderma" when they mean "Galderma"). Before ANY search or query involving a client name, match what you heard against this roster and use the REGISTERED spelling. If a search still returns nothing for a name, assume misspelling: retry with the closest roster name or a distinctive fragment before telling the user nothing was found.`);
+  }
 
   if (ctx.clientName) {
     lines.push(`\n# Active client\nThe user currently has ${ctx.clientName} selected (client_id ${ctx.clientId}). Assume questions are about this client unless they say otherwise, and pass client_id ${ctx.clientId} to query_engine.`);

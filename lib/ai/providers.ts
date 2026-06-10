@@ -113,6 +113,56 @@ export function formatMeetingBrainResult(report: string, result: { data: any; co
   return `MeetingBrain ${report}: ${result.count} results\n${JSON.stringify(payload, null, 2)}${truncNote}${hintNote}`;
 }
 
+/* ─────────────── Fuzzy matching (voice transcription drift) ─────────────── */
+
+/** Classic Levenshtein distance — small inputs only (word vs word). */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i++) {
+    const curr = [i];
+    for (let j = 1; j <= n; j++) {
+      curr[j] = Math.min(
+        prev[j] + 1,
+        curr[j - 1] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+    prev = curr;
+  }
+  return prev[n];
+}
+
+/** Distance budget by word length: "Gelderma"→"Galderma" (len 8, dist 1) passes. */
+function fuzzyTolerance(len: number): number {
+  return len >= 9 ? 3 : len >= 6 ? 2 : len >= 4 ? 1 : 0;
+}
+
+const tokenize = (s: string): string[] =>
+  (s || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length >= 3);
+
+/**
+ * Does any meaningful word of `query` approximately match any token of `target`?
+ * Built for voice: spoken proper nouns arrive phonetically misspelled
+ * ("Gelderma" for "Galderma"), so exact/ilike search misses them.
+ */
+export function fuzzyMatches(query: string, target: string): boolean {
+  const qWords = tokenize(query).filter((w) => w.length >= 4);
+  if (qWords.length === 0) return false;
+  const tTokens = tokenize(target);
+  return qWords.some((q) =>
+    tTokens.some(
+      (t) =>
+        t.includes(q) ||
+        q.includes(t) ||
+        levenshtein(q, t) <= Math.min(fuzzyTolerance(q.length), fuzzyTolerance(t.length))
+    )
+  );
+}
+
 /* ─────────────── Model Registry ─────────────── */
 
 interface ModelInfo {
@@ -1253,20 +1303,37 @@ export async function lookupClientContext(
   clientName: string,
   workspaceId: string
 ): Promise<string> {
-  // 1. Fuzzy match client name
-  const { data: clients } = await supabase
+  // 1. Match client name — ilike first, then fuzzy (voice transcription
+  // misspells names: "Gelderma" → "Galderma", so substring match can miss).
+  let { data: clients } = await supabase
     .from("app_clients")
     .select("id_client, name_client, link_website, information_industry, information_description")
     .ilike("name_client", `%${clientName}%`)
     .limit(3);
 
+  let fuzzyMatched = false;
   if (!clients || clients.length === 0) {
-    return `No client found matching "${clientName}". Available clients can be queried with query_engine on the app_clients table.`;
+    const { data: allClients } = await supabase
+      .from("app_clients")
+      .select("id_client, name_client, link_website, information_industry, information_description")
+      .limit(500);
+    const near = (allClients || []).filter((c: any) => fuzzyMatches(clientName, c.name_client || ""));
+    if (near.length > 0) {
+      clients = near;
+      fuzzyMatched = true;
+    }
+  }
+
+  if (!clients || clients.length === 0) {
+    return `No client found matching "${clientName}" (including approximate spellings). Available clients can be queried with query_engine on the app_clients table.`;
   }
 
   const client = clients[0]; // Best match
   const parts: string[] = [];
   parts.push(`# Client: ${client.name_client}`);
+  if (fuzzyMatched) {
+    parts.push(`(Matched "${clientName}" approximately to registered client "${client.name_client}" — the name was probably transcribed with a different spelling. Use "${client.name_client}" from now on.)`);
+  }
   if (client.link_website) parts.push(`Website: ${client.link_website}`);
   if (client.information_industry) parts.push(`Industry: ${client.information_industry}`);
   if (client.information_description) parts.push(`Description: ${client.information_description}`);
@@ -2915,12 +2982,35 @@ export async function queryMeetingBrain(
         if (!options.query) return { data: [], count: 0, error: "query required" };
         const twoWeeksAgo = new Date(); twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
 
-        const { data: meetings, error } = await mbDb.rpc("search_meetings", {
+        const { data: exact, error } = await mbDb.rpc("search_meetings", {
           p_user_email: userEmail,
           p_query: options.query,
           p_limit: 20,
         });
         if (error) return { data: [], count: 0, error: error.message };
+
+        // Fuzzy fallback: voice transcription misspells proper nouns
+        // ("Gelderma" for "Galderma") and the RPC's literal match finds
+        // nothing. Pull the recent meeting list and match approximately
+        // against titles + attendees.
+        let meetings = exact;
+        let fuzzyNote: string | undefined;
+        if (!meetings || meetings.length === 0) {
+          const sixMonthsAgo = new Date(); sixMonthsAgo.setDate(sixMonthsAgo.getDate() - 180);
+          const { data: recent } = await mbDb.rpc("search_meetings", {
+            p_user_email: userEmail,
+            p_since: sixMonthsAgo.toISOString(),
+            p_limit: 100,
+          });
+          const near = (recent || []).filter((r: any) =>
+            fuzzyMatches(options.query!, `${r.meeting_title || ""} ${r.attendees || ""}`)
+          );
+          if (near.length > 0) {
+            meetings = near.slice(0, 20);
+            fuzzyNote = `No exact matches for "${options.query}" — these are CLOSE matches (the name was probably transcribed with a different spelling). Confirm naturally with the user, e.g. "I found your meeting with <actual title> — that's the one, right?"`;
+            console.log(`[MeetingBrain] Fuzzy fallback for "${options.query}": ${near.length} close matches`);
+          }
+        }
 
         // search_meetings has no time bounds — it matches FUTURE (scheduled)
         // meetings too. Label each row so the model never mistakes an
@@ -2941,9 +3031,10 @@ export async function queryMeetingBrain(
             has_transcript: isUpcoming ? false : r.has_transcript,
           };
         });
-        const hint = data.some((d: any) => d.status !== "past")
+        const upcomingNote = data.some((d: any) => d.status !== "past")
           ? `NOTE: Some results are UPCOMING meetings that have not happened yet — they have no transcript or notes. When the user asks about a meeting they HAD (past tense), only consider results with status "past".`
           : undefined;
+        const hint = [fuzzyNote, upcomingNote].filter(Boolean).join("\n") || undefined;
         console.log(`[MeetingBrain] Search "${options.query}": ${data.length} matches (${data.filter((d: any) => d.status !== "past").length} upcoming)`);
         return { data, count: data.length, hint };
       }
