@@ -22,15 +22,47 @@ interface WakeDetectorOptions {
   onStateChange?: (state: WakeDetectorState, detail?: string) => void;
   /** 0..1 — model download progress during "loading" */
   onProgress?: (pct: number) => void;
+  /** Every locally-transcribed utterance (for the UI "heard:" readout — stays on-device) */
+  onHeard?: (text: string) => void;
 }
 
-// Accept common mistranscriptions of the phrase. Requires the bigram —
-// "engine" alone in conversation must NOT trigger.
-const WAKE_RE = /\b(hey|hay|hei|hi|a)[\s,.!]*(engine|enjin|engin|njin)\b/i;
+// Fast path: common direct transcriptions of the phrase.
+const WAKE_RE = /\b(hey|hay|hei|hi|he|a)[\s,.!]*(engine|enjin|engin|njin)\b/i;
+
+/** Tiny Levenshtein for wake-word fuzzy matching (short words only). */
+function lev(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i++) {
+    const curr = [i];
+    for (let j = 1; j <= n; j++) {
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = curr;
+  }
+  return prev[n];
+}
+
+/** Wake match: regex fast-path, then fuzzy — whisper-tiny mangles the phrase
+ *  in creative ways ("Hey, Engin.", "hey and gin"). Requires BOTH a greeting
+ *  token and an engine-like token, so "engine" alone never triggers. */
+export function isWakePhrase(text: string): boolean {
+  if (WAKE_RE.test(text)) return true;
+  const toks = text.toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/).filter(Boolean);
+  const engineIdx = toks.findIndex((t) => t.length >= 5 && t[0] === "e" && lev(t, "engine") <= 2);
+  if (engineIdx <= 0) return false;
+  // Greeting must be IMMEDIATELY before the engine token — "we need a new
+  // engine for the pipeline" must not wake.
+  const before = toks[engineIdx - 1];
+  const GREETINGS = ["hey", "hay", "hei", "hi", "he", "a", "hate", "they"];
+  return GREETINGS.includes(before) || lev(before, "hey") <= 1;
+}
 
 const SAMPLE_RATE = 16000; // Whisper-native
-const SPEECH_RMS = 0.015; // energy gate
-const MIN_SPEECH_MS = 400; // ignore coughs/clicks
+const SPEECH_RMS = 0.008; // energy gate (AGC mics can run quiet)
+const MIN_SPEECH_MS = 300; // ignore coughs/clicks
 const MAX_CHUNK_MS = 3000; // wake phrase fits comfortably
 const TRAIL_SILENCE_MS = 450; // end-of-utterance
 
@@ -96,6 +128,12 @@ export class WakeDetector {
           }
         }
         if (!this.asr) throw lastErr;
+        // Warm up WASM + session so the FIRST real utterance isn't dropped
+        // behind a multi-second cold inference (audio is gated while
+        // transcribing). ~2s once, then inference is fast.
+        try {
+          await this.asr(new Float32Array(8000));
+        } catch { /* warmup is best-effort */ }
       }
       if (this.stopped) return;
 
@@ -185,11 +223,16 @@ export class WakeDetector {
       // No language option — whisper-tiny.en is English-only and rejects it.
       const out = await this.asr(chunk);
       const text: string = (out?.text || "").trim();
-      if (text && WAKE_RE.test(text)) {
+      // Local-only diagnostics: what the detector heard never leaves the device.
+      if (text) {
+        console.debug(`[WakeDetector] heard: "${text}"`);
+        this.opts.onHeard?.(text);
+      }
+      if (text && isWakePhrase(text)) {
         this.opts.onWake();
       }
-    } catch {
-      // Local-only failure; keep listening
+    } catch (err: any) {
+      console.debug("[WakeDetector] transcription failed:", err?.message || err);
     } finally {
       this.transcribing = false;
     }

@@ -43,6 +43,8 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
   const [progress, setProgress] = useState(0);
   const [consentOpen, setConsentOpen] = useState(false);
   const [justWoke, setJustWoke] = useState(false);
+  const [heard, setHeard] = useState("");
+  const heardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const detectorRef = useRef<WakeDetector | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
   const tabIdRef = useRef(`${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -85,6 +87,13 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
           if (s === "error" && detail) toast.error(detail);
         },
         onProgress: setProgress,
+        // Show what the local model heard — builds trust ("it IS listening")
+        // and makes mis-transcriptions visible. Stays on-device.
+        onHeard: (text) => {
+          setHeard(text.slice(0, 60));
+          if (heardTimerRef.current) clearTimeout(heardTimerRef.current);
+          heardTimerRef.current = setTimeout(() => setHeard(""), 4000);
+        },
       });
     }
     return detectorRef.current;
@@ -165,7 +174,13 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
   return (
     <>
       {/* Floating arm control — bottom-right, out of the chat's way */}
-      <div className="fixed bottom-5 right-5 z-30">
+      <div className="fixed bottom-5 right-5 z-30 flex flex-col items-end gap-1.5">
+        {/* Transient "heard:" readout — local-only diagnostics */}
+        {listening && heard && (
+          <div className="rounded-full bg-background/90 backdrop-blur border px-3 py-1 text-[11px] text-muted-foreground shadow-sm max-w-[260px] truncate">
+            heard: &ldquo;{heard}&rdquo;
+          </div>
+        )}
         <button
           onClick={handleToggle}
           title={
