@@ -68,18 +68,34 @@ export class WakeDetector {
           "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0/dist/transformers.min.js";
         const mod: any = await import(/* webpackIgnore: true */ TRANSFORMERS_CDN);
         const { pipeline } = mod;
-        this.asr = await pipeline(
-          "automatic-speech-recognition",
-          "onnx-community/whisper-tiny.en",
-          {
-            dtype: "q8",
-            progress_callback: (p: any) => {
-              if (p?.status === "progress" && p?.total) {
-                this.opts.onProgress?.(Math.min(1, p.loaded / p.total));
-              }
-            },
-          } as any
-        );
+        const progress_callback = (p: any) => {
+          if (p?.status === "progress" && p?.total) {
+            this.opts.onProgress?.(Math.min(1, p.loaded / p.total));
+          }
+        };
+        // fp32 encoder + q4 decoder is the configuration the official
+        // transformers.js whisper examples use — the q8 merged decoder
+        // trips ORT's QDQ loader ("Missing required scale ..."). Fall back
+        // to full fp32 if the quantized decoder still fails to load.
+        const dtypeConfigs: any[] = [
+          { encoder_model: "fp32", decoder_model_merged: "q4" },
+          "fp32",
+        ];
+        let lastErr: unknown;
+        for (const dtype of dtypeConfigs) {
+          try {
+            this.asr = await pipeline(
+              "automatic-speech-recognition",
+              "onnx-community/whisper-tiny.en",
+              { dtype, progress_callback } as any
+            );
+            break;
+          } catch (err) {
+            lastErr = err;
+            this.asr = null;
+          }
+        }
+        if (!this.asr) throw lastErr;
       }
       if (this.stopped) return;
 
@@ -166,7 +182,8 @@ export class WakeDetector {
   private async transcribe(chunk: Float32Array) {
     this.transcribing = true;
     try {
-      const out = await this.asr(chunk, { language: "en" });
+      // No language option — whisper-tiny.en is English-only and rejects it.
+      const out = await this.asr(chunk);
       const text: string = (out?.text || "").trim();
       if (text && WAKE_RE.test(text)) {
         this.opts.onWake();
