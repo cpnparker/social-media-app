@@ -2922,19 +2922,30 @@ export async function queryMeetingBrain(
         });
         if (error) return { data: [], count: 0, error: error.message };
 
+        // search_meetings has no time bounds — it matches FUTURE (scheduled)
+        // meetings too. Label each row so the model never mistakes an
+        // upcoming meeting for one that already happened (and tried to read
+        // its nonexistent notes).
+        const now = new Date();
         const data = (meetings || []).map((r: any) => {
-          const isRecent = new Date(r.meeting_date) >= twoWeeksAgo;
+          const meetingDate = new Date(r.meeting_date);
+          const isRecent = meetingDate >= twoWeeksAgo;
+          const isUpcoming = meetingDate > now;
           return {
             id: r.id,
             title: r.meeting_title,
             date: r.meeting_date?.slice(0, 10),
+            status: isUpcoming ? "UPCOMING — scheduled, has not happened yet, no notes exist" : "past",
             attendees: r.attendees,
-            summary: isRecent ? r.summary?.slice(0, 500) : r.summary?.slice(0, 200),
-            has_transcript: r.has_transcript,
+            summary: isUpcoming ? undefined : isRecent ? r.summary?.slice(0, 500) : r.summary?.slice(0, 200),
+            has_transcript: isUpcoming ? false : r.has_transcript,
           };
         });
-        console.log(`[MeetingBrain] Search "${options.query}": ${data.length} matches`);
-        return { data, count: data.length };
+        const hint = data.some((d: any) => d.status !== "past")
+          ? `NOTE: Some results are UPCOMING meetings that have not happened yet — they have no transcript or notes. When the user asks about a meeting they HAD (past tense), only consider results with status "past".`
+          : undefined;
+        console.log(`[MeetingBrain] Search "${options.query}": ${data.length} matches (${data.filter((d: any) => d.status !== "past").length} upcoming)`);
+        return { data, count: data.length, hint };
       }
       case "meeting_details": {
         if (!options.meetingId) return { data: [], count: 0, error: "meeting_id required — get it from search_meetings first" };
