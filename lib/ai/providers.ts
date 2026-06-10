@@ -87,7 +87,7 @@ export function formatToolResult(result: { data: any; count: number; total?: num
 }
 
 /** Format MeetingBrain results with truncation */
-export function formatMeetingBrainResult(report: string, result: { data: any; count: number; error?: string; notice?: string }): string {
+export function formatMeetingBrainResult(report: string, result: { data: any; count: number; error?: string; notice?: string; hint?: string }): string {
   if (result.notice) return result.notice;
   if (result.error) {
     // Graceful degradation: don't let a backend hiccup read like "you have no
@@ -101,9 +101,16 @@ export function formatMeetingBrainResult(report: string, result: { data: any; co
       `- Suggest they try again in a few minutes, and offer to help with anything that doesn't need MeetingBrain in the meantime.`,
     ].join("\n");
   }
-  const rows = Array.isArray(result.data) ? result.data : [];
+  // meeting_details returns a single OBJECT, not an array. The old
+  // Array-or-empty coercion silently serialized it as "[]", so the model
+  // never saw the meeting content at all and told users "no transcript".
+  const isArray = Array.isArray(result.data);
+  const rows = isArray ? result.data : [];
   const sample = rows.slice(0, MAX_TOOL_RESULT_ROWS);
-  return `MeetingBrain ${report}: ${result.count} results\n${JSON.stringify(sample, null, 2)}${rows.length > MAX_TOOL_RESULT_ROWS ? `\n(showing first ${MAX_TOOL_RESULT_ROWS} of ${rows.length})` : ""}`;
+  const payload = isArray ? sample : result.data;
+  const truncNote = isArray && rows.length > MAX_TOOL_RESULT_ROWS ? `\n(showing first ${MAX_TOOL_RESULT_ROWS} of ${rows.length})` : "";
+  const hintNote = result.hint ? `\n\n${result.hint}` : "";
+  return `MeetingBrain ${report}: ${result.count} results\n${JSON.stringify(payload, null, 2)}${truncNote}${hintNote}`;
 }
 
 /* ─────────────── Model Registry ─────────────── */
@@ -2800,7 +2807,7 @@ export async function queryMeetingBrain(
   report: string,
   userEmail: string,
   options: { query?: string; status?: string; days?: number; workspaceId?: string; meetingId?: string; visibility?: "private" | "team" } = {}
-): Promise<{ data: any; count: number; error?: string; notice?: string }> {
+): Promise<{ data: any; count: number; error?: string; notice?: string; hint?: string }> {
   // PRIVACY GATE: personal reports return the caller's own meetings/tasks
   // (enforced by attendee email in the RPCs). In a TEAM conversation the tool
   // result becomes visible to every workspace member, so blocking here is the
@@ -2942,23 +2949,37 @@ export async function queryMeetingBrain(
         }
 
         const d = Array.isArray(details) ? details[0] : details;
+        // Transcripts can be 25k+ chars for an hour-long recording. Claude
+        // has plenty of context budget — give it the whole thing up to a
+        // generous cap (~25k tokens). Truncating at 8k cut off mid-sentence
+        // and made the AI miss most of the meeting.
+        const transcript = d.transcript?.slice(0, 100000) || null;
+        // Many meetings have only a stub transcript (or none) while the real
+        // record lives in summary/insights/coaching_notes. Surface everything
+        // and label the transcript state so the model answers from the notes
+        // instead of telling the user "no transcript available".
+        const hasNotes = !!(d.summary || d.insights || d.coaching_notes || d.external_summary || d.next_steps);
+        const transcriptStatus = !transcript ? "none" : transcript.length < 1000 ? "stub_only" : "full";
         const data = {
           title: d.meeting_title,
           date: d.meeting_date?.slice(0, 16),
           attendees: d.attendees,
           summary: d.summary,
-          // Transcripts can be 25k+ chars for an hour-long recording. Claude
-          // has plenty of context budget — give it the whole thing up to a
-          // generous cap (~25k tokens). Truncating at 8k cut off mid-sentence
-          // and made the AI miss most of the meeting.
-          transcript: d.transcript?.slice(0, 100000) || null,
+          transcript,
+          transcript_status: transcriptStatus,
           key_topics: d.key_topics,
           next_steps: d.next_steps,
           insights: d.insights,
+          coaching_notes: d.coaching_notes,
+          external_summary: d.external_summary,
           tasks: d.tasks,
         };
-        console.log(`[MeetingBrain] Details for ${options.meetingId}: ${d.meeting_title}`);
-        return { data, count: 1 };
+        const hint =
+          transcriptStatus !== "full" && hasNotes
+            ? `IMPORTANT: This meeting has ${transcriptStatus === "none" ? "no transcript" : "only a stub transcript"}, but the summary/insights/coaching_notes/external_summary fields above ARE the meeting notes — they are the full record for this meeting. Answer the user's question from them. Do NOT tell the user the meeting has no notes or no record.`
+            : undefined;
+        console.log(`[MeetingBrain] Details for ${options.meetingId}: ${d.meeting_title} (transcript=${transcriptStatus})`);
+        return { data, count: 1, hint };
       }
       case "client_meetings": {
         // Live query against the meetingbrain schema (same direct-connector
