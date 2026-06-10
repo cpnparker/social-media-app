@@ -130,6 +130,7 @@ function EngineAIContent() {
     Attachment[] | undefined
   >();
   const [searchQuery, setSearchQuery] = useState("");
+  const [deepSearchResults, setDeepSearchResults] = useState<AIConversation[]>([]);
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -604,6 +605,29 @@ function EngineAIContent() {
     fetchConversations();
   };
 
+  // Deep search — backend searches titles, summaries AND message content
+  // (debounced; only for queries of 3+ chars)
+  useEffect(() => {
+    if (!workspaceId || searchQuery.trim().length < 3) {
+      setDeepSearchResults([]);
+      return;
+    }
+    const q = searchQuery.trim();
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `/api/ai/conversations?workspaceId=${workspaceId}&search=${encodeURIComponent(q)}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        setDeepSearchResults(data.conversations || []);
+      } catch {
+        // Deep search is best-effort; title filtering still works
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchQuery, workspaceId]);
+
   // Time formatting
   const timeAgo = (dateStr: string) => {
     const diff = Date.now() - new Date(dateStr).getTime();
@@ -625,10 +649,22 @@ function EngineAIContent() {
       const q = searchQuery.toLowerCase();
       const matchesTitle = c.title.toLowerCase().includes(q);
       const matchesClient = c.customerName?.toLowerCase().includes(q);
-      if (!matchesTitle && !matchesClient) return false;
+      const matchesContent = deepSearchResults.some((d) => d.id === c.id);
+      if (!matchesTitle && !matchesClient && !matchesContent) return false;
     }
     return true;
   });
+
+  // Deep-search results for conversations not in the local list (e.g. other clients)
+  const deepExtra = searchQuery
+    ? deepSearchResults.filter(
+        (c) =>
+          (tab === "private" ? c.visibility === "private" : tab === "team" ? c.visibility === "team" : true) &&
+          !filtered.some((f) => f.id === c.id) &&
+          !conversations.some((lc) => lc.id === c.id)
+      )
+    : [];
+  const displayed = searchQuery ? [...filtered, ...deepExtra] : filtered;
 
   // How many conversations to show per client group before "more"
   const GROUP_PREVIEW_LIMIT = 5;
@@ -1063,7 +1099,7 @@ function EngineAIContent() {
               <div className="flex justify-center py-8">
                 <Loader2 className="h-4 w-4 animate-spin text-white/40" />
               </div>
-            ) : filtered.length === 0 ? (
+            ) : displayed.length === 0 ? (
               <div className="text-center py-8 px-3">
                 <p className="text-[13px] text-white/50">
                   {searchQuery
@@ -1197,8 +1233,8 @@ function EngineAIContent() {
                     </div>
                   ))
                 ) : (
-                  /* ─── Flat list (search results) ─── */
-                  filtered.map((conv) => (
+                  /* ─── Flat list (search results, incl. deep content matches) ─── */
+                  displayed.map((conv) => (
                     <button
                       key={conv.id}
                       onClick={() => handleSelectThread(conv)}
@@ -1548,6 +1584,12 @@ function EngineAIContent() {
               </h1>
               <p className="text-sm lg:text-base text-muted-foreground max-w-md text-center lg:mb-0">
                 Brainstorm ideas, draft content, refine messaging, and more.
+              </p>
+              <p
+                className="hidden lg:block text-[11px] text-muted-foreground/60 mt-2 text-center"
+                title="EngineAI can query live data from these sources when you ask — toggles below control what's included automatically."
+              >
+                Connected: Engine data (contracts, content, social, ideas) · Client meetings · Your meetings &amp; tasks · Slack · Web search · Memories
               </p>
             </div>
 
@@ -2003,6 +2045,30 @@ function EngineAIContent() {
 
                 </div>
 
+                {/* Starter prompts — shown until the user starts typing */}
+                {!homeInput.trim() && (
+                  <div className="flex items-center justify-center gap-2 mt-3 flex-wrap">
+                    {[
+                      { label: "What's in the content pipeline?", prompt: "What's in the content pipeline right now? Give me a summary by client and status.", Icon: Newspaper },
+                      { label: "Latest client meetings", prompt: "Summarise our most recent client meetings — key topics and next steps.", Icon: Users },
+                      { label: "My tasks", prompt: "What tasks am I assigned right now, across the Engine and my meetings?", Icon: ListChecks },
+                      { label: "Draft a LinkedIn post", prompt: "Draft a LinkedIn post for one of our clients. Ask me which client and topic first.", Icon: Sparkles },
+                    ].map((s) => (
+                      <button
+                        key={s.label}
+                        onClick={() => {
+                          setHomeInput(s.prompt);
+                          textareaRef.current?.focus();
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border bg-background text-xs text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+                      >
+                        <s.Icon className="h-3 w-3" />
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 <p className="text-[11px] text-muted-foreground text-center mt-2.5 hidden sm:block">
                   Press Enter to send, Shift+Enter for new line
                 </p>
@@ -2053,12 +2119,8 @@ function EngineAIContent() {
                         ...prev,
                         webSearch: turningOn ? "on" : "off",
                       }));
-                      // Web search works with Claude and Grok — switch if using an unsupported model
-                      const webModels = ["claude-sonnet-4-6", "grok-4-1-fast", "grok-3-mini"];
-                      if (turningOn && !webModels.includes(selectedModel)) {
-                        setSelectedModel("grok-4-1-fast");
-                        toast.info("Switched to Grok 4 Fast — web search requires Grok or Claude");
-                      }
+                      // All selectable models support web search: Claude natively,
+                      // Grok via LiveSearch, GPT/Gemini via the web_search tool.
                     }}
                     title={`Web Search: ${contextConfig.webSearch === "on" ? "On — AI can search the web" : "Off"} — click to toggle`}
                     className={cn(
