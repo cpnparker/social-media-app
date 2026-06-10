@@ -53,6 +53,11 @@ export interface AIProviderConfig {
    *  ai_messages incognito behaviour. The Blob upload still happens so the asset is
    *  displayed inline this turn — it just never gets indexed/listed afterwards. */
   incognito?: boolean;
+  /** Conversation visibility. In "team" conversations, personal-scope tool reports
+   *  (personal MeetingBrain meetings/tasks, all Slack reports) are blocked so one
+   *  user's private data can't land in a thread every workspace member can read.
+   *  client_meetings stays available — that report is workspace-shared by design. */
+  conversationVisibility?: "private" | "team";
 }
 
 /** Default temperature for user-facing chat. Lower than model defaults (~0.7-1.0)
@@ -82,8 +87,20 @@ function formatToolResult(result: { data: any; count: number; total?: number; su
 }
 
 /** Format MeetingBrain results with truncation */
-function formatMeetingBrainResult(report: string, result: { data: any; count: number; error?: string }): string {
-  if (result.error) return `MeetingBrain query failed: ${result.error}`;
+function formatMeetingBrainResult(report: string, result: { data: any; count: number; error?: string; notice?: string }): string {
+  if (result.notice) return result.notice;
+  if (result.error) {
+    // Graceful degradation: don't let a backend hiccup read like "you have no
+    // meetings". Tell the model exactly how to phrase the failure.
+    return [
+      `MeetingBrain query failed (report=${report}): ${result.error}`,
+      ``,
+      `INSTRUCTIONS FOR YOUR RESPONSE:`,
+      `- Tell the user MeetingBrain is temporarily unreachable, so you can't check their meetings/tasks right now.`,
+      `- Do NOT say they have no meetings or no tasks — you don't know that; the lookup failed.`,
+      `- Suggest they try again in a few minutes, and offer to help with anything that doesn't need MeetingBrain in the meantime.`,
+    ].join("\n");
+  }
   const rows = Array.isArray(result.data) ? result.data : [];
   const sample = rows.slice(0, MAX_TOOL_RESULT_ROWS);
   return `MeetingBrain ${report}: ${result.count} results\n${JSON.stringify(sample, null, 2)}${rows.length > MAX_TOOL_RESULT_ROWS ? `\n(showing first ${MAX_TOOL_RESULT_ROWS} of ${rows.length})` : ""}`;
@@ -1103,9 +1120,9 @@ const QUERY_ENGINE_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
       properties: {
         report: {
           type: "string",
-          enum: ["commissioned_units", "completed_units", "pipeline_summary", "assigned_tasks", "social_performance"],
+          enum: ["commissioned_units", "completed_units", "pipeline_summary", "contracts_summary", "assigned_tasks", "social_performance"],
           description:
-            "Run a pre-built report. commissioned_units = CUs from tasks created in period, completed_units = CUs completed in period, pipeline_summary = overview by status, assigned_tasks = current tasks assigned to a user, social_performance = social publishing data with engagement metrics (deduplicates by promo to give accurate post counts). MANDATORY: use social_performance for ANY question about how many posts were published, post performance, best posts, or engagement. Use the 'network' parameter to filter by platform.",
+            "Run a pre-built report. commissioned_units = CUs from tasks created in period, completed_units = CUs completed in period, pipeline_summary = overview by status, contracts_summary = contracts with CU utilization/remaining/days-left (use for ANY question about contracts; pass client_id to scope to one client, include_inactive=true to include ended contracts), assigned_tasks = current tasks assigned to a user, social_performance = social publishing data with engagement metrics (deduplicates by promo to give accurate post counts). MANDATORY: use social_performance for ANY question about how many posts were published, post performance, best posts, or engagement. Use the 'network' parameter to filter by platform.",
         },
         group_by: {
           type: "string",
@@ -1132,6 +1149,10 @@ const QUERY_ENGINE_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           type: "string",
           enum: ["linkedin", "facebook", "twitter", "instagram"],
           description: "For social_performance report: filter by social network. Values are lowercase.",
+        },
+        include_inactive: {
+          type: "boolean",
+          description: "For contracts_summary report: include ended/inactive contracts. Default false (active only).",
         },
         table: {
           type: "string",
@@ -1490,6 +1511,61 @@ async function reportPipelineSummary(
 }
 
 /**
+ * Contracts summary report — all contracts (optionally one client) with CU
+ * utilization. Pre-built so "what contracts do we have with X?" doesn't rely
+ * on the model composing a raw app_contracts table query.
+ */
+async function reportContractsSummary(
+  clientId?: number,
+  workspaceClientIds?: number[],
+  activeOnly: boolean = true
+): Promise<{ data: any[]; total: number; error?: string; summary?: any }> {
+  let query = supabase
+    .from("app_contracts")
+    .select("id_contract, name_contract, id_client, name_client, flag_active, units_contract, units_total_completed, units_content_completed, units_social_completed, date_start, date_end");
+
+  if (workspaceClientIds?.length) query = query.in("id_client", workspaceClientIds);
+  if (clientId) query = query.eq("id_client", clientId);
+  if (activeOnly) query = query.eq("flag_active", 1);
+
+  const { data: rows, error } = await query.order("date_end", { ascending: true }).limit(200);
+  if (error) return { data: [], total: 0, error: error.message };
+
+  const today = new Date();
+  const data = (rows || []).map((c: any) => {
+    const total = c.units_contract || 0;
+    const used = c.units_total_completed || 0;
+    const end = c.date_end ? new Date(c.date_end) : null;
+    return {
+      id_contract: c.id_contract,
+      contract: c.name_contract,
+      client: c.name_client,
+      id_client: c.id_client,
+      active: c.flag_active === 1,
+      cu_total: total,
+      cu_used: used,
+      cu_remaining: Math.max(0, total - used),
+      utilization_pct: total > 0 ? Math.round((used / total) * 100) : null,
+      cu_content_completed: c.units_content_completed || 0,
+      cu_social_completed: c.units_social_completed || 0,
+      starts: c.date_start?.slice(0, 10) || null,
+      ends: c.date_end?.slice(0, 10) || null,
+      days_remaining: end ? Math.ceil((end.getTime() - today.getTime()) / 86_400_000) : null,
+    };
+  });
+
+  const summary = {
+    contracts: data.length,
+    total_cu: data.reduce((s, c) => s + c.cu_total, 0),
+    used_cu: data.reduce((s, c) => s + c.cu_used, 0),
+    remaining_cu: data.reduce((s, c) => s + c.cu_remaining, 0),
+    ending_within_30_days: data.filter((c) => c.days_remaining !== null && c.days_remaining >= 0 && c.days_remaining <= 30).length,
+  };
+
+  return { data, total: data.length, summary };
+}
+
+/**
  * Assigned tasks report — current incomplete tasks for a user.
  * Queries content tasks (the current/first incomplete task per content item)
  * and social tasks, excluding deleted/spiked content.
@@ -1767,6 +1843,10 @@ async function queryEngine(
       case "pipeline_summary": {
         const result = await reportPipelineSummary(clientId);
         return { data: result.data, count: 1, error: result.error };
+      }
+      case "contracts_summary": {
+        const result = await reportContractsSummary(clientId, workspaceClientIds, args?.include_inactive !== true);
+        return { data: result.data, count: result.data.length, total: result.total, error: result.error, summary: result.summary };
       }
       case "assigned_tasks": {
         const result = await reportAssignedTasks(assigneeName, clientId);
@@ -2598,7 +2678,9 @@ function parseBullets(text: string): Array<{ text: string; options?: any }> {
 
 /* ─────────────── Web Search Tool (for xAI) ─────────────── */
 
-/** OpenAI-compatible tool definition for web_search (xAI only — Anthropic/Gemini have native web search) */
+/** OpenAI-compatible tool definition for web_search. Executed via executeWebSearch()
+ *  (xAI LiveSearch under the hood) for GPT and Gemini, which have no native search here.
+ *  Anthropic uses its native web_search_20250305 tool; xAI uses native search_mode. */
 const WEB_SEARCH_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   type: "function",
   function: {
@@ -2717,8 +2799,27 @@ function getMeetingBrainDb() {
 async function queryMeetingBrain(
   report: string,
   userEmail: string,
-  options: { query?: string; status?: string; days?: number; workspaceId?: string; meetingId?: string } = {}
-): Promise<{ data: any; count: number; error?: string }> {
+  options: { query?: string; status?: string; days?: number; workspaceId?: string; meetingId?: string; visibility?: "private" | "team" } = {}
+): Promise<{ data: any; count: number; error?: string; notice?: string }> {
+  // PRIVACY GATE: personal reports return the caller's own meetings/tasks
+  // (enforced by attendee email in the RPCs). In a TEAM conversation the tool
+  // result becomes visible to every workspace member, so blocking here is the
+  // only thing stopping one user's personal transcript landing in a shared
+  // thread. client_meetings is exempt — that report is workspace-shared by
+  // design and gated on registered client domains.
+  if (options.visibility === "team" && report !== "client_meetings") {
+    console.log(`[MeetingBrain] Blocked personal report "${report}" in team conversation`);
+    return {
+      data: [], count: 0,
+      notice: [
+        `This report ("${report}") returns the user's PERSONAL meeting/task data, but this is a TEAM conversation visible to all workspace members — so it was not run, to protect their privacy.`,
+        ``,
+        `Tell the user (briefly, friendly):`,
+        `- Personal meetings and tasks can only be discussed in a private conversation — ask them to switch to or start a private chat for that.`,
+        `- If they're after a CLIENT meeting, you can use report: "client_meetings" right here — client meetings are shared with the whole workspace.`,
+      ].join("\n"),
+    };
+  }
   const mbDb = getMeetingBrainDb();
   try {
     switch (report) {
@@ -3044,8 +3145,23 @@ async function querySlack(
     thread_ts?: string;
     days?: number;
     limit?: number;
+    visibility?: "private" | "team";
   } = {}
-): Promise<{ data: any; count: number; error?: string; needsReauth?: boolean }> {
+): Promise<{ data: any; count: number; error?: string; needsReauth?: boolean; notice?: string }> {
+  // PRIVACY GATE: Slack results are scoped to the requesting user's own OAuth
+  // token (their DMs, their channels). In a TEAM conversation the tool result
+  // is visible to every workspace member — block all Slack reports there.
+  if (options.visibility === "team") {
+    console.log(`[Slack] Blocked report "${report}" in team conversation`);
+    return {
+      data: [], count: 0,
+      notice: [
+        `Slack queries return the user's PERSONAL Slack data (their DMs, mentions, channels), but this is a TEAM conversation visible to all workspace members — so the query was not run, to protect their privacy.`,
+        ``,
+        `Tell the user (briefly, friendly) that Slack lookups only work in private conversations — ask them to switch to or start a private chat to search their Slack.`,
+      ].join("\n"),
+    };
+  }
   const baseUrl = (
     process.env.MEETINGBRAIN_BASE_URL ||
     "https://www.meetingbrain.ai"
@@ -3090,8 +3206,9 @@ async function querySlack(
 /** Format Slack results for AI tool_result (with truncation) */
 function formatSlackResult(
   report: string,
-  result: { data: any; count: number; error?: string; needsReauth?: boolean }
+  result: { data: any; count: number; error?: string; needsReauth?: boolean; notice?: string }
 ): string {
+  if (result.notice) return result.notice;
   if (result.error) {
     // Special-case re-auth: wrap in an explicit directive so the AI surfaces
     // the actionable re-connect link to the user instead of paraphrasing it
@@ -4333,7 +4450,7 @@ async function streamAnthropic(
         try {
           const result = await queryMeetingBrain(
             tool.input.report, config.userEmail!,
-            { query: tool.input.query, status: tool.input.status, days: tool.input.days, workspaceId: config.workspaceId, meetingId: tool.input.meeting_id }
+            { query: tool.input.query, status: tool.input.status, days: tool.input.days, workspaceId: config.workspaceId, meetingId: tool.input.meeting_id, visibility: config.conversationVisibility }
           );
           toolResults.push({
             type: "tool_result", tool_use_id: tool.id,
@@ -4353,6 +4470,7 @@ async function streamAnthropic(
               thread_ts: tool.input.thread_ts,
               days: tool.input.days,
               limit: tool.input.limit,
+              visibility: config.conversationVisibility,
             }
           );
           toolResults.push({
@@ -4825,7 +4943,7 @@ async function streamXAIChatCompletions(
           const input = JSON.parse(tc.function.arguments);
           const result = await queryMeetingBrain(
             input.report, config.userEmail!,
-            { query: input.query, status: input.status, days: input.days, workspaceId: config.workspaceId, meetingId: input.meeting_id }
+            { query: input.query, status: input.status, days: input.days, workspaceId: config.workspaceId, meetingId: input.meeting_id, visibility: config.conversationVisibility }
           );
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
@@ -4846,6 +4964,7 @@ async function streamXAIChatCompletions(
               thread_ts: input.thread_ts,
               days: input.days,
               limit: input.limit,
+              visibility: config.conversationVisibility,
             }
           );
           openaiMessages.push({
@@ -5026,6 +5145,11 @@ async function streamGemini(
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
+  }
+  // Gemini has no native web search here — expose the callable web_search tool
+  // (executed via executeWebSearch → xAI LiveSearch).
+  if (config.webSearch) {
+    tools.push(WEB_SEARCH_OPENAI_TOOL);
   }
 
   let fullText = "";
@@ -5289,6 +5413,24 @@ async function streamGemini(
         } catch (err: any) {
           geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Client context lookup failed: ${err.message}` } as any);
         }
+      } else if (tc.function.name === "web_search") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          console.log(`[WebSearch/Gemini] Starting search: "${input.query?.slice(0, 80)}"`);
+          const searchResults = await executeWebSearch(input.query, config.systemPrompt, apiModel);
+          geminiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Web search results for "${input.query}":\n\n${searchResults}\n\nIMPORTANT: Only cite facts and URLs that appear in these search results. Do NOT fabricate sources.`,
+          } as any);
+        } catch (err: any) {
+          console.error("[WebSearch/Gemini] Failed:", err.message);
+          geminiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Web search failed: ${err.message}. Answer based on your existing knowledge instead, and say clearly that you could not verify with a live search.`,
+          } as any);
+        }
       } else if (tc.function.name === "search_memory") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -5316,7 +5458,7 @@ async function streamGemini(
           const input = JSON.parse(tc.function.arguments);
           const result = await queryMeetingBrain(
             input.report, config.userEmail!,
-            { query: input.query, status: input.status, days: input.days, workspaceId: config.workspaceId, meetingId: input.meeting_id }
+            { query: input.query, status: input.status, days: input.days, workspaceId: config.workspaceId, meetingId: input.meeting_id, visibility: config.conversationVisibility }
           );
           geminiMessages.push({
             role: "tool", tool_call_id: tc.id,
@@ -5337,6 +5479,7 @@ async function streamGemini(
               thread_ts: input.thread_ts,
               days: input.days,
               limit: input.limit,
+              visibility: config.conversationVisibility,
             }
           );
           geminiMessages.push({
@@ -5432,6 +5575,11 @@ async function streamOpenAI(
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
+  }
+  // GPT has no native web search here — expose the callable web_search tool
+  // (executed via executeWebSearch → xAI LiveSearch).
+  if (config.webSearch) {
+    tools.push(WEB_SEARCH_OPENAI_TOOL);
   }
 
   let fullText = "";
@@ -5696,6 +5844,24 @@ async function streamOpenAI(
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Client context lookup failed: ${err.message}` } as any);
         }
+      } else if (tc.function.name === "web_search") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          console.log(`[WebSearch/OpenAI] Starting search: "${input.query?.slice(0, 80)}"`);
+          const searchResults = await executeWebSearch(input.query, config.systemPrompt, apiModel);
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Web search results for "${input.query}":\n\n${searchResults}\n\nIMPORTANT: Only cite facts and URLs that appear in these search results. Do NOT fabricate sources.`,
+          } as any);
+        } catch (err: any) {
+          console.error("[WebSearch/OpenAI] Failed:", err.message);
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Web search failed: ${err.message}. Answer based on your existing knowledge instead, and say clearly that you could not verify with a live search.`,
+          } as any);
+        }
       } else if (tc.function.name === "search_memory") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -5723,7 +5889,7 @@ async function streamOpenAI(
           const input = JSON.parse(tc.function.arguments);
           const result = await queryMeetingBrain(
             input.report, config.userEmail!,
-            { query: input.query, status: input.status, days: input.days, workspaceId: config.workspaceId, meetingId: input.meeting_id }
+            { query: input.query, status: input.status, days: input.days, workspaceId: config.workspaceId, meetingId: input.meeting_id, visibility: config.conversationVisibility }
           );
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
@@ -5744,6 +5910,7 @@ async function streamOpenAI(
               thread_ts: input.thread_ts,
               days: input.days,
               limit: input.limit,
+              visibility: config.conversationVisibility,
             }
           );
           openaiMessages.push({

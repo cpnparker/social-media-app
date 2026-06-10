@@ -189,6 +189,11 @@ export function buildSystemPrompt(ctx: {
   designMode?: boolean;
   /** When set, activates Studio mode — Design Mode v2's shot-aware persona with the full shot CRUD tool layer. */
   studioMode?: boolean;
+  /** "team" = thread visible to all workspace members. Personal-scope tools
+   *  (personal MeetingBrain reports, Slack) are server-blocked in team threads;
+   *  this flag lets the prompt tell the model up front instead of it finding
+   *  out via a refused tool call. */
+  conversationVisibility?: "private" | "team";
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
 
@@ -431,6 +436,14 @@ Same as Design Mode: direct, opinionated peer. Lead with the creative choice. Re
     prompt += `\n${ctx.meetingBrainContext}`;
     prompt += `\n\n_The data above is a cached snapshot that may be stale or incomplete. Treat it as a hint only. For any question about meetings — especially "now", "today", or a specific person — you MUST call query_meetingbrain to get fresh data. Do not answer "no meeting found" based on this cache alone._`;
     prompt += `\n\n**PRIVACY:** This is your private data. Never use it to answer questions about other people's schedules. If asked about a colleague's meetings, say you can only access the user's own data. For client meeting questions, use the client_meetings report (query_meetingbrain) which contains verified, workspace-shared client meetings only.`;
+  }
+
+  if (ctx.conversationVisibility === "team") {
+    prompt += `\n\n## Team Conversation — Privacy Rules`;
+    prompt += `\nThis conversation is visible to ALL workspace members. Personal-scope data tools are restricted here:`;
+    prompt += `\n- query_meetingbrain: ONLY the "client_meetings" report works (client meetings are workspace-shared). Personal reports (my_tasks, meetings, upcoming_meetings, search_meetings, meeting_details) are blocked — if the user asks for personal meetings or tasks, tell them to use a private conversation.`;
+    prompt += `\n- query_slack is blocked entirely — Slack data is personal. Point the user to a private conversation.`;
+    prompt += `\nDo not attempt blocked reports; explain the privacy rule briefly and helpfully instead.`;
   }
 
   // ── Selected roles (always-on background expertise) ──

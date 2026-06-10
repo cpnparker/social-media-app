@@ -1065,6 +1065,7 @@ export async function POST(
       userEngineId: userId,
       designMode: conversation.type_conversation_mode === "design",
       studioMode: conversation.type_conversation_mode === "design" && !!designSessionId,
+      conversationVisibility: isTeamThread ? "team" : "private",
     });
 
     // Append query router hints to system prompt as required tool calls
@@ -1134,7 +1135,10 @@ export async function POST(
     // the "user navigated away mid-stream and lost their response" bug.
     const aiStream = createStreamingResponse(
       messages,
-      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: isTeamThread ? undefined : (session.user?.email || undefined), selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId },
+      // userEmail is passed for team threads too: the MeetingBrain/Slack tools
+      // gate personal reports server-side via conversationVisibility, while the
+      // workspace-shared client_meetings report stays available to everyone.
+      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId },
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
