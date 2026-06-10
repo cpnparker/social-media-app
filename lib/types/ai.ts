@@ -88,4 +88,6 @@ export interface AIMessageRow {
   createdByName?: string;
   createdAt: string;
   status?: "pending" | "complete" | "failed";
+  /** User feedback: 1 = helpful, -1 = not helpful, null = unrated */
+  rating?: 1 | -1 | null;
 }

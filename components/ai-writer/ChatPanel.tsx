@@ -5,6 +5,7 @@ import {
   Lock,
   Users,
   MoreHorizontal,
+  Download,
   Trash2,
   Pencil,
   Globe,
@@ -545,6 +546,50 @@ export default function ChatPanel({
     setMessages((prev) => prev.slice(0, messageIndex));
     // Send the edited content as a new message
     handleSend(newContent);
+  };
+
+  // Export the conversation as a Markdown file (client-side download)
+  const handleExportMarkdown = () => {
+    if (!conversation || messages.length === 0) return;
+    const lines: string[] = [
+      `# ${conversation.title || "EngineAI Conversation"}`,
+      ``,
+      `_Exported ${new Date().toLocaleString()} · ${messages.length} messages_`,
+      ``,
+    ];
+    for (const m of messages) {
+      const who = m.role === "user" ? (m.createdByName || "User") : `EngineAI${m.model ? ` (${getModelLabel(m.model)})` : ""}`;
+      lines.push(`---`, ``, `**${who}** · ${new Date(m.createdAt).toLocaleString()}`, ``, m.content, ``);
+      if (m.attachments?.length) {
+        lines.push(`_Attachments: ${m.attachments.map((a) => a.name).join(", ")}_`, ``);
+      }
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${(conversation.title || "conversation").replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-").toLowerCase() || "conversation"}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Rate an assistant message (thumbs up/down) — optimistic with rollback
+  const handleRateMessage = async (messageId: string, rating: 1 | -1 | null) => {
+    const previous = messages.find((m) => m.id === messageId)?.rating ?? null;
+    setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, rating } : m)));
+    try {
+      const res = await fetch(`/api/ai/messages/${messageId}/feedback`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rating }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch {
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, rating: previous } : m)));
+      toast.error("Failed to save feedback");
+    }
   };
 
   // Change visibility (private ↔ team)
@@ -1124,6 +1169,10 @@ export default function ChatPanel({
                 </>
               )}
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={handleExportMarkdown} disabled={messages.length === 0}>
+              <Download className="h-3.5 w-3.5 mr-2" />
+              Export as Markdown
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               disabled={!canManage}
@@ -1258,6 +1307,12 @@ export default function ChatPanel({
                   onEdit={
                     msg.role === "user" && !isStreaming && !isFactChecking
                       ? (newContent: string) => handleEditMessage(idx, newContent)
+                      : undefined
+                  }
+                  rating={msg.rating ?? null}
+                  onRate={
+                    msg.role === "assistant" && !msg.id.startsWith("temp-") && !msg.id.startsWith("factcheck-") && !msg.id.startsWith("assistant-")
+                      ? (rating) => handleRateMessage(msg.id, rating)
                       : undefined
                   }
                 />
