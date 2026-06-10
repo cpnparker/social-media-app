@@ -219,7 +219,12 @@ export default function VoiceOverlay({
                   prefix_padding_ms: 333,
                 },
                 audio: {
-                  input: { format: { type: "audio/pcm", rate: ctx.sampleRate } },
+                  input: {
+                    format: { type: "audio/pcm", rate: ctx.sampleRate },
+                    // Pin transcription to English — without this the model
+                    // auto-detects and can lock onto the wrong language.
+                    transcription: { language_hint: "en" },
+                  },
                   output: { format: { type: "audio/pcm", rate: ctx.sampleRate } },
                 },
               },
