@@ -1,35 +1,34 @@
 "use client";
 
 /**
- * EngineAI Voice — full-screen immersive voice conversation.
+ * EngineAI Voice — compact docked voice session, integrated into the chat.
  *
- * Browser ↔ xAI Grok Voice Agent API (OpenAI Realtime-spec) over WebSocket
- * with an ephemeral token. Audio is PCM16 @ 24kHz both directions.
+ * Replaces the original full-screen overlay: the conversation thread stays
+ * visible and fills with the live transcript while you talk. Renders as a
+ * floating pill just above the chat input.
  *
- * Naturalness engineering:
- * - Mic uses browser echo cancellation + noise suppression so the model never
- *   hears itself — the mic stays HOT the entire session (full duplex).
- * - server_vad turn detection: the model decides when you've finished a thought.
- * - Hard barge-in: the moment your speech is detected, all locally queued
- *   playback is flushed (<50ms) — it stops talking like a person would.
- * - Tool calls run server-side; the model speaks an acknowledgment first so
- *   silence never feels dead.
+ * Controls: Pause/Resume (stops mic + playback, session stays alive), End.
+ *
+ * Transport: browser ↔ xAI Grok Voice Agent API (OpenAI Realtime-spec) over
+ * WebSocket with an ephemeral token. PCM16 @ 24kHz both directions.
+ * Naturalness: browser echo cancellation (full-duplex mic), server_vad smart
+ * turn detection, hard barge-in (queued playback flushed when you speak).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Mic, MicOff, X, Database, Brain, ListChecks, MessageSquare, Sparkles, Loader2 } from "lucide-react";
+import { Pause, Play, X, Database, Brain, ListChecks, MessageSquare, Sparkles, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
-type VoiceStatus = "connecting" | "listening" | "thinking" | "speaking" | "error";
+type VoiceStatus = "connecting" | "listening" | "thinking" | "speaking" | "paused" | "error";
 
-interface VoiceOverlayProps {
+interface VoiceDockProps {
   open: boolean;
   onClose: () => void;
   conversationId: string;
   workspaceId: string;
   customerId?: string | null;
-  /** Called after transcript turns are persisted so the chat thread can refresh */
+  /** Called whenever transcript turns were persisted — lets the thread refresh live */
   onTranscriptSaved?: () => void;
 }
 
@@ -40,6 +39,15 @@ const TOOL_LABELS: Record<string, { label: string; Icon: typeof Database }> = {
   query_meetingbrain: { label: "Checking meetings", Icon: ListChecks },
   query_slack: { label: "Checking Slack", Icon: MessageSquare },
   consult_analyst: { label: "Consulting the analyst", Icon: Sparkles },
+};
+
+const STATUS_TEXT: Record<VoiceStatus, string> = {
+  connecting: "Connecting…",
+  listening: "Listening",
+  thinking: "Thinking",
+  speaking: "Speaking",
+  paused: "Paused",
+  error: "Connection issue",
 };
 
 function base64ToInt16(b64: string): Int16Array {
@@ -64,18 +72,16 @@ function float32ToBase64Pcm16(f32: Float32Array): string {
   return btoa(bin);
 }
 
-export default function VoiceOverlay({
+export default function VoiceDock({
   open,
   onClose,
   conversationId,
   workspaceId,
   customerId,
   onTranscriptSaved,
-}: VoiceOverlayProps) {
+}: VoiceDockProps) {
   const [status, setStatus] = useState<VoiceStatus>("connecting");
-  const [muted, setMuted] = useState(false);
   const [caption, setCaption] = useState("");
-  const [userCaption, setUserCaption] = useState("");
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [level, setLevel] = useState(0);
   const [elapsed, setElapsed] = useState(0);
@@ -85,11 +91,11 @@ export default function VoiceOverlay({
   const micStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
   const playCursorRef = useRef(0);
   const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const mutedRef = useRef(false);
+  const pausedRef = useRef(false);
   const statusRef = useRef<VoiceStatus>("connecting");
+  const prePauseStatusRef = useRef<VoiceStatus>("listening");
   const turnsRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
   const savedCountRef = useRef(0);
   const sessionStartRef = useRef(0);
@@ -102,7 +108,7 @@ export default function VoiceOverlay({
     setStatus(s);
   };
 
-  /** Hard barge-in: kill all queued/playing assistant audio immediately. */
+  /** Hard barge-in / pause: kill all queued assistant audio immediately. */
   const flushPlayback = useCallback(() => {
     activeSourcesRef.current.forEach((src) => {
       try { src.stop(); } catch { /* already stopped */ }
@@ -114,7 +120,6 @@ export default function VoiceOverlay({
   const persistTranscript = useCallback(
     async (final: boolean) => {
       const unsaved = turnsRef.current.slice(savedCountRef.current);
-      if (unsaved.length === 0 && !final) return;
       const durationSeconds = final
         ? Math.round((Date.now() - sessionStartRef.current) / 1000)
         : undefined;
@@ -129,7 +134,6 @@ export default function VoiceOverlay({
         });
         if (unsaved.length > 0) onTranscriptSaved?.();
       } catch {
-        // best-effort; turns stay in turnsRef for the next flush
         savedCountRef.current -= unsaved.length;
       }
     },
@@ -156,21 +160,18 @@ export default function VoiceOverlay({
   useEffect(() => {
     if (!open) return;
     closingRef.current = false;
+    pausedRef.current = false;
     turnsRef.current = [];
     savedCountRef.current = 0;
     sessionStartRef.current = Date.now();
     setCaption("");
-    setUserCaption("");
     setElapsed(0);
-    setMuted(false);
-    mutedRef.current = false;
     setStatusBoth("connecting");
 
     let cancelled = false;
 
     (async () => {
       try {
-        // 1. Mint session config + ephemeral token
         const res = await fetch("/api/ai/voice/session", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -183,7 +184,7 @@ export default function VoiceOverlay({
         const cfg = await res.json();
         if (cancelled) return;
 
-        // 2. Mic with echo cancellation — the key to full duplex
+        // Mic with echo cancellation — the key to full duplex
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
@@ -199,7 +200,6 @@ export default function VoiceOverlay({
         audioCtxRef.current = ctx;
         playCursorRef.current = ctx.currentTime;
 
-        // 3. WebSocket with ephemeral token as subprotocol
         const ws = new WebSocket(cfg.wsUrl, [`xai-client-secret.${cfg.token}`]);
         wsRef.current = ws;
 
@@ -231,17 +231,15 @@ export default function VoiceOverlay({
             })
           );
 
-          // 4. Mic capture → PCM16 base64 frames
           const source = ctx.createMediaStreamSource(stream);
           micSourceRef.current = source;
           const analyser = ctx.createAnalyser();
           analyser.fftSize = 512;
-          analyserRef.current = analyser;
           source.connect(analyser);
           const processor = ctx.createScriptProcessor(2048, 1, 1);
           processorRef.current = processor;
           processor.onaudioprocess = (e) => {
-            if (mutedRef.current || ws.readyState !== WebSocket.OPEN) return;
+            if (pausedRef.current || ws.readyState !== WebSocket.OPEN) return;
             const f32 = e.inputBuffer.getChannelData(0);
             ws.send(
               JSON.stringify({
@@ -251,11 +249,10 @@ export default function VoiceOverlay({
             );
           };
           source.connect(processor);
-          processor.connect(ctx.destination); // required for onaudioprocess to fire; outputs silence
+          processor.connect(ctx.destination); // required for onaudioprocess; outputs silence
 
           setStatusBoth("listening");
 
-          // Orb level animation
           const data = new Uint8Array(analyser.frequencyBinCount);
           const tick = () => {
             if (closingRef.current) return;
@@ -277,9 +274,10 @@ export default function VoiceOverlay({
           try { msg = JSON.parse(evt.data); } catch { return; }
 
           switch (msg.type) {
-            // ── assistant audio out ──
             case "response.output_audio.delta":
             case "response.audio.delta": {
+              // Drop assistant audio entirely while paused
+              if (pausedRef.current) break;
               const audioCtx = audioCtxRef.current;
               if (!audioCtx || !msg.delta) break;
               const i16 = base64ToInt16(msg.delta);
@@ -296,7 +294,6 @@ export default function VoiceOverlay({
               activeSourcesRef.current.add(src);
               src.onended = () => {
                 activeSourcesRef.current.delete(src);
-                // Queue drained and no new audio → back to listening
                 if (
                   activeSourcesRef.current.size === 0 &&
                   statusRef.current === "speaking" &&
@@ -305,13 +302,15 @@ export default function VoiceOverlay({
                   setStatusBoth("listening");
                 }
               };
-              if (statusRef.current !== "speaking") setStatusBoth("speaking");
+              if (statusRef.current !== "speaking" && statusRef.current !== "paused") {
+                setStatusBoth("speaking");
+              }
               break;
             }
 
-            // ── BARGE-IN: user started talking ──
             case "input_audio_buffer.speech_started":
             case "conversation.interrupted": {
+              if (pausedRef.current) break;
               flushPlayback();
               setCaption("");
               setStatusBoth("listening");
@@ -323,36 +322,36 @@ export default function VoiceOverlay({
               break;
             }
 
-            // ── live captions ──
             case "response.output_audio_transcript.delta":
             case "response.audio_transcript.delta": {
-              if (msg.delta) setCaption((prev) => (prev + msg.delta).slice(-280));
+              if (msg.delta && !pausedRef.current) {
+                setCaption((prev) => (prev + msg.delta).slice(-160));
+              }
               break;
             }
             case "response.output_audio_transcript.done":
             case "response.audio_transcript.done": {
               if (msg.transcript) {
                 turnsRef.current.push({ role: "assistant", content: msg.transcript });
-                if (turnsRef.current.length - savedCountRef.current >= 4) persistTranscript(false);
+                // Flush eagerly so the thread fills in near-live
+                if (turnsRef.current.length - savedCountRef.current >= 2) persistTranscript(false);
               }
               break;
             }
             case "conversation.item.input_audio_transcription.updated": {
-              // xAI cumulative transcript with corrections
               const t = msg.transcript ?? msg.delta ?? "";
-              if (t) setUserCaption(String(t).slice(-200));
+              if (t && !pausedRef.current) setCaption(String(t).slice(-160));
               break;
             }
             case "conversation.item.input_audio_transcription.completed": {
               const t = msg.transcript || "";
               if (t.trim()) {
                 turnsRef.current.push({ role: "user", content: t.trim() });
-                setUserCaption("");
+                if (turnsRef.current.length - savedCountRef.current >= 2) persistTranscript(false);
               }
               break;
             }
 
-            // ── tool calls ──
             case "response.function_call_arguments.done": {
               const { name, call_id } = msg;
               pendingToolsRef.current += 1;
@@ -388,7 +387,12 @@ export default function VoiceOverlay({
             }
 
             case "response.done": {
-              if (activeSourcesRef.current.size === 0 && pendingToolsRef.current === 0 && statusRef.current !== "listening") {
+              if (
+                activeSourcesRef.current.size === 0 &&
+                pendingToolsRef.current === 0 &&
+                statusRef.current !== "listening" &&
+                statusRef.current !== "paused"
+              ) {
                 setStatusBoth("listening");
               }
               break;
@@ -396,10 +400,8 @@ export default function VoiceOverlay({
 
             case "error": {
               console.error("[Voice] Server error:", msg.error);
-              const detail = msg.error?.message || "Voice session error";
-              // Non-fatal errors (e.g. truncation race) shouldn't kill the call
               if (msg.error?.type === "invalid_request_error") break;
-              toast.error(detail);
+              toast.error(msg.error?.message || "Voice session error");
               break;
             }
           }
@@ -413,7 +415,6 @@ export default function VoiceOverlay({
         };
         ws.onclose = () => {
           if (!closingRef.current && statusRef.current !== "error") {
-            // Session ended server-side (token/idle limits) — close gracefully
             teardown();
             onClose();
           }
@@ -441,122 +442,107 @@ export default function VoiceOverlay({
     onClose();
   };
 
-  const toggleMute = () => {
-    mutedRef.current = !mutedRef.current;
-    setMuted(mutedRef.current);
+  const togglePause = () => {
+    if (statusRef.current === "connecting" || statusRef.current === "error") return;
+    if (pausedRef.current) {
+      // Resume — back to listening; the session stayed alive throughout
+      pausedRef.current = false;
+      setStatusBoth(prePauseStatusRef.current === "paused" ? "listening" : "listening");
+    } else {
+      prePauseStatusRef.current = statusRef.current;
+      pausedRef.current = true;
+      flushPlayback();
+      setCaption("");
+      setStatusBoth("paused");
+      // Persist whatever we have so the thread is current while paused
+      persistTranscript(false);
+    }
   };
 
   if (!open) return null;
 
   const tool = activeTool ? TOOL_LABELS[activeTool] : null;
-  const orbScale = 1 + (status === "listening" ? level * 0.35 : status === "speaking" ? 0.15 + level * 0.1 : 0);
+  const paused = status === "paused";
+  const orbScale =
+    1 + (status === "listening" ? level * 0.5 : status === "speaking" ? 0.2 + level * 0.15 : 0);
 
   return (
-    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-between bg-[#0c0f17]/[0.97] backdrop-blur-xl text-white">
-      {/* Top bar */}
-      <div className="w-full flex items-center justify-between px-6 pt-6">
-        <div className="flex items-center gap-2 text-white/50 text-sm">
-          <span className={cn("h-2 w-2 rounded-full", status === "error" ? "bg-red-500" : "bg-emerald-400 animate-pulse")} />
-          {status === "connecting" && "Connecting…"}
-          {status === "listening" && "Listening"}
-          {status === "thinking" && "Thinking"}
-          {status === "speaking" && "Speaking"}
-          {status === "error" && "Connection issue"}
-          <span className="text-white/30 ml-2">
-            {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
-          </span>
-        </div>
-        <button
-          onClick={handleEnd}
-          className="h-9 w-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
-          aria-label="End voice session"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-
-      {/* Orb */}
-      <div className="flex flex-col items-center gap-8">
-        <div className="relative h-44 w-44 flex items-center justify-center">
-          {/* Halo */}
+    <div className="fixed bottom-24 sm:bottom-28 left-1/2 -translate-x-1/2 z-40 max-w-[94vw]">
+      <div className="flex items-center gap-3 rounded-full bg-[#11141d] text-white border border-white/10 shadow-2xl pl-3 pr-2 py-2">
+        {/* Orb */}
+        <div className="relative h-8 w-8 shrink-0 flex items-center justify-center">
           <div
             className={cn(
-              "absolute inset-0 rounded-full blur-2xl transition-colors duration-500",
-              status === "speaking" && "bg-violet-500/40",
-              status === "listening" && "bg-emerald-500/30",
-              status === "thinking" && "bg-blue-500/30 animate-pulse",
+              "absolute inset-0 rounded-full blur-md transition-colors duration-300",
+              status === "speaking" && "bg-violet-500/50",
+              status === "listening" && "bg-emerald-500/40",
+              status === "thinking" && "bg-blue-500/40 animate-pulse",
               status === "connecting" && "bg-white/10 animate-pulse",
-              status === "error" && "bg-red-500/30"
+              paused && "bg-amber-500/40",
+              status === "error" && "bg-red-500/40"
             )}
-            style={{ transform: `scale(${orbScale * 1.15})` }}
+            style={{ transform: `scale(${orbScale * 1.2})` }}
           />
-          {/* Core */}
           <div
             className={cn(
-              "relative h-32 w-32 rounded-full transition-all duration-150 ease-out",
-              "bg-gradient-to-br shadow-2xl",
+              "relative h-6 w-6 rounded-full bg-gradient-to-br transition-all duration-150 ease-out",
               status === "speaking" && "from-violet-400 to-fuchsia-600",
               status === "listening" && "from-emerald-300 to-teal-600",
               status === "thinking" && "from-blue-300 to-indigo-600",
               status === "connecting" && "from-slate-400 to-slate-700",
+              paused && "from-amber-300 to-orange-600",
               status === "error" && "from-red-400 to-rose-700"
             )}
             style={{ transform: `scale(${orbScale})` }}
           >
             {status === "connecting" && (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <Loader2 className="h-8 w-8 animate-spin text-white/80" />
-              </div>
+              <Loader2 className="h-6 w-6 animate-spin text-white/80 p-1" />
             )}
           </div>
         </div>
 
-        {/* Tool activity chip */}
-        <div className="h-8">
-          {tool && (
-            <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/10 text-sm text-white/80">
-              <tool.Icon className="h-3.5 w-3.5 animate-pulse" />
-              {tool.label}…
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Captions + controls */}
-      <div className="w-full flex flex-col items-center gap-6 pb-10 px-6">
-        <div className="min-h-[3.5rem] max-w-xl text-center">
-          {userCaption && (
-            <p className="text-sm text-emerald-300/80 mb-1">{userCaption}</p>
-          )}
-          {caption && (
-            <p className="text-base text-white/85 leading-relaxed">{caption}</p>
-          )}
-          {!caption && !userCaption && status === "listening" && (
-            <p className="text-sm text-white/30">Just talk — interrupt me any time.</p>
-          )}
-        </div>
-
-        <div className="flex items-center gap-4">
-          <button
-            onClick={toggleMute}
-            className={cn(
-              "h-14 w-14 rounded-full flex items-center justify-center transition-colors",
-              muted ? "bg-amber-500/90 hover:bg-amber-500" : "bg-white/10 hover:bg-white/20"
+        {/* Status / caption / tool */}
+        <div className="min-w-0 max-w-[44vw] sm:max-w-xs">
+          <div className="flex items-center gap-2 text-[11px] text-white/50 leading-tight">
+            <span>{STATUS_TEXT[status]}</span>
+            <span className="text-white/30">
+              {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+            </span>
+            {tool && (
+              <span className="flex items-center gap-1 text-white/60">
+                <tool.Icon className="h-3 w-3 animate-pulse" />
+                {tool.label}…
+              </span>
             )}
-            aria-label={muted ? "Unmute microphone" : "Mute microphone"}
-            title={muted ? "Unmute" : "Mute"}
-          >
-            {muted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
-          </button>
-          <button
-            onClick={handleEnd}
-            className="h-14 px-7 rounded-full bg-red-500/90 hover:bg-red-500 flex items-center gap-2 font-medium transition-colors"
-            aria-label="End conversation"
-          >
-            <X className="h-5 w-5" />
-            End
-          </button>
+          </div>
+          <p className="text-[13px] text-white/85 truncate leading-tight">
+            {paused
+              ? "Paused — resume when you're ready"
+              : caption || (status === "listening" ? "Just talk — interrupt me any time" : " ")}
+          </p>
         </div>
+
+        {/* Controls */}
+        <button
+          onClick={togglePause}
+          disabled={status === "connecting" || status === "error"}
+          className={cn(
+            "h-9 w-9 shrink-0 rounded-full flex items-center justify-center transition-colors disabled:opacity-40",
+            paused ? "bg-emerald-500/90 hover:bg-emerald-500" : "bg-white/10 hover:bg-white/20"
+          )}
+          aria-label={paused ? "Resume conversation" : "Pause conversation"}
+          title={paused ? "Resume" : "Pause"}
+        >
+          {paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+        </button>
+        <button
+          onClick={handleEnd}
+          className="h-9 w-9 shrink-0 rounded-full bg-red-500/80 hover:bg-red-500 flex items-center justify-center transition-colors"
+          aria-label="End conversation"
+          title="End"
+        >
+          <X className="h-4 w-4" />
+        </button>
       </div>
     </div>
   );

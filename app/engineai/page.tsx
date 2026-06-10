@@ -83,7 +83,7 @@ import {
 } from "@/components/ui/dialog";
 import { AI_MODELS, DEFAULT_MODEL, getModelLabel } from "@/lib/ai/models";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
-import VoiceOverlay from "@/components/ai-writer/VoiceOverlay";
+import VoiceDock from "@/components/ai-writer/VoiceDock";
 import MemoryManager from "@/components/ai-writer/MemoryManager";
 import AdminDialog from "@/components/ai-writer/AdminDialog";
 import PersonaliseDialog from "@/components/ai-writer/PersonaliseDialog";
@@ -134,7 +134,7 @@ function EngineAIContent() {
   const [searchQuery, setSearchQuery] = useState("");
   const [deepSearchResults, setDeepSearchResults] = useState<AIConversation[]>([]);
   const [voiceOpen, setVoiceOpen] = useState(false);
-  const [voiceSessionN, setVoiceSessionN] = useState(0);
+  const [voiceTranscriptN, setVoiceTranscriptN] = useState(0);
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -1537,7 +1537,8 @@ function EngineAIContent() {
           /* ─── Chat view ─── */
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
             <ChatPanel
-              key={`${selectedId}-v${voiceSessionN}`}
+              key={selectedId}
+              refreshSignal={voiceTranscriptN}
               conversationId={selectedId}
               onConversationDeleted={handleConversationDeleted}
               onConversationUpdated={handleConversationUpdated}
@@ -2394,18 +2395,19 @@ function EngineAIContent() {
         open={clientContextOpen}
         onClose={() => setClientContextOpen(false)}
       />
-      {/* Immersive voice conversation */}
+      {/* Docked voice conversation — thread stays visible and fills live */}
       {workspaceId && selectedId && (
-        <VoiceOverlay
+        <VoiceDock
           open={voiceOpen}
           onClose={() => {
             setVoiceOpen(false);
-            // Remount ChatPanel so the saved voice transcript appears
-            setVoiceSessionN((n) => n + 1);
+            // Catch the final transcript flush
+            setVoiceTranscriptN((n) => n + 1);
           }}
           conversationId={selectedId}
           workspaceId={workspaceId}
           customerId={customerId}
+          onTranscriptSaved={() => setVoiceTranscriptN((n) => n + 1)}
         />
       )}
     </>

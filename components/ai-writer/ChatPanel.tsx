@@ -91,6 +91,9 @@ interface ChatPanelProps {
   onCustomerChange?: (customerId: string | null) => void;
   isAdmin?: boolean;
   headerExtra?: React.ReactNode;
+  /** Increment to quietly refetch messages (no loading spinner) — used by
+   *  voice mode to surface transcript turns in the thread live. */
+  refreshSignal?: number;
 }
 
 type ContextConfig = { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch: string; memory: string; meetingBrain: string; imageGeneration: string };
@@ -111,6 +114,7 @@ export default function ChatPanel({
   onCustomerChange,
   isAdmin,
   headerExtra,
+  refreshSignal,
 }: ChatPanelProps) {
   const [conversation, setConversation] = useState<AIConversation | null>(null);
   const [messages, setMessages] = useState<AIMessageRow[]>([]);
@@ -179,6 +183,22 @@ export default function ChatPanel({
   useEffect(() => {
     fetchConversation();
   }, [fetchConversation]);
+
+  // Quiet refresh (no spinner) — voice mode bumps refreshSignal after saving
+  // transcript turns so they appear in the thread while the session runs.
+  useEffect(() => {
+    if (!refreshSignal) return;
+    (async () => {
+      try {
+        const res = await fetch(`/api/ai/conversations/${conversationId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setMessages(data.messages || []);
+      } catch {
+        // best-effort
+      }
+    })();
+  }, [refreshSignal, conversationId]);
 
   // Fire-and-forget resume: if we return to a conversation where the last row
   // is still `pending` (streaming continued server-side while this tab was
