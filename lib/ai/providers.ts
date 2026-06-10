@@ -2928,9 +2928,15 @@ export async function queryMeetingBrain(
         const d = options.days || 90;
         const since = new Date(); since.setDate(since.getDate() - d);
 
+        // p_until: now is ESSENTIAL — the RPC sorts newest-first and includes
+        // scheduled future meetings, so without an upper bound the limit-40
+        // window fills with future calendar entries (recurring pickups,
+        // weekly syncs…) and past meetings never make it into the result;
+        // the past-only filter below then leaves nothing.
         const { data: meetings, error } = await mbDb.rpc("search_meetings", {
           p_user_email: userEmail,
           p_since: since.toISOString(),
+          p_until: new Date().toISOString(),
           p_limit: 40,
         });
         if (error) return { data: [], count: 0, error: error.message };
@@ -2997,9 +3003,12 @@ export async function queryMeetingBrain(
         let fuzzyNote: string | undefined;
         if (!meetings || meetings.length === 0) {
           const sixMonthsAgo = new Date(); sixMonthsAgo.setDate(sixMonthsAgo.getDate() - 180);
+          // p_until bounds the window to past meetings — without it the
+          // newest-first sort fills the limit with future calendar entries.
           const { data: recent } = await mbDb.rpc("search_meetings", {
             p_user_email: userEmail,
             p_since: sixMonthsAgo.toISOString(),
+            p_until: new Date().toISOString(),
             p_limit: 100,
           });
           const near = (recent || []).filter((r: any) =>
