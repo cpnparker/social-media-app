@@ -1551,15 +1551,17 @@ function EngineAIContent() {
               customers={customers.map((c) => ({ id: String(c.id), name: c.name, logoUrl: c.logoUrl || undefined }))}
               selectedCustomer={selectedCustomer ? { id: String(selectedCustomer.id), name: selectedCustomer.name } : null}
               onCustomerChange={(id) => customerCtx?.setSelectedCustomerId(id)}
-              headerExtra={
-                <>
+              inputEndSlot={
                 <button
                   onClick={() => setVoiceOpen(true)}
+                  disabled={voiceOpen}
                   title="Voice conversation"
-                  className="flex h-8 w-8 rounded-full border bg-background hover:bg-muted items-center justify-center transition-colors shrink-0"
+                  className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40"
                 >
-                  <AudioLines className="h-3.5 w-3.5 text-muted-foreground" />
+                  <AudioLines className="h-4 w-4" />
                 </button>
+              }
+              headerExtra={
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button className="hidden lg:flex h-8 w-8 rounded-full border bg-background hover:bg-muted items-center justify-center transition-colors shrink-0">
@@ -1589,7 +1591,6 @@ function EngineAIContent() {
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
-                </>
               }
               onCopyLink={() => {
                 const url = new URL(window.location.href);

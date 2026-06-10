@@ -94,6 +94,8 @@ interface ChatPanelProps {
   /** Increment to quietly refetch messages (no loading spinner) — used by
    *  voice mode to surface transcript turns in the thread live. */
   refreshSignal?: number;
+  /** Rendered in the input toolbar next to the send button (e.g. voice mode). */
+  inputEndSlot?: React.ReactNode;
 }
 
 type ContextConfig = { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch: string; memory: string; meetingBrain: string; imageGeneration: string };
@@ -115,6 +117,7 @@ export default function ChatPanel({
   isAdmin,
   headerExtra,
   refreshSignal,
+  inputEndSlot,
 }: ChatPanelProps) {
   const [conversation, setConversation] = useState<AIConversation | null>(null);
   const [messages, setMessages] = useState<AIMessageRow[]>([]);
@@ -1489,6 +1492,7 @@ export default function ChatPanel({
           onStop={handleStop}
           isStreaming={isStreaming}
           disabled={isStreaming || isFactChecking || myPermission === "view"}
+          endSlot={inputEndSlot}
           bottomSlot={
             <>
             <Popover>

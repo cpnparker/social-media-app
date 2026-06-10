@@ -26,6 +26,8 @@ interface ChatInputProps {
   placeholder?: string;
   /** Slot rendered inside the input container, bottom-left (for context controls) */
   bottomSlot?: ReactNode;
+  /** Slot rendered bottom-right, just before the send button (e.g. voice mode) */
+  endSlot?: ReactNode;
 }
 
 export interface ChatInputHandle {
@@ -33,7 +35,7 @@ export interface ChatInputHandle {
 }
 
 const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
-  function ChatInput({ onSend, onStop, disabled, isStreaming, placeholder = "Type your message...", bottomSlot }, ref) {
+  function ChatInput({ onSend, onStop, disabled, isStreaming, placeholder = "Type your message...", bottomSlot, endSlot }, ref) {
     const [value, setValue] = useState("");
     const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>(
       []
@@ -260,6 +262,8 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
               </Button>
               {bottomSlot}
             </div>
+            <div className="flex items-center gap-1">
+            {endSlot}
             {isStreaming && onStop ? (
               <Button
                 size="icon"
@@ -287,6 +291,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
                 )}
               </Button>
             )}
+            </div>
           </div>
         </div>
         <input
