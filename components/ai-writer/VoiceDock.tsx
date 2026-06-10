@@ -30,7 +30,15 @@ interface VoiceDockProps {
   customerId?: string | null;
   /** Called whenever transcript turns were persisted — lets the thread refresh live */
   onTranscriptSaved?: () => void;
+  /** Wake-phrase sessions: greet immediately with a short "Yes?" so the user
+   *  knows it's live, and auto-end after prolonged silence. */
+  wakeSession?: boolean;
 }
+
+/** Spoken hard-stop phrases — immediate end, no model round-trip. */
+const HARD_END_RE = /\b(stop listening|end (the )?(conversation|chat|session)|that('|')?s all,? thanks?)\b/i;
+/** Auto-end a wake session after this much silence (no user speech). */
+const SILENCE_END_MS = 60_000;
 
 const TOOL_LABELS: Record<string, { label: string; Icon: typeof Database }> = {
   query_engine: { label: "Checking the Engine", Icon: Database },
@@ -79,6 +87,7 @@ export default function VoiceDock({
   workspaceId,
   customerId,
   onTranscriptSaved,
+  wakeSession,
 }: VoiceDockProps) {
   const [status, setStatus] = useState<VoiceStatus>("connecting");
   const [caption, setCaption] = useState("");
@@ -107,6 +116,10 @@ export default function VoiceDock({
   const pendingToolsRef = useRef(0);
   const closingRef = useRef(false);
   const rafRef = useRef<number>(0);
+  // Graceful ending: set when the model calls end_conversation — the session
+  // closes once its sign-off audio finishes playing.
+  const endingRef = useRef(false);
+  const lastUserSpeechRef = useRef(0);
 
   const setStatusBoth = (s: VoiceStatus) => {
     statusRef.current = s;
@@ -198,10 +211,12 @@ export default function VoiceDock({
     if (!open) return;
     closingRef.current = false;
     pausedRef.current = false;
+    endingRef.current = false;
     itemsRef.current = [];
     activeUserItemRef.current = null;
     utteranceCounterRef.current = 0;
     sessionStartRef.current = Date.now();
+    lastUserSpeechRef.current = Date.now();
     setCaption("");
     setElapsed(0);
     setStatusBoth("connecting");
@@ -291,6 +306,19 @@ export default function VoiceDock({
 
           setStatusBoth("listening");
 
+          // Wake-phrase sessions: greet immediately so the user knows it's live
+          if (wakeSession) {
+            ws.send(
+              JSON.stringify({
+                type: "response.create",
+                response: {
+                  instructions:
+                    "The user just woke you with the wake phrase. Say ONLY a very short, warm prompt like \"Yes?\" or \"I'm listening — what's up?\". Nothing else.",
+                },
+              })
+            );
+          }
+
           const data = new Uint8Array(analyser.frequencyBinCount);
           const tick = () => {
             if (closingRef.current) return;
@@ -302,6 +330,18 @@ export default function VoiceDock({
             }
             setLevel(Math.min(1, Math.sqrt(sum / data.length) * 4));
             setElapsed(Math.floor((Date.now() - sessionStartRef.current) / 1000));
+            // Wake sessions: auto-end after prolonged inactivity so a missed
+            // sign-off can't leave the meter running.
+            if (
+              wakeSession &&
+              !pausedRef.current &&
+              statusRef.current === "listening" &&
+              Date.now() - lastUserSpeechRef.current > SILENCE_END_MS
+            ) {
+              teardown();
+              onClose();
+              return;
+            }
             rafRef.current = requestAnimationFrame(tick);
           };
           rafRef.current = requestAnimationFrame(tick);
@@ -332,6 +372,12 @@ export default function VoiceDock({
               activeSourcesRef.current.add(src);
               src.onended = () => {
                 activeSourcesRef.current.delete(src);
+                if (activeSourcesRef.current.size === 0 && endingRef.current) {
+                  // Sign-off finished playing — close gracefully
+                  teardown();
+                  onClose();
+                  return;
+                }
                 if (
                   activeSourcesRef.current.size === 0 &&
                   statusRef.current === "speaking" &&
@@ -349,6 +395,7 @@ export default function VoiceDock({
             case "input_audio_buffer.speech_started":
             case "conversation.interrupted": {
               if (pausedRef.current) break;
+              lastUserSpeechRef.current = Date.now();
               // New utterance starting — give id-less transcription events a
               // fresh fallback key so utterances never merge into each other.
               utteranceCounterRef.current += 1;
@@ -391,11 +438,40 @@ export default function VoiceDock({
               activeUserItemRef.current = id;
               upsertItem(id, "user", t);
               if (!pausedRef.current) setCaption(t.slice(-160));
+              lastUserSpeechRef.current = Date.now();
+              // Hard-stop phrases — immediate end, no model round-trip
+              // (teardown persists the final transcript + usage)
+              if (msg.type === "conversation.item.input_audio_transcription.completed" && HARD_END_RE.test(t)) {
+                teardown();
+                onClose();
+                return;
+              }
               break;
             }
 
             case "response.function_call_arguments.done": {
               const { name, call_id } = msg;
+              // end_conversation is handled entirely client-side: confirm the
+              // call, let the model speak ONE short sign-off, then the
+              // playback-drained handler closes the session.
+              if (name === "end_conversation") {
+                endingRef.current = true;
+                wsRef.current?.send(
+                  JSON.stringify({
+                    type: "conversation.item.create",
+                    item: { type: "function_call_output", call_id, output: "Conversation ending — say one short, warm sign-off now." },
+                  })
+                );
+                wsRef.current?.send(JSON.stringify({ type: "response.create" }));
+                // Safety net: if no sign-off audio arrives, close anyway
+                setTimeout(() => {
+                  if (!closingRef.current && endingRef.current && activeSourcesRef.current.size === 0) {
+                    teardown();
+                    onClose();
+                  }
+                }, 6000);
+                break;
+              }
               pendingToolsRef.current += 1;
               setActiveTool(name);
               try {

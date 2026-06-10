@@ -45,6 +45,18 @@ const CONSULT_ANALYST_TOOL = {
   },
 };
 
+/** end_conversation — handled CLIENT-side: the model signals closing intent,
+ *  the browser says goodbye and tears the session down (then rearms wake mode). */
+const END_CONVERSATION_TOOL = {
+  type: "function" as const,
+  function: {
+    name: "end_conversation",
+    description:
+      "Call this when the user signals the conversation is over — 'OK thanks', 'that's all', 'perfect, goodbye', 'we're done'. Do NOT call it for a pause or a topic change. After calling it, you'll be asked to say a very short sign-off.",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+};
+
 /** Chat-completions-format tools shared with the text pipeline.
  *  (Typed loosely: the OpenAI SDK's ChatCompletionTool union includes custom
  *  tools without `.function`, but everything here is a function tool.) */
@@ -55,6 +67,7 @@ const VOICE_TOOL_DEFS: { type: string; function: { name: string; description?: s
   MEETINGBRAIN_OPENAI_TOOL,
   SLACK_OPENAI_TOOL,
   CONSULT_ANALYST_TOOL,
+  END_CONVERSATION_TOOL,
 ] as any[];
 
 /** Names the tools route will execute. Anything else is rejected. */
@@ -122,7 +135,10 @@ You have live access to the workspace's data. USE IT — never guess numbers.
 - query_slack: the user's Slack.
 - search_memory: things the user told you before.
 - consult_analyst: hand hard analytical questions to a deeper reasoning model; relay its answer conversationally.
-Before any tool call, say a SHORT acknowledgment first ("let me check", "one sec, pulling that up") so the silence never feels dead. After results: give the headline first, offer detail ("want me to break that down?").`);
+Before any tool call, say a SHORT acknowledgment first ("let me check", "one sec, pulling that up") so the silence never feels dead. After results: give the headline first, offer detail ("want me to break that down?").
+
+# Ending the conversation
+When the user clearly signals they're done ("OK thanks", "that's all", "perfect, goodbye"), call end_conversation, then give ONE short warm sign-off ("Anytime — talk soon."). Don't call it for pauses, thinking out loud, or topic changes; if unsure, keep listening.`);
 
   if (ctx.clientRoster && ctx.clientRoster.length > 0) {
     lines.push(`

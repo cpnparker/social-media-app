@@ -133,6 +133,11 @@ export async function POST(req: NextRequest) {
         output = formatSlackResult(args.report, result);
         break;
       }
+      case "end_conversation": {
+        // Normally intercepted client-side; harmless if it lands here.
+        output = "Conversation ending — say one short, warm sign-off now.";
+        break;
+      }
       case "consult_analyst": {
         const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
         const msg = await anthropic.messages.create({

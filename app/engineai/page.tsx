@@ -84,6 +84,7 @@ import {
 import { AI_MODELS, DEFAULT_MODEL, getModelLabel } from "@/lib/ai/models";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
 import VoiceDock from "@/components/ai-writer/VoiceDock";
+import WakeMode from "@/components/ai-writer/WakeMode";
 import MemoryManager from "@/components/ai-writer/MemoryManager";
 import AdminDialog from "@/components/ai-writer/AdminDialog";
 import PersonaliseDialog from "@/components/ai-writer/PersonaliseDialog";
@@ -135,6 +136,7 @@ function EngineAIContent() {
   const [deepSearchResults, setDeepSearchResults] = useState<AIConversation[]>([]);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voiceTranscriptN, setVoiceTranscriptN] = useState(0);
+  const [voiceWakeSession, setVoiceWakeSession] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -573,8 +575,11 @@ function EngineAIContent() {
   // Start an immersive voice session. From a chat: binds to that thread.
   // From home: creates a fresh PRIVATE conversation first (voice is personal-
   // scope — personal MeetingBrain/Slack tools are blocked in team threads).
-  const handleVoiceStart = async () => {
+  // fromWake: session opened by the "Hey Engine" wake phrase — greets
+  // immediately and auto-ends after prolonged silence.
+  const handleVoiceStart = async (fromWake = false) => {
     if (!workspaceId || sending) return;
+    setVoiceWakeSession(fromWake);
     if (selectedId) {
       setVoiceOpen(true);
       return;
@@ -1553,7 +1558,7 @@ function EngineAIContent() {
               onCustomerChange={(id) => customerCtx?.setSelectedCustomerId(id)}
               inputEndSlot={
                 <button
-                  onClick={() => setVoiceOpen(true)}
+                  onClick={() => { setVoiceWakeSession(false); setVoiceOpen(true); }}
                   disabled={voiceOpen}
                   title="Voice conversation"
                   className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40"
@@ -2078,7 +2083,7 @@ function EngineAIContent() {
                     </DropdownMenu>
 
                     <button
-                      onClick={handleVoiceStart}
+                      onClick={() => handleVoiceStart()}
                       disabled={sending}
                       title="Start a voice conversation"
                       className="h-9 w-9 shrink-0 rounded-xl border bg-background hover:bg-muted flex items-center justify-center transition-colors disabled:opacity-50"
@@ -2409,7 +2414,12 @@ function EngineAIContent() {
           workspaceId={workspaceId}
           customerId={customerId}
           onTranscriptSaved={() => setVoiceTranscriptN((n) => n + 1)}
+          wakeSession={voiceWakeSession}
         />
+      )}
+      {/* "Hey Engine" — hands-free wake phrase (local-only listening) */}
+      {workspaceId && (
+        <WakeMode engaged={voiceOpen} onWake={() => handleVoiceStart(true)} />
       )}
     </>
   );
