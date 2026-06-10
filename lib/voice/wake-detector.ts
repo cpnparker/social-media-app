@@ -58,8 +58,16 @@ export class WakeDetector {
     this.opts.onStateChange?.("loading");
     try {
       // Lazy-load the ASR model (~40MB once, then IndexedDB-cached).
+      // transformers.js is loaded from CDN at runtime with webpackIgnore:
+      // bundling it breaks the Next build (its ONNX runtime bundles use
+      // import.meta in ways webpack can't parse), and it's browser-only.
+      // The URL constant keeps TypeScript happy (Promise<any>) and webpack
+      // out of the module graph entirely.
       if (!this.asr) {
-        const { pipeline } = await import("@huggingface/transformers");
+        const TRANSFORMERS_CDN =
+          "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0/dist/transformers.min.js";
+        const mod: any = await import(/* webpackIgnore: true */ TRANSFORMERS_CDN);
+        const { pipeline } = mod;
         this.asr = await pipeline(
           "automatic-speech-recognition",
           "onnx-community/whisper-tiny.en",
