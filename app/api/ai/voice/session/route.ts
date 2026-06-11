@@ -86,7 +86,15 @@ export async function POST(req: NextRequest) {
         Authorization: `Bearer ${process.env.XAI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ expires_after: { seconds: 300 } }),
+      // Bake the voice into the session at creation so the very first
+      // response can never race the client's session.update and speak in a
+      // different voice ("two voices" bug). Verified 2026-06-11: xAI applies
+      // `voice` from the mint body (session.created echoes it); instructions
+      // are still delivered via session.update from the browser.
+      body: JSON.stringify({
+        expires_after: { seconds: 300 },
+        session: { type: "realtime", model: VOICE_MODEL, voice: VOICE_NAME },
+      }),
     });
     if (!mintRes.ok) {
       const errText = await mintRes.text().catch(() => "");

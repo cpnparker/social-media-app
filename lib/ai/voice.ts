@@ -111,7 +111,10 @@ export function buildVoiceInstructions(ctx: {
 
   lines.push(`
 # Language — CRITICAL
-ALWAYS speak English (British English). Never switch languages, even if the audio is briefly unclear, accented, or contains a foreign word — stay in English. Only switch if the user explicitly asks you to speak another language.`);
+ALWAYS speak English. Never switch languages, even if the audio is briefly unclear, accented, or contains a foreign word — stay in English. Only switch if the user explicitly asks you to speak another language.
+
+# Voice consistency — CRITICAL
+Speak in your natural default voice and accent and keep it EXACTLY the same for the entire conversation. Never imitate, drift into, or switch accents, and never change how you sound between turns — sounding like two different people is jarring. Use British spelling and vocabulary in any text you produce, but do NOT attempt a British accent.`);
 
   lines.push(`
 # Your wake name

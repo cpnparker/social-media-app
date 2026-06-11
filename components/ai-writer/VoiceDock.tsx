@@ -419,10 +419,11 @@ export default function VoiceDock({
           setStatusBoth("listening");
 
           // Opening response — command answer or greeting — sent ONCE after
-          // session.updated confirms our voice/instructions are active
-          // (sending earlier made the greeting use the default voice).
-          // The timeout is a fallback in case session.updated never arrives.
-          setTimeout(sendInitial, 900);
+          // session.updated confirms our instructions are active. The voice
+          // itself is baked into the session at token-mint time, so even the
+          // fallback path can no longer speak in a different voice; the
+          // fallback only exists in case session.updated never arrives.
+          setTimeout(sendInitial, 2500);
 
           const data = new Uint8Array(analyser.frequencyBinCount);
           const tick = () => {
