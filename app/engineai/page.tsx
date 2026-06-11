@@ -2417,9 +2417,17 @@ function EngineAIContent() {
           wakeSession={voiceWakeSession}
         />
       )}
-      {/* "Hey Engine" — hands-free wake phrase (local-only listening) */}
+      {/* "Orac" — hands-free wake phrase (local-only listening) */}
       {workspaceId && (
-        <WakeMode engaged={voiceOpen} onWake={() => handleVoiceStart(true)} />
+        <WakeMode
+          engaged={voiceOpen}
+          onWake={() => handleVoiceStart(true)}
+          onEndConversation={() => {
+            setVoiceOpen(false);
+            // Pick up the dock's final transcript flush in the thread
+            setTimeout(() => setVoiceTranscriptN((n) => n + 1), 800);
+          }}
+        />
       )}
     </>
   );

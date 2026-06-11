@@ -37,9 +37,12 @@ interface WakeModeProps {
   onWake: () => void;
   /** True while a voice session is active — detection pauses, then rearms. */
   engaged: boolean;
+  /** Called when the user disarms while a conversation is open — the
+   *  conversation must end too (turning Orac off means OFF, like a speaker). */
+  onEndConversation?: () => void;
 }
 
-export default function WakeMode({ onWake, engaged }: WakeModeProps) {
+export default function WakeMode({ onWake, engaged, onEndConversation }: WakeModeProps) {
   const [armed, setArmed] = useState(false);
   const [state, setState] = useState<WakeDetectorState>("stopped");
   const [progress, setProgress] = useState(0);
@@ -159,9 +162,14 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
     }
   }, [getDetector]);
 
+  const onEndConversationRef = useRef(onEndConversation);
+  onEndConversationRef.current = onEndConversation;
+
   const handleToggle = () => {
     if (armed) {
       disarm();
+      // Off means OFF: an open voice conversation ends with it
+      if (engagedRef.current) onEndConversationRef.current?.();
       return;
     }
     let consented = false;

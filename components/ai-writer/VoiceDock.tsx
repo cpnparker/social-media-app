@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pause, Play, X, Database, Brain, ListChecks, MessageSquare, Sparkles, Loader2 } from "lucide-react";
+import { Pause, Play, Square, Database, Brain, ListChecks, MessageSquare, Sparkles, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -37,8 +37,13 @@ interface VoiceDockProps {
 
 /** Spoken hard-stop phrases — immediate end, no model round-trip. */
 const HARD_END_RE = /\b(stop listening|end (the )?(conversation|chat|session)|that('|')?s all,? thanks?)\b/i;
-/** Auto-end a wake session after this much silence (no user speech). */
+/** Bare voice commands (whole utterance) that end the session — Alexa-style. */
+const BARE_STOP_RE = /^\s*(orac[,!.]?\s*)?(stop|cancel|never ?mind|go to sleep|shut up|that('|')?s (all|enough))[.!?]?\s*$/i;
+/** Absolute inactivity backstop for wake sessions. */
 const SILENCE_END_MS = 60_000;
+/** Alexa-style follow-up window: after Orac finishes speaking, the session
+ *  stays open this long for a follow-up question, then closes and rearms. */
+const FOLLOWUP_WINDOW_MS = 8_000;
 
 const TOOL_LABELS: Record<string, { label: string; Icon: typeof Database }> = {
   query_engine: { label: "Checking the Engine", Icon: Database },
@@ -120,6 +125,8 @@ export default function VoiceDock({
   // closes once its sign-off audio finishes playing.
   const endingRef = useRef(false);
   const lastUserSpeechRef = useRef(0);
+  /** Wake sessions: deadline for a follow-up after Orac finishes speaking. */
+  const followUpDeadlineRef = useRef<number | null>(null);
 
   const setStatusBoth = (s: VoiceStatus) => {
     statusRef.current = s;
@@ -212,6 +219,7 @@ export default function VoiceDock({
     closingRef.current = false;
     pausedRef.current = false;
     endingRef.current = false;
+    followUpDeadlineRef.current = null;
     itemsRef.current = [];
     activeUserItemRef.current = null;
     utteranceCounterRef.current = 0;
@@ -330,8 +338,21 @@ export default function VoiceDock({
             }
             setLevel(Math.min(1, Math.sqrt(sum / data.length) * 4));
             setElapsed(Math.floor((Date.now() - sessionStartRef.current) / 1000));
-            // Wake sessions: auto-end after prolonged inactivity so a missed
-            // sign-off can't leave the meter running.
+            // Wake sessions: Alexa-style follow-up window — close shortly
+            // after Orac finishes speaking unless the user follows up.
+            if (
+              wakeSession &&
+              !pausedRef.current &&
+              statusRef.current === "listening" &&
+              followUpDeadlineRef.current !== null &&
+              Date.now() > followUpDeadlineRef.current
+            ) {
+              teardown();
+              onClose();
+              return;
+            }
+            // Absolute inactivity backstop so a missed sign-off can't leave
+            // the meter running.
             if (
               wakeSession &&
               !pausedRef.current &&
@@ -356,6 +377,7 @@ export default function VoiceDock({
             case "response.audio.delta": {
               // Drop assistant audio entirely while paused
               if (pausedRef.current) break;
+              followUpDeadlineRef.current = null; // Orac is speaking
               const audioCtx = audioCtxRef.current;
               if (!audioCtx || !msg.delta) break;
               const i16 = base64ToInt16(msg.delta);
@@ -384,6 +406,9 @@ export default function VoiceDock({
                   pendingToolsRef.current === 0
                 ) {
                   setStatusBoth("listening");
+                  // Alexa-style: Orac finished its answer — keep a short
+                  // follow-up window, then close and return to wake listening.
+                  if (wakeSession) followUpDeadlineRef.current = Date.now() + FOLLOWUP_WINDOW_MS;
                 }
               };
               if (statusRef.current !== "speaking" && statusRef.current !== "paused") {
@@ -396,6 +421,7 @@ export default function VoiceDock({
             case "conversation.interrupted": {
               if (pausedRef.current) break;
               lastUserSpeechRef.current = Date.now();
+              followUpDeadlineRef.current = null; // follow-up arrived — stay engaged
               // New utterance starting — give id-less transcription events a
               // fresh fallback key so utterances never merge into each other.
               utteranceCounterRef.current += 1;
@@ -439,9 +465,14 @@ export default function VoiceDock({
               upsertItem(id, "user", t);
               if (!pausedRef.current) setCaption(t.slice(-160));
               lastUserSpeechRef.current = Date.now();
-              // Hard-stop phrases — immediate end, no model round-trip
+              // Hard-stop — immediate end, no model round-trip. Either a stop
+              // phrase anywhere, or an Alexa-style bare command ("stop",
+              // "cancel", "go to sleep") as the WHOLE utterance.
               // (teardown persists the final transcript + usage)
-              if (msg.type === "conversation.item.input_audio_transcription.completed" && HARD_END_RE.test(t)) {
+              if (
+                msg.type === "conversation.item.input_audio_transcription.completed" &&
+                (HARD_END_RE.test(t) || BARE_STOP_RE.test(t))
+              ) {
                 teardown();
                 onClose();
                 return;
@@ -451,6 +482,7 @@ export default function VoiceDock({
 
             case "response.function_call_arguments.done": {
               const { name, call_id } = msg;
+              followUpDeadlineRef.current = null; // tool work in progress
               // end_conversation is handled entirely client-side: confirm the
               // call, let the model speak ONE short sign-off, then the
               // playback-drained handler closes the session.
@@ -512,6 +544,7 @@ export default function VoiceDock({
                 statusRef.current !== "paused"
               ) {
                 setStatusBoth("listening");
+                if (wakeSession) followUpDeadlineRef.current = Date.now() + FOLLOWUP_WINDOW_MS;
               }
               break;
             }
@@ -640,26 +673,28 @@ export default function VoiceDock({
           </p>
         </div>
 
-        {/* Controls */}
+        {/* Controls — Stop is the primary action (ends the conversation;
+            wake mode returns to local-only listening). Pause is secondary. */}
         <button
           onClick={togglePause}
           disabled={status === "connecting" || status === "error"}
           className={cn(
             "h-9 w-9 shrink-0 rounded-full flex items-center justify-center transition-colors disabled:opacity-40",
-            paused ? "bg-emerald-500/90 hover:bg-emerald-500" : "bg-white/10 hover:bg-white/20"
+            paused ? "bg-emerald-500/90 hover:bg-emerald-500" : "bg-white/5 hover:bg-white/15 text-white/70"
           )}
-          aria-label={paused ? "Resume conversation" : "Pause conversation"}
-          title={paused ? "Resume" : "Pause"}
+          aria-label={paused ? "Resume conversation" : "Pause conversation (keeps it open)"}
+          title={paused ? "Resume" : "Pause (keeps the conversation open)"}
         >
           {paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
         </button>
         <button
           onClick={handleEnd}
-          className="h-9 w-9 shrink-0 rounded-full bg-red-500/80 hover:bg-red-500 flex items-center justify-center transition-colors"
-          aria-label="End conversation"
-          title="End"
+          className="h-9 shrink-0 px-4 rounded-full bg-red-500/90 hover:bg-red-500 flex items-center gap-1.5 font-medium text-sm transition-colors"
+          aria-label="Stop and end the conversation"
+          title="Stop — ends the conversation"
         >
-          <X className="h-4 w-4" />
+          <Square className="h-3.5 w-3.5 fill-current" />
+          Stop
         </button>
       </div>
     </div>
