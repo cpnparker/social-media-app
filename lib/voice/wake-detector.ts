@@ -168,6 +168,10 @@ export class WakeDetector {
   private pendingWake = false;
   /** Final acoustic hit — transcribe() fires the wake with the command. */
   private wakeViaTemplate = false;
+  /** Final chunk that arrived while a decode was in flight. Without this
+   *  queue the final decode is silently dropped — and since wakes now fire
+   *  from the final decode, the race lost almost every wake. */
+  private queuedFinal: Float32Array | null = null;
   /** Enrolled voice templates (MFCC features). When present, template
    *  matching is the PRIMARY wake signal; ASR text match stays as backup. */
   private templates: WakeTemplate[] = [];
@@ -269,6 +273,7 @@ export class WakeDetector {
     this.grayAudio = null;
     this.pendingWake = false;
     this.wakeViaTemplate = false;
+    this.queuedFinal = null;
     const gen = ++this.gen;
     this.opts.onStateChange?.("loading");
     try {
@@ -397,16 +402,14 @@ export class WakeDetector {
             // matching whole sentences false-fires) + ASR text as backup.
             const prefix = chunk.length > WAKE_PREFIX_SAMPLES ? chunk.slice(0, WAKE_PREFIX_SAMPLES) : chunk;
             const score = this.matchTemplates(prefix);
-            if (score >= this.threshold || this.pendingWake) {
-              this.wakeViaTemplate = true;
-              this.pendingWake = false;
-            }
+            if (score >= this.threshold) this.wakeViaTemplate = true;
             if (!this.transcribing) {
               this.transcribe(chunk, true); // fires the wake with the command
-            } else if (this.wakeViaTemplate) {
-              // Decoder busy with an interim window — fire without a command
-              // rather than lose the wake.
-              this.fireWake();
+            } else {
+              // Decoder busy with an interim window (the COMMON case for any
+              // utterance long enough to have triggered one) — queue the
+              // final decode; it runs the moment the decoder frees up.
+              this.queuedFinal = chunk;
             }
           }
         } else if (
@@ -484,7 +487,9 @@ export class WakeDetector {
       // Gray-zone ensemble: acoustic score just below threshold AND an
       // Orac-ish word in the transcript — together, wake.
       const grayWake = !!text && this.grayUntil > Date.now() && oracIsh(text);
-      if (textWake || grayWake || (isFinal && this.wakeViaTemplate)) {
+      // pendingWake (set by an interim acoustic/text hit) is consumed HERE,
+      // by the final decode — possibly a queued one that ran late.
+      if (textWake || grayWake || (isFinal && (this.wakeViaTemplate || this.pendingWake))) {
         if ((textWake || grayWake) && this.grayAudio) this.maybeLearn(this.grayAudio, this.threshold);
         if (grayWake) this.grayUntil = 0;
         if (isFinal) {
@@ -499,9 +504,21 @@ export class WakeDetector {
     } catch (err: any) {
       console.debug("[WakeDetector] transcription failed:", err?.message || err);
       // Don't lose an acoustically-confirmed wake to a decode error
-      if (isFinal && this.wakeViaTemplate) this.fireWake();
+      if (isFinal && (this.wakeViaTemplate || this.pendingWake)) this.fireWake();
     } finally {
       this.transcribing = false;
+      // A completed final decode settles the utterance — deferred flags must
+      // not leak into the next one and fire on unrelated speech.
+      if (isFinal) {
+        this.wakeViaTemplate = false;
+        this.pendingWake = false;
+      }
+      // Drain the queued final decode (arrived while we were busy)
+      const queued = this.queuedFinal;
+      if (queued && !this.stopped && !this.woke) {
+        this.queuedFinal = null;
+        this.transcribe(queued, true);
+      }
     }
   }
 
@@ -512,6 +529,7 @@ export class WakeDetector {
     this.gen++; // cancels any start() that's mid-await
     this.captureResolve?.(null);
     this.captureResolve = null;
+    this.queuedFinal = null;
     try { this.processor?.disconnect(); } catch { /* noop */ }
     try { this.source?.disconnect(); } catch { /* noop */ }
     // Kill EVERY stream ever acquired, not just the current reference —
