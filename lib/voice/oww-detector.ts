@@ -26,6 +26,8 @@ export const WAKE_SCORE_THRESHOLD = 0.5;
 
 const SAMPLE_RATE = 16000;
 const CHUNK = 1280; // 80ms
+const MEL_CONTEXT = 480; // 160*3 — left context the mel conv front-end consumes
+const INT16_SCALE = 32768; // oWW models expect int16-range floats, not [-1,1]
 const MEL_BINS = 32;
 const MEL_WINDOW = 76; // mel frames per embedding (~775ms)
 const MEL_STEP = 8; // mel frames between embeddings (80ms)
@@ -102,6 +104,11 @@ export class OwwWakeDetector {
   private embBuffer: Float32Array[] = []; // rolling embeddings
   private rawRing: Float32Array[] = []; // last ~1s raw audio (command lead-in)
   private rawRingSamples = 0;
+  // openWakeWord's melspectrogram needs MEL_CONTEXT samples of left context
+  // per chunk (the conv front-end eats 3 frames): mel(1280) yields only 5
+  // frames vs the expected 8, which compresses the feature timeline ~1.6x
+  // and pins scores at ~0. Feed mel(context + chunk) and keep all frames.
+  private melCtx = new Float32Array(MEL_CONTEXT); // primed with silence
 
   private running = false;
   private stopped = true;
@@ -151,6 +158,15 @@ export class OwwWakeDetector {
       if (this.stopped || gen !== this.gen) return;
       if (!this.clsSession) this.clsSession = await load("orac.onnx", 2, 3);
       if (this.stopped || gen !== this.gen) return;
+
+      // Fresh feature state per arm. melBuffer is primed with ones exactly
+      // like openWakeWord's reference AudioFeatures — embeddings (and scores)
+      // then flow from the very first chunk, so there's no scoring dead zone
+      // right after arming.
+      this.melBuffer = [];
+      for (let f = 0; f < MEL_WINDOW; f++) this.melBuffer.push(new Array(MEL_BINS).fill(1));
+      this.embBuffer = [];
+      this.melCtx = new Float32Array(MEL_CONTEXT);
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
@@ -227,9 +243,14 @@ export class OwwWakeDetector {
     if (this.inferring || this.stopped) return; // drop frame under load — fine at 80ms cadence
     this.inferring = true;
     try {
-      // 1. melspectrogram
+      // 1. melspectrogram over [left context | new chunk] at int16 scale —
+      //    matches openWakeWord's streaming pipeline exactly (8 frames/80ms).
+      const melIn = new Float32Array(MEL_CONTEXT + CHUNK);
+      melIn.set(this.melCtx, 0);
+      for (let i = 0; i < CHUNK; i++) melIn[MEL_CONTEXT + i] = chunk[i] * INT16_SCALE;
+      this.melCtx.set(melIn.subarray(melIn.length - MEL_CONTEXT));
       const melOut = await this.melSession.run({
-        [this.melSession.inputNames[0]]: new this.ort.Tensor("float32", chunk, [1, CHUNK]),
+        [this.melSession.inputNames[0]]: new this.ort.Tensor("float32", melIn, [1, melIn.length]),
       });
       const mel = melOut[this.melSession.outputNames[0]];
       const melData: Float32Array = mel.data;
@@ -242,13 +263,9 @@ export class OwwWakeDetector {
       const maxMel = MEL_WINDOW + MEL_STEP * 40;
       if (this.melBuffer.length > maxMel) this.melBuffer.splice(0, this.melBuffer.length - maxMel);
 
-      // 2. embeddings over sliding mel windows: one new embedding every
-      //    MEL_STEP fresh mel frames once MEL_WINDOW frames are buffered.
-      this.melSinceEmb += frames;
-      while (
-        this.melBuffer.length >= MEL_WINDOW &&
-        (this.embBuffer.length === 0 || this.melSinceEmb >= MEL_STEP)
-      ) {
+      // 2. one embedding per chunk: each 80ms chunk adds exactly MEL_STEP (8)
+      //    mel frames, so the sliding 76-frame window advances by one step.
+      if (this.melBuffer.length >= MEL_WINDOW) {
         const windowFrames = this.melBuffer.slice(this.melBuffer.length - MEL_WINDOW);
         const flat = new Float32Array(MEL_WINDOW * MEL_BINS);
         for (let f = 0; f < MEL_WINDOW; f++) {
@@ -260,8 +277,6 @@ export class OwwWakeDetector {
         const emb: Float32Array = embOut[this.embSession.outputNames[0]].data;
         this.embBuffer.push(new Float32Array(emb.subarray(0, EMB_DIM)));
         if (this.embBuffer.length > EMB_WINDOW) this.embBuffer.shift();
-        this.melSinceEmb = Math.max(0, this.melSinceEmb - MEL_STEP);
-        if (this.embBuffer.length > 0 && this.melSinceEmb < MEL_STEP) break;
       }
 
       // 3. classify when we have a full context window
@@ -289,8 +304,6 @@ export class OwwWakeDetector {
       this.inferring = false;
     }
   }
-  private melSinceEmb = 0;
-
   /** Wake fired: notify immediately (chime + session connect start) while
    *  continuing to capture the spoken command in parallel. */
   private beginCommandCapture() {
@@ -352,6 +365,7 @@ export class OwwWakeDetector {
     this.queuedSamples = 0;
     this.melBuffer = [];
     this.embBuffer = [];
+    this.melCtx = new Float32Array(MEL_CONTEXT);
     this.rawRing = [];
     this.rawRingSamples = 0;
     this.opts.onStateChange?.("stopped");
