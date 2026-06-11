@@ -222,6 +222,39 @@ export function dtwSimilarity(template: WakeTemplate, candidate: WakeTemplate): 
   return Math.max(0, 1 - avg / 2);
 }
 
+/**
+ * Energy-trim leading/trailing silence (with padding). CRITICAL for
+ * matching: CMVN statistics are computed over the window, so a candidate
+ * that is mostly silence normalises very differently from a tight template —
+ * costing 10+ similarity points. Trim BOTH templates and candidates.
+ */
+export function trimSilence(audio: Float32Array, padMs = 80): Float32Array {
+  const F = 320; // 20ms frames
+  const n = Math.floor(audio.length / F);
+  if (n === 0) return audio;
+  const rms = new Float32Array(n);
+  let peak = 0;
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let j = 0; j < F; j++) {
+      const v = audio[i * F + j];
+      s += v * v;
+    }
+    rms[i] = Math.sqrt(s / F);
+    if (rms[i] > peak) peak = rms[i];
+  }
+  const thr = Math.max(peak * 0.12, 0.004);
+  let a = 0;
+  while (a < n && rms[a] < thr) a++;
+  let b = n - 1;
+  while (b > a && rms[b] < thr) b--;
+  if (a >= b) return audio;
+  const pad = Math.round((padMs / 1000) * SR);
+  const start = Math.max(0, a * F - pad);
+  const end = Math.min(audio.length, (b + 1) * F + pad);
+  return audio.slice(start, end);
+}
+
 /* ── (De)serialisation for localStorage ── */
 
 export function serializeTemplate(t: WakeTemplate): { frames: number; bins: number; b64: string } {

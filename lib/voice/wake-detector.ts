@@ -15,7 +15,8 @@
  * touching callers.
  */
 
-import { extractFeatures, dtwSimilarity, type WakeTemplate } from "./mel";
+import { extractFeatures, dtwSimilarity, trimSilence, type WakeTemplate } from "./mel";
+import { saveEnrollment } from "./wake-templates";
 
 export type WakeDetectorState = "loading" | "listening" | "stopped" | "error";
 
@@ -52,6 +53,13 @@ const ORAC_TOKENS = ["orac", "orack", "orak", "oracc", "orach", "auroch", "aurac
 const ORAC_FIRST = ["oh", "o", "or", "aw", "ore", "oar", "your"];
 const ORAC_SECOND = ["rack", "rac", "rak", "wrack", "ack", "rock"];
 
+/** Looser Orac-ish check used ONLY to confirm a gray-zone acoustic match —
+ *  both signals together justify a wake that neither alone would. */
+function oracIsh(text: string): boolean {
+  const toks = text.toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/).filter(Boolean);
+  return toks.some((t) => t.length >= 4 && (t[0] === "o" || t[0] === "a") && lev(t, "orac") <= 2);
+}
+
 /** Wake match for "Orac" (with or without a leading "hey").
  *  Deliberately does NOT match "Oracle" (a real word that appears in tech
  *  conversation) — lev<=1 against "orac" excludes it. */
@@ -87,6 +95,15 @@ const WAKE_PREFIX_SAMPLES = Math.round(1.6 * SAMPLE_RATE);
 /** Ignore matches briefly after (re)start — trailing room audio right after
  *  a conversation closes must not instantly re-wake. */
 const START_COOLDOWN_MS = 1200;
+/** Gray zone: template score below threshold but well above the noise floor.
+ *  Alone it does NOT wake — but combined with an Orac-ish word in the local
+ *  transcript of the same utterance, it does. Catches session drift (real
+ *  "Orac" scoring slightly low on a different day/mic distance). */
+const GRAY_MIN = 0.6;
+const GRAY_WINDOW_MS = 2500;
+/** Max stored templates: the enrolled takes plus utterances learned from
+ *  confirmed wakes — the set adapts to real usage across sessions. */
+const MAX_TEMPLATES = 6;
 const WINDOW_SAMPLES = Math.round(2.4 * SAMPLE_RATE); // interim decode window
 
 const BASE_MODEL = "onnx-community/whisper-base.en"; // WebGPU: bigger + still fast
@@ -111,6 +128,8 @@ export class WakeDetector {
   private lastHeard = "";
   private woke = false;
   private cooldownUntil = 0;
+  private grayUntil = 0;
+  private grayAudio: Float32Array | null = null;
   /** Enrolled voice templates (MFCC features). When present, template
    *  matching is the PRIMARY wake signal; ASR text match stays as backup. */
   private templates: WakeTemplate[] = [];
@@ -159,17 +178,42 @@ export class WakeDetector {
     this.opts.onWake();
   }
 
-  /** Template match on an audio window; reports the score, returns hit. */
-  private matchTemplates(audio: Float32Array): boolean {
-    if (this.templates.length === 0) return false;
-    const cand = extractFeatures(audio);
+  /** Template match on an audio window (silence-trimmed); reports + returns
+   *  the best score. Sets up the gray-zone window for text confirmation. */
+  private matchTemplates(audio: Float32Array): number {
+    if (this.templates.length === 0) return 0;
+    const trimmed = trimSilence(audio);
+    const cand = extractFeatures(trimmed);
     let best = 0;
     for (const t of this.templates) {
       const s = dtwSimilarity(t, cand);
       if (s > best) best = s;
     }
     this.opts.onMatchScore?.(best, this.threshold);
-    return best >= this.threshold;
+    if (best >= this.threshold) {
+      this.maybeLearn(trimmed, best);
+      this.fireWake();
+    } else if (best >= GRAY_MIN) {
+      this.grayUntil = Date.now() + GRAY_WINDOW_MS;
+      this.grayAudio = trimmed;
+    }
+    return best;
+  }
+
+  /** Add a confirmed wake utterance as a template — the set learns the
+   *  user's voice across sessions/mics instead of degrading. */
+  private maybeLearn(trimmedAudio: Float32Array, score: number) {
+    if (this.testMode || this.templates.length >= MAX_TEMPLATES) return;
+    // Strong matches add little; learn from the informative band just above
+    // threshold (session-drifted positives) and from text-confirmed wakes.
+    if (score > this.threshold + 0.12) return;
+    try {
+      const features = extractFeatures(trimmedAudio);
+      if (features.frames < 12) return;
+      this.templates = [...this.templates, features];
+      saveEnrollment(this.templates, this.threshold);
+      console.debug(`[WakeDetector] learned template #${this.templates.length} (score ${score.toFixed(2)})`);
+    } catch { /* learning is best-effort */ }
   }
 
   async start() {
@@ -181,6 +225,8 @@ export class WakeDetector {
     this.woke = false;
     this.lastHeard = "";
     this.cooldownUntil = Date.now() + START_COOLDOWN_MS;
+    this.grayUntil = 0;
+    this.grayAudio = null;
     const gen = ++this.gen;
     this.opts.onStateChange?.("loading");
     try {
@@ -307,8 +353,9 @@ export class WakeDetector {
           } else if (chunk) {
             // Template match on the utterance PREFIX only (wake words lead;
             // matching whole sentences false-fires) + ASR text as backup.
+            // matchTemplates fires the wake internally on a hit.
             const prefix = chunk.length > WAKE_PREFIX_SAMPLES ? chunk.slice(0, WAKE_PREFIX_SAMPLES) : chunk;
-            if (this.matchTemplates(prefix)) this.fireWake();
+            this.matchTemplates(prefix);
             if (!this.transcribing) this.transcribe(chunk);
           }
         } else if (
@@ -323,7 +370,7 @@ export class WakeDetector {
           const win = this.tailWindow();
           // Interim template match only EARLY in the utterance — once it's
           // clearly a sentence, only the prefix/final paths may match.
-          if (this.speechMs <= MAX_WAKE_UTTERANCE_MS && this.matchTemplates(win)) this.fireWake();
+          if (this.speechMs <= MAX_WAKE_UTTERANCE_MS) this.matchTemplates(win);
           if (!this.transcribing) this.transcribe(win);
         }
         // Hard cap on idle buffer growth (shouldn't happen, but be safe)
@@ -379,7 +426,17 @@ export class WakeDetector {
         console.debug(`[WakeDetector] heard: "${text}"`);
         this.opts.onHeard?.(text);
       }
-      if (text && isWakePhrase(text)) this.fireWake();
+      if (text && isWakePhrase(text)) {
+        // Text-confirmed wake — learn the gray-zone audio if we have it
+        if (this.grayAudio) this.maybeLearn(this.grayAudio, this.threshold);
+        this.fireWake();
+      } else if (text && this.grayUntil > Date.now() && oracIsh(text)) {
+        // Gray-zone ensemble: acoustic score was just below threshold AND
+        // the local transcript heard something Orac-ish — together, wake.
+        if (this.grayAudio) this.maybeLearn(this.grayAudio, this.threshold);
+        this.grayUntil = 0;
+        this.fireWake();
+      }
     } catch (err: any) {
       console.debug("[WakeDetector] transcription failed:", err?.message || err);
     } finally {

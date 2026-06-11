@@ -5,7 +5,10 @@
 
 import { serializeTemplate, deserializeTemplate, type WakeTemplate } from "./mel";
 
-const KEY = "engineai-orac-voice-v1";
+// v2: templates are silence-trimmed before feature extraction — v1 templates
+// were not, and can't be migrated (trim needs audio, we only keep features).
+// Version bump → loadEnrollment returns null → enrollment re-runs on arm.
+const KEY = "engineai-orac-voice-v2";
 
 /** Hard floor for the wake threshold. Empirically, UNRELATED speech and
  *  noise score 0.57–0.65 against any template (DTW best-path inflation) —

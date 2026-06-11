@@ -23,7 +23,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { extractFeatures, dtwSimilarity, type WakeTemplate } from "@/lib/voice/mel";
+import { extractFeatures, dtwSimilarity, trimSilence, type WakeTemplate } from "@/lib/voice/mel";
 import { saveEnrollment, MIN_THRESHOLD } from "@/lib/voice/wake-templates";
 import type { WakeDetector } from "@/lib/voice/wake-detector";
 
@@ -100,12 +100,15 @@ export default function WakeEnrollment({ open, onClose, detector, detectorReady 
       try {
         const audio = await detector.captureUtterance();
         if (cancelledRef.current || !audio) return;
-        const seconds = audio.length / 16000;
+        // Trim silence BEFORE measuring/extracting — matching trims its
+        // candidates the same way, so templates must be tight too.
+        const trimmed = trimSilence(audio);
+        const seconds = trimmed.length / 16000;
         if (seconds < MIN_SECONDS || seconds > MAX_SECONDS) {
           toast.error(seconds < MIN_SECONDS ? "Too short — say it a touch slower" : "Too long — just the one word");
           return;
         }
-        const features = extractFeatures(audio);
+        const features = extractFeatures(trimmed);
         if (features.frames < 12) {
           toast.error("Couldn't hear that clearly — try again");
           return;
