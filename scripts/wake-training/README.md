@@ -72,7 +72,9 @@ directly; paste it into their current notebook if needed.
 cp ~/Downloads/orac.onnx ~/Downloads/melspectrogram.onnx ~/Downloads/embedding_model.onnx public/models/
 git add public/models && git commit -m "Add trained Orac wake model" && git push
 ```
-Wait for the Vercel deploy to go green.
+Also bump `MODELS_VERSION` in `lib/voice/oww-detector.ts` (cache-buster —
+browsers that cached the previous .onnx would otherwise fail with
+"protobuf parsing failed"). Wait for the Vercel deploy to go green.
 
 ### 3. Test
 1. Open EngineAI, hard-reload the tab.
