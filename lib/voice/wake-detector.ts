@@ -78,6 +78,15 @@ const PRE_ROLL_FRAMES = 3; // ~384ms kept before speech onset — the energy
 // and multiple chances to catch the phrase.
 const DECODE_EVERY_MS = 800;
 const MIN_SPEECH_FOR_INTERIM_MS = 500;
+/** Template matching only applies to the START of an utterance (wake words
+ *  lead: "Orac" or "Orac, what's my pipeline"). Subsequence DTW searched
+ *  across whole sentences finds an "Orac-shaped" half-second in any
+ *  conversation — that's how "any sound triggers it" happened. */
+const MAX_WAKE_UTTERANCE_MS = 1600;
+const WAKE_PREFIX_SAMPLES = Math.round(1.6 * SAMPLE_RATE);
+/** Ignore matches briefly after (re)start — trailing room audio right after
+ *  a conversation closes must not instantly re-wake. */
+const START_COOLDOWN_MS = 1200;
 const WINDOW_SAMPLES = Math.round(2.4 * SAMPLE_RATE); // interim decode window
 
 const BASE_MODEL = "onnx-community/whisper-base.en"; // WebGPU: bigger + still fast
@@ -101,6 +110,7 @@ export class WakeDetector {
   private lastDecodeAt = 0;
   private lastHeard = "";
   private woke = false;
+  private cooldownUntil = 0;
   /** Enrolled voice templates (MFCC features). When present, template
    *  matching is the PRIMARY wake signal; ASR text match stays as backup. */
   private templates: WakeTemplate[] = [];
@@ -144,6 +154,7 @@ export class WakeDetector {
 
   private fireWake() {
     if (this.testMode || this.woke) return;
+    if (Date.now() < this.cooldownUntil) return; // post-start settle window
     this.woke = true; // single-fire across interim + final decodes
     this.opts.onWake();
   }
@@ -169,6 +180,7 @@ export class WakeDetector {
     this.stopped = false;
     this.woke = false;
     this.lastHeard = "";
+    this.cooldownUntil = Date.now() + START_COOLDOWN_MS;
     const gen = ++this.gen;
     this.opts.onStateChange?.("loading");
     try {
@@ -293,8 +305,10 @@ export class WakeDetector {
             this.captureResolve = null;
             resolve(chunk);
           } else if (chunk) {
-            // Template match (ms-fast, primary signal) + ASR text (backup)
-            if (this.matchTemplates(chunk)) this.fireWake();
+            // Template match on the utterance PREFIX only (wake words lead;
+            // matching whole sentences false-fires) + ASR text as backup.
+            const prefix = chunk.length > WAKE_PREFIX_SAMPLES ? chunk.slice(0, WAKE_PREFIX_SAMPLES) : chunk;
+            if (this.matchTemplates(prefix)) this.fireWake();
             if (!this.transcribing) this.transcribe(chunk);
           }
         } else if (
@@ -307,7 +321,9 @@ export class WakeDetector {
         ) {
           this.lastDecodeAt = Date.now();
           const win = this.tailWindow();
-          if (this.matchTemplates(win)) this.fireWake();
+          // Interim template match only EARLY in the utterance — once it's
+          // clearly a sentence, only the prefix/final paths may match.
+          if (this.speechMs <= MAX_WAKE_UTTERANCE_MS && this.matchTemplates(win)) this.fireWake();
           if (!this.transcribing) this.transcribe(win);
         }
         // Hard cap on idle buffer growth (shouldn't happen, but be safe)

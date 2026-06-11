@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { extractFeatures, dtwSimilarity, type WakeTemplate } from "@/lib/voice/mel";
-import { saveEnrollment } from "@/lib/voice/wake-templates";
+import { saveEnrollment, MIN_THRESHOLD } from "@/lib/voice/wake-templates";
 import type { WakeDetector } from "@/lib/voice/wake-detector";
 
 const TAKES = 3;
@@ -138,18 +138,21 @@ export default function WakeEnrollment({ open, onClose, detector, detectorReady 
     let maxNeg = 0;
     for (const t of templates) maxNeg = Math.max(maxNeg, dtwSimilarity(t, decoy));
 
+    // One decoy UNDERSAMPLES the negative world — ambient speech routinely
+    // scores 0.57–0.65 against any template. The threshold therefore takes
+    // the most conservative of: gap midpoint, decoy + margin, and the hard
+    // floor. Better to miss occasionally than to fire on any sound.
     const gap = minSelf - maxNeg;
-    let thr: number;
-    if (gap < 0.08) {
-      thr = Math.max(0.6, minSelf - 0.04);
+    let thr = Math.max((minSelf + maxNeg) / 2, maxNeg + 0.07, MIN_THRESHOLD);
+    if (gap < 0.08 || thr > minSelf - 0.02) {
+      thr = Math.max(minSelf - 0.03, MIN_THRESHOLD);
       setGapWarning(
-        `Narrow margin (your takes scored ${minSelf.toFixed(2)} vs ${maxNeg.toFixed(2)} for the other word). It'll work, but if you get false wakes, redo enrollment with more consistent takes.`
+        `Narrow margin (your "Orac" takes scored ${minSelf.toFixed(2)} vs ${maxNeg.toFixed(2)} for the other word). If it misses or false-wakes, redo enrollment — same pace and distance from the mic each take helps.`
       );
     } else {
-      thr = (minSelf + maxNeg) / 2;
       setGapWarning(null);
     }
-    thr = Math.min(Math.max(thr, 0.55), 0.92);
+    thr = Math.min(Math.max(thr, MIN_THRESHOLD), 0.92);
     setThreshold(thr);
     detector.setTemplates(templates, thr);
     setStep("test");
