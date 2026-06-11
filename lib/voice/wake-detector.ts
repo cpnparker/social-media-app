@@ -65,10 +65,19 @@ const SAMPLE_RATE = 16000; // Whisper-native
 const SPEECH_RMS = 0.008; // energy gate (AGC mics can run quiet)
 const MIN_SPEECH_MS = 300; // ignore coughs/clicks
 const MAX_CHUNK_MS = 3000; // wake phrase fits comfortably
-const TRAIL_SILENCE_MS = 450; // end-of-utterance
+const TRAIL_SILENCE_MS = 350; // end-of-utterance (snappier than the old 450)
 const PRE_ROLL_FRAMES = 3; // ~384ms kept before speech onset — the energy
 // gate detects speech a beat late, so without this the leading syllable
 // ("O-" of "Orac") is clipped from the chunk and transcription misses it.
+// Sliding-window detection: with WebGPU inference at ~500ms we can decode
+// DURING speech instead of waiting for the utterance to end — faster wake
+// and multiple chances to catch the phrase.
+const DECODE_EVERY_MS = 800;
+const MIN_SPEECH_FOR_INTERIM_MS = 500;
+const WINDOW_SAMPLES = Math.round(2.4 * SAMPLE_RATE); // interim decode window
+
+const BASE_MODEL = "onnx-community/whisper-base.en"; // WebGPU: bigger + still fast
+const TINY_MODEL = "onnx-community/whisper-tiny.en"; // WASM fallback
 
 export class WakeDetector {
   private opts: WakeDetectorOptions;
@@ -85,6 +94,9 @@ export class WakeDetector {
   private inSpeech = false;
   private transcribing = false;
   private stopped = true;
+  private lastDecodeAt = 0;
+  private lastHeard = "";
+  private woke = false;
   /** True from start() until stop() — makes start() idempotent. */
   private running = false;
   /** Bumped by stop() to cancel starts that are mid-await. */
@@ -103,6 +115,8 @@ export class WakeDetector {
     if (this.running) return;
     this.running = true;
     this.stopped = false;
+    this.woke = false;
+    this.lastHeard = "";
     const gen = ++this.gen;
     this.opts.onStateChange?.("loading");
     try {
@@ -124,20 +138,22 @@ export class WakeDetector {
         };
         // fp32 encoder + q4 decoder is the configuration the official
         // transformers.js whisper examples use — the q8 merged decoder
-        // trips ORT's QDQ loader ("Missing required scale ..."). Fall back
-        // to full fp32 if the quantized decoder still fails to load.
-        const dtypeConfigs: any[] = [
-          { encoder_model: "fp32", decoder_model_merged: "q4" },
-          "fp32",
+        // trips ORT's QDQ loader ("Missing required scale ...").
+        // WebGPU runs whisper-base.en (~half the error rate of tiny) at
+        // ~500ms/decode — verified in-browser. WASM falls back to tiny.
+        const dtype = { encoder_model: "fp32", decoder_model_merged: "q4" };
+        const gpu = (navigator as any).gpu;
+        const hasWebGPU = !!gpu && !!(await gpu.requestAdapter?.().catch(() => null));
+        const attempts: { model: string; opts: any }[] = [
+          ...(hasWebGPU ? [{ model: BASE_MODEL, opts: { device: "webgpu", dtype, progress_callback } }] : []),
+          { model: TINY_MODEL, opts: { dtype, progress_callback } },
+          { model: TINY_MODEL, opts: { dtype: "fp32", progress_callback } },
         ];
         let lastErr: unknown;
-        for (const dtype of dtypeConfigs) {
+        for (const a of attempts) {
           try {
-            this.asr = await pipeline(
-              "automatic-speech-recognition",
-              "onnx-community/whisper-tiny.en",
-              { dtype, progress_callback } as any
-            );
+            this.asr = await pipeline("automatic-speech-recognition", a.model, a.opts);
+            console.debug(`[WakeDetector] engine: ${a.model} (${a.opts.device || "wasm"})`);
             break;
           } catch (err) {
             lastErr = err;
@@ -178,7 +194,9 @@ export class WakeDetector {
       const frameMs = (2048 / SAMPLE_RATE) * 1000;
 
       this.processor.onaudioprocess = (e) => {
-        if (this.stopped || this.transcribing) return;
+        // Keep CAPTURING during transcription — only starting a new decode is
+        // gated. (The old early-return dropped mid-utterance audio.)
+        if (this.stopped) return;
         const f32 = e.inputBuffer.getChannelData(0);
         let sum = 0;
         for (let i = 0; i < f32.length; i++) sum += f32[i] * f32[i];
@@ -214,10 +232,20 @@ export class WakeDetector {
         const utteranceEnded = this.inSpeech && this.silenceMs >= TRAIL_SILENCE_MS;
         const chunkFull = this.bufferedMs >= MAX_CHUNK_MS;
         if (utteranceEnded || chunkFull) {
+          // Final decode of the full utterance
           const hadRealSpeech = this.speechMs >= MIN_SPEECH_MS;
           const chunk = hadRealSpeech ? this.drainBuffer() : null;
           this.resetVad();
-          if (chunk) this.transcribe(chunk);
+          if (chunk && !this.transcribing) this.transcribe(chunk);
+        } else if (
+          // Sliding window: decode the recent tail WHILE speech continues —
+          // faster trigger and multiple chances to catch the phrase.
+          this.inSpeech &&
+          !this.transcribing &&
+          this.speechMs >= MIN_SPEECH_FOR_INTERIM_MS &&
+          Date.now() - this.lastDecodeAt >= DECODE_EVERY_MS
+        ) {
+          this.transcribe(this.tailWindow());
         }
         // Hard cap on idle buffer growth (shouldn't happen, but be safe)
         if (this.bufferedMs > MAX_CHUNK_MS * 2) this.resetVad();
@@ -243,6 +271,12 @@ export class WakeDetector {
     return out;
   }
 
+  /** Last ~2.4s of the live buffer (buffer left intact) — for interim decodes. */
+  private tailWindow(): Float32Array {
+    const full = this.drainBuffer();
+    return full.length > WINDOW_SAMPLES ? full.slice(full.length - WINDOW_SAMPLES) : full;
+  }
+
   private resetVad() {
     this.buffer = [];
     this.preRoll = [];
@@ -254,16 +288,20 @@ export class WakeDetector {
 
   private async transcribe(chunk: Float32Array) {
     this.transcribing = true;
+    this.lastDecodeAt = Date.now();
     try {
-      // No language option — whisper-tiny.en is English-only and rejects it.
+      // No language option — the .en models are English-only and reject it.
       const out = await this.asr(chunk);
+      if (this.stopped || this.woke) return;
       const text: string = (out?.text || "").trim();
       // Local-only diagnostics: what the detector heard never leaves the device.
-      if (text) {
+      if (text && text !== this.lastHeard) {
+        this.lastHeard = text;
         console.debug(`[WakeDetector] heard: "${text}"`);
         this.opts.onHeard?.(text);
       }
       if (text && isWakePhrase(text)) {
+        this.woke = true; // single-fire — interim + final decodes of the same utterance
         this.opts.onWake();
       }
     } catch (err: any) {
