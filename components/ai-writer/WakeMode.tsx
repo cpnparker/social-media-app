@@ -15,7 +15,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AudioLines, Loader2, ShieldCheck, X } from "lucide-react";
+import { AudioLines, Loader2, ShieldCheck, X, Settings2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
@@ -26,6 +26,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { WakeDetector, type WakeDetectorState } from "@/lib/voice/wake-detector";
+import { loadEnrollment } from "@/lib/voice/wake-templates";
+import WakeEnrollment from "./WakeEnrollment";
 
 const PREF_KEY = "engineai-wake-armed";
 const CONSENT_KEY = "engineai-wake-consent";
@@ -42,9 +44,12 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
   const [state, setState] = useState<WakeDetectorState>("stopped");
   const [progress, setProgress] = useState(0);
   const [consentOpen, setConsentOpen] = useState(false);
+  const [enrollOpen, setEnrollOpen] = useState(false);
   const [justWoke, setJustWoke] = useState(false);
   const [heard, setHeard] = useState("");
+  const [match, setMatch] = useState<{ score: number; threshold: number } | null>(null);
   const heardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const matchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const detectorRef = useRef<WakeDetector | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
   const tabIdRef = useRef(`${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -102,7 +107,15 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
           if (heardTimerRef.current) clearTimeout(heardTimerRef.current);
           heardTimerRef.current = setTimeout(() => setHeard(""), 4000);
         },
+        onMatchScore: (score, threshold) => {
+          setMatch({ score, threshold });
+          if (matchTimerRef.current) clearTimeout(matchTimerRef.current);
+          matchTimerRef.current = setTimeout(() => setMatch(null), 4000);
+        },
       });
+      // Apply any previously-enrolled voice templates
+      const stored = loadEnrollment();
+      if (stored) detectorRef.current.setTemplates(stored.templates, stored.threshold);
     }
     return detectorRef.current;
   }, []);
@@ -120,7 +133,30 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
     try { localStorage.setItem(PREF_KEY, "1"); } catch { /* noop */ }
     // Claim the multi-tab lock — other tabs disarm
     channelRef.current?.postMessage({ type: "claim", tab: tabIdRef.current });
-    if (!engagedRef.current) getDetector().start();
+    const det = getDetector();
+    // First arm without enrolled voice templates → run the enrollment flow
+    // (detector starts in test mode so nothing fires during setup)
+    if (!loadEnrollment()) {
+      det.setTestMode(true);
+      setEnrollOpen(true);
+    }
+    if (!engagedRef.current) det.start();
+  }, [getDetector]);
+
+  const openEnrollment = useCallback(() => {
+    const det = getDetector();
+    det.setTestMode(true);
+    setEnrollOpen(true);
+    if (!engagedRef.current) det.start();
+  }, [getDetector]);
+
+  const handleEnrollClose = useCallback((saved: boolean) => {
+    setEnrollOpen(false);
+    const det = getDetector();
+    det.setTestMode(false);
+    if (!saved && !loadEnrollment()) {
+      toast.info("Voice matching skipped — Orac will rely on transcription only. Use the tune button to set it up anytime.");
+    }
   }, [getDetector]);
 
   const handleToggle = () => {
@@ -183,11 +219,26 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
     <>
       {/* Floating arm control — bottom-right, out of the chat's way */}
       <div className="fixed bottom-5 right-5 z-30 flex flex-col items-end gap-1.5">
-        {/* Transient "heard:" readout — local-only diagnostics */}
-        {listening && heard && (
-          <div className="rounded-full bg-background/90 backdrop-blur border px-3 py-1 text-[11px] text-muted-foreground shadow-sm max-w-[260px] truncate">
-            heard: &ldquo;{heard}&rdquo;
+        {/* Transient diagnostics readout — local-only */}
+        {listening && (heard || match) && (
+          <div className="rounded-full bg-background/90 backdrop-blur border px-3 py-1 text-[11px] text-muted-foreground shadow-sm max-w-[280px] truncate">
+            {match && (
+              <span className={cn("font-semibold mr-1.5", match.score >= match.threshold ? "text-emerald-500" : "")}>
+                {Math.round(match.score * 100)}%
+              </span>
+            )}
+            {heard && <>heard: &ldquo;{heard}&rdquo;</>}
           </div>
+        )}
+        <div className="flex items-center gap-1.5">
+        {armed && !engaged && (
+          <button
+            onClick={openEnrollment}
+            title="Tune Orac — redo voice enrollment"
+            className="h-7 w-7 rounded-full bg-background/80 backdrop-blur border shadow-lg flex items-center justify-center text-muted-foreground/60 hover:text-foreground transition-colors"
+          >
+            <Settings2 className="h-3.5 w-3.5" />
+          </button>
         )}
         <button
           onClick={handleToggle}
@@ -232,7 +283,16 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
             </>
           )}
         </button>
+        </div>
       </div>
+
+      {/* Voice enrollment — teach Orac the user's voice */}
+      <WakeEnrollment
+        open={enrollOpen}
+        onClose={handleEnrollClose}
+        detector={getDetector()}
+        detectorReady={state === "listening"}
+      />
 
       {/* First-use consent — exactly what's local vs uploaded */}
       <Dialog open={consentOpen} onOpenChange={setConsentOpen}>

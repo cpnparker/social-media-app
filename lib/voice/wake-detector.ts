@@ -15,6 +15,8 @@
  * touching callers.
  */
 
+import { extractFeatures, dtwSimilarity, type WakeTemplate } from "./mel";
+
 export type WakeDetectorState = "loading" | "listening" | "stopped" | "error";
 
 interface WakeDetectorOptions {
@@ -24,6 +26,8 @@ interface WakeDetectorOptions {
   onProgress?: (pct: number) => void;
   /** Every locally-transcribed utterance (for the UI "heard:" readout — stays on-device) */
   onHeard?: (text: string) => void;
+  /** Template-match score per analysed window (drives the enrollment test meter) */
+  onMatchScore?: (score: number, threshold: number) => void;
 }
 
 /** Tiny Levenshtein for wake-word fuzzy matching (short words only). */
@@ -97,6 +101,14 @@ export class WakeDetector {
   private lastDecodeAt = 0;
   private lastHeard = "";
   private woke = false;
+  /** Enrolled voice templates (MFCC features). When present, template
+   *  matching is the PRIMARY wake signal; ASR text match stays as backup. */
+  private templates: WakeTemplate[] = [];
+  private threshold = 0.78;
+  /** Test mode: report scores/heard text but never fire onWake. */
+  private testMode = false;
+  /** Enrollment capture: next finished utterance is delivered here raw. */
+  private captureResolve: ((audio: Float32Array | null) => void) | null = null;
   /** True from start() until stop() — makes start() idempotent. */
   private running = false;
   /** Bumped by stop() to cancel starts that are mid-await. */
@@ -107,6 +119,46 @@ export class WakeDetector {
 
   constructor(opts: WakeDetectorOptions) {
     this.opts = opts;
+  }
+
+  /** Install enrolled voice templates + calibrated wake threshold. */
+  setTemplates(templates: WakeTemplate[], threshold: number) {
+    this.templates = templates;
+    this.threshold = threshold;
+  }
+
+  /** Test mode: full detection runs (scores, heard text) but onWake never fires. */
+  setTestMode(on: boolean) {
+    this.testMode = on;
+    if (!on) this.woke = false;
+  }
+
+  /** Enrollment: resolves with the next finished utterance's raw 16kHz audio
+   *  (null if the detector stops first). Detection is suspended meanwhile. */
+  captureUtterance(): Promise<Float32Array | null> {
+    return new Promise((resolve) => {
+      this.captureResolve?.(null); // supersede any previous request
+      this.captureResolve = resolve;
+    });
+  }
+
+  private fireWake() {
+    if (this.testMode || this.woke) return;
+    this.woke = true; // single-fire across interim + final decodes
+    this.opts.onWake();
+  }
+
+  /** Template match on an audio window; reports the score, returns hit. */
+  private matchTemplates(audio: Float32Array): boolean {
+    if (this.templates.length === 0) return false;
+    const cand = extractFeatures(audio);
+    let best = 0;
+    for (const t of this.templates) {
+      const s = dtwSimilarity(t, cand);
+      if (s > best) best = s;
+    }
+    this.opts.onMatchScore?.(best, this.threshold);
+    return best >= this.threshold;
   }
 
   async start() {
@@ -232,20 +284,31 @@ export class WakeDetector {
         const utteranceEnded = this.inSpeech && this.silenceMs >= TRAIL_SILENCE_MS;
         const chunkFull = this.bufferedMs >= MAX_CHUNK_MS;
         if (utteranceEnded || chunkFull) {
-          // Final decode of the full utterance
           const hadRealSpeech = this.speechMs >= MIN_SPEECH_MS;
           const chunk = hadRealSpeech ? this.drainBuffer() : null;
           this.resetVad();
-          if (chunk && !this.transcribing) this.transcribe(chunk);
+          if (chunk && this.captureResolve) {
+            // Enrollment capture: deliver raw audio instead of detecting
+            const resolve = this.captureResolve;
+            this.captureResolve = null;
+            resolve(chunk);
+          } else if (chunk) {
+            // Template match (ms-fast, primary signal) + ASR text (backup)
+            if (this.matchTemplates(chunk)) this.fireWake();
+            if (!this.transcribing) this.transcribe(chunk);
+          }
         } else if (
-          // Sliding window: decode the recent tail WHILE speech continues —
-          // faster trigger and multiple chances to catch the phrase.
+          // Sliding window WHILE speech continues — faster trigger and
+          // multiple chances to catch the phrase.
+          !this.captureResolve &&
           this.inSpeech &&
-          !this.transcribing &&
           this.speechMs >= MIN_SPEECH_FOR_INTERIM_MS &&
           Date.now() - this.lastDecodeAt >= DECODE_EVERY_MS
         ) {
-          this.transcribe(this.tailWindow());
+          this.lastDecodeAt = Date.now();
+          const win = this.tailWindow();
+          if (this.matchTemplates(win)) this.fireWake();
+          if (!this.transcribing) this.transcribe(win);
         }
         // Hard cap on idle buffer growth (shouldn't happen, but be safe)
         if (this.bufferedMs > MAX_CHUNK_MS * 2) this.resetVad();
@@ -300,10 +363,7 @@ export class WakeDetector {
         console.debug(`[WakeDetector] heard: "${text}"`);
         this.opts.onHeard?.(text);
       }
-      if (text && isWakePhrase(text)) {
-        this.woke = true; // single-fire — interim + final decodes of the same utterance
-        this.opts.onWake();
-      }
+      if (text && isWakePhrase(text)) this.fireWake();
     } catch (err: any) {
       console.debug("[WakeDetector] transcription failed:", err?.message || err);
     } finally {
@@ -316,6 +376,8 @@ export class WakeDetector {
     this.stopped = true;
     this.running = false;
     this.gen++; // cancels any start() that's mid-await
+    this.captureResolve?.(null);
+    this.captureResolve = null;
     try { this.processor?.disconnect(); } catch { /* noop */ }
     try { this.source?.disconnect(); } catch { /* noop */ }
     // Kill EVERY stream ever acquired, not just the current reference —
