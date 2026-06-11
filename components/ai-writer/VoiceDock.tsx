@@ -33,6 +33,9 @@ interface VoiceDockProps {
   /** Wake-phrase sessions: greet immediately with a short "Yes?" so the user
    *  knows it's live, and auto-end after prolonged silence. */
   wakeSession?: boolean;
+  /** What the user said after the wake word ("Orac, what meetings…") —
+   *  answered immediately instead of greeting. */
+  initialCommand?: string;
 }
 
 /** Spoken hard-stop phrases — immediate end, no model round-trip. */
@@ -93,6 +96,7 @@ export default function VoiceDock({
   customerId,
   onTranscriptSaved,
   wakeSession,
+  initialCommand,
 }: VoiceDockProps) {
   const [status, setStatus] = useState<VoiceStatus>("connecting");
   const [caption, setCaption] = useState("");
@@ -134,6 +138,10 @@ export default function VoiceDock({
   const lastUserSpeechRef = useRef(0);
   /** Wake sessions: deadline for a follow-up after Orac finishes speaking. */
   const followUpDeadlineRef = useRef<number | null>(null);
+  /** The opening response (command answer or greeting) is sent exactly once,
+   *  AFTER session.updated — sending before the config landed made the
+   *  greeting speak in xAI's default voice ("two voices" bug). */
+  const initialSentRef = useRef(false);
 
   const setStatusBoth = (s: VoiceStatus) => {
     statusRef.current = s;
@@ -233,6 +241,7 @@ export default function VoiceDock({
     pausedRef.current = false;
     endingRef.current = false;
     followUpDeadlineRef.current = null;
+    initialSentRef.current = false;
     itemsRef.current = [];
     activeUserItemRef.current = null;
     utteranceCounterRef.current = 0;
@@ -294,6 +303,38 @@ export default function VoiceDock({
         const ws = new WebSocket(cfg.wsUrl, [`xai-client-secret.${cfg.token}`]);
         wsRef.current = ws;
 
+        // Opening turn: answer the wake-command immediately ("Orac, what
+        // meetings have I had today") or give the short wake greeting.
+        const sendInitial = () => {
+          if (initialSentRef.current || ws.readyState !== WebSocket.OPEN) return;
+          initialSentRef.current = true;
+          if (initialCommand) {
+            upsertItem("u-init", "user", initialCommand);
+            ws.send(
+              JSON.stringify({
+                type: "conversation.item.create",
+                item: {
+                  type: "message",
+                  role: "user",
+                  content: [{ type: "input_text", text: initialCommand }],
+                },
+              })
+            );
+            ws.send(JSON.stringify({ type: "response.create" }));
+            setStatusBoth("thinking");
+          } else if (wakeSession) {
+            ws.send(
+              JSON.stringify({
+                type: "response.create",
+                response: {
+                  instructions:
+                    "The user just woke you with the wake phrase. Say ONLY a very short, warm prompt like \"Yes?\" or \"I'm listening — what's up?\". Nothing else.",
+                },
+              })
+            );
+          }
+        };
+
         ws.onopen = () => {
           if (cancelled) return;
           ws.send(
@@ -305,7 +346,10 @@ export default function VoiceDock({
                 tools: cfg.tools,
                 turn_detection: {
                   type: "server_vad",
-                  threshold: 0.8,
+                  // 0.6 (was 0.8): with AEC now cancelling Orac's own voice
+                  // from the mic, a lower threshold makes barge-in catch the
+                  // user's interruptions promptly without self-triggering.
+                  threshold: 0.6,
                   silence_duration_ms: 600,
                   prefix_padding_ms: 333,
                 },
@@ -344,18 +388,11 @@ export default function VoiceDock({
 
           setStatusBoth("listening");
 
-          // Wake-phrase sessions: greet immediately so the user knows it's live
-          if (wakeSession) {
-            ws.send(
-              JSON.stringify({
-                type: "response.create",
-                response: {
-                  instructions:
-                    "The user just woke you with the wake phrase. Say ONLY a very short, warm prompt like \"Yes?\" or \"I'm listening — what's up?\". Nothing else.",
-                },
-              })
-            );
-          }
+          // Opening response — command answer or greeting — sent ONCE after
+          // session.updated confirms our voice/instructions are active
+          // (sending earlier made the greeting use the default voice).
+          // The timeout is a fallback in case session.updated never arrives.
+          setTimeout(sendInitial, 900);
 
           const data = new Uint8Array(analyser.frequencyBinCount);
           const tick = () => {
@@ -403,6 +440,11 @@ export default function VoiceDock({
           try { msg = JSON.parse(evt.data); } catch { return; }
 
           switch (msg.type) {
+            case "session.updated": {
+              // Voice/instructions confirmed active — safe to speak now
+              sendInitial();
+              break;
+            }
             case "response.output_audio.delta":
             case "response.audio.delta": {
               // Drop assistant audio entirely while paused

@@ -137,6 +137,7 @@ function EngineAIContent() {
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voiceTranscriptN, setVoiceTranscriptN] = useState(0);
   const [voiceWakeSession, setVoiceWakeSession] = useState(false);
+  const [voiceWakeCommand, setVoiceWakeCommand] = useState<string | undefined>();
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -577,9 +578,10 @@ function EngineAIContent() {
   // scope — personal MeetingBrain/Slack tools are blocked in team threads).
   // fromWake: session opened by the "Hey Engine" wake phrase — greets
   // immediately and auto-ends after prolonged silence.
-  const handleVoiceStart = async (fromWake = false) => {
+  const handleVoiceStart = async (fromWake = false, wakeCommand?: string) => {
     if (!workspaceId || sending) return;
     setVoiceWakeSession(fromWake);
+    setVoiceWakeCommand(fromWake ? wakeCommand : undefined);
     if (selectedId) {
       setVoiceOpen(true);
       return;
@@ -2415,13 +2417,14 @@ function EngineAIContent() {
           customerId={customerId}
           onTranscriptSaved={() => setVoiceTranscriptN((n) => n + 1)}
           wakeSession={voiceWakeSession}
+          initialCommand={voiceWakeCommand}
         />
       )}
       {/* "Orac" — hands-free wake phrase (local-only listening) */}
       {workspaceId && (
         <WakeMode
           engaged={voiceOpen}
-          onWake={() => handleVoiceStart(true)}
+          onWake={(command) => handleVoiceStart(true, command)}
           onEndConversation={() => {
             setVoiceOpen(false);
             // Pick up the dock's final transcript flush in the thread

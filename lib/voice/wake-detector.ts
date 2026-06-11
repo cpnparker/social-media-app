@@ -21,7 +21,10 @@ import { saveEnrollment } from "./wake-templates";
 export type WakeDetectorState = "loading" | "listening" | "stopped" | "error";
 
 interface WakeDetectorOptions {
-  onWake: () => void;
+  /** command = what the user said AFTER the wake word ("Orac, what meetings
+   *  have I had today" → "what meetings have I had today") so the session
+   *  can answer immediately instead of greeting. */
+  onWake: (command?: string) => void;
   onStateChange?: (state: WakeDetectorState, detail?: string) => void;
   /** 0..1 — model download progress during "loading" */
   onProgress?: (pct: number) => void;
@@ -66,6 +69,28 @@ function oracIsh(text: string): boolean {
     if (i > 0 && ORAC_SECOND.includes(t) && ORAC_FIRST.includes(toks[i - 1])) return true;
   }
   return false;
+}
+
+/** Extract the spoken command following the wake word. If no wake token is
+ *  found in the text but the acoustic match fired (assumeLeadingWake), the
+ *  first word is treated as the (mis-transcribed) wake word. Returns
+ *  undefined when the utterance was just the wake word alone. */
+function stripWakeCommand(text: string, assumeLeadingWake: boolean): string | undefined {
+  const words = text.split(/\s+/).filter(Boolean);
+  const norm = (w: string) => w.toLowerCase().replace(/[^a-z]/g, "");
+  let idx = -1;
+  for (let i = 0; i < words.length && i < 4; i++) {
+    const t = norm(words[i]);
+    if (t.length >= 4 && (t.startsWith("or") || t.startsWith("aur")) && lev(t, "orac") <= 2) { idx = i; break; }
+    if (ORAC_TOKENS.includes(t)) { idx = i; break; }
+    if (i + 1 < words.length && ORAC_FIRST.includes(t) && ORAC_SECOND.includes(norm(words[i + 1]))) { idx = i + 1; break; }
+  }
+  if (idx === -1) {
+    if (!assumeLeadingWake) return undefined;
+    idx = 0; // acoustic wake fired; first word is the mangled "Orac"
+  }
+  const rest = words.slice(idx + 1).join(" ").replace(/^[,.!?\s]+/, "").trim();
+  return rest.split(/\s+/).filter(Boolean).length >= 2 ? rest : undefined;
 }
 
 /** Wake match for "Orac" (with or without a leading "hey").
@@ -138,6 +163,11 @@ export class WakeDetector {
   private cooldownUntil = 0;
   private grayUntil = 0;
   private grayAudio: Float32Array | null = null;
+  /** Interim acoustic hit — wake fires at utterance END so the full spoken
+   *  command ("Orac, what meetings…") is captured and forwarded. */
+  private pendingWake = false;
+  /** Final acoustic hit — transcribe() fires the wake with the command. */
+  private wakeViaTemplate = false;
   /** Enrolled voice templates (MFCC features). When present, template
    *  matching is the PRIMARY wake signal; ASR text match stays as backup. */
   private templates: WakeTemplate[] = [];
@@ -179,11 +209,13 @@ export class WakeDetector {
     });
   }
 
-  private fireWake() {
+  private fireWake(command?: string) {
     if (this.testMode || this.woke) return;
     if (Date.now() < this.cooldownUntil) return; // post-start settle window
     this.woke = true; // single-fire across interim + final decodes
-    this.opts.onWake();
+    this.pendingWake = false;
+    this.wakeViaTemplate = false;
+    this.opts.onWake(command);
   }
 
   /** Template match on an audio window (silence-trimmed); reports + returns
@@ -198,12 +230,11 @@ export class WakeDetector {
       if (s > best) best = s;
     }
     this.opts.onMatchScore?.(best, this.threshold);
-    if (best >= this.threshold) {
-      // NOTE: no learning from score-only wakes — a false positive in the
-      // band would poison the template set and cascade into more false
-      // wakes. Learning requires independent text evidence (see transcribe).
-      this.fireWake();
-    } else if (best >= GRAY_MIN) {
+    // NOTE: no firing here — the caller decides. Wakes are deferred to
+    // utterance end so the spoken command after "Orac" travels with them.
+    // No learning from score-only matches either: a false positive would
+    // poison the template set (learning needs text evidence; see transcribe).
+    if (best < this.threshold && best >= GRAY_MIN) {
       this.grayUntil = Date.now() + GRAY_WINDOW_MS;
       this.grayAudio = trimmed;
     }
@@ -236,6 +267,8 @@ export class WakeDetector {
     this.cooldownUntil = Date.now() + START_COOLDOWN_MS;
     this.grayUntil = 0;
     this.grayAudio = null;
+    this.pendingWake = false;
+    this.wakeViaTemplate = false;
     const gen = ++this.gen;
     this.opts.onStateChange?.("loading");
     try {
@@ -362,10 +395,19 @@ export class WakeDetector {
           } else if (chunk) {
             // Template match on the utterance PREFIX only (wake words lead;
             // matching whole sentences false-fires) + ASR text as backup.
-            // matchTemplates fires the wake internally on a hit.
             const prefix = chunk.length > WAKE_PREFIX_SAMPLES ? chunk.slice(0, WAKE_PREFIX_SAMPLES) : chunk;
-            this.matchTemplates(prefix);
-            if (!this.transcribing) this.transcribe(chunk);
+            const score = this.matchTemplates(prefix);
+            if (score >= this.threshold || this.pendingWake) {
+              this.wakeViaTemplate = true;
+              this.pendingWake = false;
+            }
+            if (!this.transcribing) {
+              this.transcribe(chunk, true); // fires the wake with the command
+            } else if (this.wakeViaTemplate) {
+              // Decoder busy with an interim window — fire without a command
+              // rather than lose the wake.
+              this.fireWake();
+            }
           }
         } else if (
           // Sliding window WHILE speech continues — faster trigger and
@@ -378,9 +420,12 @@ export class WakeDetector {
           this.lastDecodeAt = Date.now();
           const win = this.tailWindow();
           // Interim template match only EARLY in the utterance — once it's
-          // clearly a sentence, only the prefix/final paths may match.
-          if (this.speechMs <= MAX_WAKE_UTTERANCE_MS) this.matchTemplates(win);
-          if (!this.transcribing) this.transcribe(win);
+          // clearly a sentence, only the prefix/final paths may match. A hit
+          // here DEFERS to utterance end so the full command is captured.
+          if (this.speechMs <= MAX_WAKE_UTTERANCE_MS && this.matchTemplates(win) >= this.threshold) {
+            this.pendingWake = true;
+          }
+          if (!this.transcribing) this.transcribe(win, false);
         }
         // Hard cap on idle buffer growth (shouldn't happen, but be safe)
         if (this.bufferedMs > MAX_CHUNK_MS * 2) this.resetVad();
@@ -421,7 +466,7 @@ export class WakeDetector {
     this.inSpeech = false;
   }
 
-  private async transcribe(chunk: Float32Array) {
+  private async transcribe(chunk: Float32Array, isFinal: boolean) {
     this.transcribing = true;
     this.lastDecodeAt = Date.now();
     try {
@@ -435,19 +480,26 @@ export class WakeDetector {
         console.debug(`[WakeDetector] heard: "${text}"`);
         this.opts.onHeard?.(text);
       }
-      if (text && isWakePhrase(text)) {
-        // Text-confirmed wake — learn the gray-zone audio if we have it
-        if (this.grayAudio) this.maybeLearn(this.grayAudio, this.threshold);
-        this.fireWake();
-      } else if (text && this.grayUntil > Date.now() && oracIsh(text)) {
-        // Gray-zone ensemble: acoustic score was just below threshold AND
-        // the local transcript heard something Orac-ish — together, wake.
-        if (this.grayAudio) this.maybeLearn(this.grayAudio, this.threshold);
-        this.grayUntil = 0;
-        this.fireWake();
+      const textWake = !!text && isWakePhrase(text);
+      // Gray-zone ensemble: acoustic score just below threshold AND an
+      // Orac-ish word in the transcript — together, wake.
+      const grayWake = !!text && this.grayUntil > Date.now() && oracIsh(text);
+      if (textWake || grayWake || (isFinal && this.wakeViaTemplate)) {
+        if ((textWake || grayWake) && this.grayAudio) this.maybeLearn(this.grayAudio, this.threshold);
+        if (grayWake) this.grayUntil = 0;
+        if (isFinal) {
+          // Forward what was said after the wake word so the session answers
+          // immediately instead of greeting.
+          const command = text ? stripWakeCommand(text, this.wakeViaTemplate && !textWake) : undefined;
+          this.fireWake(command);
+        } else {
+          this.pendingWake = true; // defer to utterance end for the command
+        }
       }
     } catch (err: any) {
       console.debug("[WakeDetector] transcription failed:", err?.message || err);
+      // Don't lose an acoustically-confirmed wake to a decode error
+      if (isFinal && this.wakeViaTemplate) this.fireWake();
     } finally {
       this.transcribing = false;
     }

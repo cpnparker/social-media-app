@@ -33,8 +33,9 @@ const PREF_KEY = "engineai-wake-armed";
 const CONSENT_KEY = "engineai-wake-consent";
 
 interface WakeModeProps {
-  /** Called when the wake phrase fires — open the voice session. */
-  onWake: () => void;
+  /** Called when the wake phrase fires — open the voice session. command =
+   *  what the user said after "Orac", to be answered immediately. */
+  onWake: (command?: string) => void;
   /** True while a voice session is active — detection pauses, then rearms. */
   engaged: boolean;
   /** Called when the user disarms while a conversation is open — the
@@ -69,7 +70,7 @@ export default function WakeMode({ onWake, engaged, onEndConversation }: WakeMod
   const getDetector = useCallback(() => {
     if (!detectorRef.current) {
       detectorRef.current = new WakeDetector({
-        onWake: () => {
+        onWake: (command?: string) => {
           if (engagedRef.current) return;
           // Chime — two quick rising tones, then hand off to the session
           try {
@@ -94,7 +95,7 @@ export default function WakeMode({ onWake, engaged, onEndConversation }: WakeMod
           setTimeout(() => setJustWoke(false), 1500);
           // Pause local listening while the cloud session runs
           detectorRef.current?.stop();
-          onWakeRef.current();
+          onWakeRef.current(command);
         },
         onStateChange: (s, detail) => {
           setState(s);
