@@ -357,8 +357,11 @@ export default function VoiceDock({
               JSON.stringify({
                 type: "response.create",
                 response: {
+                  // NOTE: response-level instructions REPLACE the session
+                  // instructions for this turn — restate the rules that must
+                  // hold for every spoken turn (English, consistent voice).
                   instructions:
-                    "The user just woke you with the wake phrase. Say ONLY a very short, warm prompt like \"Yes?\" or \"I'm listening — what's up?\". Nothing else.",
+                    "The user just woke you with the wake phrase. Say ONLY a very short, warm prompt like \"Yes?\" or \"I'm listening — what's up?\". Nothing else. Speak English, in your natural default voice — exactly the same voice as the rest of the conversation.",
                 },
               })
             );
