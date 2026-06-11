@@ -40,6 +40,11 @@ const COMMAND_RMS = 0.008;
 
 const ORT_CDN = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
 const MODELS_BASE = "/models/";
+// Bump on every model retrain/redeploy — busts browser/CDN caches of the
+// .onnx files (a stale cached model fails session creation with
+// "protobuf parsing failed").
+const MODELS_VERSION = "2";
+const modelUrl = (name: string) => `${MODELS_BASE}${name}?v=${MODELS_VERSION}`;
 
 interface OwwDetectorOptions {
   /** getCommandAudio resolves with 16kHz audio spoken after the wake word
@@ -53,7 +58,7 @@ interface OwwDetectorOptions {
 /** Are the trained model files deployed? Decides which engine WakeMode uses. */
 export async function owwModelsAvailable(): Promise<boolean> {
   try {
-    const res = await fetch(`${MODELS_BASE}orac.onnx`, { method: "HEAD" });
+    const res = await fetch(modelUrl("orac.onnx"), { method: "HEAD" });
     return res.ok;
   } catch {
     return false;
@@ -131,7 +136,7 @@ export class OwwWakeDetector {
       if (this.stopped || gen !== this.gen) return;
 
       const load = async (name: string, idx: number, total: number) => {
-        const sess = await this.ort.InferenceSession.create(`${MODELS_BASE}${name}`, {
+        const sess = await this.ort.InferenceSession.create(modelUrl(name), {
           executionProviders: ["wasm"],
         });
         this.opts.onProgress?.((idx + 1) / total);
