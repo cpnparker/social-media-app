@@ -45,6 +45,12 @@ directly; paste it into their current notebook if needed.
 
 ## After training completes (self-contained — no chat context needed)
 
+> Note: cell 5 may end with `ModuleNotFoundError: No module named 'onnx_tf'`.
+> That is the optional ONNX→TFLite conversion at the very end of train.py —
+> we only use the ONNX file, which is already written to
+> `/content/orac_model/orac.onnx` by that point (the log shows
+> "Translate the graph into ONNX... ✅" first). Ignore it and continue.
+
 ### 1. Get the models out of Colab
 - Run **cell 6** → downloads `orac_wake_models.zip`.
 - If cell 6 errors on the bundle step, the three files can be collected
