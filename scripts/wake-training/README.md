@@ -51,6 +51,13 @@ directly; paste it into their current notebook if needed.
 > `/content/orac_model/orac.onnx` by that point (the log shows
 > "Translate the graph into ONNX... ✅" first). Ignore it and continue.
 
+> Note: newer torch exporters write the classifier as `orac.onnx` (graph,
+> ~14KB) + `orac.onnx.data` (weights). The browser needs ONE self-contained
+> file — cell 6 merges them automatically. If you ever grab the file
+> manually and it's only a few KB, merge first:
+> `m = onnx.load(path); convert_model_from_external_data(m); onnx.save(m, out)`
+> (from `onnx.external_data_helper`). A healthy merged orac.onnx is >100KB.
+
 ### 1. Get the models out of Colab
 - Run **cell 6** → downloads `orac_wake_models.zip`.
 - If cell 6 errors on the bundle step, the three files can be collected
