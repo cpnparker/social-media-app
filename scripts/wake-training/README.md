@@ -93,6 +93,13 @@ browsers that cached the previous .onnx would otherwise fail with
 - False wakes → raise to 0.6–0.7.
 - Misses → lower to 0.4, or retrain with `n_samples: 8000`.
 
+### Hands-free smoke test (no human voice needed)
+With the page armed, play a synthesized wake word through the speakers:
+`say -v Daniel "orack"` (macOS, en-GB voice). The mic picks it up and the
+wake should fire (verified 2026-06-11: scores ~0.68 vs threshold 0.5).
+The en-US voices score near 0 — the model is pronunciation-sensitive,
+which is expected and good.
+
 ### 5. If arming shows an error
 Open the browser console (View → Developer → JavaScript Console) and look
 for `[OwwDetector]` lines. Most likely cause on first run: a tensor-shape
