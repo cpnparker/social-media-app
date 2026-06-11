@@ -42,3 +42,59 @@ truth is the official notebook:
 https://github.com/dscripka/openWakeWord/blob/main/notebooks/automatic_model_training.ipynb
 — our config (target phrases, British voices, sample counts) transfers
 directly; paste it into their current notebook if needed.
+
+## After training completes (self-contained — no chat context needed)
+
+### 1. Get the models out of Colab
+- Run **cell 6** → downloads `orac_wake_models.zip`.
+- If cell 6 errors on the bundle step, the three files can be collected
+  manually from the Colab file browser:
+  - `/content/orac_model/orac.onnx` (search `orac.onnx` under /content/orac_model)
+  - `/content/openWakeWord/openwakeword/resources/models/melspectrogram.onnx`
+  - `/content/openWakeWord/openwakeword/resources/models/embedding_model.onnx`
+
+### 2. Deploy
+```bash
+# unzip, then from the repo root:
+cp ~/Downloads/orac.onnx ~/Downloads/melspectrogram.onnx ~/Downloads/embedding_model.onnx public/models/
+git add public/models && git commit -m "Add trained Orac wake model" && git push
+```
+Wait for the Vercel deploy to go green.
+
+### 3. Test
+1. Open EngineAI, hard-reload the tab.
+2. Click the Orac pill to arm. First arm downloads ~3MB (progress in the
+   pill). There is NO enrollment step with the trained engine — it goes
+   straight to listening. (The ⚙ tune button disappears: that's expected,
+   it belongs to the old whisper engine.)
+3. Say "Orac" → chime + "Yes?". Say "Orac, what meetings have I had
+   today?" in one breath → chime, then it answers directly (the spoken
+   command audio is flushed into the session).
+4. The floating readout shows the live classifier score (0–100%).
+   Ambient noise should idle near 0; a deliberate "Orac" should spike.
+
+### 4. Tune (one number)
+`WAKE_SCORE_THRESHOLD` in `lib/voice/oww-detector.ts` (default 0.5):
+- False wakes → raise to 0.6–0.7.
+- Misses → lower to 0.4, or retrain with `n_samples: 8000`.
+
+### 5. If arming shows an error
+Open the browser console (View → Developer → JavaScript Console) and look
+for `[OwwDetector]` lines. Most likely cause on first run: a tensor-shape
+mismatch between the trained classifier and the engine's constants
+(`MEL_WINDOW`/`MEL_STEP`/`EMB_WINDOW`/`EMB_DIM` in
+`lib/voice/oww-detector.ts` — sized for total_length 32000 = 16
+embeddings × 96 dims). Give the console output + this note to Claude.
+
+### Rollback
+Delete the three files from `public/models/` and push — the app
+automatically falls back to the previous Whisper-based detector
+(enrollment via the ⚙ button).
+
+### Architecture context for future sessions
+- Voice roadmap: `docs/voice-roadmap.md`
+- Wake engine (trained): `lib/voice/oww-detector.ts`
+- Wake engine (fallback): `lib/voice/wake-detector.ts` + `lib/voice/mel.ts`
+- UI/arming: `components/ai-writer/WakeMode.tsx`
+- Conversation dock: `components/ai-writer/VoiceDock.tsx`
+- Voice session backend: `app/api/ai/voice/*`, config in `lib/ai/voice.ts`
