@@ -138,6 +138,7 @@ function EngineAIContent() {
   const [voiceTranscriptN, setVoiceTranscriptN] = useState(0);
   const [voiceWakeSession, setVoiceWakeSession] = useState(false);
   const [voiceWakeCommand, setVoiceWakeCommand] = useState<string | undefined>();
+  const voiceWakeAudioRef = useRef<(() => Promise<Float32Array | null>) | undefined>(undefined);
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -578,10 +579,15 @@ function EngineAIContent() {
   // scope — personal MeetingBrain/Slack tools are blocked in team threads).
   // fromWake: session opened by the "Hey Engine" wake phrase — greets
   // immediately and auto-ends after prolonged silence.
-  const handleVoiceStart = async (fromWake = false, wakeCommand?: string) => {
+  const handleVoiceStart = async (
+    fromWake = false,
+    wakeCommand?: string,
+    wakeAudio?: () => Promise<Float32Array | null>
+  ) => {
     if (!workspaceId || sending) return;
     setVoiceWakeSession(fromWake);
     setVoiceWakeCommand(fromWake ? wakeCommand : undefined);
+    voiceWakeAudioRef.current = fromWake ? wakeAudio : undefined;
     if (selectedId) {
       setVoiceOpen(true);
       return;
@@ -2418,13 +2424,14 @@ function EngineAIContent() {
           onTranscriptSaved={() => setVoiceTranscriptN((n) => n + 1)}
           wakeSession={voiceWakeSession}
           initialCommand={voiceWakeCommand}
+          initialAudioPromise={voiceWakeAudioRef.current}
         />
       )}
       {/* "Orac" — hands-free wake phrase (local-only listening) */}
       {workspaceId && (
         <WakeMode
           engaged={voiceOpen}
-          onWake={(command) => handleVoiceStart(true, command)}
+          onWake={(command, commandAudio) => handleVoiceStart(true, command, commandAudio)}
           onEndConversation={() => {
             setVoiceOpen(false);
             // Pick up the dock's final transcript flush in the thread

@@ -36,6 +36,9 @@ interface VoiceDockProps {
   /** What the user said after the wake word ("Orac, what meetings…") —
    *  answered immediately instead of greeting. */
   initialCommand?: string;
+  /** Raw post-wake command audio (16kHz) from the trained wake engine —
+   *  flushed into the session so the server transcribes it directly. */
+  initialAudioPromise?: () => Promise<Float32Array | null>;
 }
 
 /** Spoken hard-stop phrases — immediate end, no model round-trip. */
@@ -97,6 +100,7 @@ export default function VoiceDock({
   onTranscriptSaved,
   wakeSession,
   initialCommand,
+  initialAudioPromise,
 }: VoiceDockProps) {
   const [status, setStatus] = useState<VoiceStatus>("connecting");
   const [caption, setCaption] = useState("");
@@ -305,9 +309,35 @@ export default function VoiceDock({
 
         // Opening turn: answer the wake-command immediately ("Orac, what
         // meetings have I had today") or give the short wake greeting.
-        const sendInitial = () => {
+        const sendInitial = async () => {
           if (initialSentRef.current || ws.readyState !== WebSocket.OPEN) return;
           initialSentRef.current = true;
+          // Trained wake engine: flush the raw post-wake command audio into
+          // the session — server-grade STT hears the command directly.
+          if (initialAudioPromise) {
+            const timeout = new Promise<null>((r) => setTimeout(() => r(null), 8000));
+            const audio = await Promise.race([initialAudioPromise(), timeout]);
+            if (closingRef.current || ws.readyState !== WebSocket.OPEN) return;
+            if (audio && audio.length > 0) {
+              const rate = audioCtxRef.current?.sampleRate || 24000;
+              const { resampleLinear } = await import("@/lib/voice/oww-detector");
+              const resampled = resampleLinear(audio, 16000, rate);
+              // Send in ~100ms chunks; server VAD ends the turn on the
+              // trailing silence and responds.
+              const CH = Math.round(rate / 10);
+              for (let off = 0; off < resampled.length; off += CH) {
+                ws.send(
+                  JSON.stringify({
+                    type: "input_audio_buffer.append",
+                    audio: float32ToBase64Pcm16(resampled.subarray(off, Math.min(off + CH, resampled.length))),
+                  })
+                );
+              }
+              setStatusBoth("thinking");
+              return;
+            }
+            // No command captured — fall through to the greeting
+          }
           if (initialCommand) {
             upsertItem("u-init", "user", initialCommand);
             ws.send(

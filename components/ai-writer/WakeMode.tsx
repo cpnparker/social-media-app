@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { WakeDetector, type WakeDetectorState } from "@/lib/voice/wake-detector";
+import { OwwWakeDetector, owwModelsAvailable } from "@/lib/voice/oww-detector";
 import { loadEnrollment } from "@/lib/voice/wake-templates";
 import WakeEnrollment from "./WakeEnrollment";
 
@@ -33,9 +34,11 @@ const PREF_KEY = "engineai-wake-armed";
 const CONSENT_KEY = "engineai-wake-consent";
 
 interface WakeModeProps {
-  /** Called when the wake phrase fires — open the voice session. command =
-   *  what the user said after "Orac", to be answered immediately. */
-  onWake: (command?: string) => void;
+  /** Called when the wake phrase fires — open the voice session.
+   *  command: text spoken after "Orac" (whisper engine).
+   *  commandAudio: raw post-wake audio promise (trained openWakeWord
+   *  engine) — flushed into the session for server-side transcription. */
+  onWake: (command?: string, commandAudio?: () => Promise<Float32Array | null>) => void;
   /** True while a voice session is active — detection pauses, then rearms. */
   engaged: boolean;
   /** Called when the user disarms while a conversation is open — the
@@ -55,6 +58,10 @@ export default function WakeMode({ onWake, engaged, onEndConversation }: WakeMod
   const heardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const matchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const detectorRef = useRef<WakeDetector | null>(null);
+  const owwRef = useRef<OwwWakeDetector | null>(null);
+  /** null = not checked yet; cached for the session */
+  const owwAvailableRef = useRef<boolean | null>(null);
+  const [engine, setEngine] = useState<"whisper" | "oww" | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
   const tabIdRef = useRef(`${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const armedRef = useRef(false);
@@ -67,36 +74,44 @@ export default function WakeMode({ onWake, engaged, onEndConversation }: WakeMod
   const onWakeRef = useRef(onWake);
   onWakeRef.current = onWake;
 
+  /** Shared wake handoff: chime, pause local listening, open the session. */
+  const fireWakeUx = useCallback(
+    (command?: string, commandAudio?: () => Promise<Float32Array | null>) => {
+      if (engagedRef.current) return;
+      // Chime — two quick rising tones, then hand off to the session
+      try {
+        const ctx = new AudioContext();
+        const beep = (freq: number, at: number) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.frequency.value = freq;
+          osc.type = "sine";
+          gain.gain.setValueAtTime(0.0001, ctx.currentTime + at);
+          gain.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + at + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + at + 0.18);
+          osc.connect(gain).connect(ctx.destination);
+          osc.start(ctx.currentTime + at);
+          osc.stop(ctx.currentTime + at + 0.2);
+        };
+        beep(660, 0);
+        beep(990, 0.12);
+        setTimeout(() => ctx.close().catch(() => undefined), 600);
+      } catch { /* chime is best-effort */ }
+      setJustWoke(true);
+      setTimeout(() => setJustWoke(false), 1500);
+      // Pause local listening while the cloud session runs. The trained
+      // engine keeps its mic open briefly to finish capturing the command —
+      // it stops itself when the capture resolves.
+      if (!commandAudio) detectorRef.current?.stop();
+      onWakeRef.current(command, commandAudio);
+    },
+    []
+  );
+
   const getDetector = useCallback(() => {
     if (!detectorRef.current) {
       detectorRef.current = new WakeDetector({
-        onWake: (command?: string) => {
-          if (engagedRef.current) return;
-          // Chime — two quick rising tones, then hand off to the session
-          try {
-            const ctx = new AudioContext();
-            const beep = (freq: number, at: number) => {
-              const osc = ctx.createOscillator();
-              const gain = ctx.createGain();
-              osc.frequency.value = freq;
-              osc.type = "sine";
-              gain.gain.setValueAtTime(0.0001, ctx.currentTime + at);
-              gain.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + at + 0.02);
-              gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + at + 0.18);
-              osc.connect(gain).connect(ctx.destination);
-              osc.start(ctx.currentTime + at);
-              osc.stop(ctx.currentTime + at + 0.2);
-            };
-            beep(660, 0);
-            beep(990, 0.12);
-            setTimeout(() => ctx.close().catch(() => undefined), 600);
-          } catch { /* chime is best-effort */ }
-          setJustWoke(true);
-          setTimeout(() => setJustWoke(false), 1500);
-          // Pause local listening while the cloud session runs
-          detectorRef.current?.stop();
-          onWakeRef.current(command);
-        },
+        onWake: (command?: string) => fireWakeUx(command),
         onStateChange: (s, detail) => {
           setState(s);
           if (s === "error" && detail) toast.error(detail);
@@ -124,10 +139,50 @@ export default function WakeMode({ onWake, engaged, onEndConversation }: WakeMod
     return detectorRef.current;
   }, []);
 
+  /** Start the best available engine: trained openWakeWord model when its
+   *  files are deployed (no enrollment needed), else the Whisper fallback. */
+  const startEngine = useCallback(async () => {
+    if (engagedRef.current || !armedRef.current) return;
+    if (owwAvailableRef.current === null) {
+      owwAvailableRef.current = await owwModelsAvailable();
+    }
+    if (!armedRef.current || engagedRef.current) return; // re-check after await
+    if (owwAvailableRef.current) {
+      setEngine("oww");
+      if (!owwRef.current) {
+        owwRef.current = new OwwWakeDetector({
+          onWake: (getCommandAudio) => fireWakeUx(undefined, getCommandAudio),
+          onStateChange: (s, detail) => {
+            setState(s);
+            if (s === "error" && detail) toast.error(detail);
+          },
+          onProgress: setProgress,
+          onMatchScore: (score, threshold) => {
+            setMatch({ score, threshold });
+            if (matchTimerRef.current) clearTimeout(matchTimerRef.current);
+            matchTimerRef.current = setTimeout(() => setMatch(null), 4000);
+          },
+        });
+      }
+      owwRef.current.start();
+    } else {
+      setEngine("whisper");
+      const det = getDetector();
+      // First arm without enrolled voice templates → run the enrollment flow
+      // (detector starts in test mode so nothing fires during setup)
+      if (!loadEnrollment()) {
+        det.setTestMode(true);
+        setEnrollOpen(true);
+      }
+      det.start();
+    }
+  }, [getDetector, fireWakeUx]);
+
   const disarm = useCallback((persist = true) => {
     armedRef.current = false;
     setArmed(false);
     detectorRef.current?.stop();
+    owwRef.current?.stop();
     if (persist) try { localStorage.setItem(PREF_KEY, "0"); } catch { /* noop */ }
   }, []);
 
@@ -137,15 +192,8 @@ export default function WakeMode({ onWake, engaged, onEndConversation }: WakeMod
     try { localStorage.setItem(PREF_KEY, "1"); } catch { /* noop */ }
     // Claim the multi-tab lock — other tabs disarm
     channelRef.current?.postMessage({ type: "claim", tab: tabIdRef.current });
-    const det = getDetector();
-    // First arm without enrolled voice templates → run the enrollment flow
-    // (detector starts in test mode so nothing fires during setup)
-    if (!loadEnrollment()) {
-      det.setTestMode(true);
-      setEnrollOpen(true);
-    }
-    if (!engagedRef.current) det.start();
-  }, [getDetector]);
+    void startEngine();
+  }, [startEngine]);
 
   const openEnrollment = useCallback(() => {
     const det = getDetector();
@@ -190,10 +238,11 @@ export default function WakeMode({ onWake, engaged, onEndConversation }: WakeMod
     if (!armedRef.current) return;
     if (engaged) {
       detectorRef.current?.stop();
+      owwRef.current?.stop();
     } else {
-      getDetector().start();
+      void startEngine();
     }
-  }, [engaged, getDetector]);
+  }, [engaged, startEngine]);
 
   // Multi-tab lock + restore persisted preference
   useEffect(() => {
@@ -212,10 +261,11 @@ export default function WakeMode({ onWake, engaged, onEndConversation }: WakeMod
       armedRef.current = true;
       setArmed(true);
       ch.postMessage({ type: "claim", tab: tabIdRef.current });
-      if (!engagedRef.current) getDetector().start();
+      void startEngine();
     }
     return () => {
       detectorRef.current?.stop();
+      owwRef.current?.stop();
       ch.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -240,7 +290,7 @@ export default function WakeMode({ onWake, engaged, onEndConversation }: WakeMod
           </div>
         )}
         <div className="flex items-center gap-1.5">
-        {armed && !engaged && (
+        {armed && !engaged && engine === "whisper" && (
           <button
             onClick={openEnrollment}
             title="Tune Orac — redo voice enrollment"
