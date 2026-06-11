@@ -54,10 +54,18 @@ const ORAC_FIRST = ["oh", "o", "or", "aw", "ore", "oar", "your"];
 const ORAC_SECOND = ["rack", "rac", "rak", "wrack", "ack", "rock"];
 
 /** Looser Orac-ish check used ONLY to confirm a gray-zone acoustic match —
- *  both signals together justify a wake that neither alone would. */
+ *  both signals together justify a wake that neither alone would.
+ *  MUST start with "or"/"aur": plain first-letter matching let "okay"
+ *  (lev 2 from orac, whisper's favourite noise hallucination) confirm any
+ *  ambient sound that scored 0.6 — the random-wake bug. */
 function oracIsh(text: string): boolean {
   const toks = text.toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/).filter(Boolean);
-  return toks.some((t) => t.length >= 4 && (t[0] === "o" || t[0] === "a") && lev(t, "orac") <= 2);
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t.length >= 4 && (t.startsWith("or") || t.startsWith("aur")) && lev(t, "orac") <= 2) return true;
+    if (i > 0 && ORAC_SECOND.includes(t) && ORAC_FIRST.includes(toks[i - 1])) return true;
+  }
+  return false;
 }
 
 /** Wake match for "Orac" (with or without a leading "hey").
@@ -191,7 +199,9 @@ export class WakeDetector {
     }
     this.opts.onMatchScore?.(best, this.threshold);
     if (best >= this.threshold) {
-      this.maybeLearn(trimmed, best);
+      // NOTE: no learning from score-only wakes — a false positive in the
+      // band would poison the template set and cascade into more false
+      // wakes. Learning requires independent text evidence (see transcribe).
       this.fireWake();
     } else if (best >= GRAY_MIN) {
       this.grayUntil = Date.now() + GRAY_WINDOW_MS;
@@ -200,12 +210,11 @@ export class WakeDetector {
     return best;
   }
 
-  /** Add a confirmed wake utterance as a template — the set learns the
+  /** Add a TEXT-CONFIRMED wake utterance as a template — the set learns the
    *  user's voice across sessions/mics instead of degrading. */
   private maybeLearn(trimmedAudio: Float32Array, score: number) {
     if (this.testMode || this.templates.length >= MAX_TEMPLATES) return;
-    // Strong matches add little; learn from the informative band just above
-    // threshold (session-drifted positives) and from text-confirmed wakes.
+    // Strong matches add little; learn from the informative band.
     if (score > this.threshold + 0.12) return;
     try {
       const features = extractFeatures(trimmedAudio);

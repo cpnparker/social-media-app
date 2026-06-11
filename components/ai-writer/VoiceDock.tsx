@@ -102,6 +102,13 @@ export default function VoiceDock({
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  // Playback is routed through an <audio> element: Chrome's echo cancellation
+  // only includes MEDIA ELEMENT output in its reference signal — raw WebAudio
+  // destination output is NOT cancelled from the mic, so on speakers the
+  // assistant heard itself and barged in on its own replies.
+  const mediaDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const elementOutOkRef = useRef(false);
   const micStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -209,6 +216,12 @@ export default function VoiceDock({
     try { micSourceRef.current?.disconnect(); } catch { /* noop */ }
     micStreamRef.current?.getTracks().forEach((t) => t.stop());
     micStreamRef.current = null;
+    try {
+      audioElRef.current?.pause();
+      if (audioElRef.current) audioElRef.current.srcObject = null;
+    } catch { /* noop */ }
+    audioElRef.current = null;
+    mediaDestRef.current = null;
     audioCtxRef.current?.close().catch(() => { /* noop */ });
     audioCtxRef.current = null;
   }, [flushPlayback, persistTranscript]);
@@ -260,6 +273,23 @@ export default function VoiceDock({
         const ctx = new AudioContext({ sampleRate: cfg.sampleRate || 24000 });
         audioCtxRef.current = ctx;
         playCursorRef.current = ctx.currentTime;
+
+        // Echo-cancellable playback path (see refs above). If autoplay is
+        // blocked we fall back to direct WebAudio output — audible, but AEC
+        // won't cancel it (headphones recommended in that case).
+        const mediaDest = ctx.createMediaStreamDestination();
+        mediaDestRef.current = mediaDest;
+        const audioEl = new Audio();
+        audioEl.srcObject = mediaDest.stream;
+        audioElRef.current = audioEl;
+        elementOutOkRef.current = false;
+        audioEl
+          .play()
+          .then(() => { elementOutOkRef.current = true; })
+          .catch(() => {
+            console.warn("[Voice] Element playback blocked — falling back to direct output (no AEC)");
+            elementOutOkRef.current = false;
+          });
 
         const ws = new WebSocket(cfg.wsUrl, [`xai-client-secret.${cfg.token}`]);
         wsRef.current = ws;
@@ -387,7 +417,12 @@ export default function VoiceDock({
               buf.getChannelData(0).set(f32);
               const src = audioCtx.createBufferSource();
               src.buffer = buf;
-              src.connect(audioCtx.destination);
+              // Echo-cancellable element path when available, else direct
+              src.connect(
+                elementOutOkRef.current && mediaDestRef.current
+                  ? mediaDestRef.current
+                  : audioCtx.destination
+              );
               const startAt = Math.max(playCursorRef.current, audioCtx.currentTime + 0.02);
               src.start(startAt);
               playCursorRef.current = startAt + buf.duration;
