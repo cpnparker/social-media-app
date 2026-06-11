@@ -21,6 +21,7 @@ export function middleware(req: NextRequest) {
     pathname.startsWith("/register") ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/assets") ||
+    pathname.startsWith("/models/") || // wake-word .onnx files — must serve raw on every subdomain
     pathname === "/favicon.ico" ||
     pathname === "/manifest.webmanifest" ||
     pathname === "/sw.js";

@@ -59,7 +59,10 @@ interface OwwDetectorOptions {
 export async function owwModelsAvailable(): Promise<boolean> {
   try {
     const res = await fetch(modelUrl("orac.onnx"), { method: "HEAD" });
-    return res.ok;
+    // A redirect or an HTML content-type means a router/middleware swallowed
+    // the path — the file isn't truly being served; fall back to whisper.
+    const type = res.headers.get("content-type") || "";
+    return res.ok && !res.redirected && !type.includes("text/html");
   } catch {
     return false;
   }
