@@ -85,13 +85,25 @@ export class WakeDetector {
   private inSpeech = false;
   private transcribing = false;
   private stopped = true;
+  /** True from start() until stop() — makes start() idempotent. */
+  private running = false;
+  /** Bumped by stop() to cancel starts that are mid-await. */
+  private gen = 0;
+  /** EVERY mic stream ever acquired — stop() kills them all. A start/stop
+   *  race must never be able to leak a live microphone. */
+  private allStreams = new Set<MediaStream>();
 
   constructor(opts: WakeDetectorOptions) {
     this.opts = opts;
   }
 
   async start() {
+    // Idempotent: callers (React effects re-running, rapid toggles) must not
+    // be able to stack concurrent starts — that's how mic streams leak.
+    if (this.running) return;
+    this.running = true;
     this.stopped = false;
+    const gen = ++this.gen;
     this.opts.onStateChange?.("loading");
     try {
       // Lazy-load the ASR model (~40MB once, then IndexedDB-cached).
@@ -140,9 +152,9 @@ export class WakeDetector {
           await this.asr(new Float32Array(8000));
         } catch { /* warmup is best-effort */ }
       }
-      if (this.stopped) return;
+      if (this.stopped || gen !== this.gen) return;
 
-      this.stream = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
@@ -150,10 +162,15 @@ export class WakeDetector {
           channelCount: 1,
         },
       });
-      if (this.stopped) {
-        this.stream.getTracks().forEach((t) => t.stop());
+      // Register BEFORE any further await/assignment — stop() must always
+      // be able to find and kill this stream, even mid-race.
+      this.allStreams.add(stream);
+      if (this.stopped || gen !== this.gen) {
+        stream.getTracks().forEach((t) => t.stop());
+        this.allStreams.delete(stream);
         return;
       }
+      this.stream = stream;
 
       this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
       this.source = this.ctx.createMediaStreamSource(this.stream);
@@ -259,9 +276,14 @@ export class WakeDetector {
   /** Fully stop: release mic, keep the loaded model for instant re-arm. */
   stop() {
     this.stopped = true;
+    this.running = false;
+    this.gen++; // cancels any start() that's mid-await
     try { this.processor?.disconnect(); } catch { /* noop */ }
     try { this.source?.disconnect(); } catch { /* noop */ }
-    this.stream?.getTracks().forEach((t) => t.stop());
+    // Kill EVERY stream ever acquired, not just the current reference —
+    // a leaked live mic after "off" is a privacy failure, never acceptable.
+    this.allStreams.forEach((s) => s.getTracks().forEach((t) => t.stop()));
+    this.allStreams.clear();
     this.stream = null;
     this.ctx?.close().catch(() => { /* noop */ });
     this.ctx = null;

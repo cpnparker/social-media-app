@@ -51,6 +51,12 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
   const armedRef = useRef(false);
   const engagedRef = useRef(false);
   engagedRef.current = engaged;
+  // Stable identity for the wake callback: the page passes an inline
+  // function (new identity every render), and using it directly in effect
+  // deps made the rearm effect re-run start() on EVERY render — leaking a
+  // fresh mic stream each time (Chrome kept "recording" after disarm).
+  const onWakeRef = useRef(onWake);
+  onWakeRef.current = onWake;
 
   const getDetector = useCallback(() => {
     if (!detectorRef.current) {
@@ -80,13 +86,15 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
           setTimeout(() => setJustWoke(false), 1500);
           // Pause local listening while the cloud session runs
           detectorRef.current?.stop();
-          onWake();
+          onWakeRef.current();
         },
         onStateChange: (s, detail) => {
           setState(s);
           if (s === "error" && detail) toast.error(detail);
         },
         onProgress: setProgress,
+        // (all callbacks above close over refs/setters only — getDetector
+        // must stay dependency-free so its identity is stable)
         // Show what the local model heard — builds trust ("it IS listening")
         // and makes mis-transcriptions visible. Stays on-device.
         onHeard: (text) => {
@@ -97,7 +105,7 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
       });
     }
     return detectorRef.current;
-  }, [onWake]);
+  }, []);
 
   const disarm = useCallback((persist = true) => {
     armedRef.current = false;
