@@ -191,6 +191,12 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "EngineAI Auto",
     description: "Best model for each query",
   },
+  "claude-fable-5": {
+    provider: "anthropic",
+    apiModel: "claude-fable-5",
+    label: "Claude Fable 5",
+    description: "Anthropic's most powerful model",
+  },
   "claude-opus-4-8": {
     provider: "anthropic",
     apiModel: "claude-opus-4-8",
@@ -238,6 +244,12 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     apiModel: "grok-4-1-fast-non-reasoning",
     label: "Grok 4 Fast",
     description: "Fast, affordable, web search",
+  },
+  "grok-4-3": {
+    provider: "xai",
+    apiModel: "grok-4.3",
+    label: "Grok 4.3",
+    description: "xAI's flagship — strong & affordable",
   },
   "deepseek-chat": {
     provider: "deepseek",

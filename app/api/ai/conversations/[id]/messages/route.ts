@@ -22,6 +22,9 @@ export const maxDuration = 300; // 5 min — covers slow attachment extractions 
 
 // ── Cost calculation for usage tracking ──
 const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> = {
+  // Fable 5 note: classifier-flagged queries are served (and billed) as
+  // Opus 4.8 by Anthropic — our per-model rate slightly overestimates those.
+  "claude-fable-5": { inputPer1M: 1000, outputPer1M: 5000 },         // $10/$50
   "claude-opus-4-8": { inputPer1M: 500, outputPer1M: 2500 },         // $5/$25
   "claude-opus-4-7": { inputPer1M: 500, outputPer1M: 2500 },         // $5/$25 (legacy → opus-4-8)
   "claude-sonnet-4-6": { inputPer1M: 300, outputPer1M: 1500 },       // $3/$15
@@ -31,6 +34,7 @@ const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> =
   "gpt-4o-mini": { inputPer1M: 15, outputPer1M: 60 },                // $0.15/$0.60
   "gpt-4.1": { inputPer1M: 200, outputPer1M: 800 },                  // $2/$8
   "grok-4-1-fast": { inputPer1M: 20, outputPer1M: 50 },              // $0.20/$0.50
+  "grok-4-3": { inputPer1M: 125, outputPer1M: 250 },                 // $1.25/$2.50
   "grok-3": { inputPer1M: 300, outputPer1M: 1500 },                  // $3/$15
   "grok-4": { inputPer1M: 200, outputPer1M: 1000 },                  // $2/$10
   "mistral-large-latest": { inputPer1M: 200, outputPer1M: 600 },     // $2/$6

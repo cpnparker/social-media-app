@@ -136,6 +136,7 @@ function formatTokens(n: number): string {
 }
 
 const MODEL_LABELS: Record<string, string> = {
+  "claude-fable-5": "Claude Fable 5",
   "claude-opus-4-8": "Claude Opus 4.8",
   "claude-opus-4-7": "Claude Opus 4.7",
   "claude-sonnet-4-6": "Claude Sonnet 4.6",
@@ -149,6 +150,8 @@ const MODEL_LABELS: Record<string, string> = {
   "gpt-4o-mini": "GPT-4o Mini",
   "grok-4-1-fast-non-reasoning": "Grok 4 Fast",
   "grok-4-1-fast": "Grok 4 Fast",
+  "grok-4-3": "Grok 4.3",
+  "grok-4.3": "Grok 4.3",
   "grok-3-fast": "Grok 3 Fast",
   "grok-3-mini": "Grok 3 Mini",
   "grok-3": "Grok 3 (Legacy)",
@@ -158,10 +161,13 @@ const MODEL_LABELS: Record<string, string> = {
 
 const CHART_COLORS: Record<string, string> = {
   "grok-4-1-fast-non-reasoning": "#00D4AA",
+  "grok-4-3": "#0EA5E9",
+  "grok-4.3": "#0EA5E9",
   "grok-3-fast": "#60A5FA",
   "grok-3-mini": "#93C5FD",
   "grok-imagine-image": "#818CF8",
   "grok-3": "#A78BFA",
+  "claude-fable-5": "#9A3412",
   "claude-opus-4-8": "#C2410C",
   "claude-opus-4-7": "#EA580C",
   "claude-sonnet-4-6": "#F97316",
@@ -176,6 +182,7 @@ const CHART_COLORS: Record<string, string> = {
 const DEFAULT_CHART_COLORS = ["#6366F1", "#8B5CF6", "#06B6D4", "#14B8A6", "#F59E0B", "#EF4444", "#84CC16", "#E879F9"];
 
 const MODEL_COLORS: Record<string, string> = {
+  "claude-fable-5": "bg-orange-800",
   "claude-opus-4-8": "bg-orange-700",
   "claude-opus-4-7": "bg-orange-600",
   "claude-sonnet-4-6": "bg-orange-500",
