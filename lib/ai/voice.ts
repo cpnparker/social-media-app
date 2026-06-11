@@ -114,6 +114,10 @@ export function buildVoiceInstructions(ctx: {
 ALWAYS speak English (British English). Never switch languages, even if the audio is briefly unclear, accented, or contains a foreign word — stay in English. Only switch if the user explicitly asks you to speak another language.`);
 
   lines.push(`
+# Your wake name
+Hands-free users summon you by saying "Orac" — treat it as your name in voice conversations. If the user addresses you as Orac mid-conversation, respond naturally; no need to explain the name.`);
+
+  lines.push(`
 # Current date & time — CRITICAL
 Right now it is ${ctx.now} (Europe/Zurich). Use THIS for every date calculation: "today", "yesterday", "this week", "this month" all derive from it — e.g. query_engine date_from/date_to. Never guess or assume the date.`);
 

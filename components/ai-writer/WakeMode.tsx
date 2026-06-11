@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Wake Phrase Mode — "Hey Engine".
+ * Wake Phrase Mode — "Orac" (the wake name; "Hey Orac" works too).
  *
  * A self-contained floating control (bottom-right) that arms hands-free
  * voice activation:
@@ -149,7 +149,7 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
     ch.onmessage = (e) => {
       if (e.data?.type === "claim" && e.data.tab !== tabIdRef.current && armedRef.current) {
         disarm(false); // another tab took over; don't clear the preference
-        toast.info("Hey Engine moved to your other tab");
+        toast.info("Orac moved to your other tab");
       }
     };
     let saved = false;
@@ -185,8 +185,8 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
           onClick={handleToggle}
           title={
             armed
-              ? "Hey Engine is on — listening locally. Click to turn off."
-              : 'Enable "Hey Engine" hands-free voice'
+              ? "Orac is listening locally — say \"Orac\" to start a conversation. Click to turn off."
+              : 'Enable "Orac" hands-free voice'
           }
           className={cn(
             "group flex items-center gap-2 rounded-full border shadow-lg pl-2.5 pr-3 py-2 text-xs font-medium transition-all",
@@ -220,7 +220,7 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
                 />
               </span>
               <AudioLines className="h-3.5 w-3.5" />
-              {justWoke ? "Yes?" : armed ? (engaged ? "In conversation" : "Hey Engine") : "Hey Engine — off"}
+              {justWoke ? "Yes?" : armed ? (engaged ? "In conversation" : "Orac") : "Orac — off"}
             </>
           )}
         </button>
@@ -232,13 +232,13 @@ export default function WakeMode({ onWake, engaged }: WakeModeProps) {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <ShieldCheck className="h-5 w-5 text-emerald-500" />
-              Enable &ldquo;Hey Engine&rdquo;
+              Enable &ldquo;Orac&rdquo;
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
             <p>
-              With this on, EngineAI listens for the phrase{" "}
-              <strong className="text-foreground">&ldquo;Hey Engine&rdquo;</strong> so you can start a
+              With this on, EngineAI listens for its wake name{" "}
+              <strong className="text-foreground">&ldquo;Orac&rdquo;</strong> so you can start a
               voice conversation hands-free.
             </p>
             <div className="rounded-lg border p-3 space-y-2 text-xs">

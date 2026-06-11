@@ -1,5 +1,5 @@
 /**
- * On-device wake phrase detection — "Hey Engine".
+ * On-device wake phrase detection — "Orac" (also accepts "Hey Orac").
  *
  * PRIVACY: everything in this file runs locally in the browser. Audio is
  * captured into a short rolling buffer, transcribed by a local Whisper-tiny
@@ -26,9 +26,6 @@ interface WakeDetectorOptions {
   onHeard?: (text: string) => void;
 }
 
-// Fast path: common direct transcriptions of the phrase.
-const WAKE_RE = /\b(hey|hay|hei|hi|he|a)[\s,.!]*(engine|enjin|engin|njin)\b/i;
-
 /** Tiny Levenshtein for wake-word fuzzy matching (short words only). */
 function lev(a: string, b: string): number {
   const m = a.length, n = b.length;
@@ -45,19 +42,23 @@ function lev(a: string, b: string): number {
   return prev[n];
 }
 
-/** Wake match: regex fast-path, then fuzzy — whisper-tiny mangles the phrase
- *  in creative ways ("Hey, Engin.", "hey and gin"). Requires BOTH a greeting
- *  token and an engine-like token, so "engine" alone never triggers. */
+/** Whisper renders "Orac" several ways — single-token variants… */
+const ORAC_TOKENS = ["orac", "orack", "orak", "oracc", "orach", "auroch", "aurac", "aurack"];
+/** …or split into two tokens ("Oh rack", "Or ack"). */
+const ORAC_FIRST = ["oh", "o", "or", "aw", "ore", "oar", "your"];
+const ORAC_SECOND = ["rack", "rac", "rak", "wrack", "ack", "rock"];
+
+/** Wake match for "Orac" (with or without a leading "hey").
+ *  Deliberately does NOT match "Oracle" (a real word that appears in tech
+ *  conversation) — lev<=1 against "orac" excludes it. */
 export function isWakePhrase(text: string): boolean {
-  if (WAKE_RE.test(text)) return true;
   const toks = text.toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/).filter(Boolean);
-  const engineIdx = toks.findIndex((t) => t.length >= 5 && t[0] === "e" && lev(t, "engine") <= 2);
-  if (engineIdx <= 0) return false;
-  // Greeting must be IMMEDIATELY before the engine token — "we need a new
-  // engine for the pipeline" must not wake.
-  const before = toks[engineIdx - 1];
-  const GREETINGS = ["hey", "hay", "hei", "hi", "he", "a", "hate", "they"];
-  return GREETINGS.includes(before) || lev(before, "hey") <= 1;
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t.length >= 4 && (ORAC_TOKENS.includes(t) || lev(t, "orac") <= 1)) return true;
+    if (i > 0 && ORAC_SECOND.includes(t) && ORAC_FIRST.includes(toks[i - 1])) return true;
+  }
+  return false;
 }
 
 const SAMPLE_RATE = 16000; // Whisper-native
@@ -65,6 +66,9 @@ const SPEECH_RMS = 0.008; // energy gate (AGC mics can run quiet)
 const MIN_SPEECH_MS = 300; // ignore coughs/clicks
 const MAX_CHUNK_MS = 3000; // wake phrase fits comfortably
 const TRAIL_SILENCE_MS = 450; // end-of-utterance
+const PRE_ROLL_FRAMES = 3; // ~384ms kept before speech onset — the energy
+// gate detects speech a beat late, so without this the leading syllable
+// ("O-" of "Orac") is clipped from the chunk and transcription misses it.
 
 export class WakeDetector {
   private opts: WakeDetectorOptions;
@@ -74,6 +78,7 @@ export class WakeDetector {
   private source: MediaStreamAudioSourceNode | null = null;
   private asr: any = null;
   private buffer: Float32Array[] = [];
+  private preRoll: Float32Array[] = [];
   private bufferedMs = 0;
   private speechMs = 0;
   private silenceMs = 0;
@@ -163,16 +168,28 @@ export class WakeDetector {
         const rms = Math.sqrt(sum / f32.length);
         const isSpeech = rms > SPEECH_RMS;
 
+        if (isSpeech && !this.inSpeech) {
+          // Speech onset — seed the capture with the pre-roll so the leading
+          // syllable isn't clipped by the energy gate's detection lag.
+          this.buffer.push(...this.preRoll);
+          this.bufferedMs += this.preRoll.length * frameMs;
+          this.preRoll = [];
+        }
+
         if (isSpeech) {
           this.inSpeech = true;
           this.speechMs += frameMs;
           this.silenceMs = 0;
         } else if (this.inSpeech) {
           this.silenceMs += frameMs;
+        } else {
+          // Idle — maintain a short rolling pre-roll window.
+          // Copy: the engine reuses the underlying buffer between callbacks.
+          this.preRoll.push(new Float32Array(f32));
+          if (this.preRoll.length > PRE_ROLL_FRAMES) this.preRoll.shift();
         }
 
         if (this.inSpeech) {
-          // Copy — the engine reuses the underlying buffer between callbacks.
           this.buffer.push(new Float32Array(f32));
           this.bufferedMs += frameMs;
         }
@@ -211,6 +228,7 @@ export class WakeDetector {
 
   private resetVad() {
     this.buffer = [];
+    this.preRoll = [];
     this.bufferedMs = 0;
     this.speechMs = 0;
     this.silenceMs = 0;

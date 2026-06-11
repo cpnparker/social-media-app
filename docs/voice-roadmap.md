@@ -76,7 +76,14 @@ and narrates the result — fast voice up front, deep reasoning behind a tool.
 - Brand voice clone (xAI Custom Voices, or self-hosted Miso One).
 - Multilingual (Grok voice supports 20+ languages).
 
-### Phase 2.5 — Wake Phrase Mode ("Hey Engine") — PLANNED
+### Phase 2.5 — Wake Phrase Mode ("Orac") — SHIPPED v1
+
+_Wake phrase changed from "Hey Engine" to **"Orac"** (2026-06-11): "engine"
+is said constantly inside The Content Engine, making it a poor wake word;
+"Orac" is acoustically distinctive and never occurs in normal office speech.
+v1 detects via local whisper-tiny + VAD with pre-roll; if real-world accuracy
+stays insufficient, the upgrade path is a purpose-trained openWakeWord ONNX
+model (the detector interface anticipates the swap)._
 
 Hands-free activation with privacy as the design center.
 
