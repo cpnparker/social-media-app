@@ -28,6 +28,7 @@ const SAMPLE_RATE = 16000;
 const CHUNK = 1280; // 80ms
 const MEL_CONTEXT = 480; // 160*3 — left context the mel conv front-end consumes
 const INT16_SCALE = 32768; // oWW models expect int16-range floats, not [-1,1]
+const MAX_INFER_QUEUE = 40; // ~3.2s backlog cap — beyond that, drop and resync
 const MEL_BINS = 32;
 const MEL_WINDOW = 76; // mel frames per embedding (~775ms)
 const MEL_STEP = 8; // mel frames between embeddings (80ms)
@@ -100,6 +101,7 @@ export class OwwWakeDetector {
 
   private sampleQueue: Float32Array[] = [];
   private queuedSamples = 0;
+  private inferQueue: Float32Array[] = [];
   private melBuffer: number[][] = []; // rolling mel frames
   private embBuffer: Float32Array[] = []; // rolling embeddings
   private rawRing: Float32Array[] = []; // last ~1s raw audio (command lead-in)
@@ -240,13 +242,34 @@ export class OwwWakeDetector {
         else this.sampleQueue[0] = head.subarray(take);
       }
       this.queuedSamples -= CHUNK;
-      void this.processChunk(chunk);
+      // Queue, never drop: onaudioprocess runs on the main thread and gets
+      // throttled into BURSTS in background tabs — dropping the chunks that
+      // arrive while inference is busy tore holes in the mel timeline and
+      // capped real scores at a few percent. A bounded queue + single
+      // consumer preserves continuity through bursts.
+      this.inferQueue.push(chunk);
+      if (this.inferQueue.length > MAX_INFER_QUEUE) {
+        this.inferQueue.splice(0, this.inferQueue.length - MAX_INFER_QUEUE);
+        this.melCtx.fill(0); // context broken by the drop — reset cleanly
+      }
+      void this.drainInferQueue();
+    }
+  }
+
+  private async drainInferQueue() {
+    if (this.inferring || this.stopped) return;
+    this.inferring = true;
+    try {
+      while (this.inferQueue.length > 0 && !this.stopped) {
+        const chunk = this.inferQueue.shift()!;
+        await this.processChunk(chunk);
+      }
+    } finally {
+      this.inferring = false;
     }
   }
 
   private async processChunk(chunk: Float32Array) {
-    if (this.inferring || this.stopped) return; // drop frame under load — fine at 80ms cadence
-    this.inferring = true;
     try {
       // 1. melspectrogram over [left context | new chunk] at int16 scale —
       //    matches openWakeWord's streaming pipeline exactly (8 frames/80ms).
@@ -305,8 +328,6 @@ export class OwwWakeDetector {
       }
     } catch (err: any) {
       console.debug("[OwwDetector] inference error:", err?.message || err);
-    } finally {
-      this.inferring = false;
     }
   }
   /** Wake fired: notify immediately (chime + session connect start) while
@@ -368,6 +389,7 @@ export class OwwWakeDetector {
     this.source = null;
     this.sampleQueue = [];
     this.queuedSamples = 0;
+    this.inferQueue = [];
     this.melBuffer = [];
     this.embBuffer = [];
     this.melCtx = new Float32Array(MEL_CONTEXT);
