@@ -162,6 +162,7 @@ export default function WakeMode({ onWake, engaged, onEndConversation }: WakeMod
             if (matchTimerRef.current) clearTimeout(matchTimerRef.current);
             matchTimerRef.current = setTimeout(() => setMatch(null), 4000);
           },
+          onDiagnostic: (msg) => setHeard(msg),
         });
       }
       owwRef.current.start();
@@ -283,7 +284,9 @@ export default function WakeMode({ onWake, engaged, onEndConversation }: WakeMod
           <div className="rounded-full bg-background/90 backdrop-blur border px-3 py-1 text-[11px] text-muted-foreground shadow-sm max-w-[280px] truncate">
             {match && (
               <span className={cn("font-semibold mr-1.5", match.score >= match.threshold ? "text-emerald-500" : "")}>
-                {Math.round(match.score * 100)}%
+                {/* one decimal below 10% — distinguishes "mic dead" (flat 0.0)
+                    from "hearing you, not matching" (jittering 0.1–3%) */}
+                {match.score < 0.1 ? (match.score * 100).toFixed(1) : Math.round(match.score * 100)}%
               </span>
             )}
             {heard && <>heard: &ldquo;{heard}&rdquo;</>}

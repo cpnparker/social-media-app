@@ -56,6 +56,8 @@ interface OwwDetectorOptions {
   onStateChange?: (state: OwwState, detail?: string) => void;
   onProgress?: (pct: number) => void;
   onMatchScore?: (score: number, threshold: number) => void;
+  /** Non-fatal health hints surfaced in the UI (e.g. "mic appears silent"). */
+  onDiagnostic?: (message: string) => void;
 }
 
 /** Are the trained model files deployed? Decides which engine WakeMode uses. */
@@ -187,11 +189,19 @@ export class OwwWakeDetector {
       this.stream = stream;
 
       this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
+      // Safari (and some devices) ignore the sampleRate hint — resample to
+      // 16k ourselves rather than silently feeding the models 3x-slow audio.
+      const ctxRate = this.ctx.sampleRate;
+      if (ctxRate !== SAMPLE_RATE) {
+        console.debug(`[OwwDetector] AudioContext rate ${ctxRate} != 16000 — resampling`);
+      }
       this.source = this.ctx.createMediaStreamSource(stream);
       this.processor = this.ctx.createScriptProcessor(2048, 1, 1);
       this.processor.onaudioprocess = (e) => {
         if (this.stopped) return;
-        const f32 = new Float32Array(e.inputBuffer.getChannelData(0));
+        let f32: Float32Array = new Float32Array(e.inputBuffer.getChannelData(0));
+        if (ctxRate !== SAMPLE_RATE) f32 = resampleLinear(f32, ctxRate, SAMPLE_RATE);
+        this.trackMicHealth(f32);
         this.ingest(f32);
       };
       this.source.connect(this.processor);
@@ -200,6 +210,33 @@ export class OwwWakeDetector {
     } catch (err: any) {
       this.opts.onStateChange?.("error", err?.message || "Wake engine failed to start");
       this.stop();
+    }
+  }
+
+  /** Pure digital silence for several seconds means the input device is
+   *  muted/dead (a hardware-muted speakerphone reads exactly 0) — surface it
+   *  instead of letting the user shout at a dead mic reading "0%". */
+  private silentMs = 0;
+  private silenceWarned = false;
+  private trackMicHealth(samples: Float32Array) {
+    let peak = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const a = Math.abs(samples[i]);
+      if (a > peak) peak = a;
+    }
+    const frameMs = (samples.length / SAMPLE_RATE) * 1000;
+    if (peak < 1e-5) {
+      this.silentMs += frameMs;
+      if (this.silentMs > 5000 && !this.silenceWarned) {
+        this.silenceWarned = true;
+        this.opts.onDiagnostic?.("mic appears silent — check input device / mute");
+      }
+    } else {
+      this.silentMs = 0;
+      if (this.silenceWarned) {
+        this.silenceWarned = false;
+        this.opts.onDiagnostic?.("");
+      }
     }
   }
 
