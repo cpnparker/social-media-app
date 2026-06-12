@@ -99,7 +99,14 @@ export async function POST(req: NextRequest) {
     if (!mintRes.ok) {
       const errText = await mintRes.text().catch(() => "");
       console.error(`[Voice] Ephemeral token mint failed (${mintRes.status}): ${errText.slice(0, 300)}`);
-      return NextResponse.json({ error: "Could not start voice session" }, { status: 502 });
+      // 429 from xAI = credits exhausted / monthly limit hit — say so plainly
+      // instead of a generic "connection issue" (the wake word still fires
+      // locally, so without this the failure looks like the app is deaf).
+      const friendly =
+        mintRes.status === 429
+          ? "Voice unavailable: the xAI account is out of credits or hit its monthly limit — top up at console.x.ai"
+          : "Could not start voice session";
+      return NextResponse.json({ error: friendly }, { status: 503 });
     }
     const mintJson = await mintRes.json();
     // xAI returns the secret in `value` (OpenAI-spec compatible: client_secret.value)
