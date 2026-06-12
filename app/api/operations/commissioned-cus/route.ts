@@ -46,11 +46,14 @@ export async function GET(req: NextRequest) {
 
   try {
     // ── 1. Fetch ALL content tasks from the enriched view (paginated) ──
+    // Order by the unique id_task: .range() pagination over a non-unique sort
+    // (date_created has large clusters of identical timestamps) duplicates and
+    // skips rows at page boundaries, which inflates the CU totals.
     const buildContentQuery = (start: number, end: number) => {
       let q = supabase
         .from("app_tasks_content")
         .select("*")
-        .order("date_created", { ascending: false });
+        .order("id_task", { ascending: true });
       if (from) q = q.gte("date_created", `${from}T00:00:00.000Z`);
       if (to) q = q.lte("date_created", `${to}T23:59:59.999Z`);
       return q.range(start, end);
@@ -61,7 +64,7 @@ export async function GET(req: NextRequest) {
       let q = supabase
         .from("app_tasks_social")
         .select("*")
-        .order("date_created", { ascending: false });
+        .order("id_task", { ascending: true });
       if (from) q = q.gte("date_created", `${from}T00:00:00.000Z`);
       if (to) q = q.lte("date_created", `${to}T23:59:59.999Z`);
       return q.range(start, end);
@@ -205,6 +208,7 @@ export async function GET(req: NextRequest) {
               .from("app_tasks_content")
               .select("id_contract, units_content, date_completed, flag_spiked")
               .in("id_contract", batch)
+              .order("id_task", { ascending: true })
               .range(s, e)
           ),
           fetchAllRows((s, e) =>
@@ -212,6 +216,7 @@ export async function GET(req: NextRequest) {
               .from("app_tasks_social")
               .select("id_contract, units_content, date_completed, flag_spiked")
               .in("id_contract", batch)
+              .order("id_task", { ascending: true })
               .range(s, e)
           ),
         ]);
