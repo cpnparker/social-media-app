@@ -168,8 +168,13 @@ export class OwwWakeDetector {
       this.embBuffer = [];
       this.melCtx = new Float32Array(MEL_CONTEXT);
 
+      // RAW capture — echoCancellation/noiseSuppression OFF. Chrome's voice
+      // processing spectrally mangles audio the model never saw in training:
+      // measured live, the same utterance scores 0.95 raw vs 0.00 processed.
+      // Wake listening doesn't need AEC (nothing is playing; the conversation
+      // dock has its own AEC'd stream once a session starts).
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 },
       });
       this.allStreams.add(stream);
       if (this.stopped || gen !== this.gen) {
