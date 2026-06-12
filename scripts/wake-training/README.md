@@ -1,6 +1,12 @@
 # Training the "Orac" wake-word model (openWakeWord)
 
-One-time, ~1 hour on a free Google Colab GPU, £0.
+One-time, ~2–2.5 hours on a free Google Colab GPU, £0.
+
+> v2 recipe (2026-06-12): the first model (6k samples) speaker-overfit —
+> it fired for exactly one TTS voice and scored ~0 for every real voice.
+> Config now generates 30k samples, trains 50k steps with gentler negative
+> weighting. If a trained model "only ever returns 0%", test breadth with
+> several `say -v <voice>` voices before blaming the runtime engine.
 
 ## What you get
 
