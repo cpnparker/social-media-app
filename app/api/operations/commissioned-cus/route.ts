@@ -2,6 +2,35 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
 
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
+const PAGE_SIZE = 1000;
+
+// Supabase/PostgREST bounds every response to a server max-rows count
+// (1000 by default), and an explicit .limit() is still capped by it. Paginate
+// with .range() to fetch the COMPLETE result set instead of silently dropping
+// rows beyond the cap — which previously understated the CU totals ~3x.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchAllRows(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  buildQuery: (start: number, end: number) => PromiseLike<{ data: any[] | null; error: any }>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any[]> {
+  let start = 0;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const all: any[] = [];
+  for (;;) {
+    const { data, error } = await buildQuery(start, start + PAGE_SIZE - 1);
+    if (error) throw error;
+    const rows = data || [];
+    all.push(...rows);
+    if (rows.length < PAGE_SIZE) break;
+    start += PAGE_SIZE;
+  }
+  return all;
+}
+
 // GET /api/operations/commissioned-cus
 // Returns tasks (content + social promo) with metadata for the CU dashboard.
 // Uses the pre-joined views app_tasks_content and app_tasks_social.
@@ -16,33 +45,32 @@ export async function GET(req: NextRequest) {
   const excludeClientIds = searchParams.get("excludeClients"); // comma-separated IDs
 
   try {
-    // ── 1. Fetch content tasks from the enriched view ──
-    let contentTaskQuery = supabase
-      .from("app_tasks_content")
-      .select("*")
-      .order("date_created", { ascending: false })
-      .limit(5000);
+    // ── 1. Fetch ALL content tasks from the enriched view (paginated) ──
+    const buildContentQuery = (start: number, end: number) => {
+      let q = supabase
+        .from("app_tasks_content")
+        .select("*")
+        .order("date_created", { ascending: false });
+      if (from) q = q.gte("date_created", `${from}T00:00:00.000Z`);
+      if (to) q = q.lte("date_created", `${to}T23:59:59.999Z`);
+      return q.range(start, end);
+    };
 
-    if (from) contentTaskQuery = contentTaskQuery.gte("date_created", `${from}T00:00:00.000Z`);
-    if (to) contentTaskQuery = contentTaskQuery.lte("date_created", `${to}T23:59:59.999Z`);
+    // ── 2. Fetch ALL social promo tasks from the enriched view (paginated) ──
+    const buildSocialQuery = (start: number, end: number) => {
+      let q = supabase
+        .from("app_tasks_social")
+        .select("*")
+        .order("date_created", { ascending: false });
+      if (from) q = q.gte("date_created", `${from}T00:00:00.000Z`);
+      if (to) q = q.lte("date_created", `${to}T23:59:59.999Z`);
+      return q.range(start, end);
+    };
 
-    // ── 2. Fetch social promo tasks from the enriched view ──
-    let socialTaskQuery = supabase
-      .from("app_tasks_social")
-      .select("*")
-      .order("date_created", { ascending: false })
-      .limit(5000);
-
-    if (from) socialTaskQuery = socialTaskQuery.gte("date_created", `${from}T00:00:00.000Z`);
-    if (to) socialTaskQuery = socialTaskQuery.lte("date_created", `${to}T23:59:59.999Z`);
-
-    const [contentTaskRes, socialTaskRes] = await Promise.all([contentTaskQuery, socialTaskQuery]);
-
-    if (contentTaskRes.error) throw contentTaskRes.error;
-    if (socialTaskRes.error) throw socialTaskRes.error;
-
-    const contentTasks = contentTaskRes.data || [];
-    const socialTasks = socialTaskRes.data || [];
+    const [contentTasks, socialTasks] = await Promise.all([
+      fetchAllRows(buildContentQuery),
+      fetchAllRows(buildSocialQuery),
+    ]);
 
     // ── 3. Parse excluded client IDs ──
     const excludedIds = new Set(
@@ -165,21 +193,29 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      // 6b. Aggregate task CUs per contract (all time, no date filter)
+      // 6b. Aggregate task CUs per contract (all time, no date filter).
+      // Paginated — a contract can have far more than the default 1000 tasks,
+      // which previously truncated the commissioned/remaining totals.
       const cuAgg: Record<number, { commissioned: number; completed: number }> = {};
       for (let i = 0; i < contractIdArr.length; i += batchSize) {
         const batch = contractIdArr.slice(i, i + batchSize);
-        const [contentRes, socialRes] = await Promise.all([
-          supabase
-            .from("app_tasks_content")
-            .select("id_contract, units_content, date_completed, flag_spiked")
-            .in("id_contract", batch),
-          supabase
-            .from("app_tasks_social")
-            .select("id_contract, units_content, date_completed, flag_spiked")
-            .in("id_contract", batch),
+        const [contentRows, socialRows] = await Promise.all([
+          fetchAllRows((s, e) =>
+            supabase
+              .from("app_tasks_content")
+              .select("id_contract, units_content, date_completed, flag_spiked")
+              .in("id_contract", batch)
+              .range(s, e)
+          ),
+          fetchAllRows((s, e) =>
+            supabase
+              .from("app_tasks_social")
+              .select("id_contract, units_content, date_completed, flag_spiked")
+              .in("id_contract", batch)
+              .range(s, e)
+          ),
         ]);
-        for (const t of [...(contentRes.data || []), ...(socialRes.data || [])]) {
+        for (const t of [...contentRows, ...socialRows]) {
           if (t.flag_spiked === 1 && !t.date_completed) continue;
           const cid = t.id_contract;
           if (!cuAgg[cid]) cuAgg[cid] = { commissioned: 0, completed: 0 };
