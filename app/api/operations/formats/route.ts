@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
+import { fetchAllRows } from "@/lib/supabase-paginate";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 // GET /api/operations/formats
 // Returns content tasks for the Formats dashboard.
@@ -15,19 +19,19 @@ export async function GET(req: NextRequest) {
   const excludeClientIds = searchParams.get("excludeClients"); // comma-separated IDs
 
   try {
-    let query = supabase
-      .from("app_tasks_content")
-      .select(
-        "id_task, id_content, type_task, units_content, date_created, date_deadline, date_completed, name_content, type_content, id_client, name_client, id_contract, name_contract, flag_spiked"
-      )
-      .order("date_created", { ascending: false })
-      .limit(5000);
-
-    if (from) query = query.gte("date_created", `${from}T00:00:00.000Z`);
-    if (to) query = query.lte("date_created", `${to}T23:59:59.999Z`);
-
-    const { data: rows, error } = await query;
-    if (error) throw error;
+    // Paginated, ordered by the unique id_task — fetch ALL matching rows
+    // (a one-year range is ~15k, well past the old .limit(5000) cap).
+    const rows = await fetchAllRows((start, end) => {
+      let q = supabase
+        .from("app_tasks_content")
+        .select(
+          "id_task, id_content, type_task, units_content, date_created, date_deadline, date_completed, name_content, type_content, id_client, name_client, id_contract, name_contract, flag_spiked"
+        )
+        .order("id_task", { ascending: true });
+      if (from) q = q.gte("date_created", `${from}T00:00:00.000Z`);
+      if (to) q = q.lte("date_created", `${to}T23:59:59.999Z`);
+      return q.range(start, end);
+    });
 
     // Parse excluded client IDs
     const excludedIds = new Set(

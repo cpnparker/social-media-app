@@ -1,35 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
+import { fetchAllRows } from "@/lib/supabase-paginate";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
-
-const PAGE_SIZE = 1000;
-
-// Supabase/PostgREST bounds every response to a server max-rows count
-// (1000 by default), and an explicit .limit() is still capped by it. Paginate
-// with .range() to fetch the COMPLETE result set instead of silently dropping
-// rows beyond the cap — which previously understated the CU totals ~3x.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function fetchAllRows(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  buildQuery: (start: number, end: number) => PromiseLike<{ data: any[] | null; error: any }>
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<any[]> {
-  let start = 0;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const all: any[] = [];
-  for (;;) {
-    const { data, error } = await buildQuery(start, start + PAGE_SIZE - 1);
-    if (error) throw error;
-    const rows = data || [];
-    all.push(...rows);
-    if (rows.length < PAGE_SIZE) break;
-    start += PAGE_SIZE;
-  }
-  return all;
-}
 
 // GET /api/operations/commissioned-cus
 // Returns tasks (content + social promo) with metadata for the CU dashboard.
