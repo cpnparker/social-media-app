@@ -15,6 +15,13 @@ export interface Workspace {
   slug: string;
   plan: string;
   role: string;
+  accessEngine: boolean;
+  accessEngineGpt: boolean;
+  accessOperations: boolean;
+  accessAdmin: boolean;
+  accessMeetingBrain: boolean;
+  accessRfpTool: boolean;
+  accessAuthorityOn: boolean;
 }
 
 interface WorkspaceContextValue {

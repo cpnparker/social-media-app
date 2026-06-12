@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { NextResponse } from "next/server";
 
 // ── Role Categories ──
@@ -79,6 +80,27 @@ export async function canAccessClient(
   const allowedIds = await getAllowedClientIds(userId, role);
   if (!allowedIds) return true;
   return allowedIds.includes(clientId);
+}
+
+// ── Workspace membership check ──
+// Verifies the user belongs to the given workspace via Supabase workspace_members.
+// Returns the member role ('owner' | 'admin' | 'editor' | 'viewer') or null if not a member.
+export async function verifyWorkspaceMembership(
+  userId: number,
+  workspaceId: string
+): Promise<string | null> {
+  try {
+    const { data: member } = await intelligenceDb
+      .from("workspace_members")
+      .select("role")
+      .eq("workspace_id", workspaceId)
+      .eq("user_id", userId)
+      .limit(1)
+      .single();
+    return member?.role || null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Apply client scoping to a Supabase query builder ──

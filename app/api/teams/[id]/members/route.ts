@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 
 // Helper: transform member with user info
 function transformMember(m: any, user?: any) {
@@ -103,7 +104,7 @@ export async function POST(
 
         if (teamData?.workspace_id) {
           // Check if already a workspace member
-          const { data: existingWs } = await supabase
+          const { data: existingWs } = await intelligenceDb
             .from("workspace_members")
             .select("id")
             .eq("workspace_id", teamData.workspace_id)
@@ -112,7 +113,7 @@ export async function POST(
             .single();
 
           if (!existingWs) {
-            await supabase.from("workspace_members").insert({
+            await intelligenceDb.from("workspace_members").insert({
               workspace_id: teamData.workspace_id,
               user_id: resolvedUserId,
               role: "viewer",

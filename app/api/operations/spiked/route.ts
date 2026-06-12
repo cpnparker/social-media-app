@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
+import { fetchAllRows } from "@/lib/supabase-paginate";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 // GET /api/operations/spiked
 // Returns spiked tasks (content + social) where flag_spiked=1 AND date_completed IS NULL.
@@ -14,37 +18,25 @@ export async function GET(req: NextRequest) {
   const to = searchParams.get("to"); // YYYY-MM-DD
 
   try {
-    // ── 1. Fetch spiked content tasks ──
-    let contentTaskQuery = supabase
-      .from("app_tasks_content")
-      .select("*")
-      .eq("flag_spiked", 1)
-      .is("date_completed", null)
-      .order("date_spiked", { ascending: false })
-      .limit(5000);
+    // ── 1+2. Fetch ALL spiked content + social tasks (paginated). Spiked
+    // tasks number ~9k all-time, past the old .limit(5000) cap. Order by the
+    // unique id_task so .range() pagination is stable.
+    const buildSpikedQuery = (view: string) => (start: number, end: number) => {
+      let q = supabase
+        .from(view)
+        .select("*")
+        .eq("flag_spiked", 1)
+        .is("date_completed", null)
+        .order("id_task", { ascending: true });
+      if (from) q = q.gte("date_spiked", `${from}T00:00:00.000Z`);
+      if (to) q = q.lte("date_spiked", `${to}T23:59:59.999Z`);
+      return q.range(start, end);
+    };
 
-    if (from) contentTaskQuery = contentTaskQuery.gte("date_spiked", `${from}T00:00:00.000Z`);
-    if (to) contentTaskQuery = contentTaskQuery.lte("date_spiked", `${to}T23:59:59.999Z`);
-
-    // ── 2. Fetch spiked social tasks ──
-    let socialTaskQuery = supabase
-      .from("app_tasks_social")
-      .select("*")
-      .eq("flag_spiked", 1)
-      .is("date_completed", null)
-      .order("date_spiked", { ascending: false })
-      .limit(5000);
-
-    if (from) socialTaskQuery = socialTaskQuery.gte("date_spiked", `${from}T00:00:00.000Z`);
-    if (to) socialTaskQuery = socialTaskQuery.lte("date_spiked", `${to}T23:59:59.999Z`);
-
-    const [contentTaskRes, socialTaskRes] = await Promise.all([contentTaskQuery, socialTaskQuery]);
-
-    if (contentTaskRes.error) throw contentTaskRes.error;
-    if (socialTaskRes.error) throw socialTaskRes.error;
-
-    const contentTasks = contentTaskRes.data || [];
-    const socialTasks = socialTaskRes.data || [];
+    const [contentTasks, socialTasks] = await Promise.all([
+      fetchAllRows(buildSpikedQuery("app_tasks_content")),
+      fetchAllRows(buildSpikedQuery("app_tasks_social")),
+    ]);
 
     // ── 3. Build unified task list ──
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

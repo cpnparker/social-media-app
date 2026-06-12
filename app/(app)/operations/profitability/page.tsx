@@ -15,8 +15,10 @@ import {
   ChevronDown,
   ChevronRight,
   AlertCircle,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { downloadCSV } from "@/lib/csv-utils";
 import {
   BarChart,
   Bar,
@@ -30,6 +32,8 @@ import {
   CartesianGrid,
   Legend,
 } from "recharts";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 
 /* ─────────────── Types ─────────────── */
 
@@ -180,6 +184,9 @@ export default function ProfitabilityPage() {
   // Expanded client
   const [expandedClient, setExpandedClient] = useState<string | null>(null);
 
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
+
   // ── Fetch data ──
   const fetchData = async () => {
     setLoading(true);
@@ -221,7 +228,13 @@ export default function ProfitabilityPage() {
   };
 
   // ── Derived data ──
-  const sortedClients = useMemo(() => sortRows(clients, sortKey, sortDir), [clients, sortKey, sortDir]);
+  const scopedClients = useMemo(
+    () => (globalCustomerId
+      ? clients.filter((c) => c.supabaseClientId === globalCustomerId)
+      : clients),
+    [clients, globalCustomerId],
+  );
+  const sortedClients = useMemo(() => sortRows(scopedClients, sortKey, sortDir), [scopedClients, sortKey, sortDir]);
 
   // Activity pie chart data
   const activityPieData = useMemo(() => {
@@ -270,6 +283,7 @@ export default function ProfitabilityPage() {
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap items-end gap-4">
+            <CustomerDropdownFilter />
             <div>
               <label className="text-xs font-medium text-muted-foreground block mb-1">From</label>
               <Input
@@ -443,8 +457,31 @@ export default function ProfitabilityPage() {
           {/* Client table */}
           <Card>
             <CardContent className="p-0">
-              <div className="p-4 border-b">
+              <div className="p-4 border-b flex items-center justify-between">
                 <h3 className="text-sm font-semibold">Client Breakdown</h3>
+                {sortedClients.length > 0 && (
+                  <button
+                    onClick={() =>
+                      downloadCSV(
+                        sortedClients.map((c) => ({
+                          Client: c.clientName,
+                          "Matched Client": c.supabaseClientName || "",
+                          "Total Hours": Math.round(c.totalHours * 100) / 100,
+                          "Content Production": Math.round((c.activityBreakdown["Content Production"] || 0) * 100) / 100,
+                          Strategy: Math.round((c.activityBreakdown["Strategy"] || 0) * 100) / 100,
+                          "Account Management": Math.round((c.activityBreakdown["Account Management"] || 0) * 100) / 100,
+                          "CUs (period)": c.cusInPeriod,
+                          "Hours / CU": c.hoursPerCU !== null ? Math.round(c.hoursPerCU * 100) / 100 : "",
+                        })),
+                        "client-profitability.csv"
+                      )
+                    }
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                    title="Download CSV"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">

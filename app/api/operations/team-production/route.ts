@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
+import { fetchAllRows } from "@/lib/supabase-paginate";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 // GET /api/operations/team-production
 // Returns tasks assigned to specific users for team production view.
@@ -37,32 +41,29 @@ export async function GET(req: NextRequest) {
     for (let i = 0; i < userIdList.length; i += batchSize) {
       const batch = userIdList.slice(i, i + batchSize);
 
-      let query = supabase
-        .from("app_tasks_content")
-        .select("*")
-        .in("id_user_assignee", batch)
-        .order("date_deadline", { ascending: true })
-        .limit(5000);
-
-      // Include tasks that are either:
-      // - assigned with deadline in the period, OR
-      // - completed in the period
-      // We fetch broadly and filter client-side
-      if (from) {
-        // Get tasks where deadline >= from OR completed >= from
-        query = query.or(
-          `date_deadline.gte.${from}T00:00:00.000Z,date_completed.gte.${from}T00:00:00.000Z`
-        );
-      }
-      if (to) {
-        query = query.or(
-          `date_deadline.lte.${to}T23:59:59.999Z,date_completed.lte.${to}T23:59:59.999Z`
-        );
-      }
-
-      const { data: rows, error } = await query;
-      if (error) throw error;
-      if (rows) allRows.push(...rows);
+      // Include tasks that are either assigned with a deadline in the period
+      // OR completed in the period. Fetch broadly (paginated, ordered by the
+      // unique id_task) and filter client-side; a wide range over a large user
+      // batch can exceed the old .limit(5000) cap.
+      const rows = await fetchAllRows((start, end) => {
+        let query = supabase
+          .from("app_tasks_content")
+          .select("*")
+          .in("id_user_assignee", batch)
+          .order("id_task", { ascending: true });
+        if (from) {
+          query = query.or(
+            `date_deadline.gte.${from}T00:00:00.000Z,date_completed.gte.${from}T00:00:00.000Z`
+          );
+        }
+        if (to) {
+          query = query.or(
+            `date_deadline.lte.${to}T23:59:59.999Z,date_completed.lte.${to}T23:59:59.999Z`
+          );
+        }
+        return query.range(start, end);
+      });
+      allRows.push(...rows);
     }
 
     // Parse excluded client IDs

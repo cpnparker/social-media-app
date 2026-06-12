@@ -23,7 +23,7 @@
 
 @layer base {
   :root {
-    --background: 0 0% 98%;
+    --background: 0 0% 100%;
     --foreground: 224 71% 4%;
     --card: 0 0% 100%;
     --card-foreground: 224 71% 4%;
@@ -34,7 +34,7 @@
     --secondary: 220 14% 96%;
     --secondary-foreground: 224 71% 4%;
     --muted: 220 14% 96%;
-    --muted-foreground: 220 9% 46%;
+    --muted-foreground: 220 9% 40%;
     --accent: 220 14% 96%;
     --accent-foreground: 224 71% 4%;
     --destructive: 0 84% 60%;
@@ -95,5 +95,551 @@
     overflow: hidden;
     height: 100%;
     width: 100%;
+  }
+}
+
+/* ─── Design Mode theme — editorial / premium creative workspace ─── */
+.design-mode {
+  /* Warm parchment background, soft indigo accent. Overrides the global tokens
+     only within this subtree so we don't affect the rest of the app. */
+  --design-bg: 42 40% 96%;          /* #FAF6EC */
+  --design-bg-elev: 0 0% 100%;
+  --design-fg: 222 47% 11%;
+  --design-muted: 38 18% 70%;
+  --design-muted-strong: 35 18% 45%;
+  --design-border: 36 22% 86%;
+  --design-border-strong: 36 18% 72%;
+  --design-card: 0 0% 100%;
+  --design-accent: 235 60% 52%;     /* indigo */
+  --design-accent-soft: 235 80% 96%;
+  --design-pin: 35 92% 50%;
+  --design-success: 158 50% 38%;
+  --design-warning: 25 92% 58%;
+  --design-danger: 0 72% 50%;
+
+  /* Slate left rail (matches the outer EngineAI nav) */
+  --slate-1: 224 24% 12%;
+  --slate-2: 222 22% 16%;
+  --slate-3: 222 20% 22%;
+  --slate-text-1: 220 14% 96%;
+  --slate-text-2: 220 10% 75%;
+  --slate-text-3: 218 10% 55%;
+  --slate-divider: 222 16% 26%;
+
+  --shadow-card: 0 1px 2px rgba(0,0,0,0.02), 0 1px 12px rgba(15,12,40,0.04);
+  --shadow-pop: 0 6px 24px rgba(15,12,40,0.08), 0 1px 2px rgba(0,0,0,0.03);
+  --shadow-modal: 0 24px 80px -20px rgba(14,17,23,0.45);
+
+  background: hsl(var(--design-bg));
+  color: hsl(var(--design-fg));
+}
+.dark .design-mode {
+  --design-bg: 222 30% 7%;
+  --design-bg-elev: 222 30% 10%;
+  --design-fg: 220 14% 96%;
+  --design-muted: 218 11% 50%;
+  --design-border: 222 20% 18%;
+  --design-card: 222 25% 12%;
+  --design-accent: 235 70% 65%;
+  --design-accent-soft: 235 60% 18%;
+}
+
+/* Editorial labels — uppercase tracked indigo, used as section markers */
+.design-mode .section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: hsl(var(--design-accent));
+}
+
+/* Editorial display numerics — serif, hairline weight, generous tracking */
+.design-mode .editorial-numeric {
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  font-weight: 400;
+  font-feature-settings: "lnum", "tnum";
+  letter-spacing: -0.02em;
+}
+
+/* Editorial display heading */
+.design-mode .editorial-display {
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+
+/* Premium card */
+.design-mode .design-card {
+  background: hsl(var(--design-card));
+  border: 1px solid hsl(var(--design-border));
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.02), 0 1px 12px rgba(15,12,40,0.04);
+}
+
+/* Status pills */
+.design-mode .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  border: 1px solid transparent;
+}
+.design-mode .pill-neutral { background: hsl(40 30% 95%); color: hsl(35 30% 35%); border-color: hsl(36 25% 86%); }
+.design-mode .pill-success { background: hsl(158 60% 94%); color: hsl(158 50% 28%); border-color: hsl(158 50% 80%); }
+.design-mode .pill-warning { background: hsl(38 85% 92%); color: hsl(25 70% 35%); border-color: hsl(35 70% 78%); }
+.design-mode .pill-danger  { background: hsl(0 85% 95%); color: hsl(0 65% 38%); border-color: hsl(0 60% 85%); }
+.design-mode .pill-accent  { background: hsl(var(--design-accent-soft)); color: hsl(var(--design-accent)); border-color: hsl(235 50% 88%); }
+.design-mode .pill-runway  { background: hsl(275 75% 95%); color: hsl(270 60% 38%); border-color: hsl(275 55% 88%); }
+.design-mode .pill-artlist { background: hsl(158 60% 94%); color: hsl(158 50% 28%); border-color: hsl(158 50% 80%); }
+.dark .design-mode .pill-neutral { background: hsl(40 10% 18%); color: hsl(40 20% 75%); border-color: hsl(40 10% 25%); }
+.dark .design-mode .pill-success { background: hsl(158 30% 18%); color: hsl(158 50% 75%); border-color: hsl(158 30% 28%); }
+.dark .design-mode .pill-warning { background: hsl(30 30% 18%); color: hsl(30 70% 75%); border-color: hsl(30 30% 28%); }
+.dark .design-mode .pill-danger  { background: hsl(0 30% 20%); color: hsl(0 60% 80%); border-color: hsl(0 30% 30%); }
+.dark .design-mode .pill-accent  { background: hsl(235 30% 22%); color: hsl(235 60% 80%); border-color: hsl(235 30% 32%); }
+.dark .design-mode .pill-runway  { background: hsl(270 30% 22%); color: hsl(275 60% 80%); border-color: hsl(270 30% 32%); }
+.dark .design-mode .pill-artlist { background: hsl(158 30% 18%); color: hsl(158 50% 75%); border-color: hsl(158 30% 28%); }
+
+/* Thin divider */
+.design-mode .editorial-divider {
+  height: 1px;
+  background: linear-gradient(to right, transparent, hsl(var(--design-border)), transparent);
+}
+
+/* Hover affordance on asset tiles */
+.design-mode .design-tile {
+  transition: box-shadow 0.18s ease, transform 0.18s ease;
+}
+.design-mode .design-tile:hover {
+  box-shadow: 0 6px 24px rgba(15, 12, 40, 0.08), 0 1px 2px rgba(0,0,0,0.03);
+  transform: translateY(-1px);
+}
+
+/* Section label variants (v2) */
+.design-mode .section-label.muted { color: hsl(var(--design-muted-strong)); }
+.design-mode .section-label.pin   { color: hsl(var(--design-pin)); }
+
+/* Pill — ink variant for dark chips */
+.design-mode .pill-ink { background: hsl(220 14% 96%); color: hsl(224 50% 18%); border-color: hsl(220 13% 88%); }
+.design-mode .pill.ghost {
+  background: transparent;
+  border-color: hsl(var(--design-border));
+  color: hsl(var(--design-muted-strong));
+}
+
+/* Thumbnail placeholders (used while generating, and for the prototype's gradient tiles) */
+.design-mode .thumb {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+  background: linear-gradient(135deg, hsl(var(--th, 220) 40% 35%), hsl(var(--th, 220) 35% 18%));
+  color: rgba(255,255,255,0.85);
+  font-family: ui-monospace, "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+.design-mode .thumb-stripe {
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgba(255,255,255,0.10) 0 18px,
+    rgba(255,255,255,0.04) 18px 36px
+  );
+}
+
+/* Dotted ring (logo motif / brand mark) */
+.design-mode .dot-ring {
+  border-radius: 50%;
+  border: 1.25px dashed currentColor;
+}
+
+/* Extremely subtle parchment grain (applied to canvas backgrounds) */
+.design-mode .parchment-grain {
+  background-image:
+    radial-gradient(rgba(60,40,20,0.020) 1px, transparent 1px),
+    radial-gradient(rgba(60,40,20,0.012) 1px, transparent 1.5px);
+  background-size: 28px 28px, 13px 13px;
+  background-position: 0 0, 7px 7px;
+}
+
+/* Animations */
+@keyframes design-mode-blink { 50% { opacity: 0.35; } }
+.design-mode .anim-blink { animation: design-mode-blink 1.6s ease-in-out infinite; }
+@keyframes design-mode-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.design-mode .anim-shimmer {
+  background: linear-gradient(90deg, hsl(var(--design-accent-soft)) 0%, hsl(var(--design-card)) 50%, hsl(var(--design-accent-soft)) 100%);
+  background-size: 200% 100%;
+  animation: design-mode-shimmer 1.8s ease-in-out infinite;
+}
+
+/* ─── AI Response Formatting ─── */
+.ai-response {
+  font-size: 0.9375rem;
+  line-height: 1.7;
+  color: hsl(var(--foreground));
+}
+.ai-response .ai-p {
+  margin-bottom: 0.75rem;
+}
+.ai-response .ai-p:last-child {
+  margin-bottom: 0;
+}
+
+/* Headings */
+.ai-response .ai-h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 1.5rem 0 0.5rem;
+  color: hsl(var(--foreground));
+  letter-spacing: -0.01em;
+}
+.ai-response .ai-h2 {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  margin: 1.25rem 0 0.4rem;
+  color: hsl(var(--foreground));
+}
+.ai-response .ai-h3 {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  margin: 0.875rem 0 0.35rem;
+  color: hsl(var(--foreground)/0.9);
+}
+.ai-response .ai-h4 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin: 0.625rem 0 0.25rem;
+  color: hsl(var(--foreground)/0.85);
+}
+.ai-response .ai-h1:first-child,
+.ai-response .ai-h2:first-child,
+.ai-response .ai-h3:first-child,
+.ai-response .ai-h4:first-child {
+  margin-top: 0;
+}
+
+/* Lists */
+.ai-response .ai-ul {
+  list-style: disc;
+  padding-left: 1.5rem;
+  margin: 0.5rem 0;
+}
+.ai-response .ai-ol {
+  list-style: decimal;
+  padding-left: 1.5rem;
+  margin: 0.5rem 0;
+}
+/* Collapse margin when consecutive list blocks are adjacent (safety net) */
+.ai-response .ai-ul + .ai-ul,
+.ai-response .ai-ol + .ai-ul,
+.ai-response .ai-ul + .ai-ol,
+.ai-response .ai-ol + .ai-ol {
+  margin-top: 0;
+}
+.ai-response .ai-uli,
+.ai-response .ai-oli {
+  margin: 0.125rem 0;
+  padding-left: 0.15rem;
+  line-height: 1.65;
+}
+
+/* Code */
+.ai-response .ai-code-wrap {
+  margin: 0.875rem 0;
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+.ai-response .ai-code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.25rem 0.75rem;
+  background: hsl(var(--muted)/0.7);
+  border-bottom: 1px solid hsl(var(--border));
+}
+.ai-response .ai-code-lang {
+  font-size: 0.6875rem;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  color: hsl(var(--muted-foreground));
+  text-transform: lowercase;
+}
+.ai-response .ai-code-copy {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+  transition: all 0.15s;
+}
+.ai-response .ai-code-copy:hover {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground)/0.08);
+}
+.ai-response .ai-code-wrap .ai-code-block {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+}
+.ai-response .ai-code-block {
+  background: hsl(var(--muted));
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.5rem;
+  padding: 0.875rem 1rem;
+  margin: 0.875rem 0;
+  overflow-x: auto;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+.ai-response .ai-code-block code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  white-space: pre;
+}
+.ai-response .ai-inline-code {
+  background: hsl(var(--muted));
+  border: 1px solid hsl(var(--border)/0.5);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.9375rem;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+
+/* Content cards — draft posts, captions, emails rendered from language-less code fences */
+.ai-response .ai-content-card {
+  background: hsl(var(--muted)/0.4);
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.75rem;
+  padding: 1.25rem 1.5rem;
+  margin: 0.875rem 0;
+  line-height: 1.7;
+  font-size: 0.9375rem;
+}
+.ai-response .ai-content-card .ai-card-spacer {
+  display: block;
+  height: 0.75rem;
+}
+
+/* Tables */
+.ai-response .ai-table-wrap {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  border-radius: 0.5rem;
+  border: 1px solid hsl(var(--border));
+}
+.ai-response .ai-table {
+  width: 100%;
+  font-size: 0.9375rem;
+  border-collapse: collapse;
+}
+.ai-response .ai-table th {
+  background: hsl(var(--muted));
+  font-weight: 600;
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid hsl(var(--border));
+  white-space: nowrap;
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: hsl(var(--muted-foreground));
+}
+.ai-response .ai-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid hsl(var(--border)/0.5);
+  vertical-align: top;
+}
+.ai-response .ai-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.ai-response .ai-table tbody tr:hover {
+  background: hsl(var(--muted)/0.5);
+}
+
+/* Links */
+.ai-response .ai-link {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: hsl(var(--primary)/0.3);
+  transition: text-decoration-color 0.15s;
+}
+.ai-response .ai-link:hover {
+  text-decoration-color: hsl(var(--primary));
+}
+
+/* Citations */
+.ai-response .ai-cite {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 1rem;
+  min-width: 1rem;
+  padding: 0 0.25rem;
+  font-size: 0.563rem;
+  font-weight: 600;
+  background: hsl(var(--foreground)/0.07);
+  color: hsl(var(--muted-foreground));
+  border-radius: 9999px;
+  text-decoration: none;
+  vertical-align: super;
+  margin-left: 0.125rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.ai-response .ai-cite:hover {
+  background: hsl(var(--foreground)/0.12);
+}
+
+/* Horizontal rule */
+.ai-response .ai-hr {
+  border: none;
+  border-top: 1px solid hsl(var(--border));
+  margin: 1rem 0;
+}
+
+/* Bold */
+.ai-response strong {
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+/* AI-generated images */
+.ai-response .ai-generated-image-wrap {
+  margin: 0.75rem 0;
+}
+.ai-response .ai-generated-image {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.ai-response .ai-generated-image:hover {
+  opacity: 0.92;
+}
+
+/* Hashtag pills */
+.ai-response .ai-hashtag {
+  display: inline-block;
+  background: hsl(var(--primary)/0.1);
+  color: hsl(var(--primary));
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  margin: 0.0625rem 0.125rem;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+.ai-response .ai-hashtag:hover {
+  background: hsl(var(--primary)/0.18);
+}
+
+/* Media placeholders ([Embed], [Image], [Video], etc.) */
+.ai-response .ai-media-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: hsl(var(--muted)/0.6);
+  border: 2px dashed hsl(var(--border));
+  border-radius: 0.75rem;
+  padding: 1.75rem 1.5rem;
+  margin: 0.75rem 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.ai-response .ai-media-icon {
+  font-size: 1.125rem;
+  opacity: 0.6;
+}
+
+/* Document download cards */
+.ai-response .ai-download-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: hsl(var(--muted)/0.5);
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.75rem;
+  padding: 0.75rem 1.25rem;
+  margin: 0.5rem 0;
+  text-decoration: none !important;
+  color: inherit !important;
+  transition: all 0.15s ease;
+  cursor: pointer;
+  max-width: 100%;
+}
+.ai-response .ai-download-card:hover {
+  background: hsl(var(--muted)/0.8);
+  border-color: hsl(var(--primary)/0.3);
+  box-shadow: 0 2px 8px hsl(var(--primary)/0.08);
+}
+.ai-response .ai-download-icon {
+  font-size: 1.75rem;
+  flex-shrink: 0;
+}
+.ai-response .ai-download-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+.ai-response .ai-download-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-response .ai-download-action {
+  font-size: 0.75rem;
+  color: hsl(var(--primary));
+  font-weight: 500;
+}
+
+/* ─── EngineAI desktop font-size scale (+20%) ─── */
+/* Mobile keeps stock sizing; desktop bumps everything in the EngineAI surface
+   by ~20% via Tailwind text-* overrides + .ai-response explicit-size overrides. */
+@media (min-width: 1024px) {
+  .engine-ai-scope { font-size: 1.05rem; }
+
+  .engine-ai-scope .text-xs    { font-size: 0.9rem;   line-height: 1.2rem; }
+  .engine-ai-scope .text-sm    { font-size: 1.05rem;  line-height: 1.5rem; }
+  .engine-ai-scope .text-base  { font-size: 1.2rem;   line-height: 1.8rem; }
+  .engine-ai-scope .text-lg    { font-size: 1.35rem;  line-height: 2.1rem; }
+  .engine-ai-scope .text-xl    { font-size: 1.5rem;   line-height: 2.1rem; }
+  .engine-ai-scope .text-2xl   { font-size: 1.8rem;   line-height: 2.4rem; }
+  .engine-ai-scope .text-3xl   { font-size: 2.25rem;  line-height: 2.7rem; }
+
+  .engine-ai-scope .ai-response                  { font-size: 1.125rem; }
+  .engine-ai-scope .ai-response .ai-h1           { font-size: 1.5rem; }
+  .engine-ai-scope .ai-response .ai-h2           { font-size: 1.275rem; }
+  .engine-ai-scope .ai-response .ai-h3           { font-size: 1.125rem; }
+  .engine-ai-scope .ai-response .ai-h4           { font-size: 1.05rem; }
+  .engine-ai-scope .ai-response .ai-code-block   { font-size: 1.05rem; }
+  .engine-ai-scope .ai-response .ai-inline-code  { font-size: 1.125rem; }
+  .engine-ai-scope .ai-response .ai-content-card { font-size: 1.125rem; }
+  .engine-ai-scope .ai-response .ai-table        { font-size: 1.125rem; }
+  .engine-ai-scope .ai-response .ai-table th     { font-size: 1.05rem; }
+  .engine-ai-scope .ai-response .ai-hashtag      { font-size: 0.975rem; }
+  .engine-ai-scope .ai-response .ai-download-name   { font-size: 1.05rem; }
+  .engine-ai-scope .ai-response .ai-download-action { font-size: 0.9rem; }
+}
+
+/* Safe area insets for modern phones */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .safe-bottom {
+    padding-bottom: max(0px, env(safe-area-inset-bottom));
   }
 }

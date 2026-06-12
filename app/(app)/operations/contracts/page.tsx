@@ -21,8 +21,11 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { downloadCSV } from "@/lib/csv-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import {
   getTypeHex,
   typeColors,
@@ -168,6 +171,17 @@ export default function ContractsPage() {
   const [clientDropdownOpen, setClientDropdownOpen] = useState(false);
   const clientDropdownRef = useRef<HTMLDivElement>(null);
   const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
+
+  // Global customer filter from the TopBar selector — overrides the page's
+  // own client picker so the two stay in sync.
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
+  useEffect(() => {
+    if (globalCustomerId && globalCustomerId !== selectedClientId) {
+      setSelectedClientId(globalCustomerId);
+    }
+    // When the TopBar resets to All Customers we leave selectedClientId alone
+    // so the user's last in-page choice is preserved.
+  }, [globalCustomerId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Data
   const [clients, setClients] = useState<Client[]>([]);
@@ -511,10 +525,29 @@ export default function ContractsPage() {
       {/* ── Contract Selector Table ── */}
       <Card className="border-0 shadow-sm">
         <CardContent className="p-0">
-          <div className="px-4 pt-4 pb-2">
+          <div className="px-4 pt-4 pb-2 flex items-center justify-between">
             <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
               Contracts ({contracts.length})
             </h3>
+            {sortedContracts.length > 0 && (
+              <button
+                onClick={() => downloadCSV(
+                  sortedContracts.map((c) => ({
+                    Contract: c.contractName,
+                    Client: c.clientName,
+                    Start: c.dateStart || "",
+                    End: c.dateEnd || "",
+                    Contracted: Math.round((c.cusContract || 0) * 10) / 10,
+                    Delivered: Math.round((c.cusDelivered || 0) * 10) / 10,
+                  })),
+                  "contracts.csv"
+                )}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+                title="Download CSV"
+              >
+                <Download className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
@@ -807,7 +840,7 @@ export default function ContractsPage() {
                                 <td className="px-3 py-2">
                                   {item.contentId && (
                                     <a
-                                      href={`https://app.thecontentengine.com/content/${item.contentId}`}
+                                      href={`https://app.thecontentengine.com/all/contents/${item.contentId}`}
                                       target="_blank" rel="noopener noreferrer"
                                       className="text-muted-foreground hover:text-foreground transition-colors"
                                     >
