@@ -59,6 +59,42 @@ export async function GET(
 
     if (msgError) throw msgError;
 
+    // Reap dead "pending" assistant rows. The streaming route inserts a row as
+    // 'pending' then flips it to complete/failed when the upstream finishes —
+    // but on a serverless platform that completion code never runs if the
+    // function is killed mid-stream (client navigated away, platform timeout
+    // while the model was retrying). The row then dangles 'pending' forever and
+    // the UI shows "Still generating…" indefinitely on reopen. Any row pending
+    // well past a realistic generation window is dead: flip it to 'failed' here
+    // so the user sees a retry affordance immediately instead of a long spinner.
+    // (If a generation somehow is still live, its onComplete overwrites this
+    // back to 'complete' with the real text — updates key on id, not status.)
+    const STALE_PENDING_MS = 150_000; // 2.5 min — longer than any real generation
+    const nowMs = Date.now();
+    const deadPending = (rawMessages || []).filter(
+      (m: any) =>
+        m.role_message === "assistant" &&
+        m.status_message === "pending" &&
+        m.date_created &&
+        nowMs - new Date(m.date_created).getTime() > STALE_PENDING_MS
+    );
+    if (deadPending.length > 0) {
+      await Promise.all(
+        deadPending.map((m: any) => {
+          const text = m.document_message?.trim()
+            ? m.document_message // keep partial streamed text if any
+            : "Generation failed — please retry.";
+          m.status_message = "failed"; // reflect in the response we return below
+          m.document_message = text;
+          return intelligenceDb
+            .from("ai_messages")
+            .update({ status_message: "failed", document_message: text })
+            .eq("id_message", m.id_message)
+            .eq("status_message", "pending"); // don't clobber one that just completed
+        })
+      );
+    }
+
     // Resolve user names for messages with user_created
     const messageUserIds = Array.from(
       new Set(
