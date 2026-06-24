@@ -1082,9 +1082,12 @@ export async function POST(
       systemPrompt += "\n\n**LIVESEARCH ACTIVE:** xAI LiveSearch is running for this query. You are fetching LIVE results from the web RIGHT NOW. Rules:\n- Only report facts that appear in your actual search results. Do NOT use training data or prior conversation responses to fill gaps.\n- If your live search does not confirm a specific fact (price, stock level, availability, phone number), say \"I couldn't confirm this in my search\" — do not guess.\n- Your previous responses in this conversation may have been wrong. Do not simply repeat or confirm what you said before — re-verify everything with your current search results.\n- Cite the actual URLs your search returned. Do not invent citation numbers.";
     }
 
-    // Safety guard: when web search is NOT active for this query.
-    if (queryRoute.searchMode === "off" && contextConfig.webSearch !== "off") {
-      systemPrompt += "\n\n**NO LIVE SEARCH FOR THIS QUERY:** You cannot access the web right now. Do NOT state specific prices, stock levels, availability, phone numbers, or any real-time facts — you have no way to verify them. Say clearly that you cannot confirm without searching, and offer to search if the user asks.";
+    // Safety guard: whenever web search is NOT active this turn. Applies even
+    // when the web toggle is off — otherwise the model, asked to search but
+    // given no web tool, promises "I will now run a web search" it can't do and
+    // loops. Telling it plainly it has no web access stops that narration.
+    if (queryRoute.searchMode === "off") {
+      systemPrompt += "\n\n**NO WEB ACCESS THIS TURN:** You cannot access the web right now and have NO web-search tool available. Do NOT say you will search, browse, or look something up online — you can't. Do NOT state specific prices, stock levels, availability, or other real-time facts you can't verify. Answer from the workspace data and your knowledge; if the user needs live web information, tell them to toggle Web search on (the globe/Web control) and ask again.";
     }
 
     // Boost token limit for web search queries — citations + research responses run long.

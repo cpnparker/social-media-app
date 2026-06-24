@@ -177,8 +177,15 @@ export function routeQuery(
   }
 
   // ── Step 2: Explicit web search ──
+  // An explicit request ("web search", "search online", "look it up online", a
+  // pasted URL) OVERRIDES an off toggle: a direct, current ask is a stronger
+  // signal than a persistent UI toggle the user may have forgotten is off.
+  // (Without this, "do a web search about X" silently fell through to a
+  // workspace-only answer — and the model, told to search but given no web
+  // tool, looped on query_engine: the tail-chasing spiral.) Implicit signals
+  // below still respect the toggle.
   const hasUrl = CONTAINS_URL.test(userMessage);
-  const wantsWeb = webAllowed && (hasUrl || matchesAny(lower, [WEB_EXPLICIT, WEB_EXPLICIT_2, WEB_EXPLICIT_3, WEB_EXPLICIT_4]));
+  const wantsWeb = hasUrl || matchesAny(lower, [WEB_EXPLICIT, WEB_EXPLICIT_2, WEB_EXPLICIT_3, WEB_EXPLICIT_4]);
 
   // ── Step 3-5: Detect data source signals ──
   const wantsMeeting = meetingBrainAllowed && matchesAny(lower, [MEETING_KEYWORDS, MEETING_KEYWORDS_2, MEETING_KEYWORDS_3]);

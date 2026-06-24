@@ -3892,6 +3892,11 @@ async function streamAnthropic(
   // Tool use loop: Claude may request tool calls, which we execute and feed back.
   // Loop continues until the model's stop_reason is "end_turn" (no more tool calls).
   const MAX_TOOL_ROUNDS = 8; // Safety limit to prevent infinite loops
+  // No-progress guard (mirrors the xAI loop): stop the model re-calling the
+  // same tool with no progress, which produces a wall of repeated text.
+  const executedToolSigs = new Set<string>();
+  const toolCallCounts = new Map<string, number>();
+  const MAX_CALLS_PER_TOOL = 3;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const stream = anthropic.messages.stream({
       model: apiModel,
@@ -4015,7 +4020,25 @@ async function streamAnthropic(
 
     // Then add tool results
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    let executedAnyTool = false;
     for (const tool of toolUseBlocks) {
+      // No-progress guard: skip a repeat/over-cap tool call and nudge the model
+      // to answer (still push a tool_result so the API conversation stays valid).
+      const toolSig = `${tool.name}:${JSON.stringify(tool.input ?? {})}`;
+      const toolCount = (toolCallCounts.get(tool.name) || 0) + 1;
+      toolCallCounts.set(tool.name, toolCount);
+      if (executedToolSigs.has(toolSig) || toolCount > MAX_CALLS_PER_TOOL) {
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: tool.id,
+          content: executedToolSigs.has(toolSig)
+            ? `You already called ${tool.name} with these exact arguments this turn — the result is above. Do NOT call it again. Answer the user now with what you have; if the data isn't available, say so plainly. Never promise to run a search or tool you cannot actually run.`
+            : `You have called ${tool.name} too many times this turn. Stop calling tools and answer the user now with what you have.`,
+        });
+        continue;
+      }
+      executedToolSigs.add(toolSig);
+      executedAnyTool = true;
       if (tool.name === "generate_image") {
         try {
           const prompt = tool.input.prompt || "Generate an image";
@@ -4666,6 +4689,9 @@ async function streamAnthropic(
       role: "user",
       content: toolResults,
     });
+    // If the round made no real progress (every tool call was a repeat or over
+    // the per-tool cap), stop now rather than churning to the round cap.
+    if (!executedAnyTool) break;
   }
 
   // If the loop exhausted all rounds without generating text, do one final
@@ -4793,6 +4819,15 @@ async function streamXAIChatCompletions(
 
   // Tool use loop: model may request tool calls, which we execute and feed back
   const MAX_TOOL_ROUNDS = 8;
+  // No-progress guard against the "tail-chasing spiral": a model that wants a
+  // capability it lacks this turn (e.g. asks to "run a web search" when no web
+  // tool is available) calls its one available tool (query_engine) over and
+  // over, gets the same "no results", and re-narrates each round until the round
+  // cap — producing a wall of repeated text. Track executed tool signatures +
+  // per-tool counts; skip repeats and stop when a round makes no real progress.
+  const executedToolSigs = new Set<string>();
+  const toolCallCounts = new Map<string, number>();
+  const MAX_CALLS_PER_TOOL = 3;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const stream = (await xai.chat.completions.create({
       model: apiModel,
@@ -4918,7 +4953,26 @@ async function streamXAIChatCompletions(
     } as any);
 
     // Execute each tool call and add results
+    let executedAnyTool = false;
     for (const tc of toolCallsArray) {
+      // No-progress guard (see executedToolSigs above): skip a tool call
+      // identical to one already run this turn, or any tool called too many
+      // times, and tell the model to answer instead of churning the same call.
+      const toolSig = `${tc.function.name}:${(tc.function.arguments || "").replace(/\s+/g, "")}`;
+      const toolCount = (toolCallCounts.get(tc.function.name) || 0) + 1;
+      toolCallCounts.set(tc.function.name, toolCount);
+      if (executedToolSigs.has(toolSig) || toolCount > MAX_CALLS_PER_TOOL) {
+        openaiMessages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: executedToolSigs.has(toolSig)
+            ? `You already called ${tc.function.name} with these exact arguments this turn — the result is above. Do NOT call it again. Answer the user now with what you have; if the data isn't available, say so plainly. Never promise to run a search or tool you cannot actually run.`
+            : `You have called ${tc.function.name} too many times this turn. Stop calling tools and answer the user now with the information you have; if you can't find what they asked for, tell them directly.`,
+        } as any);
+        continue;
+      }
+      executedToolSigs.add(toolSig);
+      executedAnyTool = true;
       if (tc.function.name === "generate_image") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -5152,6 +5206,10 @@ async function streamXAIChatCompletions(
         } as any);
       }
     }
+    // If the round made no real progress (every tool call was a repeat or over
+    // the per-tool cap), stop now rather than churning the same calls to the
+    // round cap — this is what ends the "tail-chasing spiral".
+    if (!executedAnyTool) break;
 
     // Reset fullText for the continuation (text from tool_calls round was partial)
     // Don't reset — we want to accumulate all text across rounds
