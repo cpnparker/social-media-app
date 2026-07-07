@@ -583,7 +583,7 @@ export default function DeliveredPage() {
               <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Active Customers</h2>
                 {customerList.length > 0 && (
-                  <button onClick={() => downloadCSV(customerList.map(c => ({ Customer: c.name, CUs: Math.round(c.cus * 100) / 100, Tasks: c.taskCount })), "active-customers")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerList.map(c => ({ Customer: c.name, CUs: (c.cus).toFixed(2), Tasks: c.taskCount })), "active-customers")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -652,7 +652,7 @@ export default function DeliveredPage() {
                   Contract Activity{selectionLabel}
                 </h2>
                 {customerContracts.length > 0 && (
-                  <button onClick={() => downloadCSV(customerContracts.map(c => ({ Contract: c.contractName, "Total CUs": Math.round(c.totalContractCUs * 100) / 100, Completed: Math.round(c.completedContractCUs * 100) / 100, Remaining: Math.round(c.remaining * 100) / 100, "Period CUs": Math.round(c.periodCUs * 100) / 100 })), "contract-activity")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerContracts.map(c => ({ Contract: c.contractName, "Total CUs": (c.totalContractCUs).toFixed(2), Completed: (c.completedContractCUs).toFixed(2), Remaining: (c.remaining).toFixed(2), "Period CUs": (c.periodCUs).toFixed(2) })), "contract-activity")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -704,7 +704,7 @@ export default function DeliveredPage() {
                   Content Delivered{selectionLabel}
                 </h2>
                 {customerContent.length > 0 && (
-                  <button onClick={() => downloadCSV(customerContent.map(c => ({ Content: c.title, Type: c.type, "Commissioned By": c.commissionedBy || "\u2014", CUs: Math.round(c.cus * 100) / 100, Completed: fmtDate(c.completedAt), Commissioned: fmtDate(c.createdAt) })), "content-delivered")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerContent.map(c => ({ Content: c.title, Type: c.type, "Commissioned By": c.commissionedBy || "\u2014", CUs: (c.cus).toFixed(2), Completed: fmtDate(c.completedAt), Commissioned: fmtDate(c.createdAt) })), "content-delivered")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -799,7 +799,7 @@ export default function DeliveredPage() {
                 <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Team Deliveries</h2>
                   {teamList.length > 0 && (
-                    <button onClick={() => downloadCSV(teamList.map(u => ({ Name: u.name, Items: u.count, CUs: Math.round(u.cus * 100) / 100 })), "team-deliveries")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <button onClick={() => downloadCSV(teamList.map(u => ({ Name: u.name, Items: u.count, CUs: (u.cus).toFixed(2) })), "team-deliveries")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                       <Download className="h-3.5 w-3.5" />
                     </button>
                   )}
@@ -850,7 +850,7 @@ export default function DeliveredPage() {
                     {selectedCommissioner ? `Content \u2014 ${selectedCommissioner}` : "Content by User"}
                   </h2>
                   {commissionerContent.length > 0 && (
-                    <button onClick={() => downloadCSV(commissionerContent.map(c => ({ Content: c.title, Customer: c.customer, Type: c.type, CUs: Math.round(c.cus * 100) / 100 })), "content-by-user")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <button onClick={() => downloadCSV(commissionerContent.map(c => ({ Content: c.title, Customer: c.customer, Type: c.type, CUs: (c.cus).toFixed(2) })), "content-by-user")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                       <Download className="h-3.5 w-3.5" />
                     </button>
                   )}
