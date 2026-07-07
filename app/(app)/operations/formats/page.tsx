@@ -565,7 +565,7 @@ export default function FormatsPage() {
                       </span>
                     </div>
                     <p className="text-2xl font-bold tabular-nums">
-                      {(categorySummary[category]?.cus || 0).toFixed(1)}
+                      {(categorySummary[category]?.cus || 0).toFixed(2)}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {categorySummary[category]?.count || 0} tasks
@@ -627,7 +627,7 @@ export default function FormatsPage() {
                               <td className="px-3 py-2">
                                 <Badge variant="secondary" className="text-[9px]">{f.category}</Badge>
                               </td>
-                              <td className="px-3 py-2 text-right font-semibold tabular-nums">{f.cus.toFixed(1)}</td>
+                              <td className="px-3 py-2 text-right font-semibold tabular-nums">{f.cus.toFixed(2)}</td>
                               <td className="px-3 py-2 text-right text-muted-foreground tabular-nums">{f.count}</td>
                             </tr>
                           ))}
@@ -728,7 +728,7 @@ export default function FormatsPage() {
                             <td className="px-3 py-2 font-medium max-w-[250px] truncate">{c.name}</td>
                             <td className="px-3 py-2 text-muted-foreground truncate max-w-[140px]">{c.clientName}</td>
                             <td className="px-3 py-2 text-muted-foreground truncate max-w-[140px]">{c.contractName || "\u2014"}</td>
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(1)}</td>
+                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(2)}</td>
                             <td className="px-3 py-2 text-muted-foreground tabular-nums">{fmtDate(c.dateCreated)}</td>
                             <td className="px-3 py-2 text-center">
                               {c.contentId && (
@@ -845,11 +845,11 @@ export default function FormatsPage() {
                             )}
                           >
                             <td className={cn("px-3 py-2 font-medium", selectedCustomerId === c.id && "text-blue-600")}>{c.name}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{c.Written > 0 ? c.Written.toFixed(1) : "\u2014"}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{c.Video > 0 ? c.Video.toFixed(1) : "\u2014"}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{c.Visual > 0 ? c.Visual.toFixed(1) : "\u2014"}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{c.Strategy > 0 ? c.Strategy.toFixed(1) : "\u2014"}</td>
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.total.toFixed(1)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{c.Written > 0 ? c.Written.toFixed(2) : "\u2014"}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{c.Video > 0 ? c.Video.toFixed(2) : "\u2014"}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{c.Visual > 0 ? c.Visual.toFixed(2) : "\u2014"}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{c.Strategy > 0 ? c.Strategy.toFixed(2) : "\u2014"}</td>
+                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.total.toFixed(2)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -934,7 +934,7 @@ export default function FormatsPage() {
                               </Badge>
                             </td>
                             <td className="px-3 py-2 text-muted-foreground">{c.category}</td>
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(1)}</td>
+                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(2)}</td>
                             <td className="px-3 py-2 text-muted-foreground tabular-nums">{fmtDate(c.dateCreated)}</td>
                             <td className="px-3 py-2 text-center">
                               {c.contentId && (

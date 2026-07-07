@@ -633,7 +633,7 @@ export default function TeamProductionPage() {
                       <ClipboardList className="h-5 w-5 text-blue-500" />
                     </div>
                     <div>
-                      <p className="text-2xl font-bold tabular-nums">{totalAssignedCUs.toFixed(1)}</p>
+                      <p className="text-2xl font-bold tabular-nums">{totalAssignedCUs.toFixed(2)}</p>
                       <p className="text-xs text-muted-foreground">Assigned Tasks CUs</p>
                     </div>
                     <span className="ml-auto text-xs text-muted-foreground tabular-nums">{assignedTasks.length} tasks</span>
@@ -645,7 +645,7 @@ export default function TeamProductionPage() {
                       <CheckCircle2 className="h-5 w-5 text-emerald-500" />
                     </div>
                     <div>
-                      <p className="text-2xl font-bold tabular-nums">{totalDeliveredCUs.toFixed(1)}</p>
+                      <p className="text-2xl font-bold tabular-nums">{totalDeliveredCUs.toFixed(2)}</p>
                       <p className="text-xs text-muted-foreground">Delivered Tasks CUs</p>
                     </div>
                     <span className="ml-auto text-xs text-muted-foreground tabular-nums">{deliveredTasks.length} tasks</span>
@@ -680,16 +680,16 @@ export default function TeamProductionPage() {
                           sortedSummary.map((u) => (
                             <tr key={u.assigneeId} className="border-b border-border/30 hover:bg-muted/20 transition-colors">
                               <td className="px-3 py-2 font-medium">{u.assigneeName}</td>
-                              <td className="px-3 py-2 text-right tabular-nums">{u.assignedCUs.toFixed(1)}</td>
-                              <td className="px-3 py-2 text-right tabular-nums">{u.deliveredCUs.toFixed(1)}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{u.assignedCUs.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{u.deliveredCUs.toFixed(2)}</td>
                             </tr>
                           ))
                         )}
                         {sortedSummary.length > 0 && (
                           <tr className="border-t-2 border-border bg-muted/20 font-semibold">
                             <td className="px-3 py-2">Total</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{totalAssignedCUs.toFixed(1)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{totalDeliveredCUs.toFixed(1)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{totalAssignedCUs.toFixed(2)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{totalDeliveredCUs.toFixed(2)}</td>
                           </tr>
                         )}
                       </tbody>
@@ -741,7 +741,7 @@ export default function TeamProductionPage() {
                                 <td className="px-3 py-2 capitalize">{t.contentType}</td>
                                 <td className="px-3 py-2 max-w-[200px] truncate" title={t.contentTitle}>{t.contentTitle}</td>
                                 <td className="px-3 py-2 capitalize">{t.taskTitle}</td>
-                                <td className="px-3 py-2 text-right tabular-nums">{t.taskCUs.toFixed(1)}</td>
+                                <td className="px-3 py-2 text-right tabular-nums">{t.taskCUs.toFixed(2)}</td>
                                 <td className={cn("px-3 py-2", overdue && "text-red-500 font-medium")}>{fmtDate(t.deadline)}</td>
                                 <td className="px-3 py-2">{fmtDate(t.createdAt)}</td>
                                 <td className="px-3 py-2 text-center">
@@ -802,7 +802,7 @@ export default function TeamProductionPage() {
                               <td className="px-3 py-2 capitalize">{t.contentType}</td>
                               <td className="px-3 py-2 max-w-[200px] truncate" title={t.contentTitle}>{t.contentTitle}</td>
                               <td className="px-3 py-2 capitalize">{t.taskTitle}</td>
-                              <td className="px-3 py-2 text-right tabular-nums">{t.taskCUs.toFixed(1)}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{t.taskCUs.toFixed(2)}</td>
                               <td className="px-3 py-2">{fmtDate(t.completedAt)}</td>
                               <td className="px-3 py-2">{fmtDate(t.createdAt)}</td>
                               <td className="px-3 py-2 text-center">

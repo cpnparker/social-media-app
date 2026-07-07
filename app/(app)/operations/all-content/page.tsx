@@ -499,7 +499,7 @@ export default function AllContentPage() {
         <h1 className="text-xl font-semibold tracking-tight">All Content</h1>
         <p className="text-sm text-muted-foreground mt-0.5">
           Every piece of content {isDateFiltered ? "created in the selected period" : "across all time"}.
-          {!loading && ` ${totals.contentItems} items, ${totals.totalCUs.toFixed(1)} CUs across ${totals.customers} customers.`}
+          {!loading && ` ${totals.contentItems} items, ${totals.totalCUs.toFixed(2)} CUs across ${totals.customers} customers.`}
         </p>
       </div>
 
@@ -607,7 +607,7 @@ export default function AllContentPage() {
           {/* KPI cards */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
-              { icon: Package, color: "text-blue-500", label: "Total CUs", value: totals.totalCUs.toFixed(1) },
+              { icon: Package, color: "text-blue-500", label: "Total CUs", value: totals.totalCUs.toFixed(2) },
               { icon: FileText, color: "text-violet-500", label: "Content Items", value: String(totals.contentItems) },
               { icon: CheckCircle2, color: "text-green-500", label: "Tasks", value: String(totals.tasks) },
               { icon: Users, color: "text-cyan-500", label: "Customers", value: String(totals.customers) },
@@ -686,7 +686,7 @@ export default function AllContentPage() {
                             <td className="px-3 py-2 text-muted-foreground capitalize">{prettyType(r.contentType)}</td>
                             <td className="px-3 py-2 text-muted-foreground truncate max-w-[140px]" title={r.customerName}>{r.customerName}</td>
                             <td className="px-3 py-2 text-muted-foreground truncate max-w-[160px]" title={r.contractName || ""}>{r.contractName || "\u2014"}</td>
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{r.totalCUs.toFixed(1)}</td>
+                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{r.totalCUs.toFixed(2)}</td>
                             <td className="px-3 py-2 text-muted-foreground max-w-[180px] truncate" title={r.assigneesDisplay}>
                               {visibleAssignees.length === 0 ? "\u2014" : (
                                 <>

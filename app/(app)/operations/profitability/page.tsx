@@ -470,7 +470,7 @@ export default function ProfitabilityPage() {
                           "Content Production": Math.round((c.activityBreakdown["Content Production"] || 0) * 100) / 100,
                           Strategy: Math.round((c.activityBreakdown["Strategy"] || 0) * 100) / 100,
                           "Account Management": Math.round((c.activityBreakdown["Account Management"] || 0) * 100) / 100,
-                          "CUs (period)": c.cusInPeriod,
+                          "CUs (period)": c.cusInPeriod.toFixed(2),
                           "Hours / CU": c.hoursPerCU !== null ? Math.round(c.hoursPerCU * 100) / 100 : "",
                         })),
                         "client-profitability.csv"
@@ -568,7 +568,7 @@ export default function ProfitabilityPage() {
                               {acctMgmt > 0 ? fmtHours(acctMgmt) : "—"}
                             </td>
                             <td className="p-3 text-right font-mono text-xs whitespace-nowrap">
-                              {client.cusInPeriod > 0 ? client.cusInPeriod : "—"}
+                              {client.cusInPeriod > 0 ? client.cusInPeriod.toFixed(2) : "—"}
                             </td>
                             <td className="p-3 text-right">
                               <EfficiencyBadge hoursPerCU={client.hoursPerCU} />
@@ -597,8 +597,8 @@ export default function ProfitabilityPage() {
                                           <td className="py-1.5 text-center text-muted-foreground">
                                             {fmtDate(contract.dateStart)} — {fmtDate(contract.dateEnd)}
                                           </td>
-                                          <td className="py-1.5 text-right font-mono">{contract.cusContracted}</td>
-                                          <td className="py-1.5 text-right font-mono">{contract.cusDelivered}</td>
+                                          <td className="py-1.5 text-right font-mono">{contract.cusContracted.toFixed(2)}</td>
+                                          <td className="py-1.5 text-right font-mono">{contract.cusDelivered.toFixed(2)}</td>
                                           <td className="py-1.5 text-center">
                                             <Badge
                                               variant="outline"

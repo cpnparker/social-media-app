@@ -55,10 +55,7 @@ const fmtDate = (d: string | null) => {
 
 const fmtPct = (n: number) => `${Math.round(n * 100)}%`;
 
-const fmtNum = (n: number) => {
-  if (Number.isInteger(n)) return String(n);
-  return n.toFixed(1);
-};
+const fmtNum = (n: number) => n.toFixed(2);
 
 /** 5-tier row color based on gap between pctDuration and pctCommission */
 function getRowColor(pctDuration: number, pctCommission: number): string {

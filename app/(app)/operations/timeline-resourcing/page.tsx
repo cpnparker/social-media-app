@@ -492,7 +492,7 @@ export default function TimelineResourcingPage() {
         type: "group",
         id: group.id,
         label: group.label,
-        sublabel: `${group.contentCount} content · ${group.periodTaskCUs.toFixed(1)} task CUs · ${group.totalCUs.toFixed(1)} content CUs`,
+        sublabel: `${group.contentCount} content · ${group.periodTaskCUs.toFixed(2)} task CUs · ${group.totalCUs.toFixed(2)} content CUs`,
         indent: 0,
         isExpanded: groupExpanded,
         onToggle: () => toggleGroup(group.id),
@@ -514,7 +514,7 @@ export default function TimelineResourcingPage() {
           type: "content",
           id: cg.contentId,
           label: cg.contentTitle,
-          sublabel: `${cg.contentType} · ${cg.periodTaskCUs.toFixed(1)} task CUs · ${cg.totalCUs.toFixed(1)} content CUs`,
+          sublabel: `${cg.contentType} · ${cg.periodTaskCUs.toFixed(2)} task CUs · ${cg.totalCUs.toFixed(2)} content CUs`,
           indent: 1,
           isExpanded: contentExpanded,
           onToggle: () => toggleContent(cg.contentId),
@@ -592,9 +592,9 @@ export default function TimelineResourcingPage() {
           <span>·</span>
           <span>{stats.totalItems} content</span>
           <span>·</span>
-          <span title="Task CUs in period">{stats.totalPeriodTaskCUs.toFixed(1)} task CUs</span>
+          <span title="Task CUs in period">{stats.totalPeriodTaskCUs.toFixed(2)} task CUs</span>
           <span>·</span>
-          <span className="font-semibold text-foreground" title="Content CUs in period">{stats.totalCUs.toFixed(1)} content CUs</span>
+          <span className="font-semibold text-foreground" title="Content CUs in period">{stats.totalCUs.toFixed(2)} content CUs</span>
         </div>
       </div>
 
@@ -835,7 +835,7 @@ export default function TimelineResourcingPage() {
                                   </div>
                                   <div className="flex justify-between">
                                     <span className="text-muted-foreground">Total CUs</span>
-                                    <span className="font-medium tabular-nums">{cg.totalCUs.toFixed(1)}</span>
+                                    <span className="font-medium tabular-nums">{cg.totalCUs.toFixed(2)}</span>
                                   </div>
                                   <div className="flex justify-between">
                                     <span className="text-muted-foreground">Tasks</span>
@@ -881,16 +881,16 @@ export default function TimelineResourcingPage() {
                     <span className="text-[9px] text-muted-foreground tabular-nums pr-2 shrink-0 flex items-center gap-1">
                       <span title="Content items in period">{row.contentCount}</span>
                       <span className="text-border">|</span>
-                      <span title="Task CUs in period — CUs from tasks with deadlines in this window">{(row.periodTaskCUs ?? 0).toFixed(1)}</span>
+                      <span title="Task CUs in period — CUs from tasks with deadlines in this window">{(row.periodTaskCUs ?? 0).toFixed(2)}</span>
                       <span className="text-border">|</span>
-                      <span title="Content CUs — total CUs from all content in this period">{row.cus.toFixed(1)}</span>
+                      <span title="Content CUs — total CUs from all content in this period">{row.cus.toFixed(2)}</span>
                     </span>
                   )}
                   {row.type === "content" && row.cus !== undefined && (
                     <span className="text-[9px] text-muted-foreground tabular-nums pr-2 shrink-0 flex items-center gap-1">
-                      <span title="Task CUs in period — CUs from tasks with deadlines in this window">{(row.periodTaskCUs ?? 0).toFixed(1)}</span>
+                      <span title="Task CUs in period — CUs from tasks with deadlines in this window">{(row.periodTaskCUs ?? 0).toFixed(2)}</span>
                       <span className="text-border">|</span>
-                      <span title="Content CUs — total CUs from all tasks for this content">{row.cus.toFixed(1)}</span>
+                      <span title="Content CUs — total CUs from all tasks for this content">{row.cus.toFixed(2)}</span>
                     </span>
                   )}
                 </div>
@@ -1003,7 +1003,7 @@ export default function TimelineResourcingPage() {
                         key={`bar-${row.type}-${row.id}`}
                         className={cn("absolute rounded-sm transition-all", row.barColor)}
                         style={{ left: clampedLeft, width: Math.max(clampedWidth, 4), top: topOffset, height: barH }}
-                        title={`${row.label}${row.cus ? ` (${row.cus.toFixed(1)} CUs)` : ""}`}
+                        title={`${row.label}${row.cus ? ` (${row.cus.toFixed(2)} CUs)` : ""}`}
                       >
                         {clampedWidth > 60 && row.type === "task" && (
                           <span className="absolute inset-0 flex items-center px-1.5 text-[8px] font-medium text-white truncate">

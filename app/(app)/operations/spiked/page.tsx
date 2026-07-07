@@ -396,7 +396,7 @@ export default function SpikedPage() {
         <h1 className="text-xl font-semibold tracking-tight">Spiked Content Units</h1>
         <p className="text-sm text-muted-foreground mt-0.5">
           Spiked content {isFiltered ? "for the selected period" : "across all time"}.
-          {!loading && ` ${totals.tasks} spiked tasks, ${totals.billableCUs.toFixed(1)} billable CUs.`}
+          {!loading && ` ${totals.tasks} spiked tasks, ${totals.billableCUs.toFixed(2)} billable CUs.`}
         </p>
       </div>
 
@@ -498,8 +498,8 @@ export default function SpikedPage() {
           {/* KPI cards */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
-              { icon: Package, color: "text-red-500", label: "Spiked CUs", value: totals.totalCUs.toFixed(1) },
-              { icon: CreditCard, color: "text-amber-500", label: "Billable CUs", value: totals.billableCUs.toFixed(1) },
+              { icon: Package, color: "text-red-500", label: "Spiked CUs", value: totals.totalCUs.toFixed(2) },
+              { icon: CreditCard, color: "text-amber-500", label: "Billable CUs", value: totals.billableCUs.toFixed(2) },
               { icon: FileText, color: "text-violet-500", label: "Content Items", value: String(totals.contentItems) },
               { icon: Users, color: "text-cyan-500", label: "Customers", value: String(totals.customers) },
             ].map((kpi) => (
@@ -522,7 +522,7 @@ export default function SpikedPage() {
               <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider mr-1">CUs by type:</span>
               {cusByType.map(([type, cus]) => (
                 <Badge key={type} variant="secondary" className="text-[10px] gap-1 capitalize py-0.5">
-                  {type} <span className="font-bold">{cus.toFixed(1)}</span>
+                  {type} <span className="font-bold">{cus.toFixed(2)}</span>
                 </Badge>
               ))}
             </div>
@@ -555,7 +555,7 @@ export default function SpikedPage() {
                       {customerList.map((c) => (
                         <tr key={c.id} className="border-b border-border/30 hover:bg-muted/40">
                           <td className="px-3 py-2 font-medium">{c.name}</td>
-                          <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(1)}</td>
+                          <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(2)}</td>
                           <td className="px-3 py-2 text-right text-muted-foreground tabular-nums">{c.taskCount}</td>
                         </tr>
                       ))}
@@ -601,7 +601,7 @@ export default function SpikedPage() {
                           <td className="px-3 py-2 font-medium max-w-[250px] truncate">{c.title}</td>
                           <td className="px-3 py-2 text-muted-foreground truncate max-w-[150px]">{c.customer}</td>
                           <td className="px-3 py-2"><Badge variant="secondary" className="text-[9px] capitalize">{c.type}</Badge></td>
-                          <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(1)}</td>
+                          <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(2)}</td>
                           <td className="px-3 py-2 text-muted-foreground tabular-nums">{fmtDate(c.dateSpiked)}</td>
                           <td className="px-3 py-2 text-muted-foreground tabular-nums">{fmtDate(c.createdAt)}</td>
                           <td className="px-3 py-2 text-center">

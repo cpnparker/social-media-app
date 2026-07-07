@@ -579,8 +579,8 @@ export default function ContractsPage() {
                       <td className="px-3 py-2 text-muted-foreground">{c.clientName}</td>
                       <td className="px-3 py-2 text-muted-foreground">{fmtDate(c.dateStart)}</td>
                       <td className="px-3 py-2 text-muted-foreground">{fmtDate(c.dateEnd)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{c.cusContract}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{c.cusDelivered}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{c.cusContract.toFixed(2)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{c.cusDelivered.toFixed(2)}</td>
                     </tr>
                   ))
                 )}
@@ -626,10 +626,10 @@ export default function ContractsPage() {
                   {[
                     { label: "Start", value: fmtDate(selectedContract.dateStart) },
                     { label: "End", value: fmtDate(selectedContract.dateEnd) },
-                    { label: "Contracted CUs", value: String(selectedContract.cusContract) },
-                    { label: "Delivered CUs", value: String(selectedContract.cusDelivered) },
-                    { label: "Commissioned CUs", value: String(contractDetail.commissionedCUs) },
-                    { label: "Spiked CUs", value: String(contractDetail.spikedCUs) },
+                    { label: "Contracted CUs", value: selectedContract.cusContract.toFixed(2) },
+                    { label: "Delivered CUs", value: selectedContract.cusDelivered.toFixed(2) },
+                    { label: "Commissioned CUs", value: contractDetail.commissionedCUs.toFixed(2) },
+                    { label: "Spiked CUs", value: contractDetail.spikedCUs.toFixed(2) },
                   ].map((kpi) => (
                     <Card key={kpi.label} className="border shadow-none">
                       <CardContent className="p-3">
@@ -718,7 +718,7 @@ export default function ContractsPage() {
                                     </span>
                                   </td>
                                   <td className="px-3 py-2 text-right tabular-nums">{t.count}</td>
-                                  <td className="px-3 py-2 text-right tabular-nums">{t.cus}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{t.cus.toFixed(2)}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -773,7 +773,7 @@ export default function ContractsPage() {
                                     </span>
                                   </td>
                                   <td className="px-3 py-2 text-right tabular-nums">{f.count}</td>
-                                  <td className="px-3 py-2 text-right tabular-nums">{f.cus}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{f.cus.toFixed(2)}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -833,7 +833,7 @@ export default function ContractsPage() {
                                     {item.type.replace(/_/g, " ")}
                                   </Badge>
                                 </td>
-                                <td className="px-3 py-2 text-right tabular-nums">{item.cus}</td>
+                                <td className="px-3 py-2 text-right tabular-nums">{item.cus.toFixed(2)}</td>
                                 <td className="px-3 py-2 text-muted-foreground">{fmtDate(item.dateCreated)}</td>
                                 <td className="px-3 py-2 text-muted-foreground">{fmtDate(item.dateCompleted)}</td>
                                 <td className="px-3 py-2 text-muted-foreground truncate max-w-[120px]">{item.assignee || "\u2014"}</td>
