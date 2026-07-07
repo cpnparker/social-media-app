@@ -537,8 +537,8 @@ export default function ContractsPage() {
                     Client: c.clientName,
                     Start: c.dateStart || "",
                     End: c.dateEnd || "",
-                    Contracted: Math.round((c.cusContract || 0) * 10) / 10,
-                    Delivered: Math.round((c.cusDelivered || 0) * 10) / 10,
+                    Contracted: Math.round((c.cusContract || 0) * 100) / 100,
+                    Delivered: Math.round((c.cusDelivered || 0) * 100) / 100,
                   })),
                   "contracts.csv"
                 )}

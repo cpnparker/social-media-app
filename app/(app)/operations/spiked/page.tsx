@@ -534,7 +534,7 @@ export default function SpikedPage() {
               <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Spiked CUs by Customer</h2>
                 {customerList.length > 0 && (
-                  <button onClick={() => downloadCSV(customerList.map(row => ({ Customer: row.name, CUs: Math.round(row.cus * 10) / 10, Tasks: row.taskCount })), "spiked-cus-by-customer.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerList.map(row => ({ Customer: row.name, CUs: Math.round(row.cus * 100) / 100, Tasks: row.taskCount })), "spiked-cus-by-customer.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -574,7 +574,7 @@ export default function SpikedPage() {
                   Spiked Content ({contentList.length})
                 </h2>
                 {contentList.length > 0 && (
-                  <button onClick={() => downloadCSV(contentList.map(row => ({ Content: row.title, Customer: row.customer, Type: row.type, CUs: Math.round(row.cus * 10) / 10, Spiked: row.dateSpiked || "", Created: row.createdAt || "" })), "spiked-content.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(contentList.map(row => ({ Content: row.title, Customer: row.customer, Type: row.type, CUs: Math.round(row.cus * 100) / 100, Spiked: row.dateSpiked || "", Created: row.createdAt || "" })), "spiked-content.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}

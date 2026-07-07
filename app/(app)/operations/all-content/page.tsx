@@ -639,7 +639,7 @@ export default function AllContentPage() {
                         Type: titleCase(prettyType(r.contentType)),
                         Customer: r.customerName,
                         Contract: r.contractName || "",
-                        CUs: Math.round(r.totalCUs * 10) / 10,
+                        CUs: Math.round(r.totalCUs * 100) / 100,
                         Tasks: r.taskCount,
                         Assignees: r.assigneesDisplay,
                         Status: r.status === "in_progress" ? "In Progress" : titleCase(r.status),

@@ -362,15 +362,15 @@ export default function ContractsGridPage() {
                       Contract: row.contractName,
                       Start: row.dateStart ?? "",
                       End: row.dateEnd ?? "",
-                      "CUs Contract": Math.round(row.cusContract),
-                      "CUs Commissioned": Math.round(row.cusCommissioned),
-                      "CUs Complete": Math.round(row.cusComplete),
-                      "Remaining (Comm.)": Math.round(row.remainingCommission),
-                      "Remaining (Comp.)": Math.round(row.remainingComplete),
+                      "CUs Contract": Math.round(row.cusContract * 100) / 100,
+                      "CUs Commissioned": Math.round(row.cusCommissioned * 100) / 100,
+                      "CUs Complete": Math.round(row.cusComplete * 100) / 100,
+                      "Remaining (Comm.)": Math.round(row.remainingCommission * 100) / 100,
+                      "Remaining (Comp.)": Math.round(row.remainingComplete * 100) / 100,
                       "% Duration": fmtPct(row.pctDuration),
                       "% Commissioned": fmtPct(row.pctCommission),
                       "% Complete": fmtPct(row.pctComplete),
-                      Gap: Math.round(row.gapCommission),
+                      Gap: Math.round(row.gapCommission * 100) / 100,
                     })), "contracts-grid.csv")}
                     className="text-muted-foreground hover:text-foreground transition-colors"
                     title="Download CSV"

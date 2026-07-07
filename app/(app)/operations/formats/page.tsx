@@ -585,7 +585,7 @@ export default function FormatsPage() {
                     {formatList.length > 0 && (
                       <button
                         onClick={() => downloadCSV(
-                          formatList.map((f) => ({ Format: f.type.replace(/_/g, " "), Category: f.category, CUs: Math.round(f.cus * 10) / 10, Tasks: f.count })),
+                          formatList.map((f) => ({ Format: f.type.replace(/_/g, " "), Category: f.category, CUs: Math.round(f.cus * 100) / 100, Tasks: f.count })),
                           `formats-commissioned-${dateFrom || "all"}-to-${dateTo || "all"}.csv`
                         )}
                         className="text-muted-foreground hover:text-foreground transition-colors"
@@ -695,7 +695,7 @@ export default function FormatsPage() {
                   {formatContent.length > 0 && (
                     <button
                       onClick={() => downloadCSV(
-                        formatContent.map((c) => ({ Content: c.name, Client: c.clientName, Contract: c.contractName || "", CUs: Math.round(c.cus * 10) / 10, Commissioned: fmtDate(c.dateCreated) })),
+                        formatContent.map((c) => ({ Content: c.name, Client: c.clientName, Contract: c.contractName || "", CUs: Math.round(c.cus * 100) / 100, Commissioned: fmtDate(c.dateCreated) })),
                         `content-${(selectedFormat || "all").replace(/_/g, "-")}-${dateFrom || "all"}-to-${dateTo || "all"}.csv`
                       )}
                       className="text-muted-foreground hover:text-foreground transition-colors"
@@ -809,7 +809,7 @@ export default function FormatsPage() {
                   {customerFormatData.length > 0 && (
                     <button
                       onClick={() => downloadCSV(
-                        customerFormatData.map((c) => ({ Customer: c.name, Written: Math.round(c.Written * 10) / 10, Video: Math.round(c.Video * 10) / 10, Visual: Math.round(c.Visual * 10) / 10, Strategy: Math.round(c.Strategy * 10) / 10, "Total CUs": Math.round(c.total * 10) / 10 })),
+                        customerFormatData.map((c) => ({ Customer: c.name, Written: Math.round(c.Written * 100) / 100, Video: Math.round(c.Video * 100) / 100, Visual: Math.round(c.Visual * 100) / 100, Strategy: Math.round(c.Strategy * 100) / 100, "Total CUs": Math.round(c.total * 100) / 100 })),
                         `customer-format-breakdown-${dateFrom || "all"}-to-${dateTo || "all"}.csv`
                       )}
                       className="text-muted-foreground hover:text-foreground transition-colors"
@@ -897,7 +897,7 @@ export default function FormatsPage() {
                   {customerDetailContent.length > 0 && (
                     <button
                       onClick={() => downloadCSV(
-                        customerDetailContent.map((c) => ({ Content: c.name, Type: c.contentType.replace(/_/g, " "), Category: c.category, CUs: Math.round(c.cus * 10) / 10, Commissioned: fmtDate(c.dateCreated) })),
+                        customerDetailContent.map((c) => ({ Content: c.name, Type: c.contentType.replace(/_/g, " "), Category: c.category, CUs: Math.round(c.cus * 100) / 100, Commissioned: fmtDate(c.dateCreated) })),
                         `content-${(selectedCustomerName || "customer").replace(/\s+/g, "-").toLowerCase()}.csv`
                       )}
                       className="text-muted-foreground hover:text-foreground transition-colors"

@@ -602,7 +602,7 @@ export default function CommissionedCUsPage() {
               <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Active Customers</h2>
                 {customerList.length > 0 && (
-                  <button onClick={() => downloadCSV(customerList.map(row => ({ Customer: row.name, CUs: Math.round(row.cus * 10) / 10, Tasks: row.taskCount })), "customers-commissioned.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerList.map(row => ({ Customer: row.name, CUs: Math.round(row.cus * 100) / 100, Tasks: row.taskCount })), "customers-commissioned.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -671,7 +671,7 @@ export default function CommissionedCUsPage() {
                   Contract Activity{selectionLabel}
                 </h2>
                 {customerContracts.length > 0 && (
-                  <button onClick={() => downloadCSV(customerContracts.map(row => ({ Contract: row.contractName, "Total CUs": Math.round(row.totalContractCUs * 10) / 10, Commissioned: Math.round(row.commissionedContractCUs * 10) / 10, Remaining: Math.round(row.remaining * 10) / 10, "Period CUs": Math.round(row.periodCUs * 10) / 10 })), "contract-activity.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerContracts.map(row => ({ Contract: row.contractName, "Total CUs": Math.round(row.totalContractCUs * 100) / 100, Commissioned: Math.round(row.commissionedContractCUs * 100) / 100, Remaining: Math.round(row.remaining * 100) / 100, "Period CUs": Math.round(row.periodCUs * 100) / 100 })), "contract-activity.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -723,7 +723,7 @@ export default function CommissionedCUsPage() {
                   Content Commissioned{selectionLabel}
                 </h2>
                 {customerContent.length > 0 && (
-                  <button onClick={() => downloadCSV(customerContent.map(row => ({ Content: row.title, Type: row.type, "Commissioned By": row.commissionedBy || "", CUs: Math.round(row.cus * 10) / 10, Commissioned: row.createdAt ? fmtDate(row.createdAt) : "" })), "content-commissioned.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerContent.map(row => ({ Content: row.title, Type: row.type, "Commissioned By": row.commissionedBy || "", CUs: Math.round(row.cus * 100) / 100, Commissioned: row.createdAt ? fmtDate(row.createdAt) : "" })), "content-commissioned.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -819,7 +819,7 @@ export default function CommissionedCUsPage() {
                 <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Team Commissions</h2>
                   {teamList.length > 0 && (
-                    <button onClick={() => downloadCSV(teamList.map(row => ({ Name: row.name, Items: row.count, CUs: Math.round(row.cus * 10) / 10 })), "team-commissions.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <button onClick={() => downloadCSV(teamList.map(row => ({ Name: row.name, Items: row.count, CUs: Math.round(row.cus * 100) / 100 })), "team-commissions.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                       <Download className="h-3.5 w-3.5" />
                     </button>
                   )}

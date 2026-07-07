@@ -659,7 +659,7 @@ export default function TeamProductionPage() {
                   <div className="px-4 py-3 border-b flex items-center justify-between">
                     <h3 className="text-sm font-semibold">Summary</h3>
                     {sortedSummary.length > 0 && (
-                      <button onClick={() => downloadCSV(sortedSummary.map(row => ({ "Team Member": row.assigneeName, "Assigned CUs": Math.round(row.assignedCUs * 10) / 10, "Delivered CUs": Math.round(row.deliveredCUs * 10) / 10 })), "team-production-summary.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                      <button onClick={() => downloadCSV(sortedSummary.map(row => ({ "Team Member": row.assigneeName, "Assigned CUs": Math.round(row.assignedCUs * 100) / 100, "Delivered CUs": Math.round(row.deliveredCUs * 100) / 100 })), "team-production-summary.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                         <Download className="h-3.5 w-3.5" />
                       </button>
                     )}
@@ -708,7 +708,7 @@ export default function TeamProductionPage() {
                       <span className="text-xs text-muted-foreground">({assignedTasks.length})</span>
                     </div>
                     {assignedTasks.length > 0 && (
-                      <button onClick={() => downloadCSV(assignedTasks.map(row => ({ Assignee: row.assigneeName || "", Customer: row.customerName, Type: row.contentType, Content: row.contentTitle, Task: row.taskTitle, CUs: Math.round(row.taskCUs * 10) / 10, Deadline: row.deadline || "", Created: row.createdAt || "" })), "team-assigned-tasks.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                      <button onClick={() => downloadCSV(assignedTasks.map(row => ({ Assignee: row.assigneeName || "", Customer: row.customerName, Type: row.contentType, Content: row.contentTitle, Task: row.taskTitle, CUs: Math.round(row.taskCUs * 100) / 100, Deadline: row.deadline || "", Created: row.createdAt || "" })), "team-assigned-tasks.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                         <Download className="h-3.5 w-3.5" />
                       </button>
                     )}
@@ -771,7 +771,7 @@ export default function TeamProductionPage() {
                       <span className="text-xs text-muted-foreground">({deliveredTasks.length})</span>
                     </div>
                     {deliveredTasks.length > 0 && (
-                      <button onClick={() => downloadCSV(deliveredTasks.map(row => ({ Assignee: row.assigneeName || "", Customer: row.customerName, Type: row.contentType, Content: row.contentTitle, Task: row.taskTitle, CUs: Math.round(row.taskCUs * 10) / 10, Completed: row.completedAt || "", Created: row.createdAt || "" })), "team-delivered-tasks.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                      <button onClick={() => downloadCSV(deliveredTasks.map(row => ({ Assignee: row.assigneeName || "", Customer: row.customerName, Type: row.contentType, Content: row.contentTitle, Task: row.taskTitle, CUs: Math.round(row.taskCUs * 100) / 100, Completed: row.completedAt || "", Created: row.createdAt || "" })), "team-delivered-tasks.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                         <Download className="h-3.5 w-3.5" />
                       </button>
                     )}
