@@ -17,6 +17,7 @@ import {
   Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatLocalDate } from "@/lib/date-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 import {
@@ -69,8 +70,8 @@ interface FormatTask {
 const getThisMonthRange = () => {
   const d = new Date();
   return {
-    from: new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split("T")[0],
-    to: new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().split("T")[0],
+    from: formatLocalDate(new Date(d.getFullYear(), d.getMonth(), 1)),
+    to: formatLocalDate(new Date(d.getFullYear(), d.getMonth() + 1, 0)),
   };
 };
 
@@ -81,8 +82,8 @@ const presets = [
     getRange: () => {
       const d = new Date();
       return {
-        from: new Date(d.getFullYear(), d.getMonth() - 1, 1).toISOString().split("T")[0],
-        to: new Date(d.getFullYear(), d.getMonth(), 0).toISOString().split("T")[0],
+        from: formatLocalDate(new Date(d.getFullYear(), d.getMonth() - 1, 1)),
+        to: formatLocalDate(new Date(d.getFullYear(), d.getMonth(), 0)),
       };
     },
   },
@@ -92,8 +93,8 @@ const presets = [
       const d = new Date();
       const q = Math.floor(d.getMonth() / 3);
       return {
-        from: new Date(d.getFullYear(), q * 3, 1).toISOString().split("T")[0],
-        to: new Date(d.getFullYear(), q * 3 + 3, 0).toISOString().split("T")[0],
+        from: formatLocalDate(new Date(d.getFullYear(), q * 3, 1)),
+        to: formatLocalDate(new Date(d.getFullYear(), q * 3 + 3, 0)),
       };
     },
   },

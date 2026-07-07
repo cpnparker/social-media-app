@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { formatLocalDate } from "@/lib/date-utils";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import {
   BarChart,
@@ -539,8 +540,8 @@ export default function AIUsagePage() {
                   if (!startDate) {
                     const s = new Date();
                     s.setDate(s.getDate() - 30);
-                    setStartDate(s.toISOString().split("T")[0]);
-                    setEndDate(new Date().toISOString().split("T")[0]);
+                    setStartDate(formatLocalDate(s));
+                    setEndDate(formatLocalDate(new Date()));
                   }
                 }}
                 className={cn(

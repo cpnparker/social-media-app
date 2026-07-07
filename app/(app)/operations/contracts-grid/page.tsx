@@ -17,6 +17,7 @@ import {
   Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatLocalDate } from "@/lib/date-utils";
 import { downloadCSV } from "@/lib/csv-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
@@ -168,7 +169,7 @@ function sortRows<T extends Record<string, any>>(rows: T[], key: string, asc: bo
 /* ─────────────── Component ─────────────── */
 
 export default function ContractsGridPage() {
-  const today = new Date().toISOString().split("T")[0];
+  const today = formatLocalDate(new Date());
 
   const [contracts, setContracts] = useState<EnrichedContract[]>([]);
   const [loading, setLoading] = useState(true);
