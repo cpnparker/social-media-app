@@ -13,7 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import { Radio } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export default function LiveLauncher({ clientId }: { clientId?: string }) {
+export default function LiveLauncher({ clientId, threadId }: { clientId?: string; threadId?: string }) {
   const [inMeeting, setInMeeting] = useState(false);
   const bcRef = useRef<BroadcastChannel | null>(null);
 
@@ -32,8 +32,11 @@ export default function LiveLauncher({ clientId }: { clientId?: string }) {
   }, []);
 
   const open = () => {
-    const url = clientId ? `/meeting?client=${encodeURIComponent(clientId)}` : "/meeting";
-    window.open(url, "engineai-meeting", "popup,width=440,height=880");
+    const params = new URLSearchParams();
+    if (clientId) params.set("client", clientId);
+    if (threadId) params.set("thread", threadId); // load this chat as meeting context
+    const qs = params.toString();
+    window.open(`/meeting${qs ? `?${qs}` : ""}`, "engineai-meeting", "popup,width=440,height=880");
   };
 
   return (

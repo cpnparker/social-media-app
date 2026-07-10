@@ -79,8 +79,15 @@ export default function MeetingLivePage() {
   const [title, setTitle] = useState("");
   const [meetingType, setMeetingType] = useState<"client_checkin" | "sales" | "general">("general");
   const [context, setContext] = useState(""); // prospect name, socials, reports, events…
+  const [linkedChat, setLinkedChat] = useState<{ id: string; title: string; msgCount: number; fileCount: number } | null>(null);
+  const linkedContextRef = useRef(""); // derived text context from the source chat
   useEffect(() => { contextRef.current = context; }, [context]);
   useEffect(() => { clientIdRef.current = clientId; }, [clientId]);
+
+  /** User context + linked-chat context, combined for digest/handoff. */
+  const combinedContext = useCallback(() => {
+    return [contextRef.current, linkedContextRef.current].filter((s) => s && s.trim()).join("\n\n") || undefined;
+  }, []);
   const [attested, setAttested] = useState(false);
   const [devices, setDevices] = useState<{ deviceId: string; label: string }[]>([]);
   const [deviceId, setDeviceId] = useState<string>("");
@@ -114,13 +121,49 @@ export default function MeetingLivePage() {
   const wakeBcRef = useRef<BroadcastChannel | null>(null);
   const capPromptedRef = useRef(false);
 
-  // Optional ?client= prefill from the opener
+  // Optional ?client= / ?thread= prefill from the opener. ?thread loads the
+  // source EngineAI chat (messages + shared file names + summary) as context
+  // for this meeting — so Live from a chat continues that chat's thread.
   useEffect(() => {
     try {
-      const c = new URLSearchParams(window.location.search).get("client");
+      const sp = new URLSearchParams(window.location.search);
+      const c = sp.get("client");
       if (c) setClientId(c);
+      const thread = sp.get("thread");
+      if (thread) void loadLinkedChat(thread);
     } catch { /* noop */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const loadLinkedChat = async (threadId: string) => {
+    try {
+      const res = await fetch(`/api/ai/conversations/${threadId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const conv = data.conversation || {};
+      const messages: any[] = data.messages || [];
+      const fileNames = new Set<string>();
+      for (const m of messages) {
+        for (const a of m.attachments || []) if (a?.name) fileNames.add(a.name);
+      }
+      const parts: string[] = [`## Linked EngineAI chat: "${conv.title || conv.name_conversation || "Conversation"}"`];
+      if (conv.summary || conv.document_summary) parts.push(`Summary: ${(conv.summary || conv.document_summary).slice(0, 1500)}`);
+      if (fileNames.size) parts.push(`Files shared in the chat: ${Array.from(fileNames).slice(0, 20).join(", ")}`);
+      parts.push("Conversation so far:");
+      for (const m of messages.slice(-24)) {
+        const role = m.role === "assistant" ? "assistant" : "user";
+        const text = String(m.content || "").replace(/\s+/g, " ").trim();
+        if (text) parts.push(`[${role}] ${text.slice(0, 800)}`);
+      }
+      linkedContextRef.current = parts.join("\n").slice(0, 8000);
+      setLinkedChat({
+        id: threadId,
+        title: conv.title || conv.name_conversation || "Conversation",
+        msgCount: messages.length,
+        fileCount: fileNames.size,
+      });
+    } catch { /* best-effort — the meeting works without it */ }
+  };
 
   /* ─────────────── Device enumeration ─────────────── */
 
@@ -532,7 +575,7 @@ export default function MeetingLivePage() {
         body: JSON.stringify({
           sessionId,
           durationSeconds: seconds,
-          context: contextRef.current || undefined,
+          context: combinedContext(),
           transcript: transcript.map((u) => ({ speaker: u.speaker, text: u.text })),
         }),
       });
@@ -588,7 +631,7 @@ export default function MeetingLivePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sessionId: sessionIdRef.current,
-          context: contextRef.current || undefined,
+          context: combinedContext(),
           digest: draftDigest || undefined,
           transcript: utterancesRef.current.map((u) => ({ speaker: u.speaker, text: u.text })),
         }),
@@ -735,6 +778,7 @@ export default function MeetingLivePage() {
             title={title} setTitle={setTitle}
             meetingType={meetingType} setMeetingType={setMeetingType}
             context={context} setContext={setContext}
+            linkedChat={linkedChat} onUnlinkChat={() => { linkedContextRef.current = ""; setLinkedChat(null); }}
             devices={devices} deviceId={deviceId} setDeviceId={setDeviceId}
             attested={attested} setAttested={setAttested}
             starting={starting}
@@ -946,6 +990,8 @@ function SetupScreen(props: {
   title: string; setTitle: (v: string) => void;
   meetingType: "client_checkin" | "sales" | "general"; setMeetingType: (v: any) => void;
   context: string; setContext: (v: string) => void;
+  linkedChat: { id: string; title: string; msgCount: number; fileCount: number } | null;
+  onUnlinkChat: () => void;
   devices: { deviceId: string; label: string }[];
   deviceId: string; setDeviceId: (v: string) => void;
   attested: boolean; setAttested: (v: boolean) => void;
@@ -993,6 +1039,20 @@ function SetupScreen(props: {
             Fed into the meeting summary and carried through if you continue in EngineAI afterward.
           </span>
         </label>
+
+        {props.linkedChat && (
+          <div className="rounded-lg border bg-primary/5 border-primary/30 p-2 flex items-start gap-2">
+            <FileText className="h-3.5 w-3.5 mt-0.5 shrink-0 text-primary" />
+            <div className="min-w-0 flex-1">
+              <div className="text-[12px] font-medium truncate">Linked chat: {props.linkedChat.title}</div>
+              <div className="text-[10px] text-muted-foreground">
+                {props.linkedChat.msgCount} message{props.linkedChat.msgCount !== 1 ? "s" : ""}
+                {props.linkedChat.fileCount > 0 ? ` · ${props.linkedChat.fileCount} file${props.linkedChat.fileCount !== 1 ? "s" : ""}` : ""} loaded as context
+              </div>
+            </div>
+            <button onClick={props.onUnlinkChat} className="text-muted-foreground/50 hover:text-foreground text-xs" title="Remove linked chat">✕</button>
+          </div>
+        )}
 
         <div className="flex gap-2">
           {([

@@ -2452,6 +2452,7 @@ function EngineAIContent() {
               ? String(conversations.find((c) => c.id === selectedId)?.customerId || "")
               : "")
           }
+          threadId={selectedId || ""}
         />
       )}
     </>
