@@ -612,7 +612,7 @@ export default function MeetingLivePage() {
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Live transcript (in-memory only)</div>
             {utterances.length === 0 && !partial && (
               <p className="text-sm text-muted-foreground/70 pt-8 text-center">
-                Listening… speech appears here as it's heard.
+                Listening… speech appears here as it&apos;s heard.
               </p>
             )}
             <div className="space-y-1.5">

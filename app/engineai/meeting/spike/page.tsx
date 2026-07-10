@@ -154,7 +154,7 @@ export default function CaptureSpikePage() {
       <h1 className="text-lg font-semibold">EngineAI Live — capture spike</h1>
       <p className="text-xs text-muted-foreground leading-snug">
         Validates far-side capture per mic. Run during a real call (or play speech from another
-        device) and check whether the OTHER person's words appear below. Test each mic; the winner
+        device) and check whether the OTHER person&apos;s words appear below. Test each mic; the winner
         becomes the default. Raw capture (no echo cancellation) — exactly what the real feature uses.
       </p>
 
