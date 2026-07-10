@@ -2440,9 +2440,19 @@ function EngineAIContent() {
           }}
         />
       )}
-      {/* EngineAI Live — second-screen meeting copilot (per-user flag) */}
+      {/* EngineAI Live — second-screen meeting copilot (per-user flag).
+          Resolve the client from the global selector, else the open
+          conversation's client, so "open Live from a client" always carries
+          that client into the meeting window. */}
       {workspaceId && wsCtx?.selectedWorkspace?.accessEngineAiLive && (
-        <LiveLauncher clientId={customerId ? String(customerId) : ""} />
+        <LiveLauncher
+          clientId={
+            (customerId ? String(customerId) : "") ||
+            (selectedId
+              ? String(conversations.find((c) => c.id === selectedId)?.customerId || "")
+              : "")
+          }
+        />
       )}
     </>
   );
