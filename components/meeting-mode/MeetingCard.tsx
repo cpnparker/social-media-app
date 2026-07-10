@@ -119,6 +119,9 @@ export function MeetingCard({
           <div className="flex items-center gap-1.5">
             <span className="text-[13px] font-semibold truncate">{card.title}</span>
           </div>
+          {card.insight && (
+            <div className="mt-0.5 text-[13px] leading-snug text-foreground/90">{card.insight}</div>
+          )}
           <div className="mt-1"><CardContent kind={card.kind} body={card.body} /></div>
           {receiptLabel(card.receipt) && (
             <div className="mt-1 text-[11px] text-muted-foreground/70 truncate">↳ {receiptLabel(card.receipt)}</div>

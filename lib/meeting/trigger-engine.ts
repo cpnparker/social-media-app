@@ -39,13 +39,14 @@ export interface LiveCard {
   localId: string;
   dbId: string | null;
   kind: string;
-  source: "deck" | "t1" | "t2";
+  source: "deck" | "t1" | "t2" | "manual";
   title: string;
   body: any;
   receipt: any;
   firedAt: number;
   state: "live" | "pinned" | "drawer";
   triggerText?: string;
+  insight?: string; // natural, conversation-aware framing (LLM-generated, async)
 }
 
 const GLOBAL_MIN_GAP_MS = 20_000; // sustained ≥1 card / ~20s (burst-tolerant)

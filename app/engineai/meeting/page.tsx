@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Mic, Pause, Play, Square, Radio, Loader2, AlertTriangle, Copy, Check,
-  ExternalLink, Trash2, FileText, ArrowRightCircle,
+  ExternalLink, Trash2, FileText, ArrowRightCircle, Search,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -402,8 +402,32 @@ export default function MeetingLivePage() {
 
   /* ─────────────── Card lifecycle ─────────────── */
 
+  /** Patch a card's insight wherever it currently lives. */
+  const setCardInsight = useCallback((localId: string, insight: string) => {
+    if (!insight) return;
+    const patch = (list: LiveCard[]) => list.map((c) => (c.localId === localId ? { ...c, insight } : c));
+    setLiveCards(patch); setPinnedCards(patch); setDrawerCards(patch);
+  }, []);
+
+  /** Ask the lookup engine for a natural, conversation-aware framing of a card. */
+  const enrichCard = useCallback((card: LiveCard) => {
+    if (!sessionIdRef.current || card.body?.none) return; // nothing to frame
+    fetch("/api/ai/meeting/lookup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: sessionIdRef.current,
+        enrich: { kind: card.kind, data: card.body, utterance: card.triggerText || "" },
+      }),
+    })
+      .then((r) => r.json())
+      .then((d) => { if (d?.insight) setCardInsight(card.localId, d.insight); })
+      .catch(() => {});
+  }, [setCardInsight]);
+
   const handleCardFired = useCallback((card: LiveCard) => {
     setLiveCards((prev) => [card, ...prev].slice(0, 6));
+    enrichCard(card); // upgrade with a natural insight line (~700ms)
     // Auto-expire to drawer after 20s unless pinned
     setTimeout(() => {
       setLiveCards((prev) => {
@@ -418,7 +442,47 @@ export default function MeetingLivePage() {
 
   const handleCardDrawerOnly = useCallback((card: LiveCard) => {
     setDrawerCards((prev) => [card, ...prev].slice(0, 40));
-  }, []);
+    enrichCard(card);
+  }, [enrichCard]);
+
+  // Manual "look up the last point" — the safety net when a live trigger missed.
+  const [lookingUp, setLookingUp] = useState(false);
+  const handleManualLookup = useCallback(async () => {
+    if (!sessionIdRef.current || lookingUp) return;
+    const tail = utterancesRef.current.slice(-4).map((u) => u.text).filter(Boolean);
+    if (tail.length === 0) { toast("Nothing has been said yet to look up."); return; }
+    setLookingUp(true);
+    try {
+      const res = await fetch("/api/ai/meeting/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sessionIdRef.current, utterances: tail }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (d?.card) {
+        const card: LiveCard = {
+          localId: `lookup-${Date.now()}`,
+          dbId: d.card.id || null,
+          kind: d.card.kind,
+          source: "manual",
+          title: d.card.title,
+          body: d.card.body,
+          receipt: d.card.receipt,
+          insight: d.card.insight,
+          firedAt: Date.now(),
+          state: "pinned", // manual lookups pin so they don't vanish
+        };
+        setPinnedCards((prev) => [card, ...prev]);
+        setLiveTab("live");
+      } else {
+        toast(d?.note || "Nothing relevant found for the last point.");
+      }
+    } catch {
+      toast.error("Lookup failed");
+    } finally {
+      setLookingUp(false);
+    }
+  }, [lookingUp]);
 
   const pinCard = (card: LiveCard) => {
     engineRef.current?.report(card, "pinned");
@@ -856,6 +920,18 @@ export default function MeetingLivePage() {
                   ))}
                 </>
               )}
+            </div>
+
+            {/* Manual safety net: force a lookup on the last thing said */}
+            <div className="shrink-0 border-t p-2 bg-card/60">
+              <button
+                onClick={handleManualLookup}
+                disabled={lookingUp}
+                className="w-full h-9 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-60"
+              >
+                {lookingUp ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                {lookingUp ? "Looking it up…" : "Look up the last point"}
+              </button>
             </div>
           </div>
         )}
