@@ -72,6 +72,14 @@ CREATE INDEX IF NOT EXISTS idx_ai_meeting_cards_session
 COMMENT ON TABLE intelligence.ai_meeting_cards IS
   'EngineAI Live cards: compiled deck rows + every live trigger event (incl. suppressions). This is the relevance-tuning ground-truth dataset. Receipts hold at most one-line quotes — never transcript passages.';
 
+-- ── RLS: deny-by-default (house pattern — see 20260517_design_mode_v2.sql) ──
+-- The app reaches these tables only through the service-role key, which
+-- bypasses RLS. Enabling RLS with no policies blocks every other path
+-- (anon/authenticated PostgREST) — the right posture for consent records
+-- and meeting metadata.
+ALTER TABLE intelligence.ai_meeting_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE intelligence.ai_meeting_cards ENABLE ROW LEVEL SECURITY;
+
 -- ── 4. per-user enablement flag ──
 ALTER TABLE intelligence.users_access
   ADD COLUMN IF NOT EXISTS flag_access_engineai_live integer NOT NULL DEFAULT 0;
