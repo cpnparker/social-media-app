@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Mic, Pause, Play, Square, Radio, Loader2, AlertTriangle, Copy, Check,
-  ExternalLink, Trash2, FileText,
+  ExternalLink, Trash2, FileText, ArrowRightCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -78,6 +78,9 @@ export default function MeetingLivePage() {
   const [clientId, setClientId] = useState<string>("");
   const [title, setTitle] = useState("");
   const [meetingType, setMeetingType] = useState<"client_checkin" | "sales" | "general">("general");
+  const [context, setContext] = useState(""); // prospect name, socials, reports, events…
+  useEffect(() => { contextRef.current = context; }, [context]);
+  useEffect(() => { clientIdRef.current = clientId; }, [clientId]);
   const [attested, setAttested] = useState(false);
   const [devices, setDevices] = useState<{ deviceId: string; label: string }[]>([]);
   const [deviceId, setDeviceId] = useState<string>("");
@@ -102,6 +105,8 @@ export default function MeetingLivePage() {
   const pausedSinceRef = useRef<number | null>(null);
   const utterancesRef = useRef<Utterance[]>([]);
   const utteranceIdxRef = useRef(0);
+  const contextRef = useRef("");
+  const clientIdRef = useRef("");
   const silentFramesRef = useRef(0);
   const reconnectAttemptsRef = useRef(0);
   const idleCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -152,6 +157,8 @@ export default function MeetingLivePage() {
           sessionIdRef.current = buf.sessionId;
           setUtterances(buf.utterances);
           setTitle(buf.title || "");
+          setContext(buf.context || "");
+          if (buf.clientId) setClientId(buf.clientId);
           setStage("review");
           setStatusDetail("Recovered from an interrupted session — review and save or discard.");
           void generateDigest(buf.sessionId, buf.utterances, buf.elapsedSeconds || 0);
@@ -214,6 +221,8 @@ export default function MeetingLivePage() {
               JSON.stringify({
                 sessionId: sessionIdRef.current,
                 title,
+                context: contextRef.current,
+                clientId: clientIdRef.current,
                 utterances: utterancesRef.current.slice(-800),
                 elapsedSeconds: Math.round((Date.now() - startedAtRef.current - pausedAccumRef.current) / 1000),
               })
@@ -523,6 +532,7 @@ export default function MeetingLivePage() {
         body: JSON.stringify({
           sessionId,
           durationSeconds: seconds,
+          context: contextRef.current || undefined,
           transcript: transcript.map((u) => ({ speaker: u.speaker, text: u.text })),
         }),
       });
@@ -564,6 +574,39 @@ export default function MeetingLivePage() {
       setStage("saved");
     } catch (err: any) {
       toast.error(err.message);
+    }
+  };
+
+  const [handingOff, setHandingOff] = useState(false);
+
+  const handleContinueInEngineAI = async () => {
+    if (!sessionIdRef.current) return;
+    setHandingOff(true);
+    try {
+      const res = await fetch("/api/ai/meeting/handoff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: sessionIdRef.current,
+          context: contextRef.current || undefined,
+          digest: draftDigest || undefined,
+          transcript: utterancesRef.current.map((u) => ({ speaker: u.speaker, text: u.text })),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.conversationId) throw new Error(data.error || "Handoff failed");
+      // The transcript now lives in a conversation the user chose to keep —
+      // clear the ephemeral copies here.
+      utterancesRef.current = [];
+      setUtterances([]);
+      sessionStorage.removeItem(CRASH_BUFFER_KEY);
+      setStage("saved");
+      // Open the working conversation in the main EngineAI surface
+      window.open(`/?thread=${data.conversationId}`, "_blank");
+    } catch (err: any) {
+      toast.error(err.message || "Could not continue in EngineAI");
+    } finally {
+      setHandingOff(false);
     }
   };
 
@@ -691,6 +734,7 @@ export default function MeetingLivePage() {
             clientId={clientId} setClientId={setClientId}
             title={title} setTitle={setTitle}
             meetingType={meetingType} setMeetingType={setMeetingType}
+            context={context} setContext={setContext}
             devices={devices} deviceId={deviceId} setDeviceId={setDeviceId}
             attested={attested} setAttested={setAttested}
             starting={starting}
@@ -778,6 +822,9 @@ export default function MeetingLivePage() {
             setDigest={setDraftDigest}
             loading={digestLoading}
             utteranceCount={utterances.length}
+            hasClient={!!clientId}
+            handingOff={handingOff}
+            onContinue={handleContinueInEngineAI}
             onSave={handleSaveDigest}
             onDiscard={handleDiscard}
             onRetry={() => sessionIdRef.current && generateDigest(sessionIdRef.current, utterancesRef.current, billedSeconds())}
@@ -818,6 +865,79 @@ export default function MeetingLivePage() {
   );
 }
 
+/* ─────────────── Client picker (alphabetical + live search) ─────────────── */
+
+function ClientPicker({
+  customers, clientId, onChange,
+}: {
+  customers: { id: string; name: string }[];
+  clientId: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  const sorted = [...customers].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+  );
+  const filtered = query.trim()
+    ? sorted.filter((c) => c.name.toLowerCase().includes(query.trim().toLowerCase()))
+    : sorted;
+  const selectedName = customers.find((c) => c.id === clientId)?.name;
+
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+
+  return (
+    <div className="block" ref={boxRef}>
+      <span className="text-xs font-medium text-muted-foreground">Client <span className="opacity-60 font-normal">(optional)</span></span>
+      <div className="relative mt-1">
+        <input
+          value={open ? query : selectedName || ""}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => { setQuery(""); setOpen(true); }}
+          placeholder={selectedName || "Search clients…"}
+          className="w-full h-9 rounded-lg border bg-background px-2 text-sm"
+        />
+        {clientId && !open && (
+          <button
+            onMouseDown={(e) => { e.preventDefault(); onChange(""); setQuery(""); }}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-foreground text-xs"
+            title="Clear"
+          >✕</button>
+        )}
+        {open && (
+          <div className="absolute z-10 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border bg-popover shadow-lg">
+            <button
+              onMouseDown={(e) => { e.preventDefault(); onChange(""); setOpen(false); }}
+              className="w-full text-left px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-accent"
+            >— No client / internal —</button>
+            {filtered.map((c) => (
+              <button
+                key={c.id}
+                onMouseDown={(e) => { e.preventDefault(); onChange(c.id); setOpen(false); }}
+                className={cn(
+                  "w-full text-left px-2.5 py-1.5 text-sm hover:bg-accent truncate",
+                  c.id === clientId && "bg-accent/50 font-medium"
+                )}
+              >{c.name}</button>
+            ))}
+            {filtered.length === 0 && (
+              <div className="px-2.5 py-2 text-sm text-muted-foreground/60">No match</div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ─────────────── Setup / consent screen ─────────────── */
 
 function SetupScreen(props: {
@@ -825,6 +945,7 @@ function SetupScreen(props: {
   clientId: string; setClientId: (v: string) => void;
   title: string; setTitle: (v: string) => void;
   meetingType: "client_checkin" | "sales" | "general"; setMeetingType: (v: any) => void;
+  context: string; setContext: (v: string) => void;
   devices: { deviceId: string; label: string }[];
   deviceId: string; setDeviceId: (v: string) => void;
   attested: boolean; setAttested: (v: boolean) => void;
@@ -843,19 +964,11 @@ function SetupScreen(props: {
   return (
     <div className="p-4 space-y-4 max-w-md mx-auto">
       <div className="space-y-3">
-        <label className="block">
-          <span className="text-xs font-medium text-muted-foreground">Client (optional)</span>
-          <select
-            value={props.clientId}
-            onChange={(e) => props.setClientId(e.target.value)}
-            className="mt-1 w-full h-9 rounded-lg border bg-background px-2 text-sm"
-          >
-            <option value="">— No client / internal —</option>
-            {props.customers.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-        </label>
+        <ClientPicker
+          customers={props.customers}
+          clientId={props.clientId}
+          onChange={props.setClientId}
+        />
 
         <label className="block">
           <span className="text-xs font-medium text-muted-foreground">Meeting title</span>
@@ -865,6 +978,20 @@ function SetupScreen(props: {
             placeholder="e.g. Hiscox monthly check-in"
             className="mt-1 w-full h-9 rounded-lg border bg-background px-2 text-sm"
           />
+        </label>
+
+        <label className="block">
+          <span className="text-xs font-medium text-muted-foreground">Context <span className="opacity-60 font-normal">(optional)</span></span>
+          <textarea
+            value={props.context}
+            onChange={(e) => props.setContext(e.target.value)}
+            rows={3}
+            placeholder="Prospect name, their social channels, recent reports / events, anything useful to have on hand…"
+            className="mt-1 w-full rounded-lg border bg-background p-2 text-sm leading-snug resize-y"
+          />
+          <span className="block mt-1 text-[10px] text-muted-foreground/70">
+            Fed into the meeting summary and carried through if you continue in EngineAI afterward.
+          </span>
         </label>
 
         <div className="flex gap-2">
@@ -969,6 +1096,9 @@ function ReviewScreen(props: {
   setDigest: (d: any) => void;
   loading: boolean;
   utteranceCount: number;
+  hasClient: boolean;
+  handingOff: boolean;
+  onContinue: () => void;
   onSave: () => void;
   onDiscard: () => void;
   onRetry: () => void;
@@ -1057,23 +1187,39 @@ function ReviewScreen(props: {
         </>
       )}
 
-      <div className="flex gap-2 pt-1">
+      <div className="space-y-2 pt-1">
+        {/* Primary: carry everything into a working EngineAI conversation */}
         <button
-          onClick={props.onSave}
-          disabled={!d?.summary}
-          className={cn(
-            "flex-1 h-10 rounded-xl text-sm font-medium",
-            d?.summary ? "bg-primary text-primary-foreground hover:opacity-90" : "bg-muted text-muted-foreground cursor-not-allowed"
-          )}
+          onClick={props.onContinue}
+          disabled={props.handingOff}
+          className="w-full h-11 rounded-xl text-sm font-semibold bg-primary text-primary-foreground hover:opacity-90 flex items-center justify-center gap-2 disabled:opacity-60"
         >
-          Save digest to thread
+          {props.handingOff ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRightCircle className="h-4 w-4" />}
+          Continue in EngineAI{props.hasClient ? " (linked to client)" : ""}
         </button>
-        <button
-          onClick={props.onDiscard}
-          className="h-10 px-3 rounded-xl border text-sm text-red-600 dark:text-red-400 hover:bg-red-500/10 flex items-center gap-1.5"
-        >
-          <Trash2 className="h-3.5 w-3.5" /> Discard
-        </button>
+        <p className="text-[11px] text-muted-foreground -mt-1 text-center">
+          Opens a new chat with the transcript, summary, actions &amp; context — carry on drafting follow-ups there.
+        </p>
+
+        <div className="flex gap-2">
+          <button
+            onClick={props.onSave}
+            disabled={!d?.summary}
+            className={cn(
+              "flex-1 h-9 rounded-xl text-sm font-medium border",
+              d?.summary ? "hover:bg-accent" : "text-muted-foreground cursor-not-allowed"
+            )}
+            title="Save just the summary to the meeting thread — transcript not kept"
+          >
+            Save summary only
+          </button>
+          <button
+            onClick={props.onDiscard}
+            className="h-9 px-3 rounded-xl border text-sm text-red-600 dark:text-red-400 hover:bg-red-500/10 flex items-center gap-1.5"
+          >
+            <Trash2 className="h-3.5 w-3.5" /> Discard
+          </button>
+        </div>
       </div>
     </div>
   );

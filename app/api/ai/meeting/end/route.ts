@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  const { sessionId, durationSeconds, transcript, approveDigest, digest, discard } = body || {};
+  const { sessionId, durationSeconds, transcript, context, approveDigest, digest, discard } = body || {};
   if (!sessionId) {
     return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
   }
@@ -153,10 +153,13 @@ export async function POST(req: NextRequest) {
     // Draft digest from the in-memory transcript (processed, never stored)
     let draftDigest: any = null;
     if (Array.isArray(transcript) && transcript.length > 0) {
-      const text = transcript
+      const body = transcript
         .map((u: any) => `${u.speaker ? `[${String(u.speaker).slice(0, 20)}] ` : ""}${String(u.text || "").slice(0, 2000)}`)
-        .join("\n")
-        .slice(0, 120000); // grok-4-1-fast context is ample; cap defensively
+        .join("\n");
+      const ctxPrefix = context && String(context).trim()
+        ? `Meeting context provided by the host (use it to disambiguate names/topics):\n${String(context).slice(0, 4000)}\n\nTranscript:\n`
+        : "";
+      const text = (ctxPrefix + body).slice(0, 120000); // grok-4-1-fast context is ample; cap defensively
       try {
         const xai = getXAIClient();
         const res = await xai.chat.completions.create({
