@@ -8,6 +8,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { logAiUsage } from "@/lib/ai/usage-logger";
+import { anthropicCallParams } from "@/lib/ai/anthropic-params";
 import { TCE_COMPANY_PROFILE } from "./company-profile";
 
 export interface RfpSection {
@@ -157,8 +158,9 @@ export async function createSectionsForOpportunity(opportunity: {
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
     const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
       max_tokens: 2048,
+      ...anthropicCallParams("claude-sonnet-5"),
       system: `You are an expert RFP strategist who has won hundreds of competitive bids. You analyse RFP requirements and design the optimal response structure.
 
 Company Profile:
@@ -201,7 +203,7 @@ Design the section structure that gives us the best chance of winning this bid.`
 
     // Log usage
     logAiUsage({
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
       source: "rfp-sections",
       inputTokens: response.usage?.input_tokens || 0,
       outputTokens: response.usage?.output_tokens || 0,

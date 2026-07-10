@@ -17,42 +17,12 @@ import {
 } from "@/lib/ai/conversation-summary";
 import type { Attachment } from "@/lib/types/ai";
 import { assertServiceAllowed, ServiceControlError } from "@/lib/admin/service-control";
+import { calculateCostTenths } from "@/lib/ai/model-costs";
 
 export const maxDuration = 300; // 5 min — covers slow attachment extractions + long responses
 
-// ── Cost calculation for usage tracking ──
-const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: number }> = {
-  // Fable 5 note: classifier-flagged queries are served (and billed) as
-  // Opus 4.8 by Anthropic — our per-model rate slightly overestimates those.
-  "claude-fable-5": { inputPer1M: 1000, outputPer1M: 5000 },         // $10/$50
-  "claude-opus-4-8": { inputPer1M: 500, outputPer1M: 2500 },         // $5/$25
-  "claude-opus-4-7": { inputPer1M: 500, outputPer1M: 2500 },         // $5/$25 (legacy → opus-4-8)
-  "claude-sonnet-4-6": { inputPer1M: 300, outputPer1M: 1500 },       // $3/$15
-  "claude-sonnet-4-20250514": { inputPer1M: 300, outputPer1M: 1500 },
-  "claude-haiku-4-5": { inputPer1M: 100, outputPer1M: 500 },         // $1/$5 — VERIFY current Anthropic pricing
-  "gpt-4o": { inputPer1M: 250, outputPer1M: 1000 },                  // $2.50/$10
-  "gpt-4o-mini": { inputPer1M: 15, outputPer1M: 60 },                // $0.15/$0.60
-  "gpt-4.1": { inputPer1M: 200, outputPer1M: 800 },                  // $2/$8
-  "grok-4-1-fast": { inputPer1M: 20, outputPer1M: 50 },              // $0.20/$0.50
-  "grok-4-3": { inputPer1M: 125, outputPer1M: 250 },                 // $1.25/$2.50
-  "grok-3": { inputPer1M: 300, outputPer1M: 1500 },                  // $3/$15
-  "grok-4": { inputPer1M: 200, outputPer1M: 1000 },                  // $2/$10
-  "mistral-large-latest": { inputPer1M: 200, outputPer1M: 600 },     // $2/$6
-  "gemini-2.5-flash": { inputPer1M: 15, outputPer1M: 60 },           // $0.15/$0.60
-  "gemini-2.5-pro": { inputPer1M: 125, outputPer1M: 1000 },          // $1.25/$10
-  "gemini-3-flash": { inputPer1M: 50, outputPer1M: 300 },            // $0.50/$3
-  "gemini-3.1-flash-lite": { inputPer1M: 25, outputPer1M: 150 },     // $0.25/$1.50
-  "deepseek-chat": { inputPer1M: 27, outputPer1M: 110 },             // $0.27/$1.10
-  "sonar": { inputPer1M: 100, outputPer1M: 100 },                    // $1/$1
-  "sonar-pro": { inputPer1M: 300, outputPer1M: 1500 },               // $3/$15
-};
-
-function calculateCostTenths(model: string, inputTokens: number, outputTokens: number): number {
-  const rates = MODEL_COSTS[model] || MODEL_COSTS["claude-sonnet-4-6"];
-  const inputCost = (inputTokens / 1_000_000) * rates.inputPer1M * 10;
-  const outputCost = (outputTokens / 1_000_000) * rates.outputPer1M * 10;
-  return Math.round(inputCost + outputCost);
-}
+// Per-model cost + calculateCostTenths now live in lib/ai/model-costs.ts
+// (shared with lib/ai/usage-logger.ts so the two maps can't drift).
 
 // ── Helper: extract text from a .pptx (PowerPoint) file ──
 // .pptx is a zip; slide XML lives at ppt/slides/slide*.xml. Text runs are <a:t> elements.
@@ -1043,9 +1013,9 @@ export async function POST(
     // live results — it silently fills missing facts with plausible-sounding fabrications.
     // Claude's web_search tool is explicit and discrete: it can only cite what it fetched.
     // User-selected Grok models keep their native LiveSearch behaviour unchanged.
-    if (queryRoute.searchMode === "on" && wasAutoRouted && model === "grok-4-1-fast") {
-      model = "claude-sonnet-4-6";
-      console.log(`[Messages] Web search: auto-route override → claude-sonnet-4-6 (tool-based search)`);
+    if (queryRoute.searchMode === "on" && wasAutoRouted && model.startsWith("grok")) {
+      model = "claude-sonnet-5";
+      console.log(`[Messages] Web search: auto-route override → claude-sonnet-5 (grounded tool-based search)`);
     }
 
     let systemPrompt = buildSystemPrompt({

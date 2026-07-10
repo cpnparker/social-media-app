@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { put } from "@vercel/blob";
 import { fetchBlobContent } from "./blob-utils";
+import { anthropicCallParams } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 
 /* ─────────────── Types ─────────────── */
@@ -63,6 +64,12 @@ export interface AIProviderConfig {
 /** Default temperature for user-facing chat. Lower than model defaults (~0.7-1.0)
  *  to reduce hallucination while preserving creativity for content writing. */
 const DEFAULT_CHAT_TEMPERATURE = 0.4;
+
+/** Model-appropriate sampling/thinking params for an Anthropic chat request.
+ *  Rules live in lib/ai/anthropic-params.ts (shared with the direct RFP/voice callers). */
+function anthropicModelParams(apiModel: string, config: AIProviderConfig): Record<string, unknown> {
+  return anthropicCallParams(apiModel, config.temperature ?? DEFAULT_CHAT_TEMPERATURE);
+}
 
 /* ─────────────── Tool Result Formatting ─────────────── */
 
@@ -203,10 +210,10 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "Claude Opus 4.8",
     description: "Top-tier reasoning, code & long-form",
   },
-  "claude-sonnet-4-6": {
+  "claude-sonnet-5": {
     provider: "anthropic",
-    apiModel: "claude-sonnet-4-6",
-    label: "Claude Sonnet 4.6",
+    apiModel: "claude-sonnet-5",
+    label: "Claude Sonnet 5",
     description: "Complex reasoning & analysis",
   },
   "claude-haiku-4-5": {
@@ -290,10 +297,16 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "Gemini 3.1 Flash-Lite",
     legacy: true,
   },
+  "claude-sonnet-4-6": {
+    provider: "anthropic",
+    apiModel: "claude-sonnet-5",
+    label: "Claude Sonnet 5",
+    legacy: true,
+  },
   "claude-sonnet-4-20250514": {
     provider: "anthropic",
-    apiModel: "claude-sonnet-4-6",
-    label: "Claude Sonnet 4.6",
+    apiModel: "claude-sonnet-5",
+    label: "Claude Sonnet 5",
     legacy: true,
   },
   "grok-3": {
@@ -316,7 +329,7 @@ export function getAvailableModels() {
 }
 
 export function getModelInfo(modelId: string): ModelInfo {
-  return MODEL_REGISTRY[modelId] || MODEL_REGISTRY["claude-sonnet-4-6"];
+  return MODEL_REGISTRY[modelId] || MODEL_REGISTRY["claude-sonnet-5"];
 }
 
 /* ─────────────── Provider Clients ─────────────── */
@@ -3749,13 +3762,13 @@ export function createStreamingResponse(
             if (!result.fullText.trim()) {
               console.warn(`[AI] xAI returned empty response, falling back to Claude`);
               controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: "Grok returned empty — using Claude" })}\n\n`));
-              result = await streamAnthropic(messages, config, "claude-sonnet-4-6", controller, encoder);
+              result = await streamAnthropic(messages, config, "claude-sonnet-5", controller, encoder);
             }
           } catch (xaiErr: any) {
             const errMsg = xaiErr?.message || String(xaiErr);
             console.warn(`[AI] xAI failed (${errMsg.slice(0, 150)}), falling back to Claude`);
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: "Grok unavailable — using Claude" })}\n\n`));
-            result = await streamAnthropic(messages, config, "claude-sonnet-4-6", controller, encoder);
+            result = await streamAnthropic(messages, config, "claude-sonnet-5", controller, encoder);
           }
         }
 
@@ -3901,7 +3914,7 @@ async function streamAnthropic(
     const stream = anthropic.messages.stream({
       model: apiModel,
       max_tokens: config.maxTokens || 4096,
-      temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
+      ...anthropicModelParams(apiModel, config),
       system: systemText,
       messages: anthropicMessages,
       ...(tools.length > 0 ? { tools } : {}),
@@ -4703,7 +4716,7 @@ async function streamAnthropic(
       const finalStream = anthropic.messages.stream({
         model: apiModel,
         max_tokens: config.maxTokens || 4096,
-        temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
+        ...anthropicModelParams(apiModel, config),
         system: systemText,
         messages: anthropicMessages,
         // No tools — forces a text-only response

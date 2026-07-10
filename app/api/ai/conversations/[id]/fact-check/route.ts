@@ -106,7 +106,7 @@ export async function POST(
     const aiStream = createStreamingResponse(
       messages,
       {
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5",
         systemPrompt: FACT_CHECK_SYSTEM_PROMPT,
         maxTokens: 4096,
         webSearch: true,
@@ -121,7 +121,7 @@ export async function POST(
             id_conversation: conversationId,
             role_message: "assistant",
             document_message: fullText,
-            name_model: "claude-sonnet-4-6",
+            name_model: "claude-sonnet-5",
           });
 
           await intelligenceDb

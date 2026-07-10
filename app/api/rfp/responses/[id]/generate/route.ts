@@ -4,6 +4,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { verifyWorkspaceMembership } from "@/lib/permissions";
 import Anthropic from "@anthropic-ai/sdk";
 import { logAiUsage } from "@/lib/ai/usage-logger";
+import { anthropicCallParams } from "@/lib/ai/anthropic-params";
 import { TCE_COMPANY_PROFILE } from "@/lib/rfp/company-profile";
 
 export const maxDuration = 120;
@@ -116,8 +117,9 @@ Rules:
 - Target approximately ${section.targetWords} words`;
 
     const aiResponse = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
       max_tokens: 2048,
+      ...anthropicCallParams("claude-sonnet-5"),
       system: systemPrompt,
       messages: [
         {
@@ -129,7 +131,7 @@ Rules:
 
     // Log usage
     logAiUsage({
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
       source: "rfp-generate",
       inputTokens: aiResponse.usage?.input_tokens || 0,
       outputTokens: aiResponse.usage?.output_tokens || 0,

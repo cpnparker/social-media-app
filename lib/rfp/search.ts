@@ -8,6 +8,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { logAiUsage } from "@/lib/ai/usage-logger";
+import { anthropicCallParams } from "@/lib/ai/anthropic-params";
 import { TCE_COMPANY_PROFILE } from "./company-profile";
 import {
   verifyOpportunityUrls,
@@ -600,8 +601,9 @@ async function searchWithAnthropic(params: {
   const systemPrompt = buildSearchPrompt(params);
 
   const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
+    model: "claude-sonnet-5",
     max_tokens: 16000,
+    ...anthropicCallParams("claude-sonnet-5"),
     system: systemPrompt,
     messages: [
       {
@@ -641,7 +643,7 @@ async function searchWithAnthropic(params: {
 
   // Log usage
   logAiUsage({
-    model: "claude-sonnet-4-6",
+    model: "claude-sonnet-5",
     source: "rfp-search",
     inputTokens: response.usage?.input_tokens || 0,
     outputTokens: response.usage?.output_tokens || 0,

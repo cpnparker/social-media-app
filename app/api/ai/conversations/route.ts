@@ -261,12 +261,12 @@ export async function POST(req: NextRequest) {
         .select("name_model")
         .eq("id_workspace", workspaceId)
         .maybeSingle();
-      aiModel = settings?.name_model || "claude-sonnet-4-6";
+      aiModel = settings?.name_model || "claude-sonnet-5";
     }
     // Design mode: pin to Anthropic for v1 (only streamer with the design tools wired).
     const conversationMode = mode === "design" ? "design" : mode === "meeting" ? "meeting" : "general";
     if (conversationMode === "design" && !aiModel.startsWith("claude-")) {
-      aiModel = "claude-sonnet-4-6";
+      aiModel = "claude-sonnet-5";
     }
 
     const { data: conversation, error } = await intelligenceDb

@@ -1,14 +1,23 @@
 /**
  * Auto-router: classifies user prompts to pick the best model.
  *
- * Default → Grok 4 Fast (cheap & fast)
- * Upgrade → Claude Sonnet 4.6 (reasoning, code, complex writing)
+ * Default   → Grok 4.1 Fast   (cheap & fast — $0.20/$0.50, native web search)
+ * Reasoning → Grok 4.3        (code, analysis, complex writing — $1.25/$2.50)
+ * Grounded  → Claude Sonnet 5 (image-gen + web/fact-check, where Grok fails)
+ *
+ * Why the Grounded carve-out: Grok has no discrete web_search tool — only
+ * LiveSearch, which blends live results with training data and fabricates
+ * (the Ceri/Catherine fact-check bug). And Grok hallucinates fake markdown
+ * images instead of reliably calling the image tool. Both stay on Claude.
+ * The messages route additionally forces web-search queries onto the Grounded
+ * model even when they'd otherwise route to a Grok leg.
  *
  * Uses keyword/pattern matching — no LLM call required.
  */
 
 const FAST_MODEL = "grok-4-1-fast" as const;
-const REASONING_MODEL = "claude-sonnet-4-6" as const;
+const REASONING_MODEL = "grok-4-3" as const;
+const GROUNDED_MODEL = "claude-sonnet-5" as const;
 
 // ── Keyword patterns that signal a reasoning-heavy prompt ──
 
@@ -83,8 +92,12 @@ function matchesAny(text: string, keywords: string[]): boolean {
  * Classify a user message and return the best model to use.
  * Exported for use in the messages API route.
  */
-export function routeModel(userMessage: string): typeof FAST_MODEL | typeof REASONING_MODEL {
+export function routeModel(userMessage: string): typeof FAST_MODEL | typeof REASONING_MODEL | typeof GROUNDED_MODEL {
   const lower = userMessage.toLowerCase();
+
+  // Image generation → Claude (Grok hallucinates fake markdown images instead
+  // of reliably calling the generate_image tool). Checked first so it wins.
+  if (matchesAny(lower, IMAGE_GEN_KEYWORDS)) return GROUNDED_MODEL;
 
   // Code fences → reasoning model
   if (hasCodeFence(userMessage)) return REASONING_MODEL;
@@ -93,7 +106,6 @@ export function routeModel(userMessage: string): typeof FAST_MODEL | typeof REAS
   if (userMessage.length > 500) return REASONING_MODEL;
 
   // Keyword checks
-  if (matchesAny(lower, IMAGE_GEN_KEYWORDS)) return REASONING_MODEL;
   if (matchesAny(lower, REASONING_KEYWORDS)) return REASONING_MODEL;
   if (matchesAny(lower, CODE_KEYWORDS)) return REASONING_MODEL;
   if (matchesAny(lower, COMPLEX_WRITING_KEYWORDS)) return REASONING_MODEL;

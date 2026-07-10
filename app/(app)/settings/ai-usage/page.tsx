@@ -116,6 +116,7 @@ function formatTokens(n: number): string {
 
 const MODEL_LABELS: Record<string, string> = {
   "claude-sonnet-4-20250514": "Claude Sonnet 4",
+  "claude-sonnet-5": "Claude Sonnet 5",
   "claude-sonnet-4-6": "Claude Sonnet 4.6",
   "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
   "claude-haiku-3-20240307": "Claude Haiku 3",
@@ -124,6 +125,8 @@ const MODEL_LABELS: Record<string, string> = {
   "gpt-4.1": "GPT-4.1",
   "grok-4-1-fast-non-reasoning": "Grok 4 Fast",
   "grok-4-1-fast": "Grok 4 Fast",
+  "grok-4-3": "Grok 4.3",
+  "grok-4.3": "Grok 4.3",
   "grok-4": "Grok 4",
   "grok-3-mini": "Grok 3 Mini",
   "grok-3-fast": "Grok 3 Fast",
@@ -139,11 +142,13 @@ const MODEL_LABELS: Record<string, string> = {
 
 const MODEL_COLORS: Record<string, string> = {
   "grok-4-1-fast-non-reasoning": "#3B82F6",
+  "grok-4-3": "#2563EB",
   "grok-3-fast": "#60A5FA",
   "grok-3-mini": "#93C5FD",
   "grok-imagine-image": "#818CF8",
-  "claude-sonnet-4-6": "#F97316",
-  "claude-sonnet-4-20250514": "#FB923C",
+  "claude-sonnet-5": "#F97316",
+  "claude-sonnet-4-6": "#FB923C",
+  "claude-sonnet-4-20250514": "#FDBA74",
   "gpt-4o": "#10B981",
   "gpt-4o-mini": "#34D399",
   "dall-e-3": "#A78BFA",

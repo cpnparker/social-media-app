@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { anthropicCallParams } from "@/lib/ai/anthropic-params";
 import { auth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
@@ -141,9 +142,9 @@ export async function POST(req: NextRequest) {
       case "consult_analyst": {
         const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
         const msg = await anthropic.messages.create({
-          model: "claude-sonnet-4-6",
+          model: "claude-sonnet-5",
           max_tokens: 1200,
-          temperature: 0.3,
+          ...anthropicCallParams("claude-sonnet-5", 0.3),
           system:
             "You are EngineAI's senior analyst. You receive questions escalated from a live voice conversation. Reply with a tight, well-reasoned analysis the voice assistant can relay aloud: plain prose, no markdown, no headers, no bullet symbols. Lead with the answer, then the two or three considerations that matter most. Under 150 words unless the question truly demands more.",
           messages: [
@@ -161,7 +162,7 @@ export async function POST(req: NextRequest) {
         await intelligenceDb.from("ai_usage").insert({
           id_workspace: workspaceId,
           user_usage: userId,
-          name_model: "claude-sonnet-4-6",
+          name_model: "claude-sonnet-5",
           type_source: "engineai-voice",
           units_input: msg.usage?.input_tokens || 0,
           units_output: msg.usage?.output_tokens || 0,

@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { verifyWorkspaceMembership } from "@/lib/permissions";
 import { logAiUsage } from "@/lib/ai/usage-logger";
+import { anthropicCallParams } from "@/lib/ai/anthropic-params";
 import Anthropic from "@anthropic-ai/sdk";
 
 export const maxDuration = 60;
@@ -63,8 +64,9 @@ export async function POST(req: NextRequest) {
     const anthropic = new Anthropic();
 
     const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
       max_tokens: 2000,
+      ...anthropicCallParams("claude-sonnet-5"),
       messages: [
         {
           role: "user",
@@ -92,7 +94,7 @@ Return ONLY the JSON object, no other text.`,
 
     // Log usage
     logAiUsage({
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
       source: "rfp-profile",
       inputTokens: response.usage?.input_tokens || 0,
       outputTokens: response.usage?.output_tokens || 0,
