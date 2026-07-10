@@ -90,10 +90,13 @@ export async function GET(req: NextRequest) {
 
     if (mode === "design") {
       query = query.eq("type_conversation_mode", "design");
+    } else if (mode === "meeting") {
+      query = query.eq("type_conversation_mode", "meeting");
     } else if (mode === "general") {
-      // Default chat surface — exclude design sessions so they don't pollute the
-      // main EngineAI list. Use neq to also catch legacy null rows pre-migration.
-      query = query.neq("type_conversation_mode", "design");
+      // Default chat surface — exclude design AND meeting sessions so they
+      // don't pollute the main EngineAI list (column is NOT NULL DEFAULT
+      // 'general', so a plain not-in is safe).
+      query = query.not("type_conversation_mode", "in", '("design","meeting")');
     }
 
     if (search) {
@@ -261,7 +264,7 @@ export async function POST(req: NextRequest) {
       aiModel = settings?.name_model || "claude-sonnet-4-6";
     }
     // Design mode: pin to Anthropic for v1 (only streamer with the design tools wired).
-    const conversationMode = mode === "design" ? "design" : "general";
+    const conversationMode = mode === "design" ? "design" : mode === "meeting" ? "meeting" : "general";
     if (conversationMode === "design" && !aiModel.startsWith("claude-")) {
       aiModel = "claude-sonnet-4-6";
     }

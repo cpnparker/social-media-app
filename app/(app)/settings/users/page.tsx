@@ -52,6 +52,7 @@ interface WorkspaceMember {
   accessMeetingBrain: boolean;
   accessRfpTool: boolean;
   accessAuthorityOn: boolean;
+  accessEngineAiLive: boolean;
 }
 
 interface CustomerAssignment {
@@ -67,7 +68,8 @@ type AccessField =
   | "accessAdmin"
   | "accessMeetingBrain"
   | "accessRfpTool"
-  | "accessAuthorityOn";
+  | "accessAuthorityOn"
+  | "accessEngineAiLive";
 
 /* ─────────────── Config ─────────────── */
 
@@ -113,6 +115,7 @@ const accessFields: { key: AccessField; label: string }[] = [
   { key: "accessMeetingBrain", label: "MB" },
   { key: "accessRfpTool", label: "RFP" },
   { key: "accessAuthorityOn", label: "Auth" },
+  { key: "accessEngineAiLive", label: "Live" },
 ];
 
 const appRoleOptions: { value: string; label: string; color: string; bg: string }[] = [
@@ -367,15 +370,7 @@ export default function UsersSettingsPage() {
         )
       );
       const label =
-        field === "accessEngine"
-          ? "Engine"
-          : field === "accessEngineGpt"
-            ? "GPT"
-            : field === "accessOperations"
-              ? "Ops"
-              : field === "accessAdmin"
-                ? "Admin"
-                : "MB";
+        accessFields.find((f) => f.key === field)?.label || field;
       toast.success(
         `${value ? "Enabled" : "Disabled"} ${label} access for ${ids.length} user${ids.length !== 1 ? "s" : ""}`
       );

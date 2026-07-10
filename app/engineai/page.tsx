@@ -89,6 +89,7 @@ import MemoryManager from "@/components/ai-writer/MemoryManager";
 import AdminDialog from "@/components/ai-writer/AdminDialog";
 import PersonaliseDialog from "@/components/ai-writer/PersonaliseDialog";
 import ClientContextDialog from "@/components/ai-writer/ClientContextDialog";
+import LiveLauncher from "@/components/meeting-mode/LiveLauncher";
 import { signOut } from "next-auth/react";
 import { SectionRailDesktop, SectionRailMobile, useRailItems } from "@/components/layout/SectionRail";
 import { upload as blobUpload } from "@vercel/blob/client";
@@ -2438,6 +2439,10 @@ function EngineAIContent() {
             setTimeout(() => setVoiceTranscriptN((n) => n + 1), 800);
           }}
         />
+      )}
+      {/* EngineAI Live — second-screen meeting copilot (per-user flag) */}
+      {workspaceId && wsCtx?.selectedWorkspace?.accessEngineAiLive && (
+        <LiveLauncher clientId={customerId ? String(customerId) : ""} />
       )}
     </>
   );

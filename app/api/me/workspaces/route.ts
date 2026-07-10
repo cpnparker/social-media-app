@@ -73,6 +73,7 @@ export async function GET() {
         accessMeetingBrain: access ? !!access.flag_access_meetingbrain : false,
         accessRfpTool: access ? !!access.flag_access_rfptool : false,
         accessAuthorityOn: access ? !!access.flag_access_authorityon : false,
+        accessEngineAiLive: access ? !!access.flag_access_engineai_live : false,
       };
     });
 

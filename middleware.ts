@@ -22,6 +22,7 @@ export function middleware(req: NextRequest) {
     pathname.startsWith("/_next") ||
     pathname.startsWith("/assets") ||
     pathname.startsWith("/models/") || // wake-word .onnx files — must serve raw on every subdomain
+    pathname.startsWith("/audio/") || // AudioWorklet modules (EngineAI Live pcm16 worklet)
     pathname === "/favicon.ico" ||
     pathname === "/manifest.webmanifest" ||
     pathname === "/sw.js";
@@ -50,6 +51,13 @@ export function middleware(req: NextRequest) {
 
     // Clean URL: /design → /engineai/design (URL bar stays "/design")
     if (pathname === "/design" || pathname.startsWith("/design/")) {
+      const url = req.nextUrl.clone();
+      url.pathname = "/engineai" + pathname;
+      return NextResponse.rewrite(url);
+    }
+
+    // Clean URL: /meeting → /engineai/meeting (EngineAI Live companion window)
+    if (pathname === "/meeting" || pathname.startsWith("/meeting/")) {
       const url = req.nextUrl.clone();
       url.pathname = "/engineai" + pathname;
       return NextResponse.rewrite(url);
