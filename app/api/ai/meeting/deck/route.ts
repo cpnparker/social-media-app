@@ -34,8 +34,13 @@ const BASE_TRIGGERS: TriggerSpec[] = [
     id: "commercial",
     kind: "commercial_context",
     patterns: [
-      "\\b(price|pricing|cost|costs|rate|rates|budget|invoice|invoicing|renewal|renew|retainer|commissions?|how much)\\b",
-      "\\b(CUs?|content units?|remaining units|units left|utilisation|utilization)\\b",
+      // Contracts / commercials — the most common ask ("what contracts do we
+      // have", "status of the latest contract"). Bare "contract" was the gap.
+      "\\b(contract|contracts|contracted|agreement|agreements|retainer|retainers|deal|deals|sow|statement of work|deliverables?|scope of work)\\b",
+      // Pricing / money
+      "\\b(price|pricing|cost|costs|rate|rates|budget|budgets|invoice|invoicing|renewal|renew|renews|commissions?|commercials?|fees?|spend|how much)\\b",
+      // Units / delivery volume
+      "\\b(CUs?|content units?|remaining units|units left|units remaining|utilisation|utilization|how many (videos?|posts?|units?|reels?|articles?))\\b",
     ],
     target: "deck",
     cardKey: "contract",
@@ -54,6 +59,17 @@ const BASE_TRIGGERS: TriggerSpec[] = [
     title: "Scope check",
     cooldownMs: 300_000,
     priority: 4,
+  },
+  {
+    id: "pipeline",
+    kind: "deck_pipeline",
+    patterns: [
+      "\\b(pipeline|content pipeline|in production|in progress|what have we (done|made|produced|delivered|published|created)|how much (content|work) have we|status of (the )?(content|work|production|pipeline)|what('| i)?s (in|on) (the )?(pipeline|go|schedule))\\b",
+    ],
+    target: "deck",
+    cardKey: "pipeline",
+    cooldownMs: 180_000,
+    priority: 1,
   },
   {
     id: "commitment",
@@ -135,22 +151,24 @@ export async function POST(req: NextRequest) {
 
       const clientName = (client as any)?.data?.name_client || "client";
 
-      if (!contracts.error && Array.isArray(contracts.data) && contracts.data.length > 0) {
-        cards.push({
-          kind: "deck_contract",
-          key: "contract",
-          title: `Commercials — ${clientName}`,
-          body: {
-            contracts: contracts.data.slice(0, 4),
-            summary: contracts.summary || null,
-          },
-          receipt: {
-            record_type: "app_contracts",
-            record_id: String(contracts.data[0]?.id_contract ?? ""),
-            label: contracts.data[0]?.name_contract || "Active contract",
-          },
-        });
-      }
+      // Always compile a contract card when a client is set — even "no active
+      // contracts on file" is a useful live answer to "do we have a contract?".
+      const hasContracts = !contracts.error && Array.isArray(contracts.data) && contracts.data.length > 0;
+      cards.push({
+        kind: "deck_contract",
+        key: "contract",
+        title: `Commercials — ${clientName}`,
+        body: hasContracts
+          ? { contracts: contracts.data.slice(0, 4), summary: contracts.summary || null }
+          : { none: true, clientName },
+        receipt: hasContracts
+          ? {
+              record_type: "app_contracts",
+              record_id: String(contracts.data[0]?.id_contract ?? ""),
+              label: contracts.data[0]?.name_contract || "Active contract",
+            }
+          : { label: `No active contracts on file for ${clientName}` },
+      });
 
       if (!pipeline.error && pipeline.summary) {
         cards.push({

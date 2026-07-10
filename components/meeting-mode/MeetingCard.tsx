@@ -28,6 +28,9 @@ function fmtNum(n: any): string {
 export function CardContent({ kind, body }: { kind: string; body: any }) {
   // Contract / commercial / scope-guard — all render the contract numbers
   if (kind === "deck_contract" || kind === "commercial_context" || kind === "scope_guard") {
+    if (body?.none) {
+      return <div className="text-[13px] text-muted-foreground">No active contracts on file for {body.clientName || "this client"}.</div>;
+    }
     const c = body?.contracts?.[0] || body?.summary || {};
     const s = body?.summary || {};
     return (
