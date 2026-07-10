@@ -52,6 +52,11 @@ const WEB_EXPLICIT = /\b(search the web|search online|google it|look up online|w
 const WEB_EXPLICIT_2 = /\b(latest news|current events|trending now|breaking news|what'?s happening)\b/i;
 const WEB_EXPLICIT_3 = /\b(current price|stock price|weather in|score of|released today|just announced|search for .{3,})\b/i;
 const WEB_EXPLICIT_4 = /\b(what is the (current|latest|recent)|what'?s the (latest|current|recent))\b/i;
+// Fact-checking / verification — inherently requires the web ("fact checking
+// without sources is useless"). Treated as an EXPLICIT web request so it fires
+// even when the Web toggle is off.
+const WEB_FACTCHECK = /\b(fact[\s-]?check(ed|ing)?|double[\s-]?check|cross[\s-]?check|is (this|that|it) (true|accurate|correct|real|right))\b/i;
+const WEB_FACTCHECK_2 = /\b(verify|verif(ies|ication)|confirm|check|source|substantiate|corroborate)\b[^.?!]{0,45}\b(claims?|facts?|figures?|numbers?|stats?|statistics|sources?|accura(te|cy)|true|correct|dates?|quotes?|citations?|references?|publication)\b/i;
 
 // Step 3: Meeting data
 const MEETING_KEYWORDS = /\b(meeting|meetings|discussed in|action items?|to-?do from|agenda|minutes|standup|stand-?up|sync with|call with)\b/i;
@@ -185,7 +190,14 @@ export function routeQuery(
   // tool, looped on query_engine: the tail-chasing spiral.) Implicit signals
   // below still respect the toggle.
   const hasUrl = CONTAINS_URL.test(userMessage);
-  const wantsWeb = hasUrl || matchesAny(lower, [WEB_EXPLICIT, WEB_EXPLICIT_2, WEB_EXPLICIT_3, WEB_EXPLICIT_4]);
+  const wantsFactCheck = matchesAny(lower, [WEB_FACTCHECK, WEB_FACTCHECK_2]);
+  const wantsWeb = hasUrl || wantsFactCheck || matchesAny(lower, [WEB_EXPLICIT, WEB_EXPLICIT_2, WEB_EXPLICIT_3, WEB_EXPLICIT_4]);
+  // Fact-checking gets an extra, forceful hint — the failure mode we're fixing
+  // is the model saying "I can't verify from my training data" instead of
+  // actually searching.
+  const factCheckHint = wantsFactCheck
+    ? "The user is asking you to VERIFY factual claims. You MUST use web search to check each claim against reliable sources and cite the actual URLs — never say you cannot verify from training data or that you lack web access. Search first, then report what the sources say (confirmed / contradicted / unverified)."
+    : null;
 
   // ── Step 3-5: Detect data source signals ──
   const wantsMeeting = meetingBrainAllowed && matchesAny(lower, [MEETING_KEYWORDS, MEETING_KEYWORDS_2, MEETING_KEYWORDS_3]);
@@ -196,7 +208,7 @@ export function routeQuery(
   // If explicit web + Engine data → hybrid
   if (wantsWeb && wantsEngine) {
     const partial = { searchMode: "on" as const, suggestEngine: true, suggestMemory: wantsMemory, suggestMeetingBrain: wantsMeeting, intent: "hybrid" as const };
-    return { ...partial, hints: generateHints(partial) };
+    return { ...partial, hints: [...generateHints(partial), ...(factCheckHint ? [factCheckHint] : [])] };
   }
 
   // ── Step 7: Implicit web search ──
@@ -211,7 +223,7 @@ export function routeQuery(
   // ── Return explicit web search ──
   if (wantsWeb) {
     const partial = { searchMode: "on" as const, suggestEngine: false, suggestMemory: wantsMemory, suggestMeetingBrain: wantsMeeting, intent: "web_search" as const };
-    return { ...partial, hints: generateHints(partial) };
+    return { ...partial, hints: [...generateHints(partial), ...(factCheckHint ? [factCheckHint] : [])] };
   }
 
   // ── Return meeting data ──
