@@ -616,7 +616,7 @@ export default function MeetingLivePage() {
       const res = await fetch("/api/ai/meeting/lookup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: sessionIdRef.current, utterances: tail }),
+        body: JSON.stringify({ sessionId: sessionIdRef.current, utterances: tail, context: combinedContext() }),
       });
       const d = await res.json().catch(() => ({}));
       if (d?.card) {
@@ -642,7 +642,7 @@ export default function MeetingLivePage() {
     } finally {
       setLookingUp(false);
     }
-  }, [lookingUp]);
+  }, [lookingUp, combinedContext]);
 
   // Ambient auto-lookup — during quiet stretches (nothing surfaced for a while)
   // run the full multi-category LOOKUP over the transcript tail so useful
@@ -666,7 +666,7 @@ export default function MeetingLivePage() {
       const res = await fetch("/api/ai/meeting/lookup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: sessionIdRef.current, utterances: tail, auto: true }),
+        body: JSON.stringify({ sessionId: sessionIdRef.current, utterances: tail, auto: true, context: combinedContext() }),
       });
       const d = await res.json().catch(() => ({}));
       if (d?.card) {
@@ -689,7 +689,7 @@ export default function MeetingLivePage() {
       }
     } catch { /* transient — try again next tick */ }
     finally { autoSweepingRef.current = false; }
-  }, [handleCardFired]);
+  }, [handleCardFired, combinedContext]);
 
   const pinCard = (card: LiveCard) => {
     engineRef.current?.report(card, "pinned");

@@ -3,7 +3,7 @@ import OpenAI from "openai";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
-import { queryEngine } from "@/lib/ai/providers";
+import { queryEngine, queryMeetingBrain, searchMemory } from "@/lib/ai/providers";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 
 export const maxDuration = 30;
@@ -34,7 +34,7 @@ const ENRICH_SYSTEM = `You are a silent meeting copilot for a content agency. A 
 
 const LOOKUP_SYSTEM = `You are a silent meeting copilot for a content agency. Below is the tail of a live meeting transcript and real workspace data (scoped to one client, or workspace-wide across all clients — the scope is stated). Decide which ONE data category best answers what was just asked/discussed, and write a natural one-sentence insight grounded in the REAL numbers.
 
-Categories: "units" (how many content units commissioned/produced this month/period), "contract" (contracts/commercials/CU budgets/renewals), "pipeline" (content in production/published), "meetings" (what was agreed / last discussion / commitments), "content" (examples of past work), "none" (nothing relevant). Only choose a category whose data is actually present below.
+Categories: "units" (how many content units commissioned/produced this month/period), "contract" (contracts/commercials/CU budgets/renewals), "pipeline" (content in production/published), "meetings" (what was agreed / last discussion / commitments), "content" (examples of past work), "tasks" (the user's open action items / things they committed to — useful in 1:1s and team catch-ups), "memory" (saved workspace knowledge: notes about people, development ideas, past decisions, company facts), "none" (nothing relevant). The meeting may be an INTERNAL one (a 1:1, team catch-up) — tasks/memory are often the useful pick there. Only choose a category whose data is actually present below.
 
 Return STRICT JSON: {"category": "...", "insight": "one natural sentence using the real figures, max ~25 words"}. If category is "none", insight is "". Return ONLY the JSON.`;
 
@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
 
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 }); }
-  const { sessionId, enrich, utterances, auto } = body || {};
+  const { sessionId, enrich, utterances, auto, context } = body || {};
   if (!sessionId) return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
 
   const { data: ms } = await intelligenceDb
@@ -124,6 +124,27 @@ export async function POST(req: NextRequest) {
       by_client: Array.isArray(unitsRes?.data) ? unitsRes.data.slice(0, 15) : [],
     };
 
+    // General context — makes Live useful in INTERNAL meetings (1:1s, team
+    // catch-ups), not just client calls: the user's open action items
+    // (MeetingBrain, email-scoped) + workspace memory notes matching what's
+    // being discussed (people notes, development ideas, decisions).
+    const userEmail = session.user?.email || "";
+    const memQuery = utterances.slice(-2).map((u: string) => String(u)).join(" ").slice(0, 300);
+    const [mbTasks, memoryHits] = await Promise.all([
+      userEmail
+        ? queryMeetingBrain("my_tasks", userEmail, {}).catch(() => ({ data: [], count: 0 }))
+        : Promise.resolve({ data: [], count: 0 } as any),
+      memQuery
+        ? searchMemory(memQuery, "memories", ms.id_workspace, userId).catch(() => ({ memories: [] } as any))
+        : Promise.resolve({ memories: [] } as any),
+    ]);
+    const openTasks = (Array.isArray((mbTasks as any).data) ? (mbTasks as any).data : [])
+      .slice(0, 8)
+      .map((t: any) => ({ title: t.title, deadline: t.deadline, responsible: t.responsible, from_meeting: t.from_meeting }));
+    const memNotes = (((memoryHits as any).memories || []) as any[])
+      .slice(0, 5)
+      .map((m: any) => ({ content: String(m.content || "").slice(0, 220), category: m.category, date: m.date }));
+
     const dataForLlm: any = {
       units_commissioned_this_month: unitsThisMonth,
       contracts: contracts.summary || (Array.isArray(contracts.data) ? contracts.data.slice(0, 3) : null),
@@ -133,6 +154,8 @@ export async function POST(req: NextRequest) {
       dataForLlm.recent_meetings = recentMeetings;
       dataForLlm.recent_content = recentContent;
     }
+    if (openTasks.length) dataForLlm.open_action_items = openTasks;
+    if (memNotes.length) dataForLlm.workspace_memory_notes = memNotes;
 
     const res = await xai.chat.completions.create({
       model: API_MODEL,
@@ -140,7 +163,7 @@ export async function POST(req: NextRequest) {
       max_tokens: 120,
       messages: [
         { role: "system", content: LOOKUP_SYSTEM },
-        { role: "user", content: `Scope: ${clientId ? `Client — ${clientName}` : "Workspace-wide (all clients)"}\n\nTranscript tail:\n${utterances.map((u: string) => String(u).slice(0, 400)).join("\n").slice(0, 2500)}\n\nData:\n${JSON.stringify(dataForLlm).slice(0, 5000)}` },
+        { role: "user", content: `Scope: ${clientId ? `Client — ${clientName}` : "Workspace-wide (all clients)"}\n\n${context ? `Meeting background (from setup — may describe an internal 1:1 or catch-up):\n${String(context).slice(0, 1200)}\n\n` : ""}Transcript tail:\n${utterances.map((u: string) => String(u).slice(0, 400)).join("\n").slice(0, 2500)}\n\nData:\n${JSON.stringify(dataForLlm).slice(0, 5000)}` },
       ],
     });
     logAiUsage({ workspaceId: ms.id_workspace, userId, model: MODEL, source: "engineai-meeting", inputTokens: res.usage?.prompt_tokens || 0, outputTokens: res.usage?.completion_tokens || 0 });
@@ -182,6 +205,22 @@ export async function POST(req: NextRequest) {
       card = { kind: "commitment_memory", title: `Last meetings — ${clientName}`, insight, body: { meetings: recentMeetings.map((m2: any) => ({ title: m2.title, date: m2.date, next_steps: m2.next_steps })) }, receipt: { record_type: "ai_client_meetings", meeting_title: recentMeetings[0]?.title, meeting_date: recentMeetings[0]?.date } };
     } else if (cat === "content" && recentContent.length > 0) {
       card = { kind: "content_receipts", title: `Engine work — ${clientName}`, insight, body: { examples: recentContent.slice(0, 3).map((c2: any) => ({ name: c2.name, type: c2.type, client: clientName })) }, receipt: { record_type: "app_content", label: `${recentContent.length} recent pieces` } };
+    } else if (cat === "tasks" && openTasks.length > 0) {
+      card = {
+        kind: "open_tasks",
+        title: "Your open action items",
+        insight,
+        body: { tasks: openTasks },
+        receipt: { record_type: "meetingbrain_tasks", label: `${openTasks.length} open action item${openTasks.length === 1 ? "" : "s"}` },
+      };
+    } else if (cat === "memory" && memNotes.length > 0) {
+      card = {
+        kind: "memory_context",
+        title: "From workspace memory",
+        insight,
+        body: { notes: memNotes },
+        receipt: { record_type: "ai_memories", label: `${memNotes.length} saved note${memNotes.length === 1 ? "" : "s"}` },
+      };
     }
     if (!card) return NextResponse.json({ card: null });
 

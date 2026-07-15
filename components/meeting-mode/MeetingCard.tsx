@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { Pin, X, ThumbsUp, ThumbsDown, FileText, TrendingUp, CalendarClock, Layers } from "lucide-react";
+import { Pin, X, ThumbsUp, ThumbsDown, FileText, TrendingUp, CalendarClock, Layers, ListChecks, Brain } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LiveCard } from "@/lib/meeting/trigger-engine";
 
@@ -27,6 +27,8 @@ const KIND_ICON: Record<string, typeof FileText> = {
   commitment_memory: CalendarClock,
   content_receipts: FileText,
   units_summary: TrendingUp,
+  open_tasks: ListChecks,
+  memory_context: Brain,
 };
 
 // Left-accent colour by kind — makes the card type readable in a glance.
@@ -39,6 +41,8 @@ const KIND_ACCENT: Record<string, string> = {
   commitment_memory: "border-l-violet-500",
   content_receipts: "border-l-indigo-500",
   units_summary: "border-l-emerald-500",
+  open_tasks: "border-l-teal-500",
+  memory_context: "border-l-pink-500",
 };
 const accentOf = (kind: string) => KIND_ACCENT[kind] || "border-l-muted-foreground/30";
 
@@ -70,6 +74,38 @@ export function CardContent({ kind, body }: { kind: string; body: any }) {
           <div className="text-[12px] text-amber-600 dark:text-amber-400">{s.ending_within_30_days} contract(s) ending within 30 days</div>
         )}
       </div>
+    );
+  }
+
+  if (kind === "open_tasks") {
+    const tasks = body?.tasks || [];
+    return (
+      <ul className="space-y-1 text-[13px]">
+        {tasks.slice(0, 5).map((t: any, i: number) => (
+          <li key={i} className="leading-snug">
+            <span className="font-medium">{t.title}</span>
+            <span className="text-muted-foreground">
+              {t.deadline ? ` · due ${t.deadline}` : ""}{t.from_meeting ? ` · ${String(t.from_meeting).slice(0, 40)}` : ""}
+            </span>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  if (kind === "memory_context") {
+    const notes = body?.notes || [];
+    return (
+      <ul className="space-y-1 text-[13px]">
+        {notes.slice(0, 4).map((n: any, i: number) => (
+          <li key={i} className="leading-snug">
+            {n.content}
+            {(n.category || n.date) && (
+              <span className="text-muted-foreground/70 text-[11px]"> · {[n.category, n.date].filter(Boolean).join(" · ")}</span>
+            )}
+          </li>
+        ))}
+      </ul>
     );
   }
 
