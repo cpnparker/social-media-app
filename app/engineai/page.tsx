@@ -992,7 +992,7 @@ function EngineAIContent() {
                     className="h-7 w-7 brightness-0 invert"
                   />
                 )}
-                <span className="text-[13px] font-bold tracking-tight text-white">
+                <span className="text-[15px] font-semibold text-white">
                   EngineAI
                 </span>
               </button>
@@ -1170,7 +1170,7 @@ function EngineAIContent() {
                     <div key={group.key}>
                       {/* Group heading */}
                       <div className="flex items-center justify-between px-2.5 pt-3 pb-1">
-                        <p className="text-[11px] font-semibold text-white/40 uppercase tracking-wider truncate">
+                        <p className="text-[11px] font-semibold text-white/55 uppercase tracking-wider truncate">
                           {group.clientName}
                         </p>
                         {group.clientId !== null && (
@@ -1215,10 +1215,10 @@ function EngineAIContent() {
                                   if (e.key === "Escape") setEditingConvId(null);
                                 }}
                                 onClick={(e) => e.stopPropagation()}
-                                className="text-[13px] font-medium flex-1 bg-white/10 text-white rounded px-1.5 py-0.5 outline-none ring-1 ring-white/30 focus:ring-white/60 min-w-0"
+                                className="text-[14px] font-medium flex-1 bg-white/10 text-white rounded px-1.5 py-0.5 outline-none ring-1 ring-white/30 focus:ring-white/60 min-w-0"
                               />
                             ) : (
-                              <p className="text-[13px] font-medium truncate flex-1">{conv.title}</p>
+                              <p className="text-[14px] font-medium truncate flex-1">{conv.title}</p>
                             )}
                             <div className="flex items-center gap-0.5 shrink-0">
                               <button
@@ -1254,7 +1254,7 @@ function EngineAIContent() {
                               >
                                 <Trash2 className="h-3 w-3 text-white/30 hover:text-red-400" />
                               </button>
-                              <span className="text-[11px] text-white/40 ml-0.5">
+                              <span className="text-[11px] text-white/55 ml-0.5">
                                 {timeAgo(conv.updatedAt)}
                               </span>
                             </div>
@@ -1262,7 +1262,7 @@ function EngineAIContent() {
                           {conv.sharedWithMe && conv.sharedByName && (
                             <div className="flex items-center gap-1 mt-0.5">
                               <UserPlus className="h-3 w-3 text-white/30 shrink-0" />
-                              <p className="text-[11px] text-white/40 truncate">
+                              <p className="text-[11px] text-white/55 truncate">
                                 Shared by {conv.sharedByName}
                               </p>
                             </div>
@@ -1280,7 +1280,7 @@ function EngineAIContent() {
                               customerCtx?.setSelectedCustomerId("general");
                             }
                           }}
-                          className="w-full text-left px-2.5 py-1.5 text-[12px] text-white/40 hover:text-white/60 transition-colors"
+                          className="w-full text-left px-2.5 py-1.5 text-[12px] text-white/55 hover:text-white/80 transition-colors"
                         >
                           {group.totalCount - GROUP_PREVIEW_LIMIT} more...
                         </button>
@@ -1301,15 +1301,15 @@ function EngineAIContent() {
                       )}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-[13px] font-medium truncate flex-1">{conv.title}</p>
-                        <span className="text-[11px] text-white/40 shrink-0">
+                        <p className="text-[14px] font-medium truncate flex-1">{conv.title}</p>
+                        <span className="text-[11px] text-white/55 shrink-0">
                           {timeAgo(conv.updatedAt)}
                         </span>
                       </div>
                       {conv.sharedWithMe && conv.sharedByName && (
                         <div className="flex items-center gap-1 mt-0.5">
                           <UserPlus className="h-3 w-3 text-white/30 shrink-0" />
-                          <p className="text-[11px] text-white/40 truncate">
+                          <p className="text-[11px] text-white/55 truncate">
                             Shared by {conv.sharedByName}
                           </p>
                         </div>
@@ -1317,7 +1317,7 @@ function EngineAIContent() {
                       {conv.customerName && (
                         <div className="flex items-center gap-1 mt-0.5">
                           <Building2 className="h-3 w-3 text-white/30 shrink-0" />
-                          <p className="text-[11px] text-white/40 truncate">
+                          <p className="text-[11px] text-white/55 truncate">
                             {conv.customerName}
                           </p>
                         </div>
