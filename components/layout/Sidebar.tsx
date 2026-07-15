@@ -452,11 +452,11 @@ export function Sidebar({ onClose }: SidebarProps) {
                   <p className="text-[13px] font-medium truncate text-white">
                     {userName || "User"}
                   </p>
-                  <p className="text-[10px] text-white/50 truncate">
+                  <p className="text-[11px] text-white/60 truncate">
                     {userEmail || ""}
                   </p>
                 </div>
-                <ChevronsUpDown className="h-3 w-3 text-white/40 shrink-0" />
+                <ChevronsUpDown className="h-3 w-3 text-white/50 shrink-0" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" side="top" className="w-56 mb-1">
@@ -550,14 +550,14 @@ function EnginePanel({
                   />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-[13px] font-bold tracking-tight truncate text-white">
+                  <p className="text-[15px] font-semibold truncate text-white">
                     {wsCtx.selectedWorkspace?.name || "Workspace"}
                   </p>
-                  <p className="text-[10px] text-white/40 capitalize">
+                  <p className="text-[11px] text-white/55 capitalize">
                     {wsCtx.selectedWorkspace?.plan || "free"} plan
                   </p>
                 </div>
-                <ChevronsUpDown className="h-3 w-3 text-white/40 shrink-0" />
+                <ChevronsUpDown className="h-3 w-3 text-white/50 shrink-0" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" side="bottom" className="w-56">
@@ -604,10 +604,10 @@ function EnginePanel({
               />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-[13px] font-bold tracking-tight truncate text-white">
+              <p className="text-[15px] font-semibold truncate text-white">
                 {wsCtx?.selectedWorkspace?.name || "The Content Engine"}
               </p>
-              <p className="text-[10px] text-white/40 capitalize">
+              <p className="text-[11px] text-white/55 capitalize">
                 {wsCtx?.selectedWorkspace?.plan || "free"} plan
               </p>
             </div>
@@ -620,7 +620,7 @@ function EnginePanel({
         <Link
           href="/ideas/new"
           onClick={onClose}
-          className="flex items-center justify-center gap-2 w-full py-2 rounded-lg bg-[#023250] hover:bg-[#034170] transition-colors text-white text-[13px] font-semibold"
+          className="flex items-center justify-center gap-2 w-full py-2 rounded-lg bg-[#023250] hover:bg-[#034170] transition-colors text-white text-[14px] font-semibold"
         >
           <Plus className="h-4 w-4" />
           Add New Idea
@@ -633,7 +633,7 @@ function EnginePanel({
           href="/dashboard"
           onClick={onClose}
           className={cn(
-            "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
+            "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[14px] font-medium transition-colors",
             pathname === "/dashboard"
               ? "bg-white/15 text-white"
               : "text-white/70 hover:bg-white/10 hover:text-white"
@@ -651,7 +651,7 @@ function EnginePanel({
             href={getSubdomainUrl("ai")}
             onClick={onClose}
             className={cn(
-              "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
+              "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[14px] font-medium transition-colors",
               "text-white/70 hover:bg-white/10 hover:text-white"
             )}
           >
@@ -676,9 +676,9 @@ function EnginePanel({
                 <button
                   onClick={() => toggleSection(section.label)}
                   className={cn(
-                    "w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-semibold transition-colors",
+                    "w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[14px] font-semibold transition-colors",
                     hasActiveChild
-                      ? "text-white"
+                      ? "bg-white/10 text-white"
                       : "text-white/80 hover:bg-white/10 hover:text-white"
                   )}
                 >
@@ -712,7 +712,7 @@ function EnginePanel({
                           href={item.href}
                           onClick={onClose}
                           className={cn(
-                            "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] transition-colors",
+                            "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors",
                             active
                               ? "bg-white/15 text-white font-medium"
                               : "text-white/60 hover:bg-white/10 hover:text-white/90"
@@ -752,10 +752,10 @@ function OperationsPanel({
       <div className="px-3 pt-3 pb-2 shrink-0">
         <div className="flex items-center gap-2.5 px-2 py-1">
           <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-bold tracking-tight truncate text-white">
+            <p className="text-[15px] font-semibold truncate text-white">
               Operations
             </p>
-            <p className="text-[10px] text-white/40">
+            <p className="text-[11px] text-white/55">
               Management &amp; Oversight
             </p>
           </div>
@@ -774,7 +774,7 @@ function OperationsPanel({
                   href={item.href}
                   onClick={onClose}
                   className={cn(
-                    "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
+                    "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[14px] font-medium transition-colors",
                     active
                       ? "bg-white/15 text-white"
                       : "text-white/70 hover:bg-white/10 hover:text-white"
@@ -787,8 +787,8 @@ function OperationsPanel({
                          item.label === "Contracts" ? "text-emerald-400" :
                          item.label === "Production" ? "text-orange-400" :
                          item.label === "Duty Editor" ? "text-violet-400" :
-                         "text-white/40")
-                      : "text-white/40"
+                         "text-white/50")
+                      : "text-white/50"
                   )} />
                   <span className="truncate">{item.label}</span>
                 </Link>
@@ -802,10 +802,10 @@ function OperationsPanel({
                           href={child.href}
                           onClick={onClose}
                           className={cn(
-                            "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors",
+                            "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] font-medium transition-colors",
                             cActive
                               ? "bg-white/15 text-white"
-                              : "text-white/50 hover:bg-white/10 hover:text-white/80"
+                              : "text-white/70 hover:bg-white/10 hover:text-white"
                           )}
                         >
                           <span className="h-1 w-1 rounded-full bg-white/30 shrink-0" />
@@ -842,10 +842,10 @@ function RfpToolPanel({
         <div className="flex items-center gap-2.5 px-2 py-1">
           <FileSearch className="h-4 w-4 text-cyan-400 shrink-0" />
           <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-bold tracking-tight truncate text-white">
+            <p className="text-[15px] font-semibold truncate text-white">
               RFP Tool
             </p>
-            <p className="text-[10px] text-white/40">
+            <p className="text-[11px] text-white/55">
               Find &amp; Respond to RFPs
             </p>
           </div>
@@ -863,7 +863,7 @@ function RfpToolPanel({
                 href={item.href}
                 onClick={onClose}
                 className={cn(
-                  "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
+                  "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[14px] font-medium transition-colors",
                   active
                     ? "bg-white/15 text-white"
                     : "text-white/70 hover:bg-white/10 hover:text-white"
