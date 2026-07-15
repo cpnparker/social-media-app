@@ -39,7 +39,7 @@ export interface LiveCard {
   localId: string;
   dbId: string | null;
   kind: string;
-  source: "deck" | "t1" | "t2" | "manual";
+  source: "deck" | "t1" | "t2" | "manual" | "auto";
   title: string;
   body: any;
   receipt: any;

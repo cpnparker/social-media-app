@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/lib/contexts/WorkspaceContext";
 import { useCustomer } from "@/lib/contexts/CustomerContext";
 import { TriggerEngine, type LiveCard } from "@/lib/meeting/trigger-engine";
+import { resolveClientFromText } from "@/lib/meeting/client-match";
 import { MeetingCard } from "@/components/meeting-mode/MeetingCard";
 
 /* ─────────────── Types & constants ─────────────── */
@@ -45,6 +46,10 @@ const CRASH_BUFFER_KEY = "engineai-live-crash-buffer";
 const DEVICE_KEY = "engineai-live-mic-device";
 const SESSION_CAP_MS = 3 * 60 * 60 * 1000; // 3h absolute cap
 const STILL_HERE_PROMPT_MS = 2 * 60 * 60 * 1000; // 2h "still in a meeting?"
+// Ambient auto-lookup loop — fills quiet stretches where no keyword fired.
+const AMBIENT_INTERVAL_MS = 20_000; // how often we consider sweeping
+const AMBIENT_QUIET_MS = 40_000; // only sweep if nothing surfaced for this long
+const AMBIENT_MIN_NEW_UTTS = 2; // …and at least this many new utterances since last sweep
 const CALENDAR_SNIPPET =
   "Note: this meeting uses a live transcription assistant (EngineAI Live) so we can skip note-taking. No audio is recorded and no transcript is kept — only a reviewed summary of decisions and action items. Happy to switch it off on request.";
 const VERBAL_SNIPPET =
@@ -126,6 +131,15 @@ export default function MeetingLivePage() {
   const bcRef = useRef<BroadcastChannel | null>(null);
   const wakeBcRef = useRef<BroadcastChannel | null>(null);
   const capPromptedRef = useRef(false);
+  // Ambient auto-lookup loop
+  const lastSurfaceAtRef = useRef(0); // last time a card entered the Now zone
+  const lastAutoSweepCountRef = useRef(0);
+  const lastAutoKeyRef = useRef("");
+  const autoSweepingRef = useRef(false);
+  // Transcript-driven client resolution (only when no client was pre-selected)
+  const [proposedClient, setProposedClient] = useState<{ id: string; name: string } | null>(null);
+  const proposedClientRef = useRef<{ id: string; name: string } | null>(null);
+  const proposedDismissedRef = useRef(false);
 
   // Optional ?client= / ?thread= prefill from the opener. ?thread loads the
   // source EngineAI chat (messages + shared file names + summary) as context
@@ -263,6 +277,12 @@ export default function MeetingLivePage() {
           setUtterances(utterancesRef.current);
           // Feed the trigger engine (T1 regex + T2 batching)
           engineRef.current?.ingest(u.idx, u.text);
+          // No client bound yet → listen for the client's name and offer their
+          // briefing (proposed, never silently bound). At most one live offer.
+          if (!clientIdRef.current && !proposedDismissedRef.current && !proposedClientRef.current) {
+            const match = resolveClientFromText(u.text, customersRef.current);
+            if (match) { proposedClientRef.current = match; setProposedClient(match); }
+          }
           // Crash buffer (local-only, cleared on end/discard)
           try {
             sessionStorage.setItem(
@@ -445,7 +465,8 @@ export default function MeetingLivePage() {
 
   const handleCardFired = useCallback((card: LiveCard) => {
     setLiveCards((prev) => [card, ...prev].slice(0, 6));
-    enrichCard(card); // upgrade with a natural insight line (~700ms)
+    lastSurfaceAtRef.current = Date.now();
+    if (!card.insight) enrichCard(card); // lookup/auto cards already carry one
     // Auto-expire to the drawer after 50s unless pinned — a second-screen is
     // glanced at intermittently, so 20s routinely expired before it was read.
     setTimeout(() => {
@@ -463,6 +484,64 @@ export default function MeetingLivePage() {
     setDrawerCards((prev) => [card, ...prev].slice(0, 40));
     enrichCard(card);
   }, [enrichCard]);
+
+  /** Compile (or recompile) the pre-meeting deck and seed the context rail. */
+  const compileDeck = useCallback(async (sessionId: string) => {
+    try {
+      const dres = await fetch("/api/ai/meeting/deck", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+      const d = await dres.json().catch(() => ({}));
+      if (!dres.ok) return;
+      const deck: LiveCard[] = (d.cards || []).map((c: any) => ({
+        localId: `deck-${c.key}`,
+        dbId: c.id,
+        kind: c.kind,
+        source: "deck" as const,
+        title: c.title,
+        body: c.body,
+        receipt: c.receipt,
+        firedAt: Date.now(),
+        state: "drawer" as const,
+      }));
+      setDeckCards(deck);
+      // Seed the always-on context rail with the highest-value briefing cards
+      // (contract → last meeting → pipeline) so useful client context is visible
+      // from the start, without waiting for a spoken trigger.
+      const RANK: Record<string, number> = { deck_contract: 0, deck_last_meeting: 1, deck_pipeline: 2 };
+      const rail = [...deck]
+        .sort((a, b) => (RANK[a.kind] ?? 9) - (RANK[b.kind] ?? 9))
+        .slice(0, 3)
+        .map((c) => ({ ...c, localId: `rail-${c.kind}`, state: "drawer" as const }));
+      setRailCards(rail);
+      rail.forEach((c) => enrichCard(c)); // one natural line per rail card
+      engineRef.current?.load(d.triggerSpecs || [], (d.cards || []).map((c: any) => ({
+        id: c.id, kind: c.kind, key: c.key, title: c.title, body: c.body, receipt: c.receipt,
+      })));
+    } catch { /* deck is best-effort; live capture still works */ }
+  }, [enrichCard]);
+
+  /** Bind a client to the live session (from a confirmed name suggestion),
+   *  persist it, then recompile the deck so the rail/lookup/triggers scope
+   *  to them for the rest of the call. */
+  const bindClient = useCallback(async (id: string, name: string) => {
+    setProposedClient(null);
+    proposedClientRef.current = null;
+    proposedDismissedRef.current = true;
+    clientIdRef.current = id;
+    setClientId(id);
+    try {
+      await fetch("/api/ai/meeting/bind-client", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sessionIdRef.current, clientId: id }),
+      });
+    } catch { /* best-effort */ }
+    if (sessionIdRef.current) await compileDeck(sessionIdRef.current);
+    toast.success(`Now tracking ${name}`);
+  }, [compileDeck]);
 
   // Manual "look up the last point" — the safety net when a live trigger missed.
   const [lookingUp, setLookingUp] = useState(false);
@@ -492,6 +571,7 @@ export default function MeetingLivePage() {
           state: "pinned", // manual lookups pin so they don't vanish
         };
         setPinnedCards((prev) => [card, ...prev]);
+        lastSurfaceAtRef.current = Date.now();
       } else {
         toast(d?.note || "Nothing relevant found for the last point.");
       }
@@ -501,6 +581,49 @@ export default function MeetingLivePage() {
       setLookingUp(false);
     }
   }, [lookingUp]);
+
+  // Ambient auto-lookup — during quiet stretches (nothing surfaced for a while)
+  // run the full multi-category LOOKUP over the transcript tail so useful
+  // context surfaces even when no keyword fired (the off-script "nothing came
+  // up" case). One grok-4-1-fast call, gated on quiet + new speech + a repeat
+  // guard so it can't get noisy or expensive.
+  const runAmbientSweep = useCallback(async () => {
+    if (!sessionIdRef.current || autoSweepingRef.current || pausedRef.current) return;
+    if (Date.now() - lastSurfaceAtRef.current < AMBIENT_QUIET_MS) return; // something surfaced recently
+    const count = utterancesRef.current.length;
+    if (count - lastAutoSweepCountRef.current < AMBIENT_MIN_NEW_UTTS) return; // nothing new said
+    lastAutoSweepCountRef.current = count;
+    const tail = utterancesRef.current.slice(-6).map((u) => u.text).filter(Boolean);
+    if (tail.length === 0) return;
+    autoSweepingRef.current = true;
+    try {
+      const res = await fetch("/api/ai/meeting/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sessionIdRef.current, utterances: tail, auto: true }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (d?.card) {
+        const key = `${d.card.kind}:${d.card.receipt?.label || d.card.receipt?.meeting_title || ""}`;
+        if (key !== lastAutoKeyRef.current) { // don't repeat the last auto card
+          lastAutoKeyRef.current = key;
+          handleCardFired({
+            localId: `auto-${Date.now()}`,
+            dbId: d.card.id || null,
+            kind: d.card.kind,
+            source: "auto",
+            title: d.card.title,
+            body: d.card.body,
+            receipt: d.card.receipt,
+            insight: d.card.insight,
+            firedAt: Date.now(),
+            state: "live",
+          });
+        }
+      }
+    } catch { /* transient — try again next tick */ }
+    finally { autoSweepingRef.current = false; }
+  }, [handleCardFired]);
 
   const pinCard = (card: LiveCard) => {
     engineRef.current?.report(card, "pinned");
@@ -560,48 +683,18 @@ export default function MeetingLivePage() {
       utteranceIdxRef.current = 0;
       setUtterances([]);
       setLiveCards([]); setPinnedCards([]); setDrawerCards([]); setDeckCards([]); setRailCards([]); setFeedbacks({});
+      lastSurfaceAtRef.current = Date.now();
+      lastAutoSweepCountRef.current = 0;
+      lastAutoKeyRef.current = "";
+      setProposedClient(null);
+      proposedClientRef.current = null;
+      proposedDismissedRef.current = false;
 
       // Spin up the trigger engine + compile the pre-meeting deck (parallel
       // with capture start — the deck lands within ~1s and cards can fire).
       const engine = new TriggerEngine(sessionId, handleCardFired, handleCardDrawerOnly);
       engineRef.current = engine;
-      void (async () => {
-        try {
-          const dres = await fetch("/api/ai/meeting/deck", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId }),
-          });
-          const d = await dres.json().catch(() => ({}));
-          if (dres.ok) {
-            const deck: LiveCard[] = (d.cards || []).map((c: any) => ({
-              localId: `deck-${c.key}`,
-              dbId: c.id,
-              kind: c.kind,
-              source: "deck" as const,
-              title: c.title,
-              body: c.body,
-              receipt: c.receipt,
-              firedAt: Date.now(),
-              state: "drawer" as const,
-            }));
-            setDeckCards(deck);
-            // Seed the always-on context rail with the highest-value briefing
-            // cards (contract → last meeting → pipeline) so useful client context
-            // is visible from the start, without waiting for a spoken trigger.
-            const RANK: Record<string, number> = { deck_contract: 0, deck_last_meeting: 1, deck_pipeline: 2 };
-            const rail = [...deck]
-              .sort((a, b) => (RANK[a.kind] ?? 9) - (RANK[b.kind] ?? 9))
-              .slice(0, 3)
-              .map((c) => ({ ...c, localId: `rail-${c.kind}`, state: "drawer" as const }));
-            setRailCards(rail);
-            rail.forEach((c) => enrichCard(c)); // one natural line per rail card
-            engine.load(d.triggerSpecs || [], (d.cards || []).map((c: any) => ({
-              id: c.id, kind: c.kind, key: c.key, title: c.title, body: c.body, receipt: c.receipt,
-            })));
-          }
-        } catch { /* deck is best-effort; live capture still works */ }
-      })();
+      void compileDeck(sessionId);
 
       await startCapture(sessionId);
       setStage("live");
@@ -781,6 +874,13 @@ export default function MeetingLivePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stage]);
 
+  // Ambient auto-lookup loop (live only)
+  useEffect(() => {
+    if (stage !== "live") return;
+    const t = setInterval(() => { void runAmbientSweep(); }, AMBIENT_INTERVAL_MS);
+    return () => clearInterval(t);
+  }, [stage, runAmbientSweep]);
+
   // Unload safety: terminate the socket; crash buffer already mirrors state
   useEffect(() => {
     const onUnload = () => {
@@ -879,6 +979,26 @@ export default function MeetingLivePage() {
 
         {stage === "live" && (
           <div className="flex flex-col h-full min-h-0">
+            {/* ── Client suggestion — heard a name, no client bound yet ── */}
+            {proposedClient && (
+              <div className="shrink-0 flex items-center gap-2 px-2.5 py-1.5 border-b bg-primary/5">
+                <Radio className="h-3.5 w-3.5 text-primary shrink-0" />
+                <span className="text-[12px] min-w-0 flex-1 truncate">
+                  Sounds like <span className="font-semibold">{proposedClient.name}</span> — load their briefing?
+                </span>
+                <button
+                  onClick={() => bindClient(proposedClient.id, proposedClient.name)}
+                  className="text-[11px] font-medium px-2.5 h-6 rounded-full bg-primary text-primary-foreground hover:opacity-90 shrink-0"
+                >
+                  Load
+                </button>
+                <button
+                  onClick={() => { setProposedClient(null); proposedClientRef.current = null; proposedDismissedRef.current = true; }}
+                  className="text-muted-foreground/50 hover:text-foreground shrink-0 text-xs px-1"
+                  title="Dismiss"
+                >✕</button>
+              </div>
+            )}
             {/* ── NOW — surfaced insights, always visible (never hidden on a tab) ── */}
             <div className="flex-1 min-h-0 overflow-y-auto px-2.5 py-2 space-y-2">
               {pinnedCards.map((c) => (

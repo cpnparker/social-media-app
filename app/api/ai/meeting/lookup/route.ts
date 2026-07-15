@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
 
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 }); }
-  const { sessionId, enrich, utterances } = body || {};
+  const { sessionId, enrich, utterances, auto } = body || {};
   if (!sessionId) return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
 
   const { data: ms } = await intelligenceDb
@@ -150,11 +150,11 @@ export async function POST(req: NextRequest) {
     const { data: ins } = await intelligenceDb.from("ai_meeting_cards").insert({
       id_session: sessionId,
       kind_card: card.kind,
-      source_card: "manual",
+      source_card: auto ? "auto" : "manual",
       name_title: card.title,
       document_body: card.body,
       document_receipt: card.receipt,
-      trigger_pattern: "manual_lookup",
+      trigger_pattern: auto ? "auto_sweep" : "manual_lookup",
       state_card: "shown",
       date_shown: new Date().toISOString(),
     }).select("id_card").single();
