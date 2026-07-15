@@ -136,6 +136,7 @@ export default function MeetingLivePage() {
   const utteranceIdxRef = useRef(0);
   const contextRef = useRef("");
   const clientIdRef = useRef("");
+  const mbMeetingIdRef = useRef<string | null>(null); // set when launched from meetingbrain.ai (?mb=)
   const silentFramesRef = useRef(0);
   const reconnectAttemptsRef = useRef(0);
   const idleCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -166,6 +167,8 @@ export default function MeetingLivePage() {
       if (c) setClientId(c);
       const thread = sp.get("thread");
       if (thread) void loadLinkedChat(thread);
+      const mb = sp.get("mb"); // launched from meetingbrain.ai's meeting panel
+      if (mb) void loadMbMeeting(mb);
     } catch { /* noop */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -198,6 +201,42 @@ export default function MeetingLivePage() {
         fileCount: fileNames.size,
       });
     } catch { /* best-effort — the meeting works without it */ }
+  };
+
+  /** Launched from meetingbrain.ai — load the meeting's context (title,
+   *  attendees, notes, open next steps) into the setup form. Only the meeting
+   *  id crossed the URL; details come from the user-scoped RPC. */
+  const loadMbMeeting = async (meetingId: string) => {
+    try {
+      const res = await fetch(`/api/ai/meeting/mb-context?meetingId=${encodeURIComponent(meetingId)}`);
+      if (!res.ok) { toast.error("Could not load the meeting from MeetingBrain"); return; }
+      const { meeting } = await res.json();
+      if (!meeting) return;
+      mbMeetingIdRef.current = meetingId;
+      if (meeting.title) setTitle(String(meeting.title).slice(0, 120));
+      setMeetingType("client_checkin");
+      const attendees = Array.isArray(meeting.attendees)
+        ? meeting.attendees.map((a: any) => (typeof a === "string" ? a : a?.name || a?.email || "")).filter(Boolean).join(", ")
+        : typeof meeting.attendees === "string" ? meeting.attendees : "";
+      const parts = [`## MeetingBrain meeting: "${meeting.title || "Meeting"}"${meeting.date ? ` (${meeting.date})` : ""}`];
+      if (attendees) parts.push(`Attendees: ${attendees.slice(0, 500)}`);
+      if (meeting.key_topics) {
+        const topics = Array.isArray(meeting.key_topics) ? meeting.key_topics.join(", ") : String(meeting.key_topics);
+        parts.push(`Key topics: ${topics.slice(0, 400)}`);
+      }
+      if (meeting.summary) parts.push(`Notes: ${meeting.summary}`);
+      if (meeting.next_steps) parts.push(`Open next steps: ${meeting.next_steps}`);
+      setContext(parts.join("\n"));
+      // Best-effort client preselect from title + attendees — the picker stays
+      // fully editable, so a miss just means the user picks manually.
+      if (!clientIdRef.current) {
+        const match = resolveClientFromText(`${meeting.title || ""} ${attendees}`, customersRef.current);
+        if (match) setClientId(match.id);
+      }
+      toast.success("Meeting context loaded from MeetingBrain");
+    } catch {
+      toast.error("Could not load the meeting from MeetingBrain");
+    }
   };
 
   /* ─────────────── Device enumeration ─────────────── */
@@ -475,14 +514,16 @@ export default function MeetingLivePage() {
           utterance: card.triggerText || "",
           tail,
           clientName,
-          linkedContext: linkedContextRef.current || "",
+          // User-entered context + linked chat + (if launched from
+          // MeetingBrain) the meeting's title/attendees/notes.
+          linkedContext: combinedContext() || "",
         },
       }),
     })
       .then((r) => r.json())
       .then((d) => { if (d?.insight) setCardInsight(card.localId, d.insight); })
       .catch(() => {});
-  }, [setCardInsight]);
+  }, [setCardInsight, combinedContext]);
 
   const handleCardFired = useCallback((card: LiveCard) => {
     setLiveCards((prev) => [card, ...prev].slice(0, 6));
@@ -687,6 +728,7 @@ export default function MeetingLivePage() {
         body: JSON.stringify({
           workspaceId: selectedWorkspace.id,
           clientId: clientId || null,
+          mbMeetingId: mbMeetingIdRef.current || undefined,
           title: title || (clientId ? `Meeting — ${customers.find((c) => c.id === clientId)?.name || "client"}` : "Live meeting"),
           meetingType,
           consent: { attested: true, method: "verbal" },
