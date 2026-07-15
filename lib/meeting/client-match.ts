@@ -38,8 +38,24 @@ function tokenMatch(nameTok: string, uttTok: string): boolean {
 }
 
 /**
+ * Words that are generic in an agency context — they carry no evidence that a
+ * specific client was named. "How many CONTENT units this month?" must never
+ * match a client called "The Content Engine" on the word "content" alone.
+ */
+const GENERIC_TOKENS = new Set([
+  "content", "engine", "media", "social", "digital", "group", "agency",
+  "creative", "studio", "marketing", "brand", "company", "global", "partners",
+  "communications", "consulting", "solutions", "international", "management",
+  "team", "client", "video", "design", "production",
+]);
+
+/**
  * Resolve a client from an utterance. Returns the single best roster match, or
  * null when there is no match OR the best match is ambiguous (tied score).
+ *
+ * Evidence rules: only DISTINCTIVE name tokens count (generic agency words are
+ * ignored), and multi-token names need >=2 distinctive hits. A name made
+ * entirely of generic words can never match.
  */
 export function resolveClientFromText(
   text: string,
@@ -50,11 +66,11 @@ export function resolveClientFromText(
   let best: { id: string; name: string; score: number } | null = null;
   let tie = false;
   for (const c of roster) {
-    const nameToks = toks(c.name).filter((t) => t.length >= 4); // distinctive tokens only
-    if (nameToks.length === 0) continue;
+    const nameToks = toks(c.name).filter((t) => t.length >= 4 && !GENERIC_TOKENS.has(t));
+    if (nameToks.length === 0) continue; // nothing distinctive to match on
     let hits = 0;
     for (const nt of nameToks) if (utt.some((u) => tokenMatch(nt, u))) hits++;
-    if (hits === 0) continue;
+    if (hits < Math.min(2, nameToks.length)) continue; // require real evidence
     const score = hits / nameToks.length + hits * 0.01; // fraction of the name matched, nudged by absolute hits
     if (!best || score > best.score) {
       best = { id: c.id, name: c.name, score };

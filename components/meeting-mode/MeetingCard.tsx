@@ -26,6 +26,7 @@ const KIND_ICON: Record<string, typeof FileText> = {
   deck_last_meeting: CalendarClock,
   commitment_memory: CalendarClock,
   content_receipts: FileText,
+  units_summary: TrendingUp,
 };
 
 // Left-accent colour by kind — makes the card type readable in a glance.
@@ -37,6 +38,7 @@ const KIND_ACCENT: Record<string, string> = {
   deck_last_meeting: "border-l-violet-500",
   commitment_memory: "border-l-violet-500",
   content_receipts: "border-l-indigo-500",
+  units_summary: "border-l-emerald-500",
 };
 const accentOf = (kind: string) => KIND_ACCENT[kind] || "border-l-muted-foreground/30";
 
@@ -67,6 +69,26 @@ export function CardContent({ kind, body }: { kind: string; body: any }) {
         {s.ending_within_30_days > 0 && (
           <div className="text-[12px] text-amber-600 dark:text-amber-400">{s.ending_within_30_days} contract(s) ending within 30 days</div>
         )}
+      </div>
+    );
+  }
+
+  if (kind === "units_summary") {
+    const s = body?.summary || {};
+    const rows = body?.by_client || [];
+    return (
+      <div className="space-y-1 text-[13px]">
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+          {s.total_cu != null && (
+            <span><span className="text-muted-foreground">Total</span> <span className="font-semibold text-emerald-600 dark:text-emerald-400">{fmtNum(s.total_cu)} CU</span></span>
+          )}
+          {s.period_start && <span className="text-muted-foreground">since {s.period_start}</span>}
+        </div>
+        {rows.slice(0, 3).map((r: any, i: number) => (
+          <div key={i} className="text-muted-foreground leading-snug">
+            {r.client_name || "Unknown"} · {fmtNum(r.content_units)} CU · {fmtNum(r.task_count)} task{r.task_count === 1 ? "" : "s"}
+          </div>
+        ))}
       </div>
     );
   }
