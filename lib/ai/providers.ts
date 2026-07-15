@@ -86,9 +86,15 @@ export function formatToolResult(result: { data: any; count: number; total?: num
   if (result.total !== undefined) {
     content += `\nTotal: ${result.total}`;
   }
-  const rows = Array.isArray(result.data) ? result.data : [];
+  // Reports like pipeline_summary return a single aggregate OBJECT, not an
+  // array. The old Array-or-empty coercion serialized it as "Data: []", so the
+  // model read "no data" and improvised raw table queries instead. (Same bug
+  // class as the formatMeetingBrainResult meeting_details fix below.)
+  const isArray = Array.isArray(result.data);
+  const rows = isArray ? result.data : [];
   const sample = rows.slice(0, MAX_TOOL_RESULT_ROWS);
-  content += `\n\nData${rows.length > MAX_TOOL_RESULT_ROWS ? ` (first ${MAX_TOOL_RESULT_ROWS} of ${rows.length})` : ""}:\n${JSON.stringify(sample, null, 2)}`;
+  const payload = isArray ? sample : (result.data ?? []);
+  content += `\n\nData${isArray && rows.length > MAX_TOOL_RESULT_ROWS ? ` (first ${MAX_TOOL_RESULT_ROWS} of ${rows.length})` : ""}:\n${JSON.stringify(payload, null, 2)}`;
   content += `\nIf the user asked for a chart or graph, you MUST call generate_chart next with this data.`;
   return content;
 }
@@ -1582,17 +1588,19 @@ async function reportCompletedUnits(
  * Pipeline summary — overview of all content by status.
  */
 async function reportPipelineSummary(
-  clientId?: number
+  clientId?: number,
+  workspaceClientIds?: number[]
 ): Promise<{ data: any; error?: string }> {
   let query = supabase
     .from("app_content")
-    .select("name_client, type_content, units_content, flag_completed, flag_spiked");
+    .select("name_client, name_content, type_content, units_content, flag_completed, flag_spiked");
 
-  if (clientId) {
-    query = query.eq("id_client", clientId);
-  }
+  if (workspaceClientIds?.length) query = query.in("id_client", workspaceClientIds);
+  if (clientId) query = query.eq("id_client", clientId);
 
-  const { data: rows, error } = await query.limit(1000);
+  // Order by recency so the 1000-row cap keeps the CURRENT pipeline (an
+  // unordered limit returned an arbitrary subset once the table outgrew it).
+  const { data: rows, error } = await query.order("date_created", { ascending: false }).limit(1000);
   if (error) return { data: null, error: error.message };
 
   const items = rows || [];
@@ -1608,6 +1616,25 @@ async function reportPipelineSummary(
     byType[t].cu += item.units_content || 0;
   }
 
+  // Per-client breakdown (with item names for in-progress work) — the
+  // canonical "what's in the pipeline, by client?" answer, keyed by client
+  // NAME so responses never say "Client 39".
+  const byClient: Record<string, { in_progress: number; in_progress_cu: number; completed: number; items_in_progress: string[] }> = {};
+  for (const item of items) {
+    if (item.flag_spiked === 1) continue;
+    const key = item.name_client || "Unassigned";
+    if (!byClient[key]) byClient[key] = { in_progress: 0, in_progress_cu: 0, completed: 0, items_in_progress: [] };
+    if (item.flag_completed === 1) {
+      byClient[key].completed++;
+    } else {
+      byClient[key].in_progress++;
+      byClient[key].in_progress_cu += item.units_content || 0;
+      if (byClient[key].items_in_progress.length < 10 && item.name_content) {
+        byClient[key].items_in_progress.push(item.name_content);
+      }
+    }
+  }
+
   return {
     data: {
       total_items: items.length,
@@ -1615,6 +1642,7 @@ async function reportPipelineSummary(
       completed: { count: completed.length, cu: completed.reduce((s: number, c: any) => s + (c.units_content || 0), 0) },
       spiked: { count: spiked.length, cu: spiked.reduce((s: number, c: any) => s + (c.units_content || 0), 0) },
       by_type: byType,
+      by_client: byClient,
     },
   };
 }
@@ -1950,7 +1978,7 @@ export async function queryEngine(
         return { data: result.data, count: result.data.length, total: result.total, error: result.error };
       }
       case "pipeline_summary": {
-        const result = await reportPipelineSummary(clientId);
+        const result = await reportPipelineSummary(clientId, workspaceClientIds);
         return { data: result.data, count: 1, error: result.error };
       }
       case "contracts_summary": {
