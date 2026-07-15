@@ -1220,43 +1220,56 @@ function EngineAIContent() {
                             ) : (
                               <p className="text-[14px] font-medium truncate flex-1">{conv.title}</p>
                             )}
-                            <div className="flex items-center gap-0.5 shrink-0">
-                              <button
-                                onClick={(e) => startRenaming(e, conv)}
-                                className="p-0.5 rounded opacity-0 group-hover/conv:opacity-100 transition-opacity"
-                                title="Rename"
-                              >
-                                <Pencil className="h-3 w-3 text-white/30 hover:text-white/60" />
-                              </button>
-                              <button
-                                onClick={(e) => togglePinConversation(e, conv.id)}
+                            {/* Right slot: idle = timestamp (+pin badge); hover/selected = actions.
+                                Swapped with hidden/flex (NOT opacity) so idle rows give the full
+                                width to the title and no invisible-but-clickable buttons exist. */}
+                            <div className="flex items-center shrink-0">
+                              <span
                                 className={cn(
-                                  "p-0.5 rounded transition-opacity",
-                                  pinnedConvIds.has(conv.id)
-                                    ? "opacity-100"
-                                    : "opacity-0 group-hover/conv:opacity-100"
+                                  "flex items-center gap-1 text-[11px] text-white/55",
+                                  selectedId === conv.id ? "hidden" : "group-hover/conv:hidden"
                                 )}
-                                title={pinnedConvIds.has(conv.id) ? "Unpin" : "Pin"}
                               >
-                                <Pin
-                                  className={cn(
-                                    "h-3 w-3 transition-colors",
-                                    pinnedConvIds.has(conv.id)
-                                      ? "text-yellow-400 fill-yellow-400"
-                                      : "text-white/30 hover:text-white/60"
-                                  )}
-                                />
-                              </button>
-                              <button
-                                onClick={(e) => handleDeleteConversation(e, conv.id)}
-                                className="p-0.5 rounded opacity-0 group-hover/conv:opacity-100 transition-opacity"
-                                title="Delete"
-                              >
-                                <Trash2 className="h-3 w-3 text-white/30 hover:text-red-400" />
-                              </button>
-                              <span className="text-[11px] text-white/55 ml-0.5">
+                                {pinnedConvIds.has(conv.id) && (
+                                  <Pin className="h-3 w-3 text-yellow-400 fill-yellow-400" />
+                                )}
                                 {timeAgo(conv.updatedAt)}
                               </span>
+                              <div
+                                className={cn(
+                                  "items-center gap-0.5",
+                                  selectedId === conv.id ? "flex" : "hidden group-hover/conv:flex"
+                                )}
+                              >
+                                <button
+                                  onClick={(e) => startRenaming(e, conv)}
+                                  className="p-1 rounded hover:bg-white/10"
+                                  title="Rename"
+                                >
+                                  <Pencil className="h-3.5 w-3.5 text-white/50 hover:text-white/90" />
+                                </button>
+                                <button
+                                  onClick={(e) => togglePinConversation(e, conv.id)}
+                                  className="p-1 rounded hover:bg-white/10"
+                                  title={pinnedConvIds.has(conv.id) ? "Unpin" : "Pin"}
+                                >
+                                  <Pin
+                                    className={cn(
+                                      "h-3.5 w-3.5 transition-colors",
+                                      pinnedConvIds.has(conv.id)
+                                        ? "text-yellow-400 fill-yellow-400"
+                                        : "text-white/50 hover:text-white/90"
+                                    )}
+                                  />
+                                </button>
+                                <button
+                                  onClick={(e) => handleDeleteConversation(e, conv.id)}
+                                  className="p-1 rounded ml-0.5 hover:bg-red-500/15"
+                                  title="Delete"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5 text-white/50 hover:text-red-400" />
+                                </button>
+                              </div>
                             </div>
                           </div>
                           {conv.sharedWithMe && conv.sharedByName && (
