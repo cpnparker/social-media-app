@@ -122,6 +122,13 @@ export default function VoiceDock({
   const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const playCursorRef = useRef(0);
   const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  // One response at a time: the speech-to-speech model renders its VOICE per
+  // response, so creating a tool-continuation response while the previous one
+  // is still streaming produces a second, differently-rendered speaker midway
+  // through what the user hears as ONE reply (the "voice changes mid-reply"
+  // bug). Track the active response and queue creates until response.done.
+  const responseActiveRef = useRef(false);
+  const pendingResponseCreateRef = useRef(false);
   const pausedRef = useRef(false);
   const statusRef = useRef<VoiceStatus>("connecting");
   const prePauseStatusRef = useRef<VoiceStatus>("listening");
@@ -159,6 +166,19 @@ export default function VoiceDock({
     });
     activeSourcesRef.current.clear();
     if (audioCtxRef.current) playCursorRef.current = audioCtxRef.current.currentTime;
+  }, []);
+
+  /** Create a response only when none is active — queue otherwise. Overlapping
+   *  responses are what split one spoken reply across two per-response voice
+   *  renders (the mid-reply voice change). Confirmed active by
+   *  response.created; flushed by response.done. */
+  const requestResponse = useCallback(() => {
+    if (responseActiveRef.current) {
+      pendingResponseCreateRef.current = true;
+      return;
+    }
+    responseActiveRef.current = true; // optimistic — closes the double-create race
+    wsRef.current?.send(JSON.stringify({ type: "response.create" }));
   }, []);
 
   /** Upsert a transcript item. User items also merge prefix-refinements in
@@ -533,6 +553,11 @@ export default function VoiceDock({
               if (pausedRef.current) break;
               lastUserSpeechRef.current = Date.now();
               followUpDeadlineRef.current = null; // follow-up arrived — stay engaged
+              // Barge-in cancels the active response server-side; drop any
+              // queued continuation too — the model will pick up the pending
+              // tool output on its next (VAD-triggered) turn.
+              responseActiveRef.current = false;
+              pendingResponseCreateRef.current = false;
               // New utterance starting — give id-less transcription events a
               // fresh fallback key so utterances never merge into each other.
               utteranceCounterRef.current += 1;
@@ -605,7 +630,7 @@ export default function VoiceDock({
                     item: { type: "function_call_output", call_id, output: "Conversation ending — say one short, warm sign-off now." },
                   })
                 );
-                wsRef.current?.send(JSON.stringify({ type: "response.create" }));
+                requestResponse();
                 // Safety net: if no sign-off audio arrives, close anyway
                 setTimeout(() => {
                   if (!closingRef.current && endingRef.current && activeSourcesRef.current.size === 0) {
@@ -641,13 +666,28 @@ export default function VoiceDock({
                 pendingToolsRef.current -= 1;
                 if (pendingToolsRef.current === 0) {
                   setActiveTool(null);
-                  wsRef.current?.send(JSON.stringify({ type: "response.create" }));
+                  requestResponse(); // queued until the announcing response finishes
                 }
               }
               break;
             }
 
+            case "response.created": {
+              responseActiveRef.current = true;
+              break;
+            }
+
             case "response.done": {
+              responseActiveRef.current = false;
+              // A continuation was queued while this response streamed (tool
+              // result mid-speech) — create it now that the previous render
+              // finished, so the reply stays ONE voice, back to back.
+              if (pendingResponseCreateRef.current && !closingRef.current) {
+                pendingResponseCreateRef.current = false;
+                responseActiveRef.current = true;
+                wsRef.current?.send(JSON.stringify({ type: "response.create" }));
+                break; // stay in "thinking" — more speech incoming
+              }
               if (
                 activeSourcesRef.current.size === 0 &&
                 pendingToolsRef.current === 0 &&
