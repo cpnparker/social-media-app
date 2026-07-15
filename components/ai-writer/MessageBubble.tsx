@@ -102,10 +102,10 @@ export default function MessageBubble({
       )}
       <div
         className={cn(
-          "max-w-[90%] md:max-w-[80%] rounded-xl text-[15px]",
+          "rounded-xl text-[16px]",
           isUser
-            ? "bg-[#f0f0f0] dark:bg-[#2a2a2a] text-foreground px-4 py-2.5"
-            : "bg-transparent"
+            ? "max-w-[85%] bg-[#f0f0f0] dark:bg-[#2a2a2a] text-foreground px-4 py-2.5"
+            : "max-w-full min-w-0 flex-1 bg-transparent"
         )}
       >
         {/* Attachments */}

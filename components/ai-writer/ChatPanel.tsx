@@ -1303,7 +1303,7 @@ export default function ChatPanel({
             </p>
           </div>
         ) : (
-          <div className="py-4 space-y-1">
+          <div className="py-4 space-y-1 w-full max-w-[46rem] mx-auto">
             {messages.map((msg, idx) => {
               // Pending assistant rows render as a spinner block (below), not
               // an empty bubble. Failed rows render normally so the user sees

@@ -1662,7 +1662,7 @@ function EngineAIContent() {
             {/* Input area */}
             <div className="shrink-0 w-full flex flex-col items-center px-4 pb-4 lg:pb-8">
               <div
-                className="w-full max-w-2xl"
+                className="w-full max-w-[46rem]"
                 onDragEnter={handleHomeDragEnter}
                 onDragLeave={handleHomeDragLeave}
                 onDragOver={handleHomeDragOver}

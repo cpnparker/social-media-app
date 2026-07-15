@@ -200,7 +200,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
 
         {/* Attachment preview strip */}
         {pendingAttachments.length > 0 && (
-          <div className="flex items-center gap-2 flex-wrap max-w-4xl mx-auto mb-2 px-1">
+          <div className="flex items-center gap-2 flex-wrap max-w-[46rem] mx-auto mb-2 px-1">
             {pendingAttachments.map((att, i) => (
               <div
                 key={`${att.name}-${i}`}
@@ -231,7 +231,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         )}
 
         {/* Input container — unified border wrapping textarea + toolbar */}
-        <div className="max-w-4xl mx-auto rounded-xl border bg-background focus-within:ring-1 focus-within:ring-foreground/15 focus-within:border-foreground/20 transition-shadow">
+        <div className="max-w-[46rem] mx-auto rounded-2xl border border-foreground/10 bg-background shadow-sm focus-within:ring-2 focus-within:ring-foreground/20 focus-within:shadow-md transition-all">
           <textarea
             ref={textareaRef}
             value={value}
@@ -240,7 +240,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
             placeholder={placeholder}
             disabled={disabled}
             rows={1}
-            className="w-full resize-none bg-transparent px-3.5 pt-3 pb-2 text-base focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
+            className="w-full resize-none bg-transparent px-4 pt-3.5 pb-2.5 text-[16px] focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
             style={{ minHeight: "40px", maxHeight: "200px" }}
           />
           {/* Toolbar row — attach, context slot, send */}
