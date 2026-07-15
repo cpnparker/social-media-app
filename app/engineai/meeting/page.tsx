@@ -49,7 +49,18 @@ const STILL_HERE_PROMPT_MS = 2 * 60 * 60 * 1000; // 2h "still in a meeting?"
 // Ambient auto-lookup loop — fills quiet stretches where no keyword fired.
 const AMBIENT_INTERVAL_MS = 20_000; // how often we consider sweeping
 const AMBIENT_QUIET_MS = 40_000; // only sweep if nothing surfaced for this long
-const AMBIENT_MIN_NEW_UTTS = 2; // …and at least this many new utterances since last sweep
+const AMBIENT_MIN_NEW_UTTS = 1; // …and at least this many new utterances since last sweep
+const QUESTION_SWEEP_COOLDOWN_MS = 15_000; // min gap between question-triggered sweeps
+
+/** Question-shaped utterance → deserves an IMMEDIATE lookup, not the ambient
+ *  timer. Catches trailing "?" and interrogative openers (STT sometimes drops
+ *  punctuation on finalised turns). */
+function isQuestion(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (t.length < 8) return false;
+  if (/\?\s*$/.test(t)) return true;
+  return /^(what|how|when|where|who|why|which|can|could|do|does|did|is|are|was|were|have|has|will|would|should|tell me|remind me|give me)\b/.test(t);
+}
 const CALENDAR_SNIPPET =
   "Note: this meeting uses a live transcription assistant (EngineAI Live) so we can skip note-taking. No audio is recorded and no transcript is kept — only a reviewed summary of decisions and action items. Happy to switch it off on request.";
 const VERBAL_SNIPPET =
@@ -136,6 +147,10 @@ export default function MeetingLivePage() {
   const lastAutoSweepCountRef = useRef(0);
   const lastAutoKeyRef = useRef("");
   const autoSweepingRef = useRef(false);
+  const lastQuestionSweepAtRef = useRef(0);
+  // Latest sweep fn, reachable from the STT onmessage closure (created once at
+  // session start, so it can't capture the useCallback directly).
+  const runAmbientSweepRef = useRef<(force?: boolean) => void>(() => {});
   // Transcript-driven client resolution (only when no client was pre-selected)
   const [proposedClient, setProposedClient] = useState<{ id: string; name: string } | null>(null);
   const proposedClientRef = useRef<{ id: string; name: string } | null>(null);
@@ -282,6 +297,12 @@ export default function MeetingLivePage() {
           if (!clientIdRef.current && !proposedDismissedRef.current && !proposedClientRef.current) {
             const match = resolveClientFromText(u.text, customersRef.current);
             if (match) { proposedClientRef.current = match; setProposedClient(match); }
+          }
+          // A direct question deserves an immediate lookup — don't make it
+          // wait for the ambient timer's quiet/new-utterance gates.
+          if (isQuestion(u.text) && Date.now() - lastQuestionSweepAtRef.current > QUESTION_SWEEP_COOLDOWN_MS) {
+            lastQuestionSweepAtRef.current = Date.now();
+            runAmbientSweepRef.current(true);
           }
           // Crash buffer (local-only, cleared on end/discard)
           try {
@@ -587,12 +608,16 @@ export default function MeetingLivePage() {
   // context surfaces even when no keyword fired (the off-script "nothing came
   // up" case). One grok-4-1-fast call, gated on quiet + new speech + a repeat
   // guard so it can't get noisy or expensive.
-  const runAmbientSweep = useCallback(async () => {
+  const runAmbientSweep = useCallback(async (force = false) => {
     if (!sessionIdRef.current || autoSweepingRef.current || pausedRef.current) return;
-    if (Date.now() - lastSurfaceAtRef.current < AMBIENT_QUIET_MS) return; // something surfaced recently
-    const count = utterancesRef.current.length;
-    if (count - lastAutoSweepCountRef.current < AMBIENT_MIN_NEW_UTTS) return; // nothing new said
-    lastAutoSweepCountRef.current = count;
+    if (!force) {
+      // Timer path: only sweep quiet stretches with new speech. A forced
+      // (question-triggered) sweep skips both gates — the user just asked.
+      if (Date.now() - lastSurfaceAtRef.current < AMBIENT_QUIET_MS) return; // something surfaced recently
+      const count = utterancesRef.current.length;
+      if (count - lastAutoSweepCountRef.current < AMBIENT_MIN_NEW_UTTS) return; // nothing new said
+    }
+    lastAutoSweepCountRef.current = utterancesRef.current.length;
     const tail = utterancesRef.current.slice(-6).map((u) => u.text).filter(Boolean);
     if (tail.length === 0) return;
     autoSweepingRef.current = true;
@@ -605,7 +630,7 @@ export default function MeetingLivePage() {
       const d = await res.json().catch(() => ({}));
       if (d?.card) {
         const key = `${d.card.kind}:${d.card.receipt?.label || d.card.receipt?.meeting_title || ""}`;
-        if (key !== lastAutoKeyRef.current) { // don't repeat the last auto card
+        if (force || key !== lastAutoKeyRef.current) { // repeat-dedup applies to timer sweeps only
           lastAutoKeyRef.current = key;
           handleCardFired({
             localId: `auto-${Date.now()}`,
@@ -880,6 +905,11 @@ export default function MeetingLivePage() {
     const t = setInterval(() => { void runAmbientSweep(); }, AMBIENT_INTERVAL_MS);
     return () => clearInterval(t);
   }, [stage, runAmbientSweep]);
+
+  // Keep the STT-closure-reachable ref pointing at the latest sweep
+  useEffect(() => {
+    runAmbientSweepRef.current = (force?: boolean) => { void runAmbientSweep(force); };
+  }, [runAmbientSweep]);
 
   // Unload safety: terminate the socket; crash buffer already mirrors state
   useEffect(() => {
