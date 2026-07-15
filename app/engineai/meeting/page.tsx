@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Mic, Pause, Play, Square, Radio, Loader2, AlertTriangle, Copy, Check,
-  ExternalLink, Trash2, FileText, ArrowRightCircle, Search,
+  ExternalLink, Trash2, FileText, ArrowRightCircle, Search, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -71,7 +71,9 @@ export default function MeetingLivePage() {
   const [pinnedCards, setPinnedCards] = useState<LiveCard[]>([]);
   const [drawerCards, setDrawerCards] = useState<LiveCard[]>([]);
   const [feedbacks, setFeedbacks] = useState<Record<string, number>>({});
-  const [liveTab, setLiveTab] = useState<"live" | "deck" | "drawer">("live");
+  const [railCards, setRailCards] = useState<LiveCard[]>([]); // always-on client context
+  const [railOpen, setRailOpen] = useState(true);
+  const [liveTab, setLiveTab] = useState<"transcript" | "deck" | "drawer">("transcript");
   const engineRef = useRef<TriggerEngine | null>(null);
 
   // Setup form
@@ -83,6 +85,10 @@ export default function MeetingLivePage() {
   const linkedContextRef = useRef(""); // derived text context from the source chat
   useEffect(() => { contextRef.current = context; }, [context]);
   useEffect(() => { clientIdRef.current = clientId; }, [clientId]);
+  // Kept in a ref so enrichCard (a stable callback) can name the client without
+  // re-creating and going stale in the trigger-engine handlers.
+  const customersRef = useRef(customers);
+  useEffect(() => { customersRef.current = customers; }, [customers]);
 
   /** User context + linked-chat context, combined for digest/handoff. */
   const combinedContext = useCallback(() => {
@@ -406,18 +412,30 @@ export default function MeetingLivePage() {
   const setCardInsight = useCallback((localId: string, insight: string) => {
     if (!insight) return;
     const patch = (list: LiveCard[]) => list.map((c) => (c.localId === localId ? { ...c, insight } : c));
-    setLiveCards(patch); setPinnedCards(patch); setDrawerCards(patch);
+    setLiveCards(patch); setPinnedCards(patch); setDrawerCards(patch); setRailCards(patch);
   }, []);
 
-  /** Ask the lookup engine for a natural, conversation-aware framing of a card. */
+  /** Ask the lookup engine for a natural, conversation-aware framing of a card.
+   *  Feeds it the transcript tail, client name and any linked-chat context so the
+   *  sentence says why the number matters right now — including "gap" cards
+   *  (e.g. no contract on file), which are exactly where framing adds value. */
   const enrichCard = useCallback((card: LiveCard) => {
-    if (!sessionIdRef.current || card.body?.none) return; // nothing to frame
+    if (!sessionIdRef.current) return;
+    const clientName = customersRef.current.find((c) => c.id === clientIdRef.current)?.name || "";
+    const tail = utterancesRef.current.slice(-6).map((u) => u.text).filter(Boolean);
     fetch("/api/ai/meeting/lookup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         sessionId: sessionIdRef.current,
-        enrich: { kind: card.kind, data: card.body, utterance: card.triggerText || "" },
+        enrich: {
+          kind: card.kind,
+          data: card.body,
+          utterance: card.triggerText || "",
+          tail,
+          clientName,
+          linkedContext: linkedContextRef.current || "",
+        },
       }),
     })
       .then((r) => r.json())
@@ -428,7 +446,8 @@ export default function MeetingLivePage() {
   const handleCardFired = useCallback((card: LiveCard) => {
     setLiveCards((prev) => [card, ...prev].slice(0, 6));
     enrichCard(card); // upgrade with a natural insight line (~700ms)
-    // Auto-expire to drawer after 20s unless pinned
+    // Auto-expire to the drawer after 50s unless pinned — a second-screen is
+    // glanced at intermittently, so 20s routinely expired before it was read.
     setTimeout(() => {
       setLiveCards((prev) => {
         const still = prev.find((c) => c.localId === card.localId);
@@ -437,7 +456,7 @@ export default function MeetingLivePage() {
         setDrawerCards((d) => [{ ...card, state: "drawer" as const }, ...d].slice(0, 40));
         return prev.filter((c) => c.localId !== card.localId);
       });
-    }, 20_000);
+    }, 50_000);
   }, []);
 
   const handleCardDrawerOnly = useCallback((card: LiveCard) => {
@@ -473,7 +492,6 @@ export default function MeetingLivePage() {
           state: "pinned", // manual lookups pin so they don't vanish
         };
         setPinnedCards((prev) => [card, ...prev]);
-        setLiveTab("live");
       } else {
         toast(d?.note || "Nothing relevant found for the last point.");
       }
@@ -505,7 +523,6 @@ export default function MeetingLivePage() {
 
   const pinDeckCard = (card: LiveCard) => {
     setPinnedCards((prev) => (prev.some((c) => c.localId === card.localId) ? prev : [{ ...card, state: "pinned" }, ...prev]));
-    setLiveTab("live");
   };
 
   const handleStart = async () => {
@@ -542,7 +559,7 @@ export default function MeetingLivePage() {
       utterancesRef.current = [];
       utteranceIdxRef.current = 0;
       setUtterances([]);
-      setLiveCards([]); setPinnedCards([]); setDrawerCards([]); setDeckCards([]); setFeedbacks({});
+      setLiveCards([]); setPinnedCards([]); setDrawerCards([]); setDeckCards([]); setRailCards([]); setFeedbacks({});
 
       // Spin up the trigger engine + compile the pre-meeting deck (parallel
       // with capture start — the deck lands within ~1s and cards can fire).
@@ -569,7 +586,16 @@ export default function MeetingLivePage() {
               state: "drawer" as const,
             }));
             setDeckCards(deck);
-            if (deck.length > 0) setLiveTab("deck");
+            // Seed the always-on context rail with the highest-value briefing
+            // cards (contract → last meeting → pipeline) so useful client context
+            // is visible from the start, without waiting for a spoken trigger.
+            const RANK: Record<string, number> = { deck_contract: 0, deck_last_meeting: 1, deck_pipeline: 2 };
+            const rail = [...deck]
+              .sort((a, b) => (RANK[a.kind] ?? 9) - (RANK[b.kind] ?? 9))
+              .slice(0, 3)
+              .map((c) => ({ ...c, localId: `rail-${c.kind}`, state: "drawer" as const }));
+            setRailCards(rail);
+            rail.forEach((c) => enrichCard(c)); // one natural line per rail card
             engine.load(d.triggerSpecs || [], (d.cards || []).map((c: any) => ({
               id: c.id, kind: c.kind, key: c.key, title: c.title, body: c.body, receipt: c.receipt,
             })));
@@ -834,7 +860,7 @@ export default function MeetingLivePage() {
       )}
 
       {/* ── Body ── */}
-      <main className="flex-1 overflow-y-auto">
+      <main className={cn("flex-1 min-h-0", stage === "live" ? "overflow-hidden" : "overflow-y-auto")}>
         {stage === "setup" && (
           <SetupScreen
             customers={customers}
@@ -852,77 +878,87 @@ export default function MeetingLivePage() {
         )}
 
         {stage === "live" && (
-          <div className="flex flex-col h-full">
-            {/* Pinned cards — persist for the whole call */}
-            {pinnedCards.length > 0 && (
-              <div className="shrink-0 p-2 space-y-1.5 border-b bg-primary/[0.03]">
-                {pinnedCards.map((c) => (
-                  <MeetingCard key={c.localId} card={c} onDismiss={() => dismissCard(c, "pinned")}
-                    onFeedback={(v) => rateCard(c, v)} feedback={feedbacks[c.localId] ?? null} />
-                ))}
+          <div className="flex flex-col h-full min-h-0">
+            {/* ── NOW — surfaced insights, always visible (never hidden on a tab) ── */}
+            <div className="flex-1 min-h-0 overflow-y-auto px-2.5 py-2 space-y-2">
+              {pinnedCards.map((c) => (
+                <MeetingCard key={c.localId} card={c} onDismiss={() => dismissCard(c, "pinned")}
+                  onFeedback={(v) => rateCard(c, v)} feedback={feedbacks[c.localId] ?? null} />
+              ))}
+              {liveCards.map((c) => (
+                <MeetingCard key={c.localId} card={c} onPin={() => pinCard(c)} onDismiss={() => dismissCard(c, "live")}
+                  onFeedback={(v) => rateCard(c, v)} feedback={feedbacks[c.localId] ?? null} />
+              ))}
+              {pinnedCards.length === 0 && liveCards.length === 0 && (
+                <div className="flex flex-col items-center justify-center text-center h-full py-8 px-4">
+                  <div className="h-9 w-9 rounded-full bg-amber-500/10 flex items-center justify-center mb-2">
+                    <Radio className="h-4 w-4 text-amber-500/70" />
+                  </div>
+                  <p className="text-[13px] font-medium text-foreground/80">Listening for the moments that matter</p>
+                  <p className="text-[11px] mt-1 leading-snug text-muted-foreground/60 max-w-[15rem]">
+                    Contract, pipeline, past work and commitments surface here as they come up — or tap &ldquo;Look up the last point&rdquo;.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* ── CONTEXT RAIL — always-on client facts (collapsible) ── */}
+            {railCards.length > 0 && (
+              <div className="shrink-0 border-t bg-muted/30">
+                <button
+                  onClick={() => setRailOpen((o) => !o)}
+                  className="w-full flex items-center justify-between px-2.5 py-1 text-[10px] uppercase tracking-wide font-medium text-muted-foreground/70 hover:text-foreground"
+                >
+                  <span>On this client</span>
+                  {railOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
+                </button>
+                {railOpen && (
+                  <div className="px-2 pb-2 space-y-1.5">
+                    {railCards.map((c) => (
+                      <MeetingCard key={c.localId} card={c} variant="rail" />
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Tab switcher */}
-            <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b text-xs">
-              {([
-                ["live", `Live${liveCards.length ? ` (${liveCards.length})` : ""}`],
-                ["deck", `Deck${deckCards.length ? ` (${deckCards.length})` : ""}`],
-                ["drawer", `Drawer${drawerCards.length ? ` (${drawerCards.length})` : ""}`],
-              ] as const).map(([tab, label]) => (
-                <button key={tab} onClick={() => setLiveTab(tab)}
-                  className={cn("px-2.5 h-6 rounded-full font-medium", liveTab === tab ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent")}>
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-              {liveTab === "live" && (
-                <>
-                  {liveCards.map((c) => (
-                    <MeetingCard key={c.localId} card={c} onPin={() => pinCard(c)} onDismiss={() => dismissCard(c, "live")}
-                      onFeedback={(v) => rateCard(c, v)} feedback={feedbacks[c.localId] ?? null} />
-                  ))}
-                  {/* Transcript ticker below live cards */}
-                  <div className="pt-2 mt-1 border-t">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground/60 mb-1">Transcript · in-memory only</div>
-                    {utterances.length === 0 && !partial && (
-                      <p className="text-sm text-muted-foreground/60 py-4 text-center">Listening… cards appear here when relevant topics come up.</p>
-                    )}
-                    {utterances.slice(-12).map((u) => (
-                      <p key={u.idx} className="text-[13px] leading-snug text-muted-foreground">
-                        {u.speaker && <span className="text-[10px] font-semibold mr-1 align-middle">{u.speaker}</span>}
-                        {u.text}
-                      </p>
+            {/* ── SECONDARY — transcript / deck / drawer, each with its own scroll ── */}
+            <div className="shrink-0 border-t flex flex-col">
+              <div className="flex items-center gap-1 px-2 py-1.5 text-xs shrink-0">
+                {([
+                  ["transcript", "Transcript"],
+                  ["deck", `Deck${deckCards.length ? ` (${deckCards.length})` : ""}`],
+                  ["drawer", `Drawer${drawerCards.length ? ` (${drawerCards.length})` : ""}`],
+                ] as const).map(([tab, label]) => (
+                  <button key={tab} onClick={() => setLiveTab(tab)}
+                    className={cn("px-2.5 h-6 rounded-full font-medium transition-colors", liveTab === tab ? "bg-secondary text-secondary-foreground" : "text-muted-foreground hover:bg-accent")}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="h-44 shrink-0">
+                {liveTab === "transcript" && <TranscriptPane utterances={utterances} partial={partial} />}
+                {liveTab === "deck" && (
+                  <div className="h-full overflow-y-auto px-2.5 pb-2 space-y-1.5">
+                    {deckCards.length === 0 && <p className="text-[13px] text-muted-foreground/60 py-6 text-center">Compiling client briefing…</p>}
+                    {deckCards.map((c) => (
+                      <MeetingCard key={c.localId} card={c} onPin={() => pinDeckCard(c)} />
                     ))}
-                    {partial && <p className="text-[13px] leading-snug text-muted-foreground/50 italic">{partial}</p>}
-                    <TranscriptAutoScroll dep={utterances.length + partial.length} />
                   </div>
-                </>
-              )}
-
-              {liveTab === "deck" && (
-                <>
-                  {deckCards.length === 0 && <p className="text-sm text-muted-foreground/60 py-6 text-center">Compiling client briefing…</p>}
-                  {deckCards.map((c) => (
-                    <MeetingCard key={c.localId} card={c} onPin={() => pinDeckCard(c)} />
-                  ))}
-                </>
-              )}
-
-              {liveTab === "drawer" && (
-                <>
-                  {drawerCards.length === 0 && <p className="text-sm text-muted-foreground/60 py-6 text-center">Cards that fired but weren&apos;t shown live land here.</p>}
-                  {drawerCards.map((c) => (
-                    <MeetingCard key={c.localId} card={c} onPin={() => pinCard(c)} onDismiss={() => dismissCard(c, "drawer")}
-                      onFeedback={(v) => rateCard(c, v)} feedback={feedbacks[c.localId] ?? null} />
-                  ))}
-                </>
-              )}
+                )}
+                {liveTab === "drawer" && (
+                  <div className="h-full overflow-y-auto px-2.5 pb-2 space-y-1.5">
+                    {drawerCards.length === 0 && <p className="text-[13px] text-muted-foreground/60 py-6 text-center">Cards that fired but weren&apos;t shown live land here.</p>}
+                    {drawerCards.map((c) => (
+                      <MeetingCard key={c.localId} card={c} onPin={() => pinCard(c)} onDismiss={() => dismissCard(c, "drawer")}
+                        onFeedback={(v) => rateCard(c, v)} feedback={feedbacks[c.localId] ?? null} />
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
-            {/* Manual safety net: force a lookup on the last thing said */}
+            {/* ── Manual safety net: force a lookup on the last thing said ── */}
             <div className="shrink-0 border-t p-2 bg-card/60">
               <button
                 onClick={handleManualLookup}
@@ -1361,12 +1397,30 @@ function ReviewScreen(props: {
   );
 }
 
-/* ─────────────── Auto-scroll helper ─────────────── */
+/* ─────────────── Transcript pane (own scroll, contained) ─────────────── */
 
-function TranscriptAutoScroll({ dep }: { dep: number }) {
+function TranscriptPane({ utterances, partial }: { utterances: Utterance[]; partial: string }) {
   const ref = useRef<HTMLDivElement>(null);
+  // Scroll only when a *finalised* utterance lands — not on every interim
+  // partial. This keeps the pane from thrashing, and it now scrolls only
+  // itself (it used to share the card viewport and scroll cards off-screen).
   useEffect(() => {
-    ref.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [dep]);
-  return <div ref={ref} />;
+    const el = ref.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [utterances.length]);
+  return (
+    <div ref={ref} className="h-full overflow-y-auto px-2.5 pb-2 pt-1">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground/50 mb-1">In-memory only · not recorded</div>
+      {utterances.length === 0 && !partial && (
+        <p className="text-[13px] text-muted-foreground/50 py-4 text-center">Transcript appears here as people speak.</p>
+      )}
+      {utterances.slice(-40).map((u) => (
+        <p key={u.idx} className="text-[13px] leading-snug text-muted-foreground mb-0.5">
+          {u.speaker && <span className="text-[10px] font-semibold mr-1 align-middle text-muted-foreground/60">{u.speaker}</span>}
+          {u.text}
+        </p>
+      ))}
+      {partial && <p className="text-[13px] leading-snug text-muted-foreground/40 italic">{partial}</p>}
+    </div>
+  );
 }

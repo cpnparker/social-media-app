@@ -1,10 +1,19 @@
 "use client";
 
 /**
- * EngineAI Live — card renderer. Renders every card kind (deck + live) with a
- * receipt line. Live cards get pin/dismiss/feedback affordances.
+ * EngineAI Live — card renderer.
+ *
+ * The natural-language INSIGHT is the hero: a card is "a sharp colleague leaning
+ * over and pointing at the number", so the insight sentence leads, the raw data
+ * supports it, and the receipt (provenance) sits quietly underneath. A kind-
+ * coloured left accent makes the type scannable at a glance; cards animate in so
+ * a freshly-surfaced insight catches the eye without a jarring pop.
+ *
+ * Variants: "full" (default — Now zone / drawer, with pin/dismiss/feedback) and
+ * "rail" (compact, for the always-on client context strip).
  */
 
+import { useEffect, useState } from "react";
 import { Pin, X, ThumbsUp, ThumbsDown, FileText, TrendingUp, CalendarClock, Layers } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LiveCard } from "@/lib/meeting/trigger-engine";
@@ -18,6 +27,18 @@ const KIND_ICON: Record<string, typeof FileText> = {
   commitment_memory: CalendarClock,
   content_receipts: FileText,
 };
+
+// Left-accent colour by kind — makes the card type readable in a glance.
+const KIND_ACCENT: Record<string, string> = {
+  deck_contract: "border-l-emerald-500",
+  commercial_context: "border-l-emerald-500",
+  scope_guard: "border-l-amber-500",
+  deck_pipeline: "border-l-sky-500",
+  deck_last_meeting: "border-l-violet-500",
+  commitment_memory: "border-l-violet-500",
+  content_receipts: "border-l-indigo-500",
+};
+const accentOf = (kind: string) => KIND_ACCENT[kind] || "border-l-muted-foreground/30";
 
 function fmtNum(n: any): string {
   const v = Number(n);
@@ -55,7 +76,7 @@ export function CardContent({ kind, body }: { kind: string; body: any }) {
     return (
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[13px]">
         {s.total_items != null && <span><span className="text-muted-foreground">Items</span> {fmtNum(s.total_items)}</span>}
-        {s.commissioned?.count != null && <span><span className="text-muted-foreground">Commissioned</span> {fmtNum(s.commissioned.count)}</span>}
+        {s.commissioned?.count != null && <span><span className="text-muted-foreground">In production</span> {fmtNum(s.commissioned.count)}</span>}
         {s.completed?.count != null && <span><span className="text-muted-foreground">Completed</span> {fmtNum(s.completed.count)}</span>}
       </div>
     );
@@ -98,38 +119,85 @@ function receiptLabel(receipt: any): string {
   return receipt.label || receipt.record_type || "";
 }
 
+/** Fade/slide-in on mount so a freshly-surfaced card draws the eye gently. */
+function useEnter() {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  return shown;
+}
+
 export function MeetingCard({
-  card, onPin, onDismiss, onFeedback, feedback,
+  card, variant = "full", onPin, onDismiss, onFeedback, feedback,
 }: {
   card: LiveCard;
+  variant?: "full" | "rail";
   onPin?: () => void;
   onDismiss?: () => void;
   onFeedback?: (v: number) => void;
   feedback?: number | null;
 }) {
   const Icon = KIND_ICON[card.kind] || FileText;
+  const accent = accentOf(card.kind);
+  const shown = useEnter();
+  const enter = shown ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-1";
+
+  // ── Rail variant — compact, glanceable, always-on client context ──
+  if (variant === "rail") {
+    return (
+      <div className={cn(
+        "rounded-lg border border-l-[3px] bg-card/60 px-2 py-1.5 transition-all duration-300",
+        accent, enter,
+      )}>
+        <div className="flex items-center gap-1.5">
+          <Icon className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+          <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80 truncate">{card.title}</span>
+          {onPin && (
+            <button onClick={onPin} title="Pin" className="ml-auto text-muted-foreground/40 hover:text-primary shrink-0">
+              <Pin className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+        {card.insight
+          ? <div className="mt-0.5 text-[12px] leading-snug text-foreground/90">{card.insight}</div>
+          : <div className="mt-0.5"><CardContent kind={card.kind} body={card.body} /></div>}
+      </div>
+    );
+  }
+
+  // ── Full variant — Now zone / drawer ──
   return (
     <div className={cn(
-      "rounded-xl border bg-card/70 p-2.5 shadow-sm",
-      card.state === "pinned" && "border-primary/40 bg-primary/5"
+      "rounded-xl border border-l-[3px] bg-card/70 p-2.5 shadow-sm transition-all duration-300",
+      accent, enter,
+      card.state === "pinned" && "ring-1 ring-primary/30 bg-primary/[0.04]",
     )}>
       <div className="flex items-start gap-2">
         <Icon className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <span className="text-[13px] font-semibold truncate">{card.title}</span>
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80 truncate">{card.title}</span>
+            {card.source === "manual" && (
+              <span className="text-[9px] font-medium px-1 rounded bg-muted text-muted-foreground/70 shrink-0">looked up</span>
+            )}
           </div>
+          {/* Insight is the hero — the natural, conversation-aware observation */}
           {card.insight && (
-            <div className="mt-0.5 text-[13px] leading-snug text-foreground/90">{card.insight}</div>
+            <div className="mt-0.5 text-sm font-medium leading-snug text-foreground">{card.insight}</div>
           )}
-          <div className="mt-1"><CardContent kind={card.kind} body={card.body} /></div>
+          {/* Supporting data */}
+          <div className={cn(card.insight ? "mt-1.5 text-muted-foreground" : "mt-0.5")}>
+            <CardContent kind={card.kind} body={card.body} />
+          </div>
           {receiptLabel(card.receipt) && (
-            <div className="mt-1 text-[11px] text-muted-foreground/70 truncate">↳ {receiptLabel(card.receipt)}</div>
+            <div className="mt-1.5 text-[11px] text-muted-foreground/60 truncate">↳ {receiptLabel(card.receipt)}</div>
           )}
         </div>
-        <div className="flex flex-col items-center gap-1 shrink-0">
+        <div className="flex flex-col items-center gap-1.5 shrink-0">
           {onPin && (
-            <button onClick={onPin} title={card.state === "pinned" ? "Unpin" : "Pin"} className="text-muted-foreground/50 hover:text-foreground">
+            <button onClick={onPin} title={card.state === "pinned" ? "Unpin" : "Pin"} className="text-muted-foreground/50 hover:text-primary">
               <Pin className={cn("h-3.5 w-3.5", card.state === "pinned" && "fill-current text-primary")} />
             </button>
           )}

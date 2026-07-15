@@ -170,12 +170,15 @@ export async function POST(req: NextRequest) {
           : { label: `No active contracts on file for ${clientName}` },
       });
 
-      if (!pipeline.error && pipeline.summary) {
+      // pipeline_summary returns its aggregate on `.data` (not `.summary`, which
+      // only contracts_summary/social_performance set) — gate on the right field
+      // or the pipeline card + its T1 trigger silently never compile.
+      if (!pipeline.error && pipeline.data) {
         cards.push({
           kind: "deck_pipeline",
           key: "pipeline",
           title: `Pipeline — ${clientName}`,
-          body: { summary: pipeline.summary },
+          body: { summary: pipeline.data },
           receipt: { record_type: "app_content", label: "Content pipeline" },
         });
       }

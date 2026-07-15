@@ -30,7 +30,7 @@ function getXAIClient() {
   return new OpenAI({ apiKey: process.env.XAI_API_KEY, baseURL: "https://api.x.ai/v1" });
 }
 
-const ENRICH_SYSTEM = `You are a silent meeting copilot. Someone in a live meeting just said something, and a data card is about to be shown to the user (NOT spoken aloud). Write ONE short, natural sentence (max ~20 words) that frames the card's data in the context of what was just said — like a sharp colleague leaning over and pointing at the number. Use the REAL figures from the data. No greeting, no preamble, no "here's". Return ONLY the sentence.`;
+const ENRICH_SYSTEM = `You are a silent meeting copilot for a content agency. A data card is about to be shown to the user (NOT spoken aloud) during a live meeting. Using the recent conversation and the client's background, write ONE short, natural sentence (max ~22 words) that frames the card's REAL figures AND why they matter right now — like a sharp colleague leaning over and pointing. If the card shows a gap (e.g. no contract on file), say what's worth checking. No greeting, no preamble, no "here's". Return ONLY the sentence.`;
 
 const LOOKUP_SYSTEM = `You are a silent meeting copilot for a content agency. Below is the tail of a live meeting transcript and the client's real workspace data. Decide which ONE data category best answers what was just asked/discussed, and write a natural one-sentence insight grounded in the REAL numbers.
 
@@ -61,13 +61,18 @@ export async function POST(req: NextRequest) {
   try {
     // ── ENRICH mode ──────────────────────────────────────────────
     if (enrich && enrich.kind) {
+      const who = enrich.clientName ? `Client: ${String(enrich.clientName).slice(0, 80)}\n` : "";
+      const bg = enrich.linkedContext ? `Background: ${String(enrich.linkedContext).slice(0, 1200)}\n\n` : "";
+      const tail = Array.isArray(enrich.tail) && enrich.tail.length
+        ? `Recent conversation:\n${enrich.tail.map((t: string) => String(t).slice(0, 300)).join("\n").slice(0, 1500)}\n\n`
+        : (enrich.utterance ? `Someone said: "${String(enrich.utterance).slice(0, 400)}"\n\n` : "");
       const res = await xai.chat.completions.create({
         model: API_MODEL,
         temperature: 0.3,
-        max_tokens: 60,
+        max_tokens: 70,
         messages: [
           { role: "system", content: ENRICH_SYSTEM },
-          { role: "user", content: `Someone said: "${String(enrich.utterance || "").slice(0, 400)}"\n\nCard (${enrich.kind}) data:\n${JSON.stringify(enrich.data).slice(0, 2000)}` },
+          { role: "user", content: `${who}${bg}${tail}Card (${enrich.kind}) data:\n${JSON.stringify(enrich.data).slice(0, 2000)}` },
         ],
       });
       logAiUsage({ workspaceId: ms.id_workspace, userId, model: MODEL, source: "engineai-meeting", inputTokens: res.usage?.prompt_tokens || 0, outputTokens: res.usage?.completion_tokens || 0 });
@@ -96,7 +101,7 @@ export async function POST(req: NextRequest) {
 
     const dataForLlm = {
       contracts: contracts.summary || (Array.isArray(contracts.data) ? contracts.data.slice(0, 3) : null),
-      pipeline: pipeline.summary || null,
+      pipeline: pipeline.data || null, // pipeline_summary aggregate lives on .data, not .summary
       recent_meetings: ((meetings as any)?.data || []).map((m: any) => ({ title: m.meeting_title, date: m.meeting_date?.slice(0, 10), next_steps: (m.next_steps || "").slice(0, 300) })),
       recent_content: ((content as any)?.data || []).slice(0, 8).map((c: any) => ({ name: c.name_content, type: c.type_content })),
     };
@@ -133,7 +138,7 @@ export async function POST(req: NextRequest) {
         receipt: hasC ? { record_type: "app_contracts", label: contracts.data[0]?.name_contract || "Active contract" } : { label: `No active contracts on file for ${clientName}` },
       };
     } else if (cat === "pipeline") {
-      card = { kind: "deck_pipeline", title: `Pipeline — ${clientName}`, insight, body: { summary: pipeline.summary }, receipt: { record_type: "app_content", label: "Content pipeline" } };
+      card = { kind: "deck_pipeline", title: `Pipeline — ${clientName}`, insight, body: { summary: pipeline.data }, receipt: { record_type: "app_content", label: "Content pipeline" } };
     } else if (cat === "meetings") {
       card = { kind: "commitment_memory", title: `Last meetings — ${clientName}`, insight, body: { meetings: dataForLlm.recent_meetings.map((m2: any) => ({ title: m2.title, date: m2.date, next_steps: m2.next_steps })) }, receipt: { record_type: "ai_client_meetings", meeting_title: dataForLlm.recent_meetings[0]?.title, meeting_date: dataForLlm.recent_meetings[0]?.date } };
     } else if (cat === "content") {
