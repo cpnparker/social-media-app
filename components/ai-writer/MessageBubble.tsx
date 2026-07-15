@@ -73,6 +73,10 @@ export default function MessageBubble({
   const isFactCheck = !isUser && content.includes("## 🔍 Fact Check");
   const [sourcesExpanded, setSourcesExpanded] = useState(true);
   const [hoveredSource, setHoveredSource] = useState<number | null>(null);
+  // Rich hover preview for inline citation chips. The message HTML is
+  // sanitized innerHTML (no React handlers possible on the chips), so we
+  // delegate mouse events from the .ai-response container instead.
+  const [citePreview, setCitePreview] = useState<{ num: number; x: number; y: number } | null>(null);
 
   const formatSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes}B`;
@@ -232,12 +236,47 @@ export default function MessageBubble({
                 btn.textContent = "Copied";
                 setTimeout(() => { btn.textContent = "Copy"; }, 2000);
               }}
+              onMouseOver={(e) => {
+                // Delegated hover for inline citation chips → rich preview
+                const chip = (e.target as HTMLElement).closest("a.ai-cite") as HTMLElement | null;
+                if (!chip) return;
+                const num = parseInt(chip.getAttribute("data-source-num") || "", 10);
+                if (!num) return;
+                const r = chip.getBoundingClientRect();
+                setCitePreview({ num, x: r.left + r.width / 2, y: r.top });
+              }}
+              onMouseOut={(e) => {
+                if ((e.target as HTMLElement).closest("a.ai-cite")) setCitePreview(null);
+              }}
               dangerouslySetInnerHTML={{
                 __html: DOMPurify.sanitize(formatMarkdown(cleanContent, sources), {
                   ADD_ATTR: ['target', 'rel', 'data-source-num', 'loading', 'data-retry-src', 'data-code-copy'],
                 }),
               }}
             />
+            {citePreview && (() => {
+              const src = sources.find((s) => s.number === citePreview.num);
+              if (!src) return null;
+              return (
+                <div
+                  className="fixed z-50 pointer-events-none"
+                  style={{ left: citePreview.x, top: citePreview.y - 8, transform: "translate(-50%, -100%)" }}
+                >
+                  <div className="bg-popover text-popover-foreground border shadow-lg rounded-lg px-3 py-2 max-w-[320px]">
+                    <div className="flex items-center gap-2">
+                      <img
+                        src={src.favicon}
+                        alt=""
+                        className="h-4 w-4 rounded-sm shrink-0"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                      />
+                      <p className="text-xs font-medium truncate">{src.title || src.domain}</p>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground truncate mt-0.5">{src.domain}</p>
+                  </div>
+                </div>
+              );
+            })()}
           </>
         )}
         {isStreaming && (
@@ -303,7 +342,7 @@ export default function MessageBubble({
         {!isUser && !isStreaming && (
           <div className="flex items-center gap-1 mt-2">
             {model && (
-              <p className="text-[10px] text-muted-foreground/60 mr-2">
+              <p className="text-[11px] text-muted-foreground mr-2">
                 {getModelLabel(model)}
               </p>
             )}
@@ -322,7 +361,7 @@ export default function MessageBubble({
                 setCopied(true);
                 setTimeout(() => setCopied(false), 2000);
               }}
-              className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/40 hover:text-foreground/70 transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50"
+              className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50"
               title="Copy to clipboard"
             >
               {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
@@ -331,7 +370,7 @@ export default function MessageBubble({
             {onRetry && (
               <button
                 onClick={onRetry}
-                className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/40 hover:text-foreground/70 transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50"
+                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50"
                 title="Regenerate this response"
               >
                 <RotateCcw className="h-3 w-3" />
@@ -341,7 +380,7 @@ export default function MessageBubble({
             {onFactCheck && !isFactCheck && (
               <button
                 onClick={onFactCheck}
-                className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/40 hover:text-foreground/70 transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50"
+                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50"
                 title="Fact-check this response"
               >
                 <ShieldCheck className="h-3 w-3" />
@@ -354,7 +393,7 @@ export default function MessageBubble({
                   onClick={() => onRate(rating === 1 ? null : 1)}
                   className={cn(
                     "inline-flex items-center text-[10px] transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50",
-                    rating === 1 ? "text-green-500" : "text-muted-foreground/40 hover:text-foreground/70"
+                    rating === 1 ? "text-green-500" : "text-muted-foreground hover:text-foreground"
                   )}
                   title={rating === 1 ? "Remove rating" : "Helpful"}
                 >
@@ -364,7 +403,7 @@ export default function MessageBubble({
                   onClick={() => onRate(rating === -1 ? null : -1)}
                   className={cn(
                     "inline-flex items-center text-[10px] transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50",
-                    rating === -1 ? "text-red-500" : "text-muted-foreground/40 hover:text-foreground/70"
+                    rating === -1 ? "text-red-500" : "text-muted-foreground hover:text-foreground"
                   )}
                   title={rating === -1 ? "Remove rating" : "Not helpful"}
                 >
@@ -683,7 +722,7 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
       const n = parseInt(num, 10);
       const source = sources.find((s) => s.number === n);
       if (!source) return "";
-      return `<a href="${source.url}" target="_blank" rel="noopener" data-source-num="${n}" class="ai-cite" title="${source.domain}">${n}</a>`;
+      return `<a href="${source.url}" target="_blank" rel="noopener" data-source-num="${n}" class="ai-cite" aria-label="Source ${n}: ${source.domain}">${n}</a>`;
     }
   );
 
@@ -789,7 +828,7 @@ function applyInlineFormatting(text: string, sources: ParsedSource[] = []): stri
       const n = parseInt(num, 10);
       const source = sources.find((s) => s.number === n);
       if (!source) return "";
-      return `<a href="${source.url}" target="_blank" rel="noopener" data-source-num="${n}" class="ai-cite" title="${source.domain}">${n}</a>`;
+      return `<a href="${source.url}" target="_blank" rel="noopener" data-source-num="${n}" class="ai-cite" aria-label="Source ${n}: ${source.domain}">${n}</a>`;
     }
   );
   return html;

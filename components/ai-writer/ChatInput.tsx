@@ -251,7 +251,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
                 size="icon"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={disabled || uploading}
-                className="h-8 w-8 text-muted-foreground/50 hover:text-foreground"
+                className="h-8 w-8 text-muted-foreground hover:text-foreground"
                 title="Attach file"
               >
                 {uploading ? (
