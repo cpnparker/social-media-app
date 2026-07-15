@@ -58,6 +58,19 @@ export function CardContent({ kind, body }: { kind: string; body: any }) {
     if (body?.none) {
       return <div className="text-[13px] text-muted-foreground">No active contracts on file for {body.clientName || "this client"}.</div>;
     }
+    // Workspace-wide scope: render the aggregate summary — never a single
+    // arbitrary contract row (the list is oldest-first).
+    if (body?.workspace) {
+      const s = body.summary || {};
+      return (
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[13px]">
+          {s.contracts != null && <span><span className="text-muted-foreground">Contracts</span> {fmtNum(s.contracts)}</span>}
+          {s.total_cu != null && <span><span className="text-muted-foreground">Total</span> {fmtNum(s.total_cu)} CU</span>}
+          {s.remaining_cu != null && <span className="font-semibold text-emerald-600 dark:text-emerald-400">{fmtNum(s.remaining_cu)} CU left</span>}
+          {s.ending_within_30_days > 0 && <span className="text-amber-600 dark:text-amber-400">{fmtNum(s.ending_within_30_days)} ending ≤30d</span>}
+        </div>
+      );
+    }
     const c = body?.contracts?.[0] || body?.summary || {};
     const s = body?.summary || {};
     return (

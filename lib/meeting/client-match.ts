@@ -66,12 +66,21 @@ export function resolveClientFromText(
   let best: { id: string; name: string; score: number } | null = null;
   let tie = false;
   for (const c of roster) {
+    // Acronym aliases — "(UBS)" in "Union Bank of Switzerland (UBS)" or any
+    // ALL-CAPS word in the raw name. Exact-token match only (no fuzzing on
+    // 2-3 letter strings); a spoken acronym alone is decisive evidence.
+    const aliasList: string[] = [];
+    for (const p of c.name.match(/\(([A-Za-z]{2,6})\)/g) || []) aliasList.push(p.replace(/[()]/g, "").toLowerCase());
+    for (const a of c.name.match(/\b[A-Z]{2,6}\b/g) || []) aliasList.push(a.toLowerCase());
+    const aliasHit = aliasList.some((a) => !GENERIC_TOKENS.has(a) && utt.includes(a));
+
     const nameToks = toks(c.name).filter((t) => t.length >= 4 && !GENERIC_TOKENS.has(t));
-    if (nameToks.length === 0) continue; // nothing distinctive to match on
     let hits = 0;
     for (const nt of nameToks) if (utt.some((u) => tokenMatch(nt, u))) hits++;
-    if (hits < Math.min(2, nameToks.length)) continue; // require real evidence
-    const score = hits / nameToks.length + hits * 0.01; // fraction of the name matched, nudged by absolute hits
+
+    const evidence = aliasHit || (nameToks.length > 0 && hits >= Math.min(2, nameToks.length));
+    if (!evidence) continue;
+    const score = (aliasHit ? 1.5 : 0) + (nameToks.length ? hits / nameToks.length : 0) + hits * 0.01;
     if (!best || score > best.score) {
       best = { id: c.id, name: c.name, score };
       tie = false;

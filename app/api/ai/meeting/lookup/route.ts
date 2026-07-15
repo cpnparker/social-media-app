@@ -34,9 +34,11 @@ const ENRICH_SYSTEM = `You are a silent meeting copilot for a content agency. A 
 
 const LOOKUP_SYSTEM = `You are a silent meeting copilot for a content agency. Below is the tail of a live meeting transcript and real workspace data (scoped to one client, or workspace-wide across all clients — the scope is stated). Decide which ONE data category best answers what was just asked/discussed, and write a natural one-sentence insight grounded in the REAL numbers.
 
-Categories: "units" (how many content units commissioned/produced this month/period), "contract" (contracts/commercials/CU budgets/renewals), "pipeline" (content in production/published), "meetings" (what was agreed / last discussion / commitments), "content" (examples of past work), "tasks" (the user's open action items / things they committed to — useful in 1:1s and team catch-ups), "memory" (saved workspace knowledge: notes about people, development ideas, past decisions, company facts), "none" (nothing relevant). The meeting may be an INTERNAL one (a 1:1, team catch-up) — tasks/memory are often the useful pick there. Only choose a category whose data is actually present below.
+Categories: "units" (how many content units commissioned/produced this month/period), "contract" (contracts/commercials/CU budgets/renewals), "pipeline" (content in production/published), "meetings" (what was agreed / last discussion / commitments), "content" (examples of past work), "tasks" (the user's open action items / things they committed to — useful in 1:1s and team catch-ups), "memory" (saved workspace knowledge: notes about people, development ideas, past decisions, company facts), "client_snapshot" (a specific client was just mentioned by name — their own contract/pipeline/units snapshot; only when mentioned_client data is present), "none" (nothing relevant). The meeting may be an INTERNAL one (a 1:1, team catch-up) — tasks/memory are often the useful pick there. Only choose a category whose data is actually present below.
 
-Return STRICT JSON: {"category": "...", "insight": "one natural sentence using the real figures, max ~25 words"}. If category is "none", insight is "". Return ONLY the JSON.`;
+IMPORTANT: in a normal conversation MOST moments do not need a card — "none" is the correct answer unless the participants are clearly asking about, or would clearly benefit from, this specific data RIGHT NOW. Never force a category just because data exists; a card that restates numbers nobody asked about is noise. Discussion of strategy, people, roles, pricing IDEAS, or tools usually warrants "none".
+
+Return STRICT JSON: {"category": "...", "confidence": 0-1, "insight": "one natural sentence using the real figures, max ~25 words"}. confidence = how clearly the transcript calls for THIS data. If category is "none", insight is "". Return ONLY the JSON.`;
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -45,7 +47,7 @@ export async function POST(req: NextRequest) {
 
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 }); }
-  const { sessionId, enrich, utterances, auto, context } = body || {};
+  const { sessionId, enrich, utterances, auto, context, clientHint } = body || {};
   if (!sessionId) return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
 
   const { data: ms } = await intelligenceDb
@@ -157,6 +159,27 @@ export async function POST(req: NextRequest) {
     if (openTasks.length) dataForLlm.open_action_items = openTasks;
     if (memNotes.length) dataForLlm.workspace_memory_notes = memNotes;
 
+    // A client mentioned by NAME in the conversation (client-side matcher) —
+    // lets e.g. "UBS want 80 campaign videos" in an internal 1:1 surface a
+    // UBS-scoped snapshot instead of a workspace-wide dump.
+    let mentionedClient: any = null;
+    const hintId = clientHint?.id ? parseInt(String(clientHint.id), 10) : NaN;
+    if (Number.isFinite(hintId) && hintId !== (clientId || 0)) {
+      const [hc, hp, hu] = await Promise.all([
+        queryEngine(undefined, undefined, undefined, undefined, undefined, undefined, "contracts_summary", undefined, undefined, hintId),
+        queryEngine(undefined, undefined, undefined, undefined, undefined, undefined, "pipeline_summary", undefined, undefined, hintId),
+        queryEngine(undefined, undefined, undefined, undefined, undefined, undefined, "commissioned_units", monthStart, undefined, hintId),
+      ]);
+      mentionedClient = {
+        name: String(clientHint.name || "client").slice(0, 80),
+        contracts: Array.isArray(hc.data) ? hc.data.slice(0, 2) : [],
+        contracts_summary: hc.summary || null,
+        pipeline: hp.data || null,
+        cu_commissioned_this_month: hu?.total ?? 0,
+      };
+      dataForLlm.mentioned_client = mentionedClient;
+    }
+
     const res = await xai.chat.completions.create({
       model: API_MODEL,
       temperature: 0.2,
@@ -173,7 +196,10 @@ export async function POST(req: NextRequest) {
     const parsed = m ? JSON.parse(m[0]) : { category: "none", insight: "" };
     const cat = parsed.category;
     const insight = String(parsed.insight || "").slice(0, 240);
-    if (cat === "none" || !insight) {
+    // Relevance gate — grok tends to pick SOMETHING because workspace data is
+    // always present; low-confidence picks are noise, not help.
+    const conf = typeof parsed.confidence === "number" ? parsed.confidence : 0.7;
+    if (cat === "none" || !insight || conf < 0.6) {
       return NextResponse.json({ card: null });
     }
 
@@ -192,12 +218,34 @@ export async function POST(req: NextRequest) {
       };
     } else if (cat === "contract") {
       const hasC = Array.isArray(contracts.data) && contracts.data.length > 0;
+      // Workspace scope renders the SUMMARY, never contracts[0] — the list is
+      // sorted by date_end ascending, so [0] is the oldest contract and the
+      // body used to contradict the insight ("Renews in -1,598d").
+      card = clientId
+        ? {
+            kind: "commercial_context",
+            title: `Commercials — ${clientName}`,
+            insight,
+            body: hasC ? { contracts: contracts.data.slice(0, 4), summary: contracts.summary || null } : { none: true, clientName },
+            receipt: hasC ? { record_type: "app_contracts", label: contracts.data[0]?.name_contract || "Active contract" } : { label: `No active contracts on file for ${clientName}` },
+          }
+        : {
+            kind: "commercial_context",
+            title: "Commercials — all clients",
+            insight,
+            body: { workspace: true, summary: contracts.summary || null },
+            receipt: { record_type: "app_contracts", label: `${contracts.summary?.contracts ?? 0} active contracts` },
+          };
+    } else if (cat === "client_snapshot" && mentionedClient) {
+      const hasC = mentionedClient.contracts.length > 0;
       card = {
         kind: "commercial_context",
-        title: `Commercials — ${clientName}`,
+        title: `${mentionedClient.name} — snapshot`,
         insight,
-        body: hasC ? { contracts: contracts.data.slice(0, 4), summary: contracts.summary || null } : { none: true, clientName },
-        receipt: hasC ? { record_type: "app_contracts", label: contracts.data[0]?.name_contract || "Active contract" } : { label: `No active contracts on file for ${clientName}` },
+        body: hasC
+          ? { contracts: mentionedClient.contracts, summary: mentionedClient.contracts_summary }
+          : { none: true, clientName: mentionedClient.name },
+        receipt: { record_type: "app_contracts", label: `${mentionedClient.name} · mentioned in conversation` },
       };
     } else if (cat === "pipeline") {
       card = { kind: "deck_pipeline", title: `Pipeline — ${clientName}`, insight, body: { summary: pipeline.data }, receipt: { record_type: "app_content", label: "Content pipeline" } };

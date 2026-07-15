@@ -52,14 +52,18 @@ const AMBIENT_QUIET_MS = 40_000; // only sweep if nothing surfaced for this long
 const AMBIENT_MIN_NEW_UTTS = 1; // …and at least this many new utterances since last sweep
 const QUESTION_SWEEP_COOLDOWN_MS = 15_000; // min gap between question-triggered sweeps
 
-/** Question-shaped utterance → deserves an IMMEDIATE lookup, not the ambient
- *  timer. Catches trailing "?" and interrogative openers (STT sometimes drops
- *  punctuation on finalised turns). */
-function isQuestion(text: string): boolean {
+/** DATA-question detector for the immediate-lookup fast path. Real meetings
+ *  are full of interpersonal/rhetorical questions ("what would you change?",
+ *  "is that right?") — Jess's 1:1 turned every one of those into a forced
+ *  sweep and a wall of repeated cards. Only fire when the question is about
+ *  something the workspace can actually answer. */
+const DATA_HINT = /\b(unit|units|cu|cus|contract|contracts|pipeline|budget|budgets|commission|commissioned|spend|cost|costs|price|pricing|rate|rates|revenue|remaining|deadline|deadlines|due|task|tasks|action items?|agreed|deliver(ed|ables)?|produced|published|renewal|renews?|utili[sz]ation|invoice[sd]?|retainer|scope)\b/;
+function isDataQuestion(text: string): boolean {
   const t = text.trim().toLowerCase();
   if (t.length < 8) return false;
-  if (/\?\s*$/.test(t)) return true;
-  return /^(what|how|when|where|who|why|which|can|could|do|does|did|is|are|was|were|have|has|will|would|should|tell me|remind me|give me)\b/.test(t);
+  const interrogative = /\?\s*$/.test(t)
+    || /^(what|how|when|where|who|why|which|can|could|do|does|did|is|are|was|were|have|has|will|would|should|tell me|remind me|give me)\b/.test(t);
+  return interrogative && DATA_HINT.test(t);
 }
 const CALENDAR_SNIPPET =
   "Note: this meeting uses a live transcription assistant (EngineAI Live) so we can skip note-taking. No audio is recorded and no transcript is kept — only a reviewed summary of decisions and action items. Happy to switch it off on request.";
@@ -146,9 +150,16 @@ export default function MeetingLivePage() {
   // Ambient auto-lookup loop
   const lastSurfaceAtRef = useRef(0); // last time a card entered the Now zone
   const lastAutoSweepCountRef = useRef(0);
-  const lastAutoKeyRef = useRef("");
   const autoSweepingRef = useRef(false);
   const lastQuestionSweepAtRef = useRef(0);
+  // Per-card cooldown for auto-surfaced cards (kind+receipt key → lastShownAt).
+  // Applies to forced sweeps too — Jess's 1:1 got the same units card 5× when
+  // forced sweeps bypassed dedup.
+  const autoShownRef = useRef<Map<string, number>>(new Map());
+  // Most recent client mentioned by name in the transcript (any meeting type) —
+  // lets the lookup answer with a CLIENT-SCOPED snapshot instead of a
+  // workspace-wide dump when e.g. UBS comes up in an internal 1:1.
+  const lastMentionedClientRef = useRef<{ id: string; name: string; at: number } | null>(null);
   // Latest sweep fn, reachable from the STT onmessage closure (created once at
   // session start, so it can't capture the useCallback directly).
   const runAmbientSweepRef = useRef<(force?: boolean) => void>(() => {});
@@ -331,15 +342,21 @@ export default function MeetingLivePage() {
           setUtterances(utterancesRef.current);
           // Feed the trigger engine (T1 regex + T2 batching)
           engineRef.current?.ingest(u.idx, u.text);
-          // No client bound yet → listen for the client's name and offer their
-          // briefing (proposed, never silently bound). At most one live offer.
-          if (!clientIdRef.current && !proposedDismissedRef.current && !proposedClientRef.current) {
+          // Track client-name mentions (any meeting type) so lookups can scope
+          // to the client being DISCUSSED; additionally offer to bind when no
+          // client is set (proposed, never silent). At most one live offer.
+          {
             const match = resolveClientFromText(u.text, customersRef.current);
-            if (match) { proposedClientRef.current = match; setProposedClient(match); }
+            if (match) {
+              lastMentionedClientRef.current = { ...match, at: Date.now() };
+              if (!clientIdRef.current && !proposedDismissedRef.current && !proposedClientRef.current) {
+                proposedClientRef.current = match; setProposedClient(match);
+              }
+            }
           }
-          // A direct question deserves an immediate lookup — don't make it
-          // wait for the ambient timer's quiet/new-utterance gates.
-          if (isQuestion(u.text) && Date.now() - lastQuestionSweepAtRef.current > QUESTION_SWEEP_COOLDOWN_MS) {
+          // A direct DATA question deserves an immediate lookup — don't make
+          // it wait for the ambient timer's quiet/new-utterance gates.
+          if (isDataQuestion(u.text) && Date.now() - lastQuestionSweepAtRef.current > QUESTION_SWEEP_COOLDOWN_MS) {
             lastQuestionSweepAtRef.current = Date.now();
             runAmbientSweepRef.current(true);
           }
@@ -663,16 +680,23 @@ export default function MeetingLivePage() {
     if (tail.length === 0) return;
     autoSweepingRef.current = true;
     try {
+      // Scope hint: a client mentioned by name in the last ~90s lets the
+      // server answer with THAT client's snapshot instead of workspace-wide.
+      const mention = lastMentionedClientRef.current;
+      const clientHint = mention && Date.now() - mention.at < 90_000 ? { id: mention.id, name: mention.name } : undefined;
       const res = await fetch("/api/ai/meeting/lookup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: sessionIdRef.current, utterances: tail, auto: true, context: combinedContext() }),
+        body: JSON.stringify({ sessionId: sessionIdRef.current, utterances: tail, auto: true, context: combinedContext(), clientHint }),
       });
       const d = await res.json().catch(() => ({}));
       if (d?.card) {
+        // Per-card cooldown (kind+receipt, 5 min) — applies to forced sweeps
+        // too, so repeated questions can't wall the screen with duplicates.
         const key = `${d.card.kind}:${d.card.receipt?.label || d.card.receipt?.meeting_title || ""}`;
-        if (force || key !== lastAutoKeyRef.current) { // repeat-dedup applies to timer sweeps only
-          lastAutoKeyRef.current = key;
+        const lastShown = autoShownRef.current.get(key) || 0;
+        if (Date.now() - lastShown > 5 * 60_000) {
+          autoShownRef.current.set(key, Date.now());
           handleCardFired({
             localId: `auto-${Date.now()}`,
             dbId: d.card.id || null,
@@ -752,7 +776,8 @@ export default function MeetingLivePage() {
       setLiveCards([]); setPinnedCards([]); setDrawerCards([]); setDeckCards([]); setRailCards([]); setFeedbacks({});
       lastSurfaceAtRef.current = Date.now();
       lastAutoSweepCountRef.current = 0;
-      lastAutoKeyRef.current = "";
+      autoShownRef.current.clear();
+      lastMentionedClientRef.current = null;
       setProposedClient(null);
       proposedClientRef.current = null;
       proposedDismissedRef.current = false;
