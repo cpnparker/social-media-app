@@ -1664,12 +1664,6 @@ function EngineAIContent() {
               <p className="text-sm lg:text-base text-muted-foreground max-w-md text-center lg:mb-0">
                 Brainstorm ideas, draft content, refine messaging, and more.
               </p>
-              <p
-                className="hidden lg:block text-[11px] text-muted-foreground/60 mt-2 text-center"
-                title="EngineAI can query live data from these sources when you ask — toggles below control what's included automatically."
-              >
-                Connected: Engine data (contracts, content, social, ideas) · Client meetings · Your meetings &amp; tasks · Slack · Web search · Memories
-              </p>
             </div>
 
             {/* Input area */}
@@ -1855,7 +1849,7 @@ function EngineAIContent() {
                                       : "text-muted-foreground/40 hover:bg-muted"
                                   )}
                                 >
-                                  <item.Icon className={cn("h-3.5 w-3.5", isOn ? item.color : "text-muted-foreground/30")} />
+                                  <item.Icon className={cn("h-3.5 w-3.5", isOn ? item.color : "text-muted-foreground/50")} />
                                   {item.label}
                                 </button>
                               );
@@ -1871,7 +1865,7 @@ function EngineAIContent() {
                                   : "text-muted-foreground/40 hover:bg-muted"
                               )}
                             >
-                              <Globe className={cn("h-3.5 w-3.5", contextConfig.webSearch === "on" ? "text-emerald-400" : "text-muted-foreground/30")} />
+                              <Globe className={cn("h-3.5 w-3.5", contextConfig.webSearch === "on" ? "text-emerald-400" : "text-muted-foreground/50")} />
                               Web
                             </button>
                             <button
@@ -1885,7 +1879,7 @@ function EngineAIContent() {
                                   : "text-muted-foreground/40 hover:bg-muted"
                               )}
                             >
-                              <Brain className={cn("h-3.5 w-3.5", contextConfig.memory === "on" ? "text-pink-400" : "text-muted-foreground/30")} />
+                              <Brain className={cn("h-3.5 w-3.5", contextConfig.memory === "on" ? "text-pink-400" : "text-muted-foreground/50")} />
                               Memory
                             </button>
                             {tab !== "team" && (
@@ -1900,7 +1894,7 @@ function EngineAIContent() {
                                     : "text-muted-foreground/40 hover:bg-muted"
                                 )}
                               >
-                                <ListChecks className={cn("h-3.5 w-3.5", contextConfig.meetingBrain === "on" ? "text-teal-400" : "text-muted-foreground/30")} />
+                                <ListChecks className={cn("h-3.5 w-3.5", contextConfig.meetingBrain === "on" ? "text-teal-400" : "text-muted-foreground/50")} />
                                 Tasks
                               </button>
                             )}
@@ -1915,7 +1909,7 @@ function EngineAIContent() {
                                   : "text-muted-foreground/40 hover:bg-muted"
                               )}
                             >
-                              <ImageIcon className={cn("h-3.5 w-3.5", contextConfig.imageGeneration === "on" ? "text-violet-400" : "text-muted-foreground/30")} />
+                              <ImageIcon className={cn("h-3.5 w-3.5", contextConfig.imageGeneration === "on" ? "text-violet-400" : "text-muted-foreground/50")} />
                               Image
                             </button>
                           </div>
@@ -2050,7 +2044,7 @@ function EngineAIContent() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-9 sm:h-8 gap-1 sm:gap-1.5 text-[11px] sm:text-xs text-muted-foreground hover:text-foreground px-2 sm:px-2.5"
+                          className="h-9 sm:h-8 gap-1.5 rounded-lg border bg-background text-[13px] text-foreground/90 hover:bg-muted px-2.5"
                         >
                           {selectedModel === "auto" && <Sparkles className="h-3 w-3 text-amber-500" />}
                           {getModelLabel(selectedModel)}
@@ -2132,9 +2126,10 @@ function EngineAIContent() {
 
                 </div>
 
-                {/* Starter prompts — shown until the user starts typing */}
+                {/* Starter prompts — a proper card grid (the primary first-run
+                    affordance), shown until the user starts typing */}
                 {!homeInput.trim() && (
-                  <div className="flex items-center justify-center gap-2 mt-3 flex-wrap">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-4">
                     {[
                       { label: "What's in the content pipeline?", prompt: "What's in the content pipeline right now? Give me a summary by client and status.", Icon: Newspaper },
                       { label: "Latest client meetings", prompt: "Summarise our most recent client meetings — key topics and next steps.", Icon: Users },
@@ -2147,18 +2142,16 @@ function EngineAIContent() {
                           setHomeInput(s.prompt);
                           textareaRef.current?.focus();
                         }}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border bg-background text-xs text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+                        className="flex items-center gap-2.5 p-3 rounded-xl border bg-background text-left hover:bg-muted/50 hover:border-foreground/20 transition-colors"
                       >
-                        <s.Icon className="h-3 w-3" />
-                        {s.label}
+                        <span className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0">
+                          <s.Icon className="h-4 w-4 text-muted-foreground" />
+                        </span>
+                        <span className="text-[13px] font-medium text-foreground/90 leading-snug">{s.label}</span>
                       </button>
                     ))}
                   </div>
                 )}
-
-                <p className="text-[11px] text-muted-foreground text-center mt-2.5 hidden sm:block">
-                  Press Enter to send, Shift+Enter for new line
-                </p>
 
                 {/* Context & web search controls (desktop only — mobile uses + popover) */}
                 <div className="hidden lg:flex items-center justify-center gap-1.5 mt-3 flex-wrap">
@@ -2182,17 +2175,17 @@ function EngineAIContent() {
                         }
                         title={`${item.label}: ${isOn ? "On" : "Off"} — click to toggle`}
                         className={cn(
-                          "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
+                          "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all",
                           isOn
-                            ? "text-foreground/80 hover:text-foreground"
-                            : "text-muted-foreground/40 hover:text-muted-foreground/60"
+                            ? "bg-foreground/[0.06] border-border text-foreground"
+                            : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
                         )}
                       >
                         <item.Icon className={cn(
-                          "h-3 w-3 sm:h-2.5 sm:w-2.5 transition-colors",
+                          "h-3.5 w-3.5 transition-colors",
                           isOn
                             ? item.color
-                            : "text-muted-foreground/30"
+                            : "text-muted-foreground/50"
                         )} />
                         {item.label}
                       </button>
@@ -2211,15 +2204,15 @@ function EngineAIContent() {
                     }}
                     title={`Web Search: ${contextConfig.webSearch === "on" ? "On — AI can search the web" : "Off"} — click to toggle`}
                     className={cn(
-                      "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
+                      "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all",
                       contextConfig.webSearch === "on"
-                        ? "text-foreground/80 hover:text-foreground"
-                        : "text-muted-foreground/40 hover:text-muted-foreground/60"
+                        ? "bg-foreground/[0.06] border-border text-foreground"
+                        : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
                     )}
                   >
                     <Globe className={cn(
-                      "h-3 w-3 sm:h-2.5 sm:w-2.5 transition-colors",
-                      contextConfig.webSearch === "on" ? "text-emerald-400" : "text-muted-foreground/30"
+                      "h-3.5 w-3.5 transition-colors",
+                      contextConfig.webSearch === "on" ? "text-emerald-400" : "text-muted-foreground/50"
                     )} />
                     Web
                   </button>
@@ -2232,15 +2225,15 @@ function EngineAIContent() {
                     }
                     title={`Memory: ${contextConfig.memory === "on" ? "On — AI remembers context" : "Off"} — click to toggle`}
                     className={cn(
-                      "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
+                      "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all",
                       contextConfig.memory === "on"
-                        ? "text-foreground/80 hover:text-foreground"
-                        : "text-muted-foreground/40 hover:text-muted-foreground/60"
+                        ? "bg-foreground/[0.06] border-border text-foreground"
+                        : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
                     )}
                   >
                     <Brain className={cn(
-                      "h-3 w-3 sm:h-2.5 sm:w-2.5 transition-colors",
-                      contextConfig.memory === "on" ? "text-pink-400" : "text-muted-foreground/30"
+                      "h-3.5 w-3.5 transition-colors",
+                      contextConfig.memory === "on" ? "text-pink-400" : "text-muted-foreground/50"
                     )} />
                     Memory
                   </button>
@@ -2254,15 +2247,15 @@ function EngineAIContent() {
                       }
                       title={`MeetingBrain: ${contextConfig.meetingBrain === "on" ? "On — includes your tasks & meetings" : "Off"} — click to toggle`}
                       className={cn(
-                        "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
+                        "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all",
                         contextConfig.meetingBrain === "on"
-                          ? "text-foreground/80 hover:text-foreground"
-                          : "text-muted-foreground/40 hover:text-muted-foreground/60"
+                          ? "bg-foreground/[0.06] border-border text-foreground"
+                          : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
                       )}
                     >
                       <ListChecks className={cn(
-                        "h-3 w-3 sm:h-2.5 sm:w-2.5 transition-colors",
-                        contextConfig.meetingBrain === "on" ? "text-teal-400" : "text-muted-foreground/30"
+                        "h-3.5 w-3.5 transition-colors",
+                        contextConfig.meetingBrain === "on" ? "text-teal-400" : "text-muted-foreground/50"
                       )} />
                       MeetingBrain
                     </button>
@@ -2277,15 +2270,15 @@ function EngineAIContent() {
                     }}
                     title={`Image Generation: ${contextConfig.imageGeneration === "on" ? "On — AI can create images" : "Off"} — click to toggle`}
                     className={cn(
-                      "flex items-center gap-1.5 sm:gap-1 px-2.5 py-1.5 sm:px-2 sm:py-0.5 rounded-lg sm:rounded-md text-[11px] sm:text-[10px] transition-all",
+                      "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all",
                       contextConfig.imageGeneration === "on"
-                        ? "text-foreground/80 hover:text-foreground"
-                        : "text-muted-foreground/40 hover:text-muted-foreground/60"
+                        ? "bg-foreground/[0.06] border-border text-foreground"
+                        : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
                     )}
                   >
                     <ImageIcon className={cn(
-                      "h-3 w-3 sm:h-2.5 sm:w-2.5 transition-colors",
-                      contextConfig.imageGeneration === "on" ? "text-violet-400" : "text-muted-foreground/30"
+                      "h-3.5 w-3.5 transition-colors",
+                      contextConfig.imageGeneration === "on" ? "text-violet-400" : "text-muted-foreground/50"
                     )} />
                     Image
                   </button>
@@ -2298,7 +2291,7 @@ function EngineAIContent() {
             <div className="hidden lg:flex flex-1 items-end justify-center pb-4">
               <button
                 onClick={() => setPrivacyModalOpen(true)}
-                className="text-[11px] text-muted-foreground/50 hover:text-muted-foreground transition-colors text-center flex items-center justify-center gap-1.5"
+                className="text-[11px] text-muted-foreground/70 hover:text-muted-foreground transition-colors text-center flex items-center justify-center gap-1.5"
               >
                 <ShieldCheck className="h-3 w-3" />
                 Your data is protected. No AI provider trains on your conversations.
