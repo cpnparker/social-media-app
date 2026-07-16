@@ -163,6 +163,8 @@ function EngineAIContent() {
   const [incognitoMode, setIncognitoMode] = useState(false);
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false);
   const [scheduledOpen, setScheduledOpen] = useState(false);
+  // "Make recurring" on an answer opens the hub with the form pre-filled.
+  const [scheduledPrefill, setScheduledPrefill] = useState<{ title?: string; prompt?: string } | null>(null);
   const [adminDialogOpen, setAdminDialogOpen] = useState(false);
   const [personaliseDialogOpen, setPersonaliseDialogOpen] = useState(false);
   const [clientContextOpen, setClientContextOpen] = useState(false);
@@ -1595,6 +1597,7 @@ function EngineAIContent() {
               customers={customers.map((c) => ({ id: String(c.id), name: c.name, logoUrl: c.logoUrl || undefined }))}
               selectedCustomer={selectedCustomer ? { id: String(selectedCustomer.id), name: selectedCustomer.name } : null}
               onCustomerChange={(id) => customerCtx?.setSelectedCustomerId(id)}
+              onMakeRecurring={(seed) => { setScheduledPrefill(seed); setScheduledOpen(true); }}
               inputEndSlot={
                 <button
                   onClick={() => { setVoiceWakeSession(false); setVoiceOpen(true); }}
@@ -2402,7 +2405,8 @@ function EngineAIContent() {
         <ScheduledPromptsDialog
           workspaceId={workspaceId}
           open={scheduledOpen}
-          onClose={() => setScheduledOpen(false)}
+          onClose={() => { setScheduledOpen(false); setScheduledPrefill(null); }}
+          prefill={scheduledPrefill}
         />
       )}
 

@@ -703,6 +703,20 @@ export async function POST(
       // to keep context lean. But if the user references a previous image, keep the
       // MOST RECENT generated image intact so the model can iterate on it.
       if (m.role_message === "assistant") {
+        // Scheduled-proposal markers render client-side as confirmation cards.
+        // Never feed the raw marker back to the model — it would learn the
+        // format and could fabricate cards whose displayed times don't match
+        // what a confirm would actually save.
+        if (content.includes("[SCHEDULED_PROPOSAL]")) {
+          content = content.replace(
+            /\[SCHEDULED_PROPOSAL\]([\s\S]*?)\[\/SCHEDULED_PROPOSAL\]/g,
+            (_mk: string, json: string) => {
+              try { return `[Scheduled prompt proposal card shown: "${JSON.parse(json).title}"]`; }
+              catch { return "[Scheduled prompt proposal card shown]"; }
+            }
+          );
+        }
+
         const keepThisImage = referencesImage && hi === lastImageAssistantIdx;
 
         if (!keepThisImage) {
@@ -1116,7 +1130,7 @@ export async function POST(
       // userEmail is passed for team threads too: the MeetingBrain/Slack tools
       // gate personal reports server-side via conversationVisibility, while the
       // workspace-shared client_meetings report stays available to everyone.
-      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId },
+      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, enableScheduling: conversation.type_conversation_mode !== "design" },
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {

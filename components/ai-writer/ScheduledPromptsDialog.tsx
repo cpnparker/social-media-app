@@ -6,11 +6,50 @@
  * AT launch (both market leaders had to retrofit theirs under user pressure).
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Loader2, Play, Pause, Trash2, Plus, ExternalLink, Clock, AlertTriangle } from "lucide-react";
+import { Loader2, Play, Pause, Trash2, Plus, ExternalLink, Clock, AlertTriangle, History, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+
+/** Proven starting points — clicking one prefills the create form. */
+const TEMPLATES: {
+  label: string;
+  title: string;
+  prompt: string;
+  cadence: "daily" | "weekdays" | "weekly" | "monthly";
+  hour: number;
+  dayOfWeek?: number;
+}[] = [
+  {
+    label: "Monday Morning Operations Brief",
+    title: "Monday Morning Operations Brief",
+    prompt:
+      "Give me a Monday operations brief: CU utilisation by contract (flag anything pacing over 80% or under 20%), the content pipeline summarised by client and status, contracts ending within 30 days, and this week's scheduled client meetings. Lead with the 3 things that most need attention.",
+    cadence: "weekly", dayOfWeek: 1, hour: 8,
+  },
+  {
+    label: "Daily Pipeline Digest",
+    title: "Daily Pipeline Digest",
+    prompt:
+      "Summarise the content pipeline by client and status. Call out anything overdue or due within 2 days, and note what changed since yesterday.",
+    cadence: "weekdays", hour: 8,
+  },
+  {
+    label: "Contract Renewals Watch",
+    title: "Contract Renewals Watch",
+    prompt:
+      "List all contracts ending within the next 60 days with CU utilisation and remaining units. Flag any contract pacing to over- or under-deliver and suggest one renewal talking point for each.",
+    cadence: "monthly", hour: 9,
+  },
+  {
+    label: "Friday Week Recap",
+    title: "Friday Week Recap",
+    prompt:
+      "Recap the week: content units completed by client, social posts published with engagement highlights, and open tasks that slipped. Keep it to one screen.",
+    cadence: "weekly", dayOfWeek: 5, hour: 16,
+  },
+];
 
 interface ScheduledTask {
   id_prompt: string;
@@ -37,17 +76,22 @@ const STATUS_DOT: Record<string, string> = {
 };
 
 export default function ScheduledPromptsDialog({
-  workspaceId, open, onClose,
+  workspaceId, open, onClose, prefill,
 }: {
   workspaceId: string;
   open: boolean;
   onClose: () => void;
+  /** Pre-fill the create form (the "Make recurring" path from an answer). */
+  prefill?: { title?: string; prompt?: string } | null;
 }) {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [runningId, setRunningId] = useState<string | null>(null);
+  // Run history (expandable per row, fetched lazily and cached)
+  const [historyId, setHistoryId] = useState<string | null>(null);
+  const [runsById, setRunsById] = useState<Record<string, any[] | "loading">>({});
   // Create form
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -55,6 +99,48 @@ export default function ScheduledPromptsDialog({
   const [hour, setHour] = useState(8);
   const [dayOfWeek, setDayOfWeek] = useState(1);
   const [email, setEmail] = useState(true);
+
+  // "Make recurring" arrives with the prompt that produced the answer.
+  const prefillAppliedRef = useRef(false);
+  useEffect(() => {
+    if (open && prefill && (prefill.title || prefill.prompt)) {
+      setShowForm(true);
+      setTitle(prefill.title || "");
+      setPrompt(prefill.prompt || "");
+      prefillAppliedRef.current = true;
+    }
+    // Closing after a prefill clears the form so a later manual open
+    // doesn't show a stale pre-filled draft.
+    if (!open && prefillAppliedRef.current) {
+      prefillAppliedRef.current = false;
+      setShowForm(false);
+      setTitle("");
+      setPrompt("");
+    }
+  }, [open, prefill]);
+
+  const applyTemplate = (t: (typeof TEMPLATES)[number]) => {
+    setTitle(t.title);
+    setPrompt(t.prompt);
+    setCadence(t.cadence);
+    setHour(t.hour);
+    if (t.dayOfWeek) setDayOfWeek(t.dayOfWeek);
+  };
+
+  const toggleHistory = async (id: string) => {
+    if (historyId === id) { setHistoryId(null); return; }
+    setHistoryId(id);
+    if (!runsById[id]) {
+      setRunsById((m) => ({ ...m, [id]: "loading" }));
+      try {
+        const res = await fetch(`/api/ai/scheduled/${id}`);
+        const d = await res.json();
+        setRunsById((m) => ({ ...m, [id]: res.ok ? d.runs || [] : [] }));
+      } catch {
+        setRunsById((m) => ({ ...m, [id]: [] }));
+      }
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -106,6 +192,8 @@ export default function ScheduledPromptsDialog({
       if (!res.ok) throw new Error(d.error || "Run failed");
       toast.success("Run complete — result saved to the task's thread");
       if (d.conversationId) window.open(`/?thread=${d.conversationId}`, "_blank");
+      // Drop the cached run history so an open panel shows the new run.
+      setRunsById((m) => { const { [id]: _stale, ...rest } = m; return rest; });
       void load();
     } catch (e: any) { toast.error(e.message); }
     finally { setRunningId(null); }
@@ -135,6 +223,20 @@ export default function ScheduledPromptsDialog({
 
         {showForm && (
           <div className="rounded-xl border p-3 space-y-2.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground mr-0.5">
+                <Sparkles className="h-3 w-3" /> Templates
+              </span>
+              {TEMPLATES.map((t) => (
+                <button
+                  key={t.label}
+                  onClick={() => applyTemplate(t)}
+                  className="text-[11px] px-2 py-1 rounded-full border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
             <input
               value={title} onChange={(e) => setTitle(e.target.value)}
               placeholder="Title — e.g. Monday Morning Operations Brief"
@@ -219,6 +321,13 @@ export default function ScheduledPromptsDialog({
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => toggleHistory(t.id_prompt)} title="Run history"
+                      className={cn(
+                        "p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground",
+                        historyId === t.id_prompt && "bg-accent text-foreground"
+                      )}>
+                      <History className="h-3.5 w-3.5" />
+                    </button>
                     {t.id_conversation && (
                       <a href={`/?thread=${t.id_conversation}`} target="_blank" rel="noreferrer" title="Open results thread"
                         className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground">
@@ -239,6 +348,37 @@ export default function ScheduledPromptsDialog({
                     </button>
                   </div>
                 </div>
+                {historyId === t.id_prompt && (
+                  <div className="mt-2.5 pt-2.5 border-t">
+                    {runsById[t.id_prompt] === "loading" && (
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
+                        <Loader2 className="h-3 w-3 animate-spin" /> Loading run history…
+                      </div>
+                    )}
+                    {Array.isArray(runsById[t.id_prompt]) && (runsById[t.id_prompt] as any[]).length === 0 && (
+                      <p className="text-xs text-muted-foreground py-1">No runs yet — use ▶ Run now to try it.</p>
+                    )}
+                    {Array.isArray(runsById[t.id_prompt]) && (runsById[t.id_prompt] as any[]).length > 0 && (
+                      <div className="space-y-1">
+                        {(runsById[t.id_prompt] as any[]).map((r) => (
+                          <div key={r.id_run} className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                            <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", STATUS_DOT[r.type_status] || "bg-muted-foreground/40")} />
+                            <span className="w-32 shrink-0">
+                              {r.date_run ? new Date(r.date_run).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}
+                            </span>
+                            <span className="w-20 shrink-0 capitalize">{r.type_status}</span>
+                            <span className="w-14 shrink-0">{r.units_duration_ms ? `${Math.round(r.units_duration_ms / 1000)}s` : ""}</span>
+                            {r.document_error ? (
+                              <span className="truncate text-red-500/80" title={r.document_error}>{r.document_error}</span>
+                            ) : (
+                              <span className="truncate">{r.units_output ? `${r.units_output} tokens out` : ""}</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}

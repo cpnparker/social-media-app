@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { User, Bot, FileText, ExternalLink, ChevronDown, ChevronUp, ShieldCheck, Copy, Check, RotateCcw, Pencil, X, ThumbsUp, ThumbsDown } from "lucide-react";
+import { User, Bot, FileText, ExternalLink, ChevronDown, ChevronUp, ShieldCheck, Copy, Check, RotateCcw, Pencil, X, ThumbsUp, ThumbsDown, CalendarClock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import DOMPurify from "dompurify";
 import type { Attachment } from "@/lib/types/ai";
 import { getModelLabel } from "@/lib/ai/models";
+import ScheduledProposalCard, { type ScheduledProposal } from "./ScheduledProposalCard";
 
 interface MessageBubbleProps {
   role: "user" | "assistant" | "system";
@@ -21,6 +22,10 @@ interface MessageBubbleProps {
   /** Current feedback rating (1 / -1 / null) and change handler. Thumbs render only when handler provided. */
   rating?: 1 | -1 | null;
   onRate?: (rating: 1 | -1 | null) => void;
+  /** Promote this answer's prompt to a scheduled (recurring) task. */
+  onMakeRecurring?: () => void;
+  /** Needed by embedded scheduled-proposal confirmation cards. */
+  workspaceId?: string | null;
 }
 
 interface ParsedSource {
@@ -43,6 +48,8 @@ export default function MessageBubble({
   onEdit,
   rating,
   onRate,
+  onMakeRecurring,
+  workspaceId,
 }: MessageBubbleProps) {
   const isUser = role === "user";
   const [copied, setCopied] = useState(false);
@@ -86,9 +93,23 @@ export default function MessageBubble({
 
   const isImage = (type: string) => type.startsWith("image/");
 
+  // Extract scheduled-prompt proposal markers FIRST (they contain raw JSON that
+  // must never reach the markdown/source pipeline), then parse sources.
+  const proposals: ScheduledProposal[] = [];
+  let bodyContent = content;
+  if (!isUser && content.includes("[SCHEDULED_PROPOSAL]")) {
+    bodyContent = content.replace(
+      /\[SCHEDULED_PROPOSAL\]([\s\S]*?)\[\/SCHEDULED_PROPOSAL\]/g,
+      (_m, json) => {
+        try { proposals.push(JSON.parse(json)); } catch { /* partial/garbled — drop */ }
+        return "";
+      }
+    );
+  }
+
   // Parse sources from AI content (only for assistant messages)
   const { cleanContent, sources } = !isUser
-    ? parseSourcesFromContent(content)
+    ? parseSourcesFromContent(bodyContent)
     : { cleanContent: content, sources: [] };
 
   return (
@@ -279,6 +300,9 @@ export default function MessageBubble({
             })()}
           </>
         )}
+        {proposals.map((p) => (
+          <ScheduledProposalCard key={p.proposalId} proposal={p} workspaceId={workspaceId} />
+        ))}
         {isStreaming && (
           <span className="inline-block w-1.5 h-4 bg-foreground/60 animate-pulse ml-0.5 rounded-sm" />
         )}
@@ -350,6 +374,7 @@ export default function MessageBubble({
               onClick={() => {
                 // Strip markdown formatting for clean clipboard text
                 const plain = content
+                  .replace(/\[SCHEDULED_PROPOSAL\][\s\S]*?\[\/SCHEDULED_PROPOSAL\]/g, "")
                   .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
                   .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
                   .replace(/\*\*([^*]+)\*\*/g, "$1")
@@ -385,6 +410,16 @@ export default function MessageBubble({
               >
                 <ShieldCheck className="h-3 w-3" />
                 <span>Fact check</span>
+              </button>
+            )}
+            {onMakeRecurring && (
+              <button
+                onClick={onMakeRecurring}
+                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50"
+                title="Run this prompt automatically on a schedule"
+              >
+                <CalendarClock className="h-3 w-3" />
+                <span>Make recurring</span>
               </button>
             )}
             {onRate && (

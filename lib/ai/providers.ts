@@ -59,6 +59,10 @@ export interface AIProviderConfig {
    *  user's private data can't land in a thread every workspace member can read.
    *  client_meetings stays available — that report is workspace-shared by design. */
   conversationVisibility?: "private" | "team";
+  /** Expose the create_scheduled_task tool (NL scheduling of recurring prompts).
+   *  Set ONLY by the interactive chat route — never by the headless scheduled
+   *  runner (a scheduled prompt must not be able to schedule more prompts). */
+  enableScheduling?: boolean;
 }
 
 /** Default temperature for user-facing chat. Lower than model defaults (~0.7-1.0)
@@ -3543,6 +3547,120 @@ const SEARCH_MEMORY_TOOL: Anthropic.Tool = {
   },
 };
 
+/* ─────────────── Scheduled Prompt Proposal Tool ─────────────── */
+
+export const CREATE_SCHEDULED_TASK_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "create_scheduled_task",
+    description:
+      "Propose a recurring scheduled prompt that runs automatically on a cadence and delivers results to a dedicated thread (+ optional email). Use when the user asks for something on a schedule: 'every morning', 'weekly summary', 'send me X on Mondays', 'daily digest'. This only PROPOSES — a confirmation card is shown in chat and the user must confirm it, so never claim the task is already scheduled. Do NOT compute dates or times yourself — the server does all time math (Europe/Zurich). The prompt must be self-contained: it runs later with no conversation context.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: "Short task name, e.g. 'Monday Morning Operations Brief'",
+        },
+        prompt: {
+          type: "string",
+          description: "The full prompt to run on each tick. Self-contained — include everything needed (clients, metrics, framing); it runs with no conversation context.",
+        },
+        type_schedule: {
+          type: "string",
+          enum: ["daily", "weekdays", "weekly", "monthly"],
+          description: "Cadence. 'weekdays' = Monday-Friday.",
+        },
+        hour: { type: "number", description: "Hour of day 0-23 in Europe/Zurich. Default 8." },
+        minute: { type: "number", description: "Minute 0-59. Default 0." },
+        day_of_week: { type: "number", description: "For weekly: ISO day, 1=Monday … 7=Sunday. Default 1." },
+        day_of_month: { type: "number", description: "For monthly: day of month 1-28. Default 1." },
+        email: { type: "boolean", description: "Also email the results to the user. Default true." },
+      },
+      required: ["title", "prompt", "type_schedule"],
+    },
+  },
+};
+
+const CREATE_SCHEDULED_TASK_TOOL: Anthropic.Tool = {
+  name: "create_scheduled_task",
+  description: CREATE_SCHEDULED_TASK_OPENAI_TOOL.function.description!,
+  input_schema: {
+    ...(CREATE_SCHEDULED_TASK_OPENAI_TOOL.function.parameters as any),
+  },
+};
+
+/** Build a scheduled-prompt proposal — NO DB write. The user confirms via a card
+ *  rendered from the [SCHEDULED_PROPOSAL] marker this appends to the assistant
+ *  message (design rule: the confirmation card echoes SERVER-computed run times,
+ *  the model never does time math). Throws with a model-readable message on
+ *  invalid input or when the user is at the active-task cap. */
+async function buildScheduledProposal(
+  input: any,
+  config: AIProviderConfig
+): Promise<{ marker: string; toolMsg: string }> {
+  const { computeNextRun, describeSchedule } = await import("@/lib/scheduled/schedule");
+  const type = String(input?.type_schedule || "").toLowerCase();
+  if (!["daily", "weekdays", "weekly", "monthly"].includes(type)) {
+    throw new Error("type_schedule must be one of daily, weekdays, weekly, monthly");
+  }
+  // Strip the marker sentinels from user-controlled text — a literal
+  // "[/SCHEDULED_PROPOSAL]" inside the JSON would terminate extraction early.
+  const desentinel = (s: string) => s.replace(/\[\/?SCHEDULED_PROPOSAL\]/g, "");
+  const title = desentinel(String(input?.title || "")).trim().slice(0, 120);
+  const prompt = desentinel(String(input?.prompt || "")).trim().slice(0, 4000);
+  if (!title || !prompt) throw new Error("title and prompt are both required");
+
+  // Cap check up-front so the model can tell the user instead of a dead-end card.
+  if (config.workspaceId && config.userId) {
+    const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+    const { count } = await intelligenceDb
+      .from("ai_scheduled_prompts")
+      .select("id_prompt", { count: "exact", head: true })
+      .eq("id_workspace", config.workspaceId)
+      .eq("user_created", config.userId)
+      .eq("flag_enabled", 1);
+    if ((count || 0) >= 10) {
+      throw new Error(
+        "The user already has 10 active scheduled prompts (the limit). Ask them to pause or delete one in the Scheduled prompts hub (profile menu) first."
+      );
+    }
+  }
+
+  // Only accept real numbers / numeric strings — models emit explicit nulls for
+  // optional params they don't fill, and +null coerces to 0 (midnight, not 08:00).
+  const num = (v: any, def: number) => {
+    const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? +v : NaN;
+    return Number.isFinite(n) ? Math.trunc(n) : def;
+  };
+  const cfg = {
+    hour: Math.min(23, Math.max(0, num(input?.hour, 8))),
+    minute: Math.min(59, Math.max(0, num(input?.minute, 0))),
+    ...(type === "weekly" ? { dayOfWeek: Math.min(7, Math.max(1, num(input?.day_of_week, 1))) } : {}),
+    ...(type === "monthly" ? { dayOfMonth: Math.min(28, Math.max(1, num(input?.day_of_month, 1))) } : {}),
+    tz: "Europe/Zurich",
+  };
+  const next1 = computeNextRun(type as any, cfg);
+  const next2 = computeNextRun(type as any, cfg, next1);
+  const proposal = {
+    proposalId: crypto.randomUUID(),
+    title,
+    prompt,
+    typeSchedule: type,
+    configSchedule: cfg,
+    clientId: config.selectedClientId ?? null,
+    emailEnabled: input?.email !== false,
+    scheduleLabel: describeSchedule(type as any, cfg),
+    nextRuns: [next1.toISOString(), next2.toISOString()],
+  };
+  const fmt = (d: Date) =>
+    d.toLocaleString("en-GB", { timeZone: "Europe/Zurich", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  return {
+    marker: `\n\n[SCHEDULED_PROPOSAL]${JSON.stringify(proposal)}[/SCHEDULED_PROPOSAL]\n\n`,
+    toolMsg: `Proposal card shown to the user: "${title}" — ${proposal.scheduleLabel}; next two runs ${fmt(next1)} and ${fmt(next2)} (Europe/Zurich). It is NOT saved yet — the user must press Confirm on the card. Briefly say what the task will deliver and point them to the card below. Do NOT restate the schedule or run times (the card shows them) and do NOT claim it is already scheduled.`,
+  };
+}
+
 /**
  * Search user's memories and conversation history for relevant information.
  */
@@ -3943,6 +4061,9 @@ async function streamAnthropic(
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_TOOL);
     tools.push(SLACK_TOOL);
+  }
+  if (config.enableScheduling && config.workspaceId && config.userId) {
+    tools.push(CREATE_SCHEDULED_TASK_TOOL);
   }
 
   console.log(`[Anthropic] Streaming with tools: [${tools.map(t => (t as any).name || (t as any).type).join(', ') || 'none'}], imageGeneration=${config.imageGeneration}, designMode=${!!config.designMode}`);
@@ -4701,6 +4822,23 @@ async function streamAnthropic(
             is_error: true,
           });
         }
+      } else if (tool.name === "create_scheduled_task") {
+        try {
+          const { marker, toolMsg } = await buildScheduledProposal(tool.input, config);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ scheduled_proposal: { marker } })}\n\n`)
+          );
+          fullText += marker;
+          toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: toolMsg });
+        } catch (err: any) {
+          console.error("[ScheduledTask] Proposal failed:", err.message);
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: `Could not build the schedule proposal: ${err.message}`,
+            is_error: true,
+          });
+        }
       } else if (tool.name === "query_meetingbrain") {
         try {
           const result = await queryMeetingBrain(
@@ -4871,6 +5009,9 @@ async function streamXAIChatCompletions(
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
+  }
+  if (config.enableScheduling && config.workspaceId && config.userId) {
+    tools.push(CREATE_SCHEDULED_TASK_OPENAI_TOOL);
   }
 
   console.log(`[xAI] Streaming model=${apiModel}, webSearch=${config.webSearch}, imageGen=${config.imageGeneration}, tools=[${tools.map(t => (t as any).function?.name || t.type).join(', ') || 'none'}]`);
@@ -5224,6 +5365,23 @@ async function streamXAIChatCompletions(
             content: `Memory search failed: ${err.message}`,
           } as any);
         }
+      } else if (tc.function.name === "create_scheduled_task") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const { marker, toolMsg } = await buildScheduledProposal(input, config);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ scheduled_proposal: { marker } })}\n\n`)
+          );
+          fullText += marker;
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: toolMsg } as any);
+        } catch (err: any) {
+          console.error("[ScheduledTask/xAI] Proposal failed:", err.message);
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Could not build the schedule proposal: ${err.message}`,
+          } as any);
+        }
       } else if (tc.function.name === "query_meetingbrain") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -5435,6 +5593,9 @@ async function streamGemini(
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
+  }
+  if (config.enableScheduling && config.workspaceId && config.userId) {
+    tools.push(CREATE_SCHEDULED_TASK_OPENAI_TOOL);
   }
   // Gemini has no native web search here — expose the callable web_search tool
   // (executed via executeWebSearch → xAI LiveSearch).
@@ -5743,6 +5904,23 @@ async function streamGemini(
             content: `Memory search failed: ${err.message}`,
           } as any);
         }
+      } else if (tc.function.name === "create_scheduled_task") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const { marker, toolMsg } = await buildScheduledProposal(input, config);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ scheduled_proposal: { marker } })}\n\n`)
+          );
+          fullText += marker;
+          geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: toolMsg } as any);
+        } catch (err: any) {
+          console.error("[ScheduledTask/Gemini] Proposal failed:", err.message);
+          geminiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Could not build the schedule proposal: ${err.message}`,
+          } as any);
+        }
       } else if (tc.function.name === "query_meetingbrain") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -5865,6 +6043,9 @@ async function streamOpenAI(
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
+  }
+  if (config.enableScheduling && config.workspaceId && config.userId) {
+    tools.push(CREATE_SCHEDULED_TASK_OPENAI_TOOL);
   }
   // GPT has no native web search here — expose the callable web_search tool
   // (executed via executeWebSearch → xAI LiveSearch).
@@ -6172,6 +6353,23 @@ async function streamOpenAI(
             role: "tool",
             tool_call_id: tc.id,
             content: `Memory search failed: ${err.message}`,
+          } as any);
+        }
+      } else if (tc.function.name === "create_scheduled_task") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const { marker, toolMsg } = await buildScheduledProposal(input, config);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ scheduled_proposal: { marker } })}\n\n`)
+          );
+          fullText += marker;
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: toolMsg } as any);
+        } catch (err: any) {
+          console.error("[ScheduledTask/OpenAI] Proposal failed:", err.message);
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Could not build the schedule proposal: ${err.message}`,
           } as any);
         }
       } else if (tc.function.name === "query_meetingbrain") {

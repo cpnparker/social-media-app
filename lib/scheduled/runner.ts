@@ -82,7 +82,11 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
     ]);
     const workspaceClientIds = (clientsRes.data || []).map((c: any) => c.id_client).filter(Boolean) as number[];
 
-    const contextConfig = normalizeContextConfig(task.config_context);
+    // config_context also carries meta keys (proposalId from NL-confirmed tasks).
+    // Strip them first: normalizeContextConfig(null) and ({}) resolve to different
+    // defaults, so a meta-only object must behave exactly like null.
+    const { proposalId: _meta, ...ctxRest } = (task.config_context || {}) as Record<string, any>;
+    const contextConfig = normalizeContextConfig(Object.keys(ctxRest).length ? ctxRest : null);
     const queryRoute = routeQuery(task.document_prompt, contextConfig);
 
     // Model: resolve 'auto' like the chat route (incl. the grounded-search override).

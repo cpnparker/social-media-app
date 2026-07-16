@@ -96,6 +96,9 @@ interface ChatPanelProps {
   refreshSignal?: number;
   /** Rendered in the input toolbar next to the send button (e.g. voice mode). */
   inputEndSlot?: React.ReactNode;
+  /** Open the Scheduled prompts hub pre-filled with this answer's prompt
+   *  ("Make recurring" on assistant messages). */
+  onMakeRecurring?: (seed: { title: string; prompt: string }) => void;
 }
 
 type ContextConfig = { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch: string; memory: string; meetingBrain: string; imageGeneration: string };
@@ -116,6 +119,7 @@ export default function ChatPanel({
   onCustomerChange,
   isAdmin,
   headerExtra,
+  onMakeRecurring,
   refreshSignal,
   inputEndSlot,
 }: ChatPanelProps) {
@@ -371,13 +375,19 @@ export default function ChatPanel({
 
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
+      // SSE frames can split across reads (routine for multi-KB frames like
+      // scheduled_proposal). Buffer the trailing partial line between reads —
+      // without this, both halves of a split frame are silently dropped.
+      let sseBuf = "";
 
       while (reader) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split("\n").filter((l) => l.startsWith("data: "));
+        sseBuf += decoder.decode(value, { stream: true });
+        const segments = sseBuf.split("\n");
+        sseBuf = segments.pop() || "";
+        const lines = segments.filter((l) => l.startsWith("data: "));
 
         for (const line of lines) {
           const data = line.slice(6);
@@ -426,6 +436,15 @@ export default function ChatPanel({
               setIsSearchingMemory(true);
             } else if (parsed.memory_result) {
               setIsSearchingMemory(false);
+            } else if (parsed.scheduled_proposal) {
+              // Inject the proposal marker into client fullText for live display
+              // (the server appended the same marker to its persisted copy).
+              // MessageBubble extracts it and renders the confirmation card.
+              const marker = parsed.scheduled_proposal.marker;
+              if (marker) {
+                fullText += marker;
+                setStreamingContent(fullText);
+              }
             } else if (parsed.token) {
               // First token means search/image gen is done (if it was active)
               setIsSearchingWeb(false);
@@ -1338,6 +1357,20 @@ export default function ChatPanel({
                       ? (rating) => handleRateMessage(msg.id, rating)
                       : undefined
                   }
+                  workspaceId={conversation?.workspaceId ?? null}
+                  onMakeRecurring={
+                    msg.role === "assistant" && onMakeRecurring && !isStreaming && msg.status !== "failed" && !msg.id.startsWith("factcheck-") && !msg.content.includes("## 🔍 Fact Check")
+                      ? () => {
+                          const prior = messages.slice(0, idx).filter((m) => m.role === "user").pop();
+                          const promptText = (prior?.content || "").trim();
+                          if (!promptText) { toast.error("Couldn't find the prompt behind this answer"); return; }
+                          onMakeRecurring({
+                            title: promptText.replace(/\s+/g, " ").slice(0, 60),
+                            prompt: promptText,
+                          });
+                        }
+                      : undefined
+                  }
                 />
               );
             })}
@@ -1464,6 +1497,7 @@ export default function ChatPanel({
                 content={streamingContent}
                 model={isFactChecking ? "claude-sonnet-4-6" : conversation.model}
                 isStreaming
+                workspaceId={conversation?.workspaceId ?? null}
               />
             )}
             <div ref={messagesEndRef} />

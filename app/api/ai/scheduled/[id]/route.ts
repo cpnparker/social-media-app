@@ -13,6 +13,24 @@ async function loadOwnedTask(id: string, userId: number) {
   return task;
 }
 
+// GET /api/ai/scheduled/[id] — the task + its run history (last 20)
+export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+  const session = await auth();
+  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const userId = parseInt(session.user.id, 10);
+  const task = await loadOwnedTask(params.id, userId);
+  if (!task) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  const { data: runs, error } = await intelligenceDb
+    .from("ai_scheduled_runs")
+    .select("id_run, type_status, date_run, units_duration_ms, units_input, units_output, document_error, id_message")
+    .eq("id_prompt", params.id)
+    .order("date_run", { ascending: false })
+    .limit(20);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ task, runs: runs || [] });
+}
+
 // PATCH /api/ai/scheduled/[id] — pause/resume, edit title/prompt/schedule/email
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
   const session = await auth();

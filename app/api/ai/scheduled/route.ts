@@ -69,6 +69,27 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  // Chat confirmation cards send a proposalId — if the task was already
+  // confirmed (double-click, another device, reloaded thread), return the
+  // existing task instead of creating a duplicate.
+  const proposalId = body.proposalId ? String(body.proposalId) : null;
+  if (proposalId) {
+    const { data: existing } = await intelligenceDb
+      .from("ai_scheduled_prompts")
+      .select("*")
+      .eq("id_workspace", workspaceId)
+      .eq("user_created", userId)
+      .eq("config_context->>proposalId", proposalId)
+      .maybeSingle();
+    if (existing) {
+      return NextResponse.json({
+        task: { ...existing, schedule_label: describeSchedule(existing.type_schedule, existing.config_schedule) },
+        nextRun: existing.date_next_run,
+        alreadyExisted: true,
+      });
+    }
+  }
+
   const { count } = await intelligenceDb
     .from("ai_scheduled_prompts")
     .select("id_prompt", { count: "exact", head: true })
@@ -110,7 +131,7 @@ export async function POST(req: NextRequest) {
         document_prompt: String(prompt).slice(0, 4000),
         name_model: model || "auto",
         id_client: clientId ? parseInt(String(clientId), 10) : null,
-        config_context: body.configContext || null,
+        config_context: proposalId ? { ...(body.configContext || {}), proposalId } : (body.configContext || null),
         type_schedule: typeSchedule,
         config_schedule: configSchedule || {},
         date_next_run: nextRun.toISOString(),
