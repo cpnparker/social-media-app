@@ -86,6 +86,8 @@ import ChatPanel from "@/components/ai-writer/ChatPanel";
 import VoiceDock from "@/components/ai-writer/VoiceDock";
 import WakeMode from "@/components/ai-writer/WakeMode";
 import MemoryManager from "@/components/ai-writer/MemoryManager";
+import ScheduledPromptsDialog from "@/components/ai-writer/ScheduledPromptsDialog";
+import { Clock } from "lucide-react";
 import AdminDialog from "@/components/ai-writer/AdminDialog";
 import PersonaliseDialog from "@/components/ai-writer/PersonaliseDialog";
 import ClientContextDialog from "@/components/ai-writer/ClientContextDialog";
@@ -160,6 +162,7 @@ function EngineAIContent() {
   const [debugMode, setDebugMode] = useState(false);
   const [incognitoMode, setIncognitoMode] = useState(false);
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false);
+  const [scheduledOpen, setScheduledOpen] = useState(false);
   const [adminDialogOpen, setAdminDialogOpen] = useState(false);
   const [personaliseDialogOpen, setPersonaliseDialogOpen] = useState(false);
   const [clientContextOpen, setClientContextOpen] = useState(false);
@@ -937,6 +940,13 @@ function EngineAIContent() {
                     <span className="ml-auto text-[10px] text-muted-foreground">{memoryCount}</span>
                   )}
                 </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setScheduledOpen(true)}
+                  className="gap-2"
+                >
+                  <Clock className="h-4 w-4" />
+                  Scheduled prompts
+                </DropdownMenuItem>
                 {isAdmin && (
                   <DropdownMenuItem
                     onClick={() => setAdminDialogOpen(true)}
@@ -1386,6 +1396,13 @@ function EngineAIContent() {
                   {memoryCount > 0 && (
                     <span className="ml-auto text-[10px] text-muted-foreground">{memoryCount}</span>
                   )}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setScheduledOpen(true)}
+                  className="gap-2"
+                >
+                  <Clock className="h-4 w-4" />
+                  Scheduled prompts
                 </DropdownMenuItem>
                 {isAdmin && (
                   <DropdownMenuItem
@@ -2379,6 +2396,15 @@ function EngineAIContent() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Scheduled prompts hub */}
+      {workspaceId && (
+        <ScheduledPromptsDialog
+          workspaceId={workspaceId}
+          open={scheduledOpen}
+          onClose={() => setScheduledOpen(false)}
+        />
+      )}
 
       {/* Memory Manager Sheet */}
       {workspaceId && (

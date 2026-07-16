@@ -11,6 +11,10 @@
     {
       "path": "/api/cron/client-context",
       "schedule": "0 */12 * * *"
+    },
+    {
+      "path": "/api/cron/scheduled-prompts",
+      "schedule": "*/15 * * * *"
     }
   ]
 }
