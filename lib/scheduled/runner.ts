@@ -120,9 +120,14 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
     const contextConfig = normalizeContextConfig(Object.keys(ctxRest).length ? ctxRest : null);
     const queryRoute = routeQuery(task.document_prompt, contextConfig);
 
-    // Model: resolve 'auto' like the chat route (incl. the grounded-search override).
+    // Model: resolve 'auto' like the chat route (incl. the grounded-search override),
+    // but FLOOR auto at the reasoning tier: scheduled runs are unattended — nobody
+    // is watching to catch grok-4-1-fast fabricating a tool arg or a figure.
     let model = task.name_model || "auto";
-    if (model === "auto") model = routeModel(task.document_prompt);
+    if (model === "auto") {
+      model = routeModel(task.document_prompt);
+      if (model === "grok-4-1-fast") model = "grok-4-3";
+    }
     if (queryRoute.searchMode === "on" && model.startsWith("grok")) model = "claude-sonnet-5";
 
     let systemPrompt = buildSystemPrompt({
