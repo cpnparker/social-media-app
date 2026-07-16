@@ -41,5 +41,5 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (result.status === "failed") {
     return NextResponse.json({ error: result.error || "Run failed" }, { status: 500 });
   }
-  return NextResponse.json({ ok: true, conversationId: task.id_conversation, messageId: result.messageId });
+  return NextResponse.json({ ok: true, status: result.status, conversationId: task.id_conversation, messageId: result.messageId });
 }

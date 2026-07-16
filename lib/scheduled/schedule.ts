@@ -92,3 +92,12 @@ export function describeSchedule(type: ScheduleType, cfg: ScheduleConfig | null 
   if (type === "weekly") return `Every ${days[cfg?.dayOfWeek ?? 1]} at ${t}`;
   return `Monthly on day ${Math.min(28, Math.max(1, cfg?.dayOfMonth ?? 1))} at ${t}`;
 }
+
+/** Cheap stable fingerprint of a standing prompt (djb2 + length). Used to
+ *  detect that an update-confirmation card was built against an older version
+ *  of the task, so a stale card can't silently revert newer edits. */
+export function promptFingerprint(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return `${h.toString(36)}:${s.length}`;
+}

@@ -51,6 +51,34 @@ export async function GET(
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
+    // Opening a scheduled task's thread counts as "read": mark its unopened
+    // runs and reset the anti-abandonment counter (5 unopened → courteous pause).
+    // Awaited (not fire-and-forget): Vercel freezes the lambda after the
+    // response returns, so detached work can silently never land.
+    if (conversation.type_conversation_mode === "scheduled" && conversation.user_created === userId) {
+      try {
+        const { data: schedTask } = await intelligenceDb
+          .from("ai_scheduled_prompts")
+          .select("id_prompt, units_consecutive_ignored")
+          .eq("id_conversation", conversationId)
+          .maybeSingle();
+        if (schedTask) {
+          await Promise.all([
+            intelligenceDb.from("ai_scheduled_runs")
+              .update({ flag_opened: 1 })
+              .eq("id_prompt", schedTask.id_prompt)
+              .eq("flag_opened", 0)
+              .neq("type_status", "running"), // in-flight runs can't have been read yet
+            (schedTask.units_consecutive_ignored || 0) > 0
+              ? intelligenceDb.from("ai_scheduled_prompts")
+                  .update({ units_consecutive_ignored: 0 })
+                  .eq("id_prompt", schedTask.id_prompt)
+              : Promise.resolve(),
+          ]);
+        }
+      } catch { /* telemetry only — never block the thread load */ }
+    }
+
     const { data: rawMessages, error: msgError } = await intelligenceDb
       .from("ai_messages")
       .select("*")

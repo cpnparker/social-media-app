@@ -1075,6 +1075,36 @@ export async function POST(
       systemPrompt += "\n\n**No live web this turn — INTERNAL guidance, do NOT announce this to the user:** You don't have live web results for this message. Never open or caveat your reply by saying web search is unavailable/off — just answer the request normally using the workspace data, client files, brief, and your knowledge. Do NOT claim you are searching, browsing, or looking something up online (you're not), and do NOT assert real-time facts (prices, availability, current events, breaking news) you can't verify — instead, flag any such claim as 'to verify'. Only if the user EXPLICITLY asked you to search the web should you briefly note they can turn on the Web toggle and ask again.";
     }
 
+    // Scheduled task thread: load the standing task so the model can propose
+    // updates to it (reply-to-refine) instead of claiming changes are applied.
+    let scheduledTask:
+      | { id: string; title: string; prompt: string; typeTask: string; typeSchedule: string; configSchedule: any; scheduleLabel: string }
+      | undefined;
+    if (conversation.type_conversation_mode === "scheduled") {
+      const { data: st } = await intelligenceDb
+        .from("ai_scheduled_prompts")
+        .select("id_prompt, user_created, name_title, document_prompt, type_task, type_schedule, config_schedule")
+        .eq("id_conversation", conversationId)
+        .maybeSingle();
+      if (st && st.user_created === userId) {
+        // Only the task OWNER gets the update tool — anyone else would be
+        // steered into a Confirm card whose PATCH can only 404.
+        const { describeSchedule } = await import("@/lib/scheduled/schedule");
+        scheduledTask = {
+          id: st.id_prompt,
+          title: st.name_title,
+          prompt: st.document_prompt,
+          typeTask: st.type_task,
+          typeSchedule: st.type_schedule,
+          configSchedule: st.config_schedule,
+          scheduleLabel: describeSchedule(st.type_schedule, st.config_schedule),
+        };
+        systemPrompt += `\n\n## Scheduled task thread\nThis thread belongs to the recurring scheduled prompt "${st.name_title}" (${st.type_task}, ${scheduledTask.scheduleLabel}). Its standing prompt is:\n"""${st.document_prompt}"""\nAnswering questions about past results is normal chat. But when the user asks to change what FUTURE runs cover, their timing, or email delivery ("also include…", "drop the…", "move it to 9am", "stop emailing me"), you MUST call update_scheduled_task to propose the change — never claim a change is applied without it, and never just answer as if the standing prompt were already different.`;
+      } else if (st) {
+        systemPrompt += `\n\n## Scheduled task thread (owned by someone else)\nThis thread belongs to the recurring scheduled prompt "${st.name_title}", owned by another user. If the current user asks to change what future runs cover or when they arrive, explain that only the task's owner can modify it — you cannot propose changes here.`;
+      }
+    }
+
     // Boost token limit for web search queries — citations + research responses run long.
     const effectiveMaxTokens = queryRoute.searchMode === "on"
       ? Math.max(baseMaxTokens, 8192)
@@ -1130,7 +1160,7 @@ export async function POST(
       // userEmail is passed for team threads too: the MeetingBrain/Slack tools
       // gate personal reports server-side via conversationVisibility, while the
       // workspace-shared client_meetings report stays available to everyone.
-      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, enableScheduling: conversation.type_conversation_mode !== "design" },
+      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask },
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {

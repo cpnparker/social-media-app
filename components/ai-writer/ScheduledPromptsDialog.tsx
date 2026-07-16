@@ -20,7 +20,15 @@ const TEMPLATES: {
   cadence: "daily" | "weekdays" | "weekly" | "monthly";
   hour: number;
   dayOfWeek?: number;
+  typeTask?: "digest" | "monitor";
 }[] = [
+  {
+    label: "Contract Overrun Alert",
+    title: "Contract Overrun Alert",
+    prompt:
+      "Check every active contract's CU utilisation. Alert me when any contract goes above 90% utilisation or is pacing to run out of units before its end date. For each flagged contract state the utilisation, remaining units, and days left.",
+    cadence: "daily", hour: 9, typeTask: "monitor",
+  },
   {
     label: "Monday Morning Operations Brief",
     title: "Monday Morning Operations Brief",
@@ -55,6 +63,7 @@ interface ScheduledTask {
   id_prompt: string;
   name_title: string;
   document_prompt: string;
+  type_task: string;
   type_schedule: string;
   config_schedule: any;
   schedule_label: string;
@@ -63,6 +72,7 @@ interface ScheduledTask {
   flag_email: number;
   id_conversation: string | null;
   units_consecutive_failures: number;
+  units_consecutive_ignored: number;
   recent_runs: { type_status: string; date_run: string; document_error: string | null }[];
 }
 
@@ -99,6 +109,7 @@ export default function ScheduledPromptsDialog({
   const [hour, setHour] = useState(8);
   const [dayOfWeek, setDayOfWeek] = useState(1);
   const [email, setEmail] = useState(true);
+  const [typeTask, setTypeTask] = useState<"digest" | "monitor">("digest");
 
   // "Make recurring" arrives with the prompt that produced the answer.
   const prefillAppliedRef = useRef(false);
@@ -116,6 +127,7 @@ export default function ScheduledPromptsDialog({
       setShowForm(false);
       setTitle("");
       setPrompt("");
+      setTypeTask("digest");
     }
   }, [open, prefill]);
 
@@ -125,6 +137,7 @@ export default function ScheduledPromptsDialog({
     setCadence(t.cadence);
     setHour(t.hour);
     if (t.dayOfWeek) setDayOfWeek(t.dayOfWeek);
+    setTypeTask(t.typeTask || "digest");
   };
 
   const toggleHistory = async (id: string) => {
@@ -166,12 +179,13 @@ export default function ScheduledPromptsDialog({
           typeSchedule: cadence,
           configSchedule: { hour, minute: 0, ...(cadence === "weekly" ? { dayOfWeek } : {}), tz: "Europe/Zurich" },
           emailEnabled: email,
+          typeTask,
         }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || "Create failed");
       toast.success(`Scheduled — next run ${new Date(d.nextRun).toLocaleString()}`);
-      setTitle(""); setPrompt(""); setShowForm(false);
+      setTitle(""); setPrompt(""); setShowForm(false); setTypeTask("digest");
       void load();
     } catch (e: any) { toast.error(e.message); }
     finally { setCreating(false); }
@@ -190,8 +204,12 @@ export default function ScheduledPromptsDialog({
       const res = await fetch(`/api/ai/scheduled/${id}/run`, { method: "POST" });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || "Run failed");
-      toast.success("Run complete — result saved to the task's thread");
-      if (d.conversationId) window.open(`/?thread=${d.conversationId}`, "_blank");
+      if (d.status === "no_change") {
+        toast.success("Checked — nothing changed, so nothing was delivered (that's the monitor working)");
+      } else {
+        toast.success("Run complete — result saved to the task's thread");
+        if (d.conversationId) window.open(`/?thread=${d.conversationId}`, "_blank");
+      }
       // Drop the cached run history so an open panel shows the new run.
       setRunsById((m) => { const { [id]: _stale, ...rest } = m; return rest; });
       void load();
@@ -247,6 +265,26 @@ export default function ScheduledPromptsDialog({
               placeholder="The prompt to run — e.g. Summarise CU utilisation by contract, the content pipeline by client, and anything ending within 30 days."
               className="w-full rounded-lg border bg-background p-2.5 text-sm leading-snug resize-y"
             />
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setTypeTask("digest")}
+                className={cn(
+                  "px-2.5 py-1 rounded-full border text-xs transition-colors",
+                  typeTask === "digest" ? "bg-foreground text-background border-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Digest — delivers every run
+              </button>
+              <button
+                onClick={() => setTypeTask("monitor")}
+                className={cn(
+                  "px-2.5 py-1 rounded-full border text-xs transition-colors",
+                  typeTask === "monitor" ? "bg-foreground text-background border-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Monitor — only when something changes
+              </button>
+            </div>
             <div className="flex items-center gap-2 flex-wrap text-sm">
               <select value={cadence} onChange={(e) => setCadence(e.target.value as any)} className="h-8 rounded-lg border bg-background px-2 text-sm">
                 <option value="daily">Daily</option>
@@ -301,9 +339,18 @@ export default function ScheduledPromptsDialog({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium truncate">{t.name_title}</span>
+                      {t.type_task === "monitor" && (
+                        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-600 dark:text-sky-400 shrink-0">
+                          monitor
+                        </span>
+                      )}
                       {t.flag_enabled !== 1 && (
                         <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 shrink-0">
-                          {t.units_consecutive_failures >= 2 ? "paused — failures" : "paused"}
+                          {t.units_consecutive_failures >= 2
+                            ? "paused — failures"
+                            : t.units_consecutive_ignored >= 5
+                              ? "paused — unread"
+                              : "paused"}
                         </span>
                       )}
                     </div>

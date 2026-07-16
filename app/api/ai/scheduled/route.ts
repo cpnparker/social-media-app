@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
 
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 }); }
-  const { workspaceId, title, prompt, typeSchedule, configSchedule, clientId, emailEnabled, model } = body || {};
+  const { workspaceId, title, prompt, typeSchedule, configSchedule, clientId, emailEnabled, model, typeTask } = body || {};
   if (!workspaceId || !title?.trim() || !prompt?.trim()) {
     return NextResponse.json({ error: "workspaceId, title and prompt are required" }, { status: 400 });
   }
@@ -129,6 +129,7 @@ export async function POST(req: NextRequest) {
         email_user: session.user.email || null,
         name_title: String(title).slice(0, 120),
         document_prompt: String(prompt).slice(0, 4000),
+        type_task: typeTask === "monitor" ? "monitor" : "digest",
         name_model: model || "auto",
         id_client: clientId ? parseInt(String(clientId), 10) : null,
         config_context: proposalId ? { ...(body.configContext || {}), proposalId } : (body.configContext || null),

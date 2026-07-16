@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
   if (!due || due.length === 0) return NextResponse.json({ message: "Nothing due", ran: 0 });
 
   const results: { id: string; status: string }[] = [];
-  for (const task of due as (ScheduledPromptRow & { type_schedule: string; config_schedule: any; units_consecutive_failures: number })[]) {
+  for (const task of due as (ScheduledPromptRow & { type_schedule: string; config_schedule: any; units_consecutive_failures: number; units_consecutive_ignored: number })[]) {
     // Advance the schedule FIRST (even a crash mid-run can't cause a re-run storm)
     const nextRun = computeNextRun(task.type_schedule as ScheduleType, task.config_schedule, now);
     await intelligenceDb
@@ -89,8 +89,42 @@ export async function GET(req: NextRequest) {
         } catch { /* best-effort */ }
       }
     } else {
-      if ((task.units_consecutive_failures || 0) > 0) {
-        await intelligenceDb.from("ai_scheduled_prompts").update({ units_consecutive_failures: 0 }).eq("id_prompt", task.id_prompt);
+      const updates: Record<string, any> = {};
+      if ((task.units_consecutive_failures || 0) > 0) updates.units_consecutive_failures = 0;
+
+      // Anti-abandonment: every delivery bumps the ignored counter; opening the
+      // task's thread resets it (conversation GET). 5 unopened deliveries in a
+      // row → courteous pause, loudly. no_change monitor runs don't count.
+      if (result.status === "delivered") {
+        // Re-read the counter AFTER the run: the user may have opened the thread
+        // (reset to 0) while this run was executing — incrementing from the
+        // claim-time snapshot would clobber that reset and could falsely pause.
+        const { data: fresh } = await intelligenceDb
+          .from("ai_scheduled_prompts")
+          .select("units_consecutive_ignored")
+          .eq("id_prompt", task.id_prompt)
+          .maybeSingle();
+        const ignored = ((fresh?.units_consecutive_ignored ?? task.units_consecutive_ignored) || 0) + 1;
+        updates.units_consecutive_ignored = ignored;
+        if (ignored >= 5) {
+          updates.flag_enabled = 0;
+          if (task.email_user && process.env.RESEND_API_KEY) {
+            try {
+              await new Resend(process.env.RESEND_API_KEY).emails.send({
+                from: "EngineAI <noreply@tasks.thecontentengine.com>",
+                to: task.email_user,
+                subject: `💤 Paused for now: ${task.name_title}`,
+                html: `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:600px;margin:0 auto;padding:16px;color:#111">
+                  <p style="font-size:14px;line-height:1.6">The last 5 runs of <strong>"${task.name_title}"</strong> weren't opened, so it's been paused to keep the noise down.</p>
+                  <p style="font-size:13px">Still useful? Resume it any time from EngineAI → Scheduled prompts — one click brings it back exactly as it was.</p>
+                </div>`,
+              });
+            } catch { /* best-effort */ }
+          }
+        }
+      }
+      if (Object.keys(updates).length) {
+        await intelligenceDb.from("ai_scheduled_prompts").update(updates).eq("id_prompt", task.id_prompt);
       }
     }
   }

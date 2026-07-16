@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
-import { computeNextRun, type ScheduleType } from "@/lib/scheduled/schedule";
+import { computeNextRun, promptFingerprint, type ScheduleType } from "@/lib/scheduled/schedule";
 
 async function loadOwnedTask(id: string, userId: number) {
   const { data: task } = await intelligenceDb
@@ -43,13 +43,31 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 }); }
 
+  // Update-confirmation cards pin the version of the standing prompt they were
+  // built against. Reject stale cards so confirming an old one can't silently
+  // revert newer edits.
+  if (body.baseFp && promptFingerprint(task.document_prompt) !== body.baseFp) {
+    return NextResponse.json(
+      { error: "This task has changed since that card was created — ask again in the thread for a fresh update card." },
+      { status: 409 }
+    );
+  }
+
   const update: Record<string, any> = { date_updated: new Date().toISOString() };
   if (body.title !== undefined) update.name_title = String(body.title).slice(0, 120);
   if (body.prompt !== undefined) update.document_prompt = String(body.prompt).slice(0, 4000);
   if (body.emailEnabled !== undefined) update.flag_email = body.emailEnabled ? 1 : 0;
   if (body.enabled !== undefined) {
     update.flag_enabled = body.enabled ? 1 : 0;
-    if (body.enabled) update.units_consecutive_failures = 0; // resume clears the strike count
+    if (body.enabled) {
+      // Resume clears both strike counts (failures AND unopened-run pause)
+      update.units_consecutive_failures = 0;
+      update.units_consecutive_ignored = 0;
+    }
+  }
+  if (body.typeTask !== undefined) {
+    update.type_task = body.typeTask === "monitor" ? "monitor" : "digest";
+    if (update.type_task === "digest") update.document_last_snapshot = null; // stale monitor state must not linger
   }
   const scheduleChanged = body.typeSchedule !== undefined || body.configSchedule !== undefined;
   if (scheduleChanged) {

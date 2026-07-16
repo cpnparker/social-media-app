@@ -15,13 +15,24 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 export interface ScheduledProposal {
+  /** "update" = refine THIS thread's standing task (targetId); default = create. */
+  mode?: "create" | "update";
   proposalId: string;
+  targetId?: string;
+  /** Fingerprint of the standing prompt the update was built against —
+   *  the server rejects the PATCH if the task changed since. */
+  baseFp?: string;
   title: string;
+  oldTitle?: string;
   prompt: string;
+  oldPrompt?: string;
+  promptChanged?: boolean;
+  typeTask?: string;
   typeSchedule: string;
   configSchedule: any;
-  clientId: number | null;
-  emailEnabled: boolean;
+  scheduleChanged?: boolean;
+  clientId?: number | null;
+  emailEnabled?: boolean;
   scheduleLabel: string;
   nextRuns: string[];
 }
@@ -69,21 +80,43 @@ export default function ScheduledProposalCard({
 }) {
   const [state, setState] = useState<"idle" | "saving" | "created">("idle");
   const [nextRun, setNextRun] = useState<string | null>(null);
+  const isUpdate = proposal.mode === "update" && !!proposal.targetId;
+  const isMonitor = proposal.typeTask === "monitor";
 
-  // Restore "already confirmed" state across reloads/devices.
+  // Restore "already confirmed" state across reloads/devices (create mode only —
+  // updates are idempotent, re-confirming just re-applies the same values).
   useEffect(() => {
-    if (!workspaceId || !proposal.proposalId) return;
+    if (isUpdate || !workspaceId || !proposal.proposalId) return;
     let cancelled = false;
     void fetchConfirmedIds(workspaceId).then((ids) => {
       if (!cancelled && ids.has(proposal.proposalId)) setState("created");
     });
     return () => { cancelled = true; };
-  }, [workspaceId, proposal.proposalId]);
+  }, [workspaceId, proposal.proposalId, isUpdate]);
 
   const confirm = async () => {
     if (!workspaceId) { toast.error("Workspace not loaded yet — try again in a moment"); return; }
     setState("saving");
     try {
+      if (isUpdate) {
+        const body: Record<string, any> = {};
+        if (proposal.baseFp) body.baseFp = proposal.baseFp;
+        if (proposal.promptChanged) body.prompt = proposal.prompt;
+        if (proposal.oldTitle) body.title = proposal.title;
+        if (proposal.scheduleChanged) { body.typeSchedule = proposal.typeSchedule; body.configSchedule = proposal.configSchedule; }
+        if (typeof proposal.emailEnabled === "boolean") body.emailEnabled = proposal.emailEnabled;
+        const res = await fetch(`/api/ai/scheduled/${proposal.targetId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error || "Could not update");
+        setNextRun(d.task?.date_next_run || null);
+        setState("created");
+        toast.success("Standing prompt updated — future runs use the new version");
+        return;
+      }
       const res = await fetch("/api/ai/scheduled", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -93,6 +126,7 @@ export default function ScheduledProposalCard({
           prompt: proposal.prompt,
           typeSchedule: proposal.typeSchedule,
           configSchedule: proposal.configSchedule,
+          typeTask: proposal.typeTask,
           clientId: proposal.clientId ?? undefined,
           emailEnabled: proposal.emailEnabled,
           proposalId: proposal.proposalId,
@@ -127,25 +161,38 @@ export default function ScheduledProposalCard({
             : <CalendarClock className="h-4 w-4 text-primary" />}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium leading-snug">{proposal.title}</p>
-          <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1.5">
+          <p className="text-sm font-medium leading-snug">
+            {isUpdate && <span className="text-muted-foreground font-normal">Update: </span>}
+            {proposal.title}
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
             <span>{proposal.scheduleLabel}</span>
+            {isMonitor && (
+              <span className="inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-px rounded-full bg-sky-500/10 text-sky-600 dark:text-sky-400">
+                monitor — notifies only on change
+              </span>
+            )}
             {proposal.emailEnabled && (
               <span className="inline-flex items-center gap-0.5"><Mail className="h-3 w-3" /> email</span>
             )}
           </p>
           {next1 && (
             <p className="text-[11px] text-muted-foreground mt-1">
-              Next: {fmtRun(next1)}{next2 ? ` · then ${fmtRun(next2)}` : ""}
+              Next{isMonitor ? " check" : ""}: {fmtRun(next1)}{next2 ? ` · then ${fmtRun(next2)}` : ""}
             </p>
           )}
           <p className="text-xs text-muted-foreground/80 mt-1.5 line-clamp-2">{proposal.prompt}</p>
+          {isUpdate && proposal.promptChanged && proposal.oldPrompt && (
+            <p className="text-[11px] text-muted-foreground/60 mt-1 line-clamp-1">
+              was: <span className="line-through decoration-muted-foreground/40">{proposal.oldPrompt}</span>
+            </p>
+          )}
         </div>
       </div>
       <div className="mt-2.5 flex items-center gap-2">
         {state === "created" ? (
           <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
-            Scheduled{nextRun ? ` — next run ${fmtRun(nextRun)}` : ""} · manage in Scheduled prompts
+            {isUpdate ? "Updated" : "Scheduled"}{nextRun ? ` — next run ${fmtRun(nextRun)}` : ""} · manage in Scheduled prompts
           </span>
         ) : (
           <>
@@ -155,9 +202,11 @@ export default function ScheduledProposalCard({
               className="h-8 px-3 rounded-lg bg-primary text-primary-foreground text-sm font-medium disabled:opacity-60 flex items-center gap-1.5"
             >
               {state === "saving" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              Confirm schedule
+              {isUpdate ? "Confirm update" : "Confirm schedule"}
             </button>
-            <span className="text-[11px] text-muted-foreground">Runs only after you confirm</span>
+            <span className="text-[11px] text-muted-foreground">
+              {isUpdate ? "Applies only after you confirm" : "Runs only after you confirm"}
+            </span>
           </>
         )}
       </div>

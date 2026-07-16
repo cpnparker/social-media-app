@@ -63,6 +63,17 @@ export interface AIProviderConfig {
    *  Set ONLY by the interactive chat route — never by the headless scheduled
    *  runner (a scheduled prompt must not be able to schedule more prompts). */
   enableScheduling?: boolean;
+  /** Set when this conversation IS a scheduled task's thread — enables the
+   *  update_scheduled_task tool (reply-to-refine the standing prompt). */
+  scheduledTask?: {
+    id: string;
+    title: string;
+    prompt: string;
+    typeTask: string;
+    typeSchedule: string;
+    configSchedule: any;
+    scheduleLabel: string;
+  };
 }
 
 /** Default temperature for user-facing chat. Lower than model defaults (~0.7-1.0)
@@ -3576,6 +3587,11 @@ export const CREATE_SCHEDULED_TASK_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool =
         day_of_week: { type: "number", description: "For weekly: ISO day, 1=Monday … 7=Sunday. Default 1." },
         day_of_month: { type: "number", description: "For monthly: day of month 1-28. Default 1." },
         email: { type: "boolean", description: "Also email the results to the user. Default true." },
+        type_task: {
+          type: "string",
+          enum: ["digest", "monitor"],
+          description: "digest (default) = delivers a brief every run. monitor = watches the values the prompt describes and only notifies when something changes or a stated threshold is crossed — use when the user says 'alert me when/if', 'watch', 'let me know if'.",
+        },
       },
       required: ["title", "prompt", "type_schedule"],
     },
@@ -3642,10 +3658,12 @@ async function buildScheduledProposal(
   };
   const next1 = computeNextRun(type as any, cfg);
   const next2 = computeNextRun(type as any, cfg, next1);
+  const typeTask = input?.type_task === "monitor" ? "monitor" : "digest";
   const proposal = {
     proposalId: crypto.randomUUID(),
     title,
     prompt,
+    typeTask,
     typeSchedule: type,
     configSchedule: cfg,
     clientId: config.selectedClientId ?? null,
@@ -3657,7 +3675,127 @@ async function buildScheduledProposal(
     d.toLocaleString("en-GB", { timeZone: "Europe/Zurich", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   return {
     marker: `\n\n[SCHEDULED_PROPOSAL]${JSON.stringify(proposal)}[/SCHEDULED_PROPOSAL]\n\n`,
-    toolMsg: `Proposal card shown to the user: "${title}" — ${proposal.scheduleLabel}; next two runs ${fmt(next1)} and ${fmt(next2)} (Europe/Zurich). It is NOT saved yet — the user must press Confirm on the card. Briefly say what the task will deliver and point them to the card below. Do NOT restate the schedule or run times (the card shows them) and do NOT claim it is already scheduled.`,
+    toolMsg: `Proposal card shown to the user: "${title}" (${typeTask}) — ${proposal.scheduleLabel}; next two runs ${fmt(next1)} and ${fmt(next2)} (Europe/Zurich).${typeTask === "monitor" ? " As a monitor it will check on that schedule but only notify when something changes or the stated condition is crossed." : ""} It is NOT saved yet — the user must press Confirm on the card. Briefly say what the task will deliver and point them to the card below. Do NOT restate the schedule or run times (the card shows them) and do NOT claim it is already scheduled.`,
+  };
+}
+
+/* ─────────────── Scheduled Prompt Update Tool (reply-to-refine) ─────────────── */
+
+export const UPDATE_SCHEDULED_TASK_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "update_scheduled_task",
+    description:
+      "Propose an update to THIS thread's standing scheduled prompt. Use when the user asks future runs to change — different content ('also include…', 'drop the…', 'make it shorter'), different timing, or turning email on/off. Only pass the fields that change. This only PROPOSES — the user confirms via a card; never claim the change is applied. Do NOT compute dates/times yourself.",
+    parameters: {
+      type: "object",
+      properties: {
+        new_prompt: {
+          type: "string",
+          description: "The COMPLETE revised standing prompt (not a diff) — rewrite the current prompt with the user's requested changes folded in. Omit if the prompt isn't changing.",
+        },
+        new_title: { type: "string", description: "New task title. Omit if unchanged." },
+        type_schedule: { type: "string", enum: ["daily", "weekdays", "weekly", "monthly"], description: "Only when the user asks to change the cadence." },
+        hour: { type: "number", description: "Hour 0-23 (Europe/Zurich). Only when changing the time." },
+        minute: { type: "number", description: "Minute 0-59. Only when changing the time." },
+        day_of_week: { type: "number", description: "For weekly: ISO day 1=Monday … 7=Sunday." },
+        day_of_month: { type: "number", description: "For monthly: day 1-28." },
+        email: { type: "boolean", description: "Only when the user asks to turn result emails on/off." },
+      },
+      required: [],
+    },
+  },
+};
+
+const UPDATE_SCHEDULED_TASK_TOOL: Anthropic.Tool = {
+  name: "update_scheduled_task",
+  description: UPDATE_SCHEDULED_TASK_OPENAI_TOOL.function.description!,
+  input_schema: {
+    ...(UPDATE_SCHEDULED_TASK_OPENAI_TOOL.function.parameters as any),
+  },
+};
+
+/** Build an update proposal for the thread's standing task — NO DB write.
+ *  Same marker/card mechanics as creation, with mode:"update" + targetId;
+ *  Confirm PATCHes /api/ai/scheduled/[id] with only the changed fields. */
+async function buildScheduledUpdateProposal(
+  input: any,
+  config: AIProviderConfig
+): Promise<{ marker: string; toolMsg: string }> {
+  const task = config.scheduledTask;
+  if (!task) throw new Error("This conversation is not a scheduled task's thread");
+  const { computeNextRun, describeSchedule, promptFingerprint } = await import("@/lib/scheduled/schedule");
+
+  const desentinel = (s: string) => s.replace(/\[\/?SCHEDULED_PROPOSAL\]/g, "");
+  const newPromptRaw = input?.new_prompt ? desentinel(String(input.new_prompt)).trim().slice(0, 4000) : "";
+  const newTitleRaw = input?.new_title ? desentinel(String(input.new_title)).trim().slice(0, 120) : "";
+  const promptChanged = !!newPromptRaw && newPromptRaw !== task.prompt;
+  const titleChanged = !!newTitleRaw && newTitleRaw !== task.title;
+
+  const num = (v: any, def: number) => {
+    const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? +v : NaN;
+    return Number.isFinite(n) ? Math.trunc(n) : def;
+  };
+  // Explicit nulls (models emit them for params they don't fill) must NOT count
+  // as "the user asked to change the schedule".
+  const has = (v: any) => v !== undefined && v !== null;
+  const scheduleChanged =
+    has(input?.type_schedule) || has(input?.hour) || has(input?.minute) ||
+    has(input?.day_of_week) || has(input?.day_of_month);
+  const curCfg = task.configSchedule || {};
+  const type = scheduleChanged
+    ? (["daily", "weekdays", "weekly", "monthly"].includes(String(input?.type_schedule || "").toLowerCase())
+        ? String(input.type_schedule).toLowerCase()
+        : task.typeSchedule)
+    : task.typeSchedule;
+  const cfg = scheduleChanged
+    ? {
+        hour: Math.min(23, Math.max(0, num(input?.hour, num(curCfg.hour, 8)))),
+        minute: Math.min(59, Math.max(0, num(input?.minute, num(curCfg.minute, 0)))),
+        ...(type === "weekly" ? { dayOfWeek: Math.min(7, Math.max(1, num(input?.day_of_week, num(curCfg.dayOfWeek, 1)))) } : {}),
+        ...(type === "monthly" ? { dayOfMonth: Math.min(28, Math.max(1, num(input?.day_of_month, num(curCfg.dayOfMonth, 1)))) } : {}),
+        tz: curCfg.tz || "Europe/Zurich",
+      }
+    : curCfg;
+  const emailChanged = typeof input?.email === "boolean";
+
+  if (!promptChanged && !titleChanged && !scheduleChanged && !emailChanged) {
+    throw new Error("Nothing would change — tell the user the task already matches what they asked for.");
+  }
+
+  const next1 = computeNextRun(type as any, cfg);
+  const next2 = computeNextRun(type as any, cfg, next1);
+  const proposal = {
+    mode: "update",
+    proposalId: crypto.randomUUID(),
+    targetId: task.id,
+    // baseFp pins the card to THIS version of the standing prompt — the PATCH
+    // rejects it if the prompt changed after the card was created.
+    baseFp: promptFingerprint(task.prompt),
+    title: titleChanged ? newTitleRaw : desentinel(task.title),
+    ...(titleChanged ? { oldTitle: desentinel(task.title) } : {}),
+    prompt: promptChanged ? newPromptRaw : desentinel(task.prompt),
+    ...(promptChanged ? { oldPrompt: desentinel(task.prompt).slice(0, 600) } : {}),
+    promptChanged,
+    typeTask: task.typeTask,
+    typeSchedule: type,
+    configSchedule: cfg,
+    scheduleChanged,
+    ...(emailChanged ? { emailEnabled: input.email } : {}),
+    scheduleLabel: describeSchedule(type as any, cfg),
+    nextRuns: [next1.toISOString(), next2.toISOString()],
+  };
+  const fmt = (d: Date) =>
+    d.toLocaleString("en-GB", { timeZone: "Europe/Zurich", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  const changes = [
+    promptChanged ? "prompt" : null,
+    titleChanged ? "title" : null,
+    scheduleChanged ? `schedule → ${proposal.scheduleLabel}` : null,
+    emailChanged ? `email ${input.email ? "on" : "off"}` : null,
+  ].filter(Boolean).join(", ");
+  return {
+    marker: `\n\n[SCHEDULED_PROPOSAL]${JSON.stringify(proposal)}[/SCHEDULED_PROPOSAL]\n\n`,
+    toolMsg: `Update card shown to the user for "${task.title}" (changes: ${changes}; next runs ${fmt(next1)} and ${fmt(next2)}). NOT applied yet — the user must press Confirm on the card. Briefly summarise what future runs will now cover; do NOT restate schedule times and do NOT claim the change is applied.`,
   };
 }
 
@@ -4064,6 +4202,7 @@ async function streamAnthropic(
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
     tools.push(CREATE_SCHEDULED_TASK_TOOL);
+    if (config.scheduledTask) tools.push(UPDATE_SCHEDULED_TASK_TOOL);
   }
 
   console.log(`[Anthropic] Streaming with tools: [${tools.map(t => (t as any).name || (t as any).type).join(', ') || 'none'}], imageGeneration=${config.imageGeneration}, designMode=${!!config.designMode}`);
@@ -4822,9 +4961,11 @@ async function streamAnthropic(
             is_error: true,
           });
         }
-      } else if (tool.name === "create_scheduled_task") {
+      } else if (tool.name === "create_scheduled_task" || tool.name === "update_scheduled_task") {
         try {
-          const { marker, toolMsg } = await buildScheduledProposal(tool.input, config);
+          const { marker, toolMsg } = tool.name === "update_scheduled_task"
+            ? await buildScheduledUpdateProposal(tool.input, config)
+            : await buildScheduledProposal(tool.input, config);
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify({ scheduled_proposal: { marker } })}\n\n`)
           );
@@ -5012,6 +5153,7 @@ async function streamXAIChatCompletions(
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
     tools.push(CREATE_SCHEDULED_TASK_OPENAI_TOOL);
+    if (config.scheduledTask) tools.push(UPDATE_SCHEDULED_TASK_OPENAI_TOOL);
   }
 
   console.log(`[xAI] Streaming model=${apiModel}, webSearch=${config.webSearch}, imageGen=${config.imageGeneration}, tools=[${tools.map(t => (t as any).function?.name || t.type).join(', ') || 'none'}]`);
@@ -5365,10 +5507,12 @@ async function streamXAIChatCompletions(
             content: `Memory search failed: ${err.message}`,
           } as any);
         }
-      } else if (tc.function.name === "create_scheduled_task") {
+      } else if (tc.function.name === "create_scheduled_task" || tc.function.name === "update_scheduled_task") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const { marker, toolMsg } = await buildScheduledProposal(input, config);
+          const { marker, toolMsg } = tc.function.name === "update_scheduled_task"
+            ? await buildScheduledUpdateProposal(input, config)
+            : await buildScheduledProposal(input, config);
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify({ scheduled_proposal: { marker } })}\n\n`)
           );
@@ -5596,6 +5740,7 @@ async function streamGemini(
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
     tools.push(CREATE_SCHEDULED_TASK_OPENAI_TOOL);
+    if (config.scheduledTask) tools.push(UPDATE_SCHEDULED_TASK_OPENAI_TOOL);
   }
   // Gemini has no native web search here — expose the callable web_search tool
   // (executed via executeWebSearch → xAI LiveSearch).
@@ -5904,10 +6049,12 @@ async function streamGemini(
             content: `Memory search failed: ${err.message}`,
           } as any);
         }
-      } else if (tc.function.name === "create_scheduled_task") {
+      } else if (tc.function.name === "create_scheduled_task" || tc.function.name === "update_scheduled_task") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const { marker, toolMsg } = await buildScheduledProposal(input, config);
+          const { marker, toolMsg } = tc.function.name === "update_scheduled_task"
+            ? await buildScheduledUpdateProposal(input, config)
+            : await buildScheduledProposal(input, config);
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify({ scheduled_proposal: { marker } })}\n\n`)
           );
@@ -6046,6 +6193,7 @@ async function streamOpenAI(
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
     tools.push(CREATE_SCHEDULED_TASK_OPENAI_TOOL);
+    if (config.scheduledTask) tools.push(UPDATE_SCHEDULED_TASK_OPENAI_TOOL);
   }
   // GPT has no native web search here — expose the callable web_search tool
   // (executed via executeWebSearch → xAI LiveSearch).
@@ -6355,10 +6503,12 @@ async function streamOpenAI(
             content: `Memory search failed: ${err.message}`,
           } as any);
         }
-      } else if (tc.function.name === "create_scheduled_task") {
+      } else if (tc.function.name === "create_scheduled_task" || tc.function.name === "update_scheduled_task") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const { marker, toolMsg } = await buildScheduledProposal(input, config);
+          const { marker, toolMsg } = tc.function.name === "update_scheduled_task"
+            ? await buildScheduledUpdateProposal(input, config)
+            : await buildScheduledProposal(input, config);
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify({ scheduled_proposal: { marker } })}\n\n`)
           );
