@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
 
   // Latest 3 runs per task (small N — fine to fetch flat and group)
   const ids = (tasks || []).map((t) => t.id_prompt);
-  let runsByTask: Record<string, any[]> = {};
+  const runsByTask: Record<string, any[]> = {};
   if (ids.length) {
     const { data: runs } = await intelligenceDb
       .from("ai_scheduled_runs")
