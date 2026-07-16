@@ -225,10 +225,16 @@ export default function ScheduledPromptsDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
+      {/* flex column + min-w-0/min-h-0: the header stays put, the body scrolls
+          internally, and long nowrap prompt previews can SHRINK instead of
+          widening the dialog (grid children default to min-width:auto, which
+          made the whole overlay grow a horizontal scrollbar). */}
+      <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle className="flex items-center gap-2"><Clock className="h-4 w-4" /> Scheduled prompts</DialogTitle>
         </DialogHeader>
+
+        <div className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden space-y-3 pr-1 -mr-2">
 
         {!showForm && (
           <button
@@ -429,6 +435,7 @@ export default function ScheduledPromptsDialog({
               </div>
             );
           })}
+        </div>
         </div>
       </DialogContent>
     </Dialog>
