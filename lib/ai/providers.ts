@@ -100,11 +100,24 @@ export function formatToolResult(result: { data: any; count: number; total?: num
 }
 
 /** Format MeetingBrain results with truncation */
-export function formatMeetingBrainResult(report: string, result: { data: any; count: number; error?: string; notice?: string; hint?: string }): string {
+export function formatMeetingBrainResult(report: string, result: { data: any; count: number; error?: string; errorKind?: "invalid_call" | "infra"; notice?: string; hint?: string }): string {
   if (result.notice) return result.notice;
   if (result.error) {
-    // Graceful degradation: don't let a backend hiccup read like "you have no
-    // meetings". Tell the model exactly how to phrase the failure.
+    // Two distinct failure classes — conflating them made the model announce a
+    // fake outage ("MeetingBrain is temporarily unreachable") when its OWN tool
+    // call was malformed (fabricated meeting_id, missing query arg).
+    if (result.errorKind === "invalid_call") {
+      return [
+        `MeetingBrain rejected this call (report=${report}): ${result.error}`,
+        ``,
+        `MeetingBrain itself is working — YOUR tool call had a bad or missing argument. Do NOT tell the user MeetingBrain is down or unreachable.`,
+        `- Fix the call and try again now: use report "search_meetings" with a query keyword (attendee name or topic) to find the meeting, then "meeting_details" with the id from those results.`,
+        `- Only pass meeting_id values returned by a MeetingBrain result this turn — never invent or reuse one from injected context.`,
+        `- If a corrected retry still finds nothing, tell the user you couldn't find that meeting — not that MeetingBrain is offline.`,
+      ].join("\n");
+    }
+    // Genuine backend failure: don't let it read like "you have no meetings".
+    // Tell the model exactly how to phrase the failure.
     return [
       `MeetingBrain query failed (report=${report}): ${result.error}`,
       ``,
@@ -2937,7 +2950,15 @@ export async function queryMeetingBrain(
   report: string,
   userEmail: string,
   options: { query?: string; status?: string; days?: number; workspaceId?: string; meetingId?: string; visibility?: "private" | "team" } = {}
-): Promise<{ data: any; count: number; error?: string; notice?: string; hint?: string }> {
+): Promise<{ data: any; count: number; error?: string; errorKind?: "invalid_call" | "infra"; notice?: string; hint?: string }> {
+  // Every error return must go through this: the error paths used to be
+  // silent, which made "why did the tool fail" undiagnosable from logs.
+  // errorKind drives formatMeetingBrainResult — "invalid_call" (bad args from
+  // the model) nudges a corrected retry; "infra" reports a real outage.
+  const fail = (error: string, errorKind: "invalid_call" | "infra" = "infra") => {
+    console.warn(`[MeetingBrain] ${report} failed (${errorKind}): ${error}`);
+    return { data: [], count: 0, error, errorKind };
+  };
   // PRIVACY GATE: personal reports return the caller's own meetings/tasks
   // (enforced by attendee email in the RPCs). In a TEAM conversation the tool
   // result becomes visible to every workspace member, so blocking here is the
@@ -2965,7 +2986,7 @@ export async function queryMeetingBrain(
           p_user_email: userEmail,
           p_limit: 50,
         });
-        if (error) return { data: [], count: 0, error: error.message };
+        if (error) return fail(error.message);
 
         const filtered = options.status === "completed"
           ? (tasks || []).filter((t: any) => t.status === "DONE")
@@ -3002,7 +3023,7 @@ export async function queryMeetingBrain(
           p_until: new Date().toISOString(),
           p_limit: 40,
         });
-        if (error) return { data: [], count: 0, error: error.message };
+        if (error) return fail(error.message);
 
         // Filter to past meetings only
         const now = new Date();
@@ -3034,7 +3055,7 @@ export async function queryMeetingBrain(
           p_until: until.toISOString(),
           p_limit: 30,
         });
-        if (error) return { data: [], count: 0, error: error.message };
+        if (error) return fail(error.message);
 
         const data = (meetings || []).map((r: any) => ({
           id: r.id,
@@ -3048,7 +3069,7 @@ export async function queryMeetingBrain(
         return { data, count: data.length };
       }
       case "search_meetings": {
-        if (!options.query) return { data: [], count: 0, error: "query required" };
+        if (!options.query) return fail(`the "query" argument is required for search_meetings — pass a keyword like an attendee name or topic`, "invalid_call");
         const twoWeeksAgo = new Date(); twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
 
         const { data: exact, error } = await mbDb.rpc("search_meetings", {
@@ -3056,7 +3077,7 @@ export async function queryMeetingBrain(
           p_query: options.query,
           p_limit: 20,
         });
-        if (error) return { data: [], count: 0, error: error.message };
+        if (error) return fail(error.message);
 
         // Fuzzy enrichment: voice transcription misspells proper nouns
         // ("Gelderma" for "Galderma", "Amorite" for "Amrize") and the RPC's
@@ -3127,15 +3148,15 @@ export async function queryMeetingBrain(
         return { data, count: data.length, hint };
       }
       case "meeting_details": {
-        if (!options.meetingId) return { data: [], count: 0, error: "meeting_id required — get it from search_meetings first" };
+        if (!options.meetingId) return fail("meeting_id required — get it from search_meetings first", "invalid_call");
 
         const { data: details, error } = await mbDb.rpc("get_meeting_details", {
           p_user_email: userEmail,
           p_meeting_id: options.meetingId,
         });
-        if (error) return { data: [], count: 0, error: error.message };
+        if (error) return fail(error.message);
         if (!details || (Array.isArray(details) && details.length === 0)) {
-          return { data: [], count: 0, error: "Meeting not found or you don't have access" };
+          return fail(`no meeting exists with meeting_id "${options.meetingId}" (or the user is not an attendee) — that id is wrong or stale`, "invalid_call");
         }
 
         const d = Array.isArray(details) ? details[0] : details;
@@ -3182,7 +3203,7 @@ export async function queryMeetingBrain(
         // workspace-shared report. We fetch the client-domain allowlist here
         // (EngineAI owns app_clients) and pass it into the RPC.
         const internalDomain = userEmail.split("@")[1] || "";
-        if (!internalDomain) return { data: [], count: 0, error: "Could not derive workspace domain from user email" };
+        if (!internalDomain) return fail("Could not derive workspace domain from user email");
 
         // Build the registered-client domain allowlist from app_clients.
         const { supabase: publicDb } = await import("@/lib/supabase");
@@ -3242,7 +3263,7 @@ export async function queryMeetingBrain(
         // Fallback: RPC not present yet (deploy ordering) — read the synced
         // table. The hourly sync-context cron keeps it reasonably fresh.
         console.warn(`[MeetingBrain] get_client_meetings RPC failed (${mtgErr.message}), falling back to ai_client_meetings`);
-        if (!options.workspaceId) return { data: [], count: 0, error: mtgErr.message };
+        if (!options.workspaceId) return fail(mtgErr.message);
         const { intelligenceDb } = await import("@/lib/supabase-intelligence");
         const { data: synced, error: syncErr } = await intelligenceDb
           .from("ai_client_meetings")
@@ -3250,7 +3271,7 @@ export async function queryMeetingBrain(
           .eq("id_workspace", options.workspaceId)
           .order("meeting_date", { ascending: false })
           .limit(100);
-        if (syncErr) return { data: [], count: 0, error: syncErr.message };
+        if (syncErr) return fail(syncErr.message);
         const data = (synced || []).map((r: any) => {
           const isRecent = new Date(r.meeting_date) >= twoWeeksBack;
           return {
@@ -3267,11 +3288,11 @@ export async function queryMeetingBrain(
         console.log(`[MeetingBrain] Client meetings: ${data.length} (synced fallback)`);
         return { data, count: data.length };
       }
-      default: return { data: [], count: 0, error: `Unknown report: ${report}` };
+      default: return fail(`Unknown report: "${report}" — valid reports are my_tasks, meetings, upcoming_meetings, search_meetings, meeting_details, client_meetings`, "invalid_call");
     }
   } catch (err: any) {
     console.error("[MeetingBrain] Error:", err.message);
-    return { data: [], count: 0, error: err.message };
+    return { data: [], count: 0, error: err.message, errorKind: "infra" as const };
   }
 }
 
