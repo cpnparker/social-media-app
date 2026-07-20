@@ -1343,17 +1343,17 @@ export default function ChatPanel({
                   attachments={msg.attachments}
                   userName={msg.createdByName}
                   onFactCheck={
-                    msg.role === "assistant" && !isStreaming && !isFactChecking && !msg.content.includes("## 🔍 Fact Check") && msg.status !== "failed"
+                    msg.role === "assistant" && !isStreaming && !isFactChecking && myPermission !== "view" && !msg.content.includes("## 🔍 Fact Check") && msg.status !== "failed"
                       ? () => handleFactCheck(msg.id, msg.content)
                       : undefined
                   }
                   onRetry={
-                    msg.role === "assistant" && !isStreaming && !isFactChecking && idx === messages.length - 1
+                    msg.role === "assistant" && !isStreaming && !isFactChecking && myPermission !== "view" && idx === messages.length - 1
                       ? () => handleRetry(idx)
                       : undefined
                   }
                   onEdit={
-                    msg.role === "user" && !isStreaming && !isFactChecking
+                    msg.role === "user" && !isStreaming && !isFactChecking && myPermission !== "view"
                       ? (newContent: string) => handleEditMessage(idx, newContent)
                       : undefined
                   }
