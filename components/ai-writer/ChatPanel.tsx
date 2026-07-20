@@ -436,6 +436,12 @@ export default function ChatPanel({
               setIsSearchingMemory(true);
             } else if (parsed.memory_result) {
               setIsSearchingMemory(false);
+            } else if (parsed.fallback) {
+              // Server switched providers mid-turn (stall/failure) and will
+              // re-stream the WHOLE answer; only that answer gets persisted.
+              // Reset the partial text so display matches what's saved.
+              fullText = "";
+              setStreamingContent("");
             } else if (parsed.scheduled_proposal) {
               // Inject the proposal marker into client fullText for live display
               // (the server appended the same marker to its persisted copy).

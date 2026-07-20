@@ -80,6 +80,55 @@ export interface AIProviderConfig {
  *  to reduce hallucination while preserving creativity for content writing. */
 const DEFAULT_CHAT_TEMPERATURE = 0.4;
 
+/* ─────────────── Stream stall watchdog ─────────────── */
+
+/** A model stream that emits nothing for this long is treated as hung. Without
+ *  this, a stalled SDK stream silently burns the route's maxDuration and the
+ *  user is left with a dangling "let me look that up…" and no answer
+ *  (the WBCSD meeting-search bug, 2026-07-17). */
+const STREAM_STALL_MS = 90_000;
+
+class StreamStallError extends Error {
+  constructor() {
+    super(`Model stream stalled — no events for ${STREAM_STALL_MS / 1000}s`);
+    this.name = "StreamStallError";
+  }
+}
+
+/** Wraps an async iterable so every next() races an inactivity timer. */
+async function* withStallGuard<T>(iterable: AsyncIterable<T>): AsyncGenerator<T> {
+  const it = iterable[Symbol.asyncIterator]();
+  let finished = false;
+  try {
+    while (true) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const res = await Promise.race([
+        it.next(),
+        new Promise<never>((_, rej) => {
+          timer = setTimeout(() => rej(new StreamStallError()), STREAM_STALL_MS);
+        }),
+      ]).finally(() => clearTimeout(timer));
+      if (res.done) { finished = true; return; }
+      yield res.value; // a consumer break/throw resumes in the finally below
+    }
+  } finally {
+    // Close the source on EVERY early exit — stall, source error, or the
+    // consumer leaving (client disconnect → enqueue throws → for-await calls
+    // our return(), which does NOT run catch blocks, only finally). Without
+    // this the SDK keeps generating — and billing — after the user is gone;
+    // SDK return()/abort() cancels the upstream HTTP request.
+    if (!finished) {
+      try { void Promise.resolve(it.return?.() as any).catch(() => {}); } catch { /* already closed */ }
+    }
+  }
+}
+
+/** Injected before the forced final round when a tool loop ends abnormally
+ *  (round cap, no-progress break, or stall) — the model must answer from the
+ *  tool results it already has instead of announcing more lookups. */
+const FORCED_FINAL_NUDGE =
+  "SYSTEM NOTE (not from the user — never acknowledge or mention it): tools are no longer available this turn. Using ONLY the information already gathered above, answer the user's question fully and directly RIGHT NOW. If something could not be retrieved, say what you found and what remains unverified. Do not say you will look anything up, do not promise follow-ups, and do not repeat text you already wrote.";
+
 /** Model-appropriate sampling/thinking params for an Anthropic chat request.
  *  Rules live in lib/ai/anthropic-params.ts (shared with the direct RFP/voice callers). */
 function anthropicModelParams(apiModel: string, config: AIProviderConfig): Record<string, unknown> {
@@ -151,7 +200,7 @@ export function formatMeetingBrainResult(report: string, result: { data: any; co
   const payload = isArray ? sample : result.data;
   const truncNote = isArray && rows.length > MAX_TOOL_RESULT_ROWS ? `\n(showing first ${MAX_TOOL_RESULT_ROWS} of ${rows.length})` : "";
   const hintNote = result.hint ? `\n\n${result.hint}` : "";
-  return `MeetingBrain ${report}: ${result.count} results\n${JSON.stringify(payload, null, 2)}${truncNote}${hintNote}`;
+  return `MeetingBrain ${report}: ${result.count} results\n${JSON.stringify(payload, null, 2)}${truncNote}${hintNote}\n(Internal fields like client_id / meeting ids are for YOUR follow-up tool calls only — never write raw ids in your reply to the user; use names and dates.)`;
 }
 
 /* ─────────────── Fuzzy matching (voice transcription drift) ─────────────── */
@@ -4214,6 +4263,15 @@ async function streamAnthropic(
   // Tool use loop: Claude may request tool calls, which we execute and feed back.
   // Loop continues until the model's stop_reason is "end_turn" (no more tool calls).
   const MAX_TOOL_ROUNDS = 8; // Safety limit to prevent infinite loops
+  // True only when the model finished with a natural stop (no pending tool
+  // desire). Any other exit — round cap, no-progress break, stall — must go
+  // through the forced final answer so the user never gets a dangling
+  // "let me pull the details…" with no answer.
+  let loopEndedCleanly = false;
+  // A stall that leaves NOTHING salvageable (empty text even after the forced
+  // final) must rethrow so the provider fallback fires instead of persisting a
+  // blank reply as a successful completion.
+  let stalledOut = false;
   // No-progress guard (mirrors the xAI loop): stop the model re-calling the
   // same tool with no progress, which produces a wall of repeated text.
   const executedToolSigs = new Set<string>();
@@ -4235,7 +4293,9 @@ async function streamAnthropic(
     let currentToolName = "";
     let currentToolInput = "";
 
-    for await (const event of stream) {
+    let stalled = false;
+    try {
+    for await (const event of withStallGuard(stream)) {
       // Detect server tool use (web search — handled by Anthropic internally)
       if (event.type === "content_block_start") {
         const block = (event as any).content_block;
@@ -4321,6 +4381,17 @@ async function streamAnthropic(
       }
     }
 
+    } catch (e) {
+      if (e instanceof StreamStallError) {
+        console.warn(`[Anthropic] Round ${round} stalled mid-stream — aborting tool loop, forcing final answer from gathered context`);
+        stalled = true;
+        stalledOut = true;
+      } else {
+        throw e;
+      }
+    }
+    if (stalled) break;
+
     // Get usage from this round
     const finalMessage = await stream.finalMessage();
     totalInputTokens += finalMessage.usage?.input_tokens || 0;
@@ -4330,7 +4401,15 @@ async function streamAnthropic(
 
     // If no tool calls were made, we're done
     if (finalMessage.stop_reason !== "tool_use" || toolUseBlocks.length === 0) {
+      loopEndedCleanly = true;
       break;
+    }
+
+    // Round separator: the next round's narration must not jam straight into
+    // this round's text ("…details directly.Found it…").
+    if (fullText.trim() && !fullText.endsWith("\n")) {
+      fullText += "\n\n";
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
     }
 
     // Execute tool calls and build tool results
@@ -5035,22 +5114,36 @@ async function streamAnthropic(
     if (!executedAnyTool) break;
   }
 
-  // If the loop exhausted all rounds without generating text, do one final
-  // round with tools disabled to force the model to produce a text response
-  // from whatever tool context has been gathered.
-  if (!fullText.trim() && anthropicMessages.length > 1) {
-    console.log(`[Anthropic] Tool loop produced no text after ${MAX_TOOL_ROUNDS} rounds — forcing final response`);
+  // Forced final answer: fires when the loop ended ANY way other than a natural
+  // stop (round cap, no-progress break, stall) or produced no text at all. One
+  // tools-disabled round turns the gathered tool context into an actual answer
+  // instead of leaving a dangling "let me pull the details…".
+  if ((!loopEndedCleanly || !fullText.trim()) && anthropicMessages.length > 1) {
+    console.log(`[Anthropic] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
     try {
+      // Keep roles alternating: append the nudge to the trailing user message
+      // (tool results) if there is one, else push a fresh user message.
+      const nudgeBlock = { type: "text" as const, text: FORCED_FINAL_NUDGE };
+      const lastMsg: any = anthropicMessages[anthropicMessages.length - 1];
+      if (lastMsg?.role === "user" && Array.isArray(lastMsg.content)) lastMsg.content.push(nudgeBlock);
+      else anthropicMessages.push({ role: "user", content: [nudgeBlock] } as any);
+      if (fullText.trim() && !fullText.endsWith("\n")) {
+        fullText += "\n\n";
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+      }
       const finalStream = anthropic.messages.stream({
         model: apiModel,
         max_tokens: config.maxTokens || 4096,
         ...anthropicModelParams(apiModel, config),
         system: systemText,
         messages: anthropicMessages,
-        // No tools — forces a text-only response
+        // tools MUST be passed when the history contains tool_use/tool_result
+        // blocks — the API 400s otherwise. tool_choice "none" is what actually
+        // forces a text-only response.
+        ...(tools.length > 0 ? { tools, tool_choice: { type: "none" as const } } : {}),
       });
 
-      for await (const event of finalStream) {
+      for await (const event of withStallGuard(finalStream)) {
         if (
           event.type === "content_block_delta" &&
           (event.delta as any).type === "text_delta"
@@ -5070,6 +5163,13 @@ async function streamAnthropic(
     } catch (err: any) {
       console.error(`[Anthropic] Forced final response failed:`, err.message);
     }
+  }
+
+  // Stalled AND nothing to show (round-0 stall on a fresh chat, or the rescue
+  // itself failed): rethrow so createStreamingResponse's provider fallback
+  // takes the turn — never persist a blank reply as a successful completion.
+  if (stalledOut && !fullText.trim()) {
+    throw new StreamStallError();
   }
 
   return { fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
@@ -5164,6 +5264,7 @@ async function streamXAIChatCompletions(
 
   // Tool use loop: model may request tool calls, which we execute and feed back
   const MAX_TOOL_ROUNDS = 8;
+  let loopEndedCleanly = false; // natural stop — anything else forces a final answer
   // No-progress guard against the "tail-chasing spiral": a model that wants a
   // capability it lacks this turn (e.g. asks to "run a web search" when no web
   // tool is available) calls its one available tool (query_engine) over and
@@ -5189,7 +5290,9 @@ async function streamXAIChatCompletions(
     const toolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
     let finishReason = "";
 
-    for await (const chunk of stream) {
+    let stalled = false;
+    try {
+    for await (const chunk of withStallGuard(stream)) {
       const choice = chunk.choices?.[0];
       if (!choice) {
         // Usage-only chunk
@@ -5273,6 +5376,19 @@ async function streamXAIChatCompletions(
         totalOutputTokens += (chunk as any).usage.completion_tokens || 0;
       }
     }
+    } catch (e) {
+      if (e instanceof StreamStallError && round > 0) {
+        // Rounds complete atomically, so round > 0 means earlier rounds already
+        // executed tools — salvage that context via the forced final answer.
+        // A round-0 stall has nothing to salvage: rethrow so the provider
+        // fallback restarts the turn cleanly (no duplicate side effects).
+        console.warn(`[xAI] Round ${round} stalled mid-stream — forcing final answer from gathered context`);
+        stalled = true;
+      } else {
+        throw e;
+      }
+    }
+    if (stalled) break;
 
     // Add web_search indicator detection (xAI specific)
     // Already handled inline above with the other tool indicators
@@ -5281,7 +5397,15 @@ async function streamXAIChatCompletions(
 
     // If no tool calls, we're done
     if (finishReason !== "tool_calls" || toolCalls.size === 0) {
+      loopEndedCleanly = true;
       break;
+    }
+
+    // Round separator: the next round's narration must not jam straight into
+    // this round's text ("…details directly.Found it…").
+    if (fullText.trim() && !fullText.endsWith("\n")) {
+      fullText += "\n\n";
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
     }
 
     // Build the assistant message with tool_calls for the conversation
@@ -5579,11 +5703,17 @@ async function streamXAIChatCompletions(
     // Don't reset — we want to accumulate all text across rounds
   }
 
-  // If the loop exhausted all rounds without generating text, do one final
-  // round with tools disabled to force a text response.
-  if (!fullText.trim() && openaiMessages.length > 1) {
-    console.log(`[xAI] Tool loop produced no text after ${MAX_TOOL_ROUNDS} rounds — forcing final response`);
+  // Forced final answer: fires when the loop ended ANY way other than a natural
+  // stop, or produced no text — turns gathered tool context into an actual
+  // answer instead of a dangling "let me pull the details…".
+  if ((!loopEndedCleanly || !fullText.trim()) && openaiMessages.length > 1) {
+    console.log(`[xAI] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
     try {
+      openaiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
+      if (fullText.trim() && !fullText.endsWith("\n")) {
+        fullText += "\n\n";
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+      }
       // Use max_completion_tokens for Grok-4 (same logic as main loop)
       const finalTokenParam = apiModel.startsWith("grok-4")
         ? { max_completion_tokens: config.maxTokens || 4096 }
@@ -5594,8 +5724,11 @@ async function streamXAIChatCompletions(
         ...finalTokenParam,
         messages: openaiMessages as any,
         stream: true,
+        // History contains tool_calls/tool messages — keep tools declared but
+        // forbid calling them so this round must produce text.
+        ...(tools.length > 0 ? { tools, tool_choice: "none" } : {}),
       });
-      for await (const chunk of finalStream) {
+      for await (const chunk of withStallGuard(finalStream)) {
         const token = chunk.choices?.[0]?.delta?.content;
         if (token) {
           fullText += token;
@@ -5754,6 +5887,7 @@ async function streamGemini(
 
   // Tool use loop: model may request tool calls, which we execute and feed back
   const MAX_TOOL_ROUNDS = 8;
+  let loopEndedCleanly = false; // natural stop — anything else forces a final answer
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const stream = (await client.chat.completions.create({
       model: apiModel,
@@ -5768,7 +5902,9 @@ async function streamGemini(
     const toolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
     let finishReason = "";
 
-    for await (const chunk of stream) {
+    let stalled = false;
+    try {
+    for await (const chunk of withStallGuard(stream)) {
       const choice = chunk.choices?.[0];
       if (!choice) {
         if ((chunk as any).usage) {
@@ -5849,10 +5985,30 @@ async function streamGemini(
         totalOutputTokens += (chunk as any).usage.completion_tokens || 0;
       }
     }
+    } catch (e) {
+      if (e instanceof StreamStallError && round > 0) {
+        // Rounds complete atomically, so round > 0 means earlier rounds already
+        // executed tools — salvage that context via the forced final answer.
+        // A round-0 stall has nothing to salvage: rethrow to the outer handler.
+        console.warn(`[AI] Tool round ${round} stalled mid-stream — forcing final answer from gathered context`);
+        stalled = true;
+      } else {
+        throw e;
+      }
+    }
+    if (stalled) break;
 
     // If no tool calls, we're done
     if (finishReason !== "tool_calls" || toolCalls.size === 0) {
+      loopEndedCleanly = true;
       break;
+    }
+
+    // Round separator: the next round's narration must not jam straight into
+    // this round's text ("…details directly.Found it…").
+    if (fullText.trim() && !fullText.endsWith("\n")) {
+      fullText += "\n\n";
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
     }
 
     // Build the assistant message with tool_calls
@@ -6114,19 +6270,28 @@ async function streamGemini(
     }
   }
 
-  // If the loop exhausted all rounds without generating text, do one final
-  // round with tools disabled to force a text response.
-  if (!fullText.trim() && geminiMessages.length > 1) {
-    console.log(`[Gemini] Tool loop produced no text after ${MAX_TOOL_ROUNDS} rounds — forcing final response`);
+  // Forced final answer: fires when the loop ended ANY way other than a natural
+  // stop, or produced no text — turns gathered tool context into an actual
+  // answer instead of a dangling "let me pull the details…".
+  if ((!loopEndedCleanly || !fullText.trim()) && geminiMessages.length > 1) {
+    console.log(`[Gemini] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
     try {
+      geminiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
+      if (fullText.trim() && !fullText.endsWith("\n")) {
+        fullText += "\n\n";
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+      }
       const finalStream = await client.chat.completions.create({
         model: apiModel,
         temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
         max_tokens: config.maxTokens || 4096,
         messages: geminiMessages as any,
         stream: true,
+        // History contains tool_calls/tool messages — keep tools declared but
+        // forbid calling them so this round must produce text.
+        ...(tools.length > 0 ? { tools, tool_choice: "none" } : {}),
       });
-      for await (const chunk of finalStream) {
+      for await (const chunk of withStallGuard(finalStream)) {
         const token = chunk.choices?.[0]?.delta?.content;
         if (token) {
           fullText += token;
@@ -6207,6 +6372,7 @@ async function streamOpenAI(
 
   // Tool use loop: model may request tool calls, which we execute and feed back
   const MAX_TOOL_ROUNDS = 8;
+  let loopEndedCleanly = false; // natural stop — anything else forces a final answer
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const stream = (await client.chat.completions.create({
       model: apiModel,
@@ -6222,7 +6388,9 @@ async function streamOpenAI(
     const toolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
     let finishReason = "";
 
-    for await (const chunk of stream) {
+    let stalled = false;
+    try {
+    for await (const chunk of withStallGuard(stream)) {
       const choice = chunk.choices?.[0];
       if (!choice) {
         if ((chunk as any).usage) {
@@ -6304,10 +6472,30 @@ async function streamOpenAI(
         totalOutputTokens += (chunk as any).usage.completion_tokens || 0;
       }
     }
+    } catch (e) {
+      if (e instanceof StreamStallError && round > 0) {
+        // Rounds complete atomically, so round > 0 means earlier rounds already
+        // executed tools — salvage that context via the forced final answer.
+        // A round-0 stall has nothing to salvage: rethrow to the outer handler.
+        console.warn(`[AI] Tool round ${round} stalled mid-stream — forcing final answer from gathered context`);
+        stalled = true;
+      } else {
+        throw e;
+      }
+    }
+    if (stalled) break;
 
     // If no tool calls, we're done
     if (finishReason !== "tool_calls" || toolCalls.size === 0) {
+      loopEndedCleanly = true;
       break;
+    }
+
+    // Round separator: the next round's narration must not jam straight into
+    // this round's text ("…details directly.Found it…").
+    if (fullText.trim() && !fullText.endsWith("\n")) {
+      fullText += "\n\n";
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
     }
 
     // Build the assistant message with tool_calls for the conversation
@@ -6568,19 +6756,28 @@ async function streamOpenAI(
     }
   }
 
-  // If the loop exhausted all rounds without generating text, do one final
-  // round with tools disabled to force a text response.
-  if (!fullText.trim() && openaiMessages.length > 1) {
-    console.log(`[${options?.providerLabel ?? "OpenAI"}] Tool loop produced no text after ${MAX_TOOL_ROUNDS} rounds — forcing final response`);
+  // Forced final answer: fires when the loop ended ANY way other than a natural
+  // stop, or produced no text — turns gathered tool context into an actual
+  // answer instead of a dangling "let me pull the details…".
+  if ((!loopEndedCleanly || !fullText.trim()) && openaiMessages.length > 1) {
+    console.log(`[${options?.providerLabel ?? "OpenAI"}] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
     try {
+      openaiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
+      if (fullText.trim() && !fullText.endsWith("\n")) {
+        fullText += "\n\n";
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+      }
       const finalStream = await client.chat.completions.create({
         model: apiModel,
         temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
         max_tokens: config.maxTokens || 4096,
         messages: openaiMessages as any,
         stream: true,
+        // History contains tool_calls/tool messages — keep tools declared but
+        // forbid calling them so this round must produce text.
+        ...(tools.length > 0 ? { tools, tool_choice: "none" } : {}),
       });
-      for await (const chunk of finalStream) {
+      for await (const chunk of withStallGuard(finalStream)) {
         const token = chunk.choices?.[0]?.delta?.content;
         if (token) {
           fullText += token;
