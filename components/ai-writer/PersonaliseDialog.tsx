@@ -21,7 +21,7 @@ interface PersonaliseDialogProps {
   onClose: () => void;
 }
 
-type Tab = "context" | "roles";
+type Tab = "context" | "company" | "roles";
 
 /* ─────────────── Main Dialog ─────────────── */
 
@@ -46,6 +46,7 @@ export default function PersonaliseDialog({
           {(
             [
               { key: "context" as Tab, label: "Context" },
+              { key: "company" as Tab, label: "Company" },
               { key: "roles" as Tab, label: "Roles" },
             ] as const
           ).map((t) => (
@@ -67,6 +68,7 @@ export default function PersonaliseDialog({
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {activeTab === "context" && <ContextTab />}
+          {activeTab === "company" && <CompanyTab workspaceId={workspaceId} />}
           {activeTab === "roles" && (
             <PersonalRolesTab workspaceId={workspaceId} />
           )}
@@ -144,6 +146,94 @@ function ContextTab() {
         onChange={(e) => setPersonalContext(e.target.value)}
         placeholder="e.g. I'm the Head of Content. I prefer British English. I like concise, punchy copy..."
         className="w-full h-40 rounded-lg border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none"
+      />
+
+      <div className="flex justify-end">
+        <Button onClick={handleSave} disabled={!isDirty || saving} size="sm">
+          {saving ? (
+            <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
+          ) : (
+            <Save className="h-4 w-4 mr-1.5" />
+          )}
+          Save
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   COMPANY TAB — workspace-level "about us" context
+   ═══════════════════════════════════════════════════ */
+
+function CompanyTab({ workspaceId }: { workspaceId: string }) {
+  const [companyContext, setCompanyContext] = useState("");
+  const [savedContext, setSavedContext] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const isDirty = companyContext !== savedContext;
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`/api/ai/settings?workspaceId=${workspaceId}`);
+        if (!res.ok) throw new Error("Failed to load settings");
+        const data = await res.json();
+        const ctx = data.companyContext || "";
+        setCompanyContext(ctx);
+        setSavedContext(ctx);
+      } catch {
+        toast.error("Failed to load company context");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [workspaceId]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/ai/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, companyContext }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Failed to save");
+      }
+      setSavedContext(companyContext);
+      toast.success("Company context saved — it now applies to every conversation");
+    } catch (e: any) {
+      toast.error(e.message === "Admin access required" ? "Only workspace admins can edit company context" : e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Company-wide context included in EVERY conversation for all workspace
+        members — what the company does, its strategy, and its own products and
+        internal names (so EngineAI never treats your own tools as unknown).
+        Saving requires admin access.
+      </p>
+
+      <textarea
+        value={companyContext}
+        onChange={(e) => setCompanyContext(e.target.value)}
+        placeholder="e.g. The Content Engine is a content marketing agency. We're building an AI-authority practice (GEO/AEO) and our own product AuthorityOn.ai tracks how brands surface in AI search..."
+        className="w-full h-56 rounded-lg border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none"
       />
 
       <div className="flex justify-end">

@@ -61,20 +61,26 @@ async function loadWorkspaceConfig(workspaceId: string) {
   const [typesRes, cuRes, settingsRes] = await Promise.all([
     supabase.from("types_content").select("id_type, key_type, type_content, flag_active").eq("flag_active", 1),
     supabase.from("calculator_content").select("id, name, format, units_content").order("sort_order"),
-    intelligenceDb.from("ai_settings").select("information_format_descriptions, information_type_instructions").eq("id_workspace", workspaceId).maybeSingle(),
+    intelligenceDb.from("ai_settings").select("information_format_descriptions, information_type_instructions, information_company_context").eq("id_workspace", workspaceId).maybeSingle(),
   ]);
+  // Unknown-column fallback while the migration is pending: an unknown column
+  // fails the whole select, which would silently drop format descriptions too.
+  const settingsData: any = settingsRes.error
+    ? (await intelligenceDb.from("ai_settings").select("information_format_descriptions, information_type_instructions").eq("id_workspace", workspaceId).maybeSingle()).data
+    : settingsRes.data;
   const cuData = cuRes.data || [];
   const idToName: Record<string, string> = {};
   cuData.forEach((c: any) => { idToName[c.id] = c.name; });
   const formatDescriptions: Record<string, string> = {};
-  for (const [id, desc] of Object.entries((settingsRes.data?.information_format_descriptions as Record<string, string>) || {})) {
+  for (const [id, desc] of Object.entries((settingsData?.information_format_descriptions as Record<string, string>) || {})) {
     if (desc?.trim()) formatDescriptions[idToName[id] || id] = desc;
   }
   return {
     contentTypes: (typesRes.data || []).map((t: any) => ({ key: t.key_type, name: t.type_content, aiPrompt: null })),
     cuDefinitions: cuData.map((c: any) => ({ format: c.name, category: c.format, units: c.units_content })),
     formatDescriptions,
-    typeInstructions: (settingsRes.data?.information_type_instructions as Record<string, string>) || {},
+    typeInstructions: (settingsData?.information_type_instructions as Record<string, string>) || {},
+    companyContext: (settingsData?.information_company_context as string) || null,
   };
 }
 

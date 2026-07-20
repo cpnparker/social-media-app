@@ -64,6 +64,10 @@ interface WorkspaceConfig {
   cuDefinitions: { format: string; category: string; units: number }[];
   formatDescriptions: Record<string, string>;
   typeInstructions: Record<string, string>;
+  /** Workspace-level "about us": the company's own products, strategy, and
+   *  internal names (e.g. AuthorityOn.ai). Without this the model web-searches
+   *  the company's own tools like a stranger would. */
+  companyContext?: string | null;
 }
 
 interface ClientContext {
@@ -248,6 +252,14 @@ ${FORMATTING_GUIDELINES}`;
   const now = new Date();
   const dateStr = now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   prompt += `\n\nToday's date is ${dateStr}. Always use this as your reference for "today", "this week", "recent", etc. Your training data may be outdated — if the user asks about current events, recent news, industry trends, company information, market data, statistics, or anything that may have changed since your training cutoff, you MUST use web search to get up-to-date information before responding. Never present outdated training data as current fact. When writing content that includes factual claims about a client's industry, competitors, or market — search first, don't guess.`;
+
+  // ── Company context (workspace-level "about us") ──
+  // Identity-level: without this the model treats the company's own products
+  // (e.g. AuthorityOn.ai) as unknown terms and web-searches them.
+  if (workspaceConfig.companyContext?.trim()) {
+    prompt += `\n\n## About the company (the user's own business)\n${workspaceConfig.companyContext.trim()}`;
+    prompt += `\n\nIf the user mentions a product, tool, initiative, or name that sounds internal and isn't covered above, search MeetingBrain meetings and memory FIRST — internal names live in meeting records — before web-searching it or concluding it's unknown.`;
+  }
 
   // ── User identity ──
   if (ctx.userName) {

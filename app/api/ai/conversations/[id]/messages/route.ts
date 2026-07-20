@@ -136,18 +136,31 @@ async function fetchWorkspaceConfig(workspaceId?: string) {
       .order("sort_order"),
   ]);
 
-  // Fetch format descriptions + type instructions from ai_settings
+  // Fetch format descriptions + type instructions + company context from ai_settings
   let formatDescriptions: Record<string, string> = {};
   let typeInstructions: Record<string, string> = {};
+  let companyContext: string | null = null;
   if (workspaceId) {
     try {
-      const { data: settings } = await intelligenceDb
+      let res = await intelligenceDb
         .from("ai_settings")
-        .select("information_format_descriptions, information_type_instructions")
+        .select("information_format_descriptions, information_type_instructions, information_company_context")
         .eq("id_workspace", workspaceId)
         .maybeSingle();
+      if (res.error) {
+        // information_company_context may not exist yet (migration pending) —
+        // an unknown column fails the WHOLE select, so retry without it rather
+        // than silently losing format descriptions too.
+        res = await intelligenceDb
+          .from("ai_settings")
+          .select("information_format_descriptions, information_type_instructions")
+          .eq("id_workspace", workspaceId)
+          .maybeSingle();
+      }
+      const settings: any = res.data;
       formatDescriptions = settings?.information_format_descriptions || {};
       typeInstructions = settings?.information_type_instructions || {};
+      companyContext = settings?.information_company_context || null;
     } catch {
       // Ignore — optional
     }
@@ -180,6 +193,7 @@ async function fetchWorkspaceConfig(workspaceId?: string) {
     })),
     formatDescriptions: resolvedDescriptions,
     typeInstructions,
+    companyContext,
   };
 }
 

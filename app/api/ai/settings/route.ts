@@ -71,6 +71,7 @@ export async function GET(req: NextRequest) {
       availableModels: getAvailableModels(),
       contextConfig: normalizeContextConfig(settings?.config_context),
       cuDescription: settings?.information_cu_description || "",
+      companyContext: settings?.information_company_context || "",
       maxTokens: settings?.units_max_tokens || 4096,
       debugMode: settings?.flag_debug || false,
       cuDefinitions: (cuDefs || []).map((c: any) => ({
@@ -102,7 +103,7 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workspaceId, model, contextConfig, cuDescription, maxTokens, debugMode, formatDescriptions, typeInstructions } = body;
+    const { workspaceId, model, contextConfig, cuDescription, companyContext, maxTokens, debugMode, formatDescriptions, typeInstructions } = body;
 
     if (!workspaceId) {
       return NextResponse.json(
@@ -143,6 +144,7 @@ export async function PATCH(req: NextRequest) {
     if (model !== undefined) updateData.name_model = model;
     if (contextConfig !== undefined) updateData.config_context = contextConfig;
     if (cuDescription !== undefined) updateData.information_cu_description = cuDescription;
+    if (companyContext !== undefined) updateData.information_company_context = String(companyContext).slice(0, 8000);
     if (maxTokens !== undefined) updateData.units_max_tokens = maxTokens;
     if (debugMode !== undefined) updateData.flag_debug = debugMode ? 1 : 0;
 
