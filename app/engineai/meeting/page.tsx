@@ -69,12 +69,15 @@ const QUESTION_SWEEP_COOLDOWN_MS = 15_000; // min gap between question-triggered
  *  sweep and a wall of repeated cards. Only fire when the question is about
  *  something the workspace can actually answer. */
 const DATA_HINT = /\b(unit|units|cu|cus|contract|contracts|pipeline|budget|budgets|commission|commissioned|spend|cost|costs|price|pricing|rate|rates|revenue|remaining|deadline|deadlines|due|task|tasks|action items?|agreed|deliver(ed|ables)?|produced|published|renewal|renews?|utili[sz]ation|invoice[sd]?|retainer|scope)\b/;
+// Event/date questions ("when is the next COP meeting?") deserve an immediate
+// lookup too — the answer comes from the world_context web path, not Engine data.
+const EVENT_HINT = /\b(when|what date|which date|where)\b[\s\S]*\b(next|upcoming|this year|meeting|meetings|summit|conference|event|events|cop\s?\d*|week|deadline|launch|held)\b|\b(next|upcoming)\b[\s\S]*\b(meeting|summit|conference|event|cop\b|week)\b/;
 function isDataQuestion(text: string): boolean {
   const t = text.trim().toLowerCase();
   if (t.length < 8) return false;
   const interrogative = /\?\s*$/.test(t)
     || /^(what|how|when|where|who|why|which|can|could|do|does|did|is|are|was|were|have|has|will|would|should|tell me|remind me|give me)\b/.test(t);
-  return interrogative && DATA_HINT.test(t);
+  return interrogative && (DATA_HINT.test(t) || EVENT_HINT.test(t));
 }
 const CALENDAR_SNIPPET =
   "Note: this meeting uses a live transcription assistant (EngineAI Live) so we can skip note-taking. No audio is recorded and no transcript is kept — only a reviewed summary of decisions and action items. Happy to switch it off on request.";

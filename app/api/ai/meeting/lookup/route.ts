@@ -47,11 +47,13 @@ Return STRICT JSON: {"category": "...", "confidence": 0-1, "insight": "one natur
  *  guessed: a confident wrong date on a mid-meeting card is worse than no card. */
 async function fetchWorldContext(
   topic: string,
+  conversationAsk: string,
   workspaceId: string,
   userId: number
 ): Promise<{ title: string; facts: string[]; source_label: string; source_url: string | null } | null> {
   try {
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const today = new Date().toISOString().slice(0, 10);
     const res = await anthropic.messages.create({
       model: "claude-sonnet-5",
       max_tokens: 700,
@@ -60,7 +62,8 @@ async function fetchWorldContext(
       messages: [
         {
           role: "user",
-          content: `Search the web for current, factual background on: "${topic}".
+          content: `Today is ${today}. Search the web for current, factual background on: "${topic}".
+${conversationAsk ? `The live conversation asked: "${conversationAsk.slice(0, 200)}" — answer THAT.\n` : ""}CRITICAL for recurring events (summits, COPs, annual weeks): the useful edition is the NEXT one on or after ${today} — search for it explicitly, make IT the title and the Dates/Location facts. A past edition (even a famous recent one) may appear only as one trailing context line. If the next edition's details aren't announced yet, say so as a fact ("Next edition: dates not yet announced") rather than leading with the past one.
 Return STRICT JSON only:
 {"title":"official name (+ year/edition)","facts":["Dates: …","Location: …","Theme/agenda: …","one more relevant fact (optional)"],"source_label":"domain of the best source","source_url":"https url of that source"}
 Rules: include ONLY details confirmed by search results you actually read — if dates or location are unconfirmed, OMIT that line entirely; never guess or use training memory for specifics. Each fact <= 90 chars. Max 4 facts. If nothing useful can be confirmed, return {"title":"","facts":[]}. Return ONLY the JSON.`,
@@ -327,7 +330,8 @@ export async function POST(req: NextRequest) {
       };
     } else if (cat === "world_context" && parsed.topic) {
       const topic = String(parsed.topic).slice(0, 120);
-      const wc = await fetchWorldContext(topic, ms.id_workspace, userId);
+      const lastAsk = utterances.length ? String(utterances[utterances.length - 1] || "") : "";
+      const wc = await fetchWorldContext(topic, lastAsk, ms.id_workspace, userId);
       if (wc) {
         card = {
           kind: "world_context",
