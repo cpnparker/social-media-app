@@ -13,55 +13,12 @@
  */
 
 import * as XLSX from "xlsx";
-import crypto from "crypto";
+import { getGoogleAccessToken, googleSaConfigured, googleSaEmail } from "@/lib/gdrive/auth";
 
 const DEFAULT_FILE_ID = "1Skw6rHX5mtQMbkK5anbJrMwEL-2AHDab";
 const CACHE_MS = 10 * 60_000;
 
 let cache: { at: number; buf: ArrayBuffer } | null = null;
-let tokenCache: { at: number; token: string } | null = null;
-
-/* ── Google service-account auth (preferred: the file stays PRIVATE and is
-      shared only with the service account's email as Viewer) ── */
-
-function saConfigured(): boolean {
-  return !!(process.env.GOOGLE_SA_EMAIL && process.env.GOOGLE_SA_PRIVATE_KEY_B64);
-}
-
-function b64url(input: Buffer | string): string {
-  return Buffer.from(input).toString("base64url");
-}
-
-/** Drive read-only access token via the JWT bearer grant (cached ~50 min). */
-async function getGoogleAccessToken(): Promise<string> {
-  if (tokenCache && Date.now() - tokenCache.at < 50 * 60_000) return tokenCache.token;
-  const email = (process.env.GOOGLE_SA_EMAIL || "").trim();
-  const pem = Buffer.from((process.env.GOOGLE_SA_PRIVATE_KEY_B64 || "").trim(), "base64").toString("utf8");
-  const iat = Math.floor(Date.now() / 1000);
-  const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-  const claims = b64url(JSON.stringify({
-    iss: email,
-    scope: "https://www.googleapis.com/auth/drive.readonly",
-    aud: "https://oauth2.googleapis.com/token",
-    iat,
-    exp: iat + 3600,
-  }));
-  const signer = crypto.createSign("RSA-SHA256");
-  signer.update(`${header}.${claims}`);
-  const signature = b64url(signer.sign(pem));
-  const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion: `${header}.${claims}.${signature}`,
-    }),
-  });
-  if (!res.ok) throw new Error(`Google auth failed (${res.status}): ${(await res.text()).slice(0, 160)}`);
-  const tok = await res.json();
-  tokenCache = { at: Date.now(), token: tok.access_token };
-  return tok.access_token;
-}
 
 function excludedSheets(): Set<string> {
   const raw = process.env.FINANCE_FORECAST_EXCLUDE_SHEETS ?? "Salary projections";
@@ -71,7 +28,7 @@ function excludedSheets(): Set<string> {
 async function fetchWorkbook(): Promise<XLSX.WorkBook | { error: string }> {
   if (!cache || Date.now() - cache.at > CACHE_MS) {
     const id = process.env.FINANCE_FORECAST_FILE_ID || DEFAULT_FILE_ID;
-    if (saConfigured()) {
+    if (googleSaConfigured()) {
       // Preferred: private file shared only with the service account.
       try {
         const token = await getGoogleAccessToken();
@@ -80,7 +37,7 @@ async function fetchWorkbook(): Promise<XLSX.WorkBook | { error: string }> {
         });
         if (res.status === 404 || res.status === 403) {
           return {
-            error: `The service account can't see the forecast file — share the Drive file with ${process.env.GOOGLE_SA_EMAIL} as Viewer.`,
+            error: `The service account can't see the forecast file — share the Drive file with ${googleSaEmail()} as Viewer.`,
           };
         }
         if (!res.ok) return { error: `Drive fetch failed (${res.status})` };

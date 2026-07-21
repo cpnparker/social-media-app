@@ -3652,6 +3652,37 @@ export function formatXeroResult(report: string, result: { data: any; count: num
   return `Xero ${report}: ${JSON.stringify(result.data).slice(0, 6000)}\n(Amounts are in the currency shown — never convert or invent figures. Present money with its currency code.)`;
 }
 
+/* ─────────────── Drive Documents Tool (read-only, workspace-wide) ─────────────── */
+
+export const QUERY_DRIVE_DOCS_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "query_drive_docs",
+    description:
+      "READ-ONLY access to Google Drive documents the team has shared with EngineAI (Docs, Sheets, Slides, PDF, Word, Excel, text). Use when the user references a shared document, brief, plan, or asks what documents are available. Ground answers in the ACTUAL document content — quote/summarize what's there, never invent.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "read"], description: "list = what documents are shared; read = fetch one document's content" },
+        name: { type: "string", description: "For read: the document name (partial match ok)" },
+      },
+      required: ["action"],
+    },
+  },
+};
+
+const QUERY_DRIVE_DOCS_TOOL: Anthropic.Tool = {
+  name: "query_drive_docs",
+  description: QUERY_DRIVE_DOCS_OPENAI_TOOL.function.description!,
+  input_schema: { ...(QUERY_DRIVE_DOCS_OPENAI_TOOL.function.parameters as any) },
+};
+
+export function formatDriveDocsResult(result: { data: any; count: number; error?: string; notice?: string }): string {
+  if (result.notice) return result.notice;
+  if (result.error) return `Drive documents query failed: ${result.error}\nTell the user briefly — do not invent document contents.`;
+  return `Drive documents: ${JSON.stringify(result.data).slice(0, 9000)}\n(Quote and summarize from this actual content only.)`;
+}
+
 /* ─────────────── Scheduled Prompt Proposal Tool ─────────────── */
 
 export const CREATE_SCHEDULED_TASK_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
@@ -4296,6 +4327,9 @@ async function streamAnthropic(
   }
   if (config.workspaceId && config.financeAccess) {
     tools.push(QUERY_XERO_TOOL); // executor answers "not connected" gracefully
+  }
+  if (config.workspaceId) {
+    tools.push(QUERY_DRIVE_DOCS_TOOL); // docs shared with the SA = workspace-readable by policy
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
     tools.push(CREATE_SCHEDULED_TASK_TOOL);
@@ -5153,6 +5187,15 @@ async function streamAnthropic(
         } catch (err: any) {
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Xero error: ${err.message}`, is_error: true });
         }
+      } else if (tool.name === "query_drive_docs") {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
+          const { queryDriveDocs } = await import("@/lib/gdrive/docs");
+          const result = await queryDriveDocs(tool.input.action, tool.input.name);
+          toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: formatDriveDocsResult(result) });
+        } catch (err: any) {
+          toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Drive docs error: ${err.message}`, is_error: true });
+        }
       } else {
         // Unknown tool — return error
         toolResults.push({
@@ -5313,6 +5356,9 @@ async function streamXAIChatCompletions(
   }
   if (config.workspaceId && config.financeAccess) {
     tools.push(QUERY_XERO_OPENAI_TOOL); // executor answers "not connected" gracefully
+  }
+  if (config.workspaceId) {
+    tools.push(QUERY_DRIVE_DOCS_OPENAI_TOOL); // docs shared with the SA = workspace-readable by policy
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
     tools.push(CREATE_SCHEDULED_TASK_OPENAI_TOOL);
@@ -5762,6 +5808,16 @@ async function streamXAIChatCompletions(
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Xero error: ${err.message}` } as any);
         }
+      } else if (tc.function.name === "query_drive_docs") {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
+          const input = JSON.parse(tc.function.arguments);
+          const { queryDriveDocs } = await import("@/lib/gdrive/docs");
+          const result = await queryDriveDocs(input.action, input.name);
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatDriveDocsResult(result) } as any);
+        } catch (err: any) {
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Drive docs error: ${err.message}` } as any);
+        }
       } else {
         openaiMessages.push({
           role: "tool",
@@ -5949,6 +6005,9 @@ async function streamGemini(
   }
   if (config.workspaceId && config.financeAccess) {
     tools.push(QUERY_XERO_OPENAI_TOOL); // executor answers "not connected" gracefully
+  }
+  if (config.workspaceId) {
+    tools.push(QUERY_DRIVE_DOCS_OPENAI_TOOL); // docs shared with the SA = workspace-readable by policy
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
     tools.push(CREATE_SCHEDULED_TASK_OPENAI_TOOL);
@@ -6352,6 +6411,16 @@ async function streamGemini(
         } catch (err: any) {
           geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Xero error: ${err.message}` } as any);
         }
+      } else if (tc.function.name === "query_drive_docs") {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
+          const input = JSON.parse(tc.function.arguments);
+          const { queryDriveDocs } = await import("@/lib/gdrive/docs");
+          const result = await queryDriveDocs(input.action, input.name);
+          geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatDriveDocsResult(result) } as any);
+        } catch (err: any) {
+          geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Drive docs error: ${err.message}` } as any);
+        }
       } else {
         geminiMessages.push({
           role: "tool",
@@ -6450,6 +6519,9 @@ async function streamOpenAI(
   }
   if (config.workspaceId && config.financeAccess) {
     tools.push(QUERY_XERO_OPENAI_TOOL); // executor answers "not connected" gracefully
+  }
+  if (config.workspaceId) {
+    tools.push(QUERY_DRIVE_DOCS_OPENAI_TOOL); // docs shared with the SA = workspace-readable by policy
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
     tools.push(CREATE_SCHEDULED_TASK_OPENAI_TOOL);
@@ -6853,6 +6925,16 @@ async function streamOpenAI(
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatXeroResult(input.report, result) } as any);
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Xero error: ${err.message}` } as any);
+        }
+      } else if (tc.function.name === "query_drive_docs") {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
+          const input = JSON.parse(tc.function.arguments);
+          const { queryDriveDocs } = await import("@/lib/gdrive/docs");
+          const result = await queryDriveDocs(input.action, input.name);
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatDriveDocsResult(result) } as any);
+        } catch (err: any) {
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Drive docs error: ${err.message}` } as any);
         }
       } else {
         openaiMessages.push({
