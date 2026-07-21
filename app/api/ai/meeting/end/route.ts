@@ -160,6 +160,17 @@ export async function POST(req: NextRequest) {
         ? `Meeting context provided by the host (use it to disambiguate names/topics):\n${String(context).slice(0, 4000)}\n\nTranscript:\n`
         : "";
       const text = (ctxPrefix + body).slice(0, 120000); // grok-4-1-fast context is ample; cap defensively
+      // Company/team context (roster) so digests attribute names and roles
+      // correctly ("Gar" = Gary Lyness, Finance Manager — not a mystery guest).
+      let companyCtx = "";
+      try {
+        const { data: st } = await intelligenceDb
+          .from("ai_settings")
+          .select("information_company_context")
+          .eq("id_workspace", meetingSession.id_workspace)
+          .maybeSingle();
+        companyCtx = String(st?.information_company_context || "").slice(0, 3500);
+      } catch { /* optional */ }
       try {
         const xai = getXAIClient();
         const res = await xai.chat.completions.create({
@@ -167,7 +178,7 @@ export async function POST(req: NextRequest) {
           temperature: 0.2,
           max_tokens: 1500,
           messages: [
-            { role: "system", content: DIGEST_PROMPT },
+            { role: "system", content: companyCtx ? `${DIGEST_PROMPT}\n\nCompany & team context (use for correct name/role attribution; never copy verbatim into the summary):\n${companyCtx}` : DIGEST_PROMPT },
             { role: "user", content: text },
           ],
         });
