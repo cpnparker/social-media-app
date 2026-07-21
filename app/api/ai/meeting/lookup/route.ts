@@ -106,7 +106,7 @@ export async function POST(req: NextRequest) {
 
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 }); }
-  const { sessionId, enrich, utterances, auto, context, clientHint } = body || {};
+  const { sessionId, enrich, utterances, auto, context, clientHint, recentKinds } = body || {};
   if (!sessionId) return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
 
   const { data: ms } = await intelligenceDb
@@ -245,7 +245,7 @@ export async function POST(req: NextRequest) {
       max_tokens: 120,
       messages: [
         { role: "system", content: LOOKUP_SYSTEM },
-        { role: "user", content: `Scope: ${clientId ? `Client — ${clientName}` : "Workspace-wide (all clients)"}\n\n${context ? `Meeting background (from setup — may describe an internal 1:1 or catch-up):\n${String(context).slice(0, 1200)}\n\n` : ""}Transcript tail:\n${utterances.map((u: string) => String(u).slice(0, 400)).join("\n").slice(0, 2500)}\n\nData:\n${JSON.stringify(dataForLlm).slice(0, 5000)}` },
+        { role: "user", content: `Scope: ${clientId ? `Client — ${clientName}` : "Workspace-wide (all clients)"}\n\n${Array.isArray(recentKinds) && recentKinds.length ? `ALREADY ON SCREEN this meeting (their data is unchanged): ${recentKinds.slice(0, 8).join(", ")} — do NOT pick a category that would repeat one of these; choose a DIFFERENT category or "none" unless the participants are explicitly asking for an updated version.\n\n` : ""}${context ? `Meeting background (from setup — may describe an internal 1:1 or catch-up):\n${String(context).slice(0, 1200)}\n\n` : ""}Transcript tail:\n${utterances.map((u: string) => String(u).slice(0, 400)).join("\n").slice(0, 2500)}\n\nData:\n${JSON.stringify(dataForLlm).slice(0, 5000)}` },
       ],
     });
     logAiUsage({ workspaceId: ms.id_workspace, userId, model: MODEL, source: "engineai-meeting", inputTokens: res.usage?.prompt_tokens || 0, outputTokens: res.usage?.completion_tokens || 0 });

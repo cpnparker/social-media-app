@@ -181,7 +181,11 @@ export default function MeetingLivePage() {
   // Per-card cooldown for auto-surfaced cards (kind+receipt key → lastShownAt).
   // Applies to forced sweeps too — Jess's 1:1 got the same units card 5× when
   // forced sweeps bypassed dedup.
-  const autoShownRef = useRef<Map<string, number>>(new Map());
+  // Content-aware card dedup: a card whose DATA hasn't changed never
+  // resurfaces this session (the old 5-min cooldown let identical
+  // "commissioned this month" cards repeat 3× in one call); changed data may
+  // resurface after a short flicker guard.
+  const autoShownRef = useRef<Map<string, { at: number; content: string }>>(new Map());
   // Most recent client mentioned by name in the transcript (any meeting type) —
   // lets the lookup answer with a CLIENT-SCOPED snapshot instead of a
   // workspace-wide dump when e.g. UBS comes up in an internal 1:1.
@@ -828,19 +832,27 @@ export default function MeetingLivePage() {
       // server answer with THAT client's snapshot instead of workspace-wide.
       const mention = lastMentionedClientRef.current;
       const clientHint = mention && Date.now() - mention.at < 90_000 ? { id: mention.id, name: mention.name } : undefined;
+      // Tell the classifier what's already on screen so it picks something NEW
+      // (or none) instead of re-surfacing the same category every sweep.
+      const recentKinds = Array.from(autoShownRef.current.entries())
+        .filter(([, v]) => Date.now() - v.at < 10 * 60_000)
+        .map(([k]) => k.split(":")[0]);
       const res = await fetch("/api/ai/meeting/lookup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: sessionIdRef.current, utterances: tail, auto: true, context: combinedContext(), clientHint }),
+        body: JSON.stringify({ sessionId: sessionIdRef.current, utterances: tail, auto: true, context: combinedContext(), clientHint, recentKinds }),
       });
       const d = await res.json().catch(() => ({}));
       if (d?.card) {
         // Per-card cooldown (kind+receipt, 5 min) — applies to forced sweeps
         // too, so repeated questions can't wall the screen with duplicates.
         const key = `${d.card.kind}:${d.card.receipt?.label || d.card.receipt?.meeting_title || ""}`;
-        const lastShown = autoShownRef.current.get(key) || 0;
-        if (Date.now() - lastShown > 5 * 60_000) {
-          autoShownRef.current.set(key, Date.now());
+        const content = `${d.card.title}|${d.card.insight || ""}|${JSON.stringify(d.card.body || {})}`;
+        const prev = autoShownRef.current.get(key);
+        // Show only when the card is new for this session OR its data actually
+        // changed (60s flicker guard). Identical data never repeats.
+        if (!prev || (prev.content !== content && Date.now() - prev.at > 60_000)) {
+          autoShownRef.current.set(key, { at: Date.now(), content });
           handleCardFired({
             localId: `auto-${Date.now()}`,
             dbId: d.card.id || null,
