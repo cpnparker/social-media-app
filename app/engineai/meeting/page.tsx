@@ -61,7 +61,7 @@ const STILL_HERE_PROMPT_MS = 2 * 60 * 60 * 1000; // 2h "still in a meeting?"
 const AMBIENT_INTERVAL_MS = 20_000; // how often we consider sweeping
 const AMBIENT_QUIET_MS = 25_000; // only sweep if nothing surfaced for this long
 const AMBIENT_MIN_NEW_UTTS = 1; // …and at least this many new utterances since last sweep
-const QUESTION_SWEEP_COOLDOWN_MS = 15_000; // min gap between question-triggered sweeps
+const QUESTION_SWEEP_COOLDOWN_MS = 6_000; // min gap between question-triggered sweeps (they run in parallel now)
 
 /** DATA-question detector for the immediate-lookup fast path. Real meetings
  *  are full of interpersonal/rhetorical questions ("what would you change?",
@@ -171,7 +171,12 @@ export default function MeetingLivePage() {
   // Ambient auto-lookup loop
   const lastSurfaceAtRef = useRef(0); // last time a card entered the Now zone
   const lastAutoSweepCountRef = useRef(0);
-  const autoSweepingRef = useRef(false);
+  // Lookup concurrency: question-triggered sweeps run in PARALLEL (cap 3) so a
+  // second question never gets silently dropped while a slow web-grounded
+  // lookup is in flight; timer sweeps stay single-flight. Each in-flight
+  // lookup shows a shimmer placeholder at the top of the feed.
+  const activeSweepsRef = useRef(0);
+  const [pendingLookups, setPendingLookups] = useState<{ id: string; label: string }[]>([]);
   const lastQuestionSweepAtRef = useRef(0);
   // Per-card cooldown for auto-surfaced cards (kind+receipt key → lastShownAt).
   // Applies to forced sweeps too — Jess's 1:1 got the same units card 5× when
@@ -758,6 +763,8 @@ export default function MeetingLivePage() {
     const tail = utterancesRef.current.slice(-4).map((u) => u.text).filter(Boolean);
     if (tail.length === 0) { toast("Nothing has been said yet to look up."); return; }
     setLookingUp(true);
+    const placeholderId = `pl-manual-${Date.now()}`;
+    setPendingLookups((p) => [...p, { id: placeholderId, label: tail[tail.length - 1]?.slice(0, 90) || "the last point" }]);
     try {
       const res = await fetch("/api/ai/meeting/lookup", {
         method: "POST",
@@ -787,6 +794,7 @@ export default function MeetingLivePage() {
       toast.error("Lookup failed");
     } finally {
       setLookingUp(false);
+      setPendingLookups((p) => p.filter((x) => x.id !== placeholderId));
     }
   }, [lookingUp, combinedContext]);
 
@@ -796,7 +804,9 @@ export default function MeetingLivePage() {
   // up" case). One grok-4-1-fast call, gated on quiet + new speech + a repeat
   // guard so it can't get noisy or expensive.
   const runAmbientSweep = useCallback(async (force = false) => {
-    if (!sessionIdRef.current || autoSweepingRef.current || pausedRef.current) return;
+    if (!sessionIdRef.current || pausedRef.current) return;
+    // Question sweeps run in parallel (cap 3); timer sweeps stay single-flight.
+    if (activeSweepsRef.current >= (force ? 3 : 1)) return;
     if (!force) {
       // Timer path: only sweep quiet stretches with new speech. A forced
       // (question-triggered) sweep skips both gates — the user just asked.
@@ -807,7 +817,12 @@ export default function MeetingLivePage() {
     lastAutoSweepCountRef.current = utterancesRef.current.length;
     const tail = utterancesRef.current.slice(-6).map((u) => u.text).filter(Boolean);
     if (tail.length === 0) return;
-    autoSweepingRef.current = true;
+    activeSweepsRef.current++;
+    // Immediate feedback: a shimmer placeholder while the lookup runs — for
+    // forced sweeps always (the user just asked), for timer sweeps too (cheap
+    // honesty about background work).
+    const placeholderId = `pl-${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+    setPendingLookups((p) => [...p, { id: placeholderId, label: tail[tail.length - 1]?.slice(0, 90) || "the last point" }]);
     try {
       // Scope hint: a client mentioned by name in the last ~90s lets the
       // server answer with THAT client's snapshot instead of workspace-wide.
@@ -841,7 +856,10 @@ export default function MeetingLivePage() {
         }
       }
     } catch { /* transient — try again next tick */ }
-    finally { autoSweepingRef.current = false; }
+    finally {
+      activeSweepsRef.current--;
+      setPendingLookups((p) => p.filter((x) => x.id !== placeholderId));
+    }
   }, [handleCardFired, combinedContext]);
 
   const pinCard = (card: LiveCard) => {
@@ -908,6 +926,8 @@ export default function MeetingLivePage() {
       autoShownRef.current.clear();
       lastMentionedClientRef.current = null;
       pendingSwitchRef.current = null;
+      setPendingLookups([]);
+      activeSweepsRef.current = 0;
       deckCacheRef.current = new Map();
 
       // Spin up the trigger engine + compile the pre-meeting deck (parallel
@@ -1250,6 +1270,15 @@ export default function MeetingLivePage() {
                    the window is never empty; surfaced cards push them down and
                    nothing ever vanishes into a hidden tab. ── */}
             <div className="flex-1 min-h-0 overflow-y-auto px-2.5 py-2 space-y-2">
+              {pendingLookups.map((p) => (
+                <div key={p.id} className="rounded-xl border border-dashed border-primary/30 bg-primary/[0.03] px-3 py-2.5 flex items-center gap-2.5 animate-pulse">
+                  <Search className="h-3.5 w-3.5 text-primary/70 shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-medium text-foreground/70">Looking up…</div>
+                    <div className="text-[11px] text-muted-foreground/60 truncate">&ldquo;{p.label}&rdquo;</div>
+                  </div>
+                </div>
+              ))}
               {pinnedCards.map((c) => (
                 <MeetingCard key={c.localId} card={c} onDismiss={() => dismissCard(c, "pinned")}
                   onFeedback={(v) => rateCard(c, v)} feedback={feedbacks[c.localId] ?? null} />
@@ -1259,7 +1288,7 @@ export default function MeetingLivePage() {
                 const feed = [...liveCards, ...drawerCards, ...deckCards.filter((c) => !railKinds.has(c.kind))]
                   .filter((c, i, a) => a.findIndex((x) => x.localId === c.localId) === i)
                   .sort((a, b) => (b.firedAt || 0) - (a.firedAt || 0));
-                if (pinnedCards.length === 0 && feed.length === 0) {
+                if (pinnedCards.length === 0 && feed.length === 0 && pendingLookups.length === 0) {
                   return (
                     <div className="flex flex-col items-center justify-center text-center h-full py-8 px-4">
                       <div className="h-9 w-9 rounded-full bg-amber-500/10 flex items-center justify-center mb-2">
