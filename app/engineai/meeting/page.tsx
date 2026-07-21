@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Mic, Pause, Play, Square, Radio, Loader2, AlertTriangle, Copy, Check,
-  ExternalLink, Trash2, FileText, ArrowRightCircle, Search, ChevronDown, ChevronUp,
+  ExternalLink, Trash2, FileText, ArrowRightCircle, Search, ChevronDown, ChevronUp, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -59,7 +59,7 @@ const SESSION_CAP_MS = 3 * 60 * 60 * 1000; // 3h absolute cap
 const STILL_HERE_PROMPT_MS = 2 * 60 * 60 * 1000; // 2h "still in a meeting?"
 // Ambient auto-lookup loop — fills quiet stretches where no keyword fired.
 const AMBIENT_INTERVAL_MS = 20_000; // how often we consider sweeping
-const AMBIENT_QUIET_MS = 40_000; // only sweep if nothing surfaced for this long
+const AMBIENT_QUIET_MS = 25_000; // only sweep if nothing surfaced for this long
 const AMBIENT_MIN_NEW_UTTS = 1; // …and at least this many new utterances since last sweep
 const QUESTION_SWEEP_COOLDOWN_MS = 15_000; // min gap between question-triggered sweeps
 
@@ -104,13 +104,15 @@ export default function MeetingLivePage() {
   const [feedbacks, setFeedbacks] = useState<Record<string, number>>({});
   const [railCards, setRailCards] = useState<LiveCard[]>([]); // always-on client context
   const [railOpen, setRailOpen] = useState(true);
-  const [liveTab, setLiveTab] = useState<"transcript" | "deck" | "drawer">("transcript");
+  // Full-transcript overlay (the old bottom tabs are gone — one feed instead)
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
   const engineRef = useRef<TriggerEngine | null>(null);
 
   // Setup form
   const [clientId, setClientId] = useState<string>("");
   const [title, setTitle] = useState("");
-  const [meetingType, setMeetingType] = useState<"client_checkin" | "sales" | "general">("general");
+  // Meeting type is DYNAMIC: the classifier reads the conversation itself
+  // (internal 1:1 vs client vs sales) — nobody has to declare it upfront.
   const [context, setContext] = useState(""); // prospect name, socials, reports, events…
   const [linkedChat, setLinkedChat] = useState<{ id: string; title: string; msgCount: number; fileCount: number } | null>(null);
   const linkedContextRef = useRef(""); // derived text context from the source chat
@@ -254,7 +256,6 @@ export default function MeetingLivePage() {
       if (!meeting) return;
       mbMeetingIdRef.current = meetingId;
       if (meeting.title) setTitle(String(meeting.title).slice(0, 120));
-      setMeetingType("client_checkin");
       const attendees = Array.isArray(meeting.attendees)
         ? meeting.attendees.map((a: any) => (typeof a === "string" ? a : a?.name || a?.email || "")).filter(Boolean).join(", ")
         : typeof meeting.attendees === "string" ? meeting.attendees : "";
@@ -896,7 +897,7 @@ export default function MeetingLivePage() {
           clientId: clientId || null,
           mbMeetingId: mbMeetingIdRef.current || undefined,
           title: title || (clientId ? `Meeting — ${customers.find((c) => c.id === clientId)?.name || "client"}` : "Live meeting"),
-          meetingType,
+          meetingType: "general",
           consent: { attested: true, method: "verbal" },
           captureDevice: devices.find((d) => d.deviceId === deviceId)?.label || "default",
         }),
@@ -1249,7 +1250,6 @@ export default function MeetingLivePage() {
             customers={customers}
             clientId={clientId} setClientId={setClientId}
             title={title} setTitle={setTitle}
-            meetingType={meetingType} setMeetingType={setMeetingType}
             context={context} setContext={setContext}
             linkedChat={linkedChat} onUnlinkChat={() => { linkedContextRef.current = ""; setLinkedChat(null); }}
             devices={devices} deviceId={deviceId} setDeviceId={setDeviceId}
@@ -1290,27 +1290,46 @@ export default function MeetingLivePage() {
                 >✕</button>
               </div>
             )}
-            {/* ── NOW — surfaced insights, always visible (never hidden on a tab) ── */}
+            {/* ── FEED — every insight in ONE stream: pinned stick on top, then
+                   newest-first. Briefing (deck) cards seed the feed at bind so
+                   the window is never empty; surfaced cards push them down and
+                   nothing ever vanishes into a hidden tab. ── */}
             <div className="flex-1 min-h-0 overflow-y-auto px-2.5 py-2 space-y-2">
               {pinnedCards.map((c) => (
                 <MeetingCard key={c.localId} card={c} onDismiss={() => dismissCard(c, "pinned")}
                   onFeedback={(v) => rateCard(c, v)} feedback={feedbacks[c.localId] ?? null} />
               ))}
-              {liveCards.map((c) => (
-                <MeetingCard key={c.localId} card={c} onPin={() => pinCard(c)} onDismiss={() => dismissCard(c, "live")}
-                  onFeedback={(v) => rateCard(c, v)} feedback={feedbacks[c.localId] ?? null} />
-              ))}
-              {pinnedCards.length === 0 && liveCards.length === 0 && (
-                <div className="flex flex-col items-center justify-center text-center h-full py-8 px-4">
-                  <div className="h-9 w-9 rounded-full bg-amber-500/10 flex items-center justify-center mb-2">
-                    <Radio className="h-4 w-4 text-amber-500/70" />
-                  </div>
-                  <p className="text-[13px] font-medium text-foreground/80">Listening for the moments that matter</p>
-                  <p className="text-[11px] mt-1 leading-snug text-muted-foreground/60 max-w-[15rem]">
-                    Contract, pipeline, past work and commitments surface here as they come up — or tap &ldquo;Look up the last point&rdquo;.
-                  </p>
-                </div>
-              )}
+              {(() => {
+                const railKinds = new Set(railCards.map((r) => r.kind));
+                const feed = [...liveCards, ...drawerCards, ...deckCards.filter((c) => !railKinds.has(c.kind))]
+                  .filter((c, i, a) => a.findIndex((x) => x.localId === c.localId) === i)
+                  .sort((a, b) => (b.firedAt || 0) - (a.firedAt || 0));
+                if (pinnedCards.length === 0 && feed.length === 0) {
+                  return (
+                    <div className="flex flex-col items-center justify-center text-center h-full py-8 px-4">
+                      <div className="h-9 w-9 rounded-full bg-amber-500/10 flex items-center justify-center mb-2">
+                        <Radio className="h-4 w-4 text-amber-500/70" />
+                      </div>
+                      <p className="text-[13px] font-medium text-foreground/80">Listening for the moments that matter</p>
+                      <p className="text-[11px] mt-1 leading-snug text-muted-foreground/60 max-w-[15rem]">
+                        {clientId
+                          ? "Compiling the client briefing — insights land here as the conversation flows."
+                          : "Name a client and their briefing loads automatically; insights, commitments and event background land here as they come up."}
+                      </p>
+                    </div>
+                  );
+                }
+                return feed.map((c) =>
+                  c.source === "deck" ? (
+                    <MeetingCard key={c.localId} card={c} onPin={() => pinDeckCard(c)} />
+                  ) : (
+                    <MeetingCard key={c.localId} card={c}
+                      onPin={() => pinCard(c)}
+                      onDismiss={() => dismissCard(c, c.state === "drawer" ? "drawer" : "live")}
+                      onFeedback={(v) => rateCard(c, v)} feedback={feedbacks[c.localId] ?? null} />
+                  )
+                );
+              })()}
             </div>
 
             {/* ── CONTEXT RAIL — always-on client facts (collapsible) ── */}
@@ -1333,41 +1352,35 @@ export default function MeetingLivePage() {
               </div>
             )}
 
-            {/* ── SECONDARY — transcript / deck / drawer, each with its own scroll ── */}
-            <div className="shrink-0 border-t flex flex-col">
-              <div className="flex items-center gap-1 px-2 py-1.5 text-xs shrink-0">
-                {([
-                  ["transcript", "Transcript"],
-                  ["deck", `Deck${deckCards.length ? ` (${deckCards.length})` : ""}`],
-                  ["drawer", `Drawer${drawerCards.length ? ` (${drawerCards.length})` : ""}`],
-                ] as const).map(([tab, label]) => (
-                  <button key={tab} onClick={() => setLiveTab(tab)}
-                    className={cn("px-2.5 h-6 rounded-full font-medium transition-colors", liveTab === tab ? "bg-secondary text-secondary-foreground" : "text-muted-foreground hover:bg-accent")}>
-                    {label}
+            {/* ── Live transcript TICKER — the "it's hearing me" trust signal,
+                   one glanceable strip; tap for the full transcript ── */}
+            <button
+              onClick={() => setTranscriptOpen(true)}
+              className="shrink-0 border-t px-2.5 py-1.5 text-left bg-card/40 hover:bg-card/70 transition-colors"
+              title="Open the full transcript"
+            >
+              <div className="flex items-center gap-1.5">
+                <Mic className="h-3 w-3 text-muted-foreground/50 shrink-0" />
+                <span className="text-[11px] text-muted-foreground/80 truncate leading-snug flex-1">
+                  {partial || utterances[utterances.length - 1]?.text || "Listening…"}
+                </span>
+                <ChevronUp className="h-3 w-3 text-muted-foreground/40 shrink-0" />
+              </div>
+            </button>
+            {transcriptOpen && (
+              <div className="fixed inset-0 z-50 bg-background flex flex-col">
+                <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b">
+                  <span className="text-sm font-semibold">Transcript <span className="text-[11px] font-normal text-muted-foreground">· ephemeral, nothing recorded</span></span>
+                  <button onClick={() => setTranscriptOpen(false)}
+                    className="h-7 w-7 rounded-full border flex items-center justify-center hover:bg-accent">
+                    <X className="h-3.5 w-3.5" />
                   </button>
-                ))}
+                </div>
+                <div className="flex-1 min-h-0">
+                  <TranscriptPane utterances={utterances} partial={partial} />
+                </div>
               </div>
-              <div className="h-44 shrink-0">
-                {liveTab === "transcript" && <TranscriptPane utterances={utterances} partial={partial} />}
-                {liveTab === "deck" && (
-                  <div className="h-full overflow-y-auto px-2.5 pb-2 space-y-1.5">
-                    {deckCards.length === 0 && <p className="text-[13px] text-muted-foreground/60 py-6 text-center">Compiling client briefing…</p>}
-                    {deckCards.map((c) => (
-                      <MeetingCard key={c.localId} card={c} onPin={() => pinDeckCard(c)} />
-                    ))}
-                  </div>
-                )}
-                {liveTab === "drawer" && (
-                  <div className="h-full overflow-y-auto px-2.5 pb-2 space-y-1.5">
-                    {drawerCards.length === 0 && <p className="text-[13px] text-muted-foreground/60 py-6 text-center">Cards that fired but weren&apos;t shown live land here.</p>}
-                    {drawerCards.map((c) => (
-                      <MeetingCard key={c.localId} card={c} onPin={() => pinCard(c)} onDismiss={() => dismissCard(c, "drawer")}
-                        onFeedback={(v) => rateCard(c, v)} feedback={feedbacks[c.localId] ?? null} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+            )}
 
             {/* ── Manual safety net: force a lookup on the last thing said ── */}
             <div className="shrink-0 border-t p-2 bg-card/60">
@@ -1511,7 +1524,6 @@ function SetupScreen(props: {
   customers: { id: string; name: string }[];
   clientId: string; setClientId: (v: string) => void;
   title: string; setTitle: (v: string) => void;
-  meetingType: "client_checkin" | "sales" | "general"; setMeetingType: (v: any) => void;
   context: string; setContext: (v: string) => void;
   linkedChat: { id: string; title: string; msgCount: number; fileCount: number } | null;
   onUnlinkChat: () => void;
@@ -1576,25 +1588,6 @@ function SetupScreen(props: {
             <button onClick={props.onUnlinkChat} className="text-muted-foreground/50 hover:text-foreground text-xs" title="Remove linked chat">✕</button>
           </div>
         )}
-
-        <div className="flex gap-2">
-          {([
-            ["client_checkin", "Check-in"],
-            ["sales", "Sales / pitch"],
-            ["general", "General"],
-          ] as const).map(([val, label]) => (
-            <button
-              key={val}
-              onClick={() => props.setMeetingType(val)}
-              className={cn(
-                "flex-1 h-8 rounded-lg border text-xs font-medium",
-                props.meetingType === val ? "bg-primary text-primary-foreground border-primary" : "hover:bg-accent"
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
 
         <label className="block">
           <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
