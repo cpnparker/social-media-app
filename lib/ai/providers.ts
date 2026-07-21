@@ -3618,19 +3618,20 @@ export const QUERY_XERO_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   function: {
     name: "query_xero",
     description:
-      "Query the company's Xero accounting data (READ-ONLY): unpaid/overdue invoices, aged receivables, profit & loss, revenue by client. Use for ANY question about invoices, payments, receivables, revenue, or financial performance. Figures come straight from Xero — never estimate, convert, or invent amounts.",
+      "Query the company's finance data (READ-ONLY): Xero accounting (unpaid/overdue invoices, aged receivables, profit & loss, revenue by client) AND the revenue forecast spreadsheet (monthly forecast per client, weighted scenarios, costs). Use for ANY question about invoices, payments, receivables, revenue, forecasts, or financial performance. Figures come straight from the sources — never estimate, convert, or invent amounts.",
     parameters: {
       type: "object",
       properties: {
         report: {
           type: "string",
-          enum: ["unpaid_invoices", "aged_receivables", "profit_and_loss", "revenue_by_client"],
+          enum: ["unpaid_invoices", "aged_receivables", "profit_and_loss", "revenue_by_client", "forecast"],
           description:
-            "unpaid_invoices = approved sales invoices awaiting payment (optionally filter by client_name); aged_receivables = overdue amounts bucketed 0-30/31-60/61-90/90+ with worst offenders; profit_and_loss = P&L lines for a period; revenue_by_client = invoiced + paid totals per client for a period.",
+            "unpaid_invoices = approved sales invoices awaiting payment (optionally filter by client_name); aged_receivables = overdue amounts bucketed 0-30/31-60/61-90/90+ with worst offenders; profit_and_loss = P&L lines for a period; revenue_by_client = invoiced + paid totals per client for a period; forecast = the LIVE revenue forecast workbook (default sheet: booked forecast totals; use the sheet param for others like 'Monthly revenue' per-client detail, weighted scenarios, 'Costs').",
         },
         date_from: { type: "string", description: "ISO date for profit_and_loss / revenue_by_client (default: start of this year)" },
         date_to: { type: "string", description: "ISO date (default: today)" },
         client_name: { type: "string", description: "For unpaid_invoices: filter by contact name (partial match)" },
+        sheet: { type: "string", description: "For forecast: which sheet to read (partial name ok). The result lists available sheets." },
       },
       required: ["report"],
     },
@@ -5143,10 +5144,11 @@ async function streamAnthropic(
       } else if (tool.name === "query_xero") {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
-          const { queryXero } = await import("@/lib/xero/client");
-          const result = await queryXero(tool.input.report, config.workspaceId!, {
-            date_from: tool.input.date_from, date_to: tool.input.date_to, client_name: tool.input.client_name,
-          });
+          const result = tool.input.report === "forecast"
+            ? await (await import("@/lib/finance/forecast")).queryForecast(tool.input.sheet)
+            : await (await import("@/lib/xero/client")).queryXero(tool.input.report, config.workspaceId!, {
+                date_from: tool.input.date_from, date_to: tool.input.date_to, client_name: tool.input.client_name,
+              });
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: formatXeroResult(tool.input.report, result) });
         } catch (err: any) {
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Xero error: ${err.message}`, is_error: true });
@@ -5751,10 +5753,11 @@ async function streamXAIChatCompletions(
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
           const input = JSON.parse(tc.function.arguments);
-          const { queryXero } = await import("@/lib/xero/client");
-          const result = await queryXero(input.report, config.workspaceId!, {
-            date_from: input.date_from, date_to: input.date_to, client_name: input.client_name,
-          });
+          const result = input.report === "forecast"
+            ? await (await import("@/lib/finance/forecast")).queryForecast(input.sheet)
+            : await (await import("@/lib/xero/client")).queryXero(input.report, config.workspaceId!, {
+                date_from: input.date_from, date_to: input.date_to, client_name: input.client_name,
+              });
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatXeroResult(input.report, result) } as any);
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Xero error: ${err.message}` } as any);
@@ -6340,10 +6343,11 @@ async function streamGemini(
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
           const input = JSON.parse(tc.function.arguments);
-          const { queryXero } = await import("@/lib/xero/client");
-          const result = await queryXero(input.report, config.workspaceId!, {
-            date_from: input.date_from, date_to: input.date_to, client_name: input.client_name,
-          });
+          const result = input.report === "forecast"
+            ? await (await import("@/lib/finance/forecast")).queryForecast(input.sheet)
+            : await (await import("@/lib/xero/client")).queryXero(input.report, config.workspaceId!, {
+                date_from: input.date_from, date_to: input.date_to, client_name: input.client_name,
+              });
           geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatXeroResult(input.report, result) } as any);
         } catch (err: any) {
           geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Xero error: ${err.message}` } as any);
@@ -6841,10 +6845,11 @@ async function streamOpenAI(
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
           const input = JSON.parse(tc.function.arguments);
-          const { queryXero } = await import("@/lib/xero/client");
-          const result = await queryXero(input.report, config.workspaceId!, {
-            date_from: input.date_from, date_to: input.date_to, client_name: input.client_name,
-          });
+          const result = input.report === "forecast"
+            ? await (await import("@/lib/finance/forecast")).queryForecast(input.sheet)
+            : await (await import("@/lib/xero/client")).queryXero(input.report, config.workspaceId!, {
+                date_from: input.date_from, date_to: input.date_to, client_name: input.client_name,
+              });
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatXeroResult(input.report, result) } as any);
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Xero error: ${err.message}` } as any);
