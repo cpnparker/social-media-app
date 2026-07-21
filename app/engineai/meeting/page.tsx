@@ -182,11 +182,20 @@ export default function MeetingLivePage() {
   // Transcript-driven client resolution (only when no client was pre-selected)
   const [proposedClient, setProposedClient] = useState<{ id: string; name: string } | null>(null);
   const proposedClientRef = useRef<{ id: string; name: string } | null>(null);
-  // Per-client dismissals: rejecting one bad suggestion ("AI Media") must not
-  // block a later correct client from binding.
-  const dismissedClientIdsRef = useRef<Set<string>>(new Set());
+  // Per-client dismissals with a TTL: rejecting one bad suggestion ("AI
+  // Media") must not block a later correct client — and in multi-client
+  // calls, "not now" shouldn't mean "never this session".
+  const dismissedClientIdsRef = useRef<Map<string, number>>(new Map());
+  const isClientDismissed = (id: string) => (dismissedClientIdsRef.current.get(id) ?? 0) > Date.now() - 5 * 60_000;
   // Latest-ref so the STT closure (defined earlier) can auto-bind.
   const bindClientRef = useRef<(id: string, name: string) => void>(() => {});
+  // Follow-the-conversation switching: first strong mention of a DIFFERENT
+  // client offers a one-tap switch; a second within the window switches
+  // automatically (multi-client weekly connects move fast).
+  const pendingSwitchRef = useRef<{ id: string; firstAt: number } | null>(null);
+  // Per-client briefing cache (cards + T1 trigger lexicons) so switching back
+  // and forth between clients is instant.
+  const deckCacheRef = useRef<Map<string, { deck: LiveCard[]; rail: LiveCard[]; specs: any[]; rawCards: any[] }>>(new Map());
 
   // Optional ?client= / ?thread= prefill from the opener. ?thread loads the
   // source EngineAI chat (messages + shared file names + summary) as context
@@ -376,15 +385,30 @@ export default function MeetingLivePage() {
             const match = resolveClientFromText(u.text, customersRef.current);
             if (match) {
               lastMentionedClientRef.current = { id: match.id, name: match.name, at: Date.now() };
-              if (!clientIdRef.current && !dismissedClientIdsRef.current.has(match.id)) {
-                if (match.strong) {
-                  // The client's actual name was spoken — bind AUTOMATICALLY.
-                  // A chip the user must notice mid-call is how good context
-                  // dies unloaded (the Ceri/Sophie onboarding failure).
-                  void bindClientRef.current(match.id, match.name);
-                } else if (!proposedClientRef.current) {
-                  // Alias-only evidence stays a user-confirmed suggestion.
-                  proposedClientRef.current = match; setProposedClient(match);
+              if (!isClientDismissed(match.id)) {
+                const bound = clientIdRef.current;
+                if (!bound) {
+                  if (match.strong) {
+                    // The client's actual name was spoken — bind AUTOMATICALLY.
+                    // A chip the user must notice mid-call is how good context
+                    // dies unloaded (the Ceri/Sophie onboarding failure).
+                    void bindClientRef.current(match.id, match.name);
+                  } else if (!proposedClientRef.current) {
+                    // Alias-only evidence stays a user-confirmed suggestion.
+                    proposedClientRef.current = match; setProposedClient(match);
+                  }
+                } else if (bound !== match.id && match.strong) {
+                  // Conversation moved to another client: first strong mention
+                  // offers a one-tap switch; a second within 3 minutes follows
+                  // the conversation automatically. A passing comparison
+                  // ("unlike Hiscox…") never switches on its own.
+                  const pending = pendingSwitchRef.current;
+                  if (pending && pending.id === match.id && Date.now() - pending.firstAt < 180_000) {
+                    void bindClientRef.current(match.id, match.name);
+                  } else {
+                    pendingSwitchRef.current = { id: match.id, firstAt: Date.now() };
+                    proposedClientRef.current = match; setProposedClient(match);
+                  }
                 }
               }
             }
@@ -681,10 +705,13 @@ export default function MeetingLivePage() {
         .slice(0, 3)
         .map((c) => ({ ...c, localId: `rail-${c.kind}`, state: "drawer" as const }));
       setRailCards(rail);
-      rail.forEach((c) => enrichCard(c)); // one natural line per rail card
-      engineRef.current?.load(d.triggerSpecs || [], (d.cards || []).map((c: any) => ({
+      const specs = d.triggerSpecs || [];
+      const rawCards = (d.cards || []).map((c: any) => ({
         id: c.id, kind: c.kind, key: c.key, title: c.title, body: c.body, receipt: c.receipt,
-      })));
+      }));
+      if (clientIdRef.current) deckCacheRef.current.set(clientIdRef.current, { deck, rail, specs, rawCards });
+      rail.forEach((c) => enrichCard(c)); // one natural line per rail card
+      engineRef.current?.load(specs, rawCards);
     } catch { /* deck is best-effort; live capture still works */ }
   }, [enrichCard]);
 
@@ -692,8 +719,22 @@ export default function MeetingLivePage() {
    *  persist it, then recompile the deck so the rail/lookup/triggers scope
    *  to them for the rest of the call. */
   const bindClient = useCallback(async (id: string, name: string) => {
+    if (clientIdRef.current === id) return;
     setProposedClient(null);
     proposedClientRef.current = null;
+    pendingSwitchRef.current = null;
+    const prev = clientIdRef.current;
+    if (prev) {
+      // Snapshot the outgoing client's briefing (keep its compiled trigger
+      // specs from compile time) so switching BACK is instant.
+      const prevEntry = deckCacheRef.current.get(prev);
+      deckCacheRef.current.set(prev, {
+        specs: prevEntry?.specs ?? [],
+        rawCards: prevEntry?.rawCards ?? [],
+        deck: deckCardsRef.current,
+        rail: railCardsRef.current,
+      });
+    }
     clientIdRef.current = id;
     setClientId(id);
     try {
@@ -703,12 +744,25 @@ export default function MeetingLivePage() {
         body: JSON.stringify({ sessionId: sessionIdRef.current, clientId: id }),
       });
     } catch { /* best-effort */ }
+    const cached = deckCacheRef.current.get(id);
+    if (cached) {
+      setDeckCards(cached.deck);
+      setRailCards(cached.rail);
+      engineRef.current?.load(cached.specs, cached.rawCards); // T1 lexicons must follow the client
+      toast.success(`Switched to ${name}`);
+      return;
+    }
     if (sessionIdRef.current) await compileDeck(sessionIdRef.current);
-    toast.success(`Now tracking ${name}`);
+    toast.success(prev ? `Switched to ${name}` : `Now tracking ${name}`);
   }, [compileDeck]);
   useEffect(() => {
     bindClientRef.current = (id: string, name: string) => { void bindClient(id, name); };
   }, [bindClient]);
+  // State mirrors for the snapshot above (callbacks must not close over stale arrays)
+  const deckCardsRef = useRef<LiveCard[]>([]);
+  useEffect(() => { deckCardsRef.current = deckCards; }, [deckCards]);
+  const railCardsRef = useRef<LiveCard[]>([]);
+  useEffect(() => { railCardsRef.current = railCards; }, [railCards]);
 
   // Manual "look up the last point" — the safety net when a live trigger missed.
   const [lookingUp, setLookingUp] = useState(false);
@@ -868,7 +922,9 @@ export default function MeetingLivePage() {
       lastMentionedClientRef.current = null;
       setProposedClient(null);
       proposedClientRef.current = null;
-      dismissedClientIdsRef.current = new Set();
+      dismissedClientIdsRef.current = new Map();
+      pendingSwitchRef.current = null;
+      deckCacheRef.current = new Map();
 
       // Spin up the trigger engine + compile the pre-meeting deck (parallel
       // with capture start — the deck lands within ~1s and cards can fire).
@@ -1111,6 +1167,20 @@ export default function MeetingLivePage() {
         </div>
         {stage === "live" && (
           <>
+            <select
+              value={clientId}
+              onChange={(e) => {
+                const c = customers.find((x) => x.id === e.target.value);
+                if (c) void bindClient(c.id, c.name);
+              }}
+              className="h-7 max-w-[140px] rounded-full border bg-background pl-2 pr-1 text-[11px] text-muted-foreground"
+              title="Active client briefing — switch any time; Live also follows the conversation"
+            >
+              <option value="" disabled>Client…</option>
+              {[...customers].sort((a, b) => a.name.localeCompare(b.name)).map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
             <span className="text-xs tabular-nums text-muted-foreground">{fmtTime(elapsed)}</span>
             <button
               onClick={togglePause}
@@ -1197,16 +1267,24 @@ export default function MeetingLivePage() {
               <div className="shrink-0 flex items-center gap-2 px-2.5 py-1.5 border-b bg-primary/5">
                 <Radio className="h-3.5 w-3.5 text-primary shrink-0" />
                 <span className="text-[12px] min-w-0 flex-1 truncate">
-                  Sounds like <span className="font-semibold">{proposedClient.name}</span> — load their briefing?
+                  {clientId
+                    ? <>Now discussing <span className="font-semibold">{proposedClient.name}</span> — switch briefing?</>
+                    : <>Sounds like <span className="font-semibold">{proposedClient.name}</span> — load their briefing?</>}
                 </span>
                 <button
                   onClick={() => bindClient(proposedClient.id, proposedClient.name)}
                   className="text-[11px] font-medium px-2.5 h-6 rounded-full bg-primary text-primary-foreground hover:opacity-90 shrink-0"
                 >
-                  Load
+                  {clientId ? "Switch" : "Load"}
                 </button>
                 <button
-                  onClick={() => { if (proposedClient) dismissedClientIdsRef.current.add(proposedClient.id); setProposedClient(null); proposedClientRef.current = null; }}
+                  onClick={() => {
+                    if (proposedClient) {
+                      dismissedClientIdsRef.current.set(proposedClient.id, Date.now());
+                      if (pendingSwitchRef.current?.id === proposedClient.id) pendingSwitchRef.current = null;
+                    }
+                    setProposedClient(null); proposedClientRef.current = null;
+                  }}
                   className="text-muted-foreground/50 hover:text-foreground shrink-0 text-xs px-1"
                   title="Dismiss"
                 >✕</button>
