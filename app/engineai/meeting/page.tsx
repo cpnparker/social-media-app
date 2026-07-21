@@ -44,6 +44,14 @@ interface Utterance {
 
 const CRASH_BUFFER_KEY = "engineai-live-crash-buffer";
 const DEVICE_KEY = "engineai-live-mic-device";
+
+/** Speakerphones/headsets with onboard DSP (Jabra, Poly…) run HARDWARE echo
+ *  cancellation: everything played through their own speaker — i.e. the
+ *  meeting's far side — is subtracted from their own mic feed. Chrome's
+ *  echoCancellation:false can't reach that DSP, so capturing from these
+ *  devices only ever hears the local speaker. */
+const CONFERENCE_MIC_RE = /jabra|poly[ _-]|plantronic|anker|emeet|owl labs|speak ?\d|evolve|airpod|headset|earbud|buds\b|arctis|wh-10|wf-10/i;
+const BUILTIN_MIC_RE = /built-in|macbook|internal/i;
 const SESSION_CAP_MS = 3 * 60 * 60 * 1000; // 3h absolute cap
 const STILL_HERE_PROMPT_MS = 2 * 60 * 60 * 1000; // 2h "still in a meeting?"
 // Ambient auto-lookup loop — fills quiet stretches where no keyword fired.
@@ -117,6 +125,11 @@ export default function MeetingLivePage() {
   const [attested, setAttested] = useState(false);
   const [devices, setDevices] = useState<{ deviceId: string; label: string }[]>([]);
   const [deviceId, setDeviceId] = useState<string>("");
+  // Meeting-tab audio mixed into the capture (the reliable path when the call
+  // plays through a speakerphone/headset whose mic cancels the far side).
+  const [tabAudioOn, setTabAudioOn] = useState(false);
+  const tabStreamRef = useRef<MediaStream | null>(null);
+  const tabSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const [starting, setStarting] = useState(false);
 
   // Review
@@ -265,7 +278,14 @@ export default function MeetingLivePage() {
         setDevices(mics);
         const saved = localStorage.getItem(DEVICE_KEY);
         if (saved && mics.some((m) => m.deviceId === saved)) setDeviceId(saved);
-        else if (mics[0]) setDeviceId(mics[0].deviceId);
+        else {
+          // Default AWAY from speakerphones/headsets: their hardware AEC
+          // cancels the meeting's far side out of their own mic feed.
+          const builtin = mics.find((m) => BUILTIN_MIC_RE.test(m.label));
+          const nonConference = mics.find((m) => !CONFERENCE_MIC_RE.test(m.label));
+          const pick = builtin || nonConference || mics[0];
+          if (pick) setDeviceId(pick.deviceId);
+        }
       } catch {
         setStatusDetail("Microphone access is required for EngineAI Live");
       }
@@ -469,6 +489,52 @@ export default function MeetingLivePage() {
     setCaptureState("listening");
   }, [connectSTT, deviceId]);
 
+  const stopTabAudio = useCallback(() => {
+    try { tabSourceRef.current?.disconnect(); } catch { /* noop */ }
+    tabStreamRef.current?.getTracks().forEach((t) => t.stop());
+    tabSourceRef.current = null;
+    tabStreamRef.current = null;
+    setTabAudioOn(false);
+  }, []);
+
+  /** Mix the meeting tab's audio into the capture. The AudioWorklet input sums
+   *  every connected source, so mic + tab arrive as one mono stream. */
+  const addTabAudio = useCallback(async () => {
+    const ctx = ctxRef.current;
+    const node = nodeRef.current;
+    if (!ctx || !node) return;
+    try {
+      const disp: MediaStream = await (navigator.mediaDevices as any).getDisplayMedia({
+        video: true, // Chrome requires a video surface in the picker
+        audio: { echoCancellation: false, noiseSuppression: false },
+        selfBrowserSurface: "exclude",
+        systemAudio: "include",
+      });
+      const audioTracks = disp.getAudioTracks();
+      if (!audioTracks.length) {
+        disp.getTracks().forEach((t) => t.stop());
+        toast.error("No audio was shared — pick the MEETING TAB and tick 'Also share tab audio'");
+        return;
+      }
+      disp.getVideoTracks().forEach((t) => t.stop()); // audio is all we need
+      const audioStream = new MediaStream(audioTracks);
+      const src = ctx.createMediaStreamSource(audioStream);
+      src.connect(node);
+      tabStreamRef.current = audioStream;
+      tabSourceRef.current = src;
+      setTabAudioOn(true);
+      // User pressed the browser's own "Stop sharing" bar
+      audioTracks[0].addEventListener("ended", () => {
+        try { tabSourceRef.current?.disconnect(); } catch { /* noop */ }
+        tabSourceRef.current = null;
+        tabStreamRef.current = null;
+        setTabAudioOn(false);
+      });
+    } catch (e: any) {
+      if (e?.name !== "NotAllowedError") toast.error(`Tab audio failed: ${e?.message || e}`);
+    }
+  }, []);
+
   const teardownCapture = useCallback((opts?: { keepState?: boolean }) => {
     closingRef.current = true;
     try { wsRef.current?.send(JSON.stringify({ type: "Terminate" })); } catch { /* noop */ }
@@ -478,6 +544,11 @@ export default function MeetingLivePage() {
     nodeRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    try { tabSourceRef.current?.disconnect(); } catch { /* noop */ }
+    tabStreamRef.current?.getTracks().forEach((t) => t.stop());
+    tabSourceRef.current = null;
+    tabStreamRef.current = null;
+    setTabAudioOn(false);
     ctxRef.current?.close().catch(() => { /* noop */ });
     ctxRef.current = null;
     try { wakeLockRef.current?.release(); } catch { /* noop */ }
@@ -1055,6 +1126,34 @@ export default function MeetingLivePage() {
           <AlertTriangle className="h-3 w-3" /> Mic appears silent — check the input device / hardware mute
         </div>
       )}
+      {stage === "live" && !tabAudioOn && CONFERENCE_MIC_RE.test(devices.find((d) => d.deviceId === deviceId)?.label || "") && (
+        <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 text-[11px] bg-amber-500/10 text-amber-600 dark:text-amber-400">
+          <AlertTriangle className="h-3 w-3 shrink-0" />
+          <span className="min-w-0">
+            This mic&apos;s own echo cancellation removes the meeting&apos;s far side — you&apos;ll only capture yourself.
+            Switch to the laptop mic, or
+          </span>
+          <button onClick={addTabAudio} className="shrink-0 underline font-medium hover:opacity-80">
+            capture the meeting tab&apos;s audio
+          </button>
+        </div>
+      )}
+      {stage === "live" && (
+        <div className="shrink-0 flex items-center gap-2 px-3 py-1 text-[10px] text-muted-foreground border-b bg-background">
+          {tabAudioOn ? (
+            <>
+              <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Meeting tab audio captured
+              </span>
+              <button onClick={stopTabAudio} className="underline hover:text-foreground">stop</button>
+            </>
+          ) : (
+            <button onClick={addTabAudio} className="underline hover:text-foreground" title="Share the meeting tab (tick 'Also share tab audio') so the far side is transcribed even with a headset or speakerphone">
+              + Add meeting tab audio (headset/speakerphone users)
+            </button>
+          )}
+        </div>
+      )}
 
       {/* ── Body ── */}
       <main className={cn("flex-1 min-h-0", stage === "live" ? "overflow-hidden" : "overflow-y-auto")}>
@@ -1415,9 +1514,23 @@ function SetupScreen(props: {
               <option key={d.deviceId} value={d.deviceId}>{d.label}</option>
             ))}
           </select>
-          <span className="block mt-1 text-[10px] text-muted-foreground/70">
-            Tip: with a speakerphone (e.g. Jabra) or laptop speakers the far side is heard through this mic. Headphones will hide the other participants.
-          </span>
+          {CONFERENCE_MIC_RE.test(props.devices.find((d) => d.deviceId === props.deviceId)?.label || "") ? (
+            <span className="mt-1 flex items-start gap-1 text-[10px] text-amber-600 dark:text-amber-400">
+              <AlertTriangle className="h-3 w-3 shrink-0 mt-px" />
+              <span>
+                This looks like a speakerphone/headset. Its built-in echo cancellation removes the meeting&apos;s
+                far side from its own mic — EngineAI would only hear YOU. Pick the laptop&apos;s built-in
+                microphone here (keep using the {props.devices.find((d) => d.deviceId === props.deviceId)?.label?.split(" ")[0] || "device"} for
+                the call itself), or use &quot;Add meeting tab audio&quot; once live.
+              </span>
+            </span>
+          ) : (
+            <span className="block mt-1 text-[10px] text-muted-foreground/70">
+              Tip: use the LAPTOP mic here even when a speakerphone runs the call — it hears both you and the
+              far side from the speaker. Speakerphone/headset mics cancel the far side out (hardware echo
+              cancellation). Wearing headphones? Use &quot;Add meeting tab audio&quot; once live.
+            </span>
+          )}
         </label>
       </div>
 
