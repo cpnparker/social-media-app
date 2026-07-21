@@ -16,8 +16,12 @@ const TOKEN_URL = "https://identity.xero.com/connect/token";
 const API_BASE = "https://api.xero.com/api.xro/2.0";
 const CONNECTIONS_URL = "https://api.xero.com/connections";
 
+// GRANULAR scopes only: apps created on/after 2026-03-02 get invalid_scope for
+// the old broad scopes (accounting.transactions.read / accounting.reports.read).
+// invoices.read covers the Invoices endpoint (unpaid, aged, revenue-by-client
+// are all computed from invoice data); P&L needs its own report scope.
 export const XERO_SCOPES =
-  "openid profile email offline_access accounting.settings.read accounting.transactions.read accounting.contacts.read accounting.reports.read";
+  "openid profile email offline_access accounting.invoices.read accounting.reports.profitandloss.read accounting.contacts.read accounting.settings.read";
 
 export function xeroRedirectUri(): string {
   return (
