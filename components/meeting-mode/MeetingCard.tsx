@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { Pin, X, ThumbsUp, ThumbsDown, FileText, TrendingUp, CalendarClock, Layers, ListChecks, Brain } from "lucide-react";
+import { Pin, X, ThumbsUp, ThumbsDown, FileText, TrendingUp, CalendarClock, Layers, ListChecks, Brain, Globe } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LiveCard } from "@/lib/meeting/trigger-engine";
 
@@ -29,6 +29,7 @@ const KIND_ICON: Record<string, typeof FileText> = {
   units_summary: TrendingUp,
   open_tasks: ListChecks,
   memory_context: Brain,
+  world_context: Globe,
 };
 
 // Left-accent colour by kind — makes the card type readable in a glance.
@@ -43,6 +44,7 @@ const KIND_ACCENT: Record<string, string> = {
   units_summary: "border-l-emerald-500",
   open_tasks: "border-l-teal-500",
   memory_context: "border-l-pink-500",
+  world_context: "border-l-indigo-500",
 };
 const accentOf = (kind: string) => KIND_ACCENT[kind] || "border-l-muted-foreground/30";
 
@@ -102,6 +104,20 @@ export function CardContent({ kind, body }: { kind: string; body: any }) {
             </span>
           </li>
         ))}
+      </ul>
+    );
+  }
+
+  if (kind === "world_context") {
+    const facts: string[] = body?.facts || [];
+    return (
+      <ul className="space-y-1 text-[13px]">
+        {facts.slice(0, 4).map((f, i) => (
+          <li key={i} className="leading-snug">{f}</li>
+        ))}
+        {body?.as_of && (
+          <li className="text-muted-foreground/70 text-[11px]">Checked live · {body.as_of}</li>
+        )}
       </ul>
     );
   }

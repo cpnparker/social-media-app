@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
+import { anthropicCallParams } from "@/lib/ai/anthropic-params";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
@@ -34,11 +36,65 @@ const ENRICH_SYSTEM = `You are a silent meeting copilot for a content agency. A 
 
 const LOOKUP_SYSTEM = `You are a silent meeting copilot for a content agency. Below is the tail of a live meeting transcript and real workspace data (scoped to one client, or workspace-wide across all clients — the scope is stated). Decide which ONE data category best answers what was just asked/discussed, and write a natural one-sentence insight grounded in the REAL numbers.
 
-Categories: "units" (how many content units commissioned/produced this month/period), "contract" (contracts/commercials/CU budgets/renewals), "pipeline" (content in production/published), "meetings" (what was agreed / last discussion / commitments), "content" (examples of past work), "tasks" (the user's open action items / things they committed to — useful in 1:1s and team catch-ups), "memory" (saved workspace knowledge: notes about people, development ideas, past decisions, company facts), "client_snapshot" (a specific client was just mentioned by name — their own contract/pipeline/units snapshot; only when mentioned_client data is present), "none" (nothing relevant). The meeting may be an INTERNAL one (a 1:1, team catch-up) — tasks/memory are often the useful pick there. Only choose a category whose data is actually present below.
+Categories: "units" (how many content units commissioned/produced this month/period), "contract" (contracts/commercials/CU budgets/renewals), "pipeline" (content in production/published), "meetings" (what was agreed / last discussion / commitments), "content" (examples of past work), "tasks" (the user's open action items / things they committed to — useful in 1:1s and team catch-ups), "memory" (saved workspace knowledge: notes about people, development ideas, past decisions, company facts), "client_snapshot" (a specific client was just mentioned by name — their own contract/pipeline/units snapshot; only when mentioned_client data is present), "world_context" (a concrete PUBLIC event, summit, conference or regulation was mentioned — e.g. "CBD COP17", "New York Climate Week", an industry awards — where objective background like dates/location/theme would genuinely help the discussion; put the entity's proper name in "topic"; prefer an internal category whenever both apply), "none" (nothing relevant). The meeting may be an INTERNAL one (a 1:1, team catch-up) — tasks/memory are often the useful pick there. Only choose a category whose data is actually present below (world_context is the exception: its facts are fetched separately with LIVE web search, so for it your insight must say WHY it matters to this conversation and must NOT state dates/locations/details from memory).
 
 IMPORTANT: in a normal conversation MOST moments do not need a card — "none" is the correct answer unless the participants are clearly asking about, or would clearly benefit from, this specific data RIGHT NOW. Never force a category just because data exists; a card that restates numbers nobody asked about is noise. Discussion of strategy, people, roles, pricing IDEAS, or tools usually warrants "none".
 
-Return STRICT JSON: {"category": "...", "confidence": 0-1, "insight": "one natural sentence using the real figures, max ~25 words"}. confidence = how clearly the transcript calls for THIS data. If category is "none", insight is "". Return ONLY the JSON.`;
+Return STRICT JSON: {"category": "...", "confidence": 0-1, "insight": "one natural sentence using the real figures, max ~25 words", "topic": "official name of the public event/entity — ONLY when category is world_context, else omit"}. confidence = how clearly the transcript calls for THIS data. If category is "none", insight is "". Return ONLY the JSON.`;
+
+/** Web-grounded background for a public event/entity ("CBD COP17"). Facts come
+ *  ONLY from live search results — an unconfirmed date is OMITTED, never
+ *  guessed: a confident wrong date on a mid-meeting card is worse than no card. */
+async function fetchWorldContext(
+  topic: string,
+  workspaceId: string,
+  userId: number
+): Promise<{ title: string; facts: string[]; source_label: string; source_url: string | null } | null> {
+  try {
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const res = await anthropic.messages.create({
+      model: "claude-sonnet-5",
+      max_tokens: 700,
+      ...anthropicCallParams("claude-sonnet-5"),
+      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 } as any],
+      messages: [
+        {
+          role: "user",
+          content: `Search the web for current, factual background on: "${topic}".
+Return STRICT JSON only:
+{"title":"official name (+ year/edition)","facts":["Dates: …","Location: …","Theme/agenda: …","one more relevant fact (optional)"],"source_label":"domain of the best source","source_url":"https url of that source"}
+Rules: include ONLY details confirmed by search results you actually read — if dates or location are unconfirmed, OMIT that line entirely; never guess or use training memory for specifics. Each fact <= 90 chars. Max 4 facts. If nothing useful can be confirmed, return {"title":"","facts":[]}. Return ONLY the JSON.`,
+        },
+      ],
+    } as any);
+    logAiUsage({
+      workspaceId,
+      userId,
+      model: "claude-sonnet-5",
+      source: "engineai-meeting",
+      inputTokens: (res as any).usage?.input_tokens || 0,
+      outputTokens: (res as any).usage?.output_tokens || 0,
+    });
+    const text = ((res as any).content || [])
+      .filter((b: any) => b.type === "text")
+      .map((b: any) => b.text)
+      .join("\n");
+    const jm = text.match(/\{[\s\S]*\}/);
+    if (!jm) return null;
+    const parsed = JSON.parse(jm[0]);
+    const facts = Array.isArray(parsed.facts) ? parsed.facts.map((f: any) => String(f).slice(0, 120)).slice(0, 4) : [];
+    if (!facts.length) return null;
+    return {
+      title: String(parsed.title || "").slice(0, 90),
+      facts,
+      source_label: String(parsed.source_label || "").slice(0, 60),
+      source_url: parsed.source_url ? String(parsed.source_url).slice(0, 300) : null,
+    };
+  } catch (e: any) {
+    console.warn("[MeetingLookup] world_context fetch failed:", e?.message);
+    return null;
+  }
+}
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -269,6 +325,22 @@ export async function POST(req: NextRequest) {
         body: { notes: memNotes },
         receipt: { record_type: "ai_memories", label: `${memNotes.length} saved note${memNotes.length === 1 ? "" : "s"}` },
       };
+    } else if (cat === "world_context" && parsed.topic) {
+      const topic = String(parsed.topic).slice(0, 120);
+      const wc = await fetchWorldContext(topic, ms.id_workspace, userId);
+      if (wc) {
+        card = {
+          kind: "world_context",
+          title: wc.title || topic,
+          insight,
+          body: { facts: wc.facts, as_of: new Date().toISOString().slice(0, 10) },
+          receipt: {
+            record_type: "web",
+            label: wc.source_label ? `Live web · ${wc.source_label}` : "Live web search",
+            url: wc.source_url || undefined,
+          },
+        };
+      }
     }
     if (!card) return NextResponse.json({ card: null });
 
