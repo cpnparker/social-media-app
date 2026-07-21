@@ -43,7 +43,10 @@ interface Utterance {
 }
 
 const CRASH_BUFFER_KEY = "engineai-live-crash-buffer";
-const DEVICE_KEY = "engineai-live-mic-device";
+// v2: key bumped 2026-07-20 to invalidate remembered PRE-FIX device choices —
+// many users had the Jabra saved from before we learned speakerphone DSP
+// cancels the far side. New explicit selections (post-warning) persist again.
+const DEVICE_KEY = "engineai-live-mic-device-v2";
 
 /** Speakerphones/headsets with onboard DSP (Jabra, Poly…) run HARDWARE echo
  *  cancellation: everything played through their own speaker — i.e. the
