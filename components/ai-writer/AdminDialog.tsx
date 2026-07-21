@@ -1806,6 +1806,8 @@ function IntegrationsTab({ workspaceId }: { workspaceId: string }) {
       <p className="text-[11px] text-muted-foreground/70">
         Connection is workspace-wide and read-only. Tokens are stored server-side and refreshed
         automatically; if the connection lapses (60 days unused), reconnect here.
+        Who can QUERY the data is per-user: tick the &ldquo;Finance&rdquo; column in
+        Settings → Users (engine subdomain) — nobody has access until ticked.
       </p>
     </div>
   );

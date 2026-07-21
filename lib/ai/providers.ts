@@ -63,6 +63,10 @@ export interface AIProviderConfig {
    *  Set ONLY by the interactive chat route — never by the headless scheduled
    *  runner (a scheduled prompt must not be able to schedule more prompts). */
   enableScheduling?: boolean;
+  /** Per-user finance access (users_access.flag_access_finance — the
+   *  "Finance" column in Settings → Users). Gates the query_xero tool:
+   *  without it, finance questions get no Xero access at all. */
+  financeAccess?: boolean;
   /** Set when this conversation IS a scheduled task's thread — enables the
    *  update_scheduled_task tool (reply-to-refine the standing prompt). */
   scheduledTask?: {
@@ -4289,7 +4293,7 @@ async function streamAnthropic(
     tools.push(MEETINGBRAIN_TOOL);
     tools.push(SLACK_TOOL);
   }
-  if (config.workspaceId) {
+  if (config.workspaceId && config.financeAccess) {
     tools.push(QUERY_XERO_TOOL); // executor answers "not connected" gracefully
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
@@ -5305,7 +5309,7 @@ async function streamXAIChatCompletions(
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
   }
-  if (config.workspaceId) {
+  if (config.workspaceId && config.financeAccess) {
     tools.push(QUERY_XERO_OPENAI_TOOL); // executor answers "not connected" gracefully
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
@@ -5940,7 +5944,7 @@ async function streamGemini(
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
   }
-  if (config.workspaceId) {
+  if (config.workspaceId && config.financeAccess) {
     tools.push(QUERY_XERO_OPENAI_TOOL); // executor answers "not connected" gracefully
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
@@ -6440,7 +6444,7 @@ async function streamOpenAI(
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
   }
-  if (config.workspaceId) {
+  if (config.workspaceId && config.financeAccess) {
     tools.push(QUERY_XERO_OPENAI_TOOL); // executor answers "not connected" gracefully
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {

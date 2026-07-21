@@ -113,9 +113,12 @@ function extractMonitorState(text: string): { state: { facts?: any; condition_me
 export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunResult> {
   const started = Date.now();
   try {
-    const [workspaceConfig, clientsRes] = await Promise.all([
+    const [workspaceConfig, clientsRes, financeRes] = await Promise.all([
       loadWorkspaceConfig(task.id_workspace),
       supabase.from("app_clients").select("id_client"),
+      // Scheduled runs execute with the task OWNER's finance access — a
+      // non-finance user's task must not reach Xero.
+      intelligenceDb.from("users_access").select("flag_access_finance").eq("id_workspace", task.id_workspace).eq("user_target", task.user_created).maybeSingle(),
     ]);
     const workspaceClientIds = (clientsRes.data || []).map((c: any) => c.id_client).filter(Boolean) as number[];
 
@@ -176,6 +179,7 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
           userEmail: task.email_user || undefined,
           conversationVisibility: "private",
           selectedClientId: task.id_client || undefined,
+          financeAccess: !!financeRes?.data?.flag_access_finance,
           source: "scheduled-prompt",
         } as any,
         async (result) => {
