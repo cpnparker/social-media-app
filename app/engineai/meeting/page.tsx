@@ -182,7 +182,11 @@ export default function MeetingLivePage() {
   // Transcript-driven client resolution (only when no client was pre-selected)
   const [proposedClient, setProposedClient] = useState<{ id: string; name: string } | null>(null);
   const proposedClientRef = useRef<{ id: string; name: string } | null>(null);
-  const proposedDismissedRef = useRef(false);
+  // Per-client dismissals: rejecting one bad suggestion ("AI Media") must not
+  // block a later correct client from binding.
+  const dismissedClientIdsRef = useRef<Set<string>>(new Set());
+  // Latest-ref so the STT closure (defined earlier) can auto-bind.
+  const bindClientRef = useRef<(id: string, name: string) => void>(() => {});
 
   // Optional ?client= / ?thread= prefill from the opener. ?thread loads the
   // source EngineAI chat (messages + shared file names + summary) as context
@@ -371,9 +375,17 @@ export default function MeetingLivePage() {
           {
             const match = resolveClientFromText(u.text, customersRef.current);
             if (match) {
-              lastMentionedClientRef.current = { ...match, at: Date.now() };
-              if (!clientIdRef.current && !proposedDismissedRef.current && !proposedClientRef.current) {
-                proposedClientRef.current = match; setProposedClient(match);
+              lastMentionedClientRef.current = { id: match.id, name: match.name, at: Date.now() };
+              if (!clientIdRef.current && !dismissedClientIdsRef.current.has(match.id)) {
+                if (match.strong) {
+                  // The client's actual name was spoken — bind AUTOMATICALLY.
+                  // A chip the user must notice mid-call is how good context
+                  // dies unloaded (the Ceri/Sophie onboarding failure).
+                  void bindClientRef.current(match.id, match.name);
+                } else if (!proposedClientRef.current) {
+                  // Alias-only evidence stays a user-confirmed suggestion.
+                  proposedClientRef.current = match; setProposedClient(match);
+                }
               }
             }
           }
@@ -682,7 +694,6 @@ export default function MeetingLivePage() {
   const bindClient = useCallback(async (id: string, name: string) => {
     setProposedClient(null);
     proposedClientRef.current = null;
-    proposedDismissedRef.current = true;
     clientIdRef.current = id;
     setClientId(id);
     try {
@@ -695,6 +706,9 @@ export default function MeetingLivePage() {
     if (sessionIdRef.current) await compileDeck(sessionIdRef.current);
     toast.success(`Now tracking ${name}`);
   }, [compileDeck]);
+  useEffect(() => {
+    bindClientRef.current = (id: string, name: string) => { void bindClient(id, name); };
+  }, [bindClient]);
 
   // Manual "look up the last point" — the safety net when a live trigger missed.
   const [lookingUp, setLookingUp] = useState(false);
@@ -854,7 +868,7 @@ export default function MeetingLivePage() {
       lastMentionedClientRef.current = null;
       setProposedClient(null);
       proposedClientRef.current = null;
-      proposedDismissedRef.current = false;
+      dismissedClientIdsRef.current = new Set();
 
       // Spin up the trigger engine + compile the pre-meeting deck (parallel
       // with capture start — the deck lands within ~1s and cards can fire).
@@ -1192,7 +1206,7 @@ export default function MeetingLivePage() {
                   Load
                 </button>
                 <button
-                  onClick={() => { setProposedClient(null); proposedClientRef.current = null; proposedDismissedRef.current = true; }}
+                  onClick={() => { if (proposedClient) dismissedClientIdsRef.current.add(proposedClient.id); setProposedClient(null); proposedClientRef.current = null; }}
                   className="text-muted-foreground/50 hover:text-foreground shrink-0 text-xs px-1"
                   title="Dismiss"
                 >✕</button>
