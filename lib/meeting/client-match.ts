@@ -60,6 +60,13 @@ const ACRONYM_STOPWORDS = new Set([
   "ceo", "cfo", "cmo", "coo", "cto", "seo", "geo", "aeo", "cop", "nyc", "b2b",
   "b2c", "faq", "usp", "ui", "ux", "qa", "it", "tv", "app", "llm", "gpt", "q1",
   "q2", "q3", "q4",
+  // ALL-CAPS name fragments that are also everyday spoken words — "Marsh
+  // US/CAN" must never match on the word "can". Any alias that is a common
+  // English word will false-positive on normal speech.
+  "can", "and", "the", "for", "you", "are", "was", "not", "but", "all", "one",
+  "two", "new", "now", "who", "how", "may", "own", "off", "out", "get", "let",
+  "see", "use", "say", "top", "end", "act", "art", "air", "age", "map", "net",
+  "sun", "sky", "way", "day", "man", "men", "car", "van", "hub", "lab", "pro",
 ]);
 
 /**

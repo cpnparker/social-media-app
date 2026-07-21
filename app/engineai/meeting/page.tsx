@@ -181,14 +181,6 @@ export default function MeetingLivePage() {
   // Latest sweep fn, reachable from the STT onmessage closure (created once at
   // session start, so it can't capture the useCallback directly).
   const runAmbientSweepRef = useRef<(force?: boolean) => void>(() => {});
-  // Transcript-driven client resolution (only when no client was pre-selected)
-  const [proposedClient, setProposedClient] = useState<{ id: string; name: string } | null>(null);
-  const proposedClientRef = useRef<{ id: string; name: string } | null>(null);
-  // Per-client dismissals with a TTL: rejecting one bad suggestion ("AI
-  // Media") must not block a later correct client — and in multi-client
-  // calls, "not now" shouldn't mean "never this session".
-  const dismissedClientIdsRef = useRef<Map<string, number>>(new Map());
-  const isClientDismissed = (id: string) => (dismissedClientIdsRef.current.get(id) ?? 0) > Date.now() - 5 * 60_000;
   // Latest-ref so the STT closure (defined earlier) can auto-bind.
   const bindClientRef = useRef<(id: string, name: string) => void>(() => {});
   // Follow-the-conversation switching: first strong mention of a DIFFERENT
@@ -380,36 +372,29 @@ export default function MeetingLivePage() {
           // Feed the trigger engine (T1 regex + T2 batching)
           engineRef.current?.ingest(u.idx, u.text);
           // Track client-name mentions (any meeting type) so lookups can scope
-          // to the client being DISCUSSED; additionally offer to bind when no
-          // client is set (proposed, never silent). At most one live offer.
+          // to the client being DISCUSSED. Binding is SILENT and reactive —
+          // never a question chip. Strong evidence (real name spoken) binds or
+          // switches automatically (toast = feedback, not a question); weak
+          // evidence only feeds lastMentionedClientRef, which the reactive
+          // lookup already uses to surface mentioned-client snapshot cards.
           {
             const match = resolveClientFromText(u.text, customersRef.current);
             if (match) {
               lastMentionedClientRef.current = { id: match.id, name: match.name, at: Date.now() };
-              if (!isClientDismissed(match.id)) {
-                const bound = clientIdRef.current;
-                if (!bound) {
-                  if (match.strong) {
-                    // The client's actual name was spoken — bind AUTOMATICALLY.
-                    // A chip the user must notice mid-call is how good context
-                    // dies unloaded (the Ceri/Sophie onboarding failure).
-                    void bindClientRef.current(match.id, match.name);
-                  } else if (!proposedClientRef.current) {
-                    // Alias-only evidence stays a user-confirmed suggestion.
-                    proposedClientRef.current = match; setProposedClient(match);
-                  }
-                } else if (bound !== match.id && match.strong) {
-                  // Conversation moved to another client: first strong mention
-                  // offers a one-tap switch; a second within 3 minutes follows
-                  // the conversation automatically. A passing comparison
-                  // ("unlike Hiscox…") never switches on its own.
-                  const pending = pendingSwitchRef.current;
-                  if (pending && pending.id === match.id && Date.now() - pending.firstAt < 180_000) {
-                    void bindClientRef.current(match.id, match.name);
-                  } else {
-                    pendingSwitchRef.current = { id: match.id, firstAt: Date.now() };
-                    proposedClientRef.current = match; setProposedClient(match);
-                  }
+              const bound = clientIdRef.current;
+              if (!bound && match.strong) {
+                // The client's actual name was spoken — bind automatically.
+                void bindClientRef.current(match.id, match.name);
+              } else if (bound && bound !== match.id && match.strong) {
+                // Conversation moved to another client: a second strong mention
+                // within 3 minutes follows the conversation. A single passing
+                // comparison ("unlike Hiscox…") never switches — its snapshot
+                // still surfaces reactively via lastMentionedClientRef.
+                const pending = pendingSwitchRef.current;
+                if (pending && pending.id === match.id && Date.now() - pending.firstAt < 180_000) {
+                  void bindClientRef.current(match.id, match.name);
+                } else {
+                  pendingSwitchRef.current = { id: match.id, firstAt: Date.now() };
                 }
               }
             }
@@ -716,13 +701,11 @@ export default function MeetingLivePage() {
     } catch { /* deck is best-effort; live capture still works */ }
   }, [enrichCard]);
 
-  /** Bind a client to the live session (from a confirmed name suggestion),
-   *  persist it, then recompile the deck so the rail/lookup/triggers scope
-   *  to them for the rest of the call. */
+  /** Bind a client to the live session (spoken-name auto-bind or the header
+   *  dropdown), persist it, then load the deck so the rail/lookup/triggers
+   *  scope to them. Silent by design — the toast is feedback, not a question. */
   const bindClient = useCallback(async (id: string, name: string) => {
     if (clientIdRef.current === id) return;
-    setProposedClient(null);
-    proposedClientRef.current = null;
     pendingSwitchRef.current = null;
     const prev = clientIdRef.current;
     if (prev) {
@@ -921,9 +904,6 @@ export default function MeetingLivePage() {
       lastAutoSweepCountRef.current = 0;
       autoShownRef.current.clear();
       lastMentionedClientRef.current = null;
-      setProposedClient(null);
-      proposedClientRef.current = null;
-      dismissedClientIdsRef.current = new Map();
       pendingSwitchRef.current = null;
       deckCacheRef.current = new Map();
 
@@ -1262,34 +1242,6 @@ export default function MeetingLivePage() {
 
         {stage === "live" && (
           <div className="flex flex-col h-full min-h-0">
-            {/* ── Client suggestion — heard a name, no client bound yet ── */}
-            {proposedClient && (
-              <div className="shrink-0 flex items-center gap-2 px-2.5 py-1.5 border-b bg-primary/5">
-                <Radio className="h-3.5 w-3.5 text-primary shrink-0" />
-                <span className="text-[12px] min-w-0 flex-1 truncate">
-                  {clientId
-                    ? <>Now discussing <span className="font-semibold">{proposedClient.name}</span> — switch briefing?</>
-                    : <>Sounds like <span className="font-semibold">{proposedClient.name}</span> — load their briefing?</>}
-                </span>
-                <button
-                  onClick={() => bindClient(proposedClient.id, proposedClient.name)}
-                  className="text-[11px] font-medium px-2.5 h-6 rounded-full bg-primary text-primary-foreground hover:opacity-90 shrink-0"
-                >
-                  {clientId ? "Switch" : "Load"}
-                </button>
-                <button
-                  onClick={() => {
-                    if (proposedClient) {
-                      dismissedClientIdsRef.current.set(proposedClient.id, Date.now());
-                      if (pendingSwitchRef.current?.id === proposedClient.id) pendingSwitchRef.current = null;
-                    }
-                    setProposedClient(null); proposedClientRef.current = null;
-                  }}
-                  className="text-muted-foreground/50 hover:text-foreground shrink-0 text-xs px-1"
-                  title="Dismiss"
-                >✕</button>
-              </div>
-            )}
             {/* ── FEED — every insight in ONE stream: pinned stick on top, then
                    newest-first. Briefing (deck) cards seed the feed at bind so
                    the window is never empty; surfaced cards push them down and
