@@ -221,7 +221,7 @@ interface AdminDialogProps {
   onClose: () => void;
 }
 
-type Tab = "usage" | "context" | "roles" | "formats";
+type Tab = "usage" | "context" | "roles" | "formats" | "integrations";
 
 export default function AdminDialog({ workspaceId, open, onClose }: AdminDialogProps) {
   const [activeTab, setActiveTab] = useState<Tab>("usage");
@@ -240,6 +240,7 @@ export default function AdminDialog({ workspaceId, open, onClose }: AdminDialogP
             { key: "context" as Tab, label: "Context" },
             { key: "formats" as Tab, label: "Formats" },
             { key: "roles" as Tab, label: "Roles" },
+            { key: "integrations" as Tab, label: "Integrations" },
           ]).map((t) => (
             <button
               key={t.key}
@@ -262,6 +263,7 @@ export default function AdminDialog({ workspaceId, open, onClose }: AdminDialogP
           {activeTab === "context" && <ContextTab workspaceId={workspaceId} />}
           {activeTab === "formats" && <FormatsTab workspaceId={workspaceId} />}
           {activeTab === "roles" && <RolesTab workspaceId={workspaceId} />}
+          {activeTab === "integrations" && <IntegrationsTab workspaceId={workspaceId} />}
         </div>
       </DialogContent>
     </Dialog>
@@ -1718,6 +1720,93 @@ function RolesTab({ workspaceId }: { workspaceId: string }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   INTEGRATIONS TAB — external data connections (Xero)
+   ═══════════════════════════════════════════════════ */
+
+function IntegrationsTab({ workspaceId }: { workspaceId: string }) {
+  const [status, setStatus] = useState<{ configured: boolean; connected: boolean; tenantName: string | null; connectedAt: string | null } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const loadStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/xero/status?workspaceId=${workspaceId}`);
+      if (res.ok) setStatus(await res.json());
+    } catch { /* transient */ }
+  }, [workspaceId]);
+
+  useEffect(() => { void loadStatus(); }, [loadStatus]);
+
+  const disconnect = async () => {
+    if (!confirm("Disconnect Xero? EngineAI finance queries will stop working until reconnected.")) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/xero/status?workspaceId=${workspaceId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Disconnect failed");
+      await loadStatus();
+    } catch {
+      // surfaced by status remaining connected
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold">Xero</div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Read-only accounting access: unpaid invoices, aged receivables, P&amp;L and revenue
+              by client — available in chat, EngineAI Live, and scheduled prompts.
+            </p>
+            {status && (
+              <p className="text-xs mt-2">
+                {status.connected ? (
+                  <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                    Connected — {status.tenantName || "organisation"}
+                    {status.connectedAt ? ` · since ${new Date(status.connectedAt).toLocaleDateString()}` : ""}
+                  </span>
+                ) : status.configured ? (
+                  <span className="text-muted-foreground">Not connected yet.</span>
+                ) : (
+                  <span className="text-amber-600 dark:text-amber-400">
+                    Server not configured — add XERO_CLIENT_ID and XERO_CLIENT_SECRET to the environment first.
+                  </span>
+                )}
+              </p>
+            )}
+          </div>
+          <div className="shrink-0">
+            {status?.connected ? (
+              <button
+                onClick={disconnect}
+                disabled={busy}
+                className="h-8 px-3 rounded-lg border text-xs font-medium text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+              >
+                Disconnect
+              </button>
+            ) : (
+              <a
+                href={`/api/xero/connect?workspaceId=${workspaceId}`}
+                className={cn(
+                  "inline-flex items-center h-8 px-3 rounded-lg text-xs font-medium",
+                  status?.configured ? "bg-primary text-primary-foreground hover:opacity-90" : "border text-muted-foreground pointer-events-none opacity-50"
+                )}
+              >
+                Connect Xero
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
+      <p className="text-[11px] text-muted-foreground/70">
+        Connection is workspace-wide and read-only. Tokens are stored server-side and refreshed
+        automatically; if the connection lapses (60 days unused), reconnect here.
+      </p>
     </div>
   );
 }

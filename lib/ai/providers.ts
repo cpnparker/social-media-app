@@ -3607,6 +3607,46 @@ const SEARCH_MEMORY_TOOL: Anthropic.Tool = {
   },
 };
 
+/* ─────────────── Xero Finance Tool (read-only) ─────────────── */
+
+export const QUERY_XERO_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "query_xero",
+    description:
+      "Query the company's Xero accounting data (READ-ONLY): unpaid/overdue invoices, aged receivables, profit & loss, revenue by client. Use for ANY question about invoices, payments, receivables, revenue, or financial performance. Figures come straight from Xero — never estimate, convert, or invent amounts.",
+    parameters: {
+      type: "object",
+      properties: {
+        report: {
+          type: "string",
+          enum: ["unpaid_invoices", "aged_receivables", "profit_and_loss", "revenue_by_client"],
+          description:
+            "unpaid_invoices = approved sales invoices awaiting payment (optionally filter by client_name); aged_receivables = overdue amounts bucketed 0-30/31-60/61-90/90+ with worst offenders; profit_and_loss = P&L lines for a period; revenue_by_client = invoiced + paid totals per client for a period.",
+        },
+        date_from: { type: "string", description: "ISO date for profit_and_loss / revenue_by_client (default: start of this year)" },
+        date_to: { type: "string", description: "ISO date (default: today)" },
+        client_name: { type: "string", description: "For unpaid_invoices: filter by contact name (partial match)" },
+      },
+      required: ["report"],
+    },
+  },
+};
+
+const QUERY_XERO_TOOL: Anthropic.Tool = {
+  name: "query_xero",
+  description: QUERY_XERO_OPENAI_TOOL.function.description!,
+  input_schema: { ...(QUERY_XERO_OPENAI_TOOL.function.parameters as any) },
+};
+
+export function formatXeroResult(report: string, result: { data: any; count: number; error?: string; notice?: string }): string {
+  if (result.notice) return result.notice;
+  if (result.error) {
+    return `Xero query failed (report=${report}): ${result.error}\nTell the user briefly — do NOT invent or estimate figures instead.`;
+  }
+  return `Xero ${report}: ${JSON.stringify(result.data).slice(0, 6000)}\n(Amounts are in the currency shown — never convert or invent figures. Present money with its currency code.)`;
+}
+
 /* ─────────────── Scheduled Prompt Proposal Tool ─────────────── */
 
 export const CREATE_SCHEDULED_TASK_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
@@ -4248,6 +4288,9 @@ async function streamAnthropic(
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_TOOL);
     tools.push(SLACK_TOOL);
+  }
+  if (config.workspaceId) {
+    tools.push(QUERY_XERO_TOOL); // executor answers "not connected" gracefully
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
     tools.push(CREATE_SCHEDULED_TASK_TOOL);
@@ -5093,6 +5136,17 @@ async function streamAnthropic(
         } catch (err: any) {
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Slack error: ${err.message}`, is_error: true });
         }
+      } else if (tool.name === "query_xero") {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
+          const { queryXero } = await import("@/lib/xero/client");
+          const result = await queryXero(tool.input.report, config.workspaceId!, {
+            date_from: tool.input.date_from, date_to: tool.input.date_to, client_name: tool.input.client_name,
+          });
+          toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: formatXeroResult(tool.input.report, result) });
+        } catch (err: any) {
+          toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Xero error: ${err.message}`, is_error: true });
+        }
       } else {
         // Unknown tool — return error
         toolResults.push({
@@ -5250,6 +5304,9 @@ async function streamXAIChatCompletions(
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
+  }
+  if (config.workspaceId) {
+    tools.push(QUERY_XERO_OPENAI_TOOL); // executor answers "not connected" gracefully
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
     tools.push(CREATE_SCHEDULED_TASK_OPENAI_TOOL);
@@ -5686,6 +5743,18 @@ async function streamXAIChatCompletions(
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Slack error: ${err.message}` } as any);
         }
+      } else if (tc.function.name === "query_xero") {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
+          const input = JSON.parse(tc.function.arguments);
+          const { queryXero } = await import("@/lib/xero/client");
+          const result = await queryXero(input.report, config.workspaceId!, {
+            date_from: input.date_from, date_to: input.date_to, client_name: input.client_name,
+          });
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatXeroResult(input.report, result) } as any);
+        } catch (err: any) {
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Xero error: ${err.message}` } as any);
+        }
       } else {
         openaiMessages.push({
           role: "tool",
@@ -5870,6 +5939,9 @@ async function streamGemini(
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
+  }
+  if (config.workspaceId) {
+    tools.push(QUERY_XERO_OPENAI_TOOL); // executor answers "not connected" gracefully
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
     tools.push(CREATE_SCHEDULED_TASK_OPENAI_TOOL);
@@ -6260,6 +6332,18 @@ async function streamGemini(
         } catch (err: any) {
           geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Slack error: ${err.message}` } as any);
         }
+      } else if (tc.function.name === "query_xero") {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
+          const input = JSON.parse(tc.function.arguments);
+          const { queryXero } = await import("@/lib/xero/client");
+          const result = await queryXero(input.report, config.workspaceId!, {
+            date_from: input.date_from, date_to: input.date_to, client_name: input.client_name,
+          });
+          geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatXeroResult(input.report, result) } as any);
+        } catch (err: any) {
+          geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Xero error: ${err.message}` } as any);
+        }
       } else {
         geminiMessages.push({
           role: "tool",
@@ -6355,6 +6439,9 @@ async function streamOpenAI(
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
+  }
+  if (config.workspaceId) {
+    tools.push(QUERY_XERO_OPENAI_TOOL); // executor answers "not connected" gracefully
   }
   if (config.enableScheduling && config.workspaceId && config.userId) {
     tools.push(CREATE_SCHEDULED_TASK_OPENAI_TOOL);
@@ -6745,6 +6832,18 @@ async function streamOpenAI(
           } as any);
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Slack error: ${err.message}` } as any);
+        }
+      } else if (tc.function.name === "query_xero") {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
+          const input = JSON.parse(tc.function.arguments);
+          const { queryXero } = await import("@/lib/xero/client");
+          const result = await queryXero(input.report, config.workspaceId!, {
+            date_from: input.date_from, date_to: input.date_to, client_name: input.client_name,
+          });
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatXeroResult(input.report, result) } as any);
+        } catch (err: any) {
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Xero error: ${err.message}` } as any);
         }
       } else {
         openaiMessages.push({
