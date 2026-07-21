@@ -23,10 +23,15 @@ const contentCache = new Map<string, { at: number; text: string }>();
 interface DriveFile { id: string; name: string; mimeType: string; modifiedTime: string }
 
 async function listShared(): Promise<DriveFile[]> {
-  if (Date.now() - listCache.at < CACHE_MS) return listCache.files;
+  // Short cache, and NEVER cache emptiness for long — a freshly shared file
+  // must show up promptly ("I shared it and the list is still empty" bug).
+  const ttl = listCache.files.length ? 60_000 : 5_000;
+  if (Date.now() - listCache.at < ttl) return listCache.files;
   const token = await getGoogleAccessToken();
   const params = new URLSearchParams({
-    q: "sharedWithMe = true and trashed = false",
+    // NOTE: no `sharedWithMe = true` — that flag is unreliable for service
+    // accounts. An SA owns nothing, so "everything visible" IS the shared set.
+    q: "trashed = false",
     fields: "files(id,name,mimeType,modifiedTime)",
     pageSize: "100",
     orderBy: "name",
@@ -41,6 +46,7 @@ async function listShared(): Promise<DriveFile[]> {
   const files: DriveFile[] = (j.files || [])
     .filter((f: any) => f.id !== FORECAST_FILE_ID) // finance-gated elsewhere
     .filter((f: any) => f.mimeType !== "application/vnd.google-apps.folder");
+  console.log(`[DriveDocs] list: ${files.length} file(s) visible to the service account`);
   listCache.at = Date.now();
   listCache.files = files;
   return files;
