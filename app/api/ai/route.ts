@@ -3,17 +3,17 @@ import OpenAI from "openai";
 import { auth } from "@/lib/auth";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 
-const xai = new OpenAI({
-  apiKey: process.env.XAI_API_KEY!,
-  baseURL: "https://api.x.ai/v1",
-});
+function getXAIClient() {
+  if (!process.env.XAI_API_KEY) throw new Error("XAI_API_KEY is not set");
+  return new OpenAI({ apiKey: process.env.XAI_API_KEY, baseURL: "https://api.x.ai/v1" });
+}
 
 /** Wrapper that calls Grok and returns Anthropic-compatible shape with usage logging */
 async function createAndLog(
   params: { model: string; max_tokens: number; messages: { role: string; content: string }[] },
   source: string
 ): Promise<{ content: { type: "text"; text: string }[]; usage: { input_tokens: number; output_tokens: number } }> {
-  const response = await xai.chat.completions.create({
+  const response = await getXAIClient().chat.completions.create({
     model: params.model,
     max_tokens: params.max_tokens,
     messages: params.messages as OpenAI.ChatCompletionMessageParam[],
