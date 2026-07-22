@@ -2201,11 +2201,28 @@ export async function generateImage(
       "1024x1024";
     const files = await Promise.all(
       referenceImageUrls.slice(0, 4).map(async (u, i) => {
-        const r = await fetch(u);
-        if (!r.ok) throw new Error("Could not fetch an attached reference image");
-        const mime = r.headers.get("content-type") || "image/png";
+        let buf: Buffer;
+        let mime: string;
+        const mediaPath = u.match(/^\/api\/media\/file\?path=([^&]+)/);
+        if (mediaPath) {
+          // Uploaded attachments are stored as session-gated proxy paths — a
+          // server-side fetch of the relative URL can never work. Read the
+          // private blob directly, exactly like the media route does.
+          const { get } = await import("@vercel/blob");
+          const result: any = await get(decodeURIComponent(mediaPath[1]), { access: "private" });
+          if (!result || result.statusCode !== 200 || !result.stream) {
+            throw new Error("Could not read the attached image from storage");
+          }
+          buf = Buffer.from(await new Response(result.stream as ReadableStream).arrayBuffer());
+          mime = result.blob?.contentType || "image/png";
+        } else {
+          const r = await fetch(u);
+          if (!r.ok) throw new Error("Could not fetch an attached reference image");
+          buf = Buffer.from(await r.arrayBuffer());
+          mime = r.headers.get("content-type") || "image/png";
+        }
         const ext = mime.includes("jpeg") || mime.includes("jpg") ? "jpg" : mime.includes("webp") ? "webp" : "png";
-        return toFile(Buffer.from(await r.arrayBuffer()), `reference-${i}.${ext}`, { type: mime });
+        return toFile(buf, `reference-${i}.${ext}`, { type: mime });
       })
     );
     const res = await openai.images.edit({
