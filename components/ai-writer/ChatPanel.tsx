@@ -353,6 +353,11 @@ export default function ChatPanel({
     assistantIdRef.current = null;
 
     let fullText = "";
+    // Mirrors the server's history-echo guard: when generation failed this
+    // turn, the model may echo a PREVIOUS turn's image URL with a success
+    // narration — the server strips it from the persisted copy, and this flag
+    // lets the client strip it from the live copy so the two never diverge.
+    let imageGenFailed = false;
 
     try {
       const abortController = new AbortController();
@@ -414,6 +419,7 @@ export default function ChatPanel({
               }
             } else if (parsed.image_error) {
               setIsGeneratingImage(false);
+              imageGenFailed = true;
               toast.error(`Image generation failed: ${parsed.image_error}`);
             } else if (parsed.generating_document) {
               setIsGeneratingDocument(true);
@@ -488,6 +494,25 @@ export default function ChatPanel({
       // unmounted (cancelling their load) between clearing streaming and adding
       // the permanent message.
       if (fullText) {
+        // After a FAILED generation, strip any image markdown whose URL already
+        // exists in a prior message — that's the model echoing an old image to
+        // cover the failure (the server strips it from the persisted copy; this
+        // keeps the live copy identical). Clean turns keep echoes: legitimate
+        // re-display ("show me that image again") has no failure.
+        if (imageGenFailed) {
+          const historyUrls = new Set<string>();
+          const imgRe = /!\[[^\]]*\]\(([^)]+)\)/g;
+          for (const pm of messages) {
+            let m: RegExpExecArray | null;
+            const re = new RegExp(imgRe.source, "g");
+            while ((m = re.exec(pm.content || "")) !== null) historyUrls.add(m[1]);
+          }
+          fullText = fullText
+            .replace(/\[Previously generated image\]/g, "")
+            .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match: string, _alt: string, url: string) =>
+              historyUrls.has(url) ? "" : match
+            );
+        }
         // Deduplicate image/chart URLs — model sometimes repeats the tool-generated URL
         const seenUrls = new Set<string>();
         const dedupedText = fullText.replace(

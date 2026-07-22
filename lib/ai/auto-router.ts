@@ -70,6 +70,17 @@ const IMAGE_GEN_KEYWORDS = [
   "make a thumbnail", "create a thumbnail",
   "generate a photo", "create a photo",
   "illustrate", "illustration of",
+  // Image-EDIT follow-ups ("make the image more photo realistic", "change the
+  // background") — same tool, same Grok-hallucination risk as fresh requests.
+  // Keep these phrases image-specific: includes() matching means a generic
+  // phrase ("in the background", "in the style of") hijacks ordinary chat.
+  "make the image", "make this image", "make that image",
+  "the image more", "edit the image", "edit this image",
+  "update the image", "change the image", "regenerate the image",
+  "redo the image", "new version of the image", "another version of the image",
+  "photo realistic", "photorealistic", "more realistic", "less realistic",
+  "change the background", "restyle", "stylise this", "stylize this",
+  "use this logo", "use the logo", "with the logo",
 ];
 
 const MULTI_STEP_PATTERNS = [

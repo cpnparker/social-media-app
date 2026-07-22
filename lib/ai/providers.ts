@@ -43,6 +43,11 @@ export interface AIProviderConfig {
   imageGeneration?: boolean;
   temperature?: number;
   preserveLinks?: boolean;
+  /** Set by the provider chains when a generate_image call fails during the
+   *  turn. Gates the history-echo image stripper: only a failed turn strips
+   *  history-echoed image URLs (covering a failure with an old image); a
+   *  clean turn keeps them so "show me that image again" still works. */
+  imageGenFailedThisTurn?: boolean;
   workspaceClientIds?: number[];
   workspaceId?: string;
   userId?: number;
@@ -2216,8 +2221,14 @@ export async function generateImage(
           buf = Buffer.from(await new Response(result.stream as ReadableStream).arrayBuffer());
           mime = result.blob?.contentType || "image/png";
         } else {
-          const r = await fetch(u);
-          if (!r.ok) throw new Error("Could not fetch an attached reference image");
+          // Any other relative path can't be fetched server-side as-is —
+          // absolutize against the app origin instead of letting fetch throw
+          // an opaque "Failed to parse URL" TypeError.
+          const abs = /^https?:\/\//i.test(u)
+            ? u
+            : `${(process.env.NEXTAUTH_URL || "https://ai.thecontentengine.com").replace(/\/$/, "")}${u.startsWith("/") ? "" : "/"}${u}`;
+          const r = await fetch(abs);
+          if (!r.ok) throw new Error(`Could not fetch an attached reference image (HTTP ${r.status})`);
           buf = Buffer.from(await r.arrayBuffer());
           mime = r.headers.get("content-type") || "image/png";
         }
@@ -2225,13 +2236,28 @@ export async function generateImage(
         return toFile(buf, `reference-${i}.${ext}`, { type: mime });
       })
     );
-    const res = await openai.images.edit({
-      model: "gpt-image-1",
-      image: (files.length === 1 ? files[0] : files) as any,
-      prompt,
-      n: 1,
-      size: editSize,
-    } as any);
+    let res: Awaited<ReturnType<typeof openai.images.edit>>;
+    try {
+      // NOTE: images.edit does NOT accept the `moderation` param (images.generate
+      // does) — don't add it, the API 400s and every edit would pay a doomed
+      // first request. Content-policy refusals get a message the model can
+      // actually relay to the user.
+      res = await openai.images.edit({
+        model: "gpt-image-1",
+        image: (files.length === 1 ? files[0] : files) as any,
+        prompt,
+        n: 1,
+        size: editSize,
+      } as any);
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      if (/content policy|content_policy|moderation_blocked|safety system|rejected by the safety/i.test(msg)) {
+        throw new Error(
+          "OpenAI declined this image edit (content policy) — photo-realistic edits of real people are often refused. A stylised or illustrated look usually goes through."
+        );
+      }
+      throw e;
+    }
     const data = res.data?.[0];
     if (data && (data as any).b64_json) {
       imageBuffer = Buffer.from((data as any).b64_json, "base64");
@@ -4264,12 +4290,36 @@ export function createStreamingResponse(
           }
         }
 
-        // Strip fabricated image markdown AND deduplicate legitimate ones
-        // Models sometimes write their own ![alt](url) repeating a tool-generated URL
+        // Strip fabricated image markdown AND deduplicate legitimate ones.
+        // Models sometimes write their own ![alt](url) repeating a tool-generated
+        // URL — or, worse, ECHO a previous turn's image to cover a FAILED
+        // generation (fresh generations always mint new blob paths). Echo
+        // stripping is gated on an actual failure this turn: on a clean turn a
+        // history URL in the reply is legitimate re-display ("show me that
+        // image again" — the route keeps the last image markdown in context
+        // precisely so the model can re-emit it, and no image_ready fires).
+        const imageFailed = !!config.imageGenFailedThisTurn;
+        const historyImageUrls = new Set<string>();
+        if (imageFailed) {
+          for (const hm of messages) {
+            const hc = typeof hm.content === "string" ? hm.content : "";
+            const imgRe = /!\[[^\]]*\]\(([^)]+)\)/g;
+            let im: RegExpExecArray | null;
+            while ((im = imgRe.exec(hc)) !== null) historyImageUrls.add(im[1]);
+          }
+          // Context-placeholder debris only appears when the model is covering
+          // a failure — a clean reply legitimately containing this phrase is
+          // left alone.
+          result.fullText = result.fullText.replace(/\[Previously generated image\]/g, "");
+        }
         const seenImageUrls = new Set<string>();
         result.fullText = result.fullText.replace(
           /!\[([^\]]*)\]\(([^)]+)\)/g,
           (match, _alt, url) => {
+            if (imageFailed && historyImageUrls.has(url)) {
+              console.warn("[Stream] Stripped history-echoed image:", url.slice(0, 80));
+              return "";
+            }
             if (url.startsWith("/api/media/")) {
               // Legitimate URL — but only keep first occurrence
               if (seenImageUrls.has(url)) {
@@ -4647,10 +4697,27 @@ async function streamAnthropic(
               `data: ${JSON.stringify({ image_error: err.message })}\n\n`
             )
           );
+          // Persist the failure in the message itself — the toast is transient,
+          // and without this the model's next-round narration (which may claim
+          // success) becomes the only permanent record of the turn. One note
+          // per turn; design mode skips the token (DesignChat inlines the
+          // image_error event itself).
+          const firstImageFailure = !config.imageGenFailedThisTurn;
+          config.imageGenFailedThisTurn = true;
+          if (firstImageFailure) {
+            const failNote = `\n\n> ⚠️ Image generation failed: ${String(err?.message || err).slice(0, 300)}\n\n`;
+            if (!config.designMode) {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: failNote })}\n\n`));
+            }
+            fullText += failNote;
+          }
+          // A failed call must not trip the duplicate-signature guard into
+          // "answer with what you have" — allow an honest identical retry.
+          executedToolSigs.delete(toolSig);
           toolResults.push({
             type: "tool_result",
             tool_use_id: tool.id,
-            content: `Image generation failed: ${err.message}`,
+            content: `Image generation FAILED: ${err.message}. The user has already been shown this failure notice. Briefly acknowledge the failure and suggest a next step (retry, different phrasing, or a stylised look if the error mentions content policy). Do NOT claim an image was created. Do NOT include any image markdown or any image URL from earlier in the conversation.${firstImageFailure ? "" : " Do NOT call generate_image again this turn — tell the user it failed and stop."}`,
             is_error: true,
           });
         }
@@ -5644,10 +5711,22 @@ async function streamXAIChatCompletions(
               `data: ${JSON.stringify({ image_error: err.message })}\n\n`
             )
           );
+          // Persist the failure in the message itself (toast is transient) and
+          // let an honest identical retry through the duplicate-sig guard.
+          const firstImageFailure = !config.imageGenFailedThisTurn;
+          config.imageGenFailedThisTurn = true;
+          if (firstImageFailure) {
+            const failNote = `\n\n> ⚠️ Image generation failed: ${String(err?.message || err).slice(0, 300)}\n\n`;
+            if (!config.designMode) {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: failNote })}\n\n`));
+            }
+            fullText += failNote;
+          }
+          executedToolSigs.delete(toolSig);
           openaiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: `Image generation failed: ${err.message}`,
+            content: `Image generation FAILED: ${err.message}. The user has already been shown this failure notice. Briefly acknowledge the failure and suggest a next step (retry, different phrasing, or a stylised look if the error mentions content policy). Do NOT claim an image was created. Do NOT include any image markdown or any image URL from earlier in the conversation.${firstImageFailure ? "" : " Do NOT call generate_image again this turn — tell the user it failed and stop."}`,
           } as any);
         }
       } else if (tc.function.name === "generate_document") {
@@ -6258,10 +6337,20 @@ async function streamGemini(
               `data: ${JSON.stringify({ image_error: err.message })}\n\n`
             )
           );
+          // Persist the failure in the message itself — the toast is transient.
+          const firstImageFailure = !config.imageGenFailedThisTurn;
+          config.imageGenFailedThisTurn = true;
+          if (firstImageFailure) {
+            const failNote = `\n\n> ⚠️ Image generation failed: ${String(err?.message || err).slice(0, 300)}\n\n`;
+            if (!config.designMode) {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: failNote })}\n\n`));
+            }
+            fullText += failNote;
+          }
           geminiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: `Image generation failed: ${err.message}`,
+            content: `Image generation FAILED: ${err.message}. The user has already been shown this failure notice. Briefly acknowledge the failure and suggest a next step (retry, different phrasing, or a stylised look if the error mentions content policy). Do NOT claim an image was created. Do NOT include any image markdown or any image URL from earlier in the conversation.${firstImageFailure ? "" : " Do NOT call generate_image again this turn — tell the user it failed and stop."}`,
           } as any);
         }
       } else if (tc.function.name === "generate_document") {
@@ -6773,10 +6862,20 @@ async function streamOpenAI(
               `data: ${JSON.stringify({ image_error: err.message })}\n\n`
             )
           );
+          // Persist the failure in the message itself — the toast is transient.
+          const firstImageFailure = !config.imageGenFailedThisTurn;
+          config.imageGenFailedThisTurn = true;
+          if (firstImageFailure) {
+            const failNote = `\n\n> ⚠️ Image generation failed: ${String(err?.message || err).slice(0, 300)}\n\n`;
+            if (!config.designMode) {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: failNote })}\n\n`));
+            }
+            fullText += failNote;
+          }
           openaiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: `Image generation failed: ${err.message}`,
+            content: `Image generation FAILED: ${err.message}. The user has already been shown this failure notice. Briefly acknowledge the failure and suggest a next step (retry, different phrasing, or a stylised look if the error mentions content policy). Do NOT claim an image was created. Do NOT include any image markdown or any image URL from earlier in the conversation.${firstImageFailure ? "" : " Do NOT call generate_image again this turn — tell the user it failed and stop."}`,
           } as any);
         }
       } else if (tc.function.name === "generate_document") {
