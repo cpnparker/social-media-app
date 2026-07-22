@@ -20,6 +20,21 @@ export interface AIMessage {
   attachments?: AIAttachment[];
 }
 
+/** Most recent user-message image attachments — the reference images for
+ *  image-to-image generation ("stylise this photo", "use this logo in…"). */
+export function recentImageAttachmentUrls(messages: AIMessage[], max = 4): string[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user") continue;
+    const imgs = (m.attachments || [])
+      .filter((a) => (a.type || "").startsWith("image/"))
+      .map((a) => a.url)
+      .filter(Boolean);
+    if (imgs.length) return imgs.slice(0, max);
+  }
+  return [];
+}
+
 export interface AIProviderConfig {
   model: string;
   maxTokens?: number;
@@ -693,44 +708,20 @@ async function buildXAIContent(
 
 /* ─────────────── Image Generation (Multi-Provider) ─────────────── */
 
-/** Anthropic tool definition for generate_image */
-const IMAGE_GEN_TOOL: Anthropic.Tool = {
-  name: "generate_image",
-  description:
-    "Generate an image when the user asks for one. Use this tool for requests like 'create an image', 'generate a graphic', 'make an infographic', 'generate an image of these', etc. Do not use unsolicited — only when the user requests visual content.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      prompt: {
-        type: "string",
-        description:
-          "Detailed image generation prompt. Include style, composition, colors, text content, and all visual details. Be specific and descriptive.",
-      },
-      size: {
-        type: "string",
-        enum: ["1024x1024", "1792x1024", "1024x1792"],
-        description:
-          "1024x1024 for square (social posts, profile images), 1792x1024 for landscape (headers, banners, presentations), 1024x1792 for portrait (stories, pins, posters). Default: 1024x1024",
-      },
-    },
-    required: ["prompt"],
-  },
-};
-
 /** OpenAI-compatible function calling tool definition for generate_image */
 const IMAGE_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   type: "function",
   function: {
     name: "generate_image",
     description:
-      "Generate an image when the user asks for one. Use this tool for requests like 'create an image', 'generate a graphic', 'make an infographic', 'generate an image of these', etc. Do not use unsolicited — only when the user requests visual content.",
+      "Generate an image when the user asks for one — from scratch OR based on image(s) they attached. Use for 'create an image', 'generate a graphic', 'make an infographic', and ALSO for 'use this logo in…', 'stylise this photo', 'redraw this in X style', 'make a version of this image that…' (set use_attached_images=true for those). Do not use unsolicited — only when the user requests visual content.",
     parameters: {
       type: "object",
       properties: {
         prompt: {
           type: "string",
           description:
-            "Detailed image generation prompt. Include style, composition, colors, text content, and all visual details. Be specific and descriptive.",
+            "Detailed image generation prompt. Include style, composition, colors, text content, and all visual details. Be specific and descriptive. When use_attached_images is true, describe what to DO with the attached image(s) — what to preserve (logo shape, likeness, colors) and what to change.",
         },
         size: {
           type: "string",
@@ -738,9 +729,23 @@ const IMAGE_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           description:
             "1024x1024 for square (social posts, profile images), 1792x1024 for landscape (headers, banners, presentations), 1024x1792 for portrait (stories, pins, posters). Default: 1024x1024",
         },
+        use_attached_images: {
+          type: "boolean",
+          description:
+            "Set true when the user wants their ATTACHED image(s) used as the basis or reference — editing, restyling, incorporating a logo, likeness-preserving portraits. The most recent user-attached images are passed to the generator automatically.",
+        },
       },
       required: ["prompt"],
     },
+  },
+};
+
+/** Anthropic tool definition for generate_image (derived — declared AFTER the OpenAI variant it references) */
+const IMAGE_GEN_TOOL: Anthropic.Tool = {
+  name: "generate_image",
+  description: IMAGE_GEN_OPENAI_TOOL.function.description!,
+  input_schema: {
+    ...(IMAGE_GEN_OPENAI_TOOL.function.parameters as any),
   },
 };
 
@@ -2166,7 +2171,11 @@ export async function generateImage(
   prompt: string,
   size: "1024x1024" | "1792x1024" | "1024x1792" = "1024x1024",
   provider: ImageProvider = "openai",
-  brand?: import("./branded-prompt").BrandContext | null
+  brand?: import("./branded-prompt").BrandContext | null,
+  /** Image-to-image: user-attached reference images (logo to incorporate,
+   *  photo to stylise). Forces the gpt-image-1 EDIT path regardless of
+   *  provider — grok-imagine has no image-input mode. */
+  referenceImageUrls?: string[]
 ): Promise<string> {
   // Apply client brand context when one is loaded (auto-on in Design mode).
   if (brand) {
@@ -2180,7 +2189,43 @@ export async function generateImage(
 
   let imageBuffer: Buffer;
 
-  if (provider === "xai") {
+  if (referenceImageUrls && referenceImageUrls.length > 0) {
+    // Image-to-image via gpt-image-1 edits: condition on the user's attached
+    // image(s) — preserves logos, layouts, and likenesses that a text prompt
+    // alone cannot describe.
+    const openai = getOpenAIClient();
+    const { toFile } = await import("openai");
+    const editSize: "1024x1024" | "1536x1024" | "1024x1536" =
+      size === "1792x1024" ? "1536x1024" :
+      size === "1024x1792" ? "1024x1536" :
+      "1024x1024";
+    const files = await Promise.all(
+      referenceImageUrls.slice(0, 4).map(async (u, i) => {
+        const r = await fetch(u);
+        if (!r.ok) throw new Error("Could not fetch an attached reference image");
+        const mime = r.headers.get("content-type") || "image/png";
+        const ext = mime.includes("jpeg") || mime.includes("jpg") ? "jpg" : mime.includes("webp") ? "webp" : "png";
+        return toFile(Buffer.from(await r.arrayBuffer()), `reference-${i}.${ext}`, { type: mime });
+      })
+    );
+    const res = await openai.images.edit({
+      model: "gpt-image-1",
+      image: (files.length === 1 ? files[0] : files) as any,
+      prompt,
+      n: 1,
+      size: editSize,
+    } as any);
+    const data = res.data?.[0];
+    if (data && (data as any).b64_json) {
+      imageBuffer = Buffer.from((data as any).b64_json, "base64");
+    } else if (data?.url) {
+      const r = await fetch(data.url);
+      if (!r.ok) throw new Error("Failed to download the edited image");
+      imageBuffer = Buffer.from(await r.arrayBuffer());
+    } else {
+      throw new Error("Image edit returned no image data");
+    }
+  } else if (provider === "xai") {
     // xAI: use grok-imagine-image via the xAI OpenAI-compatible client
     const xai = getXAIClient();
     const response = await xai.images.generate({
@@ -4527,7 +4572,8 @@ async function streamAnthropic(
           const prompt = tool.input.prompt || "Generate an image";
           const size = tool.input.size || "1024x1024";
           const brand = config.designMode ? await loadBrandContext(config.workspaceId, config.selectedClientId) : null;
-          const imageUrl = await generateImage(prompt, size, "anthropic", brand);
+          const refUrls = tool.input.use_attached_images ? recentImageAttachmentUrls(messages) : undefined;
+          const imageUrl = await generateImage(prompt, size, "anthropic", brand, refUrls);
 
           // Persist to ai_design_assets in design mode.
           let designAssetId: string | null = null;
@@ -5556,7 +5602,7 @@ async function streamXAIChatCompletions(
           const input = JSON.parse(tc.function.arguments);
           const prompt = input.prompt || "Generate an image";
           const size = input.size || "1024x1024";
-          const imageUrl = await generateImage(prompt, size, "xai");
+          const imageUrl = await generateImage(prompt, size, "xai", undefined, input.use_attached_images ? recentImageAttachmentUrls(messages) : undefined);
 
           controller.enqueue(
             encoder.encode(
@@ -6170,7 +6216,7 @@ async function streamGemini(
           const prompt = input.prompt || "Generate an image";
           const size = input.size || "1024x1024";
           // Gemini delegates to OpenAI/DALL-E for image generation
-          const imageUrl = await generateImage(prompt, size, "gemini");
+          const imageUrl = await generateImage(prompt, size, "gemini", undefined, input.use_attached_images ? recentImageAttachmentUrls(messages) : undefined);
 
           controller.enqueue(
             encoder.encode(
@@ -6685,7 +6731,7 @@ async function streamOpenAI(
           const input = JSON.parse(tc.function.arguments);
           const prompt = input.prompt || "Generate an image";
           const size = input.size || "1024x1024";
-          const imageUrl = await generateImage(prompt, size, "openai");
+          const imageUrl = await generateImage(prompt, size, "openai", undefined, input.use_attached_images ? recentImageAttachmentUrls(messages) : undefined);
 
           controller.enqueue(
             encoder.encode(
