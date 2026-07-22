@@ -64,10 +64,17 @@ export function computeNextRun(
   const hour = Math.min(23, Math.max(0, cfg?.hour ?? 8));
   const minute = Math.min(59, Math.max(0, cfg?.minute ?? 0));
 
-  // Walk forward day by day (max ~62 to cover monthly) from `after`'s date in tz.
+  // Walk forward day by day (max ~62 to cover monthly) from `after`'s date in
+  // tz, iterating calendar dates — fixed 24h-UTC steps can skip a local date
+  // across a spring-forward transition (23h day) and silently miss a run.
+  const start = partsInTz(after, tz);
   for (let i = 0; i < 62; i++) {
-    const probe = new Date(after.getTime() + i * 86_400_000);
-    const { y, m, d, isoDow } = partsInTz(probe, tz);
+    // Date.UTC normalizes day overflow, yielding successive calendar dates.
+    const probe = new Date(Date.UTC(start.y, start.m - 1, start.d + i, 12));
+    const y = probe.getUTCFullYear();
+    const m = probe.getUTCMonth() + 1;
+    const d = probe.getUTCDate();
+    const isoDow = ((probe.getUTCDay() + 6) % 7) + 1;
     let matches = false;
     if (type === "daily") matches = true;
     else if (type === "weekdays") matches = isoDow >= 1 && isoDow <= 5;
