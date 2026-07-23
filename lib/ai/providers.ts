@@ -3121,8 +3121,17 @@ export async function queryMeetingBrain(
   // only thing stopping one user's personal transcript landing in a shared
   // thread. client_meetings is exempt — that report is workspace-shared by
   // design and gated on registered client domains.
-  if (options.visibility === "team" && report !== "client_meetings") {
-    console.log(`[MeetingBrain] Blocked personal report "${report}" in team conversation`);
+  // FAIL CLOSED: the test is "is this explicitly private?", NOT "is this
+  // team?". The old `=== "team"` form silently allowed any caller that forgot
+  // to pass the option (`undefined !== "team"`) — which is exactly how the
+  // Live lookup route leaked personal tasks into a team-visible meeting feed.
+  // Every call site must now state the audience it is answering for.
+  if (options.visibility !== "private" && report !== "client_meetings") {
+    if (!options.visibility) {
+      console.warn(`[MeetingBrain] Blocked personal report "${report}": caller passed no visibility (fail-closed)`);
+    } else {
+      console.log(`[MeetingBrain] Blocked personal report "${report}" in team conversation`);
+    }
     return {
       data: [], count: 0,
       notice: [
@@ -3539,8 +3548,14 @@ export async function querySlack(
   // PRIVACY GATE: Slack results are scoped to the requesting user's own OAuth
   // token (their DMs, their channels). In a TEAM conversation the tool result
   // is visible to every workspace member — block all Slack reports there.
-  if (options.visibility === "team") {
-    console.log(`[Slack] Blocked report "${report}" in team conversation`);
+  // FAIL CLOSED — see the note on queryMeetingBrain's gate: an omitted
+  // visibility must block, never allow.
+  if (options.visibility !== "private") {
+    if (!options.visibility) {
+      console.warn(`[Slack] Blocked report "${report}": caller passed no visibility (fail-closed)`);
+    } else {
+      console.log(`[Slack] Blocked report "${report}" in team conversation`);
+    }
     return {
       data: [], count: 0,
       notice: [

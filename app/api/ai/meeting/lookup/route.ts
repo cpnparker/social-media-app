@@ -193,7 +193,14 @@ export async function POST(req: NextRequest) {
     const memQuery = utterances.slice(-2).map((u: string) => String(u)).join(" ").slice(0, 300);
     const [mbTasks, memoryHits] = await Promise.all([
       userEmail
-        ? queryMeetingBrain("my_tasks", userEmail, {}).catch(() => ({ data: [], count: 0 }))
+        // Live meeting conversations are created type_visibility "team"
+        // (meeting/session/route.ts) and these results are rendered as cards
+        // on a second screen that is routinely screen-shared, then persisted
+        // to ai_meeting_cards. Declaring the real audience makes the privacy
+        // gate block personal reports here — previously this passed {} and
+        // the gate failed open, putting the host's personal MeetingBrain
+        // tasks on a shared display.
+        ? queryMeetingBrain("my_tasks", userEmail, { visibility: "team" }).catch(() => ({ data: [], count: 0 }))
         : Promise.resolve({ data: [], count: 0 } as any),
       memQuery
         ? searchMemory(memQuery, "memories", ms.id_workspace, userId).catch(() => ({ memories: [] } as any))

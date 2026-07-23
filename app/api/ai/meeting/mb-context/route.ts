@@ -18,7 +18,11 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const r = await queryMeetingBrain("meeting_details", session.user.email, { meetingId });
+    // visibility "private": this response goes ONLY to the authenticated
+    // requester as a setup-screen prefill (never into a conversation), and
+    // the RPC scopes the meeting to them by p_user_email. Stated explicitly
+    // because the privacy gate is fail-closed — an omitted audience blocks.
+    const r = await queryMeetingBrain("meeting_details", session.user.email, { meetingId, visibility: "private" });
     if (r.error || !r.data || Array.isArray(r.data)) {
       return NextResponse.json({ error: r.error || "Meeting not found" }, { status: 404 });
     }

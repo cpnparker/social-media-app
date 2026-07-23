@@ -87,41 +87,16 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
           let userId: number | null = existingUser?.id_user ?? null;
 
-          // Fallback: if email not found, try matching by name + same domain
-          // This handles cases where user's email was changed in DB
-          if (!existingUser && user.name && user.email) {
-            const emailDomain = user.email.split("@")[1];
-            console.log(`[Auth signIn] Email ${user.email} not found, trying name match: "${user.name}" + domain "${emailDomain}"`);
-            const { data: nameMatches } = await supabase
-              .from("users")
-              .select("id_user, email_user, name_user")
-              .eq("name_user", user.name)
-              .is("date_deleted", null);
-
-            if (nameMatches && nameMatches.length === 1) {
-              // Unique name match — likely the same person with a changed email
-              const match = nameMatches[0];
-              console.log(`[Auth signIn] Found unique name match: ${match.email_user} (id=${match.id_user}). Updating email to ${user.email}`);
-              userId = match.id_user;
-              // Update their email to the current Google email
-              await supabase
-                .from("users")
-                .update({ email_user: user.email })
-                .eq("id_user", match.id_user);
-            } else if (nameMatches && nameMatches.length > 1) {
-              // Multiple name matches — try to narrow by same org domain
-              const sameDomain = nameMatches.filter(m => m.email_user?.endsWith("@" + emailDomain));
-              if (sameDomain.length === 1) {
-                const match = sameDomain[0];
-                console.log(`[Auth signIn] Found domain-scoped name match: ${match.email_user} (id=${match.id_user}). Updating email to ${user.email}`);
-                userId = match.id_user;
-                await supabase
-                  .from("users")
-                  .update({ email_user: user.email })
-                  .eq("id_user", match.id_user);
-              }
-            }
-          }
+          // NO display-name fallback. There used to be one here: when the
+          // Google email was unknown, it matched an existing row by
+          // `name_user` and adopted that row's id_user, rewriting its
+          // email_user to the signer's address. Google display names are
+          // attacker-chosen free text and sign-up is open, so setting a
+          // profile name to a colleague's was enough to take over their
+          // account — their access flags, private conversations and
+          // scheduled tasks. An unknown email must only ever create a NEW
+          // user (below). Genuine email changes are an admin action.
+          // Do not reintroduce identity matching on any user-supplied field.
 
           // Auto-create user record if they don't exist and no match found
           if (!userId) {
