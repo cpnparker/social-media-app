@@ -209,6 +209,18 @@ export async function classifyMemoryAction(
 
 // ── Apply consolidation actions to the database ──
 
+/** Restrict a memory read/write to rows the current (scope, user) pass owns.
+ *  Defence in depth behind the scoped candidate pool in
+ *  runConsolidationPipeline: if a target from another scope ever reaches a
+ *  write, the statement matches zero rows instead of rewriting a memory
+ *  another user can read. */
+function ownScope(q: any, userId: number | null, scope: string) {
+  const scoped = q.eq("type_scope", scope);
+  return scope === "private" && userId !== null
+    ? scoped.eq("user_memory", userId)
+    : scoped.is("user_memory", null);
+}
+
 export async function applyConsolidationAction(
   action: ConsolidationAction,
   candidate: { content: string; category: string },
@@ -251,12 +263,16 @@ export async function applyConsolidationAction(
 
     case "REINFORCE": {
       // Fetch current values, then compute new strength
-      const { data: existing } = await intelligenceDb
+      const { data: existing } = await ownScope(intelligenceDb
         .from("ai_memories")
         .select("score_strength, count_reinforced")
-        .eq("id_memory", action.targetId)
-        .single();
+        .eq("id_memory", action.targetId), userId, scope)
+        .maybeSingle();
 
+      if (!existing) {
+        console.warn(`[Memory] REINFORCE target ${action.targetId} is outside this pass's scope — skipped`);
+        return null;
+      }
       if (existing) {
         // Diminishing boost: bigger when weak, smaller when already strong.
         // A memory at 0.7 gets +0.045, at 0.9 gets +0.03 (floor).
@@ -277,12 +293,18 @@ export async function applyConsolidationAction(
     }
 
     case "UPDATE": {
-      const { data: existing } = await intelligenceDb
+      const { data: existing } = await ownScope(intelligenceDb
         .from("ai_memories")
         .select("score_strength, count_reinforced")
-        .eq("id_memory", action.targetId)
-        .single();
+        .eq("id_memory", action.targetId), userId, scope)
+        .maybeSingle();
 
+      if (!existing) {
+        // Never rewrite a memory belonging to another scope/user — the new
+        // information is dropped rather than published into a shared row.
+        console.warn(`[Memory] UPDATE target ${action.targetId} is outside this pass's scope — skipped`);
+        return null;
+      }
       if (existing) {
         // Diminishing boost for updates too (slightly stronger than reinforce)
         const boost = Math.max(0.04, 0.2 * (1.0 - existing.score_strength));
@@ -302,7 +324,7 @@ export async function applyConsolidationAction(
     }
 
     case "CONTRADICT": {
-      await intelligenceDb
+      const { data: contradicted } = await ownScope(intelligenceDb
         .from("ai_memories")
         .update({
           information_content: action.newContent.slice(0, 500),
@@ -311,7 +333,12 @@ export async function applyConsolidationAction(
           date_last_accessed: now,
           date_updated: now,
         })
-        .eq("id_memory", action.targetId);
+        .eq("id_memory", action.targetId), userId, scope)
+        .select("id_memory");
+      if (!contradicted || contradicted.length === 0) {
+        console.warn(`[Memory] CONTRADICT target ${action.targetId} is outside this pass's scope — skipped`);
+        return null;
+      }
       console.log(`[Memory] CONTRADICT: target ${action.targetId} → "${action.newContent.slice(0, 60)}..."`);
       return { id: action.targetId, content: action.newContent, action: "CONTRADICT" };
     }
@@ -445,12 +472,26 @@ export async function runConsolidationPipeline(
 
   if (candidates.length === 0) return result;
 
-  // Fetch all existing memories with V2 fields
-  const { data: allExistingRaw } = await intelligenceDb
+  // Fetch existing memories THIS PASS IS ENTITLED TO REWRITE.
+  //
+  // PRIVACY: the pool must be scoped, not just the writes. It used to be
+  // workspace-wide, so a private extraction could match a TEAM memory and
+  // UPDATE/CONTRADICT would rewrite that row's content while leaving
+  // type_scope='team' intact — publishing one user's private detail to
+  // everyone, and defeating the type_scope read gate from the write side.
+  // A cross-scope match now simply falls through to ADD, which is also the
+  // semantically right answer: a private nuance should not be merged into a
+  // shared fact.
+  let poolQuery = intelligenceDb
     .from("ai_memories")
     .select("id_memory, information_content, type_category, score_strength, count_reinforced, date_created, date_last_accessed, type_source")
     .eq("id_workspace", workspaceId)
-    .eq("flag_active", 1);
+    .eq("flag_active", 1)
+    .eq("type_scope", scope);
+  poolQuery = scope === "private" && userId !== null
+    ? poolQuery.eq("user_memory", userId)
+    : poolQuery.is("user_memory", null);
+  const { data: allExistingRaw } = await poolQuery;
 
   const allExisting: ExistingMemory[] = (allExistingRaw || []).map((m: any) => ({
     id: m.id_memory,
@@ -548,10 +589,13 @@ export async function runConsolidationPipeline(
     }
 
     if (staleIds.length > 0) {
-      await intelligenceDb
+      // staleIds derive from the scoped pool above, so they are already
+      // own-scope; the predicate is belt-and-braces so this can never
+      // archive a memory belonging to another user or scope.
+      await ownScope(intelligenceDb
         .from("ai_memories")
         .update({ flag_active: 0 })
-        .in("id_memory", staleIds);
+        .in("id_memory", staleIds), userId, scope);
       console.log(`[Memory] Auto-archived ${staleIds.length} stale memories (decayed strength < 10%)`);
     }
   } catch (err) {

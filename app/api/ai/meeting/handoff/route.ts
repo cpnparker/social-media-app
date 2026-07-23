@@ -52,13 +52,22 @@ export async function POST(req: NextRequest) {
     const title = `Follow-up — ${meetingSession.name_title || "Live meeting"}`.slice(0, 120);
 
     // 1. New general-mode conversation, linked to the client if any.
+    //
+    // VISIBILITY follows the same rule as meeting_details: client work is a
+    // team artefact, everything else stays with its owner. This used to be
+    // unconditionally "team", so continuing an internal 1:1 — a performance
+    // review, a salary conversation — dropped its verbatim transcript into a
+    // workspace-readable thread. A bound client is the signal that this is
+    // client work; without one, the follow-up is private to the host, who
+    // can still share it deliberately.
+    const isClientMeeting = !!meetingSession.id_client;
     const { data: conversation, error: convErr } = await intelligenceDb
       .from("ai_conversations")
       .insert({
         id_workspace: meetingSession.id_workspace,
         user_created: userId,
         name_conversation: title,
-        type_visibility: "team",
+        type_visibility: isClientMeeting ? "team" : "private",
         id_client: meetingSession.id_client || null,
         name_model: HANDOFF_MODEL,
         type_conversation_mode: "general",
