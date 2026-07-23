@@ -453,8 +453,9 @@ Same as Design Mode: direct, opinionated peer. Lead with the creative choice. Re
   if (ctx.conversationVisibility === "team") {
     prompt += `\n\n## Team Conversation — Privacy Rules`;
     prompt += `\nThis conversation is visible to ALL workspace members. Personal-scope data tools are restricted here:`;
-    prompt += `\n- query_meetingbrain: ONLY the "client_meetings" report works (client meetings are workspace-shared). Personal reports (my_tasks, meetings, upcoming_meetings, search_meetings, meeting_details) are blocked — if the user asks for personal meetings or tasks, tell them to use a private conversation.`;
+    prompt += `\n- query_meetingbrain: "client_meetings" works (client meetings are workspace-shared), and "meeting_details" works FOR CLIENT MEETINGS — client work belongs to the whole team, so you can open a client meeting's transcript and notes right here even if the user wasn't in it. If the meeting turns out to be internal or personal, the tool will say so; relay that and suggest a private conversation. Personal reports (my_tasks, meetings, upcoming_meetings, search_meetings) are blocked — for those, tell the user to use a private conversation.`;
     prompt += `\n- query_slack is blocked entirely — Slack data is personal. Point the user to a private conversation.`;
+    prompt += `\n- search_memory here covers only TEAM memories and team-visible threads. The user's private memories and private threads are NOT searched, so "nothing found" may simply mean it is saved somewhere personal — say that rather than asserting nothing was ever saved.`;
     prompt += `\nDo not attempt blocked reports; explain the privacy rule briefly and helpfully instead.`;
   }
 

@@ -3111,12 +3111,37 @@ const CLIENT_DOMAIN_ALIASES = [
   "hiscox.com",   // Hiscox Insurance (registered with no website)
 ];
 
+/** OUR OWN domains. Must never be treated as a client domain: several
+ *  app_clients rows legitimately carry our own website, and the "exclude the
+ *  caller's email domain" rule alone is not enough — a workspace member who
+ *  signs in on another domain (contractor on gmail, personal Google account)
+ *  would leave our domain in the allowlist, at which point EVERY internal
+ *  meeting looks like a client meeting to the team-thread gate. */
+const INTERNAL_DOMAINS = ["thecontentengine.com", "authorityon.ai", "zdigitalagency.com"];
+
+/** Hosts that many organisations share. A client registered by its LinkedIn
+ *  company page normalises to "linkedin.com", which would then release the
+ *  transcript of any meeting with any @linkedin.com address — a recruiter, an
+ *  ads rep — to the whole workspace. Same for free mail: one client with a
+ *  gmail.com "website" would make every personal meeting a client meeting. */
+const NON_CLIENT_HOSTS = new Set([
+  "linkedin.com", "facebook.com", "instagram.com", "x.com", "twitter.com",
+  "youtube.com", "tiktok.com", "medium.com", "substack.com", "notion.site",
+  "wordpress.com", "wixsite.com", "wix.com", "squarespace.com", "github.io",
+  "github.com", "google.com", "sites.google.com", "docs.google.com",
+  "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com",
+  "yahoo.com", "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com",
+]);
+
 function normalizeClientDomain(url: string | null): string | null {
   if (!url) return null;
   let d = url.trim().toLowerCase();
   d = d.replace(/^https?:\/\//, "").replace(/^www\./, "");
   d = d.split("/")[0].split("?")[0].split("#")[0].trim();
-  return d.length > 3 && d.includes(".") ? d : null;
+  if (d.length <= 3 || !d.includes(".")) return null;
+  if (NON_CLIENT_HOSTS.has(d)) return null;
+  if (INTERNAL_DOMAINS.includes(d)) return null;
+  return d;
 }
 
 /** Registered-client email domains (app_clients.link_website + confirmed
@@ -3125,13 +3150,24 @@ function normalizeClientDomain(url: string | null): string | null {
  *  can never drift apart. */
 async function loadClientDomains(internalDomain: string): Promise<string[]> {
   const { supabase: publicDb } = await import("@/lib/supabase");
-  const { data: clientRows } = await publicDb.from("app_clients").select("link_website");
+  const { data: clientRows, error } = await publicDb.from("app_clients").select("link_website");
+  // Fail CLOSED: an empty allowlist means "nothing is a client meeting", which
+  // blocks team access rather than releasing internal transcripts. Log it so a
+  // silent query failure doesn't look like "this workspace has no clients".
+  if (error) {
+    console.error("[MeetingBrain] client-domain allowlist query failed — treating as empty (fail-closed):", error.message);
+    return [];
+  }
+  const caller = (internalDomain || "").trim().toLowerCase();
   return Array.from(new Set([
     ...(clientRows || [])
       .map((c: any) => normalizeClientDomain(c.link_website))
-      .filter((d: string | null): d is string => !!d && d !== internalDomain),
+      .filter((d: string | null): d is string => !!d && d !== caller),
     ...CLIENT_DOMAIN_ALIASES,
-  ]));
+  ]))
+    // Belt-and-braces: aliases and the caller's own domain go through the same
+    // exclusions as registered websites.
+    .filter((d) => !NON_CLIENT_HOSTS.has(d) && !INTERNAL_DOMAINS.includes(d) && d !== caller);
 }
 
 /** True if any attendee is from a registered client domain. Used to decide
@@ -3443,6 +3479,23 @@ export async function queryMeetingBrain(
           }
           console.log(`[MeetingBrain] meeting_details allowed in team conversation (client meeting)`);
         }
+        // The audience decision is per-MEETING ("is this client work?") but the
+        // payload is per-PERSON: get_meeting_details returns the RICHEST
+        // sibling row across everyone who recorded the event, and
+        // coaching_notes is individual performance feedback about whoever owns
+        // that row ("a notably effective move… or a concrete miss"). Releasing
+        // a client transcript to the team must not also publish a colleague's
+        // coaching feedback or the internal attendee list — get_client_meetings,
+        // the report this gate was modelled on, deliberately returns external
+        // names only. So redact for any non-private audience.
+        const teamAudience = options.visibility !== "private";
+        const redactedAttendees = teamAudience
+          ? String(d.attendees || "")
+              .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, (addr) => {
+                const dom = addr.split("@")[1]?.toLowerCase() || "";
+                return INTERNAL_DOMAINS.includes(dom) ? "[internal]" : addr;
+              })
+          : d.attendees;
         // Transcripts can be 25k+ chars for an hour-long recording. Claude
         // has plenty of context budget — give it the whole thing up to a
         // generous cap (~25k tokens). Truncating at 8k cut off mid-sentence
@@ -3452,19 +3505,20 @@ export async function queryMeetingBrain(
         // record lives in summary/insights/coaching_notes. Surface everything
         // and label the transcript state so the model answers from the notes
         // instead of telling the user "no transcript available".
-        const hasNotes = !!(d.summary || d.insights || d.coaching_notes || d.external_summary || d.next_steps);
+        const hasNotes = !!(d.summary || d.insights || (!teamAudience && d.coaching_notes) || d.external_summary || d.next_steps);
         const transcriptStatus = !transcript ? "none" : transcript.length < 1000 ? "stub_only" : "full";
         const data = {
           title: d.meeting_title,
           date: d.meeting_date?.slice(0, 16),
-          attendees: d.attendees,
+          attendees: redactedAttendees,
           summary: d.summary,
           transcript,
           transcript_status: transcriptStatus,
           key_topics: d.key_topics,
           next_steps: d.next_steps,
           insights: d.insights,
-          coaching_notes: d.coaching_notes,
+          // Per-person performance feedback — owner-only, never to the team.
+          coaching_notes: teamAudience ? undefined : d.coaching_notes,
           external_summary: d.external_summary,
           tasks: d.tasks,
         };
@@ -4292,8 +4346,15 @@ export async function searchMemory(
   }
 
   const totalFound = memories.length + messages.length + summaries.length;
-  const summary = `Found ${memories.length} memories, ${messages.length} messages, and ${summaries.length} thread summaries matching "${query}"`;
-  console.log(`[SearchMemory] ${summary}`);
+  let summary = `Found ${memories.length} memories, ${messages.length} messages, and ${summaries.length} thread summaries matching "${query}"`;
+  // In a team thread the search deliberately skipped the user's private
+  // memories and private threads. Say so — otherwise an empty result is
+  // indistinguishable from "nothing exists" and the model confidently tells
+  // the user nothing was ever saved, which is false and unhelpful.
+  if (!soloAudience) {
+    summary += `. NOTE: this is a TEAM conversation, so ONLY team-scoped memories and team-visible threads were searched — the user's private memories and private conversations were deliberately excluded. If this found nothing, tell the user it may be saved in their private notes/chats and they can ask again in a private conversation; do NOT claim nothing was ever saved.`;
+  }
+  console.log(`[SearchMemory] ${memories.length}/${messages.length}/${summaries.length} (audience=${soloAudience ? "solo" : "team"})`);
 
   return { memories, messages, summaries, summary };
 }
