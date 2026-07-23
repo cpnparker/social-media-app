@@ -193,14 +193,23 @@ export async function POST(req: NextRequest) {
     const memQuery = utterances.slice(-2).map((u: string) => String(u)).join(" ").slice(0, 300);
     const [mbTasks, memoryHits] = await Promise.all([
       userEmail
-        // Live meeting conversations are created type_visibility "team"
-        // (meeting/session/route.ts) and these results are rendered as cards
-        // on a second screen that is routinely screen-shared, then persisted
-        // to ai_meeting_cards. Declaring the real audience makes the privacy
-        // gate block personal reports here — previously this passed {} and
-        // the gate failed open, putting the host's personal MeetingBrain
-        // tasks on a shared display.
-        ? queryMeetingBrain("my_tasks", userEmail, { visibility: "team" }).catch(() => ({ data: [], count: 0 }))
+        // visibility "private" — the audience here is the HOST ALONE, even
+        // though the parent conversation row is type_visibility "team".
+        // The gate's question is "who can read this output", and for the
+        // Live card feed the answer is provably one person:
+        //   1. this route 403s unless consent_attested_by === userId (:118),
+        //      as do the deck (:123) and cards (cards/route.ts:32) routes —
+        //      every reader of ai_meeting_cards is the session host;
+        //   2. lookup output goes ONLY to ai_meeting_cards, never to
+        //      ai_messages, so it never enters the shared conversation;
+        //   3. the end-of-meeting digest — the one thing that DOES land in
+        //      the team-visible thread — is generated from the transcript,
+        //      not from cards.
+        // Surfacing the host's own open actions during their own meeting is
+        // the point of the feature. If cards ever start writing to
+        // ai_messages, or a non-host is allowed to read them, this must
+        // change to "team" (which blocks personal reports).
+        ? queryMeetingBrain("my_tasks", userEmail, { visibility: "private" }).catch(() => ({ data: [], count: 0 }))
         : Promise.resolve({ data: [], count: 0 } as any),
       memQuery
         ? searchMemory(memQuery, "memories", ms.id_workspace, userId).catch(() => ({ memories: [] } as any))
