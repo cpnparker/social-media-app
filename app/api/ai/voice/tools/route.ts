@@ -105,7 +105,7 @@ export async function POST(req: NextRequest) {
         break;
       }
       case "search_memory": {
-        const result = await searchMemory(args.query, args.scope || "both", workspaceId, userId);
+        const result = await searchMemory(args.query, args.scope || "both", workspaceId, userId, visibility);
         output = `${result.summary}\n\nMemories:\n${result.memories.map((m: any) => `- [${m.category}] ${m.content} (${m.date})`).join("\n") || "None found"}`;
         break;
       }

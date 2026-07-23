@@ -212,7 +212,10 @@ export async function POST(req: NextRequest) {
         ? queryMeetingBrain("my_tasks", userEmail, { visibility: "private" }).catch(() => ({ data: [], count: 0 }))
         : Promise.resolve({ data: [], count: 0 } as any),
       memQuery
-        ? searchMemory(memQuery, "memories", ms.id_workspace, userId).catch(() => ({ memories: [] } as any))
+        // "private" for the same reason as my_tasks above: this output goes
+        // only to ai_meeting_cards, which all three card routes restrict to
+        // the session host.
+        ? searchMemory(memQuery, "memories", ms.id_workspace, userId, "private").catch(() => ({ memories: [] } as any))
         : Promise.resolve({ memories: [] } as any),
     ]);
     const openTasks = (Array.isArray((mbTasks as any).data) ? (mbTasks as any).data : [])

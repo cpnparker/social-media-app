@@ -3102,6 +3102,83 @@ function getMeetingBrainDb() {
   return _mbDb;
 }
 
+/** Known client email domains that differ from their registered
+ *  app_clients.link_website (or where the website is unset), so the privacy
+ *  gate doesn't drop these real clients. CONFIRMED clients only — adding a
+ *  non-client domain here leaks that org's meetings to the workspace. */
+const CLIENT_DOMAIN_ALIASES = [
+  "beonemed.com", // BeOne Medicines (registered as beonemedicines.com)
+  "hiscox.com",   // Hiscox Insurance (registered with no website)
+];
+
+function normalizeClientDomain(url: string | null): string | null {
+  if (!url) return null;
+  let d = url.trim().toLowerCase();
+  d = d.replace(/^https?:\/\//, "").replace(/^www\./, "");
+  d = d.split("/")[0].split("?")[0].split("#")[0].trim();
+  return d.length > 3 && d.includes(".") ? d : null;
+}
+
+/** Registered-client email domains (app_clients.link_website + confirmed
+ *  aliases), excluding our own. THE definition of "a client meeting" — shared
+ *  by client_meetings and by the meeting_details team-thread check so the two
+ *  can never drift apart. */
+async function loadClientDomains(internalDomain: string): Promise<string[]> {
+  const { supabase: publicDb } = await import("@/lib/supabase");
+  const { data: clientRows } = await publicDb.from("app_clients").select("link_website");
+  return Array.from(new Set([
+    ...(clientRows || [])
+      .map((c: any) => normalizeClientDomain(c.link_website))
+      .filter((d: string | null): d is string => !!d && d !== internalDomain),
+    ...CLIENT_DOMAIN_ALIASES,
+  ]));
+}
+
+/** True if any attendee is from a registered client domain. Used to decide
+ *  whether a meeting's transcript is a TEAM artefact (client work, shared) or
+ *  a personal/internal one (owner only). */
+function hasClientAttendee(attendees: unknown, clientDomains: string[]): boolean {
+  const blob = String(attendees || "").toLowerCase();
+  if (!blob || clientDomains.length === 0) return false;
+  // Parse addresses and compare the WHOLE domain. A substring test would
+  // treat someone@hiscox.com.attacker.io as a Hiscox attendee and hand a
+  // team thread an internal transcript.
+  const emails = blob.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g) || [];
+  return emails.some((e) => {
+    const domain = e.split("@")[1];
+    return clientDomains.some((d) => domain === d || domain.endsWith(`.${d}`));
+  });
+}
+
+/** Call a MeetingBrain RPC with the registered-client domain allowlist, so
+ *  CLIENT meetings are visible to the whole workspace (account handovers,
+ *  renewal reviews) while personal/internal meetings stay attendee-scoped.
+ *
+ *  DEPLOY-SAFE: scripts/client-meetings-workspace-wide.sql adds the
+ *  p_client_domains parameter, and it is applied BY HAND in the Supabase SQL
+ *  editor. Until it has been run, PostgREST rejects the unknown argument —
+ *  so we retry once without it and keep the old attendee-scoped behaviour
+ *  rather than breaking every MeetingBrain lookup. Remove the fallback once
+ *  the SQL is confirmed live. */
+async function mbRpcWithClientDomains(
+  mbDb: any,
+  fn: "search_meetings" | "get_meeting_details",
+  args: Record<string, any>,
+  clientDomains: string[]
+): Promise<{ data: any; error: any }> {
+  if (clientDomains.length > 0) {
+    const res = await mbDb.rpc(fn, { ...args, p_client_domains: clientDomains });
+    const msg = String(res.error?.message || "");
+    const missingParam =
+      res.error?.code === "PGRST202" ||
+      /could not find the function|does not exist|p_client_domains/i.test(msg);
+    if (!res.error) return res;
+    if (!missingParam) return res;
+    console.warn(`[MeetingBrain] ${fn}: p_client_domains not accepted — falling back to attendee-scoped (run scripts/client-meetings-workspace-wide.sql)`);
+  }
+  return mbDb.rpc(fn, args);
+}
+
 export async function queryMeetingBrain(
   report: string,
   userEmail: string,
@@ -3126,7 +3203,13 @@ export async function queryMeetingBrain(
   // to pass the option (`undefined !== "team"`) — which is exactly how the
   // Live lookup route leaked personal tasks into a team-visible meeting feed.
   // Every call site must now state the audience it is answering for.
-  if (options.visibility !== "private" && report !== "client_meetings") {
+  // Exemptions: client_meetings is workspace-shared by design, and
+  // meeting_details decides for itself AFTER the fetch — a CLIENT meeting's
+  // transcript is a team artefact (client work belongs to the team), while a
+  // personal/internal meeting's is not, and that can only be told apart by
+  // looking at the attendees.
+  const decidesOwnAudience = report === "client_meetings" || report === "meeting_details";
+  if (options.visibility !== "private" && !decidesOwnAudience) {
     if (!options.visibility) {
       console.warn(`[MeetingBrain] Blocked personal report "${report}": caller passed no visibility (fail-closed)`);
     } else {
@@ -3144,6 +3227,18 @@ export async function queryMeetingBrain(
     };
   }
   const mbDb = getMeetingBrainDb();
+  // Registered-client domains, loaded at most once per call and only when a
+  // report actually needs them. Passing these to the meeting RPCs is what
+  // makes CLIENT meetings readable by colleagues who weren't in the room —
+  // the whole point of "client work belongs to the agency, not the attendee".
+  const callerDomain = userEmail.split("@")[1] || "";
+  let clientDomainsCache: string[] | null = null;
+  const getClientDomains = async (): Promise<string[]> => {
+    if (clientDomainsCache === null) {
+      clientDomainsCache = callerDomain ? await loadClientDomains(callerDomain) : [];
+    }
+    return clientDomainsCache;
+  };
   try {
     switch (report) {
       case "my_tasks": {
@@ -3182,12 +3277,12 @@ export async function queryMeetingBrain(
         // window fills with future calendar entries (recurring pickups,
         // weekly syncs…) and past meetings never make it into the result;
         // the past-only filter below then leaves nothing.
-        const { data: meetings, error } = await mbDb.rpc("search_meetings", {
+        const { data: meetings, error } = await mbRpcWithClientDomains(mbDb, "search_meetings", {
           p_user_email: userEmail,
           p_since: since.toISOString(),
           p_until: new Date().toISOString(),
           p_limit: 40,
-        });
+        }, await getClientDomains());
         if (error) return fail(error.message);
 
         // Filter to past meetings only
@@ -3237,11 +3332,12 @@ export async function queryMeetingBrain(
         if (!options.query) return fail(`the "query" argument is required for search_meetings — pass a keyword like an attendee name or topic`, "invalid_call");
         const twoWeeksAgo = new Date(); twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
 
-        const { data: exact, error } = await mbDb.rpc("search_meetings", {
+        const clientDomainsForSearch = await getClientDomains();
+        const { data: exact, error } = await mbRpcWithClientDomains(mbDb, "search_meetings", {
           p_user_email: userEmail,
           p_query: options.query,
           p_limit: 20,
-        });
+        }, clientDomainsForSearch);
         if (error) return fail(error.message);
 
         // Fuzzy enrichment: voice transcription misspells proper nouns
@@ -3254,12 +3350,12 @@ export async function queryMeetingBrain(
         const sixMonthsAgo = new Date(); sixMonthsAgo.setDate(sixMonthsAgo.getDate() - 180);
         // p_until bounds the window to past meetings — without it the
         // newest-first sort fills the limit with future calendar entries.
-        const { data: recent } = await mbDb.rpc("search_meetings", {
+        const { data: recent } = await mbRpcWithClientDomains(mbDb, "search_meetings", {
           p_user_email: userEmail,
           p_since: sixMonthsAgo.toISOString(),
           p_until: new Date().toISOString(),
           p_limit: 100,
-        });
+        }, clientDomainsForSearch);
         const near = (recent || []).filter((r: any) =>
           fuzzyMatches(options.query!, `${r.meeting_title || ""} ${r.attendees || ""}`)
         );
@@ -3315,16 +3411,38 @@ export async function queryMeetingBrain(
       case "meeting_details": {
         if (!options.meetingId) return fail("meeting_id required — get it from search_meetings first", "invalid_call");
 
-        const { data: details, error } = await mbDb.rpc("get_meeting_details", {
+        const { data: details, error } = await mbRpcWithClientDomains(mbDb, "get_meeting_details", {
           p_user_email: userEmail,
           p_meeting_id: options.meetingId,
-        });
+        }, await getClientDomains());
         if (error) return fail(error.message);
         if (!details || (Array.isArray(details) && details.length === 0)) {
           return fail(`no meeting exists with meeting_id "${options.meetingId}" (or the user is not an attendee) — that id is wrong or stale`, "invalid_call");
         }
 
         const d = Array.isArray(details) ? details[0] : details;
+
+        // AUDIENCE CHECK (deferred from the gate above — needs the attendees).
+        // In a team thread, only CLIENT meeting transcripts may be returned:
+        // client work is a team artefact, so the whole team can read those.
+        // A personal or internal-only meeting stays with its attendees.
+        // The RPC restricts this to meetings the caller attended/owns PLUS
+        // client meetings (once client-meetings-workspace-wide.sql is live);
+        // this narrows that set for team threads, it never widens it.
+        if (options.visibility !== "private") {
+          if (!hasClientAttendee(d.attendees, await getClientDomains())) {
+            console.log(`[MeetingBrain] Blocked meeting_details in team conversation: no registered client attendee`);
+            return {
+              data: [], count: 0,
+              notice: [
+                `That meeting has no registered client attendee, so it counts as a PERSONAL or internal meeting — and this is a TEAM conversation visible to every workspace member, so its transcript and notes were not returned.`,
+                ``,
+                `Tell the user (briefly, friendly): internal and personal meeting records can only be opened in a private conversation — ask them to switch to a private chat. Client meetings can be discussed right here.`,
+              ].join("\n"),
+            };
+          }
+          console.log(`[MeetingBrain] meeting_details allowed in team conversation (client meeting)`);
+        }
         // Transcripts can be 25k+ chars for an hour-long recording. Claude
         // has plenty of context budget — give it the whole thing up to a
         // generous cap (~25k tokens). Truncating at 8k cut off mid-sentence
@@ -3371,32 +3489,7 @@ export async function queryMeetingBrain(
         if (!internalDomain) return fail("Could not derive workspace domain from user email");
 
         // Build the registered-client domain allowlist from app_clients.
-        const { supabase: publicDb } = await import("@/lib/supabase");
-        const { data: clientRows } = await publicDb
-          .from("app_clients")
-          .select("link_website");
-        const normalizeDomain = (url: string | null): string | null => {
-          if (!url) return null;
-          let d = url.trim().toLowerCase();
-          d = d.replace(/^https?:\/\//, "").replace(/^www\./, "");
-          d = d.split("/")[0].split("?")[0].split("#")[0].trim();
-          return d.length > 3 && d.includes(".") ? d : null;
-        };
-        // Known client email domains that differ from their registered
-        // app_clients.link_website (or where the website is unset), so the
-        // privacy gate doesn't drop these real clients. Keep this list to
-        // CONFIRMED clients only — adding a non-client domain here would leak
-        // that org's meetings into the workspace-shared report.
-        const CLIENT_DOMAIN_ALIASES = [
-          "beonemed.com", // BeOne Medicines (registered as beonemedicines.com)
-          "hiscox.com",   // Hiscox Insurance (registered with no website)
-        ];
-        const clientDomains = Array.from(new Set([
-          ...(clientRows || [])
-            .map((c: any) => normalizeDomain(c.link_website))
-            .filter((d: string | null): d is string => !!d && d !== internalDomain),
-          ...CLIENT_DOMAIN_ALIASES,
-        ]));
+        const clientDomains = await loadClientDomains(internalDomain);
 
         const since = new Date(); since.setDate(since.getDate() - 90);
         const twoWeeksBack = new Date(); twoWeeksBack.setDate(twoWeeksBack.getDate() - 14);
@@ -4029,13 +4122,29 @@ async function buildScheduledUpdateProposal(
 
 /**
  * Search user's memories and conversation history for relevant information.
+ *
+ * PRIVACY: `visibility` is the audience of the OUTPUT, not of the data.
+ * - "private": the caller is the only reader → their own private memories and
+ *   own private threads are fair game (this is the user reading their own
+ *   data, which is the whole point of the feature).
+ * - "team": the result lands in a thread every workspace member can read, so
+ *   only TEAM-scoped memories and TEAM-visible threads may be returned.
+ *   Without this, search_memory launders private content into team threads:
+ *   pull something private on Monday, ask an innocent question in a team
+ *   thread on Friday, and the verbatim content is re-exported.
+ * FAIL CLOSED: anything that isn't explicitly "private" is treated as team.
  */
 export async function searchMemory(
   query: string,
   scope: "memories" | "conversations" | "both" = "both",
   workspaceId: string,
-  userId: number
+  userId: number,
+  visibility?: "private" | "team"
 ): Promise<{ memories: any[]; messages: any[]; summaries: any[]; summary: string }> {
+  const soloAudience = visibility === "private";
+  if (!visibility) {
+    console.warn("[Memory] searchMemory called with no visibility — restricting to team-scoped data (fail-closed)");
+  }
   const { intelligenceDb } = await import("@/lib/supabase-intelligence");
 
   // Build multiple search patterns — split query into individual terms
@@ -4056,7 +4165,8 @@ export async function searchMemory(
       .select("information_content, type_category, score_strength, date_created, type_source")
       .eq("id_workspace", workspaceId)
       .eq("flag_active", 1)
-      .or(`user_memory.eq.${userId},type_scope.eq.team`)
+      // Solo: own private memories + team memories. Team thread: team only.
+      .or(soloAudience ? `user_memory.eq.${userId},type_scope.eq.team` : `type_scope.eq.team`)
       .or(termPatterns.map(p => `information_content.ilike.${p}`).join(","))
       .order("score_strength", { ascending: false })
       .limit(10);
@@ -4076,20 +4186,25 @@ export async function searchMemory(
 
   // Search conversation messages AND conversation summaries
   if (scope === "conversations" || scope === "both") {
-    // First, find all conversation IDs this user can access:
-    // 1. Conversations they created
-    // 2. Team conversations in their workspace
-    // 3. Conversations shared with them via ai_shares
+    // Which conversations may be searched depends on the AUDIENCE of this
+    // answer, not just on what the caller can read:
+    // - solo   → everything they can access (own threads, team threads,
+    //            threads shared with them);
+    // - team   → team-visible threads ONLY. Their own private threads and
+    //            privately-shared threads are excluded, because quoting them
+    //            here would publish them to the workspace.
     const [ownConvs, sharedConvs] = await Promise.all([
       intelligenceDb
         .from("ai_conversations")
         .select("id_conversation")
         .eq("id_workspace", workspaceId)
-        .or(`user_created.eq.${userId},type_visibility.eq.team`),
-      intelligenceDb
-        .from("ai_shares")
-        .select("id_conversation")
-        .eq("user_recipient", userId),
+        .or(soloAudience ? `user_created.eq.${userId},type_visibility.eq.team` : `type_visibility.eq.team`),
+      soloAudience
+        ? intelligenceDb
+            .from("ai_shares")
+            .select("id_conversation")
+            .eq("user_recipient", userId)
+        : Promise.resolve({ data: [] as Array<{ id_conversation: string }> }),
     ]);
 
     const accessibleConvIds = [
@@ -5251,7 +5366,8 @@ async function streamAnthropic(
             tool.input.query,
             tool.input.scope || "both",
             config.workspaceId!,
-            config.userId!
+            config.userId!,
+            config.conversationVisibility
           );
           toolResults.push({
             type: "tool_result",
@@ -5882,7 +5998,8 @@ async function streamXAIChatCompletions(
             input.query,
             input.scope || "both",
             config.workspaceId!,
-            config.userId!
+            config.userId!,
+            config.conversationVisibility
           );
           openaiMessages.push({
             role: "tool",
@@ -6495,7 +6612,8 @@ async function streamGemini(
             input.query,
             input.scope || "both",
             config.workspaceId!,
-            config.userId!
+            config.userId!,
+            config.conversationVisibility
           );
           geminiMessages.push({
             role: "tool",
@@ -7020,7 +7138,8 @@ async function streamOpenAI(
             input.query,
             input.scope || "both",
             config.workspaceId!,
-            config.userId!
+            config.userId!,
+            config.conversationVisibility
           );
           openaiMessages.push({
             role: "tool",
