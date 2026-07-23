@@ -42,6 +42,12 @@ export async function POST(req: NextRequest) {
     if (!access.allowed) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
+    // A VIEW-only share recipient must not write here. Without this, they can
+    // inject a voice transcript turns into someone else's thread — which the owner's
+    // next turn reads back as trusted prior context.
+    if (access.permission === "view") {
+      return NextResponse.json({ error: "Read-only access to this conversation" }, { status: 403 });
+    }
 
     // Save turns (skip in incognito, mirroring the text pipeline)
     let saved = 0;

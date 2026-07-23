@@ -65,14 +65,22 @@ export async function POST(req: NextRequest) {
     const sessionTitle = (title || "Live meeting").slice(0, 120);
     const type = ["client_checkin", "sales", "general"].includes(meetingType) ? meetingType : "general";
 
-    // Meeting = team surface (roadmap stance): visible to the workspace.
+    // Visibility follows the bound CLIENT, not a blanket "meetings are a team
+    // surface" stance. Client work is a team artefact; an internal 1:1,
+    // performance review or salary conversation is not — and this thread
+    // receives the approved digest, so making it team-visible published those
+    // to the whole workspace. Without a bound client the thread is private to
+    // the host, who can still share it deliberately. (The live card feed is
+    // host-only either way — all three card routes gate on
+    // consent_attested_by.)
+    const isClientMeeting = !!clientId;
     const { data: conversation, error: convErr } = await intelligenceDb
       .from("ai_conversations")
       .insert({
         id_workspace: workspaceId,
         user_created: userId,
         name_conversation: sessionTitle,
-        type_visibility: "team",
+        type_visibility: isClientMeeting ? "team" : "private",
         id_client: clientId ? parseInt(String(clientId), 10) : null,
         name_model: "grok-4-1-fast",
         type_conversation_mode: "meeting",

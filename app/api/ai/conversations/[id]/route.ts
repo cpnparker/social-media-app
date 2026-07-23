@@ -236,7 +236,26 @@ export async function PATCH(
       date_updated: new Date().toISOString(),
     };
     if (body.title !== undefined) updateData.name_conversation = body.title;
-    if (body.visibility !== undefined) updateData.type_visibility = body.visibility;
+    if (body.visibility !== undefined) {
+      // VALIDATE: this was written straight from the body. An arbitrary string
+      // reads as not-"team" to the privacy gate (tools allowed) but as
+      // not-"private" to the memory-scope logic (memories written workspace-
+      // wide) — the read gate and the write gate would disagree.
+      if (body.visibility !== "private" && body.visibility !== "team") {
+        return NextResponse.json({ error: "visibility must be 'private' or 'team'" }, { status: 400 });
+      }
+      // PUBLISHING someone else's thread is not an admin power. Admins may
+      // rename or retitle, but making a colleague's private conversation
+      // workspace-readable — retroactively exposing everything gathered in it
+      // under a private audience — must be the owner's own decision.
+      if (body.visibility === "team" && conversation.type_visibility !== "team" && conversation.user_created !== userId) {
+        return NextResponse.json(
+          { error: "Only the conversation's owner can make it visible to the team" },
+          { status: 403 }
+        );
+      }
+      updateData.type_visibility = body.visibility;
+    }
     if (body.model !== undefined) updateData.name_model = body.model;
     if (body.customerId !== undefined) updateData.id_client = body.customerId ? parseInt(String(body.customerId), 10) : null;
 

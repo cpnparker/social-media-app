@@ -3151,12 +3151,15 @@ function normalizeClientDomain(url: string | null): string | null {
 async function loadClientDomains(internalDomain: string): Promise<string[]> {
   const { supabase: publicDb } = await import("@/lib/supabase");
   const { data: clientRows, error } = await publicDb.from("app_clients").select("link_website");
-  // Fail CLOSED: an empty allowlist means "nothing is a client meeting", which
-  // blocks team access rather than releasing internal transcripts. Log it so a
-  // silent query failure doesn't look like "this workspace has no clients".
+  // An EMPTY allowlist is NOT fail-closed downstream: get_client_meetings
+  // documents that a NULL/empty p_client_domains falls back to "any
+  // non-internal, non-free-mail external attendee" — i.e. every external
+  // meeting in the database becomes workspace-shared. So a query failure must
+  // throw, and callers must treat "no domains" as "block", never as "no
+  // filter". Returning [] here was itself a leak.
   if (error) {
-    console.error("[MeetingBrain] client-domain allowlist query failed — treating as empty (fail-closed):", error.message);
-    return [];
+    console.error("[MeetingBrain] client-domain allowlist query FAILED:", error.message);
+    throw new Error("client-domain allowlist unavailable");
   }
   const caller = (internalDomain || "").trim().toLowerCase();
   return Array.from(new Set([
@@ -3505,7 +3508,7 @@ export async function queryMeetingBrain(
         // record lives in summary/insights/coaching_notes. Surface everything
         // and label the transcript state so the model answers from the notes
         // instead of telling the user "no transcript available".
-        const hasNotes = !!(d.summary || d.insights || (!teamAudience && d.coaching_notes) || d.external_summary || d.next_steps);
+        const hasNotes = !!(d.summary || d.insights || d.external_summary || d.next_steps);
         const transcriptStatus = !transcript ? "none" : transcript.length < 1000 ? "stub_only" : "full";
         const data = {
           title: d.meeting_title,
@@ -3517,8 +3520,17 @@ export async function queryMeetingBrain(
           key_topics: d.key_topics,
           next_steps: d.next_steps,
           insights: d.insights,
-          // Per-person performance feedback — owner-only, never to the team.
-          coaching_notes: teamAudience ? undefined : d.coaching_notes,
+          // coaching_notes is per-person performance feedback about the OWNER
+          // of the row it came from — and get_meeting_details returns the
+          // RICHEST sibling row across everyone who recorded the event, which
+          // is frequently a colleague's. Gating it on the conversation's
+          // audience (as this did) was wrong: in an ordinary PRIVATE thread it
+          // handed over a colleague's feedback verbatim. The RPC return shape
+          // carries no owner column, so EngineAI cannot tell whose notes these
+          // are. client-meetings-fixes.sql changes the RPC to return the
+          // CALLER'S OWN coaching notes; until it is applied this stays
+          // dropped rather than risk publishing someone else's.
+          coaching_notes: undefined,
           external_summary: d.external_summary,
           tasks: d.tasks,
         };
@@ -3544,13 +3556,24 @@ export async function queryMeetingBrain(
 
         // Build the registered-client domain allowlist from app_clients.
         const clientDomains = await loadClientDomains(internalDomain);
+        // NEVER pass null/empty: get_client_meetings treats a NULL allowlist
+        // as "any non-internal, non-free-mail external attendee", which would
+        // publish every external meeting in the database to the workspace.
+        // No registered client domains ⇒ no client meetings, full stop.
+        if (clientDomains.length === 0) {
+          console.warn("[MeetingBrain] client_meetings: empty client-domain allowlist — refusing to run (would fail open)");
+          return {
+            data: [], count: 0,
+            notice: `No registered client domains are configured, so client meetings can't be identified. Tell the user this looks like a setup issue — client websites need to be filled in on the client records — rather than saying there are no client meetings.`,
+          };
+        }
 
         const since = new Date(); since.setDate(since.getDate() - 90);
         const twoWeeksBack = new Date(); twoWeeksBack.setDate(twoWeeksBack.getDate() - 14);
 
         const { data: meetings, error: mtgErr } = await mbDb.rpc("get_client_meetings", {
           p_internal_domain: internalDomain,
-          p_client_domains: clientDomains.length > 0 ? clientDomains : null,
+          p_client_domains: clientDomains,
           p_since: since.toISOString(),
           p_limit: 100,
         });

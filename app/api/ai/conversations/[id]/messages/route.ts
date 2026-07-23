@@ -1000,8 +1000,21 @@ export async function POST(
       }));
     }
 
-    // Privacy: exclude personal/sensitive data from team threads
-    const isTeamThread = conversation.type_visibility === "team";
+    // Privacy: exclude personal/sensitive data from threads with more than one
+    // reader. "private" does NOT mean solo — a private thread can be shared
+    // with up to 20 recipients via ai_shares, and a collaborator posting in
+    // someone else's thread runs tools as THEMSELVES while the answer persists
+    // for the owner and every recipient. Treat any thread that is team-visible,
+    // shared, or not owned by the caller as a multi-reader audience.
+    const { count: shareCount } = await intelligenceDb
+      .from("ai_shares")
+      .select("id_conversation", { count: "exact", head: true })
+      .eq("id_conversation", conversationId);
+    const isMultiReaderThread =
+      conversation.type_visibility === "team" ||
+      (shareCount || 0) > 0 ||
+      conversation.user_created !== userId;
+    const isTeamThread = isMultiReaderThread;
 
     // MeetingBrain context: only for private/shared threads (never team threads)
     // When in a client conversation with linked meeting context, exclude general

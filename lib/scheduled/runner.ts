@@ -160,6 +160,31 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
       }
     }
 
+    // Read the thread's CURRENT audience rather than assuming "private".
+    // Scheduled threads are created private, but the owner (or previously an
+    // admin) can flip one to Team, and every run appends its output there. A
+    // hardcoded "private" meant a flipped thread kept executing personal-scope
+    // tools — unattended, for ever, into a workspace-readable thread. Shared
+    // threads count as team too: a share recipient is an extra reader.
+    let runAudience: "private" | "team" = "private";
+    if (task.id_conversation) {
+      const [{ data: conv }, { count: shareCount }] = await Promise.all([
+        intelligenceDb
+          .from("ai_conversations")
+          .select("type_visibility")
+          .eq("id_conversation", task.id_conversation)
+          .maybeSingle(),
+        intelligenceDb
+          .from("ai_shares")
+          .select("id_conversation", { count: "exact", head: true })
+          .eq("id_conversation", task.id_conversation),
+      ]);
+      if (conv?.type_visibility === "team" || (shareCount || 0) > 0) {
+        runAudience = "team";
+        console.log(`[Scheduled] Task ${task.id_prompt}: thread is ${conv?.type_visibility === "team" ? "team-visible" : "shared"} — personal-scope tools blocked this run`);
+      }
+    }
+
     const messages: AIMessage[] = [{ role: "user", content: task.document_prompt }];
 
     // Drain the stream server-side; capture the completion via onComplete.
@@ -177,7 +202,7 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
           workspaceId: task.id_workspace,
           userId: task.user_created,
           userEmail: task.email_user || undefined,
-          conversationVisibility: "private",
+          conversationVisibility: runAudience,
           selectedClientId: task.id_client || undefined,
           financeAccess: !!financeRes?.data?.flag_access_finance,
           source: "scheduled-prompt",

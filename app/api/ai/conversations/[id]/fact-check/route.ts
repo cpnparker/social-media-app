@@ -91,6 +91,12 @@ export async function POST(
     if (!access.allowed) {
       return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 });
     }
+    // A VIEW-only share recipient must not write here: this route INSERTS an
+    // assistant message into someone else's thread, and runs with
+    // preserveLinks so model-authored URLs survive the fabricated-link strip.
+    if (access.permission === "view") {
+      return new Response(JSON.stringify({ error: "Read-only access to this conversation" }), { status: 403 });
+    }
 
     // Build fact-check message — include user's original question for context
     const messages: AIMessage[] = [
