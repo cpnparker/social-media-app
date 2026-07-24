@@ -62,6 +62,7 @@ export async function GET() {
         accessAuthorityOn: access ? !!access.flag_access_authorityon : false,
         accessEngineAiLive: access ? !!access.flag_access_engineai_live : false,
         accessFinance: access ? !!access.flag_access_finance : false,
+        accessGmail: access ? (access as any).flag_access_gmail === 1 : false,
       };
     });
 
@@ -181,7 +182,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
-    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain, accessRfpTool, accessAuthorityOn, accessEngineAiLive, accessFinance } = body;
+    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain, accessRfpTool, accessAuthorityOn, accessEngineAiLive, accessFinance, accessGmail } = body;
 
     // Determine target user IDs — bulk or single
     const isBulk = Array.isArray(userIds) && userIds.length > 0;
@@ -245,7 +246,8 @@ export async function PATCH(req: NextRequest) {
       accessMeetingBrain !== undefined ||
       accessRfpTool !== undefined ||
       accessEngineAiLive !== undefined ||
-      accessFinance !== undefined;
+      accessFinance !== undefined ||
+      accessGmail !== undefined;
 
     if (hasAccessUpdate) {
       await Promise.all(
@@ -270,6 +272,7 @@ export async function PATCH(req: NextRequest) {
             if (accessAuthorityOn !== undefined) updates.flag_access_authorityon = accessAuthorityOn ? 1 : 0;
             if (accessEngineAiLive !== undefined) updates.flag_access_engineai_live = accessEngineAiLive ? 1 : 0;
             if (accessFinance !== undefined) updates.flag_access_finance = accessFinance ? 1 : 0;
+            if (accessGmail !== undefined) updates.flag_access_gmail = accessGmail ? 1 : 0;
 
             await intelligenceDb
               .from("users_access")
@@ -288,6 +291,7 @@ export async function PATCH(req: NextRequest) {
               flag_access_authorityon: accessAuthorityOn ? 1 : 0,
               flag_access_engineai_live: accessEngineAiLive ? 1 : 0,
               flag_access_finance: accessFinance ? 1 : 0,
+              flag_access_gmail: accessGmail ? 1 : 0,
             });
           }
         })

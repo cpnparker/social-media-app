@@ -1102,17 +1102,44 @@ export async function POST(
       systemPrompt += "\n\n**No live web this turn — INTERNAL guidance, do NOT announce this to the user:** You don't have live web results for this message. Never open or caveat your reply by saying web search is unavailable/off — just answer the request normally using the workspace data, client files, brief, and your knowledge. Do NOT claim you are searching, browsing, or looking something up online (you're not), and do NOT assert real-time facts (prices, availability, current events, breaking news) you can't verify — instead, flag any such claim as 'to verify'. Only if the user EXPLICITLY asked you to search the web should you briefly note they can turn on the Web toggle and ask again.";
     }
 
-    // Per-user finance access (Settings → Users → Finance) gates query_xero.
+    // Per-user access flags (Settings → Users). finance gates query_xero;
+    // gmail gates query_gmail. Both read `=== 1` explicitly: elsewhere in this
+    // codebase an ABSENT users_access row has been treated as "allowed", which
+    // for a mailbox would mean everyone.
     let financeAccess = false;
+    let gmailAccess = false;
     try {
       const { data: fa } = await intelligenceDb
         .from("users_access")
-        .select("flag_access_finance")
+        .select("flag_access_finance, flag_access_gmail")
         .eq("id_workspace", conversation.id_workspace)
         .eq("user_target", userId)
         .maybeSingle();
-      financeAccess = !!fa?.flag_access_finance;
+      financeAccess = fa?.flag_access_finance === 1;
+      gmailAccess = (fa as any)?.flag_access_gmail === 1;
     } catch { /* no row / pre-migration = no access (secure by default) */ }
+    if (!gmailAccess) {
+      // Deploy-safe: the column may not exist yet, which fails the WHOLE
+      // select above and would silently drop finance access too.
+      try {
+        const { data: ga } = await intelligenceDb
+          .from("users_access")
+          .select("flag_access_gmail")
+          .eq("id_workspace", conversation.id_workspace)
+          .eq("user_target", userId)
+          .maybeSingle();
+        gmailAccess = (ga as any)?.flag_access_gmail === 1;
+        if (!financeAccess) {
+          const { data: fb } = await intelligenceDb
+            .from("users_access")
+            .select("flag_access_finance")
+            .eq("id_workspace", conversation.id_workspace)
+            .eq("user_target", userId)
+            .maybeSingle();
+          financeAccess = fb?.flag_access_finance === 1;
+        }
+      } catch { /* still no access */ }
+    }
 
     // Scheduled task thread: load the standing task so the model can propose
     // updates to it (reply-to-refine) instead of claiming changes are applied.
@@ -1194,12 +1221,17 @@ export async function POST(
     // CLIENT is still connected, as long as we swallow enqueue errors in the
     // wrapper below (see `clientDisconnected` try/catch). This guards against
     // the "user navigated away mid-stream and lost their response" bug.
+    // Named so the completion callback can read flags the tool executors set
+    // on it during the turn (notably sawUntrustedContent after query_gmail).
+    const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
+        allowPersonalData: true };
+
     const aiStream = createStreamingResponse(
       messages,
       // userEmail is passed for team threads too: the MeetingBrain/Slack tools
       // gate personal reports server-side via conversationVisibility, while the
       // workspace-shared client_meetings report stays available to everyone.
-      { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess },
+      aiConfigRef,
       async ({ fullText, inputTokens, outputTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
@@ -1345,9 +1377,21 @@ export async function POST(
           }
         }
 
+        // TAINTED TURN: if this reply was produced with third-party email
+        // content in context, neither the memory extractor nor the summary
+        // generator may run over it. Both are hard-wired to a different
+        // vendor, both persist where others can read, and the extractor has
+        // an explicit "standing instruction" category with no approval step —
+        // so an injected line in a message body would become permanent
+        // guidance applied to every future conversation.
+        const turnTainted = aiConfigRef.sawUntrustedContent === true;
+        if (turnTainted) {
+          console.log("[Messages] Turn read email — skipping memory extraction and summary");
+        }
+
         // Fire-and-forget: background memory extraction after stream closes
         // Client already received [DONE] and can continue interacting
-        if (memoryEnabled && capturedText.length > 50) {
+        if (!turnTainted && memoryEnabled && capturedText.length > 50) {
           runBackgroundMemoryExtraction({
             userContent: userContent || "",
             assistantContent: capturedText,
@@ -1368,7 +1412,7 @@ export async function POST(
           const currentMsgCount = (history?.length || 0) + 2; // +2 for user + assistant just added
           const lastSummaryCount = conversation.units_summary_message_count || 0;
 
-          if (shouldUpdateSummary(currentMsgCount, lastSummaryCount)) {
+          if (!turnTainted && shouldUpdateSummary(currentMsgCount, lastSummaryCount)) {
             runBackgroundSummaryUpdate({
               conversationId,
               currentMessageCount: currentMsgCount,

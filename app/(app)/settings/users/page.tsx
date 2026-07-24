@@ -54,6 +54,7 @@ interface WorkspaceMember {
   accessAuthorityOn: boolean;
   accessEngineAiLive: boolean;
   accessFinance: boolean;
+  accessGmail: boolean;
 }
 
 interface CustomerAssignment {
@@ -71,7 +72,8 @@ type AccessField =
   | "accessRfpTool"
   | "accessAuthorityOn"
   | "accessEngineAiLive"
-  | "accessFinance";
+  | "accessFinance"
+  | "accessGmail";
 
 /* ─────────────── Config ─────────────── */
 
@@ -119,6 +121,7 @@ const accessFields: { key: AccessField; label: string }[] = [
   { key: "accessAuthorityOn", label: "Auth" },
   { key: "accessEngineAiLive", label: "Live" },
   { key: "accessFinance", label: "Finance" },
+  { key: "accessGmail", label: "Mail" },
 ];
 
 const appRoleOptions: { value: string; label: string; color: string; bg: string }[] = [
