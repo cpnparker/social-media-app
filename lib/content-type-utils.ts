@@ -110,6 +110,9 @@ const CATEGORY_MAP: Record<string, string> = {
   // Written
   article: "Written",
   article_interview: "Written",
+  newsletter: "Written",
+  original_reporting: "Written",
+  reporting: "Written",
   // Video
   video: "Video",
   animation: "Video",
@@ -168,6 +171,48 @@ export const CATEGORY_ICONS: Record<string, string> = {
   Strategy: "⚙️",
   Other: "📋",
 };
+
+/** Title-case a slug-like format name (e.g. "sting_quote" → "Sting Quote"). */
+function titleCaseFormat(s: string): string {
+  return s.replace(/_/g, " ").replace(/\w\S*/g, (w) => w[0].toUpperCase() + w.slice(1).toLowerCase());
+}
+
+/**
+ * Build category multi-select options with counts from a list of items keyed by contentType.
+ * Returns only categories that have at least one item.
+ */
+export function getCategoryFilterOptions(
+  items: { contentType: string }[]
+): Array<{ value: string; label: string; count: number }> {
+  const counts: Record<string, number> = {};
+  for (const it of items) {
+    const cat = categorizeContentType(it.contentType || "");
+    counts[cat] = (counts[cat] || 0) + 1;
+  }
+  return CATEGORY_ORDER
+    .filter((c) => (counts[c] || 0) > 0)
+    .map((c) => ({ value: c, label: `${CATEGORY_ICONS[c] || ""} ${c}`.trim(), count: counts[c] }));
+}
+
+/**
+ * Build format (contentType) multi-select options with counts.
+ * If `selectedCategories` is provided, counts only reflect items whose
+ * category is in the set (useful for live count display).
+ */
+export function getFormatFilterOptions(
+  items: { contentType: string }[],
+  selectedCategories?: Set<string>
+): Array<{ value: string; label: string; count: number }> {
+  const counts: Record<string, number> = {};
+  for (const it of items) {
+    const type = it.contentType || "unknown";
+    if (selectedCategories && !selectedCategories.has(categorizeContentType(type))) continue;
+    counts[type] = (counts[type] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .map(([value, count]) => ({ value, label: titleCaseFormat(value), count }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
 
 /**
  * Find the best matching CU value for a content type key

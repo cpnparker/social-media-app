@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
+import { fetchAllRows } from "@/lib/supabase-paginate";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 // GET /api/operations/timeline-resourcing
 // Returns tasks with deadline/CU data for the Gantt chart.
@@ -17,26 +21,27 @@ export async function GET(req: NextRequest) {
     // Fetch tasks that have deadlines within the visible window
     // We also grab tasks whose calculated start (deadline - CUs days) might fall in window
     // So we widen the query range by 30 days before "from" to catch tasks that start before but end within
-    let query = supabase
-      .from("app_tasks_content")
-      .select("*")
-      .not("date_deadline", "is", null)
-      .order("date_deadline", { ascending: true })
-      .limit(5000);
+    // Paginated, ordered by the unique id_task — fetch ALL tasks with a
+    // deadline in the (widened) window rather than the old .limit(5000) cap.
+    const rows = await fetchAllRows((start, end) => {
+      let query = supabase
+        .from("app_tasks_content")
+        .select("*")
+        .not("date_deadline", "is", null)
+        .order("id_task", { ascending: true });
 
-    // Widen the from date by 30 days to catch tasks that start before the window
-    if (from) {
-      const widenedFrom = new Date(from);
-      widenedFrom.setDate(widenedFrom.getDate() - 30);
-      query = query.gte("date_deadline", widenedFrom.toISOString().split("T")[0]);
-    }
-    if (to) {
-      // Extend to date slightly to catch tasks ending at the boundary
-      query = query.lte("date_deadline", `${to}T23:59:59.999Z`);
-    }
-
-    const { data: rows, error } = await query;
-    if (error) throw error;
+      // Widen the from date by 30 days to catch tasks that start before the window
+      if (from) {
+        const widenedFrom = new Date(from);
+        widenedFrom.setDate(widenedFrom.getDate() - 30);
+        query = query.gte("date_deadline", widenedFrom.toISOString().split("T")[0]);
+      }
+      if (to) {
+        // Extend to date slightly to catch tasks ending at the boundary
+        query = query.lte("date_deadline", `${to}T23:59:59.999Z`);
+      }
+      return query.range(start, end);
+    });
 
     // Parse excluded client IDs
     const excludedIds = new Set(

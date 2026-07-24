@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "ai_max_tokens" integer DEFAULT 4096;

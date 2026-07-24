@@ -1,8 +1,520 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { checkConversationAccess } from "@/lib/ai/access";
 import { supabase } from "@/lib/supabase";
-import { createStreamingResponse, type AIMessage } from "@/lib/ai/providers";
-import { getAIWriterSystemPrompt } from "@/lib/ai/system-prompts";
+import { createStreamingResponse, type AIMessage, type AIAttachment } from "@/lib/ai/providers";
+import { buildSystemPrompt, normalizeContextConfig, isFullDetail, type NormalizedContextConfig, type DetailLevel } from "@/lib/ai/system-prompts";
+import { fetchBlobContent } from "@/lib/ai/blob-utils";
+import { extractMemories } from "@/lib/ai/memory-extraction";
+import {
+  computeImportance,
+  runConsolidationPipeline,
+} from "@/lib/ai/memory-consolidation";
+import {
+  shouldUpdateSummary,
+  runBackgroundSummaryUpdate,
+} from "@/lib/ai/conversation-summary";
+import type { Attachment } from "@/lib/types/ai";
+import { assertServiceAllowed, ServiceControlError } from "@/lib/admin/service-control";
+import { calculateCostTenths } from "@/lib/ai/model-costs";
+
+export const maxDuration = 300; // 5 min — covers slow attachment extractions + long responses
+
+// Per-model cost + calculateCostTenths now live in lib/ai/model-costs.ts
+// (shared with lib/ai/usage-logger.ts so the two maps can't drift).
+
+// ── Helper: extract text from a .pptx (PowerPoint) file ──
+// .pptx is a zip; slide XML lives at ppt/slides/slide*.xml. Text runs are <a:t> elements.
+async function extractPptxText(buffer: Buffer): Promise<string | undefined> {
+  const JSZipModule = await import("jszip");
+  const JSZip = JSZipModule.default ?? JSZipModule;
+  const zip = await JSZip.loadAsync(buffer);
+
+  const slideFiles = Object.keys(zip.files)
+    .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+    .sort((a, b) => {
+      const an = parseInt(a.match(/slide(\d+)\.xml/)?.[1] ?? "0", 10);
+      const bn = parseInt(b.match(/slide(\d+)\.xml/)?.[1] ?? "0", 10);
+      return an - bn;
+    });
+
+  if (slideFiles.length === 0) return undefined;
+
+  const slides: string[] = [];
+  for (let i = 0; i < slideFiles.length; i++) {
+    const xml = await zip.files[slideFiles[i]].async("string");
+    const runs = Array.from(xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g), (m) =>
+      m[1]
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'"),
+    );
+    const slideText = runs.join(" ").trim();
+    if (slideText) slides.push(`--- Slide ${i + 1} ---\n${slideText}`);
+  }
+
+  return slides.join("\n\n") || undefined;
+}
+
+// ── Helper: extract text from a document attachment ──
+// Uses fetchBlobContent() which handles both private proxy URLs and legacy public URLs
+async function extractDocumentText(att: Attachment): Promise<string | undefined> {
+  try {
+    const { buffer } = await fetchBlobContent(att.url);
+
+    if (att.type === "application/pdf") {
+      const pdfParseModule = await import("pdf-parse");
+      const pdfParse = pdfParseModule.default ?? pdfParseModule;
+      const data = await pdfParse(buffer);
+      return data.text;
+    }
+
+    if (att.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+      const mammoth = await import("mammoth");
+      const result = await mammoth.extractRawText({ buffer });
+      return result.value;
+    }
+
+    const isPptx =
+      att.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+      att.name.toLowerCase().endsWith(".pptx");
+    if (isPptx) {
+      return await extractPptxText(buffer);
+    }
+
+    if (att.type.startsWith("text/")) {
+      return buffer.toString("utf-8");
+    }
+
+    return undefined;
+  } catch (err) {
+    console.error(`[Messages] Failed to extract text from ${att.name}:`, err);
+    return undefined;
+  }
+}
+
+// ── Helper: convert stored attachments to AIAttachments with extracted text ──
+// If `extractedText` is already cached on the attachment, skip re-extraction.
+async function prepareAttachmentsForAI(attachments: Attachment[]): Promise<AIAttachment[]> {
+  const prepared: AIAttachment[] = [];
+
+  for (const att of attachments) {
+    const aiAtt: AIAttachment = {
+      url: att.url,
+      name: att.name,
+      type: att.type,
+    };
+
+    // Use cached extracted text if available; otherwise extract fresh
+    if (!att.type.startsWith("image/")) {
+      if ((att as any).extractedText) {
+        aiAtt.extractedText = (att as any).extractedText;
+      } else {
+        aiAtt.extractedText = await extractDocumentText(att);
+      }
+    }
+
+    prepared.push(aiAtt);
+  }
+
+  return prepared;
+}
+
+// ── Helper: fetch workspace-level config (content types + CU definitions + format descriptions) ──
+async function fetchWorkspaceConfig(workspaceId?: string) {
+  const [typesRes, cuRes] = await Promise.all([
+    supabase
+      .from("types_content")
+      .select("id_type, key_type, type_content, flag_active")
+      .eq("flag_active", 1),
+    supabase
+      .from("calculator_content")
+      .select("id, name, format, units_content")
+      .order("sort_order"),
+  ]);
+
+  // Fetch format descriptions + type instructions + company context from ai_settings
+  let formatDescriptions: Record<string, string> = {};
+  let typeInstructions: Record<string, string> = {};
+  let companyContext: string | null = null;
+  if (workspaceId) {
+    try {
+      let res = await intelligenceDb
+        .from("ai_settings")
+        .select("information_format_descriptions, information_type_instructions, information_company_context")
+        .eq("id_workspace", workspaceId)
+        .maybeSingle();
+      if (res.error) {
+        // information_company_context may not exist yet (migration pending) —
+        // an unknown column fails the WHOLE select, so retry without it rather
+        // than silently losing format descriptions too.
+        res = await intelligenceDb
+          .from("ai_settings")
+          .select("information_format_descriptions, information_type_instructions")
+          .eq("id_workspace", workspaceId)
+          .maybeSingle();
+      }
+      const settings: any = res.data;
+      formatDescriptions = settings?.information_format_descriptions || {};
+      typeInstructions = settings?.information_type_instructions || {};
+      companyContext = settings?.information_company_context || null;
+    } catch {
+      // Ignore — optional
+    }
+  }
+
+  // Build format ID → name map for resolving descriptions
+  const cuData = cuRes.data || [];
+  const idToName: Record<string, string> = {};
+  cuData.forEach((c) => { idToName[c.id] = c.name; });
+
+  // Resolve format descriptions: map IDs to names
+  const resolvedDescriptions: Record<string, string> = {};
+  for (const [id, desc] of Object.entries(formatDescriptions)) {
+    if (desc?.trim()) {
+      const name = idToName[id] || id;
+      resolvedDescriptions[name] = desc;
+    }
+  }
+
+  return {
+    contentTypes: (typesRes.data || []).map((t) => ({
+      key: t.key_type,
+      name: t.type_content,
+      aiPrompt: null,
+    })),
+    cuDefinitions: cuData.map((c) => ({
+      format: c.name,
+      category: c.format,
+      units: c.units_content,
+    })),
+    formatDescriptions: resolvedDescriptions,
+    typeInstructions,
+    companyContext,
+  };
+}
+
+// ── Helper: get date cutoff and item limit for a detail level ──
+function getDetailParams(level: DetailLevel): { dateCutoff: string | null; limit: number } {
+  const now = new Date();
+  if (level === "full-week") {
+    now.setDate(now.getDate() - 7);
+    return { dateCutoff: now.toISOString(), limit: 30 };
+  }
+  if (level === "full-month") {
+    now.setMonth(now.getMonth() - 1);
+    return { dateCutoff: now.toISOString(), limit: 50 };
+  }
+  if (level === "full-year") {
+    now.setFullYear(now.getFullYear() - 1);
+    return { dateCutoff: now.toISOString(), limit: 100 };
+  }
+  return { dateCutoff: null, limit: 30 };
+}
+
+// ── Helper: fetch client context (with optional full detail) ──
+async function fetchClientContext(clientId: number, detailConfig?: NormalizedContextConfig) {
+  const contractLevel = detailConfig?.contracts || "summary";
+  const contentLevel = detailConfig?.contentPipeline || "summary";
+  const fullContracts = isFullDetail(contractLevel);
+  const fullContent = isFullDetail(contentLevel);
+
+  // Select extra fields for full content mode (briefs, audience, topics, etc.)
+  const contentSelect = fullContent
+    ? "id_content, name_content, type_content, flag_completed, flag_spiked, units_content, id_contract, date_completed, document_type, information_brief, information_audience, name_topic_array, name_campaign_array, information_platform"
+    : "id_content, name_content, type_content, flag_completed, flag_spiked, units_content, id_contract, date_completed, document_type";
+
+  // Date filter and limits for content based on time window
+  const contentParams = fullContent ? getDetailParams(contentLevel) : { dateCutoff: null, limit: 30 };
+
+  // Build content query with optional date filter
+  let contentQ = supabase
+    .from("app_content")
+    .select(contentSelect)
+    .eq("id_client", clientId);
+  if (contentParams.dateCutoff) {
+    contentQ = contentQ.gte("date_created", contentParams.dateCutoff);
+  }
+
+  const [clientRes, contractsRes, contentRes, socialRes] = await Promise.all([
+    supabase
+      .from("app_clients")
+      .select("id_client, name_client, information_industry, information_description")
+      .eq("id_client", clientId)
+      .single(),
+    supabase
+      .from("app_contracts")
+      .select("id_contract, name_contract, units_contract, units_total_completed, flag_active, date_start, date_end, information_notes")
+      .eq("id_client", clientId)
+      .order("flag_active", { ascending: false }),
+    contentQ
+      .order("date_created", { ascending: false })
+      .limit(contentParams.limit),
+    supabase
+      .from("social")
+      .select("network")
+      .eq("id_client", clientId)
+      .is("date_deleted", null),
+  ]);
+
+  const client = clientRes.data;
+  if (!client) return null;
+
+  // Fetch current tasks for content items (latest non-completed task per content)
+  const content = contentRes.data || [];
+  const taskMap: Record<number, { type: string; assignee: string }> = {};
+  if (content.length > 0) {
+    const contentIds = content
+      .map((c: any) => c.id_content)
+      .filter((id: any) => id != null);
+    if (contentIds.length > 0) {
+      const { data: tasks } = await supabase
+        .from("app_tasks_content")
+        .select("id_content, type_task, name_user_assignee, date_completed")
+        .in("id_content", contentIds)
+        .is("date_completed", null)
+        .order("order_sort", { ascending: true });
+      if (tasks) {
+        // Keep only the first (current) incomplete task per content item
+        for (const t of tasks) {
+          if (t.id_content && !taskMap[t.id_content]) {
+            taskMap[t.id_content] = {
+              type: t.type_task || "",
+              assignee: t.name_user_assignee || "",
+            };
+          }
+        }
+      }
+    }
+  }
+
+  // Categorize content by status
+  const commissioned = content.filter((c: any) => c.flag_completed !== 1 && c.flag_spiked !== 1);
+  const completed = content.filter((c: any) => c.flag_completed === 1);
+  const spiked = content.filter((c: any) => c.flag_spiked === 1);
+
+  // Summarize social platforms used
+  const social = socialRes.data || [];
+  const platformCounts: Record<string, number> = {};
+  social.forEach((s: any) => {
+    if (s.network) platformCounts[s.network] = (platformCounts[s.network] || 0) + 1;
+  });
+
+  // Content type breakdown by category
+  const typeBreakdown: Record<string, { total: number; commissioned: number; completed: number; spiked: number }> = {};
+  content.forEach((c: any) => {
+    const t = c.type_content || "other";
+    if (!typeBreakdown[t]) typeBreakdown[t] = { total: 0, commissioned: 0, completed: 0, spiked: 0 };
+    typeBreakdown[t].total++;
+    if (c.flag_completed === 1) typeBreakdown[t].completed++;
+    else if (c.flag_spiked === 1) typeBreakdown[t].spiked++;
+    else typeBreakdown[t].commissioned++;
+  });
+
+  // For full contracts: build map of content items per contract
+  const contractContentMap: Record<number, any[]> = {};
+  if (fullContracts) {
+    content.forEach((c: any) => {
+      if (c.id_contract) {
+        if (!contractContentMap[c.id_contract]) contractContentMap[c.id_contract] = [];
+        contractContentMap[c.id_contract].push(c);
+      }
+    });
+  }
+
+  return {
+    id: client.id_client,
+    name: client.name_client,
+    industry: client.information_industry,
+    description: client.information_description,
+    contracts: (contractsRes.data || []).map((c: any) => ({
+      id: c.id_contract,
+      name: c.name_contract,
+      totalUnits: c.units_contract,
+      completedUnits: c.units_total_completed,
+      active: c.flag_active === 1,
+      startDate: c.date_start,
+      endDate: c.date_end,
+      notes: c.information_notes,
+      ...(fullContracts && contractContentMap[c.id_contract]?.length ? {
+        commissionedContent: contractContentMap[c.id_contract].map((item: any) => {
+          const task = item.id_content ? taskMap[item.id_content] : null;
+          return {
+            id: item.id_content || null,
+            title: item.name_content,
+            type: item.type_content || "other",
+            format: item.document_type || null,
+            cu: item.units_content || 0,
+            status: item.flag_completed === 1 ? "Completed" : item.flag_spiked === 1 ? "Spiked" : "Commissioned",
+            dateCompleted: item.date_completed || null,
+            currentTask: task?.type || null,
+            taskAssignee: task?.assignee || null,
+          };
+        })
+      } : {}),
+    })),
+    contentSummary: {
+      total: content.length,
+      commissioned: commissioned.length,
+      completed: completed.length,
+      spiked: spiked.length,
+      totalCU: content.reduce((sum: number, c: any) => sum + (c.units_content || 0), 0),
+      byType: typeBreakdown,
+      recentCommissioned: commissioned.slice(0, 8).map((c: any) => `${c.name_content} (${c.type_content})`),
+      recentCompleted: completed.slice(0, 8).map((c: any) => `${c.name_content} (${c.type_content})`),
+      recentSpiked: spiked.slice(0, 5).map((c: any) => `${c.name_content} (${c.type_content})`),
+    },
+    ...(fullContent ? {
+      contentItems: content.map((c: any) => ({
+        title: c.name_content,
+        type: c.type_content || "other",
+        cu: c.units_content || 0,
+        status: c.flag_completed === 1 ? "Completed" : c.flag_spiked === 1 ? "Spiked" : "Commissioned",
+        brief: c.information_brief || undefined,
+        audience: c.information_audience || undefined,
+        topics: c.name_topic_array || undefined,
+        campaigns: c.name_campaign_array || undefined,
+        platform: c.information_platform || undefined,
+      }))
+    } : {}),
+    socialPlatforms: platformCounts,
+  };
+}
+
+// ── Helper: fetch ideas for a specific client ──
+async function fetchClientIdeas(clientId: number, detailLevel?: DetailLevel) {
+  const isFull = detailLevel ? isFullDetail(detailLevel) : false;
+  const params = isFull && detailLevel ? getDetailParams(detailLevel) : { dateCutoff: null, limit: 20 };
+
+  let q = supabase
+    .from("app_ideas")
+    .select("name_idea, information_brief, status, name_topic_array, date_created, date_commissioned")
+    .eq("id_client", clientId);
+  if (params.dateCutoff) {
+    q = q.gte("date_created", params.dateCutoff);
+  }
+  const { data: rows } = await q
+    .order("date_created", { ascending: false })
+    .limit(params.limit);
+
+  return (rows || []).map((r: any) => ({
+    title: r.name_idea as string,
+    brief: r.information_brief as string | null,
+    status: r.status as string,
+    topicTags: r.name_topic_array as string[] | null,
+    createdAt: r.date_created as string,
+    commissionedAt: r.date_commissioned as string | null,
+  }));
+}
+
+// ── Helper: fetch workspace-level summary for "General" mode ──
+async function fetchWorkspaceSummary() {
+  const [clientsRes, contractsRes, contentRes, ideasRes] = await Promise.all([
+    supabase
+      .from("app_clients")
+      .select("id_client, name_client"),
+    supabase
+      .from("app_contracts")
+      .select("units_contract, units_total_completed, name_client")
+      .eq("flag_active", 1),
+    supabase
+      .from("app_content")
+      .select("name_content, type_content, flag_completed, flag_spiked, units_content, name_client")
+      .order("date_created", { ascending: false })
+      .limit(100),
+    supabase
+      .from("app_ideas")
+      .select("name_idea, information_brief, status, name_client, date_created, date_commissioned")
+      .order("date_created", { ascending: false })
+      .limit(50),
+  ]);
+
+  const clients = clientsRes.data || [];
+  const contracts = contractsRes.data || [];
+  const content = contentRes.data || [];
+  const ideas = ideasRes.data || [];
+
+  // Content summary
+  const published = content.filter((c: any) => c.flag_completed === 1);
+  const inProduction = content.filter((c: any) => c.flag_completed !== 1 && c.flag_spiked !== 1);
+  const totalCU = content.reduce((sum: number, c: any) => sum + (c.units_content || 0), 0);
+
+  // Ideas status breakdown
+  const ideasByStatus: Record<string, number> = {};
+  ideas.forEach((i: any) => {
+    const s = i.status || "unknown";
+    ideasByStatus[s] = (ideasByStatus[s] || 0) + 1;
+  });
+
+  // Ideas this week
+  const weekAgo = new Date();
+  weekAgo.setDate(weekAgo.getDate() - 7);
+  const ideasThisWeek = ideas.filter((i: any) => i.date_created && new Date(i.date_created) >= weekAgo);
+
+  // Contracts summary
+  const totalContractCU = contracts.reduce((sum: number, c: any) => sum + (c.units_contract || 0), 0);
+  const completedContractCU = contracts.reduce((sum: number, c: any) => sum + (c.units_total_completed || 0), 0);
+
+  return {
+    clientCount: clients.length,
+    contracts: {
+      active: contracts.length,
+      totalCU: totalContractCU,
+      completedCU: completedContractCU,
+      remainingCU: totalContractCU - completedContractCU,
+    },
+    content: {
+      total: content.length,
+      published: published.length,
+      inProduction: inProduction.length,
+      totalCU,
+    },
+    ideas: {
+      total: ideas.length,
+      byStatus: ideasByStatus,
+      thisWeek: ideasThisWeek.length,
+      recent: ideas.slice(0, 20).map((i: any) => ({
+        title: i.name_idea as string,
+        brief: i.information_brief as string | null,
+        status: i.status as string,
+        clientName: i.name_client as string | null,
+        createdAt: i.date_created as string,
+        commissionedAt: i.date_commissioned as string | null,
+      })),
+    },
+  };
+}
+
+// ── Helper: fetch content-object level detail ──
+async function fetchContentDetail(contentObjectId: number) {
+  const { data: co } = await supabase
+    .from("app_content")
+    .select("name_content, type_content, document_body, information_brief, information_guidelines, information_audience, information_length, information_platform, information_notes, id_client, name_client, id_contract, name_topic_array, name_campaign_array")
+    .eq("id_content", contentObjectId)
+    .single();
+
+  if (!co) return null;
+
+  return {
+    title: co.name_content,
+    type: co.type_content,
+    body: co.document_body,
+    brief: co.information_brief,
+    guidelines: co.information_guidelines,
+    audience: co.information_audience,
+    targetLength: co.information_length,
+    platform: co.information_platform,
+    notes: co.information_notes,
+    clientId: co.id_client,
+    clientName: co.name_client,
+    contractId: co.id_contract,
+    topicTags: co.name_topic_array,
+    campaignTags: co.name_campaign_array,
+  };
+}
 
 // POST /api/ai/conversations/[id]/messages — send message & stream response
 export async function POST(
@@ -19,11 +531,29 @@ export async function POST(
   const userId = parseInt(session.user.id, 10);
   const conversationId = params.id;
 
+  // Control Centre kill switch + cap. Source matches what logAiUsage writes.
+  try {
+    await assertServiceAllowed("engine", "enginegpt");
+  } catch (e) {
+    if (e instanceof ServiceControlError) {
+      return new Response(JSON.stringify({ error: e.message, reason: e.reason }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    throw e;
+  }
+
   try {
     const body = await req.json();
     const userContent = body.content;
+    const userAttachments: Attachment[] | undefined = body.attachments;
+    // Studio mode (Design v2): attach generated assets to a specific shot in
+    // a design session. Provided per-message by the Design Mode AI rail.
+    const designSessionId: string | undefined = body.designSessionId;
+    const designFocusedShotId: string | undefined = body.designFocusedShotId;
 
-    if (!userContent?.trim()) {
+    if (!userContent?.trim() && (!userAttachments || userAttachments.length === 0)) {
       return new Response(JSON.stringify({ error: "Message content is required" }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
@@ -31,114 +561,874 @@ export async function POST(
     }
 
     // Fetch conversation
-    const { data: conversation, error: convError } = await supabase
+    const { data: conversation } = await intelligenceDb
       .from("ai_conversations")
       .select("*")
-      .eq("id", conversationId)
-      .single();
+      .eq("id_conversation", conversationId)
+      .maybeSingle();
 
-    if (convError || !conversation) {
+    if (!conversation) {
       return new Response(JSON.stringify({ error: "Conversation not found" }), {
         status: 404,
         headers: { "Content-Type": "application/json" },
       });
     }
 
-    // Access check
-    if (conversation.visibility === "private" && conversation.created_by !== userId) {
+    // Share-aware access check (function expects camelCase params)
+    const access = await checkConversationAccess(conversationId, userId, {
+      visibility: conversation.type_visibility,
+      userCreated: conversation.user_created,
+      workspaceId: conversation.id_workspace,
+    });
+    if (!access.allowed) {
       return new Response(JSON.stringify({ error: "Forbidden" }), {
         status: 403,
         headers: { "Content-Type": "application/json" },
       });
     }
-
-    // Save user message
-    const { error: insertError } = await supabase
-      .from("ai_messages")
-      .insert({
-        conversation_id: conversationId,
-        role: "user",
-        content: userContent.trim(),
-        created_by: userId,
-      });
-
-    if (insertError) {
-      return new Response(JSON.stringify({ error: insertError.message }), {
-        status: 500,
+    if (access.permission === "view") {
+      return new Response(JSON.stringify({ error: "Read-only access" }), {
+        status: 403,
         headers: { "Content-Type": "application/json" },
       });
     }
 
-    // Load full conversation history
-    const { data: history } = await supabase
-      .from("ai_messages")
-      .select("role, content")
-      .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: true });
+    // Pre-extract text from document attachments so we can cache it in the DB
+    // This avoids re-downloading and re-parsing on every subsequent message
+    let enrichedAttachments: Attachment[] | null = null;
+    if (userAttachments?.length) {
+      enrichedAttachments = await Promise.all(
+        userAttachments.map(async (att) => {
+          if (!att.type.startsWith("image/") && !(att as any).extractedText) {
+            const extracted = await extractDocumentText(att);
+            if (extracted) return { ...att, extractedText: extracted } as any;
+          }
+          return att;
+        })
+      );
+    }
 
-    const messages: AIMessage[] = (history || []).map((m: any) => ({
-      role: m.role as "user" | "assistant" | "system",
-      content: m.content,
-    }));
+    // Save user message with cached extracted text (skip in incognito)
+    if (!conversation.flag_incognito) {
+      const { error: msgErr } = await intelligenceDb.from("ai_messages").insert({
+        id_conversation: conversationId,
+        role_message: "user",
+        document_message: (userContent || "").trim(),
+        attachments: enrichedAttachments || null,
+        user_created: userId,
+      });
+      if (msgErr) console.error("[Messages] Failed to save user message:", msgErr);
+    }
 
-    // Build system prompt with optional content context
-    let contentContext: { contentTitle?: string; contentType?: string; contentBrief?: string } | undefined;
-    if (conversation.content_object_id) {
-      const { data: co } = await supabase
-        .from("app_content")
-        .select("title_content, type_content, description_content")
-        .eq("id_content", conversation.content_object_id)
-        .single();
+    // Load conversation history + workspace config + AI settings in parallel
+    const [historyRes, workspaceConfig, settingsRes] = await Promise.all([
+      intelligenceDb
+        .from("ai_messages")
+        .select("role_message, document_message, attachments")
+        .eq("id_conversation", conversationId)
+        .order("date_created", { ascending: true }),
+      fetchWorkspaceConfig(conversation.id_workspace),
+      intelligenceDb
+        .from("ai_settings")
+        .select("config_context, information_cu_description, units_max_tokens, flag_debug")
+        .eq("id_workspace", conversation.id_workspace)
+        .maybeSingle(),
+    ]);
 
-      if (co) {
-        contentContext = {
-          contentTitle: co.title_content,
-          contentType: co.type_content,
-          contentBrief: co.description_content,
-        };
+    const history = historyRes.data || [];
+    const wsSettings = settingsRes.data;
+
+    // Allow per-request context config override from the client (normalize to detail levels)
+    const contextConfig = normalizeContextConfig(body.contextConfig ?? wsSettings?.config_context ?? undefined);
+    const cuDescription = wsSettings?.information_cu_description ?? undefined;
+    // Web search responses (with citations, sources, detailed research) need more room.
+    // Bump the cap for search queries to avoid mid-sentence cut-offs.
+    const baseMaxTokens = wsSettings?.units_max_tokens || 4096;
+    const maxTokens = baseMaxTokens; // resolved per-query below after route is known
+    const debugMode = body.debugMode || wsSettings?.flag_debug || false;
+
+    // Determine if memory/summary features are enabled for this request
+    // (used by truncation, memory extraction, and summary generation)
+    const isIncognito = contextConfig.incognito === "on";
+    const memoryEnabled = !isIncognito && contextConfig.memory !== "off";
+
+    // Build messages with attachments for AI
+    // Context window truncation: keep conversations manageable for AI models.
+    // Long conversations with many tool calls (image gen, queries) bloat the
+    // context and cause models to stop calling tools or hit token limits.
+    const hasSummary = !!conversation.document_summary;
+    const shouldTruncate = memoryEnabled && history.length > 30 && hasSummary;
+    // Always cap at last 20 messages regardless — prevents tool call history
+    // from overwhelming the model (each image gen adds ~3 messages)
+    const MAX_HISTORY = 20;
+    const cappedHistory = history.length > MAX_HISTORY ? history.slice(-MAX_HISTORY) : history;
+    const effectiveHistory = shouldTruncate ? history.slice(-MAX_HISTORY) : cappedHistory;
+
+    if (shouldTruncate) {
+      console.log(`[Messages] Truncating context: ${history.length} messages → summary + last 20`);
+    }
+
+    // Collapse consecutive user messages (orphaned messages from failed responses).
+    // Keep only the last user message in each consecutive run to avoid the model
+    // trying to answer 5+ unanswered questions at once and hitting timeouts.
+    const deduped: typeof effectiveHistory = [];
+    for (let i = 0; i < effectiveHistory.length; i++) {
+      const isUser = effectiveHistory[i].role_message === "user";
+      const nextIsUser = i + 1 < effectiveHistory.length && effectiveHistory[i + 1].role_message === "user";
+      if (isUser && nextIsUser) {
+        // Skip — keep only the last user message in a consecutive run
+        continue;
+      }
+      deduped.push(effectiveHistory[i]);
+    }
+    if (deduped.length < effectiveHistory.length) {
+      console.log(`[Messages] Collapsed ${effectiveHistory.length - deduped.length} orphaned user messages`);
+    }
+
+    const messages: AIMessage[] = [];
+
+    // Inject summary as context if truncating
+    if (shouldTruncate) {
+      messages.push({
+        role: "system" as const,
+        content: `[Earlier conversation context]\n${conversation.document_summary}`,
+      });
+    }
+
+    // Detect if the user's latest message references a previous image/output
+    // (e.g., "make that red", "another version", "change the background", "try again")
+    const latestUserContent = (body.content || "").toLowerCase();
+    const referencesImage = /\b(that|it|the image|the picture|this one|another|again|version|redo|modify|change|adjust|tweak|make it|more like|less|same but|similar|background|color|style|angle|pose)\b/i.test(latestUserContent);
+
+    // Find the index of the last assistant message that contains a generated image
+    let lastImageAssistantIdx = -1;
+    for (let i = deduped.length - 1; i >= 0; i--) {
+      if (deduped[i].role_message === "assistant" && /!\[Generated image\]\(/.test(deduped[i].document_message)) {
+        lastImageAssistantIdx = i;
+        break;
       }
     }
 
-    const systemPrompt = getAIWriterSystemPrompt(contentContext);
-    const model = body.model || conversation.model;
+    for (let hi = 0; hi < deduped.length; hi++) {
+      const m = deduped[hi];
+      let content = m.document_message;
 
-    // Auto-title: if this is the first user message, set conversation title
-    const userMessages = messages.filter((m) => m.role === "user");
-    if (userMessages.length === 1) {
-      const autoTitle =
-        userContent.trim().length > 60
-          ? userContent.trim().slice(0, 57) + "..."
-          : userContent.trim();
-      await supabase
-        .from("ai_conversations")
-        .update({ title: autoTitle, updated_at: new Date().toISOString() })
-        .eq("id", conversationId);
+      // For assistant messages: strip image/chart/doc markdown from conversation history
+      // to keep context lean. But if the user references a previous image, keep the
+      // MOST RECENT generated image intact so the model can iterate on it.
+      if (m.role_message === "assistant") {
+        // Scheduled-proposal markers render client-side as confirmation cards.
+        // Never feed the raw marker back to the model — it would learn the
+        // format and could fabricate cards whose displayed times don't match
+        // what a confirm would actually save.
+        if (content.includes("[SCHEDULED_PROPOSAL]")) {
+          content = content.replace(
+            /\[SCHEDULED_PROPOSAL\]([\s\S]*?)\[\/SCHEDULED_PROPOSAL\]/g,
+            (_mk: string, json: string) => {
+              try { return `[Scheduled prompt proposal card shown: "${JSON.parse(json).title}"]`; }
+              catch { return "[Scheduled prompt proposal card shown]"; }
+            }
+          );
+        }
+
+        const keepThisImage = referencesImage && hi === lastImageAssistantIdx;
+
+        if (!keepThisImage) {
+          content = content
+            .replace(/!\[Generated image\]\([^)]+\)/g, "[Previously generated image]")
+            .replace(/!\[[^\]]*\]\(\/api\/media\/[^)]+\)/g, "[Previously generated visual]")
+            .replace(/📄\s*\[Download [^\]]+\]\([^)]+\)/g, "[Previously generated document]")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+        }
+      }
+
+      const msg: AIMessage = {
+        role: m.role_message as "user" | "assistant" | "system",
+        content,
+      };
+
+      // Parse and prepare attachments for user messages
+      // Supabase JSONB returns parsed objects; handle both string and object
+      if (m.role_message === "user" && m.attachments) {
+        try {
+          const parsed: Attachment[] = typeof m.attachments === "string"
+            ? JSON.parse(m.attachments)
+            : m.attachments;
+          if (parsed.length > 0) {
+            msg.attachments = await prepareAttachmentsForAI(parsed);
+          }
+        } catch {
+          // Ignore malformed attachments
+        }
+      }
+
+      messages.push(msg);
     }
 
-    // Create streaming response
-    const stream = createStreamingResponse(
-      messages,
-      { model, systemPrompt },
-      async (fullText: string) => {
-        // Save assistant message after stream completes
-        await supabase.from("ai_messages").insert({
-          conversation_id: conversationId,
-          role: "assistant",
-          content: fullText,
-          model: model,
-        });
+    // ── Parallel fetch: context, memories, role, user prefs ──
+    // These are all independent and can run concurrently
 
-        // Update conversation timestamp
-        await supabase
-          .from("ai_conversations")
-          .update({ updated_at: new Date().toISOString() })
-          .eq("id", conversationId);
+    // Build memory query with V2 scored retrieval
+    const memoryPromise = (!isIncognito && contextConfig.memory !== "off")
+      ? (async (): Promise<{ content: string; category: string; strength: number }[]> => {
+          let memoryQuery = intelligenceDb
+            .from("ai_memories")
+            .select("id_memory, information_content, type_category, score_strength, count_reinforced, date_last_accessed, type_source")
+            .eq("id_workspace", conversation.id_workspace)
+            .eq("flag_active", 1);
+
+          if (conversation.type_visibility === "private") {
+            memoryQuery = memoryQuery.or(
+              `and(type_scope.eq.private,user_memory.eq.${userId}),type_scope.eq.team`
+            );
+          } else {
+            memoryQuery = memoryQuery.eq("type_scope", "team");
+          }
+
+          const { data } = await memoryQuery;
+          if (!data || data.length === 0) return [];
+
+          // Score each memory using importance formula (decay + reinforcement + recency)
+          const scored = data.map((m: any) => {
+            const { decayedStrength, importance } = computeImportance({
+              score_strength: m.score_strength ?? 1.0,
+              count_reinforced: m.count_reinforced ?? 0,
+              date_last_accessed: m.date_last_accessed ?? m.date_created,
+              type_category: m.type_category,
+              type_source: m.type_source ?? "inferred",
+            });
+            return {
+              id: m.id_memory,
+              content: m.information_content,
+              category: m.type_category,
+              strength: Math.round(decayedStrength * 100) / 100,
+              importance,
+            };
+          });
+
+          // Sort by importance descending, take top 25
+          scored.sort((a: any, b: any) => b.importance - a.importance);
+          const selected = scored.slice(0, 25);
+
+          // NOTE: We intentionally do NOT update date_last_accessed here.
+          // Passive retrieval (loading memories into system prompt) should not
+          // reset the decay clock. Only active reinforcement/update/contradiction
+          // (in applyConsolidationAction) should refresh access time.
+          // Without this, memories never decay because they're "accessed" on every message.
+
+          return selected.map((m: any) => ({
+            content: m.content,
+            category: m.category,
+            strength: m.strength,
+          }));
+        })()
+      : Promise.resolve([]);
+
+    // Role fetch (if specified)
+    const rolePromise = body.roleId
+      ? (async () => {
+          const { data } = await intelligenceDb
+            .from("ai_roles")
+            .select("name_role, information_instructions")
+            .eq("id_role", body.roleId)
+            .maybeSingle();
+          return data ? { name: data.name_role, instructions: data.information_instructions } : null;
+        })()
+      : Promise.resolve(null);
+
+    // User preferences fetch
+    const userPrefsPromise = (async () => {
+      const { data } = await intelligenceDb
+        .from("users_access")
+        .select("information_personal_context, name_region, data_selected_roles")
+        .eq("id_workspace", conversation.id_workspace)
+        .eq("user_target", userId)
+        .maybeSingle();
+      return data;
+    })();
+
+    // Context fetch (client / content / workspace)
+    const contextPromise = (async () => {
+      let clientContext: Awaited<ReturnType<typeof fetchClientContext>> = null;
+      let contentDetail: Awaited<ReturnType<typeof fetchContentDetail>> = null;
+      let clientIdeas: Awaited<ReturnType<typeof fetchClientIdeas>> | null = null;
+      let workspaceSummary: Awaited<ReturnType<typeof fetchWorkspaceSummary>> | null = null;
+
+      if (conversation.id_content) {
+        contentDetail = await fetchContentDetail(conversation.id_content);
+        if (contentDetail?.clientId) {
+          const [cc, ci] = await Promise.all([
+            fetchClientContext(contentDetail.clientId, contextConfig),
+            contextConfig.ideas !== "off" ? fetchClientIdeas(contentDetail.clientId, contextConfig.ideas) : null,
+          ]);
+          clientContext = cc;
+          clientIdeas = ci;
+        }
+      } else if (conversation.id_client) {
+        const [cc, ci] = await Promise.all([
+          fetchClientContext(conversation.id_client, contextConfig),
+          contextConfig.ideas !== "off" ? fetchClientIdeas(conversation.id_client, contextConfig.ideas) : null,
+        ]);
+        clientContext = cc;
+        clientIdeas = ci;
+      } else {
+        workspaceSummary = await fetchWorkspaceSummary();
+      }
+
+      return { clientContext, contentDetail, clientIdeas, workspaceSummary };
+    })();
+
+    // Fetch workspace client IDs for query_engine tool scoping
+    const clientIdsPromise = (async () => {
+      const { data } = await supabase
+        .from("app_clients")
+        .select("id_client");
+      return (data || []).map((c: any) => c.id_client).filter(Boolean) as number[];
+    })();
+
+    // Fetch processed client background profile (from asset files)
+    // Note: if conversation is content-scoped (id_content but no id_client),
+    // the client ID is resolved later via fetchContentDetail — we fetch
+    // the background after the parallel block in that case.
+    const clientBackgroundPromise = conversation.id_client
+      ? (async () => {
+          const [{ data: ctx }, { data: meetings }] = await Promise.all([
+            intelligenceDb
+              .from("ai_client_context")
+              .select("document_context, units_asset_count, date_last_processed")
+              .eq("id_workspace", conversation.id_workspace)
+              .eq("id_client", conversation.id_client)
+              .maybeSingle(),
+            intelligenceDb
+              .from("ai_client_meetings")
+              .select("meeting_title, meeting_date, meeting_summary, key_topics, next_steps, attendees_external")
+              .eq("id_workspace", conversation.id_workspace)
+              .eq("id_client", conversation.id_client)
+              .order("meeting_date", { ascending: false })
+              .limit(8),
+          ]);
+          // Build meeting_context from individual rows
+          let meeting_context: string | null = null;
+          if (meetings && meetings.length > 0) {
+            meeting_context = meetings.map((m: any) => {
+              let text = `## ${m.meeting_title} (${m.meeting_date?.slice(0, 10)})`;
+              if (m.attendees_external) text += `\nClient attendees: ${m.attendees_external}`;
+              if (m.meeting_summary) text += `\n${m.meeting_summary}`;
+              if (m.key_topics) {
+                try { const t = JSON.parse(m.key_topics); if (Array.isArray(t)) text += `\nKey topics: ${t.slice(0, 5).join(", ")}`; } catch { /* skip */ }
+              }
+              if (m.next_steps) text += `\nActions: ${m.next_steps.slice(0, 300)}`;
+              return text;
+            }).join("\n\n");
+          }
+          return ctx ? { ...ctx, meeting_context } : meeting_context ? { document_context: "", units_asset_count: 0, date_last_processed: new Date().toISOString(), meeting_context } : null;
+        })()
+      : Promise.resolve(null);
+
+    // MeetingBrain / external app context (skip in incognito or when toggled off)
+    const meetingBrainEnabled = contextConfig.meetingBrain !== "off";
+    const appContextPromise = !isIncognito && meetingBrainEnabled
+      ? (async () => {
+          const { data } = await intelligenceDb
+            .from("user_app_context")
+            .select("type_context, information_content")
+            .eq("user_target", userId)
+            .eq("name_source", "meetingbrain");
+          return data || [];
+        })()
+      : Promise.resolve([]);
+
+    // Run all in parallel
+    const [memories, role, userPrefs, ctx, appContextRows, workspaceClientIds, clientBackground] = await Promise.all([
+      memoryPromise,
+      rolePromise,
+      userPrefsPromise,
+      contextPromise,
+      appContextPromise,
+      clientIdsPromise,
+      clientBackgroundPromise,
+    ]);
+
+    const { clientContext, contentDetail, clientIdeas, workspaceSummary } = ctx;
+
+    // If conversation is content-scoped, fetch client background now that we know the client ID
+    let resolvedClientBackground = clientBackground;
+    if (!resolvedClientBackground && contentDetail?.clientId) {
+      const [{ data: ctxData }, { data: mtgData }] = await Promise.all([
+        intelligenceDb
+          .from("ai_client_context")
+          .select("document_context, units_asset_count, date_last_processed")
+          .eq("id_workspace", conversation.id_workspace)
+          .eq("id_client", contentDetail.clientId)
+          .maybeSingle(),
+        intelligenceDb
+          .from("ai_client_meetings")
+          .select("meeting_title, meeting_date, meeting_summary, key_topics, next_steps, attendees_external")
+          .eq("id_workspace", conversation.id_workspace)
+          .eq("id_client", contentDetail.clientId)
+          .gte("meeting_date", new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString())
+          .order("meeting_date", { ascending: false })
+          .limit(5),
+      ]);
+      let meeting_context: string | null = null;
+      if (mtgData && mtgData.length > 0) {
+        meeting_context = mtgData.map((m: any) => {
+          let text = `## ${m.meeting_title} (${m.meeting_date?.slice(0, 10)})`;
+          if (m.attendees_external) text += `\nClient attendees: ${m.attendees_external}`;
+          if (m.meeting_summary) text += `\n${m.meeting_summary}`;
+          if (m.key_topics) { try { const t = JSON.parse(m.key_topics); if (Array.isArray(t)) text += `\nKey topics: ${t.slice(0, 5).join(", ")}`; } catch { /* skip */ } }
+          if (m.next_steps) text += `\nActions: ${m.next_steps.slice(0, 300)}`;
+          return text;
+        }).join("\n\n");
+      }
+      resolvedClientBackground = ctxData ? { ...ctxData, meeting_context } : meeting_context ? { document_context: "", units_asset_count: 0, date_last_processed: new Date().toISOString(), meeting_context } : null;
+    }
+
+    // Resolve selected role IDs to role objects (depends on userPrefs)
+    let selectedRoles: { name: string; instructions: string }[] = [];
+    const selectedRoleIds: string[] = userPrefs?.data_selected_roles || [];
+    if (selectedRoleIds.length > 0) {
+      const { data: roleRows } = await intelligenceDb
+        .from("ai_roles")
+        .select("name_role, information_instructions")
+        .in("id_role", selectedRoleIds)
+        .eq("flag_active", 1);
+      selectedRoles = (roleRows || []).map((r: any) => ({
+        name: r.name_role,
+        instructions: r.information_instructions,
+      }));
+    }
+
+    // Privacy: exclude personal/sensitive data from threads with more than one
+    // reader. "private" does NOT mean solo — a private thread can be shared
+    // with up to 20 recipients via ai_shares, and a collaborator posting in
+    // someone else's thread runs tools as THEMSELVES while the answer persists
+    // for the owner and every recipient. Treat any thread that is team-visible,
+    // shared, or not owned by the caller as a multi-reader audience.
+    const { count: shareCount } = await intelligenceDb
+      .from("ai_shares")
+      .select("id_conversation", { count: "exact", head: true })
+      .eq("id_conversation", conversationId);
+    const isMultiReaderThread =
+      conversation.type_visibility === "team" ||
+      (shareCount || 0) > 0 ||
+      conversation.user_created !== userId;
+    const isTeamThread = isMultiReaderThread;
+
+    // MeetingBrain context: only for private/shared threads (never team threads)
+    // When in a client conversation with linked meeting context, exclude general
+    // meetings/upcoming to avoid leaking unrelated meetings into client scope.
+    const hasClientMeetings = resolvedClientBackground?.meeting_context;
+    const filteredAppContext = isTeamThread ? [] : appContextRows.filter((r: any) => {
+      if (hasClientMeetings && (r.type_context === "meetings" || r.type_context === "upcoming_meetings")) {
+        return false; // Use client-linked meetings instead
+      }
+      return true;
+    });
+    const meetingBrainContext = filteredAppContext.length > 0
+      ? filteredAppContext.map((r: any) => r.information_content || "").join("\n\n")
+      : null;
+
+    if (appContextRows.length > 0) {
+      console.log(`[Messages] MeetingBrain context: ${appContextRows.length} rows, ${meetingBrainContext?.length || 0} chars${isTeamThread ? " (excluded — team thread)" : ""}`);
+    }
+
+    // Resolve model — "auto" routes to the best model based on the prompt
+    let model = body.model || conversation.name_model;
+    let wasAutoRouted = false;
+    if (model === "auto") {
+      const { routeModel } = await import("@/lib/ai/auto-router");
+      model = routeModel(userContent || "");
+      wasAutoRouted = true;
+      console.log(`[Messages] Auto-routed → ${model}`);
+    }
+
+    // Route query to determine search mode and data source hints
+    const { routeQuery } = await import("@/lib/ai/query-router");
+    const queryRoute = routeQuery(userContent || "", contextConfig);
+    console.log(`[Messages] Query route: intent=${queryRoute.intent}, searchMode=${queryRoute.searchMode}, hints=${queryRoute.hints.length}`);
+
+    // Web search queries: use Claude (tool-based web_search_20250305) instead of Grok
+    // when the model was auto-selected. Grok's search_mode blends training data with
+    // live results — it silently fills missing facts with plausible-sounding fabrications.
+    // Claude's web_search tool is explicit and discrete: it can only cite what it fetched.
+    // User-selected Grok models keep their native LiveSearch behaviour unchanged.
+    if (queryRoute.searchMode === "on" && wasAutoRouted && model.startsWith("grok")) {
+      model = "claude-sonnet-5";
+      console.log(`[Messages] Web search: auto-route override → claude-sonnet-5 (grounded tool-based search)`);
+    }
+
+    let systemPrompt = buildSystemPrompt({
+      workspaceConfig,
+      clientContext,
+      contentDetail,
+      contextConfig,
+      cuDescription,
+      clientIdeas,
+      workspaceSummary,
+      memories: memories.length > 0 ? memories : undefined,
+      role,
+      selectedRoles: selectedRoles.length > 0 ? selectedRoles : undefined,
+      latestUserMessage: userContent || "",
+      personalContext: isTeamThread ? null : (userPrefs?.information_personal_context || null),
+      meetingBrainContext,
+      region: userPrefs?.name_region || null,
+      clientBackground: resolvedClientBackground || null,
+      userName: session.user?.name || null,
+      userEmail: session.user?.email || null,
+      userEngineId: userId,
+      designMode: conversation.type_conversation_mode === "design",
+      studioMode: conversation.type_conversation_mode === "design" && !!designSessionId,
+      conversationVisibility: isTeamThread ? "team" : "private",
+    });
+
+    // Append query router hints to system prompt as required tool calls
+    if (queryRoute.hints.length > 0) {
+      systemPrompt += "\n\n## Required tool calls for this turn\nBased on the question, you MUST call these tools before answering. Do not answer from cached inline context or training data alone.\n- " + queryRoute.hints.join("\n- ");
+    }
+
+    // For xAI/Grok: web search is built-in via LiveSearch — NOT a callable tool.
+    if (queryRoute.searchMode === "on" && model.startsWith("grok")) {
+      systemPrompt += "\n\n**LIVESEARCH ACTIVE:** xAI LiveSearch is running for this query. You are fetching LIVE results from the web RIGHT NOW. Rules:\n- Only report facts that appear in your actual search results. Do NOT use training data or prior conversation responses to fill gaps.\n- If your live search does not confirm a specific fact (price, stock level, availability, phone number), say \"I couldn't confirm this in my search\" — do not guess.\n- Your previous responses in this conversation may have been wrong. Do not simply repeat or confirm what you said before — re-verify everything with your current search results.\n- Cite the actual URLs your search returned. Do not invent citation numbers.";
+    }
+
+    // Safety guard: whenever web search is NOT active this turn. This is
+    // INTERNAL grounding guidance — it must NOT make the model open its reply by
+    // announcing "web search isn't available", which reads as a broken feature.
+    // It still prevents the model from promising a search it can't run (the
+    // tail-chasing spiral) and from asserting unverifiable real-time facts.
+    if (queryRoute.searchMode === "off") {
+      systemPrompt += "\n\n**No live web this turn — INTERNAL guidance, do NOT announce this to the user:** You don't have live web results for this message. Never open or caveat your reply by saying web search is unavailable/off — just answer the request normally using the workspace data, client files, brief, and your knowledge. Do NOT claim you are searching, browsing, or looking something up online (you're not), and do NOT assert real-time facts (prices, availability, current events, breaking news) you can't verify — instead, flag any such claim as 'to verify'. Only if the user EXPLICITLY asked you to search the web should you briefly note they can turn on the Web toggle and ask again.";
+    }
+
+    // Per-user access flags (Settings → Users). finance gates query_xero;
+    // gmail gates query_gmail. Both read `=== 1` explicitly: elsewhere in this
+    // codebase an ABSENT users_access row has been treated as "allowed", which
+    // for a mailbox would mean everyone.
+    let financeAccess = false;
+    let gmailAccess = false;
+    try {
+      const { data: fa } = await intelligenceDb
+        .from("users_access")
+        .select("flag_access_finance, flag_access_gmail")
+        .eq("id_workspace", conversation.id_workspace)
+        .eq("user_target", userId)
+        .maybeSingle();
+      financeAccess = fa?.flag_access_finance === 1;
+      gmailAccess = (fa as any)?.flag_access_gmail === 1;
+    } catch { /* no row / pre-migration = no access (secure by default) */ }
+    if (!gmailAccess) {
+      // Deploy-safe: the column may not exist yet, which fails the WHOLE
+      // select above and would silently drop finance access too.
+      try {
+        const { data: ga } = await intelligenceDb
+          .from("users_access")
+          .select("flag_access_gmail")
+          .eq("id_workspace", conversation.id_workspace)
+          .eq("user_target", userId)
+          .maybeSingle();
+        gmailAccess = (ga as any)?.flag_access_gmail === 1;
+        if (!financeAccess) {
+          const { data: fb } = await intelligenceDb
+            .from("users_access")
+            .select("flag_access_finance")
+            .eq("id_workspace", conversation.id_workspace)
+            .eq("user_target", userId)
+            .maybeSingle();
+          financeAccess = fb?.flag_access_finance === 1;
+        }
+      } catch { /* still no access */ }
+    }
+
+    // Scheduled task thread: load the standing task so the model can propose
+    // updates to it (reply-to-refine) instead of claiming changes are applied.
+    let scheduledTask:
+      | { id: string; title: string; prompt: string; typeTask: string; typeSchedule: string; configSchedule: any; scheduleLabel: string }
+      | undefined;
+    if (conversation.type_conversation_mode === "scheduled") {
+      const { data: st } = await intelligenceDb
+        .from("ai_scheduled_prompts")
+        .select("id_prompt, user_created, name_title, document_prompt, type_task, type_schedule, config_schedule")
+        .eq("id_conversation", conversationId)
+        .maybeSingle();
+      if (st && st.user_created === userId) {
+        // Only the task OWNER gets the update tool — anyone else would be
+        // steered into a Confirm card whose PATCH can only 404.
+        const { describeSchedule } = await import("@/lib/scheduled/schedule");
+        scheduledTask = {
+          id: st.id_prompt,
+          title: st.name_title,
+          prompt: st.document_prompt,
+          typeTask: st.type_task,
+          typeSchedule: st.type_schedule,
+          configSchedule: st.config_schedule,
+          scheduleLabel: describeSchedule(st.type_schedule, st.config_schedule),
+        };
+        systemPrompt += `\n\n## Scheduled task thread\nThis thread belongs to the recurring scheduled prompt "${st.name_title}" (${st.type_task}, ${scheduledTask.scheduleLabel}). Its standing prompt is:\n"""${st.document_prompt}"""\nAnswering questions about past results is normal chat. But when the user asks to change what FUTURE runs cover, their timing, or email delivery ("also include…", "drop the…", "move it to 9am", "stop emailing me"), you MUST call update_scheduled_task to propose the change — never claim a change is applied without it, and never just answer as if the standing prompt were already different.`;
+      } else if (st) {
+        systemPrompt += `\n\n## Scheduled task thread (owned by someone else)\nThis thread belongs to the recurring scheduled prompt "${st.name_title}", owned by another user. If the current user asks to change what future runs cover or when they arrive, explain that only the task's owner can modify it — you cannot propose changes here.`;
+      }
+    }
+
+    // Boost token limit for web search queries — citations + research responses run long.
+    const effectiveMaxTokens = queryRoute.searchMode === "on"
+      ? Math.max(baseMaxTokens, 8192)
+      : baseMaxTokens;
+
+    // Auto-title: if this is the first user message, set conversation title (skip incognito)
+    const userMessages = messages.filter((m) => m.role === "user");
+    if (userMessages.length === 1 && !conversation.flag_incognito) {
+      const titleSource = (userContent || "").trim() || (userAttachments?.[0]?.name || "File upload");
+      const autoTitle =
+        titleSource.length > 60
+          ? titleSource.slice(0, 57) + "..."
+          : titleSource;
+      await intelligenceDb
+        .from("ai_conversations")
+        .update({ name_conversation: autoTitle, date_updated: new Date().toISOString() })
+        .eq("id_conversation", conversationId);
+    }
+
+    // Insert a pending assistant row BEFORE starting the stream so that clients
+    // returning to this conversation mid-generation can see "a response is in
+    // flight" and poll for completion. onComplete UPDATEs this row; a failure
+    // path below marks it failed so the UI can surface retry instead of hanging.
+    let pendingMessageId: string | null = null;
+    let pendingComplete = false;
+    if (!conversation.flag_incognito) {
+      const { data: pending, error: pendErr } = await intelligenceDb
+        .from("ai_messages")
+        .insert({
+          id_conversation: conversationId,
+          role_message: "assistant",
+          document_message: "",
+          name_model: model,
+          status_message: "pending",
+        })
+        .select("id_message")
+        .single();
+      if (pendErr) {
+        console.error("[Messages] Failed to insert pending assistant row:", pendErr);
+      } else {
+        pendingMessageId = pending?.id_message || null;
+      }
+    }
+
+    // Create streaming response.
+    // The onComplete callback saves the assistant reply. It runs when the
+    // upstream AI stream finishes — which happens regardless of whether the
+    // CLIENT is still connected, as long as we swallow enqueue errors in the
+    // wrapper below (see `clientDisconnected` try/catch). This guards against
+    // the "user navigated away mid-stream and lost their response" bug.
+    // Named so the completion callback can read flags the tool executors set
+    // on it during the turn (notably sawUntrustedContent after query_gmail).
+    const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
+        allowPersonalData: true };
+
+    const aiStream = createStreamingResponse(
+      messages,
+      // userEmail is passed for team threads too: the MeetingBrain/Slack tools
+      // gate personal reports server-side via conversationVisibility, while the
+      // workspace-shared client_meetings report stays available to everyone.
+      aiConfigRef,
+      async ({ fullText, inputTokens, outputTokens }) => {
+        // Skip all persistence in incognito mode
+        if (!conversation.flag_incognito) {
+          let assistantErr: any = null;
+          if (pendingMessageId) {
+            const { error } = await intelligenceDb
+              .from("ai_messages")
+              .update({
+                document_message: fullText,
+                name_model: model,
+                status_message: "complete",
+              })
+              .eq("id_message", pendingMessageId);
+            assistantErr = error;
+          } else {
+            // Fallback path if pending-row insert failed earlier. Omits
+            // status_message so the DB DEFAULT ('complete') applies — keeps
+            // the endpoint working if the migration hasn't been applied yet.
+            const { error } = await intelligenceDb
+              .from("ai_messages")
+              .insert({
+                id_conversation: conversationId,
+                role_message: "assistant",
+                document_message: fullText,
+                name_model: model,
+              });
+            assistantErr = error;
+          }
+          pendingComplete = true;
+          if (assistantErr) console.error("[Messages] Failed to save assistant message:", assistantErr);
+
+          const { error: updateErr } = await intelligenceDb
+            .from("ai_conversations")
+            .update({ date_updated: new Date().toISOString() })
+            .eq("id_conversation", conversationId);
+          if (updateErr) console.error("[Messages] Failed to update conversation:", updateErr);
+
+          // Log AI usage for cost tracking
+          const costTenths = calculateCostTenths(model, inputTokens, outputTokens);
+          const { error: usageErr } = await intelligenceDb
+            .from("ai_usage")
+            .insert({
+              id_workspace: conversation.id_workspace,
+              user_usage: userId,
+              name_model: model,
+              type_source: conversation.id_content ? "engine" : "enginegpt",
+              units_input: inputTokens,
+              units_output: outputTokens,
+              units_cost_tenths: costTenths,
+              id_conversation: conversationId,
+            });
+          if (usageErr) console.error("[Usage] Failed to log:", usageErr);
+        }
       }
     );
 
+    // Wrap stream: inject debug context, capture text, extract & auto-save memories
+    const stream = new ReadableStream({
+      async start(controller) {
+        const encoder = new TextEncoder();
+        const decoder = new TextDecoder();
+
+        // First SSE event: expose the pending assistant-message id so clients
+        // can correlate streamed tokens with the DB row and resume via polling
+        // if they disconnect and return mid-stream.
+        if (pendingMessageId) {
+          try {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ assistantMessageId: pendingMessageId })}\n\n`)
+            );
+          } catch {}
+        }
+
+        // Send debug context if enabled
+        if (debugMode) {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ debugContext: systemPrompt })}\n\n`)
+          );
+        }
+
+        // Pass through AI stream, intercepting [DONE] for memory extraction.
+        // Critical: if the CLIENT disconnects mid-stream (user navigates away,
+        // tab closed, network blip), `controller.enqueue()` will throw. We
+        // swallow that so we keep draining the upstream AI stream — which
+        // lets its `onComplete` callback fire and persist the assistant
+        // message to the DB. Without this, long responses + large attachments
+        // could lose the reply on any client navigation.
+        const reader = aiStream.getReader();
+        let capturedText = "";
+        let clientDisconnected = false;
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            // Capture text tokens for memory extraction
+            if (memoryEnabled) {
+              const chunk = decoder.decode(value, { stream: true });
+              for (const line of chunk.split("\n")) {
+                if (line.startsWith("data: ") && line.slice(6) !== "[DONE]") {
+                  try {
+                    const parsed = JSON.parse(line.slice(6));
+                    if (parsed.token) capturedText += parsed.token;
+                  } catch {}
+                }
+              }
+            }
+
+            // Forward to client — enqueue can throw if the client closed.
+            // If it does, keep looping so the upstream AI stream completes
+            // and its onComplete callback saves the assistant message.
+            if (!clientDisconnected) {
+              try {
+                controller.enqueue(value);
+              } catch {
+                clientDisconnected = true;
+                console.warn(
+                  `[Messages] Client disconnected mid-stream for convo ${conversationId} — continuing upstream drain so response still saves`
+                );
+              }
+            }
+          }
+        } finally {
+          try { controller.close(); } catch {}
+        }
+
+        // Safety net: if onComplete never fired (upstream errored early, stream
+        // closed before any tokens, etc.) the pending assistant row would dangle
+        // forever as 'pending' and the client would spin indefinitely. Mark it
+        // failed so the UI shows retry.
+        if (pendingMessageId && !pendingComplete) {
+          try {
+            await intelligenceDb
+              .from("ai_messages")
+              .update({
+                document_message: "Generation failed — please retry.",
+                status_message: "failed",
+              })
+              .eq("id_message", pendingMessageId)
+              .eq("status_message", "pending");
+          } catch (err) {
+            console.error("[Messages] Failed to mark pending row as failed:", err);
+          }
+        }
+
+        // TAINTED TURN: if this reply was produced with third-party email
+        // content in context, neither the memory extractor nor the summary
+        // generator may run over it. Both are hard-wired to a different
+        // vendor, both persist where others can read, and the extractor has
+        // an explicit "standing instruction" category with no approval step —
+        // so an injected line in a message body would become permanent
+        // guidance applied to every future conversation.
+        const turnTainted = aiConfigRef.sawUntrustedContent === true;
+        if (turnTainted) {
+          console.log("[Messages] Turn read email — skipping memory extraction and summary");
+        }
+
+        // Fire-and-forget: background memory extraction after stream closes
+        // Client already received [DONE] and can continue interacting
+        if (!turnTainted && memoryEnabled && capturedText.length > 50) {
+          runBackgroundMemoryExtraction({
+            userContent: userContent || "",
+            assistantContent: capturedText,
+            existingMemories: memories.map((m) => m.content),
+            workspaceId: conversation.id_workspace,
+            userId,
+            conversationId,
+            conversationVisibility: conversation.type_visibility,
+          }).catch((err) => {
+            console.error("[Memory] Background extraction failed:", err);
+          });
+        }
+
+        // Fire-and-forget: background conversation summary update
+        // Gated by memoryEnabled — follows same rules as memory extraction:
+        // only for private/shared threads with memory toggle on, never team threads
+        if (memoryEnabled) {
+          const currentMsgCount = (history?.length || 0) + 2; // +2 for user + assistant just added
+          const lastSummaryCount = conversation.units_summary_message_count || 0;
+
+          if (!turnTainted && shouldUpdateSummary(currentMsgCount, lastSummaryCount)) {
+            runBackgroundSummaryUpdate({
+              conversationId,
+              currentMessageCount: currentMsgCount,
+              lastSummaryMessageCount: lastSummaryCount,
+              existingSummary: conversation.document_summary || null,
+            }).catch((err) => {
+              console.error("[Summary] Background update failed:", err);
+            });
+          }
+        }
+      },
+    });
+
     return new Response(stream, {
       headers: {
-        "Content-Type": "text/event-stream",
+        "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       },
@@ -149,4 +1439,42 @@ export async function POST(
       headers: { "Content-Type": "application/json" },
     });
   }
+}
+
+// ── Background memory extraction + consolidation (V2) ──
+// Extracts candidates from the conversation exchange, then runs them through
+// the shared consolidation pipeline (findSimilar → classify → apply).
+async function runBackgroundMemoryExtraction({
+  userContent,
+  assistantContent,
+  existingMemories,
+  workspaceId,
+  userId,
+  conversationId,
+  conversationVisibility,
+}: {
+  userContent: string;
+  assistantContent: string;
+  existingMemories: string[];
+  workspaceId: string;
+  userId: number;
+  conversationId: string;
+  conversationVisibility: string;
+}): Promise<{ id: string; content: string }[]> {
+  const suggestions = await extractMemories(userContent, assistantContent, existingMemories);
+  if (suggestions.length === 0) return [];
+
+  const scope = conversationVisibility === "private" ? "private" : "team";
+  const memUserId = scope === "private" ? userId : null;
+
+  const result = await runConsolidationPipeline(
+    suggestions,
+    workspaceId,
+    memUserId,
+    scope,
+    conversationId,
+    "inferred"
+  );
+
+  return result.memories.map((m) => ({ id: m.id, content: m.content }));
 }

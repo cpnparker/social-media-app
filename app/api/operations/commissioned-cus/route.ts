@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
+import { fetchAllRows } from "@/lib/supabase-paginate";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 // GET /api/operations/commissioned-cus
 // Returns tasks (content + social promo) with metadata for the CU dashboard.
@@ -16,33 +20,35 @@ export async function GET(req: NextRequest) {
   const excludeClientIds = searchParams.get("excludeClients"); // comma-separated IDs
 
   try {
-    // ── 1. Fetch content tasks from the enriched view ──
-    let contentTaskQuery = supabase
-      .from("app_tasks_content")
-      .select("*")
-      .order("date_created", { ascending: false })
-      .limit(5000);
+    // ── 1. Fetch ALL content tasks from the enriched view (paginated) ──
+    // Order by the unique id_task: .range() pagination over a non-unique sort
+    // (date_created has large clusters of identical timestamps) duplicates and
+    // skips rows at page boundaries, which inflates the CU totals.
+    const buildContentQuery = (start: number, end: number) => {
+      let q = supabase
+        .from("app_tasks_content")
+        .select("*")
+        .order("id_task", { ascending: true });
+      if (from) q = q.gte("date_created", `${from}T00:00:00.000Z`);
+      if (to) q = q.lte("date_created", `${to}T23:59:59.999Z`);
+      return q.range(start, end);
+    };
 
-    if (from) contentTaskQuery = contentTaskQuery.gte("date_created", `${from}T00:00:00.000Z`);
-    if (to) contentTaskQuery = contentTaskQuery.lte("date_created", `${to}T23:59:59.999Z`);
+    // ── 2. Fetch ALL social promo tasks from the enriched view (paginated) ──
+    const buildSocialQuery = (start: number, end: number) => {
+      let q = supabase
+        .from("app_tasks_social")
+        .select("*")
+        .order("id_task", { ascending: true });
+      if (from) q = q.gte("date_created", `${from}T00:00:00.000Z`);
+      if (to) q = q.lte("date_created", `${to}T23:59:59.999Z`);
+      return q.range(start, end);
+    };
 
-    // ── 2. Fetch social promo tasks from the enriched view ──
-    let socialTaskQuery = supabase
-      .from("app_tasks_social")
-      .select("*")
-      .order("date_created", { ascending: false })
-      .limit(5000);
-
-    if (from) socialTaskQuery = socialTaskQuery.gte("date_created", `${from}T00:00:00.000Z`);
-    if (to) socialTaskQuery = socialTaskQuery.lte("date_created", `${to}T23:59:59.999Z`);
-
-    const [contentTaskRes, socialTaskRes] = await Promise.all([contentTaskQuery, socialTaskQuery]);
-
-    if (contentTaskRes.error) throw contentTaskRes.error;
-    if (socialTaskRes.error) throw socialTaskRes.error;
-
-    const contentTasks = contentTaskRes.data || [];
-    const socialTasks = socialTaskRes.data || [];
+    const [contentTasks, socialTasks] = await Promise.all([
+      fetchAllRows(buildContentQuery),
+      fetchAllRows(buildSocialQuery),
+    ]);
 
     // ── 3. Parse excluded client IDs ──
     const excludedIds = new Set(
@@ -146,22 +152,73 @@ export async function GET(req: NextRequest) {
     if (contractIdSet.size > 0) {
       const contractIdArr = Array.from(contractIdSet);
       const batchSize = 200;
+
+      // 6a. Fetch contract metadata
+      const contractMetaMap: Record<number, { name: string; clientId: number | null; clientName: string; units: number }> = {};
       for (let i = 0; i < contractIdArr.length; i += batchSize) {
         const batch = contractIdArr.slice(i, i + batchSize);
         const { data: rows } = await supabase
           .from("app_contracts")
-          .select("id_contract, name_contract, id_client, name_client, units_contract, units_total_completed")
+          .select("id_contract, name_contract, id_client, name_client, units_contract")
           .in("id_contract", batch);
         for (const c of rows || []) {
-          contracts.push({
-            contractId: String(c.id_contract),
-            contractName: c.name_contract || "Unnamed",
-            clientId: c.id_client ? String(c.id_client) : null,
+          contractMetaMap[c.id_contract] = {
+            name: c.name_contract || "Unnamed",
+            clientId: c.id_client || null,
             clientName: c.name_client || "Unknown",
-            totalContractCUs: Number(c.units_contract) || 0,
-            completedContractCUs: Number(c.units_total_completed) || 0,
-          });
+            units: Number(c.units_contract) || 0,
+          };
         }
+      }
+
+      // 6b. Aggregate task CUs per contract (all time, no date filter).
+      // Paginated — a contract can have far more than the default 1000 tasks,
+      // which previously truncated the commissioned/remaining totals.
+      const cuAgg: Record<number, { commissioned: number; completed: number }> = {};
+      for (let i = 0; i < contractIdArr.length; i += batchSize) {
+        const batch = contractIdArr.slice(i, i + batchSize);
+        const [contentRows, socialRows] = await Promise.all([
+          fetchAllRows((s, e) =>
+            supabase
+              .from("app_tasks_content")
+              .select("id_contract, units_content, date_completed, flag_spiked")
+              .in("id_contract", batch)
+              .order("id_task", { ascending: true })
+              .range(s, e)
+          ),
+          fetchAllRows((s, e) =>
+            supabase
+              .from("app_tasks_social")
+              .select("id_contract, units_content, date_completed, flag_spiked")
+              .in("id_contract", batch)
+              .order("id_task", { ascending: true })
+              .range(s, e)
+          ),
+        ]);
+        for (const t of [...contentRows, ...socialRows]) {
+          if (t.flag_spiked === 1 && !t.date_completed) continue;
+          const cid = t.id_contract;
+          if (!cuAgg[cid]) cuAgg[cid] = { commissioned: 0, completed: 0 };
+          const cus = Number(t.units_content) || 0;
+          cuAgg[cid].commissioned += cus;
+          if (t.date_completed) cuAgg[cid].completed += cus;
+        }
+      }
+
+      // 6c. Build contract list
+      for (const id of contractIdArr) {
+        const meta = contractMetaMap[id];
+        if (!meta) continue;
+        const agg = cuAgg[id] || { commissioned: 0, completed: 0 };
+        contracts.push({
+          contractId: String(id),
+          contractName: meta.name,
+          clientId: meta.clientId ? String(meta.clientId) : null,
+          clientName: meta.clientName,
+          totalContractCUs: meta.units,
+          commissionedContractCUs: agg.commissioned,
+          completedContractCUs: agg.completed,
+        });
       }
     }
 
