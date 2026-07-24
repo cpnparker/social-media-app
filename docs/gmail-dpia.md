@@ -79,9 +79,25 @@ Proportionality is addressed by design rather than by policy:
 | Recipient | Role | What they receive | Retention |
 |---|---|---|---|
 | Google (Gmail API) | Source | The query | Google's own logging |
-| Anthropic (Claude API) | Processor | Message content in the prompt | Per Anthropic's commercial terms |
+| Anthropic (Claude API) | Processor | Message content in the prompt | **30 days** (organisation default, decision recorded 2026-07-24), accessible by Anthropic for safety and security purposes. Never used for training — Commercial Terms §B. Zero Data Retention was considered and not adopted; see §4a |
 | Vercel | Infrastructure | Metadata only — counts, hashed queries, never content (§10.5) | Platform logs, ~1h runtime retention |
 | Supabase | Storage | The chat thread, which may contain quoted mail | Until the thread is deleted |
+
+### 4a. Retention decision at the processor
+
+Anthropic's organisation default of 30-day retention is retained rather than
+switching to Zero Data Retention. Rationale: every EngineAI feature in the
+mail path is ZDR-eligible, so ZDR was technically available at no functional
+cost, but the 30-day window is a documented, bounded, safety-and-security
+retention by a processor contractually barred from training on the content —
+which is proportionate for ordinary business correspondence. Revisit if the
+feature is ever extended to more sensitive material.
+
+Note two limits that apply **regardless** of this setting, and which ZDR
+would not have removed: content flagged by Anthropic's automated trust and
+safety systems may be retained for up to 2 years, and features outside the
+Messages API (none of which EngineAI uses in this path) carry their own
+retention.
 
 **No other AI vendor receives mailbox content.** EngineAI is multi-provider
 (Anthropic / xAI / OpenAI / Google), but mail queries are technically pinned to
