@@ -1,9 +1,62 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { auth } from "@/lib/auth";
+
+/**
+ * SECURITY: this route had NO authentication on any handler. GET returned the
+ * whole user directory including every access flag; PATCH let an unauthenticated
+ * caller grant themselves flag_access_admin / flag_access_finance /
+ * flag_access_gmail; DELETE removed anyone's workspace access. Since every
+ * privacy gate in the app reads users_access, that made this endpoint the root
+ * of the entire permission model.
+ *
+ * GET stays available to any signed-in workspace member — ShareDialog and the
+ * RFP tool need the name list — but access flags are stripped for non-admins.
+ * Mutations require admin.
+ */
+async function requireMember(): Promise<
+  | { ok: true; userId: number; workspaceId: string; isAdmin: boolean }
+  | { ok: false; res: NextResponse }
+> {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return { ok: false, res: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+  }
+  const userId = parseInt(session.user.id, 10);
+
+  const { data: ws } = await intelligenceDb.from("workspaces").select("id").limit(1).single();
+  if (!ws) {
+    return { ok: false, res: NextResponse.json({ error: "No workspace" }, { status: 404 }) };
+  }
+
+  const [{ data: member }, { data: adminRow }] = await Promise.all([
+    intelligenceDb.from("workspace_members").select("role")
+      .eq("workspace_id", ws.id).eq("user_id", userId).limit(1).maybeSingle(),
+    intelligenceDb.from("users_access").select("flag_access_admin")
+      .eq("id_workspace", ws.id).eq("user_target", userId)
+      .eq("flag_access_admin", 1).limit(1).maybeSingle(),
+  ]);
+  if (!member) {
+    return { ok: false, res: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
+  }
+  const isAdmin = !!adminRow || ["owner", "admin"].includes(String(member.role || "").toLowerCase());
+  return { ok: true, userId, workspaceId: ws.id, isAdmin };
+}
+
+async function requireAdmin() {
+  const g = await requireMember();
+  if (!g.ok) return g;
+  if (!g.isAdmin) {
+    return { ok: false as const, res: NextResponse.json({ error: "Admin access required" }, { status: 403 }) };
+  }
+  return g;
+}
 
 // GET /api/workspace-members — list ALL users from Postgres, enriched with workspace data
 export async function GET() {
+  const guard = await requireMember();
+  if (!guard.ok) return guard.res;
   try {
     // Get the default workspace
     const { data: ws } = await intelligenceDb
@@ -66,7 +119,17 @@ export async function GET() {
       };
     });
 
-    return NextResponse.json({ members, workspaceId: ws.id });
+    // Non-admins get identity only — the sharing and RFP pickers need names,
+    // not a map of who can reach finance, mail or admin.
+    const safeMembers = guard.isAdmin
+      ? members
+      : members.map((m) => ({
+          id: m.id, name: m.name, email: m.email, avatarUrl: m.avatarUrl,
+          provider: m.provider, createdAt: m.createdAt, role: m.role,
+          appRole: m.appRole, joinedAt: m.joinedAt,
+        }));
+
+    return NextResponse.json({ members: safeMembers, workspaceId: ws.id });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -74,6 +137,8 @@ export async function GET() {
 
 // POST /api/workspace-members — invite a new user to the workspace
 export async function POST(req: NextRequest) {
+  const guard = await requireAdmin();
+  if (!guard.ok) return guard.res;
   try {
     const { email, name, role } = await req.json();
 
@@ -180,6 +245,8 @@ export async function POST(req: NextRequest) {
 // PATCH /api/workspace-members — update a member's role and/or area access
 // Supports both single-user (userId) and bulk (userIds[]) updates
 export async function PATCH(req: NextRequest) {
+  const guard = await requireAdmin();
+  if (!guard.ok) return guard.res;
   try {
     const body = await req.json();
     const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain, accessRfpTool, accessAuthorityOn, accessEngineAiLive, accessFinance, accessGmail } = body;
@@ -306,6 +373,8 @@ export async function PATCH(req: NextRequest) {
 
 // DELETE /api/workspace-members — remove a user from the workspace
 export async function DELETE(req: NextRequest) {
+  const guard = await requireAdmin();
+  if (!guard.ok) return guard.res;
   try {
     const { searchParams } = new URL(req.url);
     const userId = searchParams.get("userId");
