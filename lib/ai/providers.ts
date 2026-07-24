@@ -3293,11 +3293,33 @@ export async function queryMeetingBrain(
   try {
     switch (report) {
       case "my_tasks": {
-        const { data: tasks, error } = await mbDb.rpc("get_active_tasks", {
-          p_user_email: userEmail,
-          p_limit: 50,
-        });
+        // get_active_tasks strips DONE/IGNORE in SQL, so asking for completed
+        // tasks used to return an empty list — which the model reported as
+        // "you have no completed tasks", a false statement. Ask the RPC to
+        // include them when they were requested; if the deployed function
+        // predates that parameter, say so rather than answering "none".
+        const wantsDone = options.status === "completed" || options.status === "all";
+        let includeDoneSupported = true;
+        let tasksRes = wantsDone
+          ? await mbDb.rpc("get_active_tasks", { p_user_email: userEmail, p_limit: 50, p_include_done: true })
+          : await mbDb.rpc("get_active_tasks", { p_user_email: userEmail, p_limit: 50 });
+        if (wantsDone && tasksRes.error) {
+          const msg = String(tasksRes.error.message || "");
+          if (tasksRes.error.code === "PGRST202" || /could not find the function|p_include_done/i.test(msg)) {
+            includeDoneSupported = false;
+            console.warn("[MeetingBrain] get_active_tasks lacks p_include_done — run scripts/task-include-done.sql");
+            tasksRes = await mbDb.rpc("get_active_tasks", { p_user_email: userEmail, p_limit: 50 });
+          }
+        }
+        const { data: tasks, error } = tasksRes;
         if (error) return fail(error.message);
+
+        if (options.status === "completed" && !includeDoneSupported) {
+          return {
+            data: [], count: 0,
+            notice: `Completed tasks aren't available from this tool yet — MeetingBrain only returns OPEN tasks. Tell the user that plainly; do NOT say they have no completed tasks, which would be untrue. Their open tasks are available if useful.`,
+          };
+        }
 
         const filtered = options.status === "completed"
           ? (tasks || []).filter((t: any) => t.status === "DONE")
@@ -4435,9 +4457,20 @@ export async function searchMemory(
   const { intelligenceDb } = await import("@/lib/supabase-intelligence");
 
   // Build multiple search patterns — split query into individual terms
-  // and also create a combined pattern for multi-word phrases
-  const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
-  const combinedPattern = `%${query.replace(/\s+/g, "%")}%`;
+  // and also create a combined pattern for multi-word phrases.
+  //
+  // PostgREST's or() takes a comma-separated list where commas, parentheses,
+  // dots and quotes are GRAMMAR. Interpolating raw user text broke the whole
+  // filter for any query containing punctuation — "BeOne pricing (objection)"
+  // produced a malformed filter, the query errored, the error was swallowed,
+  // and the model reported "nothing found". Strip the metacharacters from each
+  // term instead: an ilike '%term%' does not need them, and dropping them
+  // changes nothing about what matches.
+  // Sanitise FIRST, then split — so "what's" becomes two tokens rather than
+  // one token containing a space, and trailing "?" never reaches the filter.
+  const sanitized = query.toLowerCase().replace(/[(),."'\\%*?!:;\[\]{}]/g, " ");
+  const terms = sanitized.split(/\s+/).filter((t) => t.length > 2);
+  const combinedPattern = `%${sanitized.trim().replace(/\s+/g, "%")}%`;
   // Build OR filter for individual terms: matches ANY term
   const termPatterns = terms.map(t => `%${t}%`);
 
