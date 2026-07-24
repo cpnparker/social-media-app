@@ -81,7 +81,7 @@ async function handleMeetingIngest(
   }
 
   // Fetch existing memories for de-duplication
-  const existingContents = await getExistingMemoryContents(workspaceId);
+  const existingContents = await getExistingMemoryContents(workspaceId, userId);
 
   // Extract
   const meetingInput: MeetingMemoryInput = {
@@ -145,7 +145,7 @@ async function handleTaskIngest(
   }
 
   // Fetch existing memories for de-duplication
-  const existingContents = await getExistingMemoryContents(workspaceId);
+  const existingContents = await getExistingMemoryContents(workspaceId, userId);
 
   // Extract
   const taskInput: TaskMemoryInput = {
@@ -176,12 +176,20 @@ async function handleTaskIngest(
 
 // ── Helpers ──
 
-async function getExistingMemoryContents(workspaceId: string): Promise<string[]> {
+/** Existing memories to dedupe a candidate against.
+ *
+ *  PRIVACY: scoped to what THIS ingest is entitled to compare with — the
+ *  target user's own private memories plus team-scoped ones. It used to
+ *  select every active memory in the workspace, so one user's ingest built
+ *  its LLM prompt out of every OTHER user's private memories, sending them
+ *  to the model as "existing memories". */
+async function getExistingMemoryContents(workspaceId: string, userId: number): Promise<string[]> {
   const { data } = await intelligenceDb
     .from("ai_memories")
     .select("information_content")
     .eq("id_workspace", workspaceId)
-    .eq("flag_active", 1);
+    .eq("flag_active", 1)
+    .or(`user_memory.eq.${userId},type_scope.eq.team`);
 
   return (data || []).map((m: any) => m.information_content as string);
 }

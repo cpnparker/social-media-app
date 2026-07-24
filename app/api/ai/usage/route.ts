@@ -36,6 +36,24 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  // PER-USER COST IS ADMIN-ONLY. Workspace membership alone was enough to see
+  // a per-person breakdown of who is spending what on AI — which is
+  // management information about colleagues, not a shared workspace resource.
+  // Members still get the workspace totals; only the by-user split is gated.
+  const { data: adminRow } = await intelligenceDb
+    .from("users_access")
+    .select("flag_access_admin")
+    .eq("user_target", userId)
+    .eq("id_workspace", workspaceId)
+    .eq("flag_access_admin", 1)
+    .limit(1)
+    .maybeSingle();
+  // Admin means EITHER the access flag OR the workspace role: the dashboard
+  // shows this card based on workspace role, so gating the data on the flag
+  // alone would leave role-admins staring at an empty chart with no
+  // explanation. Whichever grants it, per-user cost stays admin-only.
+  const canSeePerUser = !!adminRow || ["owner", "admin"].includes(String(memberRole || "").toLowerCase());
+
   try {
     const now = new Date();
     const startDate = customStart ? new Date(customStart) : new Date(now);
@@ -305,7 +323,13 @@ export async function GET(req: NextRequest) {
     }
     const byUserModel = Object.values(userModelMap).sort((a, b) => b.cost - a.cost);
 
-    return NextResponse.json({ summary, daily, dailyModels, byModel, bySource, byUser, byUserModel, byApp });
+    // Non-admins get workspace totals but not the per-colleague breakdown.
+    return NextResponse.json({
+      summary, daily, dailyModels, byModel, bySource, byApp,
+      byUser: canSeePerUser ? byUser : [],
+      byUserModel: canSeePerUser ? byUserModel : [],
+      ...(canSeePerUser ? {} : { perUserRestricted: true }),
+    });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
