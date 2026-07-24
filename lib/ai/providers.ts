@@ -3298,16 +3298,20 @@ export async function queryMeetingBrain(
         // "you have no completed tasks", a false statement. Ask the RPC to
         // include them when they were requested; if the deployed function
         // predates that parameter, say so rather than answering "none".
-        const wantsDone = options.status === "completed" || options.status === "all";
+        // Filter by status SERVER-SIDE. Fetching everything and filtering here
+        // does not work: the RPC's LIMIT applies before our filter, so with a
+        // large open-task list the returned page contains no DONE rows at all
+        // and "completed" comes back empty — the exact bug this fixes.
+        const statusMode = options.status === "completed" ? "done" : options.status === "all" ? "all" : "open";
         let includeDoneSupported = true;
-        let tasksRes = wantsDone
-          ? await mbDb.rpc("get_active_tasks", { p_user_email: userEmail, p_limit: 50, p_include_done: true })
-          : await mbDb.rpc("get_active_tasks", { p_user_email: userEmail, p_limit: 50 });
-        if (wantsDone && tasksRes.error) {
+        let tasksRes = statusMode === "open"
+          ? await mbDb.rpc("get_active_tasks", { p_user_email: userEmail, p_limit: 50 })
+          : await mbDb.rpc("get_active_tasks", { p_user_email: userEmail, p_limit: 50, p_status_mode: statusMode });
+        if (statusMode !== "open" && tasksRes.error) {
           const msg = String(tasksRes.error.message || "");
-          if (tasksRes.error.code === "PGRST202" || /could not find the function|p_include_done/i.test(msg)) {
+          if (tasksRes.error.code === "PGRST202" || /could not find the function|p_status_mode/i.test(msg)) {
             includeDoneSupported = false;
-            console.warn("[MeetingBrain] get_active_tasks lacks p_include_done — run scripts/task-include-done.sql");
+            console.warn("[MeetingBrain] get_active_tasks lacks p_status_mode — run scripts/task-include-done.sql");
             tasksRes = await mbDb.rpc("get_active_tasks", { p_user_email: userEmail, p_limit: 50 });
           }
         }
