@@ -158,12 +158,15 @@ their privacy policy*, that they do not retain Workspace data to develop or
 improve non-personalised AI/ML models. **TCE's privacy notice must carry this
 sentence.** See §14.
 
-**Verification/CASA:** the OAuth consent screen's User Type must be confirmed
-as *Internal*. If Internal, restricted-scope verification and the annual CASA
-assessment do not apply. Note MeetingBrain is invite-only but **not
-domain-locked**, so if any non-TCE Google account has ever signed in, the app
-is External and those requirements already apply — independently of this
-feature. **Unverified; must be checked in the Cloud console.**
+**Verification/CASA — VERIFIED 2026-07-24: User Type = Internal.** Confirmed
+in the Google Cloud console (APIs & Services → Google Auth Platform →
+Audience), so only accounts in the TCE Workspace organisation can authorise
+the app. Under Google's "Additional Requirements for Specific API Scopes",
+restricted-scope verification and the annual CASA security assessment
+therefore **do not apply**. This is verification relief only: Limited Use
+(above) still governs, and GDPR/nFADP apply regardless. **Re-check if the app
+is ever switched to External**, which brings both requirements into scope
+immediately.
 
 ## 8. Risk assessment
 
@@ -290,12 +293,12 @@ therefore not required.**
 | # | Action | Owner |
 |---|---|---|
 | 1 | Add the Workspace no-training commitment to TCE's privacy notice (§7) | Chris |
-| 2 | Confirm the OAuth consent screen is User Type = **Internal** (§7) | Chris |
+| 2 | ~~Confirm the OAuth consent screen is User Type = Internal (§7)~~ — **DONE 2026-07-24: Internal** | ✅ |
 | 3 | Confirm Anthropic usage is under commercial terms, not consumer (§7) | Chris |
 | 4 | Add the ROPA entry (§13) | Chris |
 | 5 | Add the correspondence line to the public privacy notice (§11) | Chris |
 | 6 | Send the staff note (§11) | Chris |
-| 7 | Legal review of §5–§7 | External adviser |
+| 7 | ~~Legal review of §5–§7~~ — **DONE, reviewed and signed 2026-07-24** | ✅ |
 
 ## 15. Review
 
