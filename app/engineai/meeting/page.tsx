@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { ClientPicker } from "@/components/meeting/ClientPicker";
 import { useWorkspace } from "@/lib/contexts/WorkspaceContext";
 import { useCustomer } from "@/lib/contexts/CustomerContext";
 import { TriggerEngine, type LiveCard } from "@/lib/meeting/trigger-engine";
@@ -1183,20 +1184,21 @@ export default function MeetingLivePage() {
         </div>
         {stage === "live" && (
           <>
-            <select
-              value={clientId}
-              onChange={(e) => {
-                const c = customers.find((x) => x.id === e.target.value);
+            {/* Searchable, not a native <select>: mid-call you need the right
+                client in a couple of keystrokes, and a 100-option select also
+                rendered every client name into the DOM (which is why copying
+                the feed used to sweep up the whole client list). */}
+            <ClientPicker
+              compact
+              customers={customers}
+              clientId={clientId}
+              onChange={(id) => {
+                if (!id) return; // no unbinding mid-meeting — pick another client instead
+                const c = customers.find((x) => x.id === id);
                 if (c) void bindClient(c.id, c.name);
               }}
-              className="h-7 max-w-[140px] rounded-full border bg-background pl-2 pr-1 text-[11px] text-muted-foreground"
-              title="Active client briefing — switch any time; Live also follows the conversation"
-            >
-              <option value="" disabled>Client…</option>
-              {[...customers].sort((a, b) => a.name.localeCompare(b.name)).map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+              allowClear={false}
+            />
             <span className="text-xs tabular-nums text-muted-foreground">{fmtTime(elapsed)}</span>
             <button
               onClick={togglePause}
@@ -1443,76 +1445,6 @@ export default function MeetingLivePage() {
 
 /* ─────────────── Client picker (alphabetical + live search) ─────────────── */
 
-function ClientPicker({
-  customers, clientId, onChange,
-}: {
-  customers: { id: string; name: string }[];
-  clientId: string;
-  onChange: (id: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const boxRef = useRef<HTMLDivElement>(null);
-
-  const sorted = [...customers].sort((a, b) =>
-    a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
-  );
-  const filtered = query.trim()
-    ? sorted.filter((c) => c.name.toLowerCase().includes(query.trim().toLowerCase()))
-    : sorted;
-  const selectedName = customers.find((c) => c.id === clientId)?.name;
-
-  useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
-      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
-
-  return (
-    <div className="block" ref={boxRef}>
-      <span className="text-xs font-medium text-muted-foreground">Client <span className="opacity-60 font-normal">(optional)</span></span>
-      <div className="relative mt-1">
-        <input
-          value={open ? query : selectedName || ""}
-          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
-          onFocus={() => { setQuery(""); setOpen(true); }}
-          placeholder={selectedName || "Search clients…"}
-          className="w-full h-9 rounded-lg border bg-background px-2 text-sm"
-        />
-        {clientId && !open && (
-          <button
-            onMouseDown={(e) => { e.preventDefault(); onChange(""); setQuery(""); }}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-foreground text-xs"
-            title="Clear"
-          >✕</button>
-        )}
-        {open && (
-          <div className="absolute z-10 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border bg-popover shadow-lg">
-            <button
-              onMouseDown={(e) => { e.preventDefault(); onChange(""); setOpen(false); }}
-              className="w-full text-left px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-accent"
-            >— No client / internal —</button>
-            {filtered.map((c) => (
-              <button
-                key={c.id}
-                onMouseDown={(e) => { e.preventDefault(); onChange(c.id); setOpen(false); }}
-                className={cn(
-                  "w-full text-left px-2.5 py-1.5 text-sm hover:bg-accent truncate",
-                  c.id === clientId && "bg-accent/50 font-medium"
-                )}
-              >{c.name}</button>
-            ))}
-            {filtered.length === 0 && (
-              <div className="px-2.5 py-2 text-sm text-muted-foreground/60">No match</div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
 /* ─────────────── Setup / consent screen ─────────────── */
 
