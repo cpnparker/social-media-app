@@ -4242,7 +4242,7 @@ export const QUERY_XERO_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         date_from: { type: "string", description: "ISO date for profit_and_loss / revenue_by_client (default: start of this year)" },
         date_to: { type: "string", description: "ISO date (default: today)" },
         client_name: { type: "string", description: "For unpaid_invoices: filter by contact name (partial match)" },
-        sheet: { type: "string", description: "For forecast: which sheet to read (partial name ok). The result lists available sheets." },
+        sheet: { type: "string", description: "For forecast: which sheet to read (partial name ok). Pass a COMMA-SEPARATED LIST for several at once, or \"all\" for the whole workbook — do that when comparing scenarios, rather than one call per sheet (repeat calls to the same tool are capped). The result lists available sheets." },
       },
       required: ["report"],
     },
@@ -5090,6 +5090,15 @@ async function streamAnthropic(
   const executedToolSigs = new Set<string>();
   const toolCallCounts = new Map<string, number>();
   const MAX_CALLS_PER_TOOL = 3;
+  // Read-only data tools get more headroom: a legitimate multi-part report
+  // ("net profit by month across every scenario") needs several pulls, and
+  // capping those at 3 made the model fill the rest of a table with
+  // placeholders. The identical-arguments dedup above still stops true
+  // spirals, which is what this guard was added for.
+  const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
+    query_xero: 8, query_engine: 8, query_meetingbrain: 6, query_drive_docs: 6,
+  };
+  const budgetFor = (name: string) => READ_ONLY_TOOL_BUDGET[name] ?? MAX_CALLS_PER_TOOL;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     // HARD taint: suppress ALL tool use for the rest of the turn via
     // tool_choice "none", not just an executor guard. The executor guard
@@ -5263,13 +5272,13 @@ async function streamAnthropic(
       const toolSig = `${tool.name}:${JSON.stringify(tool.input ?? {})}`;
       const toolCount = (toolCallCounts.get(tool.name) || 0) + 1;
       toolCallCounts.set(tool.name, toolCount);
-      if (executedToolSigs.has(toolSig) || toolCount > MAX_CALLS_PER_TOOL) {
+      if (executedToolSigs.has(toolSig) || toolCount > budgetFor(tool.name)) {
         toolResults.push({
           type: "tool_result",
           tool_use_id: tool.id,
           content: executedToolSigs.has(toolSig)
             ? `You already called ${tool.name} with these exact arguments this turn — the result is above. Do NOT call it again. Answer the user now with what you have; if the data isn't available, say so plainly. Never promise to run a search or tool you cannot actually run.`
-            : `You have called ${tool.name} too many times this turn. Stop calling tools and answer the user now with what you have.`,
+            : `You have called ${tool.name} too many times this turn. Stop calling it and answer now. IMPORTANT: report only what you actually retrieved — do NOT fill missing rows or columns with placeholders like "[not retrieved]" as if they were results. Say plainly which parts you could not fetch and why, and mention that many of these tools accept a comma-separated list (or "all") so the rest can be fetched in ONE call next time.`,
         });
         continue;
       }
@@ -6200,6 +6209,15 @@ async function streamXAIChatCompletions(
   const executedToolSigs = new Set<string>();
   const toolCallCounts = new Map<string, number>();
   const MAX_CALLS_PER_TOOL = 3;
+  // Read-only data tools get more headroom: a legitimate multi-part report
+  // ("net profit by month across every scenario") needs several pulls, and
+  // capping those at 3 made the model fill the rest of a table with
+  // placeholders. The identical-arguments dedup above still stops true
+  // spirals, which is what this guard was added for.
+  const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
+    query_xero: 8, query_engine: 8, query_meetingbrain: 6, query_drive_docs: 6,
+  };
+  const budgetFor = (name: string) => READ_ONLY_TOOL_BUDGET[name] ?? MAX_CALLS_PER_TOOL;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const stream = (await xai.chat.completions.create({
       model: apiModel,
@@ -6365,13 +6383,13 @@ async function streamXAIChatCompletions(
       const toolSig = `${tc.function.name}:${(tc.function.arguments || "").replace(/\s+/g, "")}`;
       const toolCount = (toolCallCounts.get(tc.function.name) || 0) + 1;
       toolCallCounts.set(tc.function.name, toolCount);
-      if (executedToolSigs.has(toolSig) || toolCount > MAX_CALLS_PER_TOOL) {
+      if (executedToolSigs.has(toolSig) || toolCount > budgetFor(tc.function.name)) {
         openaiMessages.push({
           role: "tool",
           tool_call_id: tc.id,
           content: executedToolSigs.has(toolSig)
             ? `You already called ${tc.function.name} with these exact arguments this turn — the result is above. Do NOT call it again. Answer the user now with what you have; if the data isn't available, say so plainly. Never promise to run a search or tool you cannot actually run.`
-            : `You have called ${tc.function.name} too many times this turn. Stop calling tools and answer the user now with the information you have; if you can't find what they asked for, tell them directly.`,
+            : `You have called ${tc.function.name} too many times this turn. Stop calling it and answer now. IMPORTANT: report only what you actually retrieved — do NOT fill missing rows or columns with placeholders as if they were results. Say plainly what you could not fetch, and note that many of these tools accept a comma-separated list (or "all") to fetch the rest in ONE call.`,
         } as any);
         continue;
       }

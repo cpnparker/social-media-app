@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Loader2, Play, Pause, Trash2, Plus, ExternalLink, Clock, AlertTriangle, History, Sparkles } from "lucide-react";
+import { Loader2, Play, Pause, Trash2, Plus, ExternalLink, Clock, AlertTriangle, History, Sparkles, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -110,6 +110,10 @@ export default function ScheduledPromptsDialog({
   const [dayOfWeek, setDayOfWeek] = useState(1);
   const [email, setEmail] = useState(true);
   const [typeTask, setTypeTask] = useState<"digest" | "monitor">("digest");
+  /** Set while editing an existing task — the form then PATCHes instead of
+   *  POSTing. Previously the only way to change a schedule (or fix a typo in
+   *  a long prompt) was to delete and retype the whole thing. */
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   // "Make recurring" arrives with the prompt that produced the answer.
   const prefillAppliedRef = useRef(false);
@@ -167,25 +171,55 @@ export default function ScheduledPromptsDialog({
 
   useEffect(() => { if (open) void load(); }, [open, load]);
 
+  const startEdit = (t: ScheduledTask) => {
+    const cfg = t.config_schedule || {};
+    setEditingId(t.id_prompt);
+    setTitle(t.name_title || "");
+    setPrompt(t.document_prompt || "");
+    setCadence((["daily", "weekdays", "weekly", "monthly"].includes(t.type_schedule)
+      ? t.type_schedule : "weekdays") as any);
+    setHour(typeof cfg.hour === "number" ? cfg.hour : 8);
+    setDayOfWeek(typeof cfg.dayOfWeek === "number" ? cfg.dayOfWeek : 1);
+    setEmail(t.flag_email === 1);
+    setTypeTask(t.type_task === "monitor" ? "monitor" : "digest");
+    setShowForm(true);
+  };
+
+  const resetForm = () => {
+    setEditingId(null);
+    setTitle(""); setPrompt(""); setTypeTask("digest");
+    setCadence("weekdays"); setHour(8); setDayOfWeek(1); setEmail(true);
+    setShowForm(false);
+  };
+
   const create = async () => {
     if (!title.trim() || !prompt.trim()) { toast.error("Title and prompt are required"); return; }
     setCreating(true);
     try {
-      const res = await fetch("/api/ai/scheduled", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          workspaceId, title, prompt,
-          typeSchedule: cadence,
-          configSchedule: { hour, minute: 0, ...(cadence === "weekly" ? { dayOfWeek } : {}), tz: "Europe/Zurich" },
-          emailEnabled: email,
-          typeTask,
-        }),
-      });
-      const d = await res.json();
-      if (!res.ok) throw new Error(d.error || "Create failed");
-      toast.success(`Scheduled — next run ${new Date(d.nextRun).toLocaleString()}`);
-      setTitle(""); setPrompt(""); setShowForm(false); setTypeTask("digest");
+      const payload = {
+        title, prompt,
+        typeSchedule: cadence,
+        configSchedule: { hour, minute: 0, ...(cadence === "weekly" ? { dayOfWeek } : {}), tz: "Europe/Zurich" },
+        emailEnabled: email,
+        typeTask,
+      };
+      const res = editingId
+        ? await fetch(`/api/ai/scheduled/${editingId}`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          })
+        : await fetch("/api/ai/scheduled", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ workspaceId, ...payload }),
+          });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || (editingId ? "Update failed" : "Create failed"));
+      toast.success(
+        editingId
+          ? `Updated${d.nextRun ? ` — next run ${new Date(d.nextRun).toLocaleString()}` : ""}`
+          : `Scheduled — next run ${new Date(d.nextRun).toLocaleString()}`
+      );
+      resetForm();
       void load();
     } catch (e: any) { toast.error(e.message); }
     finally { setCreating(false); }
@@ -238,7 +272,7 @@ export default function ScheduledPromptsDialog({
 
         {!showForm && (
           <button
-            onClick={() => setShowForm(true)}
+            onClick={() => { setEditingId(null); setShowForm(true); }}
             className="flex items-center gap-2 w-full p-3 rounded-xl border border-dashed text-sm text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
           >
             <Plus className="h-4 w-4" /> New scheduled prompt
@@ -247,7 +281,12 @@ export default function ScheduledPromptsDialog({
 
         {showForm && (
           <div className="rounded-xl border p-3 space-y-2.5">
-            <div className="flex items-center gap-1.5 flex-wrap">
+            {editingId && (
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-foreground">
+                <Pencil className="h-3 w-3" /> Editing this scheduled prompt — changes apply from the next run
+              </div>
+            )}
+            <div className={cn("flex items-center gap-1.5 flex-wrap", editingId && "hidden")}>
               <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground mr-0.5">
                 <Sparkles className="h-3 w-3" /> Templates
               </span>
@@ -316,12 +355,12 @@ export default function ScheduledPromptsDialog({
               </label>
             </div>
             <div className="flex gap-2 justify-end">
-              <button onClick={() => setShowForm(false)} className="h-8 px-3 rounded-lg border text-sm hover:bg-accent">Cancel</button>
+              <button onClick={resetForm} className="h-8 px-3 rounded-lg border text-sm hover:bg-accent">Cancel</button>
               <button
                 onClick={create} disabled={creating}
                 className="h-8 px-3 rounded-lg bg-primary text-primary-foreground text-sm font-medium disabled:opacity-60 flex items-center gap-1.5"
               >
-                {creating && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Schedule
+                {creating && <Loader2 className="h-3.5 w-3.5 animate-spin" />} {editingId ? "Save changes" : "Schedule"}
               </button>
             </div>
           </div>
@@ -374,6 +413,10 @@ export default function ScheduledPromptsDialog({
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => startEdit(t)} title="Edit prompt & schedule"
+                      className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
                     <button onClick={() => toggleHistory(t.id_prompt)} title="Run history"
                       className={cn(
                         "p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground",

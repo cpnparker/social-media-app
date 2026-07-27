@@ -83,6 +83,14 @@ function serializeSheet(ws: XLSX.WorkSheet): string {
   return lines.join("\n").slice(0, 7000);
 }
 
+/** How many sheets one call may return. Comparison questions ("net profit by
+ *  month across every scenario") need most of the workbook at once, and the
+ *  tool loop caps repeat calls to the same tool at 3 — so one-sheet-per-call
+ *  meant the model got three scenarios and filled the rest of the table with
+ *  "[not retrieved]". Serialisation is already capped per sheet, so several
+ *  fit comfortably. */
+const MAX_SHEETS_PER_CALL = 12;
+
 export async function queryForecast(
   sheet?: string
 ): Promise<{ data: any; count: number; error?: string; notice?: string }> {
@@ -93,14 +101,48 @@ export async function queryForecast(
     const excluded = excludedSheets();
     const visible = wb.SheetNames.filter((n) => !excluded.has(n.toLowerCase()));
 
-    let target = sheet
-      ? visible.find((n) => n.toLowerCase() === sheet.toLowerCase()) ||
-        visible.find((n) => n.toLowerCase().includes(sheet.toLowerCase()))
+    // "all" (or a comma-separated list) returns several sheets in one call.
+    const raw = (sheet || "").trim();
+    const wantsAll = /^(all|\*|all sheets|everything)$/i.test(raw);
+    const requested = wantsAll
+      ? visible
+      : raw.includes(",")
+        ? raw.split(",").map((x) => x.trim()).filter(Boolean)
+        : [];
+
+    if (wantsAll || requested.length > 1) {
+      const resolved: string[] = [];
+      const missing: string[] = [];
+      for (const want of requested) {
+        const hit =
+          visible.find((n) => n.toLowerCase() === want.toLowerCase()) ||
+          visible.find((n) => n.toLowerCase().includes(want.toLowerCase()));
+        if (hit && !resolved.includes(hit)) resolved.push(hit);
+        else if (!hit) missing.push(want);
+      }
+      const capped = resolved.slice(0, MAX_SHEETS_PER_CALL);
+      return {
+        data: {
+          file: "Forecast 2026 (live from Google Drive)",
+          available_sheets: visible,
+          ...(missing.length ? { not_found: missing } : {}),
+          ...(resolved.length > capped.length
+            ? { note: `Returned the first ${capped.length} of ${resolved.length} sheets — ask for the rest by name.` }
+            : {}),
+          sheets: capped.map((n) => ({ sheet: n, rows: serializeSheet(wb.Sheets[n]) })),
+        },
+        count: capped.length,
+      };
+    }
+
+    let target = raw
+      ? visible.find((n) => n.toLowerCase() === raw.toLowerCase()) ||
+        visible.find((n) => n.toLowerCase().includes(raw.toLowerCase()))
       : undefined;
-    if (sheet && !target) {
+    if (raw && !target) {
       return {
         data: { available_sheets: visible }, count: visible.length,
-        error: `No sheet matching "${sheet}" — pick one of the available sheets.`,
+        error: `No sheet matching "${raw}" — pick one of the available sheets.`,
       };
     }
     if (!target) target = visible.includes("Forecast Actual Booked") ? "Forecast Actual Booked" : visible[0];
