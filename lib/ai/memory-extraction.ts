@@ -48,6 +48,21 @@ Return format:
 
 If nothing noteworthy, return: {"memories": []}`;
 
+/** Categories a BACKGROUND pass may write.
+ *
+ *  "instruction" and "style" are deliberately excluded. They are standing
+ *  directives applied to every future conversation, and background extraction
+ *  runs unattended over text that may restate third-party content — an email
+ *  body, a shared document, a meeting transcript — which the person who wrote
+ *  it chose knowing an assistant might read it. A turn that READS such content
+ *  already skips extraction entirely, but the model can still restate it a
+ *  turn later, once the taint has expired with the request.
+ *
+ *  Users can still create standing instructions deliberately, through
+ *  POST /api/ai/memories, where they see and confirm what is being saved.
+ */
+const BACKGROUND_SAFE_CATEGORIES = ["preference", "fact", "client_insight"];
+
 export async function extractMemories(
   userMessage: string,
   assistantResponse: string,
@@ -90,14 +105,9 @@ export async function extractMemories(
 
     if (!parsed.memories || !Array.isArray(parsed.memories)) return [];
 
-    // Filter to high-confidence suggestions, cap at 3
-    const validCategories = [
-      "preference",
-      "fact",
-      "instruction",
-      "style",
-      "client_insight",
-    ];
+    // Filter to high-confidence suggestions, cap at 3.
+    // NOTE the excluded categories — see BACKGROUND_SAFE_CATEGORIES.
+    const validCategories = BACKGROUND_SAFE_CATEGORIES;
 
     return parsed.memories
       .filter(
