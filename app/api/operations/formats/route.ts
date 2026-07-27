@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
 import { fetchAllRows } from "@/lib/supabase-paginate";
+import { nextDay } from "@/lib/date-utils";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -28,8 +29,9 @@ export async function GET(req: NextRequest) {
           "id_task, id_content, type_task, units_content, date_created, date_deadline, date_completed, name_content, type_content, id_client, name_client, id_contract, name_contract, flag_spiked"
         )
         .order("id_task", { ascending: true });
-      if (from) q = q.gte("date_created", `${from}T00:00:00.000Z`);
-      if (to) q = q.lte("date_created", `${to}T23:59:59.999Z`);
+      // TEXT bare-date column — bare gte / lt(nextDay), see lib/date-utils.ts
+      if (from) q = q.gte("date_created", from);
+      if (to) q = q.lt("date_created", nextDay(to));
       return q.range(start, end);
     });
 

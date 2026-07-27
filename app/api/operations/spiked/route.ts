@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
 import { fetchAllRows } from "@/lib/supabase-paginate";
+import { nextDay } from "@/lib/date-utils";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -28,8 +29,9 @@ export async function GET(req: NextRequest) {
         .eq("flag_spiked", 1)
         .is("date_completed", null)
         .order("id_task", { ascending: true });
-      if (from) q = q.gte("date_spiked", `${from}T00:00:00.000Z`);
-      if (to) q = q.lte("date_spiked", `${to}T23:59:59.999Z`);
+      // TEXT bare-date column — bare gte / lt(nextDay), see lib/date-utils.ts
+      if (from) q = q.gte("date_spiked", from);
+      if (to) q = q.lt("date_spiked", nextDay(to));
       return q.range(start, end);
     };
 

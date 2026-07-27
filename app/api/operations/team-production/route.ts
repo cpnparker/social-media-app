@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
 import { fetchAllRows } from "@/lib/supabase-paginate";
+import { nextDay } from "@/lib/date-utils";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -51,14 +52,16 @@ export async function GET(req: NextRequest) {
           .select("*")
           .in("id_user_assignee", batch)
           .order("id_task", { ascending: true });
+        // TEXT bare-date columns — bare gte / lt(nextDay), see lib/date-utils.ts
         if (from) {
           query = query.or(
-            `date_deadline.gte.${from}T00:00:00.000Z,date_completed.gte.${from}T00:00:00.000Z`
+            `date_deadline.gte.${from},date_completed.gte.${from}`
           );
         }
         if (to) {
+          const cap = nextDay(to);
           query = query.or(
-            `date_deadline.lte.${to}T23:59:59.999Z,date_completed.lte.${to}T23:59:59.999Z`
+            `date_deadline.lt.${cap},date_completed.lt.${cap}`
           );
         }
         return query.range(start, end);

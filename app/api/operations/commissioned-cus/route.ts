@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
 import { fetchAllRows } from "@/lib/supabase-paginate";
+import { nextDay } from "@/lib/date-utils";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -24,13 +25,15 @@ export async function GET(req: NextRequest) {
     // Order by the unique id_task: .range() pagination over a non-unique sort
     // (date_created has large clusters of identical timestamps) duplicates and
     // skips rows at page boundaries, which inflates the CU totals.
+    // Date bounds: the view's date columns are TEXT bare dates — bare gte and
+    // lt(nextDay) are the only correct comparisons (see lib/date-utils.ts).
     const buildContentQuery = (start: number, end: number) => {
       let q = supabase
         .from("app_tasks_content")
         .select("*")
         .order("id_task", { ascending: true });
-      if (from) q = q.gte("date_created", `${from}T00:00:00.000Z`);
-      if (to) q = q.lte("date_created", `${to}T23:59:59.999Z`);
+      if (from) q = q.gte("date_created", from);
+      if (to) q = q.lt("date_created", nextDay(to));
       return q.range(start, end);
     };
 
@@ -40,8 +43,8 @@ export async function GET(req: NextRequest) {
         .from("app_tasks_social")
         .select("*")
         .order("id_task", { ascending: true });
-      if (from) q = q.gte("date_created", `${from}T00:00:00.000Z`);
-      if (to) q = q.lte("date_created", `${to}T23:59:59.999Z`);
+      if (from) q = q.gte("date_created", from);
+      if (to) q = q.lt("date_created", nextDay(to));
       return q.range(start, end);
     };
 

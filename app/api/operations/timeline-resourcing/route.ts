@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
 import { fetchAllRows } from "@/lib/supabase-paginate";
+import { nextDay } from "@/lib/date-utils";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -37,8 +38,8 @@ export async function GET(req: NextRequest) {
         query = query.gte("date_deadline", widenedFrom.toISOString().split("T")[0]);
       }
       if (to) {
-        // Extend to date slightly to catch tasks ending at the boundary
-        query = query.lte("date_deadline", `${to}T23:59:59.999Z`);
+        // TEXT bare-date column — lt(nextDay) includes all of the `to` day
+        query = query.lt("date_deadline", nextDay(to));
       }
       return query.range(start, end);
     });
