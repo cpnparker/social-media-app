@@ -285,12 +285,16 @@ export default function MessageBubble({
                 >
                   <div className="bg-popover text-popover-foreground border shadow-lg rounded-lg px-3 py-2 max-w-[320px]">
                     <div className="flex items-center gap-2">
-                      <img
-                        src={src.favicon}
-                        alt=""
-                        className="h-4 w-4 rounded-sm shrink-0"
-                        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                      />
+                      {src.favicon ? (
+                        <img
+                          src={src.favicon}
+                          alt=""
+                          className="h-4 w-4 rounded-sm shrink-0"
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                        />
+                      ) : (
+                        <span className="h-4 w-4 rounded-sm shrink-0 bg-muted-foreground/20" aria-hidden />
+                      )}
                       <p className="text-xs font-medium truncate">{src.title || src.domain}</p>
                     </div>
                     <p className="text-[11px] text-muted-foreground truncate mt-0.5">{src.domain}</p>
@@ -333,14 +337,18 @@ export default function MessageBubble({
                     onMouseLeave={() => setHoveredSource(null)}
                     className="relative group flex items-center gap-1.5 rounded-lg border bg-background/80 hover:bg-background hover:border-foreground/20 px-2.5 py-1.5 text-[11px] transition-all hover:shadow-sm max-w-[220px]"
                   >
-                    <img
-                      src={src.favicon}
-                      alt=""
-                      className="h-3.5 w-3.5 rounded-sm shrink-0"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = "none";
-                      }}
-                    />
+                    {src.favicon ? (
+                      <img
+                        src={src.favicon}
+                        alt=""
+                        className="h-3.5 w-3.5 rounded-sm shrink-0"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = "none";
+                        }}
+                      />
+                    ) : (
+                      <span className="h-3.5 w-3.5 rounded-sm shrink-0 bg-muted-foreground/20" aria-hidden />
+                    )}
                     <span className="truncate text-muted-foreground group-hover:text-foreground transition-colors">
                       {src.title || src.domain}
                     </span>
@@ -476,13 +484,14 @@ function getDomain(url: string): string {
   }
 }
 
-function getFavicon(url: string): string {
-  try {
-    const origin = new URL(url).origin;
-    return `${origin}/favicon.ico`;
-  } catch {
-    return "";
-  }
+function getFavicon(_url: string): string {
+  // Deliberately returns nothing. This used to be `${origin}/favicon.ico`,
+  // which made the browser fetch an attacker-chosen origin for every URL the
+  // model emitted — a zero-click beacon that fired for anyone who opened the
+  // thread, and one the server-side link strip cannot prevent (it is skipped
+  // entirely while web search is on, so citations survive). The domain name
+  // is already shown next to each source and carries the same information.
+  return "";
 }
 
 function getTitleFromUrl(url: string): string {
@@ -712,12 +721,30 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
   html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/(?<!\*)\*([^*]+?)\*(?!\*)/g, "<em>$1</em>");
 
-  // Images ![alt](url) — render as full-width inline images
-  // Use a replacer function to HTML-escape the alt text (prompts can contain quotes)
+  // Images ![alt](url) — render as full-width inline images.
+  //
+  // SECURITY: the host allowlist lives HERE, in the renderer, not only in the
+  // server's post-stream scrub. Tokens are painted as they stream, so by the
+  // time the server rewrites the final text the browser has already issued the
+  // request — which is a zero-click exfiltration channel when the reply was
+  // built from attacker-controlled content (an email body, a shared Drive
+  // doc). Only our own media proxy and blob host may become an <img>;
+  // anything else renders as inert text so the user can still see what was
+  // suggested.
   html = html.replace(
-    /!\[([^\]]*)\]\(((https?:\/\/|\/api\/)[^)]+)\)/g,
-    (_m, alt, url) =>
-      `<div class="ai-generated-image-wrap my-3"><a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${escapeHtml(alt)}" class="ai-generated-image rounded-lg max-w-full" loading="lazy" data-retry-src="${url}" /></a></div>`
+    /!\[([^\]]*)\]\(([^)\s]+)\)/g,
+    (_m, alt, url) => {
+      const u = String(url);
+      const allowed =
+        u.startsWith("/api/media/") ||
+        /^https?:\/\/[a-z0-9-]+\.public\.blob\.vercel-storage\.com\//i.test(u) ||
+        /^https?:\/\/[a-z0-9-]+\.blob\.vercel-storage\.com\//i.test(u);
+      if (!allowed) {
+        console.warn("[MessageBubble] blocked non-allowlisted image host:", u.slice(0, 80));
+        return `<span class="text-muted-foreground/60 text-xs">[image from an untrusted source was not loaded]</span>`;
+      }
+      return `<div class="ai-generated-image-wrap my-3"><a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="${escapeHtml(alt)}" class="ai-generated-image rounded-lg max-w-full" loading="lazy" data-retry-src="${u}" /></a></div>`;
+    }
   );
 
   // Strip any remaining image markdown with non-matching URLs (model-fabricated)

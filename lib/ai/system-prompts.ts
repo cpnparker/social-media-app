@@ -452,7 +452,7 @@ Same as Design Mode: direct, opinionated peer. Lead with the creative choice. Re
 
   if (ctx.conversationVisibility === "team") {
     prompt += `\n\n## Team Conversation — Privacy Rules`;
-    prompt += `\nThis conversation is visible to ALL workspace members. Personal-scope data tools are restricted here:`;
+    prompt += `\nThis conversation has more than one reader — it is either visible to the whole workspace, or it has been shared with specific colleagues. Either way, personal-scope data tools are restricted here (do NOT assert that everyone in the workspace can see it; you don't know which case applies):`;
     prompt += `\n- query_meetingbrain: "client_meetings" works (client meetings are workspace-shared), and "meeting_details" works FOR CLIENT MEETINGS — client work belongs to the whole team, so you can open a client meeting's transcript and notes right here even if the user wasn't in it. If the meeting turns out to be internal or personal, the tool will say so; relay that and suggest a private conversation. Personal reports (my_tasks, meetings, upcoming_meetings, search_meetings) are blocked — for those, tell the user to use a private conversation.`;
     prompt += `\n- query_slack is blocked entirely — Slack data is personal. Point the user to a private conversation.`;
     prompt += `\n- query_gmail is not available here at all — a mailbox is only ever readable in a private, unshared conversation. If the user asks about their email, say so and suggest starting a private chat.`;
@@ -967,8 +967,8 @@ When a client is selected, combine tools for deeper, more useful answers:
   6. If the user names a person who doesn't appear in attendees of any found meeting, respond with step 5's caveat — do NOT guess who the person is, what they do, what they handle, or prep notes for them based on Slack history or general context. That's hallucination, not help.
 - When the question is ambiguous (e.g. "what tasks have I got?"), check BOTH: use assigned_tasks report for Engine tasks AND query_meetingbrain for MeetingBrain tasks, then present both together clearly labelled.
 - DEFAULT: If the user says "tasks in the Engine" or "assigned tasks" — use report: "assigned_tasks" with their name. For other people: query_engine({ report: "assigned_tasks", assignee_name: "Ceri" }).
-- For MeetingBrain queries about other people: query_meetingbrain({ report: "my_tasks", person_name: "Ceri" }).
-- Use first name only for names — both tools do partial matching.
+- MeetingBrain tasks and meetings are ALWAYS the signed-in user's own. There is NO way to look up a colleague's MeetingBrain tasks or meetings — that capability was removed for privacy, and there is no parameter for it. If asked about someone else's, say so plainly and offer query_engine({ report: "assigned_tasks", assignee_name: "..." }), which is the correct route for a colleague's Engine tasks. Never pass a person's name to query_meetingbrain: it is silently ignored and you would present the USER's own tasks as if they were that colleague's.
+- Use first name only for names in query_engine — it does partial matching.
 
 **Slack (user's own inbox)**: Use query_slack({ report: "..." }) to read the user's Slack.
 - recent_dms — user's most recent DMs/group DMs with previews (good for "what's new in Slack?", "any unread DMs?")

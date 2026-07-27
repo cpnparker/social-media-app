@@ -1395,14 +1395,24 @@ export async function POST(
         // an explicit "standing instruction" category with no approval step —
         // so an injected line in a message body would become permanent
         // guidance applied to every future conversation.
+        // HARD taint (mail): skip extraction AND summary.
+        // SOFT taint (Drive/Slack/MeetingBrain): skip only extraction. Those
+        // are routine mid-flow lookups, so blocking summaries too would mean
+        // heavy MeetingBrain users never got a thread summary again — but
+        // extraction is the channel that turns injected text into a STANDING
+        // INSTRUCTION applied to every future conversation, and that is worth
+        // closing for any third-party content.
         const turnTainted = aiConfigRef.sawUntrustedContent === true;
-        if (turnTainted) {
-          console.log("[Messages] Turn read email — skipping memory extraction and summary");
+        const turnHadThirdParty = turnTainted || aiConfigRef.sawThirdPartyContent === true;
+        if (turnHadThirdParty) {
+          console.log(
+            `[Messages] Third-party content in turn (${turnTainted ? "mail: hard" : "soft"}) — skipping memory extraction${turnTainted ? " and summary" : ""}`
+          );
         }
 
         // Fire-and-forget: background memory extraction after stream closes
         // Client already received [DONE] and can continue interacting
-        if (!turnTainted && memoryEnabled && capturedText.length > 50) {
+        if (!turnHadThirdParty && memoryEnabled && capturedText.length > 50) {
           runBackgroundMemoryExtraction({
             userContent: userContent || "",
             assistantContent: capturedText,
