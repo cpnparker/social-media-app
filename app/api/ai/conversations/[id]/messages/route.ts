@@ -766,6 +766,22 @@ export async function POST(
       messages.push(msg);
     }
 
+    // ── Audience, computed BEFORE anything reads personal data ──
+    // This must precede the memory fetch below: the passive system-prompt
+    // injection branches on it, and it used to branch on raw type_visibility —
+    // so a "private" thread that had been SHARED still loaded the caller's own
+    // private memories and rendered them into a prompt every recipient's reply
+    // was generated from. Same definition the tool gates use: team-visible,
+    // shared with anyone, or not owned by the caller ⇒ more than one reader.
+    const { count: shareCount } = await intelligenceDb
+      .from("ai_shares")
+      .select("id_conversation", { count: "exact", head: true })
+      .eq("id_conversation", conversationId);
+    const isMultiReaderThread =
+      conversation.type_visibility === "team" ||
+      (shareCount || 0) > 0 ||
+      conversation.user_created !== userId;
+
     // ── Parallel fetch: context, memories, role, user prefs ──
     // These are all independent and can run concurrently
 
@@ -778,7 +794,10 @@ export async function POST(
             .eq("id_workspace", conversation.id_workspace)
             .eq("flag_active", 1);
 
-          if (conversation.type_visibility === "private") {
+          // Solo thread: own private memories + team ones. More than one
+          // reader: team-scoped only — never inject one person's private
+          // memories into a prompt someone else will read the answer to.
+          if (!isMultiReaderThread) {
             memoryQuery = memoryQuery.or(
               `and(type_scope.eq.private,user_memory.eq.${userId}),type_scope.eq.team`
             );
@@ -1006,14 +1025,6 @@ export async function POST(
     // someone else's thread runs tools as THEMSELVES while the answer persists
     // for the owner and every recipient. Treat any thread that is team-visible,
     // shared, or not owned by the caller as a multi-reader audience.
-    const { count: shareCount } = await intelligenceDb
-      .from("ai_shares")
-      .select("id_conversation", { count: "exact", head: true })
-      .eq("id_conversation", conversationId);
-    const isMultiReaderThread =
-      conversation.type_visibility === "team" ||
-      (shareCount || 0) > 0 ||
-      conversation.user_created !== userId;
     const isTeamThread = isMultiReaderThread;
 
     // MeetingBrain context: only for private/shared threads (never team threads)
@@ -1464,8 +1475,16 @@ async function runBackgroundMemoryExtraction({
   const suggestions = await extractMemories(userContent, assistantContent, existingMemories);
   if (suggestions.length === 0) return [];
 
-  const scope = conversationVisibility === "private" ? "private" : "team";
-  const memUserId = scope === "private" ? userId : null;
+  // ALWAYS private. POST /api/ai/memories treats promoting a team memory as a
+  // privileged workspace-wide act (it is injected into every member's system
+  // prompt on every turn) and requires admin. Background extraction performed
+  // that same act with no check at all, so any member chatting in a team
+  // thread could plant standing guidance on all their colleagues — no crafted
+  // request needed. Extraction now only ever produces a memory for the person
+  // whose exchange it came from; team memories are created deliberately,
+  // through the gated route.
+  const scope = "private";
+  const memUserId = userId;
 
   const result = await runConsolidationPipeline(
     suggestions,

@@ -3189,16 +3189,36 @@ async function loadClientDomains(internalDomain: string): Promise<string[]> {
  *  whether a meeting's transcript is a TEAM artefact (client work, shared) or
  *  a personal/internal one (owner only). */
 function hasClientAttendee(attendees: unknown, clientDomains: string[]): boolean {
-  const blob = String(attendees || "").toLowerCase();
-  if (!blob || clientDomains.length === 0) return false;
-  // Parse addresses and compare the WHOLE domain. A substring test would
-  // treat someone@hiscox.com.attacker.io as a Hiscox attendee and hand a
-  // team thread an internal transcript.
-  const emails = blob.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g) || [];
-  return emails.some((e) => {
-    const domain = e.split("@")[1];
+  if (clientDomains.length === 0) return false;
+
+  const domainMatches = (email: string): boolean => {
+    const domain = String(email || "").toLowerCase().split("@")[1];
+    if (!domain) return false;
+    // Whole-domain comparison: a substring test would read
+    // someone@hiscox.com.attacker.io as a Hiscox attendee.
     return clientDomains.some((d) => domain === d || domain.endsWith(`.${d}`));
-  });
+  };
+
+  // Inspect ONLY the email field of each attendee. Display names are
+  // third-party controlled — anyone can set their calendar name to
+  // "a@hiscox.com" — and scanning the raw blob let that forge client status,
+  // publishing an internal transcript to a team thread. Mirrors
+  // meetingbrain.has_client_attendee, which was hardened the same way.
+  const raw = typeof attendees === "string" ? attendees.trim() : "";
+  if (raw.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.some((a: any) => domainMatches(a?.email));
+      }
+    } catch { /* fall through to the conservative default below */ }
+  } else if (Array.isArray(attendees)) {
+    return (attendees as any[]).some((a: any) => domainMatches(a?.email));
+  }
+
+  // Unparseable attendees: fail CLOSED. Treating it as a client meeting would
+  // release a transcript on the strength of text we could not interpret.
+  return false;
 }
 
 /** Call a MeetingBrain RPC with the registered-client domain allowlist, so

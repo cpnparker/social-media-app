@@ -236,6 +236,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
     }
 
+    // Validate the enum on CREATE, exactly as PATCH does. An arbitrary string
+    // reads as not-"team" to the privacy gates (personal tools allowed) but as
+    // not-"private" to the memory-scope logic (memories written workspace-wide)
+    // — the read gate and the write gate would disagree about the same thread.
+    if (visibility !== undefined && visibility !== null && visibility !== "private" && visibility !== "team") {
+      return NextResponse.json(
+        { error: "visibility must be 'private' or 'team'" },
+        { status: 400 }
+      );
+    }
+
     // Verify user belongs to this workspace
     const memberRole = await verifyWorkspaceMembership(userId, workspaceId);
     if (!memberRole) {

@@ -77,8 +77,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Read-only access to this conversation" }, { status: 403 });
     }
 
+    // Audience must match the text pipeline's definition: a "private" thread
+    // shared with colleagues has more than one reader, and voice turns are
+    // persisted into the owner's thread for all of them to read. Using raw
+    // type_visibility here meant personal MeetingBrain tasks, Slack DMs and
+    // private memories were fully unlocked inside a shared thread.
+    const { count: shareCount } = await intelligenceDb
+      .from("ai_shares")
+      .select("id_conversation", { count: "exact", head: true })
+      .eq("id_conversation", conversationId);
     const visibility: "private" | "team" =
-      conversation.type_visibility === "team" ? "team" : "private";
+      conversation.type_visibility === "team" ||
+      (shareCount || 0) > 0 ||
+      conversation.user_created !== userId
+        ? "team"
+        : "private";
     const workspaceId: string = conversation.id_workspace;
 
     let output: string;
