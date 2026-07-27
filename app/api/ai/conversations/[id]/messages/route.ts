@@ -1070,6 +1070,7 @@ export async function POST(
       console.log(`[Messages] Web search: auto-route override → claude-sonnet-5 (grounded tool-based search)`);
     }
 
+
     let systemPrompt = buildSystemPrompt({
       workspaceConfig,
       clientContext,
@@ -1150,6 +1151,25 @@ export async function POST(
           financeAccess = fb?.flag_access_finance === 1;
         }
       } catch { /* still no access */ }
+    }
+    // Mailbox questions must land on Claude, because query_gmail only ever
+    // registers there (mail content is contractually restricted to one
+    // processor). Without this the default "auto" model resolves to Grok, the
+    // tool is never offered, and the user gets a confident answer built from
+    // nothing instead of their inbox. Only rewrites an AUTO-routed model — a
+    // deliberately chosen model is left alone, and the tool simply stays
+    // unavailable there.
+    const MAIL_INTENT =
+      /\b(inbox|mailbox|e-?mails?|mail from|mailed|emailed|unread|replied|reply from|in my mail)\b/i;
+    if (
+      gmailAccess &&
+      !isTeamThread &&
+      wasAutoRouted &&
+      !model.startsWith("claude") &&
+      MAIL_INTENT.test(userContent || "")
+    ) {
+      model = "claude-sonnet-5";
+      console.log(`[Messages] Mail intent: auto-route override → claude-sonnet-5 (query_gmail is Claude-only)`);
     }
 
     // Scheduled task thread: load the standing task so the model can propose

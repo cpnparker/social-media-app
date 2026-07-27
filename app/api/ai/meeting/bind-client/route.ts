@@ -36,9 +36,34 @@ export async function POST(req: NextRequest) {
     console.error("[MeetingBindClient] Update failed:", error.message);
     return NextResponse.json({ error: "Could not link client" }, { status: 500 });
   }
-  // Keep the meeting thread linked too (mirrors session creation).
+  // Keep the meeting thread linked too (mirrors session creation) — and
+  // promote it to team visibility, which session creation also does when a
+  // client is picked up front. Without this, a client bound mid-call (the
+  // whole reason the in-meeting picker exists) left the thread private, so
+  // the approved digest of genuine client work never reached the team.
+  // Guarded: meeting threads only, owned by the caller, never demotes, and
+  // never promotes a thread that has been shared with specific people.
   if (ms.id_conversation) {
-    await intelligenceDb.from("ai_conversations").update({ id_client: cid }).eq("id_conversation", ms.id_conversation);
+    const update: Record<string, any> = { id_client: cid };
+    const { data: conv } = await intelligenceDb
+      .from("ai_conversations")
+      .select("type_visibility, user_created, type_conversation_mode")
+      .eq("id_conversation", ms.id_conversation)
+      .maybeSingle();
+    if (
+      cid &&
+      conv &&
+      conv.type_conversation_mode === "meeting" &&
+      conv.type_visibility !== "team" &&
+      conv.user_created === userId
+    ) {
+      const { count: shareCount } = await intelligenceDb
+        .from("ai_shares")
+        .select("id_conversation", { count: "exact", head: true })
+        .eq("id_conversation", ms.id_conversation);
+      if (!shareCount) update.type_visibility = "team";
+    }
+    await intelligenceDb.from("ai_conversations").update(update).eq("id_conversation", ms.id_conversation);
   }
   return NextResponse.json({ ok: true });
 }

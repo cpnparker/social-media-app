@@ -257,7 +257,7 @@ export async function applyConsolidationAction(
         .select("id_memory")
         .single();
       if (!inserted) return null;
-      console.log(`[Memory] ADD (${typeSource}, strength=${initialStrength}): "${candidate.content.slice(0, 60)}..."`);
+      console.log(`[Memory] ADD (${typeSource}, strength=${initialStrength}) cat=${candidate.category} scope=${scope}`);
       return { id: inserted.id_memory, content: candidate.content, action: "ADD" };
     }
 
@@ -319,7 +319,7 @@ export async function applyConsolidationAction(
           })
           .eq("id_memory", action.targetId);
       }
-      console.log(`[Memory] UPDATE: target ${action.targetId} → "${action.newContent.slice(0, 60)}..."`);
+      console.log(`[Memory] UPDATE: target ${action.targetId} (${action.newContent.length} chars)`);
       return { id: action.targetId, content: action.newContent, action: "UPDATE" };
     }
 
@@ -339,13 +339,13 @@ export async function applyConsolidationAction(
         console.warn(`[Memory] CONTRADICT target ${action.targetId} is outside this pass's scope — skipped`);
         return null;
       }
-      console.log(`[Memory] CONTRADICT: target ${action.targetId} → "${action.newContent.slice(0, 60)}..."`);
+      console.log(`[Memory] CONTRADICT: target ${action.targetId} (${action.newContent.length} chars)`);
       return { id: action.targetId, content: action.newContent, action: "CONTRADICT" };
     }
 
     case "NOOP":
     default:
-      console.log(`[Memory] NOOP: skipped "${candidate.content.slice(0, 60)}..."`);
+      console.log(`[Memory] NOOP: skipped (cat=${candidate.category})`);
       return null;
   }
 }
@@ -527,7 +527,7 @@ export async function runConsolidationPipeline(
       if (slotsAvailable > 0) {
         action = { action: "ADD" as const };
       } else {
-        console.log(`[Memory] Skipped (no slots): "${candidate.content.slice(0, 60)}..."`);
+        console.log(`[Memory] Skipped (no slots) cat=${candidate.category}`);
         result.skipped++;
         continue;
       }
@@ -536,7 +536,7 @@ export async function runConsolidationPipeline(
     }
 
     if (action.action === "ADD" && slotsAvailable <= 0) {
-      console.log(`[Memory] Skipped ADD (no slots): "${candidate.content.slice(0, 60)}..."`);
+      console.log(`[Memory] Skipped ADD (no slots) cat=${candidate.category}`);
       result.skipped++;
       continue;
     }

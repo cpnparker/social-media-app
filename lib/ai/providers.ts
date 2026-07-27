@@ -3149,6 +3149,17 @@ const MEETINGBRAIN_TOOL: Anthropic.Tool = {
 import { createClient as createMBClient } from "@supabase/supabase-js";
 
 let _mbDb: any = null;
+/** Hash a search term for logging. Meeting/mail search terms ARE content
+ *  ("redundancy package Dan"), and platform logs are readable by anyone with
+ *  project access — the Gmail bridge already applies this rule. */
+function qHash(q: unknown): string {
+  const v = String(q ?? "");
+  if (!v) return "-";
+  let h = 5381;
+  for (let i = 0; i < v.length; i++) h = ((h << 5) + h + v.charCodeAt(i)) >>> 0;
+  return `${h.toString(36)}:${v.length}`;
+}
+
 function getMeetingBrainDb() {
   if (!_mbDb) {
     _mbDb = createMBClient(
@@ -3282,7 +3293,7 @@ async function mbRpcWithClientDomains(
   fn: "search_meetings" | "get_meeting_details",
   args: Record<string, any>,
   clientDomains: string[]
-): Promise<{ data: any; error: any }> {
+): Promise<{ data: any; error: any; degraded?: boolean }> {
   if (clientDomains.length > 0) {
     const res = await mbDb.rpc(fn, { ...args, p_client_domains: clientDomains });
     const msg = String(res.error?.message || "");
@@ -3292,6 +3303,12 @@ async function mbRpcWithClientDomains(
     if (!res.error) return res;
     if (!missingParam) return res;
     console.warn(`[MeetingBrain] ${fn}: p_client_domains not accepted — falling back to attendee-scoped (run scripts/client-meetings-workspace-wide.sql)`);
+    const fallback = await mbDb.rpc(fn, args);
+    // Flag it: without this, a client meeting the caller did not attend comes
+    // back empty and gets reported as "that id is wrong or stale", sending the
+    // model off to re-search for a meeting that exists and is simply not
+    // reachable on this deployment.
+    return { ...fallback, degraded: true };
   }
   return mbDb.rpc(fn, args);
 }
@@ -3384,6 +3401,21 @@ export async function queryMeetingBrain(
         const { data: tasks, error } = tasksRes;
         if (error) return fail(error.message);
 
+        if (options.status === "all" && !includeDoneSupported) {
+          // The open tasks ARE returned — but they are not the whole picture,
+          // and describing them as everything would be a confident wrong answer.
+          const openOnly = (tasks || []).filter((t: any) => t.status !== "DONE");
+          return {
+            data: openOnly.map((r: any) => ({
+              id: r.id, title: r.title, description: r.description?.slice(0, 200) || null,
+              status: r.status, responsible: r.responsible,
+              deadline: r.deadline?.slice(0, 10) || null, created: r.created_at?.slice(0, 10),
+              from_meeting: r.meeting_source || null, project: r.project_name || null,
+            })),
+            count: openOnly.length,
+            hint: `These are the user's OPEN tasks only — completed tasks cannot be retrieved on this deployment. Say so explicitly; do NOT present this as a complete list of everything on their plate.`,
+          };
+        }
         if (options.status === "completed" && !includeDoneSupported) {
           return {
             data: [], count: 0,
@@ -3548,18 +3580,29 @@ export async function queryMeetingBrain(
           ? `NOTE: Some results are UPCOMING meetings that have not happened yet — they have no transcript or notes. When the user asks about a meeting they HAD (past tense), only consider results with status "past".`
           : undefined;
         const hint = [fuzzyNote, upcomingNote].filter(Boolean).join("\n") || undefined;
-        console.log(`[MeetingBrain] Search "${options.query}": ${data.length} matches (${data.filter((d: any) => d.status !== "past").length} upcoming)`);
+        console.log(`[MeetingBrain] Search q=${qHash(options.query)}: ${data.length} matches (${data.filter((d: any) => d.status !== "past").length} upcoming)`);
         return { data, count: data.length, hint };
       }
       case "meeting_details": {
         if (!options.meetingId) return fail("meeting_id required — get it from search_meetings first", "invalid_call");
 
-        const { data: details, error } = await mbRpcWithClientDomains(mbDb, "get_meeting_details", {
+        const detailsRes = await mbRpcWithClientDomains(mbDb, "get_meeting_details", {
           p_user_email: userEmail,
           p_meeting_id: options.meetingId,
         }, await getClientDomains());
+        const { data: details, error } = detailsRes;
         if (error) return fail(error.message);
         if (!details || (Array.isArray(details) && details.length === 0)) {
+          // On a deployment where client-meetings-workspace-wide.sql has not
+          // been applied, a genuine client meeting the caller did not attend
+          // returns nothing. Reporting that as a bad id sent the model off to
+          // re-search for a meeting that exists and is merely unreachable.
+          if (detailsRes.degraded) {
+            return {
+              data: [], count: 0,
+              notice: `That meeting exists, but this deployment can only open meetings the user personally attended — the workspace-wide client-meeting access has not been enabled yet (an admin needs to run client-meetings-workspace-wide.sql). Tell the user that plainly; do NOT say the meeting id is wrong, and do not search again for it.`,
+            };
+          }
           return fail(`no meeting exists with meeting_id "${options.meetingId}" (or the user is not an attendee) — that id is wrong or stale`, "invalid_call");
         }
 
@@ -3847,6 +3890,9 @@ const GMAIL_TOOL: Anthropic.Tool = {
 export interface GmailQueryResult {
   data: any[];
   count: number;
+  /** Messages the bridge could not fetch. Surfaced so a partial set is never
+   *  described to the user as the complete answer. */
+  dropped?: number;
   error?: string;
   statusCode?: string;
   needsReauth?: boolean;
@@ -3923,7 +3969,7 @@ export async function queryGmail(
 
     // Counts only. For a mailbox the query IS content.
     console.log(`[Gmail] ${report}: ${results.length} result(s)`);
-    return { data: results, count: results.length, unreadTotal: json?.unread_total ?? null };
+    return { data: results, count: results.length, unreadTotal: json?.unread_total ?? null, dropped: json?.dropped ?? 0 };
   } catch (err: any) {
     const aborted = err?.name === "TimeoutError" || err?.name === "AbortError";
     console.warn(`[Gmail] ${report} ${aborted ? "timed out" : "error"}: ${String(err?.message || err).slice(0, 120)}`);
@@ -3979,7 +4025,7 @@ export function formatGmailResult(report: string, result: GmailQueryResult): str
   return fenceUntrusted(result.data, {
     source: "EMAIL CONTENT written by third parties",
     preamble: `${head}${result.count} message${result.count === 1 ? "" : "s"} from the user's own mailbox.`,
-    instructions: `Answer the user's question from the above. Quote sparingly, attribute to the sender, and give dates. If you need the rest of a conversation, use report "thread" with its thread_id.`,
+    instructions: `${result.dropped ? `NOTE: ${result.dropped} further message(s) matched but could not be retrieved — say the list may be incomplete rather than presenting it as everything.\n` : ""}Answer the user's question from the above. Quote sparingly, attribute to the sender, and give dates. If you need the rest of a conversation, use report "thread" with its thread_id.`,
   });
 }
 
@@ -4534,10 +4580,28 @@ export async function searchMemory(
   // Sanitise FIRST, then split — so "what's" becomes two tokens rather than
   // one token containing a space, and trailing "?" never reaches the filter.
   const sanitized = query.toLowerCase().replace(/[(),."'\\%*?!:;\[\]{}]/g, " ");
-  const terms = sanitized.split(/\s+/).filter((t) => t.length > 2);
+  let terms = sanitized.split(/\s+/).filter((t) => t.length > 2);
+  // Short but meaningful queries — "AI", "Q4", "PR", "UX", "HR" — produced an
+  // EMPTY term list, which built an `or()` with no operands. PostgREST
+  // rejects that with a 400, the error was swallowed, and the model reported
+  // "nothing found": a confident wrong answer about the user's own data. Fall
+  // back to the whole sanitised query when every token is short.
+  if (terms.length === 0) {
+    const whole = sanitized.trim();
+    if (whole.length >= 2) terms = [whole];
+  }
   const combinedPattern = `%${sanitized.trim().replace(/\s+/g, "%")}%`;
   // Build OR filter for individual terms: matches ANY term
   const termPatterns = terms.map(t => `%${t}%`);
+
+  // Nothing searchable at all (e.g. a one-character query): say so rather
+  // than letting an empty result read as "you have nothing saved".
+  if (termPatterns.length === 0) {
+    return {
+      memories: [], messages: [], summaries: [],
+      summary: `The search term was too short to look up. Ask the user for a slightly longer term — do NOT tell them nothing is saved, because nothing was actually searched.`,
+    };
+  }
 
   const memories: any[] = [];
   const messages: any[] = [];
