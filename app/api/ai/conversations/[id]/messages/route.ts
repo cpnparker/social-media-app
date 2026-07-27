@@ -1159,8 +1159,24 @@ export async function POST(
     // nothing instead of their inbox. Only rewrites an AUTO-routed model — a
     // deliberately chosen model is left alone, and the tool simply stays
     // unavailable there.
-    const MAIL_INTENT =
-      /\b(inbox|mailbox|e-?mails?|mail from|mailed|emailed|unread|replied|reply from|in my mail)\b/i;
+    // Deliberately narrow: it must name the user's OWN mail. The first cut
+    // matched bare "inbox"/"email"/"unread", which are everyday words in this
+    // app (the social Inbox, "email the client", campaign emails) and would
+    // have silently switched the model mid-conversation for ordinary work.
+    const MAIL_INTENT = new RegExp(
+      [
+        "\\bmy (inbox|mailbox|e-?mail|mails)\\b",
+        "\\bin my (inbox|mailbox|mail|e-?mail)\\b",
+        "\\bcheck my (mail|e-?mail|inbox)\\b",
+        "\\b(e-?mailed?|mailed) (me|us)\\b",
+        "\\b(did|has|have|hasn.t|didn.t) \\w+ (e-?mailed|replied|reply|written|got back|come back)",
+        "\\b(e-?mails?|mail) from\\b",
+        "\\bany (unread|new) (mail|e-?mails?)\\b",
+        "\\b(search|look in|find in) (my )?(mail|e-?mail|inbox)\\b",
+        "\\bthe (e-?mail|thread) (from|about)\\b",
+      ].join("|"),
+      "i"
+    );
     if (
       gmailAccess &&
       !isTeamThread &&

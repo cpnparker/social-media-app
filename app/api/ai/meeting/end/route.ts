@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
 
   const { data: meetingSession } = await intelligenceDb
     .from("ai_meeting_sessions")
-    .select("id_session, id_conversation, id_workspace, name_title, status_session, consent_attested_by")
+    .select("id_session, id_conversation, id_workspace, id_client, name_title, status_session, consent_attested_by")
     .eq("id_session", sessionId)
     .maybeSingle();
   if (!meetingSession) {
@@ -114,12 +114,59 @@ export async function POST(req: NextRequest) {
       });
       if (msgErr) throw msgErr;
 
+      // Publication decision belongs HERE, not at client-bind time: this is
+      // the moment a human deliberately reviews the digest and approves it.
+      // (bind-client used to promote, but binding is silent and automatic
+      // from the transcript, so a client's name spoken aloud in an internal
+      // 1:1 published the whole thread.)
+      //
+      // Promote only when: a client is bound (client work is a team
+      // artefact), the thread is still private, the caller owns it, nobody
+      // has been given a specific share, and the thread was NOT used as a
+      // private chat. That last check is the important one — meeting threads
+      // are ordinary chat threads, so a host who asked about their mail or
+      // memories in it must not have that history republished. Counts that
+      // come back null are treated as unknown ⇒ do not promote.
+      const convUpdate: Record<string, any> = { date_updated: new Date().toISOString() };
+      if (meetingSession.id_client) {
+        const [{ data: conv }, { count: shareCount }, { count: userMsgCount }] = await Promise.all([
+          intelligenceDb
+            .from("ai_conversations")
+            .select("type_visibility, user_created, type_conversation_mode")
+            .eq("id_conversation", meetingSession.id_conversation)
+            .maybeSingle(),
+          intelligenceDb
+            .from("ai_shares")
+            .select("id_conversation", { count: "exact", head: true })
+            .eq("id_conversation", meetingSession.id_conversation),
+          intelligenceDb
+            .from("ai_messages")
+            .select("id_message", { count: "exact", head: true })
+            .eq("id_conversation", meetingSession.id_conversation)
+            .eq("role_message", "user"),
+        ]);
+        if (
+          conv &&
+          conv.type_conversation_mode === "meeting" &&
+          conv.type_visibility !== "team" &&
+          conv.user_created === userId &&
+          shareCount === 0 &&
+          userMsgCount === 0
+        ) {
+          convUpdate.type_visibility = "team";
+          console.log(`[MeetingEnd] Client meeting digest approved — thread published to the team`);
+        }
+      }
+
       await intelligenceDb
         .from("ai_conversations")
-        .update({ date_updated: new Date().toISOString() })
+        .update(convUpdate)
         .eq("id_conversation", meetingSession.id_conversation);
 
-      return NextResponse.json({ ok: true, committed: true, conversationId: meetingSession.id_conversation });
+      return NextResponse.json({
+        ok: true, committed: true, conversationId: meetingSession.id_conversation,
+        sharedWithTeam: convUpdate.type_visibility === "team",
+      });
     }
 
     // ── Step 1: end the session, log usage, draft the digest ──

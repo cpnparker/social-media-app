@@ -4587,8 +4587,11 @@ export async function searchMemory(
   // "nothing found": a confident wrong answer about the user's own data. Fall
   // back to the whole sanitised query when every token is short.
   if (terms.length === 0) {
-    const whole = sanitized.trim();
-    if (whole.length >= 2) terms = [whole];
+    // Fall back to the individual SHORT tokens, not the joined string:
+    // "Q4 PR" as one pattern (%q4 pr%) only matches that literal phrase, so
+    // the query still found nothing. Two-character tokens are meaningful here
+    // ("AI", "Q4", "PR", "UX", "HR"); single characters are not.
+    terms = sanitized.split(/\s+/).filter((t) => t.length >= 2);
   }
   const combinedPattern = `%${sanitized.trim().replace(/\s+/g, "%")}%`;
   // Build OR filter for individual terms: matches ANY term
@@ -4849,14 +4852,24 @@ export function createStreamingResponse(
         } else if (modelInfo.provider === "deepseek") {
           // DeepSeek is OpenAI-compatible — reuse streamOpenAI with a different client.
           // Image generation isn't supported, so force it off regardless of UI toggle.
-          result = await streamOpenAI(
-            messages,
-            { ...config, imageGeneration: false },
-            modelInfo.apiModel,
-            controller,
-            encoder,
-            { clientOverride: getDeepSeekClient(), providerLabel: "DeepSeek" },
-          );
+          // Mutate the SAME config object rather than cloning: the tool
+          // executors write taint flags onto it during the turn, and the
+          // route reads them afterwards to decide whether to run memory
+          // extraction. A spread copy silently dropped those flags.
+          const prevImageGen = config.imageGeneration;
+          config.imageGeneration = false;
+          try {
+            result = await streamOpenAI(
+              messages,
+              config,
+              modelInfo.apiModel,
+              controller,
+              encoder,
+              { clientOverride: getDeepSeekClient(), providerLabel: "DeepSeek" },
+            );
+          } finally {
+            config.imageGeneration = prevImageGen;
+          }
         } else if (modelInfo.provider === "perplexity") {
           result = await streamPerplexity(messages, config, modelInfo.apiModel, controller, encoder);
         } else {
@@ -5906,7 +5919,7 @@ async function streamAnthropic(
             tool.input.report, config.userEmail!,
             { query: tool.input.query, status: tool.input.status, days: tool.input.days, workspaceId: config.workspaceId, meetingId: tool.input.meeting_id, visibility: config.conversationVisibility }
           );
-          config.sawThirdPartyContent = true;
+          if (result.count > 0) config.sawThirdPartyContent = true;
           toolResults.push({
             type: "tool_result", tool_use_id: tool.id,
             content: formatMeetingBrainResult(tool.input.report, result),
@@ -5928,7 +5941,7 @@ async function streamAnthropic(
               visibility: config.conversationVisibility,
             }
           );
-          config.sawThirdPartyContent = true;
+          if (result.count > 0) config.sawThirdPartyContent = true;
           toolResults.push({
             type: "tool_result", tool_use_id: tool.id,
             content: formatSlackResult(tool.input.report, result),
@@ -5975,6 +5988,7 @@ async function streamAnthropic(
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
           const { queryDriveDocs } = await import("@/lib/gdrive/docs");
           const result = await queryDriveDocs(tool.input.action, tool.input.name);
+          if (result.count > 0) config.sawThirdPartyContent = true;
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: formatDriveDocsResult(result) });
         } catch (err: any) {
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Drive docs error: ${err.message}`, is_error: true });
@@ -6591,7 +6605,7 @@ async function streamXAIChatCompletions(
             input.report, config.userEmail!,
             { query: input.query, status: input.status, days: input.days, workspaceId: config.workspaceId, meetingId: input.meeting_id, visibility: config.conversationVisibility }
           );
-          config.sawThirdPartyContent = true;
+          if (result.count > 0) config.sawThirdPartyContent = true;
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
             content: formatMeetingBrainResult(input.report, result),
@@ -6614,7 +6628,7 @@ async function streamXAIChatCompletions(
               visibility: config.conversationVisibility,
             }
           );
-          config.sawThirdPartyContent = true;
+          if (result.count > 0) config.sawThirdPartyContent = true;
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
             content: formatSlackResult(input.report, result),
@@ -6663,6 +6677,7 @@ async function streamXAIChatCompletions(
           const input = JSON.parse(tc.function.arguments);
           const { queryDriveDocs } = await import("@/lib/gdrive/docs");
           const result = await queryDriveDocs(input.action, input.name);
+          if (result.count > 0) config.sawThirdPartyContent = true;
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatDriveDocsResult(result) } as any);
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Drive docs error: ${err.message}` } as any);
@@ -7249,7 +7264,7 @@ async function streamGemini(
             input.report, config.userEmail!,
             { query: input.query, status: input.status, days: input.days, workspaceId: config.workspaceId, meetingId: input.meeting_id, visibility: config.conversationVisibility }
           );
-          config.sawThirdPartyContent = true;
+          if (result.count > 0) config.sawThirdPartyContent = true;
           geminiMessages.push({
             role: "tool", tool_call_id: tc.id,
             content: formatMeetingBrainResult(input.report, result),
@@ -7272,7 +7287,7 @@ async function streamGemini(
               visibility: config.conversationVisibility,
             }
           );
-          config.sawThirdPartyContent = true;
+          if (result.count > 0) config.sawThirdPartyContent = true;
           geminiMessages.push({
             role: "tool", tool_call_id: tc.id,
             content: formatSlackResult(input.report, result),
@@ -7321,6 +7336,7 @@ async function streamGemini(
           const input = JSON.parse(tc.function.arguments);
           const { queryDriveDocs } = await import("@/lib/gdrive/docs");
           const result = await queryDriveDocs(input.action, input.name);
+          if (result.count > 0) config.sawThirdPartyContent = true;
           geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatDriveDocsResult(result) } as any);
         } catch (err: any) {
           geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Drive docs error: ${err.message}` } as any);
@@ -7819,7 +7835,7 @@ async function streamOpenAI(
             input.report, config.userEmail!,
             { query: input.query, status: input.status, days: input.days, workspaceId: config.workspaceId, meetingId: input.meeting_id, visibility: config.conversationVisibility }
           );
-          config.sawThirdPartyContent = true;
+          if (result.count > 0) config.sawThirdPartyContent = true;
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
             content: formatMeetingBrainResult(input.report, result),
@@ -7842,7 +7858,7 @@ async function streamOpenAI(
               visibility: config.conversationVisibility,
             }
           );
-          config.sawThirdPartyContent = true;
+          if (result.count > 0) config.sawThirdPartyContent = true;
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
             content: formatSlackResult(input.report, result),
@@ -7891,6 +7907,7 @@ async function streamOpenAI(
           const input = JSON.parse(tc.function.arguments);
           const { queryDriveDocs } = await import("@/lib/gdrive/docs");
           const result = await queryDriveDocs(input.action, input.name);
+          if (result.count > 0) config.sawThirdPartyContent = true;
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatDriveDocsResult(result) } as any);
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Drive docs error: ${err.message}` } as any);

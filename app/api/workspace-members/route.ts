@@ -121,12 +121,18 @@ export async function GET() {
 
     // Non-admins get identity only — the sharing and RFP pickers need names,
     // not a map of who can reach finance, mail or admin.
+    // accessEngineGpt is KEPT for non-admins: ShareDialog and the RFP picker
+    // filter the member list on it to decide who can be shared with, so
+    // stripping it emptied both for everyone who isn't an admin. It is a
+    // low-sensitivity "can this person use the assistant at all" bit. The
+    // flags that describe reach into finance, mail and admin stay admin-only.
     const safeMembers = guard.isAdmin
       ? members
       : members.map((m) => ({
           id: m.id, name: m.name, email: m.email, avatarUrl: m.avatarUrl,
           provider: m.provider, createdAt: m.createdAt, role: m.role,
           appRole: m.appRole, joinedAt: m.joinedAt,
+          accessEngineGpt: m.accessEngineGpt,
         }));
 
     return NextResponse.json({ members: safeMembers, workspaceId: ws.id });
