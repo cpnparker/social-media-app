@@ -330,30 +330,60 @@ export default function ScheduledPromptsDialog({
                 Monitor — only when something changes
               </button>
             </div>
-            <div className="flex items-center gap-2 flex-wrap text-sm">
-              <select value={cadence} onChange={(e) => setCadence(e.target.value as any)} className="h-8 rounded-lg border bg-background px-2 text-sm">
-                <option value="daily">Daily</option>
-                <option value="weekdays">Weekdays</option>
-                <option value="weekly">Weekly</option>
-                <option value="monthly">Monthly (1st)</option>
-              </select>
+            {/* LABELLED controls. These were two bare dropdowns reading
+                "[Weekdays] [08:00]", which scans as a statement of fact rather
+                than a choice — users reported there was "no way to pick a day
+                or time". The day selector also only exists for Weekly, so
+                without a label on the cadence there was no hint it was there. */}
+            <div className="flex items-end gap-3 flex-wrap text-sm">
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-muted-foreground">Repeat</span>
+                <select value={cadence} onChange={(e) => setCadence(e.target.value as any)} className="h-8 rounded-lg border bg-background px-2 text-sm">
+                  <option value="daily">Every day</option>
+                  <option value="weekdays">Every weekday (Mon–Fri)</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly (1st)</option>
+                </select>
+              </label>
               {cadence === "weekly" && (
-                <select value={dayOfWeek} onChange={(e) => setDayOfWeek(parseInt(e.target.value, 10))} className="h-8 rounded-lg border bg-background px-2 text-sm">
-                  {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((d, i) => (
-                    <option key={d} value={i + 1}>{d}</option>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-medium text-muted-foreground">On</span>
+                  <select value={dayOfWeek} onChange={(e) => setDayOfWeek(parseInt(e.target.value, 10))} className="h-8 rounded-lg border bg-background px-2 text-sm">
+                    {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((d, i) => (
+                      <option key={d} value={i + 1}>{d}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-muted-foreground">At</span>
+                <select value={hour} onChange={(e) => setHour(parseInt(e.target.value, 10))} className="h-8 rounded-lg border bg-background px-2 text-sm">
+                  {Array.from({ length: 24 }, (_, h) => (
+                    <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>
                   ))}
                 </select>
-              )}
-              <select value={hour} onChange={(e) => setHour(parseInt(e.target.value, 10))} className="h-8 rounded-lg border bg-background px-2 text-sm">
-                {Array.from({ length: 24 }, (_, h) => (
-                  <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>
-                ))}
-              </select>
-              <span className="text-xs text-muted-foreground">Europe/Zurich</span>
-              <label className="flex items-center gap-1.5 text-xs ml-auto">
+              </label>
+              <span className="text-xs text-muted-foreground pb-2">Europe/Zurich</span>
+              <label className="flex items-center gap-1.5 text-xs ml-auto pb-2">
                 <input type="checkbox" checked={email} onChange={(e) => setEmail(e.target.checked)} /> Email me results
               </label>
             </div>
+            {/* Say what will happen, rather than making the user infer it from
+                three dropdowns. */}
+            <p className="text-[11px] text-muted-foreground">
+              {(() => {
+                const t = `${String(hour).padStart(2, "0")}:00`;
+                const day = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][dayOfWeek - 1];
+                const when =
+                  cadence === "daily" ? `every day at ${t}`
+                  : cadence === "weekdays" ? `every weekday at ${t}`
+                  : cadence === "weekly" ? `every ${day} at ${t}`
+                  : `on the 1st of each month at ${t}`;
+                return `Runs ${when}, Europe/Zurich${email ? ", and emails you the result" : ""}.${
+                  typeTask === "monitor" ? " As a monitor, it only delivers when something has changed." : ""
+                }`;
+              })()}
+            </p>
             <div className="flex gap-2 justify-end">
               <button onClick={resetForm} className="h-8 px-3 rounded-lg border text-sm hover:bg-accent">Cancel</button>
               <button
