@@ -205,11 +205,19 @@ export default function MessageBubble({
     return { ...parsed, proposals: found };
   }, [content, isUser]);
 
-  const renderedHtml = useMemo(
-    () =>
-      DOMPurify.sanitize(formatMarkdown(cleanContent, sources), {
+  // The OBJECT is memoised, not just the string, and that distinction is the
+  // whole fix. React compares the dangerouslySetInnerHTML prop by identity —
+  // a fresh `{ __html }` literal each render makes it rewrite innerHTML even
+  // when the html is byte-identical, which tears down and rebuilds every child
+  // node. Any selection inside the message dies with them, so highlighting
+  // cleared itself the instant the chip appeared. Verified by intercepting the
+  // innerHTML setter: one write per render, sameString true, 909 → 909 chars.
+  const htmlProp = useMemo(
+    () => ({
+      __html: DOMPurify.sanitize(formatMarkdown(cleanContent, sources), {
         ADD_ATTR: ["target", "rel", "data-source-num", "loading", "data-retry-src", "data-code-copy"],
       }),
+    }),
     [cleanContent, sources]
   );
 
@@ -371,7 +379,7 @@ export default function MessageBubble({
               onMouseOut={(e) => {
                 if ((e.target as HTMLElement).closest("a.ai-cite")) setCitePreview(null);
               }}
-              dangerouslySetInnerHTML={{ __html: renderedHtml }}
+              dangerouslySetInnerHTML={htmlProp}
             />
             {citePreview && (() => {
               const src = sources.find((s) => s.number === citePreview.num);
