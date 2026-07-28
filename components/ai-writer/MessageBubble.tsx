@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { User, Bot, FileText, ExternalLink, ChevronDown, ChevronUp, ShieldCheck, Copy, Check, RotateCcw, Pencil, X, ThumbsUp, ThumbsDown, CalendarClock, NotebookPen, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -99,7 +99,12 @@ export default function MessageBubble({
 
   useEffect(() => {
     if (!messageId || !workspaceId) return;
-    const onSelectionChange = () => {
+
+    // Read the selection only once it has SETTLED. Doing this on every
+    // selectionchange meant a state update per mouse-move, and the browser
+    // was re-rendering the bubble instead of tracking the drag — the
+    // selection stuttered and snapped to whole words and paragraphs.
+    const settle = () => {
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || sel.rangeCount === 0) { setSelection(null); return; }
       const range = sel.getRangeAt(0);
@@ -116,8 +121,25 @@ export default function MessageBubble({
       if (!rect.width && !rect.height) { setSelection(null); return; }
       setSelection({ text, x: rect.left + rect.width / 2, y: rect.top });
     };
+
+    // selectionchange is used ONLY to dismiss — no text extraction, no
+    // geometry, and setSelection(null) on an already-null value is a no-op in
+    // React, so this stays free during a drag.
+    const onSelectionChange = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) setSelection(null);
+    };
+
     document.addEventListener("selectionchange", onSelectionChange);
-    return () => document.removeEventListener("selectionchange", onSelectionChange);
+    document.addEventListener("mouseup", settle);
+    document.addEventListener("touchend", settle);
+    document.addEventListener("keyup", settle);
+    return () => {
+      document.removeEventListener("selectionchange", onSelectionChange);
+      document.removeEventListener("mouseup", settle);
+      document.removeEventListener("touchend", settle);
+      document.removeEventListener("keyup", settle);
+    };
   }, [messageId, workspaceId]);
 
   const clip = async (text: string, type: "highlight" | "answer" | "prompt") => {
@@ -159,22 +181,37 @@ export default function MessageBubble({
 
   // Extract scheduled-prompt proposal markers FIRST (they contain raw JSON that
   // must never reach the markdown/source pipeline), then parse sources.
-  const proposals: ScheduledProposal[] = [];
-  let bodyContent = content;
-  if (!isUser && content.includes("[SCHEDULED_PROPOSAL]")) {
-    bodyContent = content.replace(
-      /\[SCHEDULED_PROPOSAL\]([\s\S]*?)\[\/SCHEDULED_PROPOSAL\]/g,
-      (_m, json) => {
-        try { proposals.push(JSON.parse(json)); } catch { /* partial/garbled — drop */ }
-        return "";
-      }
-    );
-  }
+  //
+  // MEMOISED, and it matters: this chain plus the markdown render below is a
+  // full parse of the message, and it used to run on EVERY render. Any state
+  // change in this component — hover, rating, the selection chip — paid for it
+  // again. Dragging to select fired it tens of times a second and the drag
+  // stuttered.
+  const { cleanContent, sources, proposals } = useMemo(() => {
+    const found: ScheduledProposal[] = [];
+    let bodyContent = content;
+    if (!isUser && content.includes("[SCHEDULED_PROPOSAL]")) {
+      bodyContent = content.replace(
+        /\[SCHEDULED_PROPOSAL\]([\s\S]*?)\[\/SCHEDULED_PROPOSAL\]/g,
+        (_m, json) => {
+          try { found.push(JSON.parse(json)); } catch { /* partial/garbled — drop */ }
+          return "";
+        }
+      );
+    }
+    const parsed = !isUser
+      ? parseSourcesFromContent(bodyContent)
+      : { cleanContent: content, sources: [] as ParsedSource[] };
+    return { ...parsed, proposals: found };
+  }, [content, isUser]);
 
-  // Parse sources from AI content (only for assistant messages)
-  const { cleanContent, sources } = !isUser
-    ? parseSourcesFromContent(bodyContent)
-    : { cleanContent: content, sources: [] };
+  const renderedHtml = useMemo(
+    () =>
+      DOMPurify.sanitize(formatMarkdown(cleanContent, sources), {
+        ADD_ATTR: ["target", "rel", "data-source-num", "loading", "data-retry-src", "data-code-copy"],
+      }),
+    [cleanContent, sources]
+  );
 
   return (
     <div
@@ -334,11 +371,7 @@ export default function MessageBubble({
               onMouseOut={(e) => {
                 if ((e.target as HTMLElement).closest("a.ai-cite")) setCitePreview(null);
               }}
-              dangerouslySetInnerHTML={{
-                __html: DOMPurify.sanitize(formatMarkdown(cleanContent, sources), {
-                  ADD_ATTR: ['target', 'rel', 'data-source-num', 'loading', 'data-retry-src', 'data-code-copy'],
-                }),
-              }}
+              dangerouslySetInnerHTML={{ __html: renderedHtml }}
             />
             {citePreview && (() => {
               const src = sources.find((s) => s.number === citePreview.num);
