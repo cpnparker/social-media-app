@@ -179,6 +179,11 @@ export function buildSystemPrompt(ctx: {
   clientIdeas?: IdeaItem[] | null;
   workspaceSummary?: WorkspaceSummary | null;
   memories?: { content: string; category: string; strength?: number }[];
+  /** One-line index of the user's notebook — count plus the topics they
+   *  annotated. Never the clipped text itself: that is what search_notebook is
+   *  for, and keeping it out is what stops a growing scrapbook inflating every
+   *  turn the way resident memories would. */
+  notebookIndex?: string | null;
   role?: { name: string; instructions: string } | null;
   selectedRoles?: { name: string; instructions: string }[];
   latestUserMessage?: string;
@@ -851,6 +856,13 @@ Same as Design Mode: direct, opinionated peer. Lead with the creative choice. Re
     prompt += `\n- "Fading" memories may be outdated — reference only if clearly relevant to the current topic.`;
     prompt += `\n- If any memory conflicts with what the user is saying right now, follow the current conversation.`;
     prompt += `\n- Never mention the memory system or that you "remember" something unless the user explicitly asks.`;
+  }
+
+  // ── Notebook ──
+  if (ctx.notebookIndex) {
+    prompt += `\n\n## Notebook\n${ctx.notebookIndex}`;
+    prompt += `\n- Entries are VERBATIM passages the user chose to keep, plus their own notes on them — treat a saved passage as a stronger signal of what they care about than something merely mentioned in passing.`;
+    prompt += `\n- Do not guess at the contents from this index. Call search_notebook and quote what comes back.`;
   }
 
   // ── Engine deep links ──

@@ -4,6 +4,7 @@ import { put } from "@vercel/blob";
 import { fetchBlobContent } from "./blob-utils";
 import { anthropicCallParams } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
+import { searchNotebook } from "@/lib/notebook/search";
 
 /* ─────────────── Types ─────────────── */
 
@@ -4222,6 +4223,51 @@ const SEARCH_MEMORY_TOOL: Anthropic.Tool = {
   },
 };
 
+/* ─────────────── Notebook Tool (read-only) ─────────────── */
+
+export const SEARCH_NOTEBOOK_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "search_notebook",
+    description:
+      "Search the user's NOTEBOOK — passages they deliberately highlighted and saved from earlier answers, plus their own annotations on them. Different from search_memory: memories are short facts the system inferred or the user stated, whereas notebook entries are verbatim material the user chose to keep, often with a note explaining why it matters. Reach for this when the user refers to something they 'saved', 'clipped', 'kept' or 'noted', when they ask what they have on a topic, or when their notebook index suggests they have relevant material.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Search keywords — e.g. 'retainer overage', 'renewal likelihood', 'drone footage examples'",
+        },
+      },
+      required: ["query"],
+    },
+  },
+};
+
+/** Anthropic tool definition for search_notebook */
+const SEARCH_NOTEBOOK_TOOL: Anthropic.Tool = {
+  name: "search_notebook",
+  description: SEARCH_NOTEBOOK_OPENAI_TOOL.function.description!,
+  input_schema: {
+    ...(SEARCH_NOTEBOOK_OPENAI_TOOL.function.parameters as any),
+  },
+};
+
+/** Shared formatter so all four provider chains render hits identically. */
+export function formatNotebookResult(
+  result: { hits: { quote: string; note: string | null; type: string; notebook: string; source: string | null; date: string }[]; summary: string }
+): string {
+  if (result.hits.length === 0) return result.summary;
+  const body = result.hits
+    .map((h) => {
+      const from = h.source ? ` — from "${h.source}"` : "";
+      const note = h.note ? `\n  User's note: ${h.note}` : "";
+      return `- [${h.notebook} · ${h.type} · ${h.date}${from}]\n  "${h.quote}"${note}`;
+    })
+    .join("\n");
+  return `${result.summary}\n\n${body}\n\n(These are the user's own saved passages. Quote them accurately and say which one you are drawing on.)`;
+}
+
 /* ─────────────── Xero Finance Tool (read-only) ─────────────── */
 
 export const QUERY_XERO_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
@@ -5074,6 +5120,7 @@ async function streamAnthropic(
   }
   if (config.workspaceId && config.userId) {
     tools.push(SEARCH_MEMORY_TOOL);
+    tools.push(SEARCH_NOTEBOOK_TOOL);
   }
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_TOOL);
@@ -5140,6 +5187,7 @@ async function streamAnthropic(
   // spirals, which is what this guard was added for.
   const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
     query_xero: 8, query_engine: 8, query_meetingbrain: 6, query_drive_docs: 6,
+    search_notebook: 6,
   };
   const budgetFor = (name: string) => READ_ONLY_TOOL_BUDGET[name] ?? MAX_CALLS_PER_TOOL;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -5923,6 +5971,30 @@ async function streamAnthropic(
             is_error: true,
           });
         }
+      } else if (tool.name === "search_notebook") {
+        try {
+          const result = await searchNotebook(
+            tool.input.query,
+            config.workspaceId!,
+            config.userId!,
+            config.conversationVisibility
+          );
+          // Notebook entries are captured from earlier answers, so they are
+          // workspace content rather than third-party text — no taint flag.
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: formatNotebookResult(result),
+          });
+        } catch (err: any) {
+          console.error("[SearchNotebook] Failed:", err.message);
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: `Notebook search failed: ${err.message}`,
+            is_error: true,
+          });
+        }
       } else if (tool.name === "search_memory") {
         try {
           const result = await searchMemory(
@@ -6198,6 +6270,7 @@ async function streamXAIChatCompletions(
   // (WEB_SEARCH_OPENAI_TOOL is kept for reference but no longer added to tools)
   if (config.workspaceId && config.userId) {
     tools.push(SEARCH_MEMORY_OPENAI_TOOL);
+    tools.push(SEARCH_NOTEBOOK_OPENAI_TOOL);
   }
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
@@ -6259,6 +6332,7 @@ async function streamXAIChatCompletions(
   // spirals, which is what this guard was added for.
   const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
     query_xero: 8, query_engine: 8, query_meetingbrain: 6, query_drive_docs: 6,
+    search_notebook: 6,
   };
   const budgetFor = (name: string) => READ_ONLY_TOOL_BUDGET[name] ?? MAX_CALLS_PER_TOOL;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -6617,6 +6691,28 @@ async function streamXAIChatCompletions(
             content: `Web search failed: ${err.message}. Answer based on your existing knowledge instead.`,
           } as any);
         }
+      } else if (tc.function.name === "search_notebook") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const result = await searchNotebook(
+            input.query,
+            config.workspaceId!,
+            config.userId!,
+            config.conversationVisibility
+          );
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: formatNotebookResult(result),
+          } as any);
+        } catch (err: any) {
+          console.error("[SearchNotebook] Failed:", err.message);
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Notebook search failed: ${err.message}`,
+          } as any);
+        }
       } else if (tc.function.name === "search_memory") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -6923,6 +7019,7 @@ async function streamGemini(
   }
   if (config.workspaceId && config.userId) {
     tools.push(SEARCH_MEMORY_OPENAI_TOOL);
+    tools.push(SEARCH_NOTEBOOK_OPENAI_TOOL);
   }
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
@@ -7276,6 +7373,28 @@ async function streamGemini(
             content: `Web search failed: ${err.message}. Answer based on your existing knowledge instead, and say clearly that you could not verify with a live search.`,
           } as any);
         }
+      } else if (tc.function.name === "search_notebook") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const result = await searchNotebook(
+            input.query,
+            config.workspaceId!,
+            config.userId!,
+            config.conversationVisibility
+          );
+          geminiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: formatNotebookResult(result),
+          } as any);
+        } catch (err: any) {
+          console.error("[SearchNotebook] Failed:", err.message);
+          geminiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Notebook search failed: ${err.message}`,
+          } as any);
+        }
       } else if (tc.function.name === "search_memory") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -7493,6 +7612,7 @@ async function streamOpenAI(
   }
   if (config.workspaceId && config.userId) {
     tools.push(SEARCH_MEMORY_OPENAI_TOOL);
+    tools.push(SEARCH_NOTEBOOK_OPENAI_TOOL);
   }
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
@@ -7845,6 +7965,28 @@ async function streamOpenAI(
             role: "tool",
             tool_call_id: tc.id,
             content: `Web search failed: ${err.message}. Answer based on your existing knowledge instead, and say clearly that you could not verify with a live search.`,
+          } as any);
+        }
+      } else if (tc.function.name === "search_notebook") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const result = await searchNotebook(
+            input.query,
+            config.workspaceId!,
+            config.userId!,
+            config.conversationVisibility
+          );
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: formatNotebookResult(result),
+          } as any);
+        } catch (err: any) {
+          console.error("[SearchNotebook] Failed:", err.message);
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Notebook search failed: ${err.message}`,
           } as any);
         }
       } else if (tc.function.name === "search_memory") {

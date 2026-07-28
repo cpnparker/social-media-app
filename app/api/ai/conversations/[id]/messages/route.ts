@@ -5,6 +5,7 @@ import { checkConversationAccess } from "@/lib/ai/access";
 import { supabase } from "@/lib/supabase";
 import { createStreamingResponse, type AIMessage, type AIAttachment } from "@/lib/ai/providers";
 import { buildSystemPrompt, normalizeContextConfig, isFullDetail, type NormalizedContextConfig, type DetailLevel } from "@/lib/ai/system-prompts";
+import { notebookIndex } from "@/lib/notebook/search";
 import { fetchBlobContent } from "@/lib/ai/blob-utils";
 import { extractMemories } from "@/lib/ai/memory-extraction";
 import {
@@ -959,7 +960,19 @@ export async function POST(
       : Promise.resolve([]);
 
     // Run all in parallel
-    const [memories, role, userPrefs, ctx, appContextRows, workspaceClientIds, clientBackground] = await Promise.all([
+    // The notebook index uses the SAME audience the memory query does: in a
+    // multi-reader thread only team-shareable entries are counted, so the
+    // index never hints at the existence of private clippings.
+    const notebookIndexPromise = notebookIndex(
+      conversation.id_workspace,
+      userId,
+      isMultiReaderThread ? "team" : "private"
+    ).catch((e: any) => {
+      console.warn("[Notebook] index failed:", e?.message);
+      return null;
+    });
+
+    const [memories, role, userPrefs, ctx, appContextRows, workspaceClientIds, clientBackground, nbIndex] = await Promise.all([
       memoryPromise,
       rolePromise,
       userPrefsPromise,
@@ -967,6 +980,7 @@ export async function POST(
       appContextPromise,
       clientIdsPromise,
       clientBackgroundPromise,
+      notebookIndexPromise,
     ]);
 
     const { clientContext, contentDetail, clientIdeas, workspaceSummary } = ctx;
@@ -1072,6 +1086,7 @@ export async function POST(
 
 
     let systemPrompt = buildSystemPrompt({
+      notebookIndex: nbIndex,
       workspaceConfig,
       clientContext,
       contentDetail,
