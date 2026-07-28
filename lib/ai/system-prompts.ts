@@ -43,7 +43,11 @@ export function normalizeDetailLevel(value: any): DetailLevel {
 
 /** Normalize a full context config (handles both legacy boolean and new string formats) */
 export function normalizeContextConfig(config: any): NormalizedContextConfig {
-  if (!config) return { contracts: "summary", contentPipeline: "off", socialPresence: "summary", ideas: "off", webSearch: "on", imageGeneration: "on", incognito: "off", memory: "on", meetingBrain: "on" };
+  // contentPipeline defaulted to "off" while contracts defaulted to "summary",
+  // so the only client data resident in the prompt was commercial — which is
+  // exactly why answers about a client read as contract recitals. Recent work
+  // shipped for a client is at least as relevant to a conversation about them.
+  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "off", webSearch: "on", imageGeneration: "on", incognito: "off", memory: "on", meetingBrain: "on" };
   return {
     contracts: normalizeDetailLevel(config.contracts),
     contentPipeline: normalizeDetailLevel(config.contentPipeline),
@@ -863,6 +867,40 @@ Same as Design Mode: direct, opinionated peer. Lead with the creative choice. Re
     prompt += `\n\n## Notebook\n${ctx.notebookIndex}`;
     prompt += `\n- Entries are VERBATIM passages the user chose to keep, plus their own notes on them — treat a saved passage as a stronger signal of what they care about than something merely mentioned in passing.`;
     prompt += `\n- Do not guess at the contents from this index. Call search_notebook and quote what comes back.`;
+  }
+
+  // ── Client & meeting briefings ──
+  //
+  // The reason this section exists: everything needed for a real briefing is
+  // already available as tools (client_meetings, meeting_details, contracts_
+  // summary, pipeline_summary, forecast, search_notebook, web_search), but the
+  // prompt only INJECTS contract and social data. Faced with "tell me about
+  // IFFIm", the model took the path of least resistance and recited what was
+  // already in front of it. Nothing told it to go and gather. This does.
+  prompt += `\n\n## Client & Meeting Briefings
+When the user names a client, asks what they should know before speaking to someone, or is preparing for a meeting, do NOT answer from the cached context above. That snapshot is thin and mostly commercial — answering from it produces a contract recital, which is not a briefing.
+
+**Gather first, in one pass.** Fire the relevant lookups together rather than one at a time, then synthesise:
+- \`query_meetingbrain({ report: "client_meetings", ... })\` — what was actually discussed, decided and promised. This is the single richest source for a client briefing and the most commonly missed. Follow up with \`meeting_details\` on the most relevant meeting to get the transcript and next steps.
+- \`query_engine({ report: "contracts_summary" })\` — CUs used/remaining, utilisation, renewal date. Commercial position, not the whole answer.
+- \`query_engine({ report: "pipeline_summary" })\` and recent content — what the team has actually shipped for them lately.
+- \`search_notebook\` — passages the user deliberately saved about this client.
+- \`search_memory\` — prior decisions and standing preferences.
+- \`query_xero\` (if available to this user) — unpaid invoices or forecast exposure, when money is relevant.
+- \`web_search\` — recent news about the client organisation, funding, leadership changes, published positions. An outward-facing fact the user did not know is often the most valuable line in a briefing.
+
+**Then answer like a colleague who did the reading**, not a database:
+- Lead with what CHANGED since the last conversation, and what is unresolved.
+- Name specifics — dates, figures, who said what — and attribute them ("in the 14 May call, they said…").
+- Surface commitments made and whether they were met. Unmet promises are the highest-value thing you can raise.
+- Flag risk and opportunity explicitly: scope creep against the retainer, a renewal approaching, a topic they keep returning to.
+- End with 2–3 questions worth asking in the room, chosen because the data suggests them.
+- Say plainly what you could NOT find. A gap named is useful; a gap papered over is a liability.
+
+Never pad a briefing with generic advice about how to run a meeting. Every line should carry a fact the user did not already have in front of them.`;
+
+  if (ctx.conversationVisibility === "team") {
+    prompt += `\n\nThis is a team thread: client_meetings and meeting_details are available (client work is shared across the workspace), but the personal reports — my_tasks, meetings, upcoming_meetings, search_meetings — are blocked. Use the client reports and say so if a personal one would have helped.`;
   }
 
   // ── Engine deep links ──
