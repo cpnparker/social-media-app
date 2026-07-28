@@ -1,13 +1,15 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { User, Bot, FileText, ExternalLink, ChevronDown, ChevronUp, ShieldCheck, Copy, Check, RotateCcw, Pencil, X, ThumbsUp, ThumbsDown, CalendarClock } from "lucide-react";
+import { User, Bot, FileText, ExternalLink, ChevronDown, ChevronUp, ShieldCheck, Copy, Check, RotateCcw, Pencil, X, ThumbsUp, ThumbsDown, CalendarClock, NotebookPen, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import DOMPurify from "dompurify";
 import type { Attachment } from "@/lib/types/ai";
 import { getModelLabel } from "@/lib/ai/models";
 import ScheduledProposalCard, { type ScheduledProposal } from "./ScheduledProposalCard";
+import { toast } from "sonner";
+import { saveToNotebook, normaliseSelection } from "@/lib/notebook/client";
 
 interface MessageBubbleProps {
   role: "user" | "assistant" | "system";
@@ -26,6 +28,10 @@ interface MessageBubbleProps {
   onMakeRecurring?: () => void;
   /** Needed by embedded scheduled-proposal confirmation cards. */
   workspaceId?: string | null;
+  /** Identity + provenance for notebook captures and deep links. */
+  messageId?: string;
+  conversationId?: string;
+  conversationTitle?: string | null;
 }
 
 interface ParsedSource {
@@ -50,6 +56,9 @@ export default function MessageBubble({
   onRate,
   onMakeRecurring,
   workspaceId,
+  messageId,
+  conversationId,
+  conversationTitle,
 }: MessageBubbleProps) {
   const isUser = role === "user";
   const [copied, setCopied] = useState(false);
@@ -77,6 +86,61 @@ export default function MessageBubble({
       img.addEventListener("error", handleError, { once: false });
     });
   }, [content, isStreaming]);
+  /**
+   * Highlight → "Save to notebook".
+   *
+   * Listens for a selection that lies inside THIS bubble and shows a chip
+   * anchored to it. Native selection works fine over the sanitized innerHTML;
+   * what needs care is the teardown — the chip must vanish the moment the
+   * selection collapses, or it hangs over the next thing the user reads.
+   */
+  const [selection, setSelection] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [savingClip, setSavingClip] = useState(false);
+
+  useEffect(() => {
+    if (!messageId || !workspaceId) return;
+    const onSelectionChange = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) { setSelection(null); return; }
+      const range = sel.getRangeAt(0);
+      const host = contentRef.current;
+      // Only claim a selection that both starts and ends inside this bubble —
+      // a drag across several messages belongs to none of them.
+      if (!host || !host.contains(range.startContainer) || !host.contains(range.endContainer)) {
+        setSelection(null);
+        return;
+      }
+      const text = normaliseSelection(sel.toString());
+      if (!text) { setSelection(null); return; }
+      const rect = range.getBoundingClientRect();
+      if (!rect.width && !rect.height) { setSelection(null); return; }
+      setSelection({ text, x: rect.left + rect.width / 2, y: rect.top });
+    };
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => document.removeEventListener("selectionchange", onSelectionChange);
+  }, [messageId, workspaceId]);
+
+  const clip = async (text: string, type: "highlight" | "answer" | "prompt") => {
+    if (!workspaceId) return;
+    setSavingClip(true);
+    try {
+      const entry = await saveToNotebook({
+        workspaceId,
+        quote: text,
+        type,
+        conversationId: conversationId || null,
+        messageId: messageId || null,
+      });
+      if (entry) {
+        toast.success("Saved to notebook");
+        setSelection(null);
+        window.getSelection()?.removeAllRanges();
+      }
+    } finally {
+      setSavingClip(false);
+    }
+  };
+
   const isFactCheck = !isUser && content.includes("## 🔍 Fact Check");
   const [sourcesExpanded, setSourcesExpanded] = useState(true);
   const [hoveredSource, setHoveredSource] = useState<number | null>(null);
@@ -115,8 +179,9 @@ export default function MessageBubble({
   return (
     <div
       ref={contentRef}
+      id={messageId ? `msg-${messageId}` : undefined}
       className={cn(
-        "flex gap-2 md:gap-3 px-3 md:px-4 py-3",
+        "flex gap-2 md:gap-3 px-3 md:px-4 py-3 rounded-xl transition-colors",
         isUser ? "justify-end" : "justify-start"
       )}
     >
@@ -430,6 +495,17 @@ export default function MessageBubble({
                 <span>Make recurring</span>
               </button>
             )}
+            {messageId && workspaceId && (
+              <button
+                onClick={() => clip(cleanContent, isUser ? "prompt" : "answer")}
+                disabled={savingClip}
+                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50 disabled:opacity-50"
+                title={isUser ? "Save this prompt to your notebook" : "Save this answer to your notebook"}
+              >
+                {savingClip ? <Loader2 className="h-3 w-3 animate-spin" /> : <NotebookPen className="h-3 w-3" />}
+                <span>Notebook</span>
+              </button>
+            )}
             {onRate && (
               <>
                 <button
@@ -467,6 +543,30 @@ export default function MessageBubble({
               {userName.split(" ")[0]}
             </span>
           )}
+        </div>
+      )}
+
+      {/* Highlight → save. Fixed-positioned from the selection rect, so it
+          tracks the text rather than the bubble. onMouseDown-preventDefault
+          keeps the click from collapsing the selection before it is read. */}
+      {selection && (
+        <div
+          className="fixed z-50"
+          style={{
+            left: Math.min(Math.max(selection.x, 90), (typeof window !== "undefined" ? window.innerWidth : 0) - 90),
+            top: selection.y - 8,
+            transform: "translate(-50%, -100%)",
+          }}
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          <button
+            onClick={() => clip(selection.text, "highlight")}
+            disabled={savingClip}
+            className="flex items-center gap-1.5 rounded-lg bg-foreground text-background shadow-lg px-2.5 py-1.5 text-xs font-medium hover:bg-foreground/90 transition-colors disabled:opacity-60"
+          >
+            {savingClip ? <Loader2 className="h-3 w-3 animate-spin" /> : <NotebookPen className="h-3 w-3" />}
+            Save to notebook
+          </button>
         </div>
       )}
     </div>

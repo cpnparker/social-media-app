@@ -32,6 +32,10 @@ interface ChatInputProps {
 
 export interface ChatInputHandle {
   uploadFiles: (files: File[]) => Promise<void>;
+  /** Put text in the box WITHOUT sending — the notebook's "ask about this"
+   *  seeds a question for the user to finish. Distinct from ChatPanel's
+   *  initialMessage, which auto-sends. */
+  seedText: (text: string) => void;
 }
 
 const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
@@ -93,8 +97,21 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       setUploading(false);
     }, []);
 
-    // Expose uploadFiles to parent via ref
-    useImperativeHandle(ref, () => ({ uploadFiles }), [uploadFiles]);
+    // Expose uploadFiles + seedText to parent via ref
+    const seedText = useCallback((text: string) => {
+      // Append rather than replace: seeding must never eat something the user
+      // was midway through typing.
+      setValue((prev) => (prev.trim() ? `${prev.replace(/\s+$/, "")}\n\n${text}` : text));
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.focus();
+        el.selectionStart = el.selectionEnd = el.value.length;
+        el.style.height = "auto";
+        el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+      });
+    }, []);
+    useImperativeHandle(ref, () => ({ uploadFiles, seedText }), [uploadFiles, seedText]);
 
     const handleSubmit = () => {
       const trimmed = value.trim();

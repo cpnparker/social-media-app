@@ -91,6 +91,9 @@ interface ChatPanelProps {
   onCustomerChange?: (customerId: string | null) => void;
   isAdmin?: boolean;
   headerExtra?: React.ReactNode;
+  /** Text to drop into the composer WITHOUT sending (notebook "ask about
+   *  this"). The nonce lets the same text be seeded twice. */
+  seedText?: { text: string; nonce: number } | null;
   /** Increment to quietly refetch messages (no loading spinner) — used by
    *  voice mode to surface transcript turns in the thread live. */
   refreshSignal?: number;
@@ -119,6 +122,7 @@ export default function ChatPanel({
   onCustomerChange,
   isAdmin,
   headerExtra,
+  seedText,
   onMakeRecurring,
   refreshSignal,
   inputEndSlot,
@@ -166,6 +170,14 @@ export default function ChatPanel({
   const [userScrolledUp, setUserScrolledUp] = useState(false);
   const initialMessageSent = useRef(false);
   const chatInputRef = useRef<ChatInputHandle>(null);
+  // Seeded text goes into the box for the user to finish — unlike
+  // initialMessage, which is sent automatically.
+  const seededNonce = useRef<number | null>(null);
+  useEffect(() => {
+    if (!seedText || seedText.nonce === seededNonce.current) return;
+    seededNonce.current = seedText.nonce;
+    chatInputRef.current?.seedText(seedText.text);
+  }, [seedText]);
   const [isDragging, setIsDragging] = useState(false);
   const dragCounterRef = useRef(0);
 
@@ -1362,6 +1374,9 @@ export default function ChatPanel({
               return (
                 <MessageBubble
                   key={msg.id}
+                  messageId={msg.id}
+                  conversationId={conversationId}
+                  conversationTitle={conversation?.title || null}
                   role={msg.role}
                   content={msg.content}
                   model={msg.model}

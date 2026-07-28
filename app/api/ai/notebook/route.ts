@@ -65,6 +65,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       notebooks: rows.map(mapNotebook),
       entries: allowed.map(mapNotebookEntry),
+      // The panel needs to know which entries are the caller's own (only the
+      // author may annotate, delete or promote). Returning it here avoids
+      // wiring a session dependency into the panel just to learn its own id.
+      currentUserId: userId,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

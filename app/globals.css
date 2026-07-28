@@ -484,6 +484,16 @@
   border-bottom: none;
 }
 
+/* Deep link from a notebook entry back to its source message: a brief tint
+   so the eye lands on the right bubble after the scroll, then fades out. */
+@keyframes ai-flash-fade {
+  0%, 55% { background-color: hsl(var(--accent)); }
+  100%    { background-color: transparent; }
+}
+.ai-flash {
+  animation: ai-flash-fade 1.8s ease-out forwards;
+}
+
 /* ── Figures ──────────────────────────────────────────────────────────
    A forecast table is a dozen scenarios wide. Left-aligned proportional
    digits make columns impossible to compare down the page, so numeric

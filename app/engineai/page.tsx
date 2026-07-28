@@ -93,6 +93,7 @@ import PersonaliseDialog from "@/components/ai-writer/PersonaliseDialog";
 import ClientContextDialog from "@/components/ai-writer/ClientContextDialog";
 import LiveLauncher, { openLiveWindow, useLiveSession } from "@/components/meeting-mode/LiveLauncher";
 import { useInstallPrompt } from "@/lib/use-install-prompt";
+import NotebookPanel from "@/components/notebook/NotebookPanel";
 import { signOut } from "next-auth/react";
 import { SectionRailDesktop, SectionRailMobile, useRailItems } from "@/components/layout/SectionRail";
 import { upload as blobUpload } from "@vercel/blob/client";
@@ -149,6 +150,7 @@ function EngineAIContent() {
   const wakeRef = useRef<WakeModeHandle>(null);
   const [wakeUi, setWakeUi] = useState({ armed: false, listening: false, loading: false });
   const liveInMeeting = useLiveSession();
+  const [seedText, setSeedText] = useState<{ text: string; nonce: number } | null>(null);
   const { canInstall, promptInstall } = useInstallPrompt();
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -869,6 +871,29 @@ function EngineAIContent() {
     setInitialAttachments(undefined);
     setSidebarOpen(false);
   };
+
+  /**
+   * Jump from a notebook entry to the message it was captured from.
+   * The thread may need to load first, so poll briefly for the anchor rather
+   * than assuming it is already mounted; give up quietly if the message has
+   * since been deleted (id_message deliberately has no foreign key).
+   */
+  const jumpToSource = useCallback((conversationId: string, messageId: string | null) => {
+    if (conversationId !== selectedId) setSelectedId(conversationId);
+    if (!messageId) return;
+    let tries = 0;
+    const find = () => {
+      const el = document.getElementById(`msg-${messageId}`);
+      if (!el) {
+        if (tries++ < 40) setTimeout(find, 100); // ~4s, covers a thread fetch
+        return;
+      }
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("ai-flash");
+      setTimeout(() => el.classList.remove("ai-flash"), 1800);
+    };
+    setTimeout(find, 60);
+  }, [selectedId]);
 
   // Get the currently selected conversation object
   const selectedConversation = selectedId
@@ -1701,6 +1726,7 @@ function EngineAIContent() {
               selectedCustomer={selectedCustomer ? { id: String(selectedCustomer.id), name: selectedCustomer.name } : null}
               onCustomerChange={(id) => customerCtx?.setSelectedCustomerId(id)}
               onMakeRecurring={(seed) => { setScheduledPrefill(seed); setScheduledOpen(true); }}
+              seedText={seedText}
               inputEndSlot={
                 <button
                   onClick={() => { setVoiceWakeSession(false); setVoiceOpen(true); }}
@@ -2426,6 +2452,20 @@ function EngineAIContent() {
           </div>
         )}
       </div>
+
+      {/* ─── Notebook (docked right, collapsed by default) ─── */}
+      <NotebookPanel
+        workspaceId={workspaceId}
+        onJumpToSource={jumpToSource}
+        onAskAbout={(entry) => {
+          // Seed the composer rather than sending: the user decides what to ask
+          // about the clipping.
+          const seed = `About this from my notebook:\n\n> ${entry.quote.slice(0, 1200)}\n\n`;
+          if (selectedId) setSeedText({ text: seed, nonce: Date.now() });
+          else setHomeInput((prev) => (prev.trim() ? `${prev}\n\n${seed}` : seed));
+          toast.info("Added to the message box — finish your question");
+        }}
+      />
 
       {/* Data Privacy Modal */}
       <Dialog open={privacyModalOpen} onOpenChange={setPrivacyModalOpen}>
