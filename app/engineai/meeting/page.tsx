@@ -1372,7 +1372,7 @@ function cardSignature(card: LiveCard): string {
             title={title} setTitle={setTitle}
             context={context} setContext={setContext}
             linkedChat={linkedChat} onUnlinkChat={() => { linkedContextRef.current = ""; setLinkedChat(null); }}
-            mbBrief={mbBrief} onUnlinkMb={() => { mbBriefRef.current = null; setMbBrief(null); }}
+            mbBrief={mbBrief} onUnlinkMb={() => { mbBriefRef.current = null; mbMeetingIdRef.current = null; setMbBrief(null); }}
             devices={devices} deviceId={deviceId} setDeviceId={setDeviceId}
             attested={attested} setAttested={setAttested}
             starting={starting}

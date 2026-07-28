@@ -250,6 +250,14 @@ function EngineAIContent() {
       const seed = title
         ? `Brief me on the meeting "${title}" — pull it up with query_meetingbrain (report: meeting_details, meeting_id: ${mbId}). What was decided, what did we commit to, and what's still open?`
         : `Brief me on the MeetingBrain meeting with id ${mbId} — use query_meetingbrain (report: meeting_details). What was decided, what did we commit to, and what's still open?`;
+      // FORCE the audience this was fetched under. mb-context reads the
+      // meeting with visibility "private"; if the Team tab happens to be
+      // active, handleQuickSend would create a TEAM conversation and the seed
+      // — which instructs the model to call meeting_details — would pull the
+      // full client transcript into a workspace-readable thread. handleVoiceStart
+      // hardcodes "private" for exactly this reason; this path must match.
+      setTab("private");
+      setIncognitoMode(false);
       setHomeInput((prev) => (prev.trim() ? prev : seed));
       toast.info(title ? `Loaded "${title}" — press send for the briefing` : "Meeting loaded — press send for the briefing");
       // Drop ?mb= so a refresh doesn't re-seed over what the user has typed.

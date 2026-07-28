@@ -214,6 +214,9 @@ export async function POST(req: NextRequest) {
               mb_tasks: Array.isArray(d.tasks)
                 ? d.tasks.slice(0, 6).map((t: any) => String(t?.title || "").slice(0, 160)).filter(Boolean)
                 : [],
+              // Marks this row as MeetingBrain-derived so the persistence
+              // step below can refuse to write it to disk.
+              _mbDerived: true,
             }, ...meetingRows];
           }
         } catch (e: any) {
@@ -234,6 +237,7 @@ export async function POST(req: NextRequest) {
               attendees: m.attendees_external || null,
               tasks: Array.isArray(m.mb_tasks) ? m.mb_tasks : undefined,
             })),
+            _mbDerived: meetingRows.some((m: any) => m._mbDerived) || undefined,
           },
           receipt: {
             record_type: "ai_client_meetings",
@@ -255,7 +259,17 @@ export async function POST(req: NextRequest) {
             kind_card: c.kind,
             source_card: "deck",
             name_title: c.title,
-            document_body: c.body,
+            // MeetingBrain-derived bodies are NOT written to disk. The card is
+            // still returned to the host in this response and shown live — but
+            // persisting it put MeetingBrain's summary, next steps and task
+            // titles into intelligence.ai_meeting_cards, where nothing deletes
+            // them: "Discard" only flips status_session, so the user was told
+            // "nothing was saved" while a copy of a meeting record stayed on
+            // disk, outside MeetingBrain's own retention controls. A stub keeps
+            // the trigger log honest without keeping the content.
+            document_body: (c.body as any)?._mbDerived
+              ? { mb: true, note: "MeetingBrain-derived — shown live, deliberately not persisted" }
+              : c.body,
             document_receipt: c.receipt,
             state_card: "compiled",
           }))
