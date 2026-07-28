@@ -39,11 +39,20 @@ export async function POST(req: NextRequest) {
 
     // The session must be this user's own Live session. consent_attested_by is
     // the host gate used by every other meeting route.
-    const { data: ms } = await intelligenceDb
+    // date_STARTED, not date_created — naming a column that does not exist
+    // makes PostgREST return an ERROR with null data, which read here as
+    // "session not found" and sent every save down the stale-session path.
+    const { data: ms, error: msErr } = await intelligenceDb
       .from("ai_meeting_sessions")
-      .select("id_session, id_workspace, name_title, mb_meeting_id, consent_attested_by, date_created")
+      .select("id_session, id_workspace, name_title, mb_meeting_id, consent_attested_by, date_started")
       .eq("id_session", sessionId)
       .maybeSingle();
+    // Check the ERROR explicitly. Inferring "not found" from null data hides
+    // schema mistakes behind a plausible user-facing message.
+    if (msErr) {
+      console.error("[ExportToMB] session lookup failed:", msErr.message);
+      return NextResponse.json({ error: `Could not load the session: ${msErr.message}` }, { status: 500 });
+    }
     // Distinguish the two failures. A bare "Not found" was untraceable: the
     // most likely cause in practice is a STALE sessionId restored from the
     // crash buffer, pointing at a session that no longer exists — which looks
@@ -140,7 +149,7 @@ export async function POST(req: NextRequest) {
           user_id: mbUser.id,
           calendar_event_id: `engineai-live-${sessionId}`,
           meeting_title: ms.name_title || "EngineAI Live meeting",
-          meeting_date: ms.date_created || new Date().toISOString(),
+          meeting_date: ms.date_started || new Date().toISOString(),
           summary: includeSummary && summary ? String(summary).slice(0, 20000) : null,
           local_transcript: transcriptBody,
           content_hash: transcriptBody ? createHash("sha256").update(transcriptBody).digest("hex") : null,

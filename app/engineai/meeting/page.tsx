@@ -305,10 +305,12 @@ export default function MeetingLivePage() {
       if (meeting.state === "processed") {
         toast.success("Loaded this meeting's notes from MeetingBrain");
       } else if (previous) {
-        toast.success(`MeetingBrain has nothing for this meeting yet — loaded the previous one instead`);
-      } else {
-        toast.info("MeetingBrain has no notes for this meeting yet — it processes after the meeting ends");
+        toast.success("Loaded the previous meeting's notes from MeetingBrain");
       }
+      // No toast for the empty case. The ⚡ button only exists BEFORE a meeting
+      // is processed, so "no notes yet" is the normal state on every single
+      // launch — announcing it every time is nagging about the expected. The
+      // panel already says it, in place, where it can be read or ignored.
     } catch {
       toast.error("Could not load the meeting from MeetingBrain");
     }
