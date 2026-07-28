@@ -668,9 +668,30 @@ function convertMarkdownTables(html: string, sources: ParsedSource[]): string {
             c > 0 && vals.length > 0 && vals.filter(isNumericCell).length >= Math.ceil(vals.length / 2);
         }
 
-        let tableHtml = '<div class="ai-table-wrap"><table class="ai-table"><thead><tr>';
+        // Only a table with real figures gets the content-sized treatment; a
+        // table of prose must wrap instead of scrolling sideways.
+        const hasFigures = numericCol.some(Boolean);
+
+        // When one column holds long prose it takes the slack, and the short
+        // label columns beside it get squeezed until "Audit Committee Chair"
+        // breaks over three lines. Keep short columns on one line so the long
+        // one absorbs the wrapping — but only when there IS a long column to
+        // absorb it, or a wide table of medium cells would overflow.
+        const colLen: number[] = [];
+        for (let c = 0; c < colCount; c++) {
+          colLen[c] = Math.max(
+            plainCell(headerCells[c] ?? "").length,
+            ...dataCells.map((r) => plainCell(r[c] ?? "").length),
+            0
+          );
+        }
+        const hasLongCol = colLen.some((l) => l > 40);
+        const tightCol = colLen.map((l) => hasLongCol && l <= 24);
+        let tableHtml =
+          `<div class="ai-table-wrap"><table class="ai-table${hasFigures ? " ai-table-figures" : ""}"><thead><tr>`;
         headerCells.forEach((cell, c) => {
-          tableHtml += `<th${numericCol[c] ? ' class="ai-num"' : ""}>${applyInlineFormatting(cell, sources)}</th>`;
+          const hc = [numericCol[c] ? "ai-num" : "", tightCol[c] ? "ai-tight" : ""].filter(Boolean).join(" ");
+          tableHtml += `<th${hc ? ` class="${hc}"` : ""}>${applyInlineFormatting(cell, sources)}</th>`;
         });
         tableHtml += "</tr></thead><tbody>";
 
@@ -681,6 +702,7 @@ function convertMarkdownTables(html: string, sources: ParsedSource[]): string {
             const bare = plainCell(cell);
             const cls = [
               numericCol[c] ? "ai-num" : "",
+              tightCol[c] ? "ai-tight" : "",
               numericCol[c] && isNumericCell(bare) && /^[-(]/.test(bare) ? "ai-neg" : "",
             ].filter(Boolean).join(" ");
             tableHtml += `<td${cls ? ` class="${cls}"` : ""}>${applyInlineFormatting(cell, sources)}</td>`;

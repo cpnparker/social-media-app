@@ -444,13 +444,24 @@
   border: 1px solid hsl(var(--border));
 }
 .ai-response .ai-table {
-  /* max-content + min-width:100% lets a wide table size to its content and
-     scroll, instead of squeezing every column until labels wrap ("Gross
-     margin %" broke over two lines). Narrow tables still fill the column. */
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
   font-size: 0.9375rem;
   border-collapse: collapse;
+}
+/* Only tables that actually hold figures size to their content and scroll —
+   comparing numbers needs unbroken columns. Applying that to a prose table
+   made a long description column one endless line the reader had to scroll
+   for every row, so those keep width:100% and wrap normally. */
+.ai-response .ai-table-figures {
+  width: max-content;
+  min-width: 100%;
+}
+/* Even in a figures table, a free-text column must wrap rather than stretch
+   the whole grid off-screen. */
+.ai-response .ai-table-figures td:not(.ai-num),
+.ai-response .ai-table-figures th:not(.ai-num) {
+  max-width: 24rem;
+  white-space: normal;
 }
 .ai-response .ai-table th {
   background: hsl(var(--muted));
@@ -487,6 +498,14 @@
 }
 .ai-response .ai-table td.ai-neg {
   color: hsl(var(--ai-negative));
+}
+
+/* Short label columns sitting next to a long prose column: hold them on one
+   line so the prose column takes the wrapping, instead of "Audit Committee
+   Chair" breaking over three lines while the description has room to spare. */
+.ai-response .ai-table th.ai-tight,
+.ai-response .ai-table td.ai-tight {
+  white-space: nowrap;
 }
 
 /* Zebra: opaque, so the pinned first column can sit on top of it. */
