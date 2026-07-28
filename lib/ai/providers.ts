@@ -1465,7 +1465,7 @@ export const LOOKUP_CLIENT_CONTEXT_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool =
   function: {
     name: "lookup_client_context",
     description:
-      "Look up a client's full context including brand guidelines, AI-processed asset summaries, recent client meetings, and active contracts. Use this when the user asks about a specific client in the General channel or needs client-specific context that isn't already in the conversation.",
+      "START HERE whenever the user names a client, asks what a client has been up to, or is preparing to speak to one. Returns the client's identity and Engine id, brand background, AI-processed asset summaries, recent client meetings and active contracts in a single call — the fastest route to a grounded answer about a client, and the right first step before fanning out to query_meetingbrain (what was said), query_engine (commercial position) or search_notebook. Fuzzy-matches the name, so it also resolves a client the user spelled differently.",
     parameters: {
       type: "object",
       properties: {
@@ -1522,6 +1522,10 @@ export async function lookupClientContext(
   const client = clients[0]; // Best match
   const parts: string[] = [];
   parts.push(`# Client: ${client.name_client}`);
+  // Hand back the id the follow-up reports need. Without it, scoping a
+  // query_engine report to this client costs an extra round just to rediscover
+  // the number — and a round is the scarce resource in a briefing, not calls.
+  parts.push(`Engine client_id: ${client.id_client} — pass this as client_id to query_engine reports (contracts_summary, pipeline_summary, assigned_tasks) to scope them to this client.`);
   if (fuzzyMatched) {
     parts.push(`(Matched "${clientName}" approximately to registered client "${client.name_client}" — the name was probably transcribed with a different spelling. Use "${client.name_client}" from now on.)`);
   }

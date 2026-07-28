@@ -880,7 +880,7 @@ Same as Design Mode: direct, opinionated peer. Lead with the creative choice. Re
   prompt += `\n\n## Client & Meeting Briefings
 When the user names a client, asks what they should know before speaking to someone, or is preparing for a meeting, do NOT answer from the cached context above. That snapshot is thin and mostly commercial — answering from it produces a contract recital, which is not a briefing.
 
-**Gather first, in one pass.** Fire the relevant lookups together rather than one at a time, then synthesise:
+**Gather first, in one pass.** Start with \`lookup_client_context({ client_name })\` — it resolves the client (fuzzy-matching a misspelled name), returns brand background, recent meetings and contracts in a single call, and hands back the Engine \`client_id\` you should pass to the reports below so they come back scoped rather than workspace-wide. Then fire the rest together rather than one at a time, and synthesise:
 - \`query_meetingbrain({ report: "client_meetings", ... })\` — what was actually discussed, decided and promised. This is the single richest source for a client briefing and the most commonly missed. Follow up with \`meeting_details\` on the most relevant meeting to get the transcript and next steps.
 - \`query_engine({ report: "contracts_summary" })\` — CUs used/remaining, utilisation, renewal date. Commercial position, not the whole answer.
 - \`query_engine({ report: "pipeline_summary" })\` and recent content — what the team has actually shipped for them lately.
@@ -1054,8 +1054,29 @@ When a client is selected, combine tools for deeper, more useful answers:
   }
 
   // ── Closing instruction ──
+  //
+  // This used to claim "full context about X's contracts, content pipeline,
+  // social presence, and ideas … Never ask for information you already have."
+  // It was false — `ideas` defaults to off and is never even fetched, and
+  // content pipeline was off until recently — and because it is the LAST
+  // substantive line before the user's question, it licensed exactly the
+  // behaviour reported: recite the resident commercial data, retrieve nothing.
+  // It also flatly contradicted the Client & Meeting Briefings section above.
+  // Now it enumerates only what was actually rendered, and names what wasn't.
   if (clientContext || contentDetail) {
-    prompt += `\n\n---\nYou have full context about ${clientContext ? `${clientContext.name}'s contracts, content pipeline, social presence, and ideas` : "this content piece"}. When the user refers to "this client" or "this content", use the data above. Never ask for information you already have.`;
+    if (clientContext) {
+      const have: string[] = ["contracts"];
+      if ((ctx.contextConfig?.contentPipeline || "summary") !== "off") have.push("content pipeline");
+      if ((ctx.contextConfig?.socialPresence || "summary") !== "off") have.push("social presence");
+      if ((ctx.contextConfig?.ideas || "summary") !== "off") have.push("ideas");
+      if (ctx.clientBackground?.document_context) have.push("brand background");
+
+      prompt += `\n\n---\nFor ${clientContext.name} the context above covers ${have.join(", ")} — and nothing else. It is a commercial and production snapshot, NOT a relationship history.`;
+      prompt += `\n\nIt does NOT contain: what was said in meetings, decisions taken, commitments either side made, open action items, invoices or forecast exposure, saved notebook passages, or anything happening at ${clientContext.name} in the wider world. If the question touches any of those — and "tell me about them", "how are they doing" and "prep me" all do — retrieve before answering. Reciting the snapshot at someone preparing for a conversation is the failure mode to avoid.`;
+      prompt += `\n\nWhen the user says "this client", they mean ${clientContext.name}; don't ask which. Use the resident figures directly rather than re-fetching them.`;
+    } else {
+      prompt += `\n\n---\nYou have the full detail of this content piece above. When the user refers to "this content", use the data above rather than asking for it again.`;
+    }
   }
 
   // ── Memory search tool ──

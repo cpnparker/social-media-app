@@ -44,8 +44,14 @@ function isEmojiOnly(text: string): boolean {
 }
 const EDITING = /^(make |change |edit |update |modify |adjust |tweak |fix |correct |improve )(it |this |that |the )?(to be |to |so it |more |less )?/i;
 
-// Data keywords that prevent conversational classification
-const DATA_KEYWORDS = /\b(contract|client|content|pipeline|social|meeting|task|CU|budget|report|data|metrics|performance|search|find|look up|web|price|cost|news|compare)\b/i;
+// Data keywords that prevent conversational classification.
+//
+// "Update me on IFFIm" used to fall through here: the EDITING regex above
+// matches a leading "update ", nothing in the sentence was a data keyword (a
+// client's NAME isn't one), so it was classified as a text-editing request and
+// reached the model with no mandated tool calls at all. The briefing verbs
+// below close that, along with "account" and "brief".
+const DATA_KEYWORDS = /\b(contract|client|account|content|pipeline|social|meeting|task|CU|budget|report|data|metrics|performance|search|find|look up|web|price|cost|news|compare|brief|briefing|prep|prepare|status|update on|catch me up|where are we|up to speed)\b/i;
 
 // Step 2: Explicit web search
 const WEB_EXPLICIT = /\b(search the web|search online|google it|look up online|web search|search for me|find online|look it up online|browse the web)\b/i;
@@ -117,7 +123,16 @@ function hasDataKeywords(text: string): boolean {
 function generateHints(route: Omit<QueryRoute, "hints">): string[] {
   const hints: string[] = [];
   if (route.suggestEngine) {
-    hints.push("This query likely involves workspace data — consider using query_engine to look up contracts, content, clients, or performance metrics.");
+    // This hint is promoted to a MUST-call list in the chat route, so whatever
+    // it names is the only thing guaranteed to be retrieved. Naming only
+    // query_engine — and describing it contracts-first — is a large part of
+    // why answers about a client came back as contract recitals.
+    hints.push(
+      "This query likely involves workspace data — use query_engine (contracts_summary, pipeline_summary, assigned_tasks, social performance)."
+    );
+    hints.push(
+      "If the question is about a specific CLIENT, or is preparing the user to speak to one: call lookup_client_context(client_name) FIRST for identity, brand background and recent meetings, then fan out IN THE SAME ROUND — query_meetingbrain({report:'client_meetings'}) for what was actually said and promised, query_engine({report:'contracts_summary'}) for the commercial position, and search_notebook for anything the user saved about them. Commercial figures alone are not an answer to a question about a client."
+    );
   }
   if (route.suggestMemory) {
     hints.push("The user may be referencing something from a past conversation — consider using search_memory to find relevant context.");
