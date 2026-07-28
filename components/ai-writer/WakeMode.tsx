@@ -14,7 +14,7 @@
  * Multi-tab safe: a BroadcastChannel lock ensures only one tab arms.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { AudioLines, Loader2, ShieldCheck, X, Settings2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -44,9 +44,23 @@ interface WakeModeProps {
   /** Called when the user disarms while a conversation is open — the
    *  conversation must end too (turning Orac off means OFF, like a speaker). */
   onEndConversation?: () => void;
+  /** Mirror the arm/listen state outward so a header control can reflect it.
+   *  The floating pill is hidden on mobile (it collided with the composer's
+   *  send button), so the page needs its own read on the state. */
+  onStateChange?: (s: { armed: boolean; listening: boolean; loading: boolean }) => void;
 }
 
-export default function WakeMode({ onWake, engaged, onEndConversation }: WakeModeProps) {
+/** Lets the page drive Orac from elsewhere (the mobile header) without
+ *  unmounting this component — the wake engine lives in here, so it has to
+ *  stay mounted regardless of where the button is. */
+export interface WakeModeHandle {
+  toggle: () => void;
+}
+
+const WakeMode = forwardRef<WakeModeHandle, WakeModeProps>(function WakeMode(
+  { onWake, engaged, onEndConversation, onStateChange },
+  ref
+) {
   const [armed, setArmed] = useState(false);
   const [state, setState] = useState<WakeDetectorState>("stopped");
   const [progress, setProgress] = useState(0);
@@ -275,10 +289,19 @@ export default function WakeMode({ onWake, engaged, onEndConversation }: WakeMod
   const listening = armed && state === "listening" && !engaged;
   const loading = armed && state === "loading";
 
+  useImperativeHandle(ref, () => ({ toggle: handleToggle }));
+
+  // Mirror outward in an effect, not during render — calling a parent setState
+  // mid-render would loop.
+  useEffect(() => {
+    onStateChange?.({ armed, listening, loading });
+  }, [armed, listening, loading, onStateChange]);
+
   return (
     <>
-      {/* Floating arm control — bottom-right, out of the chat's way */}
-      <div className="fixed bottom-5 right-5 z-30 flex flex-col items-end gap-1.5">
+      {/* Floating arm control — desktop only. On mobile it sat on top of the
+          composer's send button, so the trigger moves to the header. */}
+      <div className="fixed bottom-5 right-5 z-30 hidden lg:flex flex-col items-end gap-1.5">
         {/* Transient diagnostics readout — local-only */}
         {listening && (heard || match) && (
           <div className="rounded-full bg-background/90 backdrop-blur border px-3 py-1 text-[11px] text-muted-foreground shadow-sm max-w-[280px] truncate">
@@ -405,4 +428,6 @@ export default function WakeMode({ onWake, engaged, onEndConversation }: WakeMod
       </Dialog>
     </>
   );
-}
+});
+
+export default WakeMode;

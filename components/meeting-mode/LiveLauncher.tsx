@@ -9,18 +9,27 @@
  * session is live in the companion.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Radio } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export default function LiveLauncher({ clientId, threadId }: { clientId?: string; threadId?: string }) {
-  const [inMeeting, setInMeeting] = useState(false);
-  const bcRef = useRef<BroadcastChannel | null>(null);
+/** Open (or refocus) the companion window. Exported so the mobile header can
+ *  launch Live without a second copy of the popup contract — the named target
+ *  is what stops a re-click spawning a second capture session. */
+export function openLiveWindow({ clientId, threadId }: { clientId?: string; threadId?: string } = {}) {
+  const params = new URLSearchParams();
+  if (clientId) params.set("client", clientId);
+  if (threadId) params.set("thread", threadId); // load this chat as meeting context
+  const qs = params.toString();
+  window.open(`/meeting${qs ? `?${qs}` : ""}`, "engineai-meeting", "popup,width=440,height=880");
+}
 
+/** True while a session is live in the companion window. */
+export function useLiveSession(): boolean {
+  const [inMeeting, setInMeeting] = useState(false);
   useEffect(() => {
     try {
       const bc = new BroadcastChannel("engineai-meeting");
-      bcRef.current = bc;
       bc.onmessage = (e) => {
         if (e.data?.type === "session-started") setInMeeting(true);
         if (e.data?.type === "session-ended") setInMeeting(false);
@@ -30,17 +39,17 @@ export default function LiveLauncher({ clientId, threadId }: { clientId?: string
       /* BroadcastChannel unsupported — launcher still works */
     }
   }, []);
+  return inMeeting;
+}
 
-  const open = () => {
-    const params = new URLSearchParams();
-    if (clientId) params.set("client", clientId);
-    if (threadId) params.set("thread", threadId); // load this chat as meeting context
-    const qs = params.toString();
-    window.open(`/meeting${qs ? `?${qs}` : ""}`, "engineai-meeting", "popup,width=440,height=880");
-  };
+export default function LiveLauncher({ clientId, threadId }: { clientId?: string; threadId?: string }) {
+  const inMeeting = useLiveSession();
+  const open = () => openLiveWindow({ clientId, threadId });
 
   return (
-    <div className="fixed bottom-16 right-5 z-30">
+    // Desktop only — on mobile this sat on top of the composer's send button,
+    // so the trigger moves into the header instead.
+    <div className="fixed bottom-16 right-5 z-30 hidden lg:block">
       <button
         onClick={open}
         title={inMeeting ? "EngineAI Live — session in progress (click to focus)" : "EngineAI Live — open the meeting companion"}

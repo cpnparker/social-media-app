@@ -45,7 +45,8 @@ export default function RootLayout({
       <body className={`${geistSans.variable} font-sans antialiased`}>
         <script
           dangerouslySetInnerHTML={{
-            __html: `if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js')}`,
+            __html: `if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js')}
+window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();window.__engineInstallPrompt=e;window.dispatchEvent(new Event('engine-installprompt'))});`,
           }}
         />
         <ThemeProvider

@@ -84,14 +84,15 @@ import {
 import { AI_MODELS, DEFAULT_MODEL, getModelLabel } from "@/lib/ai/models";
 import ChatPanel from "@/components/ai-writer/ChatPanel";
 import VoiceDock from "@/components/ai-writer/VoiceDock";
-import WakeMode from "@/components/ai-writer/WakeMode";
+import WakeMode, { type WakeModeHandle } from "@/components/ai-writer/WakeMode";
 import MemoryManager from "@/components/ai-writer/MemoryManager";
 import ScheduledPromptsDialog from "@/components/ai-writer/ScheduledPromptsDialog";
-import { Clock } from "lucide-react";
+import { Clock, Radio, Download } from "lucide-react";
 import AdminDialog from "@/components/ai-writer/AdminDialog";
 import PersonaliseDialog from "@/components/ai-writer/PersonaliseDialog";
 import ClientContextDialog from "@/components/ai-writer/ClientContextDialog";
-import LiveLauncher from "@/components/meeting-mode/LiveLauncher";
+import LiveLauncher, { openLiveWindow, useLiveSession } from "@/components/meeting-mode/LiveLauncher";
+import { useInstallPrompt } from "@/lib/use-install-prompt";
 import { signOut } from "next-auth/react";
 import { SectionRailDesktop, SectionRailMobile, useRailItems } from "@/components/layout/SectionRail";
 import { upload as blobUpload } from "@vercel/blob/client";
@@ -142,6 +143,13 @@ function EngineAIContent() {
   const [voiceWakeSession, setVoiceWakeSession] = useState(false);
   const [voiceWakeCommand, setVoiceWakeCommand] = useState<string | undefined>();
   const voiceWakeAudioRef = useRef<(() => Promise<Float32Array | null>) | undefined>(undefined);
+  // Mobile puts Live + Orac in the header (their floating pills overlapped the
+  // composer's send button). WakeMode stays mounted either way — the wake
+  // engine lives inside it — so the header drives it through this handle.
+  const wakeRef = useRef<WakeModeHandle>(null);
+  const [wakeUi, setWakeUi] = useState({ armed: false, listening: false, loading: false });
+  const liveInMeeting = useLiveSession();
+  const { canInstall, promptInstall } = useInstallPrompt();
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -867,6 +875,64 @@ function EngineAIContent() {
     ? conversations.find((c) => c.id === selectedId) ?? null
     : null;
 
+  const liveEnabled = !!(workspaceId && wsCtx?.selectedWorkspace?.accessEngineAiLive);
+
+  /**
+   * Mobile-only header controls. Live and Orac used to float at the viewport's
+   * bottom-right, which on a phone is exactly where the composer's send button
+   * sits — the two overlapped. Header buttons keep both one tap away (better
+   * than burying them in a menu) and leave the composer clear. Rendered in the
+   * home header and, via headerExtra, in the thread header.
+   */
+  const mobileTools = (
+    <div className="lg:hidden ml-auto flex items-center gap-1 shrink-0">
+      {liveEnabled && (
+        <button
+          onClick={() =>
+            openLiveWindow({
+              clientId:
+                (customerId ? String(customerId) : "") ||
+                (selectedId ? String(conversations.find((c) => c.id === selectedId)?.customerId || "") : ""),
+              threadId: selectedId || "",
+            })
+          }
+          aria-label={liveInMeeting ? "EngineAI Live — session in progress" : "Open EngineAI Live"}
+          title={liveInMeeting ? "EngineAI Live — session in progress" : "EngineAI Live"}
+          className={cn(
+            "h-9 w-9 rounded-lg flex items-center justify-center transition-colors",
+            liveInMeeting
+              ? "text-amber-600 dark:text-amber-400 bg-amber-500/10"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted"
+          )}
+        >
+          <Radio className={cn("h-[18px] w-[18px]", liveInMeeting && "animate-pulse")} />
+        </button>
+      )}
+      <button
+        onClick={() => wakeRef.current?.toggle()}
+        aria-label={wakeUi.armed ? "Orac is listening — turn off" : "Turn on Orac hands-free voice"}
+        aria-pressed={wakeUi.armed}
+        title={wakeUi.armed ? 'Orac is listening — say "Orac". Tap to turn off.' : 'Orac — hands-free voice'}
+        className={cn(
+          "relative h-9 w-9 rounded-lg flex items-center justify-center transition-colors",
+          wakeUi.armed ? "text-foreground bg-muted" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+        )}
+      >
+        {wakeUi.loading ? (
+          <Loader2 className="h-[18px] w-[18px] animate-spin" />
+        ) : (
+          <AudioLines className="h-[18px] w-[18px]" />
+        )}
+        {wakeUi.listening && (
+          <span className="absolute top-1.5 right-1.5 flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60 animate-ping" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+          </span>
+        )}
+      </button>
+    </div>
+  );
+
   return (
     <>
       {/* ─── Mobile overlay backdrop ─── */}
@@ -966,6 +1032,24 @@ function EngineAIContent() {
                   <BookOpen className="h-4 w-4" />
                   Client Context
                 </DropdownMenuItem>
+                {/* Only rendered once Chrome/Edge has fired beforeinstallprompt,
+                    so the item never appears where it couldn't work (already
+                    installed, or a browser without the API). */}
+                {canInstall && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={async () => {
+                        const outcome = await promptInstall();
+                        if (outcome === "accepted") toast.success("EngineAI installed — look for it on your home screen");
+                      }}
+                      className="gap-2"
+                    >
+                      <Download className="h-4 w-4" />
+                      Install app
+                    </DropdownMenuItem>
+                  </>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={() => signOut({ callbackUrl: "/login" })}
@@ -1423,6 +1507,24 @@ function EngineAIContent() {
                   <BookOpen className="h-4 w-4" />
                   Client Context
                 </DropdownMenuItem>
+                {/* Only rendered once Chrome/Edge has fired beforeinstallprompt,
+                    so the item never appears where it couldn't work (already
+                    installed, or a browser without the API). */}
+                {canInstall && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={async () => {
+                        const outcome = await promptInstall();
+                        if (outcome === "accepted") toast.success("EngineAI installed — look for it on your home screen");
+                      }}
+                      className="gap-2"
+                    >
+                      <Download className="h-4 w-4" />
+                      Install app
+                    </DropdownMenuItem>
+                  </>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={() => signOut({ callbackUrl: "/login" })}
@@ -1456,6 +1558,7 @@ function EngineAIContent() {
               />
               <span className="text-sm font-bold">EngineAI</span>
             </div>
+            {mobileTools}
           </div>
         )}
 
@@ -1609,6 +1712,8 @@ function EngineAIContent() {
                 </button>
               }
               headerExtra={
+                <>
+                {mobileTools}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button className="hidden lg:flex h-8 w-8 rounded-full border bg-background hover:bg-muted items-center justify-center transition-colors shrink-0">
@@ -1638,6 +1743,7 @@ function EngineAIContent() {
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
+                </>
               }
               onCopyLink={() => {
                 const url = new URL(window.location.href);
@@ -2467,6 +2573,8 @@ function EngineAIContent() {
       {/* "Orac" — hands-free wake phrase (local-only listening) */}
       {workspaceId && (
         <WakeMode
+          ref={wakeRef}
+          onStateChange={setWakeUi}
           engaged={voiceOpen}
           onWake={(command, commandAudio) => handleVoiceStart(true, command, commandAudio)}
           onEndConversation={() => {
