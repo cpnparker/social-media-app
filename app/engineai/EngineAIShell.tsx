@@ -26,7 +26,13 @@ export default function EngineAIShell({
         if (cancelled) return;
         if (r.status === 401) {
           // Truly not authenticated — redirect to login
-          const cb = encodeURIComponent(window.location.origin + "/");
+          // Preserve the path AND query. Building this as origin + "/" threw
+          // away deep links: MeetingBrain's "Open in EngineAI" arrives as
+          // /engineai?mb=<id> in a fresh tab, so a signed-out click silently
+          // lost the meeting and landed on an empty home screen.
+          const cb = encodeURIComponent(
+            window.location.origin + window.location.pathname + window.location.search
+          );
           router.replace("/login?callbackUrl=" + cb);
         } else if (r.ok) {
           setAuthChecked(true);

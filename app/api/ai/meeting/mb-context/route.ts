@@ -59,6 +59,8 @@ function shape(d: any) {
   };
 }
 
+export const maxDuration = 30;
+
 export async function GET(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.email) {
@@ -92,7 +94,12 @@ export async function GET(req: NextRequest) {
         // present an unrelated meeting as the previous one — so require a
         // reasonably distinctive title. The panel shows the matched title and
         // date, so a wrong match is visible rather than silent.
-        const seriesQuery = String(meeting.title || "").replace(/\s*[-–—|]\s*.*$/, "").trim();
+        // Split only on a SPACED separator. `\s*[-–—|]\s*` matched inside
+        // hyphenated words, so "Catch-up — Acme" became "Catch" and
+        // "Check-in with Bob" became "Check" — dropping the very token that
+        // identifies the series, then matching half the calendar.
+        const fullTitle = String(meeting.title || "").trim();
+        const seriesQuery = fullTitle.replace(/\s+[-–—|]\s+.*$/, "").trim() || fullTitle;
         const distinctive = seriesQuery.length >= 8 || seriesQuery.split(/\s+/).length >= 2;
         if (seriesQuery.length >= 3 && distinctive) {
           const s = await queryMeetingBrain("search_meetings", session.user.email, {
@@ -105,10 +112,23 @@ export async function GET(req: NextRequest) {
           // string. Testing FOR "past" fails closed if that wording ever
           // changes; testing against the prose would silently start returning
           // meetings that have not happened yet.
-          const past = rows
+          // CORROBORATE. Date order alone is not evidence of the same series:
+          // search_meetings full-text matches transcript content and, via the
+          // client-domain allowlist, reaches meetings the caller never
+          // attended — so the newest "past" hit could be another client's
+          // meeting entirely, and its next steps would then be shown in this
+          // room. Require the candidate title to share the series wording.
+          const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+          const seriesKey = norm(seriesQuery);
+          const candidates = rows
             .filter((m) => m?.id && m.id !== meetingId && String(m.status || "") === "past")
-            .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))[0];
-          if (past?.id) {
+            .filter((m) => {
+              const t = norm(String(m.title || ""));
+              return !!t && (t.includes(seriesKey) || seriesKey.includes(t));
+            })
+            .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
+            .slice(0, 3); // one unrecorded occurrence must not kill the feature
+          for (const past of candidates) {
             const p = await queryMeetingBrain("meeting_details", session.user.email, {
               meetingId: String(past.id),
               visibility: "private",
@@ -116,7 +136,7 @@ export async function GET(req: NextRequest) {
             if (!p.error && p.data && !Array.isArray(p.data)) {
               const shaped = shape(p.data as any);
               // Only worth returning if it actually carries something.
-              if (shaped.summary || shaped.next_steps || shaped.tasks.length) previous = shaped;
+              if (shaped.summary || shaped.next_steps || shaped.tasks.length) { previous = shaped; break; }
             }
           }
         }
