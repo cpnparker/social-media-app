@@ -222,6 +222,46 @@ function EngineAIContent() {
   const customerLoading = customerCtx?.loading ?? true;
   const threadClientSyncedRef = useRef(false);
 
+  /**
+   * Arriving from MeetingBrain AFTER a meeting (`/engineai?mb=<id>`).
+   *
+   * MeetingBrain's ⚡ link before/during a meeting opens Live. Once the meeting
+   * has ended there is nothing to listen to, but this is the moment the
+   * transcript, summary and extracted tasks finally exist — so that link comes
+   * here instead and seeds a grounded question. Nothing is copied across: only
+   * the meeting id crosses the URL, and the model re-fetches with
+   * query_meetingbrain under the reader's OWN authority, which is what keeps a
+   * meeting someone didn't attend out of reach.
+   */
+  const mbSeededRef = useRef(false);
+  useEffect(() => {
+    const mbId = searchParams.get("mb");
+    // Wait for the session/workspace to resolve. The auth gate here is
+    // client-side, so this effect can otherwise fire before sign-in completes,
+    // the mb-context fetch 401s, and the seed loses the meeting title.
+    if (!mbId || !workspaceId || mbSeededRef.current) return;
+    mbSeededRef.current = true;
+    (async () => {
+      let title = "";
+      try {
+        const res = await fetch(`/api/ai/meeting/mb-context?meetingId=${encodeURIComponent(mbId)}`);
+        if (res.ok) title = (await res.json())?.meeting?.title || "";
+      } catch { /* the question still works without the title */ }
+      const seed = title
+        ? `Brief me on the meeting "${title}" — pull it up with query_meetingbrain (report: meeting_details, meeting_id: ${mbId}). What was decided, what did we commit to, and what's still open?`
+        : `Brief me on the MeetingBrain meeting with id ${mbId} — use query_meetingbrain (report: meeting_details). What was decided, what did we commit to, and what's still open?`;
+      setHomeInput((prev) => (prev.trim() ? prev : seed));
+      toast.info(title ? `Loaded "${title}" — press send for the briefing` : "Meeting loaded — press send for the briefing");
+      // Drop ?mb= so a refresh doesn't re-seed over what the user has typed.
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("mb");
+        window.history.replaceState({}, "", url.toString());
+      } catch { /* noop */ }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId]);
+
   useEffect(() => {
     const threadId = searchParams.get("thread");
     if (!threadId || customerLoading || threadClientSyncedRef.current) return;

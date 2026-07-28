@@ -87,15 +87,26 @@ export async function GET(req: NextRequest) {
     let previous: ReturnType<typeof shape> | null = null;
     if (meeting.state !== "processed") {
       try {
+        // Be conservative about what counts as "the same series". A bare
+        // "Weekly" or "Catch-up" would match half the calendar and we would
+        // present an unrelated meeting as the previous one — so require a
+        // reasonably distinctive title. The panel shows the matched title and
+        // date, so a wrong match is visible rather than silent.
         const seriesQuery = String(meeting.title || "").replace(/\s*[-–—|]\s*.*$/, "").trim();
-        if (seriesQuery.length >= 3) {
+        const distinctive = seriesQuery.length >= 8 || seriesQuery.split(/\s+/).length >= 2;
+        if (seriesQuery.length >= 3 && distinctive) {
           const s = await queryMeetingBrain("search_meetings", session.user.email, {
             query: seriesQuery,
             visibility: "private",
           });
           const rows: any[] = Array.isArray(s.data) ? s.data : [];
+          // Positive assertion, not a negative one: search_meetings marks past
+          // rows status "past" and future rows with an "UPCOMING — …" prose
+          // string. Testing FOR "past" fails closed if that wording ever
+          // changes; testing against the prose would silently start returning
+          // meetings that have not happened yet.
           const past = rows
-            .filter((m) => m?.id && m.id !== meetingId && !/^UPCOMING/i.test(String(m.label || m.status || "")))
+            .filter((m) => m?.id && m.id !== meetingId && String(m.status || "") === "past")
             .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))[0];
           if (past?.id) {
             const p = await queryMeetingBrain("meeting_details", session.user.email, {
