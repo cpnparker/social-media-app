@@ -70,6 +70,47 @@ export function mapMemory(row: any) {
   };
 }
 
+// ── Notebook (ai_notebooks / ai_notebook_entries) ──
+
+export function mapNotebook(row: any) {
+  if (!row) return row;
+  return {
+    id: row.id_notebook,
+    workspaceId: row.id_workspace,
+    userId: row.user_created,
+    title: row.name_title,
+    description: row.document_description ?? null,
+    visibility: row.type_visibility as "private" | "team",
+    isArchived: row.flag_archived === 1,
+    createdAt: row.date_created,
+    updatedAt: row.date_updated,
+  };
+}
+
+export function mapNotebookEntry(row: any) {
+  if (!row) return row;
+  return {
+    id: row.id_entry,
+    notebookId: row.id_notebook,
+    workspaceId: row.id_workspace,
+    userId: row.user_created,
+    type: row.type_entry as "highlight" | "answer" | "prompt" | "note",
+    quote: row.document_quote,
+    note: row.document_note ?? null,
+    conversationId: row.id_conversation ?? null,
+    messageId: row.id_message ?? null,
+    sourceTitle: row.name_source_title ?? null,
+    clientId: row.id_client ?? null,
+    tags: Array.isArray(row.config_tags) ? row.config_tags : [],
+    order: row.units_order ?? 0,
+    // Whether this entry has been promoted to a real memory (never automatic).
+    isMemory: row.flag_memory === 1,
+    memoryId: row.id_memory ?? null,
+    createdAt: row.date_created,
+    updatedAt: row.date_updated,
+  };
+}
+
 // ── Role (ai_roles) ──
 
 export function mapRole(row: any) {
