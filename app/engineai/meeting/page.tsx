@@ -17,10 +17,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Mic, Pause, Play, Square, Radio, Loader2, AlertTriangle, Copy, Check,
-  ExternalLink, Trash2, FileText, ArrowRightCircle, Search, ChevronDown, ChevronUp, X,
-} from "lucide-react";
+import { Mic, Pause, Play, Square, Radio, Loader2, AlertTriangle, Copy, Check, ExternalLink, Trash2, FileText, ArrowRightCircle, Search, ChevronDown, ChevronUp, X, CalendarClock } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { ClientPicker } from "@/components/meeting/ClientPicker";
@@ -114,6 +111,7 @@ export default function MeetingLivePage() {
 
   // Setup form
   const [clientId, setClientId] = useState<string>("");
+  const [mbBrief, setMbBrief] = useState<any>(null);
   const [title, setTitle] = useState("");
   // Meeting type is DYNAMIC: the classifier reads the conversation itself
   // (internal 1:1 vs client vs sales) — nobody has to declare it upfront.
@@ -162,6 +160,9 @@ export default function MeetingLivePage() {
   const utteranceIdxRef = useRef(0);
   const contextRef = useRef("");
   const clientIdRef = useRef("");
+  /** MeetingBrain brief for this session. Held here and rendered read-only —
+   *  never merged into the Context textarea, which is persisted downstream. */
+  const mbBriefRef = useRef<any>(null);
   /** The ?client= prefill comes from whatever client was selected in the app,
    *  NOT from who is actually in the room. It is a GUESS. Until the meeting
    *  corroborates it (the name is spoken, or the user picks it themselves) it
@@ -269,29 +270,45 @@ export default function MeetingLivePage() {
     try {
       const res = await fetch(`/api/ai/meeting/mb-context?meetingId=${encodeURIComponent(meetingId)}`);
       if (!res.ok) { toast.error("Could not load the meeting from MeetingBrain"); return; }
-      const { meeting } = await res.json();
+      const { meeting, previous } = await res.json();
       if (!meeting) return;
       mbMeetingIdRef.current = meetingId;
       if (meeting.title) setTitle(String(meeting.title).slice(0, 120));
+
+      // DELIBERATELY NOT setContext(). The Context textarea is not a scratchpad:
+      // combinedContext() feeds it to the digest prompt AND handoff writes it
+      // verbatim into an ai_messages row, in a conversation that becomes
+      // team-visible once a client is bound. Routing MeetingBrain material
+      // through it would manufacture a second, on-disk, workspace-readable copy
+      // of a meeting record — in a product whose whole legal position is that
+      // it does not keep transcripts. It lives in this ref and on screen only,
+      // and is excluded from the sessionStorage crash buffer for the same
+      // reason (that buffer persists `context`, not this).
+      const brief = { meeting, previous: previous || null };
+      mbBriefRef.current = brief;
+      setMbBrief(brief);
+
       const attendees = Array.isArray(meeting.attendees)
         ? meeting.attendees.map((a: any) => (typeof a === "string" ? a : a?.name || a?.email || "")).filter(Boolean).join(", ")
         : typeof meeting.attendees === "string" ? meeting.attendees : "";
-      const parts = [`## MeetingBrain meeting: "${meeting.title || "Meeting"}"${meeting.date ? ` (${meeting.date})` : ""}`];
-      if (attendees) parts.push(`Attendees: ${attendees.slice(0, 500)}`);
-      if (meeting.key_topics) {
-        const topics = Array.isArray(meeting.key_topics) ? meeting.key_topics.join(", ") : String(meeting.key_topics);
-        parts.push(`Key topics: ${topics.slice(0, 400)}`);
-      }
-      if (meeting.summary) parts.push(`Notes: ${meeting.summary}`);
-      if (meeting.next_steps) parts.push(`Open next steps: ${meeting.next_steps}`);
-      setContext(parts.join("\n"));
-      // Best-effort client preselect from title + attendees — the picker stays
-      // fully editable, so a miss just means the user picks manually.
+
+      // Best-effort client preselect. Still only when nothing is bound, and it
+      // stays PROVISIONAL — the corroboration timer applies, because a title
+      // match is a guess like any other.
       if (!clientIdRef.current) {
         const match = resolveClientFromText(`${meeting.title || ""} ${attendees}`, customersRef.current);
-        if (match) setClientId(match.id);
+        if (match) { setClientId(match.id); provisionalClientRef.current = true; }
       }
-      toast.success("Meeting context loaded from MeetingBrain");
+
+      // Say what was actually found. "Loaded" over a payload of nulls is how
+      // this felt useful while delivering nothing.
+      if (meeting.state === "processed") {
+        toast.success("Loaded this meeting's notes from MeetingBrain");
+      } else if (previous) {
+        toast.success(`MeetingBrain has nothing for this meeting yet — loaded the previous one instead`);
+      } else {
+        toast.info("MeetingBrain has no notes for this meeting yet — it processes after the meeting ends");
+      }
     } catch {
       toast.error("Could not load the meeting from MeetingBrain");
     }
@@ -1355,6 +1372,7 @@ function cardSignature(card: LiveCard): string {
             title={title} setTitle={setTitle}
             context={context} setContext={setContext}
             linkedChat={linkedChat} onUnlinkChat={() => { linkedContextRef.current = ""; setLinkedChat(null); }}
+            mbBrief={mbBrief} onUnlinkMb={() => { mbBriefRef.current = null; setMbBrief(null); }}
             devices={devices} deviceId={deviceId} setDeviceId={setDeviceId}
             attested={attested} setAttested={setAttested}
             starting={starting}
@@ -1540,6 +1558,8 @@ function SetupScreen(props: {
   title: string; setTitle: (v: string) => void;
   context: string; setContext: (v: string) => void;
   linkedChat: { id: string; title: string; msgCount: number; fileCount: number } | null;
+  mbBrief: any;
+  onUnlinkMb: () => void;
   onUnlinkChat: () => void;
   devices: { deviceId: string; label: string }[];
   deviceId: string; setDeviceId: (v: string) => void;
@@ -1602,6 +1622,53 @@ function SetupScreen(props: {
             <button onClick={props.onUnlinkChat} className="text-muted-foreground/50 hover:text-foreground text-xs" title="Remove linked chat">✕</button>
           </div>
         )}
+
+        {props.mbBrief && (() => {
+          // Read-only by design: this is MeetingBrain's record, shown so the
+          // user can see what was pulled. It is NOT merged into Context, which
+          // is persisted downstream.
+          const m = props.mbBrief.meeting || {};
+          const prev = props.mbBrief.previous;
+          const src = prev || m;
+          const tasks: any[] = Array.isArray(src.tasks) ? src.tasks : [];
+          return (
+            <div className="rounded-lg border bg-amber-500/5 border-amber-500/30 p-2">
+              <div className="flex items-start gap-2">
+                <CalendarClock className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-500" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12px] font-medium truncate">
+                    From MeetingBrain{prev ? " — previous meeting" : ""}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {prev
+                      ? `This meeting hasn't been processed yet — showing "${String(prev.title || "the last one").slice(0, 48)}"${prev.date ? ` (${String(prev.date).slice(0, 10)})` : ""}`
+                      : m.state === "processed"
+                        ? `${String(m.title || "This meeting").slice(0, 48)}${m.date ? ` (${String(m.date).slice(0, 10)})` : ""}`
+                        : "No notes yet — MeetingBrain processes after a meeting ends"}
+                  </div>
+                </div>
+                <button onClick={props.onUnlinkMb} className="text-muted-foreground/50 hover:text-foreground text-xs" title="Don't use this">✕</button>
+              </div>
+              {(src.next_steps || tasks.length > 0) && (
+                <div className="mt-2 pl-5 space-y-1">
+                  {src.next_steps && (
+                    <div className="text-[11px] leading-snug">
+                      <span className="text-muted-foreground">Open next steps: </span>
+                      {String(src.next_steps).slice(0, 220)}
+                    </div>
+                  )}
+                  {tasks.length > 0 && (
+                    <div className="text-[11px] leading-snug">
+                      <span className="text-muted-foreground">Tasks ({tasks.length}): </span>
+                      {tasks.slice(0, 3).map((t: any) => t.title).filter(Boolean).join(" · ").slice(0, 200)}
+                      {tasks.length > 3 ? ` +${tasks.length - 3} more` : ""}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         <label className="block">
           <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">

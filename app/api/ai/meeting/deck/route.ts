@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
-import { queryEngine } from "@/lib/ai/providers";
+import { queryEngine, queryMeetingBrain } from "@/lib/ai/providers";
 
 export const maxDuration = 30;
 
@@ -100,6 +100,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const userId = parseInt(session.user.id, 10);
+  // MeetingBrain scopes every personal report by the caller's own email —
+  // that RPC-level p_user_email check IS the access boundary for the enrich
+  // below, so a user cannot pull a meeting they were not part of.
+  const userEmail = session.user.email || "";
 
   let body: any;
   try {
@@ -114,7 +118,7 @@ export async function POST(req: NextRequest) {
 
   const { data: meetingSession } = await intelligenceDb
     .from("ai_meeting_sessions")
-    .select("id_session, id_workspace, id_client, consent_attested_by, name_title")
+    .select("id_session, id_workspace, id_client, consent_attested_by, name_title, mb_meeting_id")
     .eq("id_session", sessionId)
     .maybeSingle();
   if (!meetingSession) {
@@ -183,7 +187,39 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      const meetingRows = (meetings as any)?.data || [];
+      // Prefer MeetingBrain when the session was launched from it. The local
+      // ai_client_meetings mirror is READ-ONLY in this codebase — every
+      // reference is a SELECT and nothing writes it — so on its own the
+      // "last time we agreed…" card answers from a table that may never have
+      // been populated. mb_meeting_id was previously written at session
+      // create and never read by anything.
+      let meetingRows = (meetings as any)?.data || [];
+      const mbId = (meetingSession as any).mb_meeting_id;
+      if (mbId && userEmail) {
+        try {
+          const det = await queryMeetingBrain("meeting_details", userEmail, {
+            meetingId: String(mbId),
+            visibility: "private",
+          });
+          const d: any = det?.data;
+          if (d && !Array.isArray(d) && (d.summary || d.next_steps || (Array.isArray(d.tasks) && d.tasks.length))) {
+            meetingRows = [{
+              meeting_title: d.title,
+              meeting_date: d.date,
+              meeting_summary: d.summary || d.external_summary || "",
+              key_topics: d.key_topics || null,
+              next_steps: d.next_steps || "",
+              attendees_external: null,
+              // Derived lines only — never transcript passages into a card body.
+              mb_tasks: Array.isArray(d.tasks)
+                ? d.tasks.slice(0, 6).map((t: any) => String(t?.title || "").slice(0, 160)).filter(Boolean)
+                : [],
+            }, ...meetingRows];
+          }
+        } catch (e: any) {
+          console.warn("[Deck] MeetingBrain enrich failed:", e?.message);
+        }
+      }
       if (meetingRows.length > 0) {
         cards.push({
           kind: "deck_last_meeting",
@@ -196,6 +232,7 @@ export async function POST(req: NextRequest) {
               summary: (m.meeting_summary || "").slice(0, 400),
               next_steps: (m.next_steps || "").slice(0, 600),
               attendees: m.attendees_external || null,
+              tasks: Array.isArray(m.mb_tasks) ? m.mb_tasks : undefined,
             })),
           },
           receipt: {
