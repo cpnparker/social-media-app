@@ -73,18 +73,58 @@ export function CardContent({ kind, body }: { kind: string; body: any }) {
         </div>
       );
     }
-    const c = body?.contracts?.[0] || body?.summary || {};
+    // Pick the contract that actually matters, not contracts[0]. The query
+    // sorts by date_end ASCENDING, so [0] is the OLDEST — which is how a
+    // contract that ended in May 2024 became the headline card in a live
+    // meeting. Prefer the live contract closest to renewal; fall back to the
+    // most recently ended when every one has expired.
+    const list: any[] = Array.isArray(body?.contracts) ? body.contracts : [];
+    const isExpired = (x: any) =>
+      x?.expired === true || (typeof x?.days_remaining === "number" && x.days_remaining < 0);
+    const live = list.filter((x) => !isExpired(x));
+    const pick = live.length
+      ? live.reduce((a, b) => ((a.days_remaining ?? Infinity) <= (b.days_remaining ?? Infinity) ? a : b))
+      : list.length
+        ? list.reduce((a, b) => ((a.days_remaining ?? -Infinity) >= (b.days_remaining ?? -Infinity) ? a : b))
+        : null;
+    const c = pick || body?.summary || {};
     const s = body?.summary || {};
+    const otherLive = Math.max(0, live.length - (pick && !isExpired(pick) ? 1 : 0));
+    // A negative days_remaining was rendered as "Renews in -791d" — technically
+    // the arithmetic, but read at a glance in a live meeting it says the
+    // contract is current. Expiry gets its own wording and colour, and a
+    // spent contract stops being green.
+    const expired = c.expired === true || (typeof c.days_remaining === "number" && c.days_remaining < 0);
+    const spent = typeof c.cu_remaining === "number" && c.cu_remaining < 0.5;
     return (
       <div className="space-y-1 text-sm">
         {c.name_contract && <div className="font-medium">{c.name_contract}</div>}
+        {expired && (
+          <div className="text-[12px] font-semibold text-red-600 dark:text-red-400">
+            ⚠ Expired{c.ends ? ` ${c.ends}` : ""} — not a live contract
+          </div>
+        )}
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[13px]">
           {c.cu_total != null && <span><span className="text-muted-foreground">Total</span> {fmtNum(c.cu_total)}</span>}
           {c.cu_used != null && <span><span className="text-muted-foreground">Used</span> {fmtNum(c.cu_used)}</span>}
-          {c.cu_remaining != null && <span className="font-semibold text-emerald-600 dark:text-emerald-400">{fmtNum(c.cu_remaining)} left</span>}
+          {c.cu_remaining != null && (
+            <span className={cn(
+              "font-semibold",
+              spent ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"
+            )}>
+              {fmtNum(c.cu_remaining)} left
+            </span>
+          )}
           {c.utilization_pct != null && <span><span className="text-muted-foreground">Util</span> {fmtNum(c.utilization_pct)}%</span>}
-          {c.days_remaining != null && <span><span className="text-muted-foreground">Renews in</span> {fmtNum(c.days_remaining)}d</span>}
+          {typeof c.days_remaining === "number" && (
+            c.days_remaining < 0
+              ? <span className="text-red-600 dark:text-red-400">Ended {fmtNum(Math.abs(c.days_remaining))}d ago</span>
+              : <span><span className="text-muted-foreground">Renews in</span> {fmtNum(c.days_remaining)}d</span>
+          )}
         </div>
+        {otherLive > 0 && (
+          <div className="text-[12px] text-muted-foreground">+{otherLive} other live contract{otherLive === 1 ? "" : "s"}</div>
+        )}
         {s.ending_within_30_days > 0 && (
           <div className="text-[12px] text-amber-600 dark:text-amber-400">{s.ending_within_30_days} contract(s) ending within 30 days</div>
         )}

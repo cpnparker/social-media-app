@@ -162,6 +162,15 @@ export default function MeetingLivePage() {
   const utteranceIdxRef = useRef(0);
   const contextRef = useRef("");
   const clientIdRef = useRef("");
+  /** The ?client= prefill comes from whatever client was selected in the app,
+   *  NOT from who is actually in the room. It is a GUESS. Until the meeting
+   *  corroborates it (the name is spoken, or the user picks it themselves) it
+   *  stays provisional, and if the conversation never mentions them we stop
+   *  asserting their commercials — a pitch to an unregistered prospect once
+   *  produced a full deck for an unrelated client. */
+  const provisionalClientRef = useRef(false);
+  const clientCorroboratedRef = useRef(false);
+  const utterancesSinceBindRef = useRef(0);
   const mbMeetingIdRef = useRef<string | null>(null); // set when launched from meetingbrain.ai (?mb=)
   const silentFramesRef = useRef(0);
   const reconnectAttemptsRef = useRef(0);
@@ -187,6 +196,9 @@ export default function MeetingLivePage() {
   // "commissioned this month" cards repeat 3× in one call); changed data may
   // resurface after a short flicker guard.
   const autoShownRef = useRef<Map<string, { at: number; content: string }>>(new Map());
+  /** Signatures of cards already surfaced this session — the content dedup the
+   *  four emission routes all lacked. Cleared on session start. */
+  const shownSigRef = useRef<Set<string>>(new Set());
   // Most recent client mentioned by name in the transcript (any meeting type) —
   // lets the lookup answer with a CLIENT-SCOPED snapshot instead of a
   // workspace-wide dump when e.g. UBS comes up in an internal 1:1.
@@ -211,7 +223,7 @@ export default function MeetingLivePage() {
     try {
       const sp = new URLSearchParams(window.location.search);
       const c = sp.get("client");
-      if (c) setClientId(c);
+      if (c) { setClientId(c); provisionalClientRef.current = true; clientCorroboratedRef.current = false; }
       const thread = sp.get("thread");
       if (thread) void loadLinkedChat(thread);
       const mb = sp.get("mb"); // launched from meetingbrain.ai's meeting panel
@@ -392,6 +404,30 @@ export default function MeetingLivePage() {
           // lookup already uses to surface mentioned-client snapshot cards.
           {
             const match = resolveClientFromText(u.text, customersRef.current);
+
+            // Corroboration check for a PROVISIONAL (prefilled) client. The
+            // prefill came from app state, not the room, so if the meeting
+            // runs on without ever naming them we drop it rather than keep
+            // asserting an unrelated client's commercials.
+            if (clientIdRef.current && provisionalClientRef.current && !clientCorroboratedRef.current) {
+              if (match && match.id === clientIdRef.current) {
+                clientCorroboratedRef.current = true;
+                provisionalClientRef.current = false;
+              } else {
+                utterancesSinceBindRef.current += 1;
+                if (utterancesSinceBindRef.current >= 25) {
+                  const dropped = customersRef.current.find((c) => c.id === clientIdRef.current)?.name || "that client";
+                  provisionalClientRef.current = false;
+                  clientIdRef.current = "";
+                  setClientId("");
+                  setLiveCards([]);
+                  setRailCards([]);
+                  toast.info(`No mention of ${dropped} — cleared. This meeting has no client record; say a client name to load one.`);
+                  console.log(`[Live] provisional client ${dropped} never corroborated — unbound`);
+                }
+              }
+            }
+
             if (match) {
               lastMentionedClientRef.current = { id: match.id, name: match.name, at: Date.now() };
               const bound = clientIdRef.current;
@@ -651,7 +687,39 @@ export default function MeetingLivePage() {
       .catch(() => {});
   }, [setCardInsight, combinedContext]);
 
+/** Identity of a card by the FACTS it asserts, never by its authored prose. */
+function cardSignature(card: LiveCard): string {
+  const b: any = (card as any).body || {};
+  const first = Array.isArray(b.contracts) ? b.contracts[0] : null;
+  const facts = JSON.stringify({
+    contractIds: Array.isArray(b.contracts) ? b.contracts.map((c: any) => c.id_contract).slice(0, 6) : null,
+    total: first?.cu_total ?? b.summary?.total_cu ?? null,
+    used: first?.cu_used ?? null,
+    left: first?.cu_remaining ?? b.summary?.remaining_cu ?? null,
+    items: Array.isArray(b.items) ? b.items.map((x: any) => x?.id ?? x?.name ?? x?.title).slice(0, 8) : null,
+    tasks: Array.isArray(b.tasks) ? b.tasks.map((x: any) => x?.id ?? x?.title).slice(0, 8) : null,
+    none: b.none ?? null,
+  });
+  return `${card.kind}|${(card as any).title || ""}|${facts}`;
+}
+
   const handleCardFired = useCallback((card: LiveCard) => {
+    // CONTENT dedup, session-scoped. The existing guards are all rate limiters
+    // in separate key namespaces — the deck, the ambient sweep, manual lookups
+    // and T1/T2 each reach the feed by their own route — so nothing ever
+    // recorded "this exact card has already been shown". One meeting surfaced
+    // the same 90/90-CU commercial card seven times.
+    //
+    // The signature deliberately ignores card.insight: the observed duplicates
+    // carried IDENTICAL figures with different prose (and some with none at
+    // all), so any key including the authored text can never match.
+    const sig = cardSignature(card);
+    if (shownSigRef.current.has(sig)) {
+      console.log(`[Live] duplicate card suppressed: ${card.kind}`);
+      return;
+    }
+    shownSigRef.current.add(sig);
+
     setLiveCards((prev) => [card, ...prev].slice(0, 6));
     lastSurfaceAtRef.current = Date.now();
     if (!card.insight) enrichCard(card); // lookup/auto cards already carry one
@@ -719,6 +787,12 @@ export default function MeetingLivePage() {
    *  scope to them. Silent by design — the toast is feedback, not a question. */
   const bindClient = useCallback(async (id: string, name: string) => {
     if (clientIdRef.current === id) return;
+    // Any binding that gets HERE is evidence-based — a spoken name, or the
+    // user choosing from the picker. Either way it is no longer a guess
+    // inherited from app state, so the provisional timer stops applying.
+    provisionalClientRef.current = false;
+    clientCorroboratedRef.current = true;
+    utterancesSinceBindRef.current = 0;
     pendingSwitchRef.current = null;
     const prev = clientIdRef.current;
     if (prev) {
@@ -937,6 +1011,7 @@ export default function MeetingLivePage() {
       lastSurfaceAtRef.current = Date.now();
       lastAutoSweepCountRef.current = 0;
       autoShownRef.current.clear();
+      shownSigRef.current.clear();
       lastMentionedClientRef.current = null;
       pendingSwitchRef.current = null;
       setPendingLookups([]);

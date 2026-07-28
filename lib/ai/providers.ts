@@ -1842,6 +1842,11 @@ async function reportContractsSummary(
       starts: c.date_start?.slice(0, 10) || null,
       ends: c.date_end?.slice(0, 10) || null,
       days_remaining: end ? Math.ceil((end.getTime() - today.getTime()) / 86_400_000) : null,
+      // `flag_active` is an operational flag nobody clears when a contract runs
+      // out, so activeOnly alone let a contract that ended in May 2024 through —
+      // and it was then presented in a live client meeting as "Active contract,
+      // renews in -791d". Expiry is a property of the DATE, not the flag.
+      expired: !!end && end.getTime() < today.getTime(),
     };
   });
 

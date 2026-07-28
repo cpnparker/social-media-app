@@ -305,7 +305,7 @@ export async function POST(req: NextRequest) {
             title: `Commercials — ${clientName}`,
             insight,
             body: hasC ? { contracts: contracts.data.slice(0, 4), summary: contracts.summary || null } : { none: true, clientName },
-            receipt: hasC ? { record_type: "app_contracts", label: contracts.data[0]?.name_contract || "Active contract" } : { label: `No active contracts on file for ${clientName}` },
+            receipt: hasC ? { record_type: "app_contracts", label: contracts.data[0]?.name_contract || "Contract on file" } : { label: `No active contracts on file for ${clientName}` },
           }
         : {
             kind: "commercial_context",

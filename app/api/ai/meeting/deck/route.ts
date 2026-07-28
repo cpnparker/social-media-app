@@ -165,7 +165,7 @@ export async function POST(req: NextRequest) {
           ? {
               record_type: "app_contracts",
               record_id: String(contracts.data[0]?.id_contract ?? ""),
-              label: contracts.data[0]?.name_contract || "Active contract",
+              label: contracts.data[0]?.name_contract || "Contract on file",
             }
           : { label: `No active contracts on file for ${clientName}` },
       });
