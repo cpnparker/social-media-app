@@ -737,6 +737,17 @@ function cardSignature(card: LiveCard): string {
   }, []);
 
   const handleCardDrawerOnly = useCallback((card: LiveCard) => {
+    // The SAME content guard as the live path. This route is where the engine
+    // sends cards it has "suppressed" for cooldown or cap — but drawerCards is
+    // concatenated into the visible feed, so suppression here hid nothing and
+    // every rejected fire still appeared. Guarding only handleCardFired left
+    // the duplicates arriving by this door.
+    const sig = cardSignature(card);
+    if (shownSigRef.current.has(sig)) {
+      console.log(`[Live] duplicate card suppressed (drawer): ${card.kind}`);
+      return;
+    }
+    shownSigRef.current.add(sig);
     setDrawerCards((prev) => [card, ...prev].slice(0, 40));
     enrichCard(card);
   }, [enrichCard]);

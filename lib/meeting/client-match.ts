@@ -118,7 +118,16 @@ export function resolveClientFromText(
     // "strong" (auto-bind) requires >=2 distinctive tokens spoken — a single
     // word ("Zurich", "Hiscox") is evidence enough for a SUGGESTION chip but
     // never for silently loading a client's data mid-call.
-    const nameEvidence = nameToks.length > 0 && hits >= Math.min(2, nameToks.length);
+    // A one-token client name ("Booking.com" → ["booking"]) previously matched
+    // on a single everyday word, so someone saying "booking" pulled a full
+    // snapshot for an unrelated client mid-meeting. A lone common word is no
+    // longer evidence; a lone DISTINCTIVE one (>=6 chars, e.g. "Hiscox") still
+    // is, since those don't collide with ordinary speech.
+    const COMMON_WORD = /^(booking|content|engine|group|media|global|digital|health|energy|impact|future|world|people|London|brand)$/i;
+    const nameEvidence =
+      nameToks.length > 1
+        ? hits >= 2
+        : nameToks.length === 1 && hits >= 1 && nameToks[0].length >= 6 && !COMMON_WORD.test(nameToks[0]);
     const evidence = aliasHit || nameEvidence;
     if (!evidence) continue;
     const score = (aliasHit ? 1.5 : 0) + (nameToks.length ? hits / nameToks.length : 0) + hits * 0.01;
