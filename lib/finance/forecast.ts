@@ -67,20 +67,60 @@ async function fetchWorkbook(): Promise<XLSX.WorkBook | { error: string }> {
   }
 }
 
-/** Serialize one sheet as trimmed pipe-separated rows the model can read. */
-function serializeSheet(ws: XLSX.WorkSheet): string {
-  const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
-  const lines: string[] = [];
-  for (const r of rows) {
+/** Sheet names are typed by a human and asked for by a model, so neither side
+ *  agrees on punctuation: the workbook's "Renewals only 100" was never found
+ *  when the model asked for "Renewals Only 100%" because the old test was
+ *  one-directional (sheet.includes(want)) on raw strings. Compare on
+ *  alphanumerics only, and allow the want to be the longer of the two. */
+function norm(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+export function resolveSheet(visible: string[], want: string): string | undefined {
+  const w = norm(want);
+  if (!w) return undefined;
+  return (
+    visible.find((n) => norm(n) === w) ||
+    visible.find((n) => norm(n).startsWith(w)) ||
+    visible.find((n) => norm(n).includes(w)) ||
+    // "Renewals Only 100%" ⊃ "Renewals only 100". Require a reasonably long
+    // sheet name so a 2-letter tab doesn't swallow every request.
+    visible.find((n) => norm(n).length >= 5 && w.includes(norm(n)))
+  );
+}
+
+/** Serialize one sheet as trimmed pipe-separated rows the model can read.
+ *  With `match`, return only the header block plus rows whose LABEL cells hit
+ *  a term — a cross-scenario question wants one row from every sheet, not 110
+ *  rows from three of them. */
+export function serializeSheet(ws: XLSX.WorkSheet, match?: string[]): { rows: string; matched: number } {
+  const raw: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
+  const all: string[] = [];
+  for (const r of raw) {
     const cells = r.map((c) => String(c).trim());
     if (!cells.some((c) => c !== "")) continue; // skip empty rows
     // trim trailing empty cells
     let end = cells.length;
     while (end > 0 && cells[end - 1] === "") end--;
-    lines.push(cells.slice(0, end).join(" | "));
-    if (lines.length >= 110) { lines.push("… (truncated)"); break; }
+    all.push(cells.slice(0, end).join(" | "));
   }
-  return lines.join("\n").slice(0, 7000);
+
+  if (!match || match.length === 0) {
+    const lines = all.slice(0, 110);
+    if (all.length > 110) lines.push("… (truncated)");
+    return { rows: lines.join("\n").slice(0, 7000), matched: lines.length };
+  }
+
+  const terms = match.map(norm).filter(Boolean);
+  // The first non-empty rows carry the month header the figures line up under.
+  const head = all.slice(0, 4);
+  const hits: string[] = [];
+  for (const line of all.slice(4)) {
+    const label = norm(line.split("|").slice(0, 2).join(" "));
+    if (terms.some((t) => label.includes(t))) hits.push(line);
+    if (hits.length >= 40) break;
+  }
+  return { rows: [...head, ...hits].join("\n").slice(0, 7000), matched: hits.length };
 }
 
 /** How many sheets one call may return. Comparison questions ("net profit by
@@ -90,9 +130,14 @@ function serializeSheet(ws: XLSX.WorkSheet): string {
  *  "[not retrieved]". Serialisation is already capped per sheet, so several
  *  fit comfortably. */
 const MAX_SHEETS_PER_CALL = 12;
+/** With a row filter each sheet costs a handful of lines, so the whole
+ *  workbook fits — which is the only way a "compare every scenario" answer
+ *  gets every scenario. */
+const MAX_SHEETS_FILTERED = 30;
 
 export async function queryForecast(
-  sheet?: string
+  sheet?: string,
+  match?: string
 ): Promise<{ data: any; count: number; error?: string; notice?: string }> {
   try {
     const wb = await fetchWorkbook();
@@ -100,6 +145,9 @@ export async function queryForecast(
 
     const excluded = excludedSheets();
     const visible = wb.SheetNames.filter((n) => !excluded.has(n.toLowerCase()));
+
+    const terms = (match || "").split(",").map((x) => x.trim()).filter(Boolean);
+    const filtered = terms.length > 0;
 
     // "all" (or a comma-separated list) returns several sheets in one call.
     const raw = (sheet || "").trim();
@@ -114,31 +162,43 @@ export async function queryForecast(
       const resolved: string[] = [];
       const missing: string[] = [];
       for (const want of requested) {
-        const hit =
-          visible.find((n) => n.toLowerCase() === want.toLowerCase()) ||
-          visible.find((n) => n.toLowerCase().includes(want.toLowerCase()));
+        const hit = resolveSheet(visible, want);
         if (hit && !resolved.includes(hit)) resolved.push(hit);
         else if (!hit) missing.push(want);
       }
-      const capped = resolved.slice(0, MAX_SHEETS_PER_CALL);
+      const limit = filtered ? MAX_SHEETS_FILTERED : MAX_SHEETS_PER_CALL;
+      const capped = resolved.slice(0, limit);
+      const dropped = resolved.slice(limit);
+      const sheets = capped.map((n) => {
+        const { rows, matched } = serializeSheet(wb.Sheets[n], filtered ? terms : undefined);
+        return {
+          sheet: n,
+          rows,
+          // Say it outright, per sheet: a silent empty block is what the model
+          // turns into "Not retrieved" instead of asking again.
+          ...(filtered && matched === 0
+            ? { note: `No row matched ${terms.map((t) => `"${t}"`).join(" / ")} on this sheet — the figure may be labelled differently here. Re-read this sheet without a row filter before reporting it as unavailable.` }
+            : {}),
+        };
+      });
       return {
         data: {
           file: "Forecast 2026 (live from Google Drive)",
           available_sheets: visible,
-          ...(missing.length ? { not_found: missing } : {}),
-          ...(resolved.length > capped.length
-            ? { note: `Returned the first ${capped.length} of ${resolved.length} sheets — ask for the rest by name.` }
+          ...(filtered ? { row_filter: terms } : {}),
+          ...(missing.length
+            ? { not_found: missing, not_found_hint: "These names matched no sheet. Check available_sheets for the real spelling and call again — do NOT report them as unavailable without retrying." }
             : {}),
-          sheets: capped.map((n) => ({ sheet: n, rows: serializeSheet(wb.Sheets[n]) })),
+          ...(dropped.length
+            ? { omitted_sheets: dropped, omitted_hint: `Hit the ${limit}-sheet limit. Call again with sheet="${dropped.join(", ")}" to get these — do NOT leave them blank in the answer.` }
+            : {}),
+          sheets,
         },
         count: capped.length,
       };
     }
 
-    let target = raw
-      ? visible.find((n) => n.toLowerCase() === raw.toLowerCase()) ||
-        visible.find((n) => n.toLowerCase().includes(raw.toLowerCase()))
-      : undefined;
+    let target = raw ? resolveSheet(visible, raw) : undefined;
     if (raw && !target) {
       return {
         data: { available_sheets: visible }, count: visible.length,
@@ -147,12 +207,17 @@ export async function queryForecast(
     }
     if (!target) target = visible.includes("Forecast Actual Booked") ? "Forecast Actual Booked" : visible[0];
 
+    const { rows, matched } = serializeSheet(wb.Sheets[target], filtered ? terms : undefined);
     return {
       data: {
         file: "Forecast 2026 (live from Google Drive)",
         sheet: target,
         available_sheets: visible,
-        rows: serializeSheet(wb.Sheets[target]),
+        ...(filtered ? { row_filter: terms } : {}),
+        rows,
+        ...(filtered && matched === 0
+          ? { note: `No row matched ${terms.map((t) => `"${t}"`).join(" / ")} — re-read this sheet without a row filter before reporting the figure as unavailable.` }
+          : {}),
       },
       count: 1,
     };

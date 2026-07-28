@@ -4243,6 +4243,7 @@ export const QUERY_XERO_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         date_to: { type: "string", description: "ISO date (default: today)" },
         client_name: { type: "string", description: "For unpaid_invoices: filter by contact name (partial match)" },
         sheet: { type: "string", description: "For forecast: which sheet to read (partial name ok). Pass a COMMA-SEPARATED LIST for several at once, or \"all\" for the whole workbook — do that when comparing scenarios, rather than one call per sheet (repeat calls to the same tool are capped). The result lists available sheets." },
+        match: { type: "string", description: "For forecast: comma-separated ROW LABELS to extract, e.g. \"net profit, gross margin, cu projected\". Use this whenever you need the same line from many sheets — it returns the header rows plus matching rows only, so the whole workbook fits in one call instead of being cut off at the sheet limit. Omit to get full sheets." },
       },
       required: ["report"],
     },
@@ -4260,7 +4261,49 @@ export function formatXeroResult(report: string, result: { data: any; count: num
   if (result.error) {
     return `Xero query failed (report=${report}): ${result.error}\nTell the user briefly — do NOT invent or estimate figures instead.`;
   }
-  return `Xero ${report}: ${JSON.stringify(result.data).slice(0, 6000)}\n(Amounts are in the currency shown — never convert or invent figures. Present money with its currency code.)`;
+  const money = "(Amounts are in the currency shown — never convert or invent figures. Present money with its currency code.)";
+
+  // The forecast workbook is an order of magnitude bigger than the Xero
+  // reports: a dozen scenario sheets at ~7k chars each. JSON.stringify'd and
+  // cut at 6000 chars it lost every sheet after the second — the model then
+  // wrote "Not retrieved" for the rest. Render it as labelled blocks (no JSON
+  // escaping of the newlines that make the rows legible) with a budget that
+  // fits the whole workbook, and say so out loud if it still has to trim.
+  if (report === "forecast" && result.data && typeof result.data === "object" && !Array.isArray(result.data)) {
+    const d = result.data as any;
+    const parts: string[] = [`Forecast workbook: ${d.file || "Forecast 2026"}`];
+    if (Array.isArray(d.available_sheets)) parts.push(`Available sheets: ${d.available_sheets.join(" · ")}`);
+    if (Array.isArray(d.row_filter)) parts.push(`Row filter applied: ${d.row_filter.join(", ")} (header rows + matching rows only)`);
+    if (Array.isArray(d.not_found) && d.not_found.length) parts.push(`NOT FOUND: ${d.not_found.join(", ")} — ${d.not_found_hint || "retry with a name from Available sheets."}`);
+    if (Array.isArray(d.omitted_sheets) && d.omitted_sheets.length) parts.push(`OMITTED: ${d.omitted_sheets.join(", ")} — ${d.omitted_hint || "call again for these."}`);
+
+    const blocks = Array.isArray(d.sheets)
+      ? d.sheets.map((s: any) => `### Sheet: ${s.sheet}${s.note ? `\n${s.note}` : ""}\n${s.rows}`)
+      : d.rows
+        ? [`### Sheet: ${d.sheet}${d.note ? `\n${d.note}` : ""}\n${d.rows}`]
+        : [];
+
+    const BUDGET = 60000;
+    const head = parts.join("\n");
+    const kept: string[] = [];
+    let used = head.length;
+    for (const b of blocks) {
+      if (used + b.length > BUDGET) break;
+      kept.push(b);
+      used += b.length + 2;
+    }
+    const dropped = blocks.length - kept.length;
+    return [
+      head,
+      ...kept,
+      dropped > 0
+        ? `⚠️ ${dropped} sheet(s) did not fit in this result. Ask for them by name in a follow-up call — do NOT leave them blank or write "not retrieved" in the answer.`
+        : "",
+      money,
+    ].filter(Boolean).join("\n\n");
+  }
+
+  return `Xero ${report}: ${JSON.stringify(result.data).slice(0, 6000)}\n${money}`;
 }
 
 /* ─────────────── Drive Documents Tool (read-only, workspace-wide) ─────────────── */
@@ -5278,7 +5321,7 @@ async function streamAnthropic(
           tool_use_id: tool.id,
           content: executedToolSigs.has(toolSig)
             ? `You already called ${tool.name} with these exact arguments this turn — the result is above. Do NOT call it again. Answer the user now with what you have; if the data isn't available, say so plainly. Never promise to run a search or tool you cannot actually run.`
-            : `You have called ${tool.name} too many times this turn. Stop calling it and answer now. IMPORTANT: report only what you actually retrieved — do NOT fill missing rows or columns with placeholders like "[not retrieved]" as if they were results. Say plainly which parts you could not fetch and why, and mention that many of these tools accept a comma-separated list (or "all") so the rest can be fetched in ONE call next time.`,
+            : `You have called ${tool.name} too many times this turn. Stop calling it and answer now. IMPORTANT: report only what you actually retrieved — do NOT fill missing rows or columns with placeholders — no "[not retrieved]", "Not retrieved", "N/A", "TBC" or dashes standing in for figures you never fetched. If a whole column would be placeholders, drop that column and say why underneath the table instead of shipping a column of nothing. Say plainly which parts you could not fetch and why, and mention that many of these tools accept a comma-separated list (or "all") so the rest can be fetched in ONE call next time.`,
         });
         continue;
       }
@@ -5984,7 +6027,7 @@ async function streamAnthropic(
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
           const result = tool.input.report === "forecast"
-            ? await (await import("@/lib/finance/forecast")).queryForecast(tool.input.sheet)
+            ? await (await import("@/lib/finance/forecast")).queryForecast(tool.input.sheet, tool.input.match)
             : await (await import("@/lib/xero/client")).queryXero(tool.input.report, config.workspaceId!, {
                 date_from: tool.input.date_from, date_to: tool.input.date_to, client_name: tool.input.client_name,
               });
@@ -6681,7 +6724,7 @@ async function streamXAIChatCompletions(
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
           const input = JSON.parse(tc.function.arguments);
           const result = input.report === "forecast"
-            ? await (await import("@/lib/finance/forecast")).queryForecast(input.sheet)
+            ? await (await import("@/lib/finance/forecast")).queryForecast(input.sheet, input.match)
             : await (await import("@/lib/xero/client")).queryXero(input.report, config.workspaceId!, {
                 date_from: input.date_from, date_to: input.date_to, client_name: input.client_name,
               });
@@ -7340,7 +7383,7 @@ async function streamGemini(
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
           const input = JSON.parse(tc.function.arguments);
           const result = input.report === "forecast"
-            ? await (await import("@/lib/finance/forecast")).queryForecast(input.sheet)
+            ? await (await import("@/lib/finance/forecast")).queryForecast(input.sheet, input.match)
             : await (await import("@/lib/xero/client")).queryXero(input.report, config.workspaceId!, {
                 date_from: input.date_from, date_to: input.date_to, client_name: input.client_name,
               });
@@ -7911,7 +7954,7 @@ async function streamOpenAI(
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
           const input = JSON.parse(tc.function.arguments);
           const result = input.report === "forecast"
-            ? await (await import("@/lib/finance/forecast")).queryForecast(input.sheet)
+            ? await (await import("@/lib/finance/forecast")).queryForecast(input.sheet, input.match)
             : await (await import("@/lib/xero/client")).queryXero(input.report, config.workspaceId!, {
                 date_from: input.date_from, date_to: input.date_to, client_name: input.client_name,
               });

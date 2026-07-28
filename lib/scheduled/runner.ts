@@ -17,6 +17,7 @@ import { buildSystemPrompt, normalizeContextConfig } from "@/lib/ai/system-promp
 import { routeQuery } from "@/lib/ai/query-router";
 import { routeModel } from "@/lib/ai/auto-router";
 import { logAiUsage } from "@/lib/ai/usage-logger";
+import { markdownToEmailHtml } from "@/lib/scheduled/email-html";
 
 export interface ScheduledPromptRow {
   id_prompt: string;
@@ -305,18 +306,23 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
         const base = process.env.NEXTAUTH_URL || "https://engine.thecontentengine.com";
         const link = `${base}/engineai?thread=${task.id_conversation}`;
         const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        const bodyHtml = esc(deliverText.slice(0, 2200)).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br/>");
+        // Render the markdown properly: a scheduled answer is routinely a wide
+        // table, and escaping the pipes into one <p> made it unreadable.
+        const { html: bodyHtml, truncated, hasTable } = markdownToEmailHtml(deliverText);
         const subject = task.type_task === "monitor"
           ? `🔔 ${task.name_title}${changedSummary ? `: ${changedSummary}` : ""}`
           : `⏰ ${task.name_title}`;
+        // Tables need the room; prose still reads best at ~600px.
+        const width = hasTable ? 960 : 600;
         await new Resend(process.env.RESEND_API_KEY).emails.send({
           from: "EngineAI <noreply@tasks.thecontentengine.com>",
           to: task.email_user,
           subject,
-          html: `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:600px;margin:0 auto;padding:16px;color:#111">
-            <p style="font-size:14px;line-height:1.6">${bodyHtml}${deliverText.length > 2200 ? "<br/><em>…continued in the thread</em>" : ""}</p>
-            <p style="margin:20px 0"><a href="${link}" style="background:#111;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-size:14px">Open in EngineAI</a></p>
-            <p style="font-size:11px;color:#888">Scheduled prompt "${esc(task.name_title)}" — manage it in EngineAI → Scheduled.</p>
+          html: `<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:${width}px;margin:0 auto;padding:16px;color:#111827">
+            ${bodyHtml}
+            ${truncated ? `<p style="margin:12px 0 0;font-size:13px;color:#6b7280"><em>This answer was too long for one email — open the thread for the rest.</em></p>` : ""}
+            <p style="margin:24px 0"><a href="${link}" style="background:#111827;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-size:14px;display:inline-block">Open in EngineAI</a></p>
+            <p style="font-size:11px;color:#9ca3af;margin:0">Scheduled prompt "${esc(task.name_title)}" — manage it in EngineAI → Scheduled.</p>
           </div>`,
         });
       } catch (e: any) {
