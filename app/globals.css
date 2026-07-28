@@ -39,6 +39,11 @@
     --accent-foreground: 224 71% 4%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
+    /* Table figures: --destructive is tuned for buttons, not text on a
+       surface — it's too dark to read in dark mode. Zebra is a SOLID
+       colour so the pinned first column can sit opaque on top of it. */
+    --ai-negative: 0 72% 45%;
+    --ai-zebra: 220 14% 98%;
     --border: 220 13% 91%;
     --input: 220 13% 91%;
     --ring: 220 90% 56%;
@@ -70,6 +75,8 @@
     --accent-foreground: 220 14% 96%;
     --destructive: 0 63% 31%;
     --destructive-foreground: 220 14% 96%;
+    --ai-negative: 0 80% 68%;
+    --ai-zebra: 223 47% 13%;
     --border: 217 33% 17%;
     --input: 217 33% 17%;
     --ring: 220 90% 56%;
@@ -437,7 +444,11 @@
   border: 1px solid hsl(var(--border));
 }
 .ai-response .ai-table {
-  width: 100%;
+  /* max-content + min-width:100% lets a wide table size to its content and
+     scroll, instead of squeezing every column until labels wrap ("Gross
+     margin %" broke over two lines). Narrow tables still fill the column. */
+  width: max-content;
+  min-width: 100%;
   font-size: 0.9375rem;
   border-collapse: collapse;
 }
@@ -460,6 +471,64 @@
 }
 .ai-response .ai-table tbody tr:last-child td {
   border-bottom: none;
+}
+
+/* ── Figures ──────────────────────────────────────────────────────────
+   A forecast table is a dozen scenarios wide. Left-aligned proportional
+   digits make columns impossible to compare down the page, so numeric
+   columns (decided per column from the body, in convertMarkdownTables)
+   get right-aligned tabular figures and negatives get their own colour. */
+.ai-response .ai-table th.ai-num,
+.ai-response .ai-table td.ai-num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+.ai-response .ai-table td.ai-neg {
+  color: hsl(var(--ai-negative));
+}
+
+/* Zebra: opaque, so the pinned first column can sit on top of it. */
+.ai-response .ai-table tbody tr:nth-child(even) td {
+  background: hsl(var(--ai-zebra));
+}
+
+/* Pin the label column. Scrolling a wide table sideways otherwise loses
+   which row you're reading — the one thing email can't do and chat can. */
+.ai-response .ai-table th:first-child,
+.ai-response .ai-table td:first-child {
+  position: sticky;
+  left: 0;
+  background: hsl(var(--card));
+  box-shadow: 1px 0 0 hsl(var(--border));
+  min-width: 8rem;
+  max-width: 22rem;
+}
+.ai-response .ai-table td:first-child {
+  font-weight: 600;
+  color: hsl(var(--foreground));
+  z-index: 1;
+}
+.ai-response .ai-table th:first-child {
+  background: hsl(var(--muted));
+  z-index: 2;
+}
+.ai-response .ai-table tbody tr:nth-child(even) td:first-child {
+  background: hsl(var(--ai-zebra));
+}
+/* A row whose label is bolded (**Full year**) is a totals row — rule it off
+   so the eye stops there instead of reading it as one more month. */
+.ai-response .ai-table tbody tr.ai-total td,
+.ai-response .ai-table tbody tr.ai-total td:first-child {
+  border-top: 2px solid hsl(var(--border));
+  background: hsl(var(--muted));
+  font-weight: 650;
+}
+
+.ai-response .ai-table tbody tr:hover td,
+.ai-response .ai-table tbody tr:hover td:first-child {
+  background: hsl(var(--accent));
 }
 .ai-response .ai-table tbody tr:hover {
   background: hsl(var(--muted)/0.5);

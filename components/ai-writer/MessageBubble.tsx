@@ -582,6 +582,20 @@ function parseSourcesFromContent(content: string): {
   return { cleanContent: cleaned, sources };
 }
 
+/** Cell text with inline markers removed — a totals row is usually written
+ *  **-48,000**, and the asterisks would otherwise make the one row that
+ *  matters most read as prose: no alignment, no negative colour. */
+function plainCell(cell: string): string {
+  return cell.replace(/\*\*/g, "").replace(/`/g, "").replace(/^\*|\*$/g, "").trim();
+}
+
+const NUMERIC_CELL = /^[-+(]?\s*(?:CHF|GBP|USD|EUR|£|\$|€)?\s*[\d][\d,.\s]*\s*%?\)?$/i;
+
+function isNumericCell(cell: string): boolean {
+  const c = plainCell(cell);
+  return c !== "" && NUMERIC_CELL.test(c);
+}
+
 /**
  * Line-by-line markdown table detection — more robust than regex.
  * Finds lines starting & ending with | and converts to HTML tables.
@@ -638,18 +652,39 @@ function convertMarkdownTables(html: string, sources: ParsedSource[]): string {
           row.split("|").slice(1, -1).map((cell: string) => cell.trim());
 
         const headerCells = parseRow(headerLine);
-        let tableHtml = '<div class="ai-table-wrap"><table class="ai-table"><thead><tr>';
-        for (const cell of headerCells) {
-          tableHtml += `<th>${applyInlineFormatting(cell, sources)}</th>`;
+        const dataCells = dataLines.map(parseRow);
+
+        // Decide alignment per column from the BODY, so a figures column stays
+        // right-aligned even when one cell reads "n/a" — and so a table of
+        // prose is left untouched. A totals row is usually written **-48,000**,
+        // hence stripping the markers before testing.
+        const colCount = Math.max(headerCells.length, ...dataCells.map((r) => r.length), 0);
+        const numericCol: boolean[] = [];
+        for (let c = 0; c < colCount; c++) {
+          const vals = dataCells
+            .map((r) => plainCell(r[c] ?? ""))
+            .filter((v) => v !== "" && v !== "—" && v !== "-" && v !== "–");
+          numericCol[c] =
+            c > 0 && vals.length > 0 && vals.filter(isNumericCell).length >= Math.ceil(vals.length / 2);
         }
+
+        let tableHtml = '<div class="ai-table-wrap"><table class="ai-table"><thead><tr>';
+        headerCells.forEach((cell, c) => {
+          tableHtml += `<th${numericCol[c] ? ' class="ai-num"' : ""}>${applyInlineFormatting(cell, sources)}</th>`;
+        });
         tableHtml += "</tr></thead><tbody>";
 
-        for (const row of dataLines) {
-          const cells = parseRow(row);
-          tableHtml += "<tr>";
-          for (const cell of cells) {
-            tableHtml += `<td>${applyInlineFormatting(cell, sources)}</td>`;
-          }
+        for (const cells of dataCells) {
+          const isTotal = /^\*\*.+\*\*$/.test((cells[0] ?? "").trim());
+          tableHtml += isTotal ? '<tr class="ai-total">' : "<tr>";
+          cells.forEach((cell, c) => {
+            const bare = plainCell(cell);
+            const cls = [
+              numericCol[c] ? "ai-num" : "",
+              numericCol[c] && isNumericCell(bare) && /^[-(]/.test(bare) ? "ai-neg" : "",
+            ].filter(Boolean).join(" ");
+            tableHtml += `<td${cls ? ` class="${cls}"` : ""}>${applyInlineFormatting(cell, sources)}</td>`;
+          });
           tableHtml += "</tr>";
         }
         tableHtml += "</tbody></table></div>";
