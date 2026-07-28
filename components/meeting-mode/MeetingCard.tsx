@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { Pin, X, ThumbsUp, ThumbsDown, FileText, TrendingUp, CalendarClock, Layers, ListChecks, Brain, Globe } from "lucide-react";
+import { Pin, X, ThumbsUp, ThumbsDown, FileText, TrendingUp, CalendarClock, Layers, ListChecks, Brain, Globe, MessageSquareQuote } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LiveCard } from "@/lib/meeting/trigger-engine";
 
@@ -30,6 +30,7 @@ const KIND_ICON: Record<string, typeof FileText> = {
   open_tasks: ListChecks,
   memory_context: Brain,
   world_context: Globe,
+  moment: MessageSquareQuote,
 };
 
 // Left-accent colour by kind — makes the card type readable in a glance.
@@ -45,6 +46,8 @@ const KIND_ACCENT: Record<string, string> = {
   open_tasks: "border-l-teal-500",
   memory_context: "border-l-pink-500",
   world_context: "border-l-indigo-500",
+  // Amber: a moment is the one card type that wants you to act NOW.
+  moment: "border-l-amber-500",
 };
 const accentOf = (kind: string) => KIND_ACCENT[kind] || "border-l-muted-foreground/30";
 
@@ -127,6 +130,21 @@ export function CardContent({ kind, body }: { kind: string; body: any }) {
         )}
         {s.ending_within_30_days > 0 && (
           <div className="text-[12px] text-amber-600 dark:text-amber-400">{s.ending_within_30_days} contract(s) ending within 30 days</div>
+        )}
+      </div>
+    );
+  }
+
+  if (kind === "moment") {
+    // A moment card's evidence is the sentence itself — show it verbatim and
+    // in quotes, because the value is "you just heard this", not a statistic.
+    const quote = body?.quote ? String(body.quote) : "";
+    return (
+      <div className="space-y-1 text-sm">
+        {quote && (
+          <p className="text-[13px] leading-relaxed text-foreground/90 border-l-2 border-amber-500/50 pl-2 italic">
+            &ldquo;{quote}&rdquo;
+          </p>
         )}
       </div>
     );

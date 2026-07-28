@@ -34,6 +34,18 @@ function getXAIClient() {
 
 const ENRICH_SYSTEM = `You are a silent meeting copilot for a content agency. A data card is about to be shown to the user (NOT spoken aloud) during a live meeting. Using the recent conversation and the client's background, write ONE short, natural sentence (max ~22 words) that frames the card's REAL figures AND why they matter right now — like a sharp colleague leaning over and pointing. If the card shows a gap (e.g. no contract on file), say what's worth checking. No greeting, no preamble, no "here's". Return ONLY the sentence.`;
 
+const MOMENT_SYSTEM = `You are a silent meeting copilot for a content agency, watching a live meeting for the user (an agency person, often mid-pitch). Something notable was just SAID in the room and is being flagged to them on screen — they can act on it within seconds.
+
+Write ONE short line (max ~20 words) that tells them what to DO about it. Not a summary of what was said — they heard it. Examples of the register:
+- a scope request → "Worth confirming what's in scope before agreeing — this sounds like a second contract."
+- a commitment they made → "You've promised a follow-up — pin it so it lands in the digest."
+- a date → "Confirm the September start works before the call ends."
+- a pricing question → "Answer with the unit rate, then the flexibility — the rate is the thing they'll remember."
+- a stated concern → "Address this head on; leaving it unanswered is what loses the shortlist."
+- how they'll decide → "Note the criteria — mirror this language in the follow-up."
+
+If there is genuinely nothing useful to add, return the single word NONE. Never invent facts, numbers or history — you have only the sentence and the conversation around it. No greeting, no preamble. Return ONLY the line.`;
+
 const LOOKUP_SYSTEM = `You are a silent meeting copilot for a content agency. Below is the tail of a live meeting transcript and real workspace data (scoped to one client, or workspace-wide across all clients — the scope is stated). Decide which ONE data category best answers what was just asked/discussed, and write a natural one-sentence insight grounded in the REAL numbers.
 
 Categories: "units" (how many content units commissioned/produced this month/period), "contract" (contracts/commercials/CU budgets/renewals), "pipeline" (content in production/published), "meetings" (what was agreed / last discussion / commitments), "content" (examples of past work), "tasks" (the user's open action items / things they committed to — useful in 1:1s and team catch-ups), "memory" (saved workspace knowledge: notes about people, development ideas, past decisions, company facts), "client_snapshot" (a specific client was just mentioned by name — their own contract/pipeline/units snapshot; only when mentioned_client data is present), "world_context" (a concrete PUBLIC event, summit, conference or regulation was mentioned — e.g. "CBD COP17", "New York Climate Week", an industry awards — where objective background like dates/location/theme would genuinely help the discussion; put the entity's proper name in "topic"; prefer an internal category whenever both apply), "none" (nothing relevant). The meeting may be an INTERNAL one (a 1:1, team catch-up) — tasks/memory are often the useful pick there. Only choose a category whose data is actually present below (world_context is the exception: its facts are fetched separately with LIVE web search, so for it your insight must say WHY it matters to this conversation and must NOT state dates/locations/details from memory).
@@ -131,13 +143,22 @@ export async function POST(req: NextRequest) {
         model: API_MODEL,
         temperature: 0.3,
         max_tokens: 70,
-        messages: [
-          { role: "system", content: ENRICH_SYSTEM },
-          { role: "user", content: `${who}${bg}${tail}Card (${enrich.kind}) data:\n${JSON.stringify(enrich.data).slice(0, 2000)}` },
-        ],
+        messages: enrich.kind === "moment"
+          ? [
+              { role: "system", content: MOMENT_SYSTEM },
+              { role: "user", content: `${who}${bg}${tail}They just said: "${String((enrich.data as any)?.quote || enrich.utterance || "").slice(0, 400)}"` },
+            ]
+          : [
+              { role: "system", content: ENRICH_SYSTEM },
+              { role: "user", content: `${who}${bg}${tail}Card (${enrich.kind}) data:\n${JSON.stringify(enrich.data).slice(0, 2000)}` },
+            ],
       });
       logAiUsage({ workspaceId: ms.id_workspace, userId, model: MODEL, source: "engineai-meeting", inputTokens: res.usage?.prompt_tokens || 0, outputTokens: res.usage?.completion_tokens || 0 });
       const insight = (res.choices?.[0]?.message?.content || "").trim().replace(/^["']|["']$/g, "").slice(0, 240);
+      // A moment card carries the quote itself, so an empty insight still
+      // leaves a useful card — better than padding it with a line that says
+      // nothing.
+      if (/^none\.?$/i.test(insight)) return NextResponse.json({ insight: "" });
       return NextResponse.json({ insight });
     }
 
