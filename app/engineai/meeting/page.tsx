@@ -78,7 +78,7 @@ function isDataQuestion(text: string): boolean {
   return interrogative && (DATA_HINT.test(t) || EVENT_HINT.test(t));
 }
 const CALENDAR_SNIPPET =
-  "Note: this meeting uses a live transcription assistant (EngineAI Live) so we can skip note-taking. No audio is recorded and no transcript is kept — only a reviewed summary of decisions and action items. Happy to switch it off on request.";
+  "Note: this meeting uses a live transcription assistant (EngineAI Live) so we can skip note-taking. No audio is recorded, and the transcript is discarded at the end — we keep a reviewed summary of decisions and action items. If we need to keep the transcript we will say so first. Happy to switch it off on request.";
 const VERBAL_SNIPPET =
   "Quick note before we start — I use a live assistant that transcribes our conversation so I don't take notes. Nothing is recorded or kept, just the action items. All good?";
 
@@ -1192,6 +1192,48 @@ function cardSignature(card: LiveCard): string {
     }
   };
 
+  const [sendingMb, setSendingMb] = useState(false);
+  /**
+   * Send this session's material to MeetingBrain. Explicitly user-initiated
+   * from the review screen, after the digest has been read — the default stays
+   * process-and-discard, and this is the one act that makes any of it durable.
+   */
+  const handleSendToMb = async (parts: { summary: boolean; transcript: boolean; tasks: boolean }) => {
+    if (!sessionIdRef.current) return;
+    setSendingMb(true);
+    try {
+      const d: any = draftDigest || {};
+      const res = await fetch("/api/ai/meeting/export-to-mb", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: sessionIdRef.current,
+          includeSummary: parts.summary,
+          includeTranscript: parts.transcript,
+          includeTasks: parts.tasks,
+          summary: parts.summary ? (d.summary || "") : undefined,
+          // The in-memory transcript — this request is the only time it leaves
+          // the browser for MeetingBrain, and only because the user asked.
+          transcript: parts.transcript
+            ? utterancesRef.current.map((u) => u.text).filter(Boolean).join("\n")
+            : undefined,
+          tasks: parts.tasks ? (d.action_items || d.actions || []) : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { toast.error(data.error || "Could not send to MeetingBrain"); return; }
+      toast.success(
+        data.mode === "attached"
+          ? `Sent to the MeetingBrain meeting${data.taskCount ? ` — ${data.taskCount} task(s)` : ""}`
+          : `Created a MeetingBrain meeting${data.taskCount ? ` — ${data.taskCount} task(s)` : ""}`
+      );
+    } catch {
+      toast.error("Could not send to MeetingBrain");
+    } finally {
+      setSendingMb(false);
+    }
+  };
+
   const handleDiscard = async () => {
     if (!confirm("Discard everything from this meeting? Nothing will be saved.")) return;
     try {
@@ -1509,6 +1551,8 @@ function cardSignature(card: LiveCard): string {
             onContinue={handleContinueInEngineAI}
             onSave={handleSaveDigest}
             onDiscard={handleDiscard}
+            onSendToMb={handleSendToMb}
+            sendingMb={sendingMb}
             onRetry={() => sessionIdRef.current && generateDigest(sessionIdRef.current, utterancesRef.current, billedSeconds())}
           />
         )}
@@ -1733,8 +1777,10 @@ function SetupScreen(props: {
           />
           <span className="text-xs leading-snug">
             I confirm every participant in this meeting has been informed that a live
-            transcription assistant is in use, and consents. <strong>No audio is recorded
-            and no transcript is kept</strong> — only a summary I review and approve.
+            transcription assistant is in use, and consents. <strong>No audio is ever
+            recorded, and the transcript is discarded when this window closes</strong> —
+            unless I choose to save it to MeetingBrain at the end, which I will only do
+            if participants were told the meeting was being recorded.
           </span>
         </label>
       </div>
@@ -1772,6 +1818,8 @@ function ReviewScreen(props: {
   onContinue: () => void;
   onSave: () => void;
   onDiscard: () => void;
+  onSendToMb: (parts: { summary: boolean; transcript: boolean; tasks: boolean }) => void;
+  sendingMb: boolean;
   onRetry: () => void;
 }) {
   const [emailCopied, setEmailCopied] = useState(false);
@@ -1872,6 +1920,16 @@ function ReviewScreen(props: {
           Opens a new chat with the transcript, summary, actions &amp; context — carry on drafting follow-ups there.
         </p>
 
+        {/* Send to MeetingBrain — the ONE act that makes any of this durable
+            outside EngineAI. Opt-in, itemised, and after the digest has been
+            read, so the user is choosing with full sight of the content. */}
+        <MbSendBox
+          disabled={!d?.summary}
+          sending={props.sendingMb}
+          hasTasks={Array.isArray(d?.action_items) && d.action_items.length > 0}
+          onSend={props.onSendToMb}
+        />
+
         <div className="flex gap-2">
           <button
             onClick={props.onSave}
@@ -1896,6 +1954,63 @@ function ReviewScreen(props: {
   );
 }
 
+/* ─────────────── Send-to-MeetingBrain box ─────────────── */
+
+function MbSendBox(props: {
+  disabled: boolean;
+  sending: boolean;
+  hasTasks: boolean;
+  onSend: (parts: { summary: boolean; transcript: boolean; tasks: boolean }) => void;
+}) {
+  const [summary, setSummary] = useState(true);
+  const [transcript, setTranscript] = useState(false);
+  const [tasks, setTasks] = useState(props.hasTasks);
+  const none = !summary && !transcript && !tasks;
+
+  const Row = ({ on, set, label, hint }: { on: boolean; set: (v: boolean) => void; label: string; hint?: string }) => (
+    <label className="flex items-start gap-2 cursor-pointer">
+      <input type="checkbox" checked={on} onChange={(e) => set(e.target.checked)} className="mt-0.5 h-3.5 w-3.5 accent-violet-600" />
+      <span className="min-w-0">
+        <span className="text-[12px] font-medium">{label}</span>
+        {hint && <span className="block text-[10px] text-muted-foreground leading-snug">{hint}</span>}
+      </span>
+    </label>
+  );
+
+  return (
+    <div className="rounded-xl border border-violet-500/30 bg-violet-500/5 p-3 space-y-2">
+      <div className="text-[12px] font-semibold flex items-center gap-1.5">
+        <span aria-hidden="true">⚡</span> Send to MeetingBrain
+      </div>
+      <div className="space-y-1.5">
+        <Row on={summary} set={setSummary} label="Summary" hint="The digest above, as the meeting's notes." />
+        <Row
+          on={transcript}
+          set={setTranscript}
+          label="Transcript"
+          hint="Saves the full transcript to MeetingBrain. Nothing is kept unless you tick this."
+        />
+        <Row on={tasks} set={setTasks} label="Action items" hint={props.hasTasks ? "Created as MeetingBrain tasks." : "None found in this meeting."} />
+      </div>
+      {transcript && (
+        <p className="text-[10px] leading-snug text-amber-600 dark:text-amber-400">
+          The transcript becomes a stored record in MeetingBrain, kept under its retention rules — not
+          discarded when you close this window. Only send it if participants were told the meeting was
+          being recorded.
+        </p>
+      )}
+      <button
+        onClick={() => props.onSend({ summary, transcript, tasks })}
+        disabled={props.disabled || props.sending || none}
+        className="w-full h-9 rounded-xl text-sm font-medium bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 flex items-center justify-center gap-2"
+      >
+        {props.sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+        {none ? "Choose what to send" : "Send to MeetingBrain"}
+      </button>
+    </div>
+  );
+}
+
 /* ─────────────── Transcript pane (own scroll, contained) ─────────────── */
 
 function TranscriptPane({ utterances, partial }: { utterances: Utterance[]; partial: string }) {
@@ -1909,7 +2024,7 @@ function TranscriptPane({ utterances, partial }: { utterances: Utterance[]; part
   }, [utterances.length]);
   return (
     <div ref={ref} className="h-full overflow-y-auto px-2.5 pb-2 pt-1">
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground/50 mb-1">In-memory only · not recorded</div>
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground/50 mb-1">In-memory only · discarded unless you save it</div>
       {utterances.length === 0 && !partial && (
         <p className="text-[13px] text-muted-foreground/50 py-4 text-center">Transcript appears here as people speak.</p>
       )}

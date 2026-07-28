@@ -3170,7 +3170,7 @@ function qHash(q: unknown): string {
   return `${h.toString(36)}:${v.length}`;
 }
 
-function getMeetingBrainDb() {
+export function getMeetingBrainDb() {
   if (!_mbDb) {
     _mbDb = createMBClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
