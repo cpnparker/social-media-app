@@ -44,8 +44,20 @@ export async function POST(req: NextRequest) {
       .select("id_session, id_workspace, name_title, mb_meeting_id, consent_attested_by, date_created")
       .eq("id_session", sessionId)
       .maybeSingle();
-    if (!ms || ms.consent_attested_by !== userId) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    // Distinguish the two failures. A bare "Not found" was untraceable: the
+    // most likely cause in practice is a STALE sessionId restored from the
+    // crash buffer, pointing at a session that no longer exists — which looks
+    // identical to a permissions failure from the outside.
+    if (!ms) {
+      console.warn(`[ExportToMB] no session row for ${sessionId} (stale crash buffer?)`);
+      return NextResponse.json(
+        { error: "This meeting session is no longer available — it may be from an earlier session. Start a new one and try again." },
+        { status: 404 }
+      );
+    }
+    if (ms.consent_attested_by !== userId) {
+      console.warn(`[ExportToMB] session ${sessionId} belongs to user ${ms.consent_attested_by}, not ${userId}`);
+      return NextResponse.json({ error: "This session belongs to another user." }, { status: 403 });
     }
 
     const mbDb = getMeetingBrainDb();

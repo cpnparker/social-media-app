@@ -347,10 +347,23 @@ export default function MeetingLivePage() {
 
   useEffect(() => {
     try {
-      const raw = sessionStorage.getItem(CRASH_BUFFER_KEY);
+      // A deliberate launch is NOT a crash. The Live window opens with a named
+      // target, so re-clicking MeetingBrain's ⚡ reuses the same tab and the
+      // same sessionStorage — which meant a previous session that was ended but
+      // never resolved (window closed at the review screen) was restored over
+      // the new one: last meeting's transcript, last meeting's notes, straight
+      // to a review screen for a meeting the user had not held. It also raced
+      // the ?mb= load, which is why a second click behaved differently.
+      const fresh = new URLSearchParams(window.location.search).has("mb");
+      const raw = fresh ? null : sessionStorage.getItem(CRASH_BUFFER_KEY);
+      if (fresh) sessionStorage.removeItem(CRASH_BUFFER_KEY);
       if (raw) {
         const buf = JSON.parse(raw);
-        if (buf?.utterances?.length > 2 && buf.sessionId) {
+        // An unresolved buffer must not haunt the tab indefinitely.
+        const ageMs = buf?.savedAt ? Date.now() - Number(buf.savedAt) : Infinity;
+        const recent = ageMs < 2 * 60 * 60 * 1000; // 2h
+        if (!recent) sessionStorage.removeItem(CRASH_BUFFER_KEY);
+        if (recent && buf?.utterances?.length > 2 && buf.sessionId) {
           utterancesRef.current = buf.utterances;
           utteranceIdxRef.current = buf.utterances.length;
           sessionIdRef.current = buf.sessionId;
@@ -482,6 +495,7 @@ export default function MeetingLivePage() {
                 clientId: clientIdRef.current,
                 utterances: utterancesRef.current.slice(-800),
                 elapsedSeconds: Math.round((Date.now() - startedAtRef.current - pausedAccumRef.current) / 1000),
+                savedAt: Date.now(),
               })
             );
           } catch { /* quota — fine, best-effort */ }
@@ -1027,6 +1041,9 @@ function cardSignature(card: LiveCard): string {
       }
       const { sessionId, conversationId: convId } = await res.json();
       sessionIdRef.current = sessionId;
+      // Drop any abandoned buffer from an earlier session in this tab, so it
+      // can never be restored over this one.
+      try { sessionStorage.removeItem(CRASH_BUFFER_KEY); } catch { /* noop */ }
       setConversationId(convId);
       localStorage.setItem(DEVICE_KEY, deviceId);
       closingRef.current = false;
