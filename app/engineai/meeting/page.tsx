@@ -228,7 +228,18 @@ export default function MeetingLivePage() {
       const thread = sp.get("thread");
       if (thread) void loadLinkedChat(thread);
       const mb = sp.get("mb"); // launched from meetingbrain.ai's meeting panel
-      if (mb) void loadMbMeeting(mb);
+      if (mb) {
+        // Record the link IMMEDIATELY. The id comes from the URL, so it is
+        // known whether or not the context fetch succeeds — and for a meeting
+        // you are currently IN, MeetingBrain holds only a calendar stub, so
+        // meeting_details returns nothing, mb-context 404s and loadMbMeeting
+        // bails early. Setting the ref inside that function meant the session
+        // stored mb_meeting_id: null for exactly the case this feature exists
+        // for, so "send to MeetingBrain" could never attach and created a
+        // duplicate meeting instead.
+        mbMeetingIdRef.current = mb;
+        void loadMbMeeting(mb);
+      }
     } catch { /* noop */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

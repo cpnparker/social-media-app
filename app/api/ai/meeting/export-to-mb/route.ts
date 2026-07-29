@@ -109,6 +109,11 @@ export async function POST(req: NextRequest) {
         .select("id, user_id, local_transcript")
         .eq("id", String(ms.mb_meeting_id))
         .maybeSingle();
+      if (!existing) {
+        console.warn(`[ExportToMB] mb_meeting_id ${ms.mb_meeting_id} not found — creating a new meeting instead`);
+      } else if (String(existing.user_id) !== String(mbUser.id)) {
+        console.warn(`[ExportToMB] mb_meeting_id ${ms.mb_meeting_id} belongs to ${existing.user_id}, not ${mbUser.id} — creating a new meeting instead`);
+      }
       if (existing && String(existing.user_id) === String(mbUser.id)) {
         meetingId = existing.id;
         mode = "attached";
