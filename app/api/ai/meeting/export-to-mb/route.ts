@@ -96,6 +96,8 @@ export async function POST(req: NextRequest) {
 
     let meetingId: string | null = null;
     let mode: "attached" | "created" = "created";
+    let attachedMeeting: any = null;
+    let attendeeTasks = 0;
 
     // ── Attach to the originating meeting, if it is genuinely the caller's ──
     // mb_meeting_id is stored verbatim from the ?mb= deep link, i.e. whichever
@@ -106,7 +108,7 @@ export async function POST(req: NextRequest) {
     if (ms.mb_meeting_id) {
       const { data: existing } = await mbDb
         .from("processed_meeting")
-        .select("id, user_id, local_transcript")
+        .select("id, user_id, local_transcript, calendar_event_id, attendees")
         .eq("id", String(ms.mb_meeting_id))
         .maybeSingle();
       if (!existing) {
@@ -117,6 +119,7 @@ export async function POST(req: NextRequest) {
       if (existing && String(existing.user_id) === String(mbUser.id)) {
         meetingId = existing.id;
         mode = "attached";
+        attachedMeeting = existing;
         const patch: Record<string, unknown> = {};
         if (includeSummary && summary) {
           patch.summary = String(summary).slice(0, 20000);
@@ -203,10 +206,84 @@ export async function POST(req: NextRequest) {
       if (taskCount > 0) {
         await mbDb.from("processed_meeting").update({ tasks_extracted: taskCount }).eq("id", meetingId);
       }
+
+      // ── Fan out to the attendee each item was assigned to ──
+      //
+      // MeetingBrain keeps a SEPARATE row per attendee per calendar event, and
+      // tasks are personal to the row that generated them — shareTranscript-
+      // ToAttendees copies only the transcript, never tasks. So without this,
+      // an action item owned by a colleague lands only in the recorder's list
+      // and they never see it, which is exactly what happened after the first
+      // real session.
+      //
+      // Scoped deliberately: only attendees who already have their OWN row for
+      // this calendar event (i.e. MeetingBrain users whose calendar was
+      // scanned) get a task, and it is attached to THEIR row. Nobody gains a
+      // meeting record they did not already have, and a client attendee with
+      // no MeetingBrain account gets nothing.
+      const eventId = attachedMeeting?.calendar_event_id;
+      if (eventId && !String(eventId).startsWith("engineai-live-")) {
+        try {
+          // Sibling rows for the same calendar event, excluding the host's.
+          const { data: siblings } = await mbDb
+            .from("processed_meeting")
+            .select("id, user_id")
+            .eq("calendar_event_id", eventId)
+            .neq("user_id", mbUser.id);
+
+          if (siblings && siblings.length > 0) {
+            const { data: sibUsers } = await mbDb
+              .from("users")
+              .select("id, name, email")
+              .in("id", siblings.map((r: any) => r.user_id));
+
+            const norm = (x: string) => String(x || "").toLowerCase().replace(/[^a-z]+/g, " ").trim();
+            let fanned = 0;
+            for (const sib of siblings) {
+              const u = (sibUsers || []).find((x: any) => String(x.id) === String(sib.user_id));
+              if (!u) continue;
+              const first = norm(u.name).split(" ")[0];
+              // Match the digest's `owner` against this attendee. First name is
+              // how people are named in a meeting; require a real token so a
+              // blank owner never matches everyone.
+              const theirs = (Array.isArray(tasks) ? tasks : []).filter((t: any) => {
+                const owner = norm(t?.owner);
+                if (!owner || !first || first.length < 2) return false;
+                return owner === norm(u.name) || owner.split(" ").includes(first);
+              });
+              for (const t of theirs) {
+                const title = String(t?.item || t?.title || "").trim().slice(0, 300);
+                if (!title) continue;
+                const { error } = await mbDb.from("task").insert({
+                  title,
+                  description: null,
+                  status: "NEW",
+                  responsible: u.name || null,
+                  deadline: t?.due || null,
+                  meeting: ms.name_title || "EngineAI Live meeting",
+                  meeting_id: sib.id,           // THEIR row, not the host's
+                  source_ref: `meeting:${sib.id}`,
+                  user_id: u.id,
+                  order: 0,
+                });
+                if (!error) fanned++;
+                else if (error.code !== "23505") console.warn("[ExportToMB] attendee task:", error.message);
+              }
+            }
+            if (fanned > 0) {
+              attendeeTasks = fanned;
+              console.log(`[ExportToMB] fanned ${fanned} task(s) to ${siblings.length} attendee row(s)`);
+            }
+          }
+        } catch (e: any) {
+          // Never fail the host's save because a colleague's copy did not land.
+          console.warn("[ExportToMB] attendee fan-out failed:", e?.message);
+        }
+      }
     }
 
     console.log(`[ExportToMB] session ${sessionId} → meeting ${meetingId} (${mode}), ${taskCount} task(s)`);
-    return NextResponse.json({ ok: true, mode, meetingId, taskCount });
+    return NextResponse.json({ ok: true, mode, meetingId, taskCount, attendeeTasks });
   } catch (err: any) {
     console.error("[ExportToMB] Failed:", err.message);
     return NextResponse.json({ error: err.message || "Could not send to MeetingBrain" }, { status: 500 });

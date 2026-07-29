@@ -1252,10 +1252,14 @@ function cardSignature(card: LiveCard): string {
       });
       const data = await res.json();
       if (!res.ok) { toast.error(data.error || "Could not send to MeetingBrain"); return; }
+      const extra = [
+        data.taskCount ? `${data.taskCount} task${data.taskCount === 1 ? "" : "s"}` : "",
+        data.attendeeTasks ? `${data.attendeeTasks} to attendees` : "",
+      ].filter(Boolean).join(", ");
       toast.success(
-        data.mode === "attached"
-          ? `Sent to the MeetingBrain meeting${data.taskCount ? ` — ${data.taskCount} task(s)` : ""}`
-          : `Created a MeetingBrain meeting${data.taskCount ? ` — ${data.taskCount} task(s)` : ""}`
+        (data.mode === "attached"
+          ? "Sent to the MeetingBrain meeting"
+          : "Created a MeetingBrain meeting") + (extra ? ` — ${extra}` : "")
       );
     } catch {
       toast.error("Could not send to MeetingBrain");
@@ -2020,7 +2024,7 @@ function MbSendBox(props: {
           label="Transcript"
           hint="Saves the full transcript to MeetingBrain. Nothing is kept unless you tick this."
         />
-        <Row on={tasks} set={setTasks} label="Action items" hint={props.hasTasks ? "Created as MeetingBrain tasks." : "None found in this meeting."} />
+        <Row on={tasks} set={setTasks} label="Action items" hint={props.hasTasks ? "Created as MeetingBrain tasks — and assigned to attendees who own them." : "None found in this meeting."} />
       </div>
       {transcript && (
         <p className="text-[10px] leading-snug text-amber-600 dark:text-amber-400">
