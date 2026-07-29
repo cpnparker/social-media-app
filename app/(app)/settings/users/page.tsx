@@ -55,6 +55,7 @@ interface WorkspaceMember {
   accessEngineAiLive: boolean;
   accessFinance: boolean;
   accessGmail: boolean;
+  accessEngineTasks: boolean;
 }
 
 interface CustomerAssignment {
@@ -73,7 +74,8 @@ type AccessField =
   | "accessAuthorityOn"
   | "accessEngineAiLive"
   | "accessFinance"
-  | "accessGmail";
+  | "accessGmail"
+  | "accessEngineTasks";
 
 /* ─────────────── Config ─────────────── */
 
@@ -122,6 +124,8 @@ const accessFields: { key: AccessField; label: string }[] = [
   { key: "accessEngineAiLive", label: "Live" },
   { key: "accessFinance", label: "Finance" },
   { key: "accessGmail", label: "Mail" },
+  // Shows the user's Engine tasks inside MeetingBrain (read-only).
+  { key: "accessEngineTasks", label: "Tasks" },
 ];
 
 const appRoleOptions: { value: string; label: string; color: string; bg: string }[] = [

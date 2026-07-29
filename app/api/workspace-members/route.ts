@@ -116,6 +116,7 @@ export async function GET() {
         accessEngineAiLive: access ? !!access.flag_access_engineai_live : false,
         accessFinance: access ? !!access.flag_access_finance : false,
         accessGmail: access ? (access as any).flag_access_gmail === 1 : false,
+        accessEngineTasks: access ? (access as any).flag_access_engine_tasks === 1 : false,
       };
     });
 
@@ -255,7 +256,7 @@ export async function PATCH(req: NextRequest) {
   if (!guard.ok) return guard.res;
   try {
     const body = await req.json();
-    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain, accessRfpTool, accessAuthorityOn, accessEngineAiLive, accessFinance, accessGmail } = body;
+    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain, accessRfpTool, accessAuthorityOn, accessEngineAiLive, accessFinance, accessGmail, accessEngineTasks } = body;
 
     // Determine target user IDs — bulk or single
     const isBulk = Array.isArray(userIds) && userIds.length > 0;
@@ -318,19 +319,35 @@ export async function PATCH(req: NextRequest) {
       accessAdmin !== undefined ||
       accessMeetingBrain !== undefined ||
       accessRfpTool !== undefined ||
+      // accessAuthorityOn was missing here while being handled in both
+      // branches below, so toggling ONLY "Auth" silently did nothing.
+      accessAuthorityOn !== undefined ||
       accessEngineAiLive !== undefined ||
       accessFinance !== undefined ||
-      accessGmail !== undefined;
+      accessGmail !== undefined ||
+      accessEngineTasks !== undefined;
 
     if (hasAccessUpdate) {
+      // supabase-js resolves PostgREST failures as { error }; it does not
+      // throw. Every write below used to drop that error, so a rejected
+      // grant still answered 200 and the admin UI painted the toggle green.
+      const failures: string[] = [];
+
       await Promise.all(
         targetIds.map(async (numericId) => {
-          const { data: existing } = await intelligenceDb
+          const { data: existing, error: readErr } = await intelligenceDb
             .from("users_access")
             .select("*")
             .eq("id_workspace", ws.id)
             .eq("user_target", numericId)
             .maybeSingle();
+
+          if (readErr) {
+            // Without this, a failed read looks like "no row" and sends an
+            // existing user down the INSERT path.
+            failures.push(`user ${numericId}: ${readErr.message}`);
+            return;
+          }
 
           if (existing) {
             const updates: Record<string, any> = {
@@ -346,13 +363,15 @@ export async function PATCH(req: NextRequest) {
             if (accessEngineAiLive !== undefined) updates.flag_access_engineai_live = accessEngineAiLive ? 1 : 0;
             if (accessFinance !== undefined) updates.flag_access_finance = accessFinance ? 1 : 0;
             if (accessGmail !== undefined) updates.flag_access_gmail = accessGmail ? 1 : 0;
+            if (accessEngineTasks !== undefined) updates.flag_access_engine_tasks = accessEngineTasks ? 1 : 0;
 
-            await intelligenceDb
+            const { error: updErr } = await intelligenceDb
               .from("users_access")
               .update(updates)
               .eq("id_access", existing.id_access);
+            if (updErr) failures.push(`user ${numericId}: ${updErr.message}`);
           } else {
-            await intelligenceDb.from("users_access").insert({
+            const { error: insErr } = await intelligenceDb.from("users_access").insert({
               id_workspace: ws.id,
               user_target: numericId,
               flag_access_engine: accessEngine ? 1 : 0,
@@ -365,10 +384,24 @@ export async function PATCH(req: NextRequest) {
               flag_access_engineai_live: accessEngineAiLive ? 1 : 0,
               flag_access_finance: accessFinance ? 1 : 0,
               flag_access_gmail: accessGmail ? 1 : 0,
+              // Only sent when the admin actually touched this toggle. Naming a
+              // column that does not exist yet fails the WHOLE insert, which
+              // would break unrelated grants for the users who have no row.
+              ...(accessEngineTasks !== undefined
+                ? { flag_access_engine_tasks: accessEngineTasks ? 1 : 0 }
+                : {}),
             });
+            if (insErr) failures.push(`user ${numericId}: ${insErr.message}`);
           }
         })
       );
+
+      if (failures.length) {
+        return NextResponse.json(
+          { error: `Access update failed — ${failures.join("; ")}` },
+          { status: 500 }
+        );
+      }
     }
 
     return NextResponse.json({ success: true, updated: targetIds.length });
