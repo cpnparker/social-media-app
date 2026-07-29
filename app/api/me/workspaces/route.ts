@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { findUserIdByEmail } from "@/lib/user-lookup";
 
 // GET /api/me/workspaces — returns workspaces the user belongs to
 export async function GET() {
@@ -17,15 +17,9 @@ export async function GET() {
     // If token.sub is a Google ID (not a valid DB ID), resolve via email
     if (!isValidId && session.user.email) {
       console.warn(`[/api/me/workspaces] Invalid user ID ${session.user.id}, resolving by email: ${session.user.email}`);
-      const { data: dbUser } = await supabase
-        .from("users")
-        .select("id_user")
-        .eq("email_user", session.user.email)
-        .is("date_deleted", null)
-        .limit(1)
-        .single();
-      if (dbUser) {
-        userId = dbUser.id_user;
+      const dbUserId = await findUserIdByEmail(session.user.email);
+      if (dbUserId != null) {
+        userId = dbUserId;
       } else {
         return NextResponse.json({ workspaces: [] });
       }

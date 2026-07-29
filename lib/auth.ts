@@ -2,6 +2,7 @@ import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
 import { supabase } from "./supabase";
 import { intelligenceDb } from "./supabase-intelligence";
+import { findUserByEmail } from "./user-lookup";
 
 // Share auth cookies across all *.thecontentengine.com subdomains
 const isProduction = process.env.NODE_ENV === "production";
@@ -72,18 +73,23 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     async signIn({ user, account }) {
       if (account?.provider === "google" && user.email) {
         try {
-          // Primary lookup: by email
-          const { data: existingUser, error } = await supabase
-            .from("users")
-            .select("id_user, email_user")
-            .eq("email_user", user.email)
-            .is("date_deleted", null)
-            .single();
-
-          if (error && error.code !== "PGRST116") {
-            // PGRST116 = no rows found (expected for new users)
-            console.error("signIn DB lookup error:", error.message);
-          }
+          // Primary lookup: by email, case-insensitively.
+          //
+          // `eq` is case-sensitive and 87 of 712 live rows store a mixed-case
+          // email_user (Claire@…, Harry.S.Leff@…). Those signers matched
+          // nothing here and fell straight through to the auto-create below —
+          // forking a second, empty account away from their real one and its
+          // access flags, conversations and scheduled tasks.
+          //
+          // findUserByEmail throws rather than returning null when the query
+          // itself fails, and that matters most here: a transient DB error
+          // must never read as "new user" and create a duplicate. The outer
+          // catch lets sign-in proceed; the jwt callback resolves the id on
+          // the next pass.
+          const existingUser = await findUserByEmail<{ id_user: number }>(
+            user.email,
+            "id_user"
+          );
 
           let userId: number | null = existingUser?.id_user ?? null;
 
@@ -198,15 +204,12 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         token.email = user.email;
         token.name = token.name || user.name;
         try {
-          const { data: dbUser, error } = await supabase
-            .from("users")
-            .select("id_user, name_user, role_user")
-            .eq("email_user", user.email)
-            .is("date_deleted", null)
-            .single();
-          if (error && error.code !== "PGRST116") {
-            console.error("jwt DB lookup error:", error.message);
-          }
+          // Case-insensitive: see the signIn callback above.
+          const dbUser = await findUserByEmail<{
+            id_user: number;
+            name_user: string | null;
+            role_user: string | null;
+          }>(user.email, "id_user, name_user, role_user");
           if (dbUser) {
             console.log(`[Auth JWT] Resolved ${user.email} → userId=${dbUser.id_user}`);
             token.sub = String(dbUser.id_user);
@@ -231,12 +234,11 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       const isValidDbId = !isNaN(subAsInt) && Number.isSafeInteger(subAsInt) && subAsInt > 0 && subAsInt < 10000000;
       if (!isValidDbId && token.email && !user) {
         try {
-          const { data: dbUser } = await supabase
-            .from("users")
-            .select("id_user, name_user, role_user")
-            .eq("email_user", token.email as string)
-            .is("date_deleted", null)
-            .single();
+          const dbUser = await findUserByEmail<{
+            id_user: number;
+            name_user: string | null;
+            role_user: string | null;
+          }>(token.email as string, "id_user, name_user, role_user");
           if (dbUser) {
             console.log(`[Auth] Self-healed JWT: ${token.sub} → ${dbUser.id_user} for ${token.email}`);
             token.sub = String(dbUser.id_user);
