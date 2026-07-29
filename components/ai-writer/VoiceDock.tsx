@@ -370,9 +370,18 @@ export default function VoiceDock({
                 },
               })
             );
+            // Arm the guard BEFORE sending, not when the server acks. The
+            // queue in requestResponse() checks responseActiveRef, and between
+            // this send and response.created arriving it was false — so a tool
+            // result or VAD turn landing in that window sent a SECOND
+            // response.create. Two overlapping responses = two renders = the
+            // voice changing mid-reply.
+            responseActiveRef.current = true;
             ws.send(JSON.stringify({ type: "response.create" }));
             setStatusBoth("thinking");
           } else if (wakeSession) {
+            // Same reason as above — armed before the send, not on the ack.
+            responseActiveRef.current = true;
             ws.send(
               JSON.stringify({
                 type: "response.create",
