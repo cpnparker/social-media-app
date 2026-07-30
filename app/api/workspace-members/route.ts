@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { auth } from "@/lib/auth";
+import { findUserByEmail } from "@/lib/user-lookup";
 
 /**
  * SECURITY: this route had NO authentication on any handler. GET returned the
@@ -165,14 +166,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No workspace found" }, { status: 404 });
     }
 
-    // Find or create the user
-    let { data: existingUser } = await supabase
-      .from("users")
-      .select("*")
-      .eq("email_user", normalizedEmail)
-      .is("date_deleted", null)
-      .limit(1)
-      .single();
+    // Find or create the user. The lookup must be case-insensitive:
+    // normalizedEmail is lowercase, many stored rows are not, and an `eq` miss
+    // here does not fail — it creates a duplicate account for someone who
+    // already exists, then grants the workspace access to the empty duplicate.
+    let existingUser = await findUserByEmail<any>(normalizedEmail, "*");
 
     if (!existingUser) {
       const namePart = normalizedEmail.split("@")[0].replace(/[._-]/g, " ");

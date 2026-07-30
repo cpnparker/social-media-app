@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
+import { findUserByEmail } from "@/lib/user-lookup";
 
 // GET /api/me — returns the current user's profile
 export async function GET() {
@@ -29,14 +30,10 @@ export async function GET() {
     // Fallback: lookup by email from JWT (handles Google ID in token.sub)
     if (!dbUser && session.user.email) {
       console.warn(`[/api/me] ID lookup failed for ${session.user.id}, falling back to email: ${session.user.email}`);
-      const { data } = await supabase
-        .from("users")
-        .select("id_user, email_user, name_user, role_user")
-        .eq("email_user", session.user.email)
-        .is("date_deleted", null)
-        .limit(1)
-        .single();
-      dbUser = data;
+      dbUser = await findUserByEmail(
+        session.user.email,
+        "id_user, email_user, name_user, role_user"
+      );
     }
 
     if (!dbUser) {

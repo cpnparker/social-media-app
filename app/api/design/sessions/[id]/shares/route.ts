@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
+import { findUserIdByEmail } from "@/lib/user-lookup";
 
 /**
  * Design-mode session sharing — mirror of ai_shares for design_sessions.
@@ -88,13 +89,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (typeof recipientId === "number") {
     resolvedRecipientId = recipientId;
   } else if (recipientEmail) {
-    const { data: u } = await supabase
-      .from("users")
-      .select("id_user")
-      .eq("email_user", recipientEmail)
-      .maybeSingle();
-    if (!u) return NextResponse.json({ error: `No user with email ${recipientEmail}` }, { status: 404 });
-    resolvedRecipientId = (u as any).id_user;
+    // Case-insensitive: an `eq` here rejected every recipient whose stored
+    // email_user has uppercase in it as "no such user".
+    const recipientUserId = await findUserIdByEmail(recipientEmail);
+    if (recipientUserId == null) return NextResponse.json({ error: `No user with email ${recipientEmail}` }, { status: 404 });
+    resolvedRecipientId = recipientUserId;
   } else {
     return NextResponse.json({ error: "recipientEmail or recipientId required" }, { status: 400 });
   }

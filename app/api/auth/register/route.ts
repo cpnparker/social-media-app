@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { findUserIdByEmail } from "@/lib/user-lookup";
 
 export async function POST(req: NextRequest) {
   try {
@@ -20,15 +21,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Check if user already exists
-    const { data: existing } = await supabase
-      .from("users")
-      .select("id_user")
-      .eq("email_user", email)
-      .is("date_deleted", null)
-      .single();
+    // Check if user already exists. Case-insensitively — an `eq` let
+    // Claire@… register a second time as claire@… and vice versa.
+    const existing = await findUserIdByEmail(email);
 
-    if (existing) {
+    if (existing != null) {
       return NextResponse.json(
         { error: "An account with this email already exists" },
         { status: 409 }

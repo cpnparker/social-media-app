@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { findUserIdByEmail } from "@/lib/user-lookup";
 
 // Helper: transform member with user info
 function transformMember(m: any, user?: any) {
@@ -65,16 +66,12 @@ export async function POST(
     if (!resolvedUserId && email) {
       const normalizedEmail = email.trim().toLowerCase();
 
-      const { data: existingUser } = await supabase
-        .from("users")
-        .select("id_user")
-        .eq("email_user", normalizedEmail)
-        .is("date_deleted", null)
-        .limit(1)
-        .single();
+      // Case-insensitive: normalizedEmail is lowercase, many stored rows are
+      // not, and an `eq` miss creates a duplicate account rather than failing.
+      const existingUserId = await findUserIdByEmail(normalizedEmail);
 
-      if (existingUser) {
-        resolvedUserId = String(existingUser.id_user);
+      if (existingUserId != null) {
+        resolvedUserId = String(existingUserId);
       } else {
         // Auto-create a new user with the provided email
         const namePart = normalizedEmail.split("@")[0].replace(/[._-]/g, " ");
