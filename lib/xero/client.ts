@@ -154,8 +154,17 @@ async function fetchUnpaidInvoices(workspaceId: string): Promise<any[]> {
 export async function queryXero(
   report: string,
   workspaceId: string,
-  opts: { date_from?: string; date_to?: string; client_name?: string } = {}
+  opts: { date_from?: string; date_to?: string; client_name?: string; audience?: "solo" | "team" } = {}
 ): Promise<{ data: any; count: number; error?: string; notice?: string }> {
+  // Fail closed on the audience, so this cannot be reached from a chain that
+  // forgot to gate registration. Finance is restricted per user
+  // (flag_access_finance); a multi-reader thread is read by everyone.
+  if (opts.audience === "team") {
+    return {
+      data: [], count: 0,
+      notice: "Finance data was NOT looked up: this conversation has more than one reader. Tell the user briefly that Xero and forecast figures can only be opened in a private, unshared conversation — suggest starting one.",
+    };
+  }
   if (!xeroConfigured()) return { data: [], count: 0, error: "Xero is not configured on the server (missing XERO_CLIENT_ID/SECRET)" };
   try {
     const conn = await getXeroConnection(workspaceId);
