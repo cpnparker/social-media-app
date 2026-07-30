@@ -3,6 +3,7 @@ import OpenAI from "openai";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { logAiUsage } from "@/lib/ai/usage-logger";
+import { mergeSameWorkstreamItems } from "@/lib/ai/merge-action-items";
 
 export const maxDuration = 60;
 
@@ -22,6 +23,7 @@ export const maxDuration = 60;
 //
 //   { sessionId, discard: true }
 //     → marks the session discarded; nothing else persists.
+
 const DIGEST_MODEL = "grok-4-1-fast";
 const DIGEST_API_MODEL = "grok-4-1-fast-non-reasoning";
 /** AssemblyAI streaming ≈ $0.27/hr with diarization → ~0.45¢/min ≈ 5 tenths-of-a-cent per minute. */
@@ -39,7 +41,9 @@ const DIGEST_PROMPT = `You are generating the post-meeting digest for a live bus
   "action_items": [{"owner": "name or 'us'/'client'", "item": "what", "due": "when if stated, else null"}],
   "followup_email": "a short, warm, professional follow-up email draft the host could send (no subject line)"
 }
-Rules: only include what is actually in the transcript — never invent. Numbers, dates and commitments must be verbatim-accurate. Return ONLY the JSON object.`;
+Rules: only include what is actually in the transcript — never invent. Numbers, dates and commitments must be verbatim-accurate.
+CONSOLIDATION: merge action items that are steps of ONE workstream for the SAME owner — the same deliverable or the same counterpart (e.g. "ask Gary about the process" and later "share the document with Gary and confirm") — into ONE item with the steps joined by "; ". HARD RULE: no commitment may disappear in a merge — every action stated in the transcript must appear either as its own item or as an explicit step inside a merged item, including preparatory steps (asking about, checking, confirming something). Distinct deliverables stay separate items even for the same owner; when merged steps carry different due dates, use the earliest.
+Return ONLY the JSON object.`;
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -240,6 +244,15 @@ export async function POST(req: NextRequest) {
         });
         const jsonMatch = raw.match(/\{[\s\S]*\}/);
         if (jsonMatch) draftDigest = JSON.parse(jsonMatch[0]);
+        // Lossless backstop for same-workstream splits the prompt's
+        // CONSOLIDATION rule didn't catch — the host reviews the merged list.
+        if (draftDigest && Array.isArray(draftDigest.action_items)) {
+          try {
+            draftDigest.action_items = mergeSameWorkstreamItems(draftDigest.action_items);
+          } catch (mergeErr: any) {
+            console.warn('[MeetingEnd] action-item merge skipped:', mergeErr.message);
+          }
+        }
       } catch (err: any) {
         console.error("[MeetingEnd] Digest generation failed:", err.message);
         // Non-fatal: the client can retry or save without a digest
