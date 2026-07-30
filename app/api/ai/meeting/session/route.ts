@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { verifyWorkspaceMembership } from "@/lib/permissions";
+import { checkConversationAccess } from "@/lib/ai/access";
 
 // POST /api/ai/meeting/session — start an EngineAI Live meeting session.
 //
@@ -29,7 +30,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { workspaceId, clientId, mbMeetingId, title, meetingType, consent, captureDevice } = body || {};
+  const { workspaceId, clientId, mbMeetingId, title, meetingType, consent, captureDevice, sourceConversationId } = body || {};
   if (!workspaceId) {
     return NextResponse.json({ error: "workspaceId is required" }, { status: 400 });
   }
@@ -89,9 +90,33 @@ export async function POST(req: NextRequest) {
       .single();
     if (convErr) throw convErr;
 
-    const { data: meetingSession, error: sessErr } = await intelligenceDb
-      .from("ai_meeting_sessions")
-      .insert({
+    // The chat this Live session was opened FROM, if any. Recorded so that
+    // "Continue in EngineAI" can carry the meeting back into that thread
+    // instead of stranding the follow-up in a new one. Verified here rather
+    // than trusted from the client: a source the caller cannot write to is
+    // dropped, so it can never be used to inject a transcript into someone
+    // else's conversation.
+    let sourceId: string | null = null;
+    if (sourceConversationId) {
+      const { data: src } = await intelligenceDb
+        .from("ai_conversations")
+        .select("id_conversation, type_visibility, user_created, id_workspace")
+        .eq("id_conversation", String(sourceConversationId))
+        .maybeSingle();
+      if (src && src.id_workspace === workspaceId) {
+        const access = await checkConversationAccess(src.id_conversation, userId, {
+          visibility: src.type_visibility,
+          userCreated: src.user_created,
+          workspaceId: src.id_workspace,
+        });
+        if (access.allowed && access.permission !== "view") sourceId = src.id_conversation;
+      }
+    }
+
+    // Built as a variable so the new column can be dropped and retried if the
+    // ALTER TABLE has not run yet — naming an absent column fails the whole
+    // insert, which would stop Live sessions starting at all.
+    const sessionRow: Record<string, any> = {
         id_conversation: conversation.id_conversation,
         id_workspace: workspaceId,
         id_client: clientId ? parseInt(String(clientId), 10) : null,
@@ -104,10 +129,29 @@ export async function POST(req: NextRequest) {
         consent_method: ["verbal", "calendar_note", "both"].includes(consent.method) ? consent.method : "verbal",
         consent_wording_version: "v1",
         capture_device: (captureDevice || "").slice(0, 200) || null,
-      })
+    };
+    if (sourceId) sessionRow.id_conversation_source = sourceId;
+
+    let { data: meetingSession, error: sessErr } = await intelligenceDb
+      .from("ai_meeting_sessions")
+      .insert(sessionRow)
       .select("id_session")
       .single();
+
+    // Pre-migration fallback: retry without the new column rather than refuse
+    // to start the meeting. The follow-up then lands in a new thread, which is
+    // the old behaviour — degraded, not broken.
+    if (sessErr && sourceId) {
+      console.warn("[MeetingSession] retrying without id_conversation_source:", sessErr.message);
+      delete sessionRow.id_conversation_source;
+      ({ data: meetingSession, error: sessErr } = await intelligenceDb
+        .from("ai_meeting_sessions")
+        .insert(sessionRow)
+        .select("id_session")
+        .single());
+    }
     if (sessErr) throw sessErr;
+    if (!meetingSession) throw new Error("Session insert returned no row");
 
     return NextResponse.json({
       conversationId: conversation.id_conversation,

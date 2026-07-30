@@ -1046,6 +1046,10 @@ function cardSignature(card: LiveCard): string {
           meetingType: "general",
           consent: { attested: true, method: "verbal" },
           captureDevice: devices.find((d) => d.deviceId === deviceId)?.label || "default",
+          // The chat Live was opened from (?thread=). Recorded on the session so
+          // "Continue in EngineAI" carries the meeting back into that thread
+          // rather than starting a new one beside it.
+          sourceConversationId: linkedChat?.id || undefined,
         }),
       });
       if (!res.ok) {
@@ -1581,6 +1585,7 @@ function cardSignature(card: LiveCard): string {
             loading={digestLoading}
             utteranceCount={utterances.length}
             hasClient={!!clientId}
+            sourceChatTitle={linkedChat?.title || null}
             handingOff={handingOff}
             onContinue={handleContinueInEngineAI}
             onSave={handleSaveDigest}
@@ -1848,6 +1853,8 @@ function ReviewScreen(props: {
   loading: boolean;
   utteranceCount: number;
   hasClient: boolean;
+  /** Title of the chat Live was opened from — the follow-up returns there. */
+  sourceChatTitle: string | null;
   handingOff: boolean;
   onContinue: () => void;
   onSave: () => void;
@@ -1948,7 +1955,9 @@ function ReviewScreen(props: {
           className="w-full h-11 rounded-xl text-sm font-semibold bg-primary text-primary-foreground hover:opacity-90 flex items-center justify-center gap-2 disabled:opacity-60"
         >
           {props.handingOff ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRightCircle className="h-4 w-4" />}
-          Continue in EngineAI{props.hasClient ? " (linked to client)" : ""}
+          {props.sourceChatTitle
+            ? `Continue in \u201C${props.sourceChatTitle.slice(0, 40)}\u201D`
+            : `Continue in EngineAI${props.hasClient ? " (linked to client)" : ""}`}
         </button>
         <p className="text-[11px] text-muted-foreground -mt-1 text-center">
           Opens a new chat with the transcript, summary, actions &amp; context — carry on drafting follow-ups there.
