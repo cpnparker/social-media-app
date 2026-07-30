@@ -76,7 +76,19 @@ export async function POST(req: NextRequest) {
       ? (allClients || []).find((c: any) => c.id_client === clientId)?.name_client || null
       : null;
 
-    const isTeamThread = conversation.type_visibility === "team";
+    // Audience must match the text pipeline and the sibling voice/tools route:
+    // a "private" thread that has been SHARED, or one owned by someone else,
+    // has more than one reader. Reading raw type_visibility here treated those
+    // as solo and unlocked personal-scope data for a voice turn that is then
+    // persisted into a thread other people read.
+    const { count: shareCount } = await intelligenceDb
+      .from("ai_shares")
+      .select("id_conversation", { count: "exact", head: true })
+      .eq("id_conversation", conversation.id_conversation);
+    const isTeamThread =
+      conversation.type_visibility === "team" ||
+      (shareCount || 0) > 0 ||
+      conversation.user_created !== userId;
 
     // Mint the ephemeral token (5 min TTL — covers connection setup; the
     // WebSocket session itself stays alive past token expiry).

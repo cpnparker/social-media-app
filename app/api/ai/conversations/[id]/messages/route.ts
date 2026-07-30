@@ -911,12 +911,32 @@ export async function POST(
       return { clientContext, contentDetail, clientIdeas, workspaceSummary };
     })();
 
-    // Fetch workspace client IDs for query_engine tool scoping
+    // Fetch workspace client IDs for query_engine tool scoping.
+    //
+    // The error used to be discarded, and an empty list is not inert: every
+    // chain registers query_engine and lookup_client_context behind
+    // `if (config.workspaceClientIds?.length)`, so one failed read silently
+    // removed the ENTIRE Content Engine connection for that turn and the
+    // assistant simply told the user it had no access. Retry once — these
+    // failures are transient — and log loudly if it still fails, so the
+    // degraded turn is at least visible in the logs rather than looking like
+    // a workspace with no clients.
     const clientIdsPromise = (async () => {
-      const { data } = await supabase
-        .from("app_clients")
-        .select("id_client");
-      return (data || []).map((c: any) => c.id_client).filter(Boolean) as number[];
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const { data, error } = await supabase
+          .from("app_clients")
+          .select("id_client");
+        if (!error) {
+          return (data || []).map((c: any) => c.id_client).filter(Boolean) as number[];
+        }
+        console.error(
+          `[chat] app_clients lookup failed (attempt ${attempt}/2): ${error.message}`
+        );
+      }
+      console.error(
+        "[chat] app_clients unavailable — query_engine and lookup_client_context will NOT be offered this turn"
+      );
+      return [] as number[];
     })();
 
     // Fetch processed client background profile (from asset files)

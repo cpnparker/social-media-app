@@ -902,6 +902,7 @@ When the user names a client, asks what they should know before speaking to some
 - \`query_engine({ report: "pipeline_summary" })\` and recent content — what the team has actually shipped for them lately.
 - \`search_notebook\` — passages the user deliberately saved about this client.
 - \`search_memory\` — prior decisions and standing preferences.
+- \`query_drive_docs\` — briefs, plans and strategy documents the team has shared with EngineAI. Registered on every chain but previously named in no prompt, so it was never reached: if a question refers to a brief, a plan or "the document", call it with action:"list" then action:"read" rather than saying you cannot see their files.
 - \`query_xero\` (if available to this user) — unpaid invoices or forecast exposure, when money is relevant.
 - \`web_search\` — recent news about the client organisation, funding, leadership changes, published positions. An outward-facing fact the user did not know is often the most valuable line in a briefing.
 
