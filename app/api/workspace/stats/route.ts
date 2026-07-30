@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { resolveWorkspaceAndUser } from "@/lib/api-utils";
 import { requireAuth, isTCEStaff } from "@/lib/permissions";
 
@@ -34,7 +35,7 @@ export async function GET() {
         .eq("flag_active", 1)
         .is("date_deleted", null),
 
-      supabase
+      intelligenceDb
         .from("workspace_members")
         .select("id", { count: "exact", head: true })
         .eq("workspace_id", workspaceId),

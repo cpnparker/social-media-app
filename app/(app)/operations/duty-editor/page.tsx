@@ -18,12 +18,23 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { getSubdomainUrl } from "@/lib/subdomain";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
+
+/** Match writing-style task types: write/writing/writer/draft/copy/rewrite/etc. */
+function isWritingTask(taskType: string | null | undefined): boolean {
+  if (!taskType) return false;
+  const t = taskType.toLowerCase();
+  return t.includes("writ") || t.includes("draft") || t.includes("copy");
+}
 
 interface ContentItem {
   id: string;
   workingTitle: string;
   contentType: string;
   customerName: string;
+  customerId: string;
   status: string;
   createdAt: string;
   deadlineProduction: string | null;
@@ -40,6 +51,9 @@ export default function DutyEditorPage() {
   const [items, setItems] = useState<ContentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
 
   useEffect(() => {
     const fetchAll = async () => {
@@ -60,7 +74,19 @@ export default function DutyEditorPage() {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const weekFromNow = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-  const active = useMemo(() => items.filter((i) => i.status === "draft"), [items]);
+  // Active items where the CURRENT task is an unassigned writing task.
+  // This is what the duty editor needs to triage — pieces waiting for a writer.
+  const active = useMemo(
+    () =>
+      items.filter(
+        (i) =>
+          i.status === "draft" &&
+          i.currentTask &&
+          isWritingTask(i.currentTask.type) &&
+          !i.currentTask.assignee,
+      ),
+    [items],
+  );
 
   // Items needing attention: overdue deadlines
   const overdue = useMemo(() => {
@@ -104,8 +130,10 @@ export default function DutyEditorPage() {
       .sort((a, b) => new Date(b.completedAt!).getTime() - new Date(a.completedAt!).getTime());
   }, [items]);
 
-  // Search filter for content rows
+  // Search + global customer filter for content rows
   const matchesSearch = (item: ContentItem) => {
+    // Global customer scope (from the TopBar selector)
+    if (globalCustomerId && item.customerId !== globalCustomerId) return false;
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -131,8 +159,11 @@ export default function DutyEditorPage() {
 
   const ContentRow = ({ item, showDeadline = true }: { item: ContentItem; showDeadline?: boolean }) => {
     const deadline = item.deadlineProduction || item.deadlinePublication;
+    // On the operations subdomain, /content/[id] is rewritten to commissioned-cus
+    // by middleware. Send users to the engine subdomain where the page lives.
+    const href = getSubdomainUrl("engine", `/content/${item.id}`);
     return (
-      <Link href={`/content/${item.id}`} className="flex items-center gap-3 p-2 -mx-2 rounded-lg hover:bg-muted/50 transition-colors group">
+      <Link href={href} className="flex items-center gap-3 p-2 -mx-2 rounded-lg hover:bg-muted/50 transition-colors group">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="text-sm font-medium truncate group-hover:text-foreground">{item.workingTitle}</span>
@@ -182,13 +213,17 @@ export default function DutyEditorPage() {
         <h1 className="text-xl font-semibold tracking-tight">Duty Editor</h1>
         <p className="text-sm text-muted-foreground mt-0.5">
           {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
-          {" · "}{active.length} active items
+          {" · "}{active.length} writing task{active.length === 1 ? "" : "s"} waiting for an assignee
         </p>
       </div>
 
       {/* Controls bar — consistent with other operations pages */}
       <Card className="border-0 shadow-sm">
-        <CardContent className="p-3 flex flex-wrap items-center gap-3">
+        <CardContent className="p-3 space-y-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <CustomerDropdownFilter />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
           {/* Quick stat pills */}
           <div className="flex items-center gap-2 flex-wrap">
             <div className={cn(
@@ -218,6 +253,7 @@ export default function DutyEditorPage() {
           <div className="relative w-[180px]">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
             <Input type="text" placeholder="Search..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="h-7 text-xs pl-7" />
+          </div>
           </div>
         </CardContent>
       </Card>

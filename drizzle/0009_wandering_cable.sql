@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "ai_type_instructions" jsonb;

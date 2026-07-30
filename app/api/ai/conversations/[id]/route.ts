@@ -1,6 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
+import { checkConversationAccess } from "@/lib/ai/access";
+import { mapConversation, mapMessage } from "@/lib/ai/response-mappers";
+
+/** Check if a user has workspace admin access for a specific workspace */
+async function isWorkspaceAdmin(userId: number, workspaceId: string): Promise<boolean> {
+  const { data } = await intelligenceDb
+    .from("users_access")
+    .select("flag_access_admin")
+    .eq("user_target", userId)
+    .eq("id_workspace", workspaceId)
+    .eq("flag_access_admin", 1)
+    .limit(1)
+    .maybeSingle();
+  return !!data;
+}
 
 // GET /api/ai/conversations/[id] — get conversation with messages
 export async function GET(
@@ -15,36 +31,173 @@ export async function GET(
   const conversationId = params.id;
 
   try {
-    // Fetch conversation
-    const { data: conversation, error: convError } = await supabase
+    const { data: conversation } = await intelligenceDb
       .from("ai_conversations")
       .select("*")
-      .eq("id", conversationId)
-      .single();
+      .eq("id_conversation", conversationId)
+      .maybeSingle();
 
-    if (convError || !conversation) {
+    if (!conversation) {
       return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
     }
 
-    // Access check: private conversations are only for the creator
-    if (conversation.visibility === "private" && conversation.created_by !== userId) {
+    // Share-aware access check (function expects camelCase params)
+    const access = await checkConversationAccess(conversationId, userId, {
+      visibility: conversation.type_visibility,
+      userCreated: conversation.user_created,
+      workspaceId: conversation.id_workspace,
+    });
+    if (!access.allowed) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Fetch messages
-    const { data: messages, error: msgError } = await supabase
+    // Opening a scheduled task's thread counts as "read": mark its unopened
+    // runs and reset the anti-abandonment counter (5 unopened → courteous pause).
+    // Awaited (not fire-and-forget): Vercel freezes the lambda after the
+    // response returns, so detached work can silently never land.
+    if (conversation.type_conversation_mode === "scheduled" && conversation.user_created === userId) {
+      try {
+        const { data: schedTask } = await intelligenceDb
+          .from("ai_scheduled_prompts")
+          .select("id_prompt, units_consecutive_ignored")
+          .eq("id_conversation", conversationId)
+          .maybeSingle();
+        if (schedTask) {
+          await Promise.all([
+            intelligenceDb.from("ai_scheduled_runs")
+              .update({ flag_opened: 1 })
+              .eq("id_prompt", schedTask.id_prompt)
+              .eq("flag_opened", 0)
+              .neq("type_status", "running"), // in-flight runs can't have been read yet
+            (schedTask.units_consecutive_ignored || 0) > 0
+              ? intelligenceDb.from("ai_scheduled_prompts")
+                  .update({ units_consecutive_ignored: 0 })
+                  .eq("id_prompt", schedTask.id_prompt)
+              : Promise.resolve(),
+          ]);
+        }
+      } catch { /* telemetry only — never block the thread load */ }
+    }
+
+    const { data: rawMessages, error: msgError } = await intelligenceDb
       .from("ai_messages")
       .select("*")
-      .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: true });
+      .eq("id_conversation", conversationId)
+      .order("date_created", { ascending: true });
 
-    if (msgError) {
-      return NextResponse.json({ error: msgError.message }, { status: 500 });
+    if (msgError) throw msgError;
+
+    // Reap dead "pending" assistant rows. The streaming route inserts a row as
+    // 'pending' then flips it to complete/failed when the upstream finishes —
+    // but on a serverless platform that completion code never runs if the
+    // function is killed mid-stream (client navigated away, platform timeout
+    // while the model was retrying). The row then dangles 'pending' forever and
+    // the UI shows "Still generating…" indefinitely on reopen. Any row pending
+    // well past a realistic generation window is dead: flip it to 'failed' here
+    // so the user sees a retry affordance immediately instead of a long spinner.
+    // (If a generation somehow is still live, its onComplete overwrites this
+    // back to 'complete' with the real text — updates key on id, not status.)
+    const STALE_PENDING_MS = 150_000; // 2.5 min — longer than any real generation
+    const nowMs = Date.now();
+    const deadPending = (rawMessages || []).filter(
+      (m: any) =>
+        m.role_message === "assistant" &&
+        m.status_message === "pending" &&
+        m.date_created &&
+        nowMs - new Date(m.date_created).getTime() > STALE_PENDING_MS
+    );
+    if (deadPending.length > 0) {
+      await Promise.all(
+        deadPending.map((m: any) => {
+          const text = m.document_message?.trim()
+            ? m.document_message // keep partial streamed text if any
+            : "Generation failed — please retry.";
+          m.status_message = "failed"; // reflect in the response we return below
+          m.document_message = text;
+          return intelligenceDb
+            .from("ai_messages")
+            .update({ status_message: "failed", document_message: text })
+            .eq("id_message", m.id_message)
+            .eq("status_message", "pending"); // don't clobber one that just completed
+        })
+      );
+    }
+
+    // Resolve user names for messages with user_created
+    const messageUserIds = Array.from(
+      new Set(
+        (rawMessages || [])
+          .filter((m: any) => m.user_created)
+          .map((m: any) => m.user_created)
+      )
+    );
+    let messageNameMap = new Map<number, string>();
+    if (messageUserIds.length > 0) {
+      const { data: msgUsers } = await supabase
+        .from("users")
+        .select("id_user, name_user")
+        .in("id_user", messageUserIds);
+      messageNameMap = new Map(
+        (msgUsers || []).map((u: any) => [u.id_user, u.name_user])
+      );
+    }
+
+    // Map DB column names → frontend-friendly camelCase
+    const messages = (rawMessages || []).map((m: any) => ({
+      ...mapMessage(m),
+      createdByName: m.user_created ? messageNameMap.get(m.user_created) || null : null,
+    }));
+
+    // Resolve customer name if conversation has an id_client
+    let customerName: string | null = null;
+    if (conversation.id_client) {
+      const { data: client } = await supabase
+        .from("app_clients")
+        .select("name_client")
+        .eq("id_client", conversation.id_client)
+        .single();
+      if (client) customerName = client.name_client;
+    }
+
+    // Get share count + shared user info for header avatar stack (owner only)
+    let shareCount = 0;
+    let shares: { userId: number; userName: string | null; permission: string }[] = [];
+    if (access.permission === "owner") {
+      const { data: shareRows } = await intelligenceDb
+        .from("ai_shares")
+        .select("user_recipient, type_permission")
+        .eq("id_conversation", conversationId);
+
+      shareCount = (shareRows || []).length;
+
+      if (shareCount > 0) {
+        const userIds = (shareRows || []).map((s: any) => s.user_recipient);
+        const { data: users } = await supabase
+          .from("users")
+          .select("id_user, name_user")
+          .in("id_user", userIds);
+
+        const nameMap = new Map(
+          (users || []).map((u: any) => [u.id_user, u.name_user])
+        );
+
+        shares = (shareRows || []).map((s: any) => ({
+          userId: s.user_recipient,
+          userName: nameMap.get(s.user_recipient) || null,
+          permission: s.type_permission,
+        }));
+      }
     }
 
     return NextResponse.json({
-      conversation,
-      messages: messages || [],
+      conversation: {
+        ...mapConversation(conversation),
+        customerName,
+        myPermission: access.permission,
+        shareCount,
+        shares,
+      },
+      messages,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -65,36 +218,68 @@ export async function PATCH(
 
   try {
     // Check ownership
-    const { data: conversation } = await supabase
+    const { data: conversation } = await intelligenceDb
       .from("ai_conversations")
-      .select("created_by")
-      .eq("id", conversationId)
-      .single();
+      .select("user_created, type_visibility, id_workspace")
+      .eq("id_conversation", conversationId)
+      .maybeSingle();
 
-    if (!conversation || conversation.created_by !== userId) {
+    if (!conversation) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    if (conversation.user_created !== userId && !(await isWorkspaceAdmin(userId, conversation.id_workspace))) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const body = await req.json();
     const updateData: Record<string, any> = {
-      updated_at: new Date().toISOString(),
+      date_updated: new Date().toISOString(),
     };
-    if (body.title !== undefined) updateData.title = body.title;
-    if (body.visibility !== undefined) updateData.visibility = body.visibility;
-    if (body.model !== undefined) updateData.model = body.model;
+    if (body.title !== undefined) updateData.name_conversation = body.title;
+    if (body.visibility !== undefined) {
+      // VALIDATE: this was written straight from the body. An arbitrary string
+      // reads as not-"team" to the privacy gate (tools allowed) but as
+      // not-"private" to the memory-scope logic (memories written workspace-
+      // wide) — the read gate and the write gate would disagree.
+      if (body.visibility !== "private" && body.visibility !== "team") {
+        return NextResponse.json({ error: "visibility must be 'private' or 'team'" }, { status: 400 });
+      }
+      // PUBLISHING someone else's thread is not an admin power. Admins may
+      // rename or retitle, but making a colleague's private conversation
+      // workspace-readable — retroactively exposing everything gathered in it
+      // under a private audience — must be the owner's own decision.
+      if (body.visibility === "team" && conversation.type_visibility !== "team" && conversation.user_created !== userId) {
+        return NextResponse.json(
+          { error: "Only the conversation's owner can make it visible to the team" },
+          { status: 403 }
+        );
+      }
+      updateData.type_visibility = body.visibility;
+    }
+    if (body.model !== undefined) updateData.name_model = body.model;
+    if (body.customerId !== undefined) updateData.id_client = body.customerId ? parseInt(String(body.customerId), 10) : null;
 
-    const { data: updated, error } = await supabase
+    const { data: updated, error } = await intelligenceDb
       .from("ai_conversations")
       .update(updateData)
-      .eq("id", conversationId)
+      .eq("id_conversation", conversationId)
       .select()
       .single();
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) throw error;
+
+    // Clear shares when changing to team (they become redundant)
+    if (
+      body.visibility === "team" &&
+      conversation.type_visibility === "private"
+    ) {
+      await intelligenceDb
+        .from("ai_shares")
+        .delete()
+        .eq("id_conversation", conversationId);
     }
 
-    return NextResponse.json({ conversation: updated });
+    return NextResponse.json({ conversation: mapConversation(updated) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -114,25 +299,30 @@ export async function DELETE(
 
   try {
     // Check ownership
-    const { data: conversation } = await supabase
+    const { data: conversation } = await intelligenceDb
       .from("ai_conversations")
-      .select("created_by")
-      .eq("id", conversationId)
-      .single();
+      .select("user_created, id_workspace")
+      .eq("id_conversation", conversationId)
+      .maybeSingle();
 
-    if (!conversation || conversation.created_by !== userId) {
+    if (!conversation) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    if (conversation.user_created !== userId && !(await isWorkspaceAdmin(userId, conversation.id_workspace))) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Cascade delete handles messages
-    const { error } = await supabase
+    // Nullify usage rows that reference this conversation, then delete.
+    // (ai_messages and ai_conversation_shares cascade-delete via FK constraint.)
+    await intelligenceDb
+      .from("ai_usage")
+      .update({ id_conversation: null })
+      .eq("id_conversation", conversationId);
+
+    await intelligenceDb
       .from("ai_conversations")
       .delete()
-      .eq("id", conversationId);
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+      .eq("id_conversation", conversationId);
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

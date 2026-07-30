@@ -6,6 +6,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
   type ReactNode,
 } from "react";
 
@@ -45,15 +46,26 @@ export function useCustomerSafe() {
   return useContext(CustomerContext);
 }
 
-const STORAGE_KEY = "selected-customer-id";
-
 export function CustomerProvider({ children }: { children: ReactNode }) {
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [selectedCustomerId, setSelectedCustomerIdState] = useState<string | null>(null);
+  // Initialize from URL param immediately to prevent null→value→null flicker
+  const [selectedCustomerId, setSelectedCustomerIdState] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URL(window.location.href).searchParams.get("client");
+  });
   const [canViewAll, setCanViewAll] = useState(false);
   const [isSingleCustomer, setIsSingleCustomer] = useState(false);
   const [loading, setLoading] = useState(true);
   const [role, setRole] = useState<string | null>(null);
+
+  // Capture URL ?client= param ONCE at mount time — don't re-read later
+  // (the URL may be modified by other effects before fetchCustomers runs again)
+  const initialUrlClientRef = useRef<string | null>(
+    typeof window !== "undefined"
+      ? new URL(window.location.href).searchParams.get("client")
+      : null
+  );
+  const initialClientConsumedRef = useRef(false);
 
   const fetchCustomers = useCallback(async () => {
     try {
@@ -67,22 +79,26 @@ export function CustomerProvider({ children }: { children: ReactNode }) {
       setCanViewAll(viewAll);
       setRole(data.role || null);
 
-      // Restore from localStorage
-      const stored = localStorage.getItem(STORAGE_KEY);
+      // Use the URL ?client= param captured at mount time (only on first call)
+      const urlClientId = !initialClientConsumedRef.current
+        ? initialUrlClientRef.current
+        : null;
+      const isFirstLoad = !initialClientConsumedRef.current;
+      initialClientConsumedRef.current = true;
 
-      if (!viewAll && customerList.length === 1) {
-        // Single customer user — auto-select
-        setIsSingleCustomer(true);
-        setSelectedCustomerIdState(customerList[0].id);
-      } else if (stored && customerList.some((c) => c.id === stored)) {
-        // Restore previously selected customer
-        setSelectedCustomerIdState(stored);
-      } else if (viewAll) {
-        // Workspace view (All Customers) — default to null
-        setSelectedCustomerIdState(null);
-      } else if (customerList.length > 0) {
-        // Default to first customer
-        setSelectedCustomerIdState(customerList[0].id);
+      // Only set the initial customer selection on first load.
+      // On subsequent calls (refreshCustomers), don't change the selection.
+      if (isFirstLoad) {
+        if (!viewAll && customerList.length === 1) {
+          setIsSingleCustomer(true);
+          setSelectedCustomerIdState(customerList[0].id);
+        } else if (urlClientId && customerList.some((c) => c.id === urlClientId)) {
+          setSelectedCustomerIdState(urlClientId);
+        } else if (viewAll) {
+          setSelectedCustomerIdState(null);
+        } else if (customerList.length > 0) {
+          setSelectedCustomerIdState(customerList[0].id);
+        }
       }
     } catch {
       // fail silently
@@ -97,11 +113,6 @@ export function CustomerProvider({ children }: { children: ReactNode }) {
 
   const setSelectedCustomerId = useCallback((id: string | null) => {
     setSelectedCustomerIdState(id);
-    if (id) {
-      localStorage.setItem(STORAGE_KEY, id);
-    } else {
-      localStorage.removeItem(STORAGE_KEY);
-    }
   }, []);
 
   const selectedCustomer = customers.find((c) => c.id === selectedCustomerId) || null;

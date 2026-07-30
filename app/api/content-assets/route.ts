@@ -9,6 +9,25 @@ const ENTITY_TABLE_MAP: Record<string, { table: string; view: string; fk: string
   idea: { table: "assets_ideas", view: "app_assets_ideas", fk: "id_idea" },
 };
 
+/**
+ * Fire-and-forget: trigger AI client context refresh after asset changes.
+ * Uses the internal API endpoint so processing happens asynchronously.
+ */
+function triggerClientContextRefresh(clientId: number, req: NextRequest) {
+  const origin = new URL(req.url).origin;
+  const cookie = req.headers.get("cookie") || "";
+  fetch(`${origin}/api/ai/client-context`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: cookie,
+    },
+    body: JSON.stringify({ clientId }),
+  }).catch((err) => {
+    console.warn("[ContentAssets] Failed to trigger context refresh:", err.message);
+  });
+}
+
 // Transform existing asset row → camelCase API shape
 function transformAsset(row: any, entityType: string) {
   return {
@@ -105,6 +124,11 @@ export async function POST(req: NextRequest) {
 
     if (error) throw error;
 
+    // Trigger background AI context refresh when client assets change
+    if (entityType === "client" && body.entityId) {
+      triggerClientContextRefresh(parseInt(body.entityId, 10), req);
+    }
+
     return NextResponse.json({ asset: transformAsset(asset, entityType) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -133,12 +157,28 @@ export async function DELETE(req: NextRequest) {
   }
 
   try {
+    // Look up the client ID before deleting (for context refresh)
+    let clientIdForRefresh: number | null = null;
+    if (entityType === "client") {
+      const { data: assetRow } = await supabase
+        .from(mapping.table)
+        .select("id_client")
+        .eq("id_asset", parseInt(id, 10))
+        .maybeSingle();
+      clientIdForRefresh = assetRow?.id_client || null;
+    }
+
     const { error } = await supabase
       .from(mapping.table)
       .update({ date_deleted: new Date().toISOString() })
       .eq("id_asset", parseInt(id, 10));
 
     if (error) throw error;
+
+    // Trigger background AI context refresh when client assets change
+    if (clientIdForRefresh) {
+      triggerClientContextRefresh(clientIdForRefresh, req);
+    }
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

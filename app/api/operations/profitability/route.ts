@@ -8,6 +8,7 @@ import {
   buildClientProfitability,
   fuzzyMatchClient,
 } from "@/lib/clockify";
+import { nextDay } from "@/lib/date-utils";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -52,17 +53,18 @@ export async function GET(req: NextRequest) {
         .select("*")
         .order("name_client", { ascending: true }),
       supabase.from("app_contracts").select("*"),
-      // Tasks completed in the period — sum units_content for CUs
+      // Tasks completed in the period — sum units_content for CUs.
+      // TEXT bare-date column — bare gte / lt(nextDay), see lib/date-utils.ts
       supabase
         .from("app_tasks_content")
         .select("id_client, id_contract, units_content, date_completed, flag_spiked")
-        .gte("date_completed", fromISO)
-        .lte("date_completed", toISO),
+        .gte("date_completed", fromDate)
+        .lt("date_completed", nextDay(toDate)),
       supabase
         .from("app_tasks_social")
         .select("id_client, id_contract, units_content, date_completed, flag_spiked")
-        .gte("date_completed", fromISO)
-        .lte("date_completed", toISO),
+        .gte("date_completed", fromDate)
+        .lt("date_completed", nextDay(toDate)),
     ]);
 
     // ── 2. Build Clockify per-client hour aggregation ──
@@ -127,10 +129,11 @@ export async function GET(req: NextRequest) {
     // Group contracts by Supabase client id, filtered to period overlap
     const contractsByClientId = new Map<string, Record<string, any>[]>();
     for (const c of supabaseContracts) {
+      // Bare-date string compares — app_contracts dates are TEXT "YYYY-MM-DD"
       const cStart = c.date_start || null;
       const cEnd = c.date_end || null;
       const overlaps =
-        (!cStart || cStart <= toISO) && (!cEnd || cEnd >= fromISO);
+        (!cStart || cStart <= toDate) && (!cEnd || cEnd >= fromDate);
       if (!overlaps) continue;
       const cid = String(c.id_client);
       if (!contractsByClientId.has(cid)) contractsByClientId.set(cid, []);

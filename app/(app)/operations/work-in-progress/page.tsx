@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Loader2, Clock, AlertTriangle, CheckCircle2, ArrowRight, User, Search } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 
 interface ContentItem {
   id: string;
@@ -30,6 +32,9 @@ export default function WorkInProgressPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "overdue" | "fast">("all");
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
 
   useEffect(() => {
     const fetchAll = async () => {
@@ -60,6 +65,11 @@ export default function WorkInProgressPage() {
 
   const filtered = useMemo(() => {
     let list = [...items];
+
+    // Global customer scope (from the TopBar selector)
+    if (globalCustomerId) {
+      list = list.filter((i) => i.customerId === globalCustomerId);
+    }
 
     // Apply search filter
     if (searchQuery.trim()) {
@@ -95,7 +105,7 @@ export default function WorkInProgressPage() {
       if (deadlineB) return 1;
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
-  }, [items, filter, searchQuery]);
+  }, [items, filter, searchQuery, globalCustomerId]);
 
   // Group by current task type
   const byCurrentStep = useMemo(() => {
@@ -137,7 +147,11 @@ export default function WorkInProgressPage() {
 
       {/* Controls bar — consistent with other operations pages */}
       <Card className="border-0 shadow-sm">
-        <CardContent className="p-3 flex flex-wrap items-center gap-3">
+        <CardContent className="p-3 space-y-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <CustomerDropdownFilter />
+          </div>
+        <div className="flex flex-wrap items-center gap-3">
           {/* Filter toggles */}
           <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-0.5">
             <button
@@ -191,6 +205,7 @@ export default function WorkInProgressPage() {
           <div className="relative w-[180px]">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
             <Input type="text" placeholder="Search..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="h-7 text-xs pl-7" />
+          </div>
           </div>
         </CardContent>
       </Card>
