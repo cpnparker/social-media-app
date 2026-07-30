@@ -187,14 +187,23 @@ const MAX_TOOL_RESULT_ROWS = 100;
 const MAX_WEB_SEARCH_CHARS = 6000;
 
 /** Format query_engine results with optional truncation to reduce token usage */
-export function formatToolResult(result: { data: any; count: number; total?: number; summary?: any; error?: string }): string {
+export function formatToolResult(result: { data: any; count: number; total?: number; matched_total?: number; truncated?: boolean; warning?: string; summary?: any; error?: string }): string {
   if (result.error) return `Query failed: ${result.error}`;
   let content = `Query returned ${result.count} rows.`;
+  // First, before the data, so it cannot be skimmed past. A tool result that
+  // silently omits rows is indistinguishable from one that found nothing, and
+  // the model will state the absence as fact.
+  if (result.warning) {
+    content += `\n\n⚠ INCOMPLETE RESULT: ${result.warning}`;
+  }
   if (result.summary) {
     content += `\n\nSUMMARY (use these pre-calculated numbers):\n${JSON.stringify(result.summary, null, 2)}`;
   }
   if (result.total !== undefined) {
     content += `\nTotal: ${result.total}`;
+  }
+  if (result.matched_total !== undefined && result.matched_total !== result.total) {
+    content += `\nMatching rows in database: ${result.matched_total} (you are seeing ${result.total})`;
   }
   // Reports like pipeline_summary return a single aggregate OBJECT, not an
   // array. The old Array-or-empty coercion serialized it as "Data: []", so the
@@ -1806,20 +1815,44 @@ async function reportPipelineSummary(
  * utilization. Pre-built so "what contracts do we have with X?" doesn't rely
  * on the model composing a raw app_contracts table query.
  */
+/** Comfortably above the 231 contracts that exist, so the cap is a backstop
+ *  rather than something the answer routinely runs into. */
+const CONTRACTS_MAX_ROWS = 1000;
+
 async function reportContractsSummary(
   clientId?: number,
   workspaceClientIds?: number[],
   activeOnly: boolean = true
-): Promise<{ data: any[]; total: number; error?: string; summary?: any }> {
+): Promise<{
+  data: any[];
+  total: number;
+  error?: string;
+  summary?: any;
+  truncated?: boolean;
+  matched_total?: number;
+}> {
   let query = supabase
     .from("app_contracts")
-    .select("id_contract, name_contract, id_client, name_client, flag_active, units_contract, units_total_completed, units_content_completed, units_social_completed, date_start, date_end");
+    .select(
+      "id_contract, name_contract, id_client, name_client, flag_active, units_contract, units_total_completed, units_content_completed, units_social_completed, date_start, date_end",
+      // The true row count, not the number we happened to return. Without it
+      // `total` was just data.length, so a truncated result looked complete and
+      // the model told a user "no Hiscox contract exists — I searched the full
+      // contracts database (200 contracts)". It had searched 200 of 231.
+      { count: "exact" }
+    );
 
   if (workspaceClientIds?.length) query = query.in("id_client", workspaceClientIds);
   if (clientId) query = query.eq("id_client", clientId);
   if (activeOnly) query = query.eq("flag_active", 1);
 
-  const { data: rows, error } = await query.order("date_end", { ascending: true }).limit(200);
+  // Newest-ending first. Ascending put the longest-expired contracts at the top
+  // and pushed the live ones off the end of the cap — Hiscox, ending 2026-07-21,
+  // sorted 209th of 231 and was discarded along with every other current deal.
+  // Whatever the cap, the rows that survive it must be the ones that matter.
+  const { data: rows, error, count } = await query
+    .order("date_end", { ascending: false })
+    .limit(CONTRACTS_MAX_ROWS);
   if (error) return { data: [], total: 0, error: error.message };
 
   const today = new Date();
@@ -1858,7 +1891,17 @@ async function reportContractsSummary(
     ending_within_30_days: data.filter((c) => c.days_remaining !== null && c.days_remaining >= 0 && c.days_remaining <= 30).length,
   };
 
-  return { data, total: data.length, summary };
+  // matched_total is how many rows match the filter in the database; total is
+  // how many we returned. When they differ the caller has NOT seen everything
+  // and must not answer "no such contract exists" from this result alone.
+  const matchedTotal = count ?? data.length;
+  return {
+    data,
+    total: data.length,
+    matched_total: matchedTotal,
+    truncated: matchedTotal > data.length,
+    summary,
+  };
 }
 
 /**
@@ -2122,7 +2165,7 @@ export async function queryEngine(
   groupBy?: "client" | "day" | "week",
   assigneeName?: string,
   args?: Record<string, any>
-): Promise<{ data: any; count: number; total?: number; error?: string; summary?: any }> {
+): Promise<{ data: any; count: number; total?: number; matched_total?: number; truncated?: boolean; warning?: string; error?: string; summary?: any }> {
   // Report mode — run pre-built aggregate queries
   if (report) {
     switch (report) {
@@ -2142,7 +2185,23 @@ export async function queryEngine(
       }
       case "contracts_summary": {
         const result = await reportContractsSummary(clientId, workspaceClientIds, args?.include_inactive !== true);
-        return { data: result.data, count: result.data.length, total: result.total, error: result.error, summary: result.summary };
+        return {
+          data: result.data,
+          count: result.data.length,
+          total: result.total,
+          matched_total: result.matched_total,
+          error: result.error,
+          summary: result.summary,
+          // Absence of evidence is not evidence of absence. A truncated result
+          // once produced "there is no Hiscox contract in the system at all —
+          // I searched the full contracts database", about a live contract.
+          ...(result.truncated
+            ? {
+                truncated: true,
+                warning: `Showing ${result.data.length} of ${result.matched_total} matching contracts. This is NOT the full set — do NOT say a contract does not exist based on this result. To check a specific client, call this report again with client_id, or use get_client_context to resolve the name first.`,
+              }
+            : {}),
+        };
       }
       case "assigned_tasks": {
         const result = await reportAssignedTasks(assigneeName, clientId);
