@@ -74,17 +74,68 @@ export async function POST(req: NextRequest) {
 
     // Resolve the caller's MeetingBrain identity. Note the table is `users`
     // (plural) — scripts/supabase-schema.sql declares `user` and is stale.
-    const { data: mbUser } = await mbDb
+    // ilike is only the case-insensitive coarse filter: `_` in a real email is
+    // a single-char wildcard to ilike, so the exact lowercase compare decides.
+    const { data: mbCandidates } = await mbDb
       .from("users")
-      .select("id, name")
+      .select("id, name, email")
       .ilike("email", email)
-      .maybeSingle();
+      .limit(5);
+    const mbUser = (mbCandidates || []).find(
+      (u: any) => String(u.email || "").toLowerCase() === email
+    );
     if (!mbUser?.id) {
       return NextResponse.json(
         { error: "No MeetingBrain account for this email — ask an admin to invite you." },
         { status: 403 }
       );
     }
+
+    // Review routing for exported tasks. This route is MeetingBrain's seventh
+    // task-insert path and lives outside that repo, so it mirrors the tray
+    // contract rather than importing it: no extractor confidence exists here,
+    // so everything is a SUGGESTION unless the recipient chose full-auto.
+    // (The host saw the digest, but a digest skim is not per-task review —
+    // the first live session put four board tasks straight into the host's
+    // inbox, which is exactly what the tray exists to prevent.)
+    const SUGGESTION_TTL_DAYS = 10;
+    const reviewFieldsForMode = (mode: string | null | undefined) =>
+      mode === "auto"
+        ? {}
+        : {
+            review_state: "suggested",
+            suggested_expires_at: new Date(
+              Date.now() + SUGGESTION_TTL_DAYS * 24 * 60 * 60 * 1000
+            ).toISOString(),
+          };
+    // Missing column (migration not run) degrades to inserting without review
+    // fields — the pre-tray behaviour.
+    const isMissingReviewColumn = (e: any) =>
+      e &&
+      (e.code === "42703" || e.code === "PGRST204") &&
+      /review_state|suggested_expires_at|task_review_mode/.test(e.message || "");
+    const reviewModeFor = async (mbUserId: string): Promise<string> => {
+      try {
+        const { data, error } = await mbDb
+          .from("users")
+          .select("task_review_mode")
+          .eq("id", mbUserId)
+          .maybeSingle();
+        if (error || !data) return "balanced";
+        return String(data.task_review_mode || "balanced");
+      } catch {
+        return "balanced";
+      }
+    };
+    const insertTaskRouted = async (row: Record<string, unknown>, mode: string) => {
+      const payload = { ...row, ...reviewFieldsForMode(mode) };
+      let { error } = await mbDb.from("task").insert(payload);
+      if (error && isMissingReviewColumn(error)) {
+        ({ error } = await mbDb.from("task").insert(row));
+      }
+      return error;
+    };
+    const hostReviewMode = await reviewModeFor(mbUser.id);
 
     const bullets = (text: string) =>
       String(text || "")
@@ -93,6 +144,36 @@ export async function POST(req: NextRequest) {
         .filter(Boolean)
         .map((l) => `• ${l}`)
         .join("\n");
+
+    // The Live popup's template names ("Meeting — client") are session labels,
+    // not meeting titles — the first exported session landed in MeetingBrain as
+    // "Meeting — client" when it was an internal HR discussion. When the label
+    // is one of those templates (or empty), title the record from the digest
+    // summary's opening sentence instead; a dated fallback beats a wrong label.
+    const deriveMeetingTitle = (): string => {
+      const clean = String(ms.name_title || "").trim();
+      const generic =
+        !clean ||
+        /^meeting\s*[—–-]?\s*(client|internal|external|general)?$/i.test(clean) ||
+        /^engineai live meeting$/i.test(clean);
+      if (!generic) return clean;
+      const firstSentence = String(summary || "")
+        .trim()
+        .split(/(?<=[.!?])\s+/)[0]
+        ?.replace(/^the\s+(meeting|session|call|discussion)\s+(focused on|covered|discussed|was about|centred on|centered on|addressed)\s*/i, "")
+        ?.replace(/[.!?]\s*$/, "")
+        ?.trim();
+      if (firstSentence && firstSentence.length >= 8) {
+        const capped =
+          firstSentence.length > 80
+            ? firstSentence.slice(0, 80).replace(/\s+\S*$/, "") + "…"
+            : firstSentence;
+        return capped.charAt(0).toUpperCase() + capped.slice(1);
+      }
+      const d = ms.date_started ? new Date(ms.date_started) : new Date();
+      return `EngineAI Live meeting — ${d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
+    };
+    const meetingTitle = deriveMeetingTitle();
 
     let meetingId: string | null = null;
     let mode: "attached" | "created" = "created";
@@ -156,7 +237,7 @@ export async function POST(req: NextRequest) {
         .insert({
           user_id: mbUser.id,
           calendar_event_id: `engineai-live-${sessionId}`,
-          meeting_title: ms.name_title || "EngineAI Live meeting",
+          meeting_title: meetingTitle,
           meeting_date: ms.date_started || new Date().toISOString(),
           summary: includeSummary && summary ? String(summary).slice(0, 20000) : null,
           local_transcript: transcriptBody,
@@ -189,7 +270,7 @@ export async function POST(req: NextRequest) {
           status: "NEW",
           responsible: t.owner || mbUser.name || null,
           deadline: t.due,
-          meeting: ms.name_title || "EngineAI Live meeting",
+          meeting: meetingTitle,
           meeting_id: meetingId,
           source_ref: `meeting:${meetingId}`,
           user_id: mbUser.id,
@@ -199,7 +280,7 @@ export async function POST(req: NextRequest) {
         // 23505 = the partial unique index blocking a duplicate open task —
         // the DB backstop doing its job, not a failure. Insert one at a time so
         // one duplicate does not reject the batch.
-        const { error } = await mbDb.from("task").insert(row);
+        const error = await insertTaskRouted(row, hostReviewMode);
         if (!error) taskCount++;
         else if (error.code !== "23505") console.warn("[ExportToMB] task insert:", error.message);
       }
@@ -251,21 +332,23 @@ export async function POST(req: NextRequest) {
                 if (!owner || !first || first.length < 2) return false;
                 return owner === norm(u.name) || owner.split(" ").includes(first);
               });
+              // Route by the ATTENDEE's review mode — the tray is personal.
+              const theirMode = theirs.length > 0 ? await reviewModeFor(u.id) : "balanced";
               for (const t of theirs) {
                 const title = String(t?.item || t?.title || "").trim().slice(0, 300);
                 if (!title) continue;
-                const { error } = await mbDb.from("task").insert({
+                const error = await insertTaskRouted({
                   title,
                   description: null,
                   status: "NEW",
                   responsible: u.name || null,
                   deadline: t?.due || null,
-                  meeting: ms.name_title || "EngineAI Live meeting",
+                  meeting: meetingTitle,
                   meeting_id: sib.id,           // THEIR row, not the host's
                   source_ref: `meeting:${sib.id}`,
                   user_id: u.id,
                   order: 0,
-                });
+                }, theirMode);
                 if (!error) fanned++;
                 else if (error.code !== "23505") console.warn("[ExportToMB] attendee task:", error.message);
               }
