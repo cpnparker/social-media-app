@@ -1313,6 +1313,10 @@ const ALLOWED_COLUMNS: Record<string, string[]> = {
     "information_brief", "information_audience", "information_platform",
     "name_topic_array", "name_campaign_array",
     "name_user_commissioned", "name_user_content_lead", "name_user_completed",
+    // Numeric identity columns. The system prompt orders the model to filter on
+    // these for "my work" questions; omitting them here meant the filter was
+    // silently dropped and the answer covered the whole workspace.
+    "id_user_content_lead", "id_user_commissioned", "id_user_completed",
     "date_deadline_production", "date_deadline_publication",
   ],
   app_contracts: [
@@ -1321,6 +1325,8 @@ const ALLOWED_COLUMNS: Record<string, string[]> = {
     "units_contract", "units_total_completed",
     "units_content_completed", "units_social_completed",
     "information_notes",
+    // "which clients do I manage?" — see the note on app_content above.
+    "user_account_manager",
   ],
   app_clients: [
     "id_client", "name_client", "information_industry", "information_description",
@@ -1331,6 +1337,7 @@ const ALLOWED_COLUMNS: Record<string, string[]> = {
     "id_contract", "name_contract", "type_task", "type_content",
     "date_created", "date_completed", "date_deadline",
     "name_user_assignee", "name_user_assigner",
+    "id_user_assignee", "id_user_assigner", "id_user_completed",
     "order_sort", "flag_task_current", "information_notes", "units_content",
   ],
   app_ideas: [
@@ -1351,6 +1358,7 @@ const ALLOWED_COLUMNS: Record<string, string[]> = {
     "id_contract", "name_contract", "network", "type_post", "type_task",
     "date_created", "date_completed", "date_deadline",
     "name_user_assignee", "name_user_assigner",
+    "id_user_assignee", "id_user_completed",
     "units_content", "information_notes", "flag_spiked",
   ],
   // NOTE: app_posting_posts and social_posts_overview are NOT queryable directly.
@@ -1403,7 +1411,7 @@ export const QUERY_ENGINE_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         },
         assignee_name: {
           type: "string",
-          description: "For assigned_tasks report: the person's name (e.g. 'Chris', 'Ceri', 'Katie'). Searches name_user_assignee with partial match.",
+          description: "For assigned_tasks report: the person's name. Prefer a FULL name ('Katie Shaw', not 'Katie') — the name is resolved to an Engine user account, and a first name alone often matches several people (10 users match 'Chris'). If it is ambiguous the result says so and lists the candidates; relay that rather than presenting a merged list as one person's workload.",
         },
         network: {
           type: "string",
@@ -1579,15 +1587,29 @@ export async function lookupClientContext(
     }
   }
 
-  // 4. Fetch active contracts summary
-  const { data: contracts } = await supabase
+  // 4. Fetch active contracts summary.
+  //
+  // This filtered on `type_status`, which does not exist on app_contracts. The
+  // query failed with 42703 every time, the error was discarded, and `contracts`
+  // came back undefined — so the commercial half of EVERY client briefing was
+  // silently missing, and the assistant read that as the client having no
+  // contracts. The real flag is flag_active (integer 1), as used by
+  // reportContractsSummary. Newest-ending first so the five shown are current.
+  const { data: contracts, error: contractsErr } = await supabase
     .from("app_contracts")
-    .select("name_contract, units_contract, units_total_completed, date_start, date_end, type_status")
+    .select("name_contract, units_contract, units_total_completed, date_start, date_end")
     .eq("id_client", client.id_client)
-    .in("type_status", ["active", "Active"])
+    .eq("flag_active", 1)
+    .order("date_end", { ascending: false })
     .limit(5);
 
-  if (contracts && contracts.length > 0) {
+  if (contractsErr) {
+    // Never let a failed lookup read as "no contracts".
+    console.error("[client-context] contracts lookup failed:", contractsErr.message);
+    parts.push(
+      `\n## Active Contracts\nUnavailable — the contract lookup failed. Do NOT tell the user this client has no contracts; say the commercial data could not be loaded.`
+    );
+  } else if (contracts && contracts.length > 0) {
     parts.push(`\n## Active Contracts (${contracts.length})`);
     for (const c of contracts) {
       const used = c.units_total_completed || 0;
@@ -2020,10 +2042,76 @@ async function reportContractsSummary(
  * Queries content tasks (the current/first incomplete task per content item)
  * and social tasks, excluding deleted/spiked content.
  */
+/**
+ * Resolve a spoken name to actual Engine user ids.
+ *
+ * The report used to filter `name_user_assignee ILIKE %name%` directly, which
+ * merges people: "Chris" matches 10 live users (Chris Parker, Christina
+ * Salzano, Christopher Colford…), "Katie" matches 4, and "Mike Parsons"
+ * matches two DIFFERENT people who share a name. Every other connection joins
+ * identity on an id or an email; this one guessed on a substring, so one
+ * person's plate of work silently included several colleagues'.
+ *
+ * Resolving to ids first means an ambiguous name can be reported as ambiguous
+ * instead of quietly answered wrongly.
+ */
+async function resolveAssigneeIds(
+  name: string
+): Promise<{ ids: number[]; candidates: { id: number; name: string; email: string }[]; error?: string }> {
+  const { data, error } = await supabase
+    .from("users")
+    .select("id_user, name_user, email_user")
+    .ilike("name_user", `%${name}%`)
+    .is("date_deleted", null)
+    .limit(25);
+
+  if (error) return { ids: [], candidates: [], error: error.message };
+
+  const candidates = (data ?? []).map((u: any) => ({
+    id: u.id_user as number,
+    name: (u.name_user as string) ?? "",
+    email: (u.email_user as string) ?? "",
+  }));
+
+  // An exact (case-insensitive) full-name match beats a partial one: "Katie
+  // Shaw" should not be diluted by the other three Katies.
+  const wanted = name.trim().toLowerCase();
+  const exact = candidates.filter((c) => c.name.trim().toLowerCase() === wanted);
+  const chosen = exact.length ? exact : candidates;
+
+  return { ids: chosen.map((c) => c.id), candidates: chosen };
+}
+
 async function reportAssignedTasks(
   assigneeName?: string,
   clientId?: number
 ): Promise<{ data: any[]; total: number; error?: string; summary?: any; truncated?: boolean; matched_total?: number; warning?: string }> {
+  // Resolve the name to ids BEFORE querying, so we filter on identity rather
+  // than on a substring of a display name.
+  let assigneeIds: number[] | null = null;
+  let assigneeNote: string | null = null;
+  if (assigneeName) {
+    const resolved = await resolveAssigneeIds(assigneeName);
+    if (resolved.error) {
+      return { data: [], total: 0, error: `Could not resolve "${assigneeName}": ${resolved.error}` };
+    }
+    if (!resolved.ids.length) {
+      return {
+        data: [],
+        total: 0,
+        warning: `No Engine user matches the name "${assigneeName}", so no tasks could be looked up. Do NOT report this as "they have no tasks" — the person could not be identified. Ask for their full name or email.`,
+      };
+    }
+    assigneeIds = resolved.ids;
+    if (resolved.candidates.length > 1) {
+      assigneeNote =
+        `"${assigneeName}" matches ${resolved.candidates.length} people: ` +
+        resolved.candidates.map((c) => `${c.name} <${c.email}>`).join("; ") +
+        `. The tasks below are the COMBINED list for all of them — each row's "assignee" field says whose it is. ` +
+        `Do not present this as one person's workload; say the name was ambiguous and ask which one is meant.`;
+    }
+  }
+
   // Query incomplete content tasks
   let contentQ = supabase
     .from("app_tasks_content")
@@ -2031,8 +2119,8 @@ async function reportAssignedTasks(
     .is("date_completed", null)
     .or("flag_spiked.eq.0,flag_spiked.is.null");
 
-  if (assigneeName) {
-    contentQ = contentQ.ilike("name_user_assignee", `%${assigneeName}%`);
+  if (assigneeIds) {
+    contentQ = contentQ.in("id_user_assignee", assigneeIds);
   }
   if (clientId) {
     contentQ = contentQ.eq("id_client", clientId);
@@ -2044,8 +2132,8 @@ async function reportAssignedTasks(
     .select("name_client, id_client, name_social, id_social, network, type_task, units_content, date_created, date_deadline, name_user_assignee", { count: "exact" })
     .is("date_completed", null);
 
-  if (assigneeName) {
-    socialQ = socialQ.ilike("name_user_assignee", `%${assigneeName}%`);
+  if (assigneeIds) {
+    socialQ = socialQ.in("id_user_assignee", assigneeIds);
   }
   if (clientId) {
     socialQ = socialQ.eq("id_client", clientId);
@@ -2107,21 +2195,22 @@ async function reportAssignedTasks(
 
   const truncated = contentRes.truncated || socialRes.truncated;
   const matchedTotal = contentRes.matched + socialRes.matched;
+  const truncationWarning = truncated
+    ? truncationNote(
+        "open task rows",
+        contentRes.rows.length + socialRes.rows.length,
+        matchedTotal,
+        "This is not everything assigned to them, so do NOT describe it as their full workload or say a piece of work is not assigned to them."
+      )
+    : null;
+  // Both caveats matter and neither should silence the other.
+  const warning = [assigneeNote, truncationWarning].filter(Boolean).join(" ") || undefined;
+
   return {
     data: tasks,
     total: tasks.length,
-    ...(truncated
-      ? {
-          truncated: true,
-          matched_total: matchedTotal,
-          warning: truncationNote(
-            "open task rows",
-            contentRes.rows.length + socialRes.rows.length,
-            matchedTotal,
-            "This is not everything assigned to them, so do NOT describe it as their full workload or say a piece of work is not assigned to them."
-          ),
-        }
-      : {}),
+    ...(truncated ? { truncated: true, matched_total: matchedTotal } : {}),
+    ...(warning ? { warning } : {}),
   };
 }
 
@@ -2366,8 +2455,9 @@ export async function queryEngine(
     return { data: [], count: 0, error: "No valid columns selected" };
   }
 
-  // Build query
-  let query = supabase.from(table).select(selectedCols.join(","));
+  // Build query. count:"exact" so a 100-row page is never mistaken for the
+  // whole result — same reason as the pre-built reports.
+  let query = supabase.from(table).select(selectedCols.join(","), { count: "exact" });
 
   // Workspace scoping — auto-filter by client IDs if the table has id_client
   if (workspaceClientIds?.length && allowedCols.includes("id_client")) {
@@ -2375,9 +2465,19 @@ export async function queryEngine(
   }
 
   // Apply filters
+  //
+  // A filter on a column that is not allowlisted used to be dropped with a bare
+  // `continue`. The query then ran UNFILTERED and the model presented the result
+  // as scoped — so "what tasks have I got?" answered with the whole workspace's
+  // work. Dropping the filter is still the safe behaviour, but it can no longer
+  // be silent.
+  const droppedFilters: string[] = [];
   if (filters?.length) {
     for (const f of filters) {
-      if (!allowedCols.includes(f.column)) continue; // skip invalid columns
+      if (!allowedCols.includes(f.column)) {
+        droppedFilters.push(f.column);
+        continue;
+      }
       switch (f.operator) {
         case "eq": query = query.eq(f.column, f.value); break;
         case "neq": query = query.neq(f.column, f.value); break;
@@ -2409,15 +2509,41 @@ export async function queryEngine(
   const maxRows = Math.min(Math.max(limit || 100, 1), 100);
   query = query.limit(maxRows);
 
-  const { data, error } = await query;
+  const { data, error, count: matchedCount } = await query;
 
   if (error) {
     console.error("[QueryEngine] Supabase error:", error.message);
     return { data: [], count: 0, error: error.message };
   }
 
-  console.log(`[QueryEngine] ${table}: ${data?.length || 0} rows returned (limit ${maxRows})`);
-  return { data: data || [], count: data?.length || 0 };
+  const rows = data || [];
+  const matched = matchedCount ?? rows.length;
+  const truncated = matched > rows.length;
+
+  // Two separate honesty problems, both of which used to be silent.
+  const notes: string[] = [];
+  if (droppedFilters.length) {
+    notes.push(
+      `The filter(s) on ${Array.from(new Set(droppedFilters)).join(", ")} could NOT be applied — ` +
+        `that column is not queryable on ${table}. These results are therefore NOT scoped by it. ` +
+        `Do not describe them as belonging to one person or one group.`
+    );
+  }
+  if (truncated) {
+    notes.push(
+      `Showing ${rows.length} of ${matched} matching rows (page limit ${maxRows}). ` +
+        `Do not present this as the complete set or count from it — narrow the query instead.`
+    );
+  }
+
+  console.log(`[QueryEngine] ${table}: ${rows.length}/${matched} rows (limit ${maxRows})${droppedFilters.length ? ` — dropped filters: ${droppedFilters.join(",")}` : ""}`);
+  return {
+    data: rows,
+    count: rows.length,
+    matched_total: matched,
+    ...(truncated ? { truncated: true } : {}),
+    ...(notes.length ? { warning: notes.join(" ") } : {}),
+  };
 }
 
 type ImageProvider = "openai" | "xai" | "anthropic" | "gemini";
