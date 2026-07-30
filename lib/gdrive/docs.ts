@@ -105,7 +105,21 @@ async function readFileText(f: DriveFile): Promise<string> {
     }
   }
 
-  text = text.replace(/\n{3,}/g, "\n\n").trim().slice(0, MAX_CHARS);
+  text = text.replace(/\n{3,}/g, "\n\n").trim();
+
+  // Say so when the document does not fit. Cutting silently meant the model
+  // read the first third of a brief and answered "the brief doesn't cover
+  // budget" — confidently — when budget was on page 6. A marker in the text
+  // itself is what reaches the model, whatever formats the result downstream.
+  if (text.length > MAX_CHARS) {
+    const full = text.length;
+    text =
+      text.slice(0, MAX_CHARS) +
+      `\n\n[⚠ TRUNCATED — showing the first ${MAX_CHARS.toLocaleString()} of ${full.toLocaleString()} characters of this document. ` +
+      `You have NOT seen the rest. Do not conclude the document omits something you did not read; ` +
+      `say which part you saw and offer to look at a specific section.]`;
+  }
+
   contentCache.set(f.id, { at: Date.now(), text });
   return text;
 }

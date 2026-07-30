@@ -1409,6 +1409,11 @@ export const QUERY_ENGINE_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           type: "number",
           description: "Optional client ID to scope report to a single client",
         },
+        scope: {
+          type: "string",
+          enum: ["workspace"],
+          description: "Set to 'workspace' to force a query across ALL clients. Needed only when the conversation is anchored to a client (opened from a client page) but the user is asking a cross-client question — e.g. 'which contracts renew next month?' or 'total CUs across all clients'. Without it, an anchored thread scopes to its client and the result will say so.",
+        },
         assignee_name: {
           type: "string",
           description: "For assigned_tasks report: the person's name. Prefer a FULL name ('Katie Shaw', not 'Katie') — the name is resolved to an Engine user account, and a first name alone often matches several people (10 users match 'Chris'). If it is ambiguous the result says so and lists the candidates; relay that rather than presenting a merged list as one person's workload.",
@@ -2371,7 +2376,66 @@ interface QueryFilter {
  * Execute a safe, read-only database query against the Content Engine.
  * All inputs are validated against allowlists. Queries are workspace-scoped.
  */
+/**
+ * Client anchoring, applied once for every caller.
+ *
+ * A thread opened from a client page carries that client. Omitting client_id
+ * used to be silently reinterpreted as "scope to the anchored client", with no
+ * escape hatch and nothing in the result to say a filter had been applied — so
+ * "which contracts are up for renewal next month?" asked inside a Galderma
+ * thread came back Galderma-only and was presented as the workspace-wide
+ * answer. The system prompt tells the model the opposite: that omitting
+ * client_id means all clients.
+ *
+ * The anchor still applies by default, because it is usually what the user
+ * means. But scope:"workspace" overrides it, and when it is applied without
+ * the model asking, the result says so.
+ */
 export async function queryEngine(
+  table?: string,
+  columns?: string[],
+  filters?: QueryFilter[],
+  order?: { column: string; ascending: boolean },
+  limit?: number,
+  workspaceClientIds?: number[],
+  report?: string,
+  dateFrom?: string,
+  dateTo?: string,
+  clientId?: number,
+  groupBy?: "client" | "day" | "week",
+  assigneeName?: string,
+  args?: Record<string, any>,
+  anchorClientId?: number
+): Promise<{ data: any; count: number; total?: number; matched_total?: number; truncated?: boolean; warning?: string; error?: string; summary?: any }> {
+  let anchorNote: string | null = null;
+  let effectiveClientId = clientId;
+
+  if (!effectiveClientId && anchorClientId && args?.scope !== "workspace") {
+    effectiveClientId = anchorClientId;
+    const { data: anchorClient } = await supabase
+      .from("app_clients")
+      .select("name_client")
+      .eq("id_client", anchorClientId)
+      .maybeSingle();
+    const who = anchorClient?.name_client || `client ${anchorClientId}`;
+    anchorNote =
+      `NOTE: this result was scoped to ${who} because the conversation is anchored ` +
+      `to them — it is NOT a workspace-wide figure. If the user asked across all ` +
+      `clients, call query_engine again with scope:"workspace".`;
+  }
+
+  const result = await queryEngineScoped(
+    table, columns, filters, order, limit, workspaceClientIds,
+    report, dateFrom, dateTo, effectiveClientId, groupBy, assigneeName, args
+  );
+
+  if (anchorNote) {
+    result.warning = result.warning ? `${anchorNote} ${result.warning}` : anchorNote;
+  }
+  return result;
+}
+
+async function queryEngineScoped(
   table: string | undefined,
   columns?: string[],
   filters?: QueryFilter[],
@@ -4674,7 +4738,41 @@ export function formatXeroResult(report: string, result: { data: any; count: num
     ].filter(Boolean).join("\n\n");
   }
 
-  return `Xero ${report}: ${JSON.stringify(result.data).slice(0, 6000)}\n${money}`;
+  // Everything else. The summary block is rendered FIRST and never truncated.
+  //
+  // This used to be a flat `JSON.stringify(data).slice(0, 6000)`. For
+  // unpaid_invoices the payload is { invoices: [...60], summary: {...} }, so
+  // the summary sits after the invoice array and the cut severed it — the
+  // model saw a partial list, no count and no total_due, and added up the
+  // invoices it could see. "How much is outstanding?" then came back
+  // materially low, with no hedge, and the chasing went to the wrong clients.
+  const d = result.data;
+  if (d && typeof d === "object" && !Array.isArray(d) && (d as any).summary) {
+    const { summary, ...rest } = d as any;
+    const parts = [`Xero ${report}`];
+    parts.push(`SUMMARY (authoritative — use these figures, do NOT recompute them from the rows below):\n${JSON.stringify(summary, null, 2)}`);
+
+    const restJson = JSON.stringify(rest);
+    const BUDGET = 6000;
+    const cut = restJson.length > BUDGET;
+    parts.push(`DETAIL:\n${cut ? restJson.slice(0, BUDGET) : restJson}`);
+
+    // Rows can be dropped twice over: the client slices to 60, and the budget
+    // above may cut further. Either way the list is not the whole story.
+    const shown = Array.isArray((rest as any).invoices) ? (rest as any).invoices.length : null;
+    if (cut || (shown !== null && result.count > shown)) {
+      parts.push(
+        `⚠ The rows above are a SAMPLE${shown !== null ? ` (${shown} of ${result.count})` : ""}` +
+          `${cut ? " and were truncated further to fit" : ""}. Never total them yourself — quote summary.total_due.`
+      );
+    }
+    parts.push(money);
+    return parts.join("\n\n");
+  }
+
+  const flat = JSON.stringify(d);
+  const cut = flat.length > 6000;
+  return `Xero ${report}: ${cut ? flat.slice(0, 6000) : flat}${cut ? "\n⚠ Output truncated — this is not the full result; do not total or count from it." : ""}\n${money}`;
 }
 
 /* ─────────────── Drive Documents Tool (read-only, workspace-wide) ─────────────── */
@@ -6246,7 +6344,8 @@ async function streamAnthropic(
         }
       } else if (tool.name === "query_engine") {
         try {
-          const effectiveClientId = tool.input.client_id || config.selectedClientId;
+          // The anchor is resolved inside queryEngine so the rule (and the
+          // note it adds when it fires) lives in exactly one place.
           const result = await queryEngine(
             tool.input.table,
             tool.input.columns,
@@ -6257,10 +6356,11 @@ async function streamAnthropic(
             tool.input.report,
             tool.input.date_from,
             tool.input.date_to,
-            effectiveClientId,
+            tool.input.client_id,
             tool.input.group_by,
             tool.input.assignee_name,
-            tool.input
+            tool.input,
+            config.selectedClientId
           );
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify({ query_result: { table: tool.input.report || tool.input.table, count: result.count } })}\n\n`)
@@ -6947,7 +7047,8 @@ async function streamXAIChatCompletions(
       } else if (tc.function.name === "query_engine") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const effectiveClientId = input.client_id || config.selectedClientId;
+          // The anchor is resolved inside queryEngine so the rule (and the
+          // note it adds when it fires) lives in exactly one place.
           const result = await queryEngine(
             input.table,
             input.columns,
@@ -6958,10 +7059,11 @@ async function streamXAIChatCompletions(
             input.report,
             input.date_from,
             input.date_to,
-            effectiveClientId,
+            input.client_id,
             input.group_by,
             input.assignee_name,
-            input
+            input,
+            config.selectedClientId
           );
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify({ query_result: { table: input.report || input.table, count: result.count } })}\n\n`)
@@ -7640,7 +7742,8 @@ async function streamGemini(
       } else if (tc.function.name === "query_engine") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const effectiveClientId = input.client_id || config.selectedClientId;
+          // The anchor is resolved inside queryEngine so the rule (and the
+          // note it adds when it fires) lives in exactly one place.
           const result = await queryEngine(
             input.table,
             input.columns,
@@ -7651,10 +7754,11 @@ async function streamGemini(
             input.report,
             input.date_from,
             input.date_to,
-            effectiveClientId,
+            input.client_id,
             input.group_by,
             input.assignee_name,
-            input
+            input,
+            config.selectedClientId
           );
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify({ query_result: { table: input.report || input.table, count: result.count } })}\n\n`)
@@ -8234,7 +8338,8 @@ async function streamOpenAI(
       } else if (tc.function.name === "query_engine") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const effectiveClientId = input.client_id || config.selectedClientId;
+          // The anchor is resolved inside queryEngine so the rule (and the
+          // note it adds when it fires) lives in exactly one place.
           const result = await queryEngine(
             input.table,
             input.columns,
@@ -8245,10 +8350,11 @@ async function streamOpenAI(
             input.report,
             input.date_from,
             input.date_to,
-            effectiveClientId,
+            input.client_id,
             input.group_by,
             input.assignee_name,
-            input
+            input,
+            config.selectedClientId
           );
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify({ query_result: { table: input.report || input.table, count: result.count } })}\n\n`)
