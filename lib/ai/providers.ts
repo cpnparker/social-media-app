@@ -202,8 +202,11 @@ export function formatToolResult(result: { data: any; count: number; total?: num
   if (result.total !== undefined) {
     content += `\nTotal: ${result.total}`;
   }
-  if (result.matched_total !== undefined && result.matched_total !== result.total) {
-    content += `\nMatching rows in database: ${result.matched_total} (you are seeing ${result.total})`;
+  // Only on truncation, and deliberately NOT compared against `total`: for the
+  // units reports `total` is a CU sum, not a row count, so "N of M" across the
+  // two would be comparing different things.
+  if (result.truncated && result.matched_total !== undefined) {
+    content += `\nRows matching in the database: ${result.matched_total} — this query could not return them all.`;
   }
   // Reports like pipeline_summary return a single aggregate OBJECT, not an
   // array. The old Array-or-empty coercion serialized it as "Data: []", so the
@@ -1603,18 +1606,79 @@ export async function lookupClientContext(
  * Sums content_units from tasks created in the date range, joining through
  * content/social to get client info, excluding deleted/spiked items.
  */
+/**
+ * Row caps for the pre-built reports.
+ *
+ * A cap is fine. A cap the caller cannot see is not: these reports SUM the rows
+ * they get back and hand the total over as fact, so a silent truncation is an
+ * understated number that looks entirely plausible. Same bug class that told a
+ * user "there is no Hiscox contract in the system at all" (see
+ * reportContractsSummary).
+ *
+ * Every capped query below therefore selects with { count: "exact" } and goes
+ * through runCapped, so the caller always learns whether it saw everything.
+ *
+ * Sized against live volumes so ordinary questions never truncate at all.
+ * Only the AGGREGATE reaches the model — the raw rows are summed here — so a
+ * generous cap costs database time, not tokens. Measured on production: 13,455
+ * task rows fetch in 577ms / 3.4MB, 11,092 content rows in 317ms / 1.9MB.
+ */
+const REPORT_MAX_ROWS = {
+  /** app_tasks_content / app_tasks_social, date-filtered. A year of content
+   *  tasks is ~13.5k; all time is ~95k and will still (honestly) truncate. */
+  units: 25000,
+  /** app_content, date-filtered. All-time completed is ~9.1k, so this fits. */
+  content: 25000,
+  /** app_content, whole pipeline, no date filter. Table is ~11.1k, so this fits. */
+  pipeline: 25000,
+  /** One person's open tasks — a personal list, not an aggregate. Every open
+   *  content task org-wide is ~2k, so even the unfiltered call fits. */
+  assignedContent: 5000,
+  assignedSocial: 2000,
+} as const;
+
+interface CappedResult<T> {
+  rows: T[];
+  /** Rows matching the filter in the database, not the number returned. */
+  matched: number;
+  truncated: boolean;
+  error?: string;
+}
+
+/**
+ * Run a query that was built with `.select(cols, { count: "exact" })` and
+ * report honestly whether the cap bit.
+ */
+async function runCapped<T = any>(query: any, cap: number): Promise<CappedResult<T>> {
+  const { data, error, count } = await query.limit(cap);
+  if (error) return { rows: [], matched: 0, truncated: false, error: error.message };
+  const rows = (data ?? []) as T[];
+  const matched = count ?? rows.length;
+  return { rows, matched, truncated: matched > rows.length };
+}
+
+/** The sentence the model reads when a report could not see everything. */
+function truncationNote(
+  noun: string,
+  shown: number,
+  matched: number,
+  consequence: string
+): string {
+  return `Showing ${shown} of ${matched} matching ${noun}. ${consequence} Say so plainly, and offer to narrow the date range or scope to one client rather than presenting these figures as complete.`;
+}
+
 async function reportCommissionedUnits(
   dateFrom: string,
   dateTo?: string,
   clientId?: number,
   groupBy: "client" | "day" | "week" = "client"
-): Promise<{ data: any[]; total: number; error?: string; summary?: any }> {
+): Promise<{ data: any[]; total: number; error?: string; summary?: any; truncated?: boolean; matched_total?: number; warning?: string }> {
   const endDate = dateTo || new Date().toISOString().slice(0, 10);
 
   // Query content tasks created in period
   let contentTasksQ = supabase
     .from("app_tasks_content")
-    .select("name_client, id_client, units_content, name_content, type_content, type_task, date_created, flag_spiked, date_completed")
+    .select("name_client, id_client, units_content, name_content, type_content, type_task, date_created, flag_spiked, date_completed", { count: "exact" })
     .gte("date_created", dateFrom)
     .lte("date_created", endDate + "T23:59:59")
     .or("flag_spiked.eq.0,flag_spiked.is.null,date_completed.not.is.null");
@@ -1626,7 +1690,7 @@ async function reportCommissionedUnits(
   // Query social tasks created in period
   let socialTasksQ = supabase
     .from("app_tasks_social")
-    .select("name_client, id_client, units_content, name_social, network, type_task, date_created")
+    .select("name_client, id_client, units_content, name_social, network, type_task, date_created", { count: "exact" })
     .gte("date_created", dateFrom)
     .lte("date_created", endDate + "T23:59:59");
 
@@ -1634,17 +1698,37 @@ async function reportCommissionedUnits(
     socialTasksQ = socialTasksQ.eq("id_client", clientId);
   }
 
+  // Newest first: if the cap does bite, the rows that survive should be the
+  // recent ones. Ascending kept the oldest slice of the range and dropped
+  // everything current.
   const [contentRes, socialRes] = await Promise.all([
-    contentTasksQ.order("date_created", { ascending: true }).limit(1000),
-    socialTasksQ.order("date_created", { ascending: true }).limit(1000),
+    runCapped(contentTasksQ.order("date_created", { ascending: false }), REPORT_MAX_ROWS.units),
+    runCapped(socialTasksQ.order("date_created", { ascending: false }), REPORT_MAX_ROWS.units),
   ]);
 
   if (contentRes.error) {
-    console.error("[Report] Content tasks error:", contentRes.error.message);
-    return { data: [], total: 0, error: contentRes.error.message };
+    console.error("[Report] Content tasks error:", contentRes.error);
+    return { data: [], total: 0, error: contentRes.error };
   }
 
-  const allTasks = [...(contentRes.data || []), ...(socialRes.data || [])];
+  const allTasks = [...contentRes.rows, ...socialRes.rows];
+  const shown = allTasks.length;
+  const matchedTotal = contentRes.matched + socialRes.matched;
+  const truncated = contentRes.truncated || socialRes.truncated;
+  // Every branch below sums units_content over allTasks, so a truncated fetch
+  // yields a CU figure that is a floor, not a total.
+  const trunc = truncated
+    ? {
+        truncated: true,
+        matched_total: matchedTotal,
+        warning: truncationNote(
+          "tasks",
+          shown,
+          matchedTotal,
+          "The CU totals below are therefore a LOWER BOUND, not the real figure, and must not be quoted as the period's commissioned units."
+        ),
+      }
+    : {};
 
   if (groupBy === "day") {
     // Aggregate by day — always daily granularity
@@ -1661,7 +1745,7 @@ async function reportCommissionedUnits(
     const data = Object.values(timeTotals).sort((a, b) => a.date.localeCompare(b.date));
     const total = data.reduce((sum, d) => sum + d.content_units, 0);
     console.log(`[Report] Commissioned units daily ${dateFrom} to ${endDate}: ${total} CU across ${data.length} days`);
-    return { data, total };
+    return { data, total, ...trunc };
   }
 
   if (groupBy === "week") {
@@ -1682,7 +1766,7 @@ async function reportCommissionedUnits(
     const data = Object.values(weekTotals).sort((a, b) => a.date.localeCompare(b.date));
     const total = data.reduce((sum, d) => sum + d.content_units, 0);
     console.log(`[Report] Commissioned units weekly ${dateFrom} to ${endDate}: ${total} CU across ${data.length} weeks`);
-    return { data, total };
+    return { data, total, ...trunc };
   }
 
   // Default: aggregate by client
@@ -1700,7 +1784,7 @@ async function reportCommissionedUnits(
   const total = data.reduce((sum, c) => sum + c.content_units, 0);
 
   console.log(`[Report] Commissioned units ${dateFrom} to ${endDate}: ${total} CU across ${data.length} clients`);
-  return { data, total };
+  return { data, total, ...trunc };
 }
 
 /**
@@ -1710,12 +1794,12 @@ async function reportCompletedUnits(
   dateFrom: string,
   dateTo?: string,
   clientId?: number
-): Promise<{ data: any[]; total: number; error?: string; summary?: any }> {
+): Promise<{ data: any[]; total: number; error?: string; summary?: any; truncated?: boolean; matched_total?: number; warning?: string }> {
   const endDate = dateTo || new Date().toISOString().slice(0, 10);
 
   let query = supabase
     .from("app_content")
-    .select("name_client, id_client, units_content, name_content, type_content, date_completed")
+    .select("name_client, id_client, units_content, name_content, type_content, date_completed", { count: "exact" })
     .eq("flag_completed", 1)
     .gte("date_completed", dateFrom)
     .lte("date_completed", endDate + "T23:59:59");
@@ -1724,11 +1808,11 @@ async function reportCompletedUnits(
     query = query.eq("id_client", clientId);
   }
 
-  const { data: rows, error } = await query.order("date_completed", { ascending: false }).limit(500);
-
-  if (error) {
-    return { data: [], total: 0, error: error.message };
+  const res = await runCapped(query.order("date_completed", { ascending: false }), REPORT_MAX_ROWS.content);
+  if (res.error) {
+    return { data: [], total: 0, error: res.error };
   }
+  const rows = res.rows;
 
   const clientTotals: Record<string, { client_name: string; client_id: number; content_units: number; item_count: number }> = {};
   for (const item of (rows || [])) {
@@ -1744,7 +1828,22 @@ async function reportCompletedUnits(
   const total = data.reduce((sum, c) => sum + c.content_units, 0);
 
   console.log(`[Report] Completed units ${dateFrom} to ${endDate}: ${total} CU across ${data.length} clients`);
-  return { data, total };
+  return {
+    data,
+    total,
+    ...(res.truncated
+      ? {
+          truncated: true,
+          matched_total: res.matched,
+          warning: truncationNote(
+            "completed content items",
+            rows.length,
+            res.matched,
+            "The CU total above is therefore a LOWER BOUND for the period, not the real figure."
+          ),
+        }
+      : {}),
+  };
 }
 
 /**
@@ -1753,20 +1852,20 @@ async function reportCompletedUnits(
 async function reportPipelineSummary(
   clientId?: number,
   workspaceClientIds?: number[]
-): Promise<{ data: any; error?: string }> {
+): Promise<{ data: any; error?: string; truncated?: boolean; matched_total?: number; warning?: string }> {
   let query = supabase
     .from("app_content")
-    .select("name_client, name_content, type_content, units_content, flag_completed, flag_spiked");
+    .select("name_client, name_content, type_content, units_content, flag_completed, flag_spiked", { count: "exact" });
 
   if (workspaceClientIds?.length) query = query.in("id_client", workspaceClientIds);
   if (clientId) query = query.eq("id_client", clientId);
 
-  // Order by recency so the 1000-row cap keeps the CURRENT pipeline (an
-  // unordered limit returned an arbitrary subset once the table outgrew it).
-  const { data: rows, error } = await query.order("date_created", { ascending: false }).limit(1000);
-  if (error) return { data: null, error: error.message };
+  // Order by recency so the cap keeps the CURRENT pipeline (an unordered limit
+  // returned an arbitrary subset once the table outgrew it).
+  const res = await runCapped(query.order("date_created", { ascending: false }), REPORT_MAX_ROWS.pipeline);
+  if (res.error) return { data: null, error: res.error };
 
-  const items = rows || [];
+  const items = res.rows as any[];
   const commissioned = items.filter((c: any) => !c.flag_completed && !c.flag_spiked);
   const completed = items.filter((c: any) => c.flag_completed === 1);
   const spiked = items.filter((c: any) => c.flag_spiked === 1);
@@ -1807,6 +1906,18 @@ async function reportPipelineSummary(
       by_type: byType,
       by_client: byClient,
     },
+    ...(res.truncated
+      ? {
+          truncated: true,
+          matched_total: res.matched,
+          warning: truncationNote(
+            "content items",
+            items.length,
+            res.matched,
+            "total_items and every count and CU figure below are therefore partial — they describe the most recent slice of the pipeline, not all of it."
+          ),
+        }
+      : {}),
   };
 }
 
@@ -1912,11 +2023,11 @@ async function reportContractsSummary(
 async function reportAssignedTasks(
   assigneeName?: string,
   clientId?: number
-): Promise<{ data: any[]; total: number; error?: string; summary?: any }> {
+): Promise<{ data: any[]; total: number; error?: string; summary?: any; truncated?: boolean; matched_total?: number; warning?: string }> {
   // Query incomplete content tasks
   let contentQ = supabase
     .from("app_tasks_content")
-    .select("name_client, id_client, name_content, id_content, type_content, type_task, units_content, date_created, date_deadline, name_user_assignee, flag_task_current, order_sort")
+    .select("name_client, id_client, name_content, id_content, type_content, type_task, units_content, date_created, date_deadline, name_user_assignee, flag_task_current, order_sort", { count: "exact" })
     .is("date_completed", null)
     .or("flag_spiked.eq.0,flag_spiked.is.null");
 
@@ -1930,7 +2041,7 @@ async function reportAssignedTasks(
   // Query incomplete social tasks
   let socialQ = supabase
     .from("app_tasks_social")
-    .select("name_client, id_client, name_social, id_social, network, type_task, units_content, date_created, date_deadline, name_user_assignee")
+    .select("name_client, id_client, name_social, id_social, network, type_task, units_content, date_created, date_deadline, name_user_assignee", { count: "exact" })
     .is("date_completed", null);
 
   if (assigneeName) {
@@ -1940,20 +2051,23 @@ async function reportAssignedTasks(
     socialQ = socialQ.eq("id_client", clientId);
   }
 
+  // The cap is applied BEFORE the per-content dedupe below, and a content item
+  // carries many workflow steps, so 100 rows collapsed to far fewer items. The
+  // old caps therefore bit much harder than they appeared to.
   const [contentRes, socialRes] = await Promise.all([
-    contentQ.order("date_created", { ascending: false }).limit(100),
-    socialQ.order("date_created", { ascending: false }).limit(50),
+    runCapped(contentQ.order("date_created", { ascending: false }), REPORT_MAX_ROWS.assignedContent),
+    runCapped(socialQ.order("date_created", { ascending: false }), REPORT_MAX_ROWS.assignedSocial),
   ]);
 
   if (contentRes.error) {
-    console.error("[Report] Assigned tasks error:", contentRes.error.message);
-    return { data: [], total: 0, error: contentRes.error.message };
+    console.error("[Report] Assigned tasks error:", contentRes.error);
+    return { data: [], total: 0, error: contentRes.error };
   }
 
   // For content tasks: keep only the current/first task per content item
   // (each content piece can have multiple workflow tasks — writing, editing, review)
   const seenContent = new Set<number>();
-  const contentTasks = (contentRes.data || []).filter((t: any) => {
+  const contentTasks = (contentRes.rows || []).filter((t: any) => {
     if (!t.id_content || seenContent.has(t.id_content)) return false;
     seenContent.add(t.id_content);
     return true;
@@ -1973,7 +2087,7 @@ async function reportAssignedTasks(
       created: t.date_created?.slice(0, 10),
       deadline: t.date_deadline?.slice(0, 10),
     })),
-    ...(socialRes.data || []).map((t: any) => ({
+    ...(socialRes.rows || []).map((t: any) => ({
       type: "social" as const,
       client: t.name_client,
       client_id: t.id_client,
@@ -1991,7 +2105,24 @@ async function reportAssignedTasks(
   const totalCU = tasks.reduce((s, t) => s + t.cu, 0);
   console.log(`[Report] Assigned tasks for ${assigneeName || "all"}: ${tasks.length} tasks, ${totalCU} CU`);
 
-  return { data: tasks, total: tasks.length };
+  const truncated = contentRes.truncated || socialRes.truncated;
+  const matchedTotal = contentRes.matched + socialRes.matched;
+  return {
+    data: tasks,
+    total: tasks.length,
+    ...(truncated
+      ? {
+          truncated: true,
+          matched_total: matchedTotal,
+          warning: truncationNote(
+            "open task rows",
+            contentRes.rows.length + socialRes.rows.length,
+            matchedTotal,
+            "This is not everything assigned to them, so do NOT describe it as their full workload or say a piece of work is not assigned to them."
+          ),
+        }
+      : {}),
+  };
 }
 
 /**
@@ -2172,16 +2303,16 @@ export async function queryEngine(
       case "commissioned_units": {
         if (!dateFrom) return { data: [], count: 0, error: "date_from is required for commissioned_units report" };
         const result = await reportCommissionedUnits(dateFrom, dateTo, clientId, groupBy || "client");
-        return { data: result.data, count: result.data.length, total: result.total, error: result.error };
+        return { data: result.data, count: result.data.length, total: result.total, error: result.error, matched_total: result.matched_total, truncated: result.truncated, warning: result.warning };
       }
       case "completed_units": {
         if (!dateFrom) return { data: [], count: 0, error: "date_from is required for completed_units report" };
         const result = await reportCompletedUnits(dateFrom, dateTo, clientId);
-        return { data: result.data, count: result.data.length, total: result.total, error: result.error };
+        return { data: result.data, count: result.data.length, total: result.total, error: result.error, matched_total: result.matched_total, truncated: result.truncated, warning: result.warning };
       }
       case "pipeline_summary": {
         const result = await reportPipelineSummary(clientId, workspaceClientIds);
-        return { data: result.data, count: 1, error: result.error };
+        return { data: result.data, count: 1, error: result.error, matched_total: result.matched_total, truncated: result.truncated, warning: result.warning };
       }
       case "contracts_summary": {
         const result = await reportContractsSummary(clientId, workspaceClientIds, args?.include_inactive !== true);
@@ -2205,7 +2336,7 @@ export async function queryEngine(
       }
       case "assigned_tasks": {
         const result = await reportAssignedTasks(assigneeName, clientId);
-        return { data: result.data, count: result.data.length, total: result.total, error: result.error };
+        return { data: result.data, count: result.data.length, total: result.total, error: result.error, matched_total: result.matched_total, truncated: result.truncated, warning: result.warning };
       }
       case "social_performance": {
         const result = await reportSocialPerformance(dateFrom, dateTo, clientId, args?.network);
