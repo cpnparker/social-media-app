@@ -4860,7 +4860,18 @@ export function formatDriveDocsResult(result: { data: any; count: number; error?
   if (result.error) return `Drive documents query failed: ${result.error}\nTell the user briefly — do not invent document contents.`;
   // Anyone in the workspace can share a document with the service account and
   // its contents are then read aloud by the assistant — same trust level as mail.
-  return fenceUntrusted(String(JSON.stringify(result.data)).slice(0, 9000), {
+  //
+  // The per-document truncation marker added in lib/gdrive/docs.ts sits at the
+  // END of the document text, so this 9,000-char slice could cut it straight
+  // off — JSON escaping inflates an 8,000-char document well past the budget.
+  // The signal has to be re-applied AFTER slicing or it does not survive.
+  const json = JSON.stringify(result.data);
+  const cut = json.length > 9000;
+  const body = cut ? json.slice(0, 9000) : json;
+  const note = cut
+    ? `\n\n[⚠ This tool result was truncated to fit. You have NOT seen the full document text. Do not conclude a document omits something you did not read — say which part you saw and offer to look at a specific section.]`
+    : "";
+  return fenceUntrusted(body + note, {
     source: "the CONTENT of Drive documents shared with EngineAI, written by whoever authored them",
     instructions: "Quote and summarise from this actual content only — never invent document contents.",
   });

@@ -5,6 +5,7 @@ import { auth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { checkConversationAccess } from "@/lib/ai/access";
+import { hasEngineAiAccess } from "@/lib/permissions";
 import { VOICE_TOOL_NAMES } from "@/lib/ai/voice";
 import {
   queryEngine,
@@ -75,6 +76,16 @@ export async function POST(req: NextRequest) {
     // next turn reads back as trusted prior context.
     if (access.permission === "view") {
       return NextResponse.json({ error: "Read-only access to this conversation" }, { status: 403 });
+    }
+
+    // Reaching a conversation is not entitlement to run a turn against it —
+    // the voice surface reaches Engine, client context, MeetingBrain and Slack
+    // with the same reach as chat, so it needs the same front door.
+    if (!(await hasEngineAiAccess(userId, conversation.id_workspace))) {
+      return NextResponse.json(
+        { error: "You do not have access to EngineAI" },
+        { status: 403 }
+      );
     }
 
     // Audience must match the text pipeline's definition: a "private" thread

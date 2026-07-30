@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
-import { verifyWorkspaceMembership } from "@/lib/permissions";
+import { verifyWorkspaceMembership, hasEngineAiAccess } from "@/lib/permissions";
 import { checkConversationAccess } from "@/lib/ai/access";
 import {
   buildVoiceInstructions,
@@ -60,6 +60,16 @@ export async function POST(req: NextRequest) {
     });
     if (!access.allowed) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    // Reaching a conversation is not entitlement to run a turn against it —
+    // the voice surface reaches Engine, client context, MeetingBrain and Slack
+    // with the same reach as chat, so it needs the same front door.
+    if (!(await hasEngineAiAccess(userId, conversation.id_workspace))) {
+      return NextResponse.json(
+        { error: "You do not have access to EngineAI" },
+        { status: 403 }
+      );
     }
 
     // Resolve client name for the instructions (optional) + the full roster

@@ -159,7 +159,12 @@ export async function queryXero(
   // Fail closed on the audience, so this cannot be reached from a chain that
   // forgot to gate registration. Finance is restricted per user
   // (flag_access_finance); a multi-reader thread is read by everyone.
-  if (opts.audience === "team") {
+  //
+  // Tested `=== "team"` first, which meant an OMITTED audience sailed through —
+  // fail-OPEN, and the exact case the comment claims to defend against. It now
+  // matches queryGmail (`!== "solo"`). All four call sites pass an audience, so
+  // this changes nothing today; it is the missing-caller case it exists for.
+  if (opts.audience !== "solo") {
     return {
       data: [], count: 0,
       notice: "Finance data was NOT looked up: this conversation has more than one reader. Tell the user briefly that Xero and forecast figures can only be opened in a private, unshared conversation — suggest starting one.",
