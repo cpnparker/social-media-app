@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { runScheduledPrompt } from "@/lib/scheduled/runner";
+import { hasEngineAiAccess } from "@/lib/permissions";
 
 export const maxDuration = 120;
 
@@ -18,6 +19,18 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     .eq("id_prompt", params.id)
     .maybeSingle();
   if (!task || task.user_created !== userId) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // "Run now" executes a full assistant turn with the same tool belt as the
+  // chat routes, so it needs the same front-door check. Owning an existing
+  // scheduled prompt is not entitlement: without this, a user whose EngineAI
+  // access was revoked could keep running the pipeline through prompts they
+  // had created earlier, for as long as their cookie lived.
+  if (!(await hasEngineAiAccess(userId, task.id_workspace))) {
+    return NextResponse.json(
+      { error: "You do not have access to EngineAI" },
+      { status: 403 }
+    );
+  }
 
   const { data: runRow } = await intelligenceDb
     .from("ai_scheduled_runs")

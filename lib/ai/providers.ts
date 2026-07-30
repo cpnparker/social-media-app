@@ -187,7 +187,7 @@ const MAX_TOOL_RESULT_ROWS = 100;
 const MAX_WEB_SEARCH_CHARS = 6000;
 
 /** Format query_engine results with optional truncation to reduce token usage */
-export function formatToolResult(result: { data: any; count: number; total?: number; matched_total?: number; truncated?: boolean; warning?: string; summary?: any; error?: string }): string {
+export function formatToolResult(result: { data: any; count: number; total?: number; matched_total?: number; truncated?: boolean; warning?: string; scope_note?: string; summary?: any; error?: string }): string {
   if (result.error) return `Query failed: ${result.error}`;
   let content = `Query returned ${result.count} rows.`;
   // First, before the data, so it cannot be skimmed past. A tool result that
@@ -195,6 +195,12 @@ export function formatToolResult(result: { data: any; count: number; total?: num
   // the model will state the absence as fact.
   if (result.warning) {
     content += `\n\n⚠ INCOMPLETE RESULT: ${result.warning}`;
+  }
+  // A scoping note is not an incompleteness warning — the result is complete
+  // for the scope it was run at. Labelled separately so the model does not
+  // hedge a correct answer.
+  if (result.scope_note) {
+    content += `\n\n${result.scope_note}`;
   }
   if (result.summary) {
     content += `\n\nSUMMARY (use these pre-calculated numbers):\n${JSON.stringify(result.summary, null, 2)}`;
@@ -2429,11 +2435,16 @@ export async function queryEngine(
   assigneeName?: string,
   args?: Record<string, any>,
   anchorClientId?: number
-): Promise<{ data: any; count: number; total?: number; matched_total?: number; truncated?: boolean; warning?: string; error?: string; summary?: any }> {
+): Promise<{ data: any; count: number; total?: number; matched_total?: number; truncated?: boolean; warning?: string; scope_note?: string; error?: string; summary?: any }> {
   let anchorNote: string | null = null;
   let effectiveClientId = clientId;
 
-  if (!effectiveClientId && anchorClientId && args?.scope !== "workspace") {
+  // ONLY report mode consumes clientId. Raw table mode scopes by
+  // workspaceClientIds and the model's own filters and never reads it, so
+  // announcing an anchor there stated a filter that had not been applied —
+  // the rows were workspace-wide while the note claimed one client. Emitting
+  // it unconditionally was a regression in this wrapper's first version.
+  if (report && !effectiveClientId && anchorClientId && args?.scope !== "workspace") {
     effectiveClientId = anchorClientId;
     const { data: anchorClient } = await supabase
       .from("app_clients")
@@ -2453,7 +2464,10 @@ export async function queryEngine(
   );
 
   if (anchorNote) {
-    result.warning = result.warning ? `${anchorNote} ${result.warning}` : anchorNote;
+    // Carried separately from `warning`: this is a scoping note, not a
+    // truncation, and routing it through `warning` filed it under
+    // "⚠ INCOMPLETE RESULT" — which it is not.
+    result.scope_note = anchorNote;
   }
   return result;
 }
@@ -2472,7 +2486,7 @@ async function queryEngineScoped(
   groupBy?: "client" | "day" | "week",
   assigneeName?: string,
   args?: Record<string, any>
-): Promise<{ data: any; count: number; total?: number; matched_total?: number; truncated?: boolean; warning?: string; error?: string; summary?: any }> {
+): Promise<{ data: any; count: number; total?: number; matched_total?: number; truncated?: boolean; warning?: string; scope_note?: string; error?: string; summary?: any }> {
   // Report mode — run pre-built aggregate queries
   if (report) {
     switch (report) {
@@ -7701,9 +7715,12 @@ async function streamGemini(
     // the same round as query_gmail still run.
     const taintedBeforeBatch = config.sawUntrustedContent === true;
     for (const tc of toolCallsArray) {
-      // TAINTED TURN — see the Anthropic chain. These chains are reachable
-      // with an already-tainted config when the orchestrator falls back to
-      // them mid-turn, and the block was missing here entirely.
+      // TAINTED TURN — see the Anthropic chain. DEFENCE IN DEPTH, currently
+      // unreachable: query_gmail is registered only when the chain's apiModel
+      // matches /^claude/, and the orchestrator's only fallback edges are
+      // anthropic<->xai, so neither of these chains can be tainted today. It is
+      // here so that widening the model gate cannot silently open the hole —
+      // the earlier claim that this closed an existing gap was wrong.
       if (taintedBeforeBatch) {
         geminiMessages.push({
           role: "tool",
@@ -8315,9 +8332,12 @@ async function streamOpenAI(
     // the same round as query_gmail still run.
     const taintedBeforeBatch = config.sawUntrustedContent === true;
     for (const tc of toolCallsArray) {
-      // TAINTED TURN — see the Anthropic chain. These chains are reachable
-      // with an already-tainted config when the orchestrator falls back to
-      // them mid-turn, and the block was missing here entirely.
+      // TAINTED TURN — see the Anthropic chain. DEFENCE IN DEPTH, currently
+      // unreachable: query_gmail is registered only when the chain's apiModel
+      // matches /^claude/, and the orchestrator's only fallback edges are
+      // anthropic<->xai, so neither of these chains can be tainted today. It is
+      // here so that widening the model gate cannot silently open the hole —
+      // the earlier claim that this closed an existing gap was wrong.
       if (taintedBeforeBatch) {
         openaiMessages.push({
           role: "tool",

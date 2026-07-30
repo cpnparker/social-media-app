@@ -100,7 +100,12 @@ export async function POST(req: NextRequest) {
       case "query_engine": {
         const { data: clients } = await supabase.from("app_clients").select("id_client");
         const workspaceClientIds = (clients || []).map((c: any) => c.id_client).filter(Boolean) as number[];
-        const effectiveClientId = args.client_id || conversation.id_client || undefined;
+        // Voice is the FIFTH query_engine call site — the four text chains are
+        // in providers.ts. It used to resolve the client anchor here and pass
+        // it in the clientId slot, which meant queryEngine saw a caller-supplied
+        // client: scope:"workspace" could not override it and no scoping note
+        // was produced. Pass the model's own client_id, and the thread's client
+        // as the ANCHOR, so voice behaves exactly like the text chains.
         const result = await queryEngine(
           args.table,
           args.columns,
@@ -111,10 +116,11 @@ export async function POST(req: NextRequest) {
           args.report,
           args.date_from,
           args.date_to,
-          effectiveClientId,
+          args.client_id,
           args.group_by,
           args.assignee_name,
-          args
+          args,
+          conversation.id_client || undefined
         );
         output = formatToolResult(result);
         break;
