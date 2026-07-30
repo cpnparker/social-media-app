@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { checkConversationAccess } from "@/lib/ai/access";
+import { hasEngineAiAccess } from "@/lib/permissions";
 import { supabase } from "@/lib/supabase";
 import { createStreamingResponse, type AIMessage, type AIAttachment } from "@/lib/ai/providers";
 import { buildSystemPrompt, normalizeContextConfig, isFullDetail, type NormalizedContextConfig, type DetailLevel } from "@/lib/ai/system-prompts";
@@ -592,6 +593,17 @@ export async function POST(
         status: 403,
         headers: { "Content-Type": "application/json" },
       });
+    }
+
+    // Reaching a conversation you are allowed to read is not the same as being
+    // allowed to run a turn. flag_access_enginegpt used to be a browser-only
+    // gate, so a revoked user with a live cookie could still POST here and get
+    // a full turn with Engine, client-context, MeetingBrain and Slack access.
+    if (!(await hasEngineAiAccess(userId, conversation.id_workspace))) {
+      return new Response(
+        JSON.stringify({ error: "You do not have access to EngineAI" }),
+        { status: 403, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     // Pre-extract text from document attachments so we can cache it in the DB

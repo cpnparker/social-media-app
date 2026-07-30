@@ -53,21 +53,29 @@ export async function POST(req: NextRequest) {
 
     // 1. New general-mode conversation, linked to the client if any.
     //
-    // VISIBILITY follows the same rule as meeting_details: client work is a
-    // team artefact, everything else stays with its owner. This used to be
-    // unconditionally "team", so continuing an internal 1:1 — a performance
-    // review, a salary conversation — dropped its verbatim transcript into a
-    // workspace-readable thread. A bound client is the signal that this is
-    // client work; without one, the follow-up is private to the host, who
-    // can still share it deliberately.
-    const isClientMeeting = !!meetingSession.id_client;
+    // ALWAYS PRIVATE. This is the only handoff path that writes the verbatim
+    // transcript, so it is the one place publication must not be inferred.
+    //
+    // It previously used `id_client ? "team" : "private"`, treating a bound
+    // client as the signal for client work. But binding is SILENT and
+    // AUTOMATIC — meeting/page.tsx calls bind-client whenever the live
+    // transcript mentions a client strongly enough, with no confirmation. So
+    // saying "we still owe UBS the edit" once during a performance review or a
+    // salary conversation published that 1:1's full transcript to everyone in
+    // the workspace.
+    //
+    // bind-client already refuses to promote visibility for exactly this
+    // reason (see its comment at bind-client/route.ts:40-51); this path was
+    // reintroducing the hazard from the other end. The client link is still
+    // recorded, so the thread carries client context — but the host shares it
+    // deliberately, as they can from any private thread.
     const { data: conversation, error: convErr } = await intelligenceDb
       .from("ai_conversations")
       .insert({
         id_workspace: meetingSession.id_workspace,
         user_created: userId,
         name_conversation: title,
-        type_visibility: isClientMeeting ? "team" : "private",
+        type_visibility: "private",
         id_client: meetingSession.id_client || null,
         name_model: HANDOFF_MODEL,
         type_conversation_mode: "general",

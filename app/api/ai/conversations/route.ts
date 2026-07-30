@@ -3,7 +3,7 @@ import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
 import { mapConversation } from "@/lib/ai/response-mappers";
-import { verifyWorkspaceMembership } from "@/lib/permissions";
+import { verifyWorkspaceMembership, hasEngineAiAccess } from "@/lib/permissions";
 
 // GET /api/ai/conversations — list conversations
 export async function GET(req: NextRequest) {
@@ -251,6 +251,15 @@ export async function POST(req: NextRequest) {
     const memberRole = await verifyWorkspaceMembership(userId, workspaceId);
     if (!memberRole) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    // Being in the workspace is not the same as being allowed to use EngineAI.
+    // Without this the rail could hide the product while the API still served it.
+    if (!(await hasEngineAiAccess(userId, workspaceId))) {
+      return NextResponse.json(
+        { error: "You do not have access to EngineAI" },
+        { status: 403 }
+      );
     }
 
     // Verify workspace exists in Supabase
