@@ -305,7 +305,12 @@ export default function ContentDetailPage() {
   const [chatConversations, setChatConversations] = useState<AIConversation[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
-  const [chatModel, setChatModel] = useState("claude-sonnet-4-20250514");
+  // Was "claude-sonnet-4-20250514" — a legacy id that MODEL_REGISTRY silently
+  // remaps to Sonnet 5, so the calls were always right. The label was not:
+  // getModelLabel() only knows AI_MODELS, so the picker opened showing the raw
+  // string "claude-sonnet-4-20250514" until the user changed it. Same model,
+  // stated honestly.
+  const [chatModel, setChatModel] = useState("claude-sonnet-5");
 
   // AI Writer — combined tab state
   const [toolsExpanded, setToolsExpanded] = useState(false);

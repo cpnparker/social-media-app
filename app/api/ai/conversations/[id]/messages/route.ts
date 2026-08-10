@@ -1210,16 +1210,27 @@ export async function POST(
     // matched bare "inbox"/"email"/"unread", which are everyday words in this
     // app (the social Inbox, "email the client", campaign emails) and would
     // have silently switched the model mid-conversation for ordinary work.
+    // "the inbox" is left out for the same reason — only "my inbox" counts.
+    //
+    // The clauses below were verified against 22 real phrasings and 12
+    // marketing-email decoys. Three earlier misses are why this widened:
+    // every "e-?mail" was singular, so "check my emails" fell through;
+    // "e-?mailed?" requires the second e, so it matched "emailed" but not
+    // "did X email me"; and "gmail" — the actual product name — appeared
+    // nowhere, so "check my gmail" routed to Grok and got denied.
     const MAIL_INTENT = new RegExp(
       [
-        "\\bmy (inbox|mailbox|e-?mail|mails)\\b",
-        "\\bin my (inbox|mailbox|mail|e-?mail)\\b",
-        "\\bcheck my (mail|e-?mail|inbox)\\b",
-        "\\b(e-?mailed?|mailed) (me|us)\\b",
-        "\\b(did|has|have|hasn.t|didn.t) \\w+ (e-?mailed|replied|reply|written|got back|come back)",
+        "\\bg-?mail\\b",
+        "\\bmy (inbox|mailbox|e-?mails?|mails)\\b",
+        "\\bin my (inbox|mailbox|mail|e-?mails?)\\b",
+        "\\b(check|search|read|look in|find in|go through) (my )?(mail|e-?mails?|inbox|mailbox)\\b",
+        "\\b(e-?mailed|mailed) (me|us)\\b",
+        "\\b(did|does|has|have|hasn.t|didn.t|will) \\w+ (e-?mail(ed)?|replied|reply|written|got back|come back)",
         "\\b(e-?mails?|mail) from\\b",
         "\\bany (unread|new) (mail|e-?mails?)\\b",
-        "\\b(search|look in|find in) (my )?(mail|e-?mail|inbox)\\b",
+        "\\bunread (mail|e-?mails?)\\b",
+        "\\b(e-?mails?|mail) (i|we) (got|received|have|missed)\\b",
+        "\\breceived (an?|any) (e-?mails?|mail)\\b",
         "\\bthe (e-?mail|thread) (from|about)\\b",
       ].join("|"),
       "i"
@@ -1233,6 +1244,20 @@ export async function POST(
     ) {
       model = "claude-sonnet-5";
       console.log(`[Messages] Mail intent: auto-route override → claude-sonnet-5 (query_gmail is Claude-only)`);
+    }
+
+    // Say the true thing about the mailbox.
+    //
+    // The override above only fires on an AUTO-routed turn whose wording trips
+    // MAIL_INTENT. A user who picked Grok themselves, or who asks obliquely
+    // ("can you see what Ceri sent over?"), still lands on a chain where
+    // query_gmail was never registered — and the model then says it has no way
+    // to read email at all, which is false and which the user believes. It is
+    // a model restriction, not a missing feature, so the prompt has to carry
+    // that distinction; the model cannot infer it from an absent tool.
+    if (gmailAccess && !isTeamThread && !model.startsWith("claude")) {
+      systemPrompt +=
+        "\n\n**Mailbox — INTERNAL, do not raise unprompted:** this user's work mailbox IS connected to EngineAI, but the tool that reads it runs only on the Claude models, and this turn is not on one. So if they ask about their email, do NOT tell them you have no access to email, that you can't read a mailbox, or that Slack is the only inbox you can see — all three are wrong, and they will act on it. Say their mailbox is available on the Claude models, and that switching the model (or using EngineAI Auto, which sends mail questions to Claude) and asking again will read it. Never answer a question about the contents of their mail from memory or inference.";
     }
 
     // Scheduled task thread: load the standing task so the model can propose
