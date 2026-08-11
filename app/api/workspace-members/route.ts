@@ -117,6 +117,8 @@ export async function GET() {
         accessEngineAiLive: access ? !!access.flag_access_engineai_live : false,
         accessFinance: access ? !!access.flag_access_finance : false,
         accessGmail: access ? (access as any).flag_access_gmail === 1 : false,
+        accessCalendar: access ? (access as any).flag_access_calendar === 1 : false,
+        accessMicrosoft: access ? (access as any).flag_access_microsoft === 1 : false,
         accessEngineTasks: access ? (access as any).flag_access_engine_tasks === 1 : false,
       };
     });
@@ -254,7 +256,7 @@ export async function PATCH(req: NextRequest) {
   if (!guard.ok) return guard.res;
   try {
     const body = await req.json();
-    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain, accessRfpTool, accessAuthorityOn, accessEngineAiLive, accessFinance, accessGmail, accessEngineTasks } = body;
+    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain, accessRfpTool, accessAuthorityOn, accessEngineAiLive, accessFinance, accessGmail, accessCalendar, accessMicrosoft, accessEngineTasks } = body;
 
     // Determine target user IDs — bulk or single
     const isBulk = Array.isArray(userIds) && userIds.length > 0;
@@ -323,6 +325,8 @@ export async function PATCH(req: NextRequest) {
       accessEngineAiLive !== undefined ||
       accessFinance !== undefined ||
       accessGmail !== undefined ||
+      accessCalendar !== undefined ||
+      accessMicrosoft !== undefined ||
       accessEngineTasks !== undefined;
 
     if (hasAccessUpdate) {
@@ -361,6 +365,8 @@ export async function PATCH(req: NextRequest) {
             if (accessEngineAiLive !== undefined) updates.flag_access_engineai_live = accessEngineAiLive ? 1 : 0;
             if (accessFinance !== undefined) updates.flag_access_finance = accessFinance ? 1 : 0;
             if (accessGmail !== undefined) updates.flag_access_gmail = accessGmail ? 1 : 0;
+            if (accessCalendar !== undefined) updates.flag_access_calendar = accessCalendar ? 1 : 0;
+            if (accessMicrosoft !== undefined) updates.flag_access_microsoft = accessMicrosoft ? 1 : 0;
             if (accessEngineTasks !== undefined) updates.flag_access_engine_tasks = accessEngineTasks ? 1 : 0;
 
             const { error: updErr } = await intelligenceDb
@@ -382,6 +388,8 @@ export async function PATCH(req: NextRequest) {
               flag_access_engineai_live: accessEngineAiLive ? 1 : 0,
               flag_access_finance: accessFinance ? 1 : 0,
               flag_access_gmail: accessGmail ? 1 : 0,
+              flag_access_calendar: accessCalendar ? 1 : 0,
+              flag_access_microsoft: accessMicrosoft ? 1 : 0,
               // Only sent when the admin actually touched this toggle. Naming a
               // column that does not exist yet fails the WHOLE insert, which
               // would break unrelated grants for the users who have no row.

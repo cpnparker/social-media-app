@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Settings, UserPlus, ListChecks, Link2, CreditCard, Boxes, Building2, Sparkles, FileText, Sliders, GaugeCircle } from "lucide-react";
+import { Settings, UserPlus, ListChecks, Link2, CreditCard, Boxes, Building2, Sparkles, FileText, Sliders, GaugeCircle, Plug } from "lucide-react";
 
 const settingsNav = [
   { label: "Workspace", href: "/settings/workspace", icon: Settings },
@@ -15,6 +15,7 @@ const settingsNav = [
   { label: "AI Context", href: "/settings/ai-context", icon: Sliders },
   { label: "AI Usage", href: "/settings/ai-usage", icon: Sparkles },
   { label: "AI Control", href: "/settings/ai-control", icon: GaugeCircle },
+  { label: "Connections", href: "/settings/connections", icon: Plug },
   { label: "Links", href: "/settings/links", icon: Link2 },
   { label: "Billing", href: "/settings/billing", icon: CreditCard },
 ];

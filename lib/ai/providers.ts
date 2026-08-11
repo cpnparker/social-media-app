@@ -90,6 +90,8 @@ export interface AIProviderConfig {
   financeAccess?: boolean;
   /** Per-user Gmail access flag (users_access.flag_access_gmail). */
   gmailAccess?: boolean;
+  calendarAccess?: boolean;
+  microsoftAccess?: boolean;
   /** ALLOWLIST, not a denylist: set ONLY by the interactive chat route. Any
    *  other caller (scheduled runner, Live, voice, fact-check, RFP, design)
    *  gets personal-mailbox tools by omission — so a future surface cannot
@@ -4399,6 +4401,188 @@ const GMAIL_TOOL: Anthropic.Tool = {
   input_schema: { ...(GMAIL_OPENAI_TOOL.function.parameters as any) },
 };
 
+/* ─────────────── Calendar & Microsoft 365 (via the MeetingBrain bridge) ───────────────
+ *
+ * Neither grant lives in EngineAI. Google and Microsoft are the LOGIN for
+ * MeetingBrain, so the tokens are there and always were; these tools reach them
+ * over the same server-to-server bridge that already serves Gmail. EngineAI's
+ * job is to decide who may ask, not to hold the connection.
+ *
+ * Registration mirrors Gmail's four gates exactly — per-user flag,
+ * allowPersonalData (interactive chat only), a solo audience, and a Claude
+ * chain. The last one is not a capability limit: personal-inbox content is
+ * restricted to the processor whose terms we hold for it, and Microsoft carries
+ * Mail.Read, so it is treated as mail-grade. Calendar is held to the same bar
+ * because a calendar is a record of who someone meets and when.
+ */
+
+const CALENDAR_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "query_calendar",
+    description:
+      "Read the USER'S OWN Google Calendar. Use for 'what's on today', 'when am I next meeting X', 'what's in my diary this week', 'find the kickoff call'. Reads only their own calendar; you cannot query anyone else's. Read-only.",
+    parameters: {
+      type: "object",
+      properties: {
+        report: {
+          type: "string",
+          enum: ["upcoming_events", "day_agenda", "search_events", "event_details"],
+          description:
+            "upcoming_events: next N days. day_agenda: one day in full (pass `date`, omitted = today). search_events: free-text search either side of today (pass `query`). event_details: one event (pass `event_id` from a previous result).",
+        },
+        query: { type: "string", description: "Search text. Required for search_events." },
+        date: { type: "string", description: "YYYY-MM-DD. day_agenda only; omitted means today." },
+        event_id: { type: "string", description: "Event id from a previous result. Required for event_details." },
+        days: { type: "number", description: "Window size. Defaults: 7 (upcoming), 90 either side (search)." },
+        limit: { type: "number", description: "Max events, capped at 50." },
+      },
+      required: ["report"],
+    },
+  },
+};
+
+const CALENDAR_TOOL: Anthropic.Tool = {
+  name: "query_calendar",
+  description: CALENDAR_OPENAI_TOOL.function.description!,
+  input_schema: { ...(CALENDAR_OPENAI_TOOL.function.parameters as any) },
+};
+
+const MICROSOFT_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "query_microsoft",
+    description:
+      "Read the USER'S OWN Microsoft 365 — Outlook mail, Outlook calendar, and Teams chats. Use when they ask about Outlook, Teams, or their Microsoft account specifically. Reads only their own data. Read-only.",
+    parameters: {
+      type: "object",
+      properties: {
+        report: {
+          type: "string",
+          enum: ["recent_mail", "search_mail", "upcoming_events", "recent_teams"],
+          description:
+            "recent_mail: recent Outlook inbox. search_mail: full-text mailbox search (pass `query`). upcoming_events: Outlook calendar ahead. recent_teams: recent Teams chat messages.",
+        },
+        query: { type: "string", description: "Search text. Required for search_mail." },
+        days: { type: "number", description: "How far back/ahead. Defaults: 3 (mail), 7 (events)." },
+        limit: { type: "number", description: "Max items, capped at 30." },
+      },
+      required: ["report"],
+    },
+  },
+};
+
+const MICROSOFT_TOOL: Anthropic.Tool = {
+  name: "query_microsoft",
+  description: MICROSOFT_OPENAI_TOOL.function.description!,
+  input_schema: { ...(MICROSOFT_OPENAI_TOOL.function.parameters as any) },
+};
+
+export interface BridgeQueryResult {
+  data: any[];
+  count: number;
+  error?: string;
+  statusCode?: string;
+}
+
+/**
+ * Shared caller for the two NEW bridge endpoints.
+ *
+ * Deliberately does not touch queryGmail. That function carries a mailbox
+ * identity assertion and its own result shape, and folding it into a generic
+ * helper to save a few lines would mean editing the most sensitive path in the
+ * app to ship an unrelated feature.
+ */
+async function queryBridge(
+  service: "calendar" | "microsoft",
+  userEmail: string,
+  report: string,
+  options: Record<string, unknown>,
+  audience: string | undefined
+): Promise<BridgeQueryResult> {
+  // Fail closed on an omitted audience, exactly as the personal-data gate does
+  // elsewhere: `undefined !== "solo"` must block, not pass.
+  if (audience !== "solo") {
+    console.warn(`[${service}] blocked — audience=${audience ?? "(absent)"} (fail-closed)`);
+    return { data: [], count: 0, error: "BLOCKED_AUDIENCE", statusCode: "audience_not_solo" };
+  }
+
+  const baseUrl = (process.env.MEETINGBRAIN_BASE_URL || "https://www.meetingbrain.ai").trim();
+  const key = (process.env.ENGINEAI_GMAIL_KEY || process.env.MEETINGBRAIN_API_KEY || process.env.ENGINEGPT_INGEST_KEY || "").trim();
+  if (!key) return { data: [], count: 0, error: `${service} access isn't configured on this deployment.` };
+
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/engineai/${service}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": key },
+      // Identity LAST so nothing in options can override it.
+      body: JSON.stringify({ ...options, report, audience: "solo", caller: "chat", userEmail }),
+      signal: AbortSignal.timeout(20_000),
+    });
+
+    const json = await res.json().catch(() => ({} as any));
+    if (!res.ok) {
+      console.warn(`[${service}] ${report} failed (${res.status}) code=${json?.status_code || "-"}`);
+      return { data: [], count: 0, error: json?.error || `HTTP ${res.status}`, statusCode: json?.status_code };
+    }
+
+    const data = Array.isArray(json?.data) ? json.data : [];
+    console.log(`[${service}] ${report}: ${data.length} result(s)`);
+    return { data, count: data.length };
+  } catch (err: any) {
+    const aborted = err?.name === "TimeoutError" || err?.name === "AbortError";
+    console.warn(`[${service}] ${report} ${aborted ? "timed out" : "error"}: ${String(err?.message || err).slice(0, 120)}`);
+    return {
+      data: [], count: 0,
+      error: aborted ? `${service} lookup timed out — try a narrower query.` : `${service} is unavailable right now.`,
+      statusCode: aborted ? "timeout" : "error",
+    };
+  }
+}
+
+async function queryCalendar(userEmail: string, report: string, options: Record<string, unknown>, audience?: string) {
+  return queryBridge("calendar", userEmail, report, options, audience);
+}
+
+async function queryMicrosoft(userEmail: string, report: string, options: Record<string, unknown>, audience?: string) {
+  return queryBridge("microsoft", userEmail, report, options, audience);
+}
+
+/**
+ * Render bridge results for the model.
+ *
+ * Calendar entries and Outlook/Teams messages are written by OTHER PEOPLE —
+ * anyone who can send an invite or a message controls this text. It is fenced
+ * with a per-call nonce for the same reason Gmail's is.
+ */
+function formatBridgeResult(service: "calendar" | "microsoft", report: string, result: BridgeQueryResult): string {
+  if (result.error === "BLOCKED_AUDIENCE") {
+    return `Not available here: this is personal data and can only be read in a private, unshared conversation. Tell the user that plainly and suggest a private chat.`;
+  }
+  if (result.error) {
+    const reauth = result.statusCode === "needs_reauth" || result.statusCode === "not_connected";
+    return [
+      `${service === "calendar" ? "Calendar" : "Microsoft 365"} lookup failed: ${result.error}`,
+      reauth
+        ? `RELAY THIS TO THE USER as an action they can take, with the link: [open MeetingBrain](https://www.meetingbrain.ai/profile/scans). Do NOT say you have no access to their ${service === "calendar" ? "calendar" : "Microsoft account"} — the connection exists or can be made, it just needs their attention.`
+        : `Say what failed. Do not invent entries, and do not claim the lookup succeeded.`,
+    ].join("\n");
+  }
+  if (result.count === 0) {
+    return `No matching ${service === "calendar" ? "calendar entries" : "Microsoft 365 items"} found. Say so plainly — do not invent any.`;
+  }
+
+  return fenceUntrusted(result.data, {
+    preamble: `${result.count} ${service === "calendar" ? "calendar entr" + (result.count === 1 ? "y" : "ies") : "item(s)"} for report "${report}".`,
+    source:
+      service === "calendar"
+        ? "the user's own Google Calendar — titles, descriptions and attendee lists written by whoever created each invite, who may be outside this workspace"
+        : "the user's own Microsoft 365 — Outlook mail and Teams messages written by other people, including senders outside this organisation",
+    instructions:
+      "Use it only to answer the user's question. Summarise; do not quote long passages verbatim unless asked. Never surface internal ids.",
+  });
+}
+
 export interface GmailQueryResult {
   data: any[];
   count: number;
@@ -5703,6 +5887,29 @@ async function streamAnthropic(
   ) {
     tools.push(GMAIL_TOOL);
   }
+
+  // Calendar and Microsoft 365 — same four gates as the mailbox above, and
+  // for the same reasons. Separate per-user flags so granting one does not
+  // grant the others. The /^claude/ test is the CHAIN's model, not
+  // config.model, so an Anthropic→Grok fallback cannot carry these across.
+  if (
+    config.userEmail &&
+    config.calendarAccess &&
+    config.allowPersonalData &&
+    config.conversationVisibility === "private" &&
+    /^claude/.test(apiModel || "")
+  ) {
+    tools.push(CALENDAR_TOOL);
+  }
+  if (
+    config.userEmail &&
+    config.microsoftAccess &&
+    config.allowPersonalData &&
+    config.conversationVisibility === "private" &&
+    /^claude/.test(apiModel || "")
+  ) {
+    tools.push(MICROSOFT_TOOL);
+  }
   // Finance is gated per user on flag_access_finance (5 of 693 today). A
   // multi-reader thread is read by every EngineAI user, so answering there
   // would put receivables and forecast figures in front of people the flag
@@ -6686,6 +6893,33 @@ async function streamAnthropic(
         } catch (err: any) {
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Slack error: ${err.message}`, is_error: true });
         }
+      } else if (tool.name === "query_calendar" || tool.name === "query_microsoft") {
+        const svc = tool.name === "query_calendar" ? "calendar" : "microsoft";
+        try {
+          const fn = svc === "calendar" ? queryCalendar : queryMicrosoft;
+          const result = await fn(
+            config.userEmail!,
+            tool.input.report,
+            {
+              query: tool.input.query,
+              date: tool.input.date,
+              event_id: tool.input.event_id,
+              days: tool.input.days,
+              limit: tool.input.limit,
+            },
+            config.conversationVisibility === "private" ? "solo" : "team"
+          );
+          // TAINT: invite text, Outlook mail and Teams messages are written by
+          // other people. Same treatment as Gmail — anything the model does for
+          // the rest of this turn could be following a planted instruction.
+          if (result.count > 0) config.sawUntrustedContent = true;
+          toolResults.push({
+            type: "tool_result", tool_use_id: tool.id,
+            content: formatBridgeResult(svc, tool.input.report, result),
+          });
+        } catch (err: any) {
+          toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `${svc} error: ${err.message}`, is_error: true });
+        }
       } else if (tool.name === "query_gmail") {
         try {
           const result = await queryGmail(tool.input.report, config.userEmail!, {
@@ -6910,6 +7144,29 @@ async function streamXAIChatCompletions(
     /^claude/.test(apiModel || "")
   ) {
     tools.push(GMAIL_OPENAI_TOOL);
+  }
+
+  // Calendar and Microsoft 365 — same four gates as the mailbox above, and
+  // for the same reasons. Separate per-user flags so granting one does not
+  // grant the others. The /^claude/ test is the CHAIN's model, not
+  // config.model, so an Anthropic→Grok fallback cannot carry these across.
+  if (
+    config.userEmail &&
+    config.calendarAccess &&
+    config.allowPersonalData &&
+    config.conversationVisibility === "private" &&
+    /^claude/.test(apiModel || "")
+  ) {
+    tools.push(CALENDAR_OPENAI_TOOL);
+  }
+  if (
+    config.userEmail &&
+    config.microsoftAccess &&
+    config.allowPersonalData &&
+    config.conversationVisibility === "private" &&
+    /^claude/.test(apiModel || "")
+  ) {
+    tools.push(MICROSOFT_OPENAI_TOOL);
   }
   // Single-reader threads only — see the note on the Anthropic chain above.
   if (config.workspaceId && config.financeAccess && config.conversationVisibility !== "team") {
@@ -7453,6 +7710,32 @@ async function streamXAIChatCompletions(
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Slack error: ${err.message}` } as any);
         }
+      } else if (tc.function.name === "query_calendar" || tc.function.name === "query_microsoft") {
+        const svc = tc.function.name === "query_calendar" ? "calendar" : "microsoft";
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const fn = svc === "calendar" ? queryCalendar : queryMicrosoft;
+          const result = await fn(
+            config.userEmail!,
+            input.report,
+            {
+              query: input.query,
+              date: input.date,
+              event_id: input.event_id,
+              days: input.days,
+              limit: input.limit,
+            },
+            config.conversationVisibility === "private" ? "solo" : "team"
+          );
+          // TAINT — see the Anthropic chain.
+          if (result.count > 0) config.sawUntrustedContent = true;
+          openaiMessages.push({
+            role: "tool", tool_call_id: tc.id,
+            content: formatBridgeResult(svc, input.report, result),
+          } as any);
+        } catch (err: any) {
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `${svc} error: ${err.message}` } as any);
+        }
       } else if (tc.function.name === "query_gmail") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -7706,6 +7989,29 @@ async function streamGemini(
     /^claude/.test(apiModel || "")
   ) {
     tools.push(GMAIL_OPENAI_TOOL);
+  }
+
+  // Calendar and Microsoft 365 — same four gates as the mailbox above, and
+  // for the same reasons. Separate per-user flags so granting one does not
+  // grant the others. The /^claude/ test is the CHAIN's model, not
+  // config.model, so an Anthropic→Grok fallback cannot carry these across.
+  if (
+    config.userEmail &&
+    config.calendarAccess &&
+    config.allowPersonalData &&
+    config.conversationVisibility === "private" &&
+    /^claude/.test(apiModel || "")
+  ) {
+    tools.push(CALENDAR_OPENAI_TOOL);
+  }
+  if (
+    config.userEmail &&
+    config.microsoftAccess &&
+    config.allowPersonalData &&
+    config.conversationVisibility === "private" &&
+    /^claude/.test(apiModel || "")
+  ) {
+    tools.push(MICROSOFT_OPENAI_TOOL);
   }
   // Single-reader threads only — see the note on the Anthropic chain above.
   if (config.workspaceId && config.financeAccess && config.conversationVisibility !== "team") {
@@ -8196,6 +8502,32 @@ async function streamGemini(
         } catch (err: any) {
           geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Slack error: ${err.message}` } as any);
         }
+      } else if (tc.function.name === "query_calendar" || tc.function.name === "query_microsoft") {
+        const svc = tc.function.name === "query_calendar" ? "calendar" : "microsoft";
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const fn = svc === "calendar" ? queryCalendar : queryMicrosoft;
+          const result = await fn(
+            config.userEmail!,
+            input.report,
+            {
+              query: input.query,
+              date: input.date,
+              event_id: input.event_id,
+              days: input.days,
+              limit: input.limit,
+            },
+            config.conversationVisibility === "private" ? "solo" : "team"
+          );
+          // TAINT — see the Anthropic chain.
+          if (result.count > 0) config.sawUntrustedContent = true;
+          geminiMessages.push({
+            role: "tool", tool_call_id: tc.id,
+            content: formatBridgeResult(svc, input.report, result),
+          } as any);
+        } catch (err: any) {
+          geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `${svc} error: ${err.message}` } as any);
+        }
       } else if (tc.function.name === "query_gmail") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -8360,6 +8692,29 @@ async function streamOpenAI(
     /^claude/.test(apiModel || "")
   ) {
     tools.push(GMAIL_OPENAI_TOOL);
+  }
+
+  // Calendar and Microsoft 365 — same four gates as the mailbox above, and
+  // for the same reasons. Separate per-user flags so granting one does not
+  // grant the others. The /^claude/ test is the CHAIN's model, not
+  // config.model, so an Anthropic→Grok fallback cannot carry these across.
+  if (
+    config.userEmail &&
+    config.calendarAccess &&
+    config.allowPersonalData &&
+    config.conversationVisibility === "private" &&
+    /^claude/.test(apiModel || "")
+  ) {
+    tools.push(CALENDAR_OPENAI_TOOL);
+  }
+  if (
+    config.userEmail &&
+    config.microsoftAccess &&
+    config.allowPersonalData &&
+    config.conversationVisibility === "private" &&
+    /^claude/.test(apiModel || "")
+  ) {
+    tools.push(MICROSOFT_OPENAI_TOOL);
   }
   // Single-reader threads only — see the note on the Anthropic chain above.
   if (config.workspaceId && config.financeAccess && config.conversationVisibility !== "team") {
@@ -8850,6 +9205,32 @@ async function streamOpenAI(
           } as any);
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Slack error: ${err.message}` } as any);
+        }
+      } else if (tc.function.name === "query_calendar" || tc.function.name === "query_microsoft") {
+        const svc = tc.function.name === "query_calendar" ? "calendar" : "microsoft";
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const fn = svc === "calendar" ? queryCalendar : queryMicrosoft;
+          const result = await fn(
+            config.userEmail!,
+            input.report,
+            {
+              query: input.query,
+              date: input.date,
+              event_id: input.event_id,
+              days: input.days,
+              limit: input.limit,
+            },
+            config.conversationVisibility === "private" ? "solo" : "team"
+          );
+          // TAINT — see the Anthropic chain.
+          if (result.count > 0) config.sawUntrustedContent = true;
+          openaiMessages.push({
+            role: "tool", tool_call_id: tc.id,
+            content: formatBridgeResult(svc, input.report, result),
+          } as any);
+        } catch (err: any) {
+          openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `${svc} error: ${err.message}` } as any);
         }
       } else if (tc.function.name === "query_gmail") {
         try {

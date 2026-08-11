@@ -1167,6 +1167,13 @@ export async function POST(
     // for a mailbox would mean everyone.
     let financeAccess = false;
     let gmailAccess = false;
+    // Calendar and Microsoft 365, read in their own tolerant pass below. Kept
+    // OUT of the select above on purpose: an unknown column fails the WHOLE
+    // PostgREST select, and folding two new columns into the query that also
+    // resolves finance and mail would mean a missing migration silently
+    // revoking access to both of those instead of just failing the new ones.
+    let calendarAccess = false;
+    let microsoftAccess = false;
     try {
       const { data: fa } = await intelligenceDb
         .from("users_access")
@@ -1199,6 +1206,19 @@ export async function POST(
         }
       } catch { /* still no access */ }
     }
+    // Calendar + Microsoft, in their own pass so a missing migration can only
+    // ever deny these two. Explicit `=== 1`, and any error leaves both false.
+    try {
+      const { data: cm } = await intelligenceDb
+        .from("users_access")
+        .select("flag_access_calendar, flag_access_microsoft")
+        .eq("id_workspace", conversation.id_workspace)
+        .eq("user_target", userId)
+        .maybeSingle();
+      calendarAccess = (cm as any)?.flag_access_calendar === 1;
+      microsoftAccess = (cm as any)?.flag_access_microsoft === 1;
+    } catch { /* pre-migration or no row = denied */ }
+
     // Mailbox questions must land on Claude, because query_gmail only ever
     // registers there (mail content is contractually restricted to one
     // processor). Without this the default "auto" model resolves to Grok, the
@@ -1235,15 +1255,36 @@ export async function POST(
       ].join("|"),
       "i"
     );
+    // Calendar and Microsoft register on the Claude chains only, for the same
+    // reason mail does, so they need the same auto-route override or the tool
+    // is simply never offered and the model answers from nothing.
+    // Narrow, like MAIL_INTENT: "the meeting" and "my diary" are everyday words
+    // here, and "calendar" alone appears in content-planning chat constantly.
+    const PERSONAL_SCHEDULE_INTENT = new RegExp(
+      [
+        "\\bmy (calendar|diary|schedule|agenda)\\b",
+        "\\b(in|on) my (calendar|diary|schedule)\\b",
+        "\\bwhat.s (on|in) (my )?(calendar|diary|schedule|agenda)\\b",
+        "\\b(am i|are we) (free|busy|meeting)\\b",
+        "\\bwhen (am i|do i) (next )?(meet|meeting|see)\\b",
+        "\\bnext meeting\\b",
+        "\\boutlook\\b",
+        "\\bteams (chat|message|messages)\\b",
+        "\\bmicrosoft 365\\b",
+        "\\bm365\\b",
+      ].join("|"),
+      "i"
+    );
     if (
-      gmailAccess &&
+      (gmailAccess || calendarAccess || microsoftAccess) &&
       !isTeamThread &&
       wasAutoRouted &&
       !model.startsWith("claude") &&
-      MAIL_INTENT.test(userContent || "")
+      (MAIL_INTENT.test(userContent || "") ||
+        ((calendarAccess || microsoftAccess) && PERSONAL_SCHEDULE_INTENT.test(userContent || "")))
     ) {
       model = "claude-sonnet-5";
-      console.log(`[Messages] Mail intent: auto-route override → claude-sonnet-5 (query_gmail is Claude-only)`);
+      console.log(`[Messages] Personal-data intent: auto-route override → claude-sonnet-5 (these tools are Claude-only)`);
     }
 
     // Say the true thing about the mailbox.
@@ -1255,9 +1296,14 @@ export async function POST(
     // to read email at all, which is false and which the user believes. It is
     // a model restriction, not a missing feature, so the prompt has to carry
     // that distinction; the model cannot infer it from an absent tool.
-    if (gmailAccess && !isTeamThread && !model.startsWith("claude")) {
+    if ((gmailAccess || calendarAccess || microsoftAccess) && !isTeamThread && !model.startsWith("claude")) {
+      const have = [
+        gmailAccess ? "their work mailbox" : null,
+        calendarAccess ? "their calendar" : null,
+        microsoftAccess ? "their Microsoft 365 (Outlook and Teams)" : null,
+      ].filter(Boolean).join(", ");
       systemPrompt +=
-        "\n\n**Mailbox — INTERNAL, do not raise unprompted:** this user's work mailbox IS connected to EngineAI, but the tool that reads it runs only on the Claude models, and this turn is not on one. So if they ask about their email, do NOT tell them you have no access to email, that you can't read a mailbox, or that Slack is the only inbox you can see — all three are wrong, and they will act on it. Say their mailbox is available on the Claude models, and that switching the model (or using EngineAI Auto, which sends mail questions to Claude) and asking again will read it. Never answer a question about the contents of their mail from memory or inference.";
+        `\n\n**Personal data — INTERNAL, do not raise unprompted:** this user HAS ${have} connected to EngineAI, but the tools that read those run only on the Claude models, and this turn is not on one. So if they ask, do NOT tell them you have no access, that you cannot read it, or that Slack is the only thing you can see — all of those are wrong and they will act on it. Say it is available on the Claude models, and that switching the model (or using EngineAI Auto, which routes these questions to Claude) and asking again will read it. Never answer a question about the CONTENTS of any of it from memory or inference.`;
     }
 
     // Scheduled task thread: load the standing task so the model can propose
@@ -1342,7 +1388,7 @@ export async function POST(
     // the "user navigated away mid-stream and lost their response" bug.
     // Named so the completion callback can read flags the tool executors set
     // on it during the turn (notably sawUntrustedContent after query_gmail).
-    const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
+    const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, calendarAccess, microsoftAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
         allowPersonalData: true };
 
     const aiStream = createStreamingResponse(

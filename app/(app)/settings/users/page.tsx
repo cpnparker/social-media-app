@@ -55,6 +55,8 @@ interface WorkspaceMember {
   accessEngineAiLive: boolean;
   accessFinance: boolean;
   accessGmail: boolean;
+  accessCalendar: boolean;
+  accessMicrosoft: boolean;
   accessEngineTasks: boolean;
 }
 
@@ -75,6 +77,8 @@ type AccessField =
   | "accessEngineAiLive"
   | "accessFinance"
   | "accessGmail"
+  | "accessCalendar"
+  | "accessMicrosoft"
   | "accessEngineTasks";
 
 /* ─────────────── Config ─────────────── */
@@ -124,6 +128,8 @@ const accessFields: { key: AccessField; label: string }[] = [
   { key: "accessEngineAiLive", label: "Live" },
   { key: "accessFinance", label: "Finance" },
   { key: "accessGmail", label: "Mail" },
+  { key: "accessCalendar", label: "Calendar" },
+  { key: "accessMicrosoft", label: "M365" },
   // Shows the user's Engine tasks inside MeetingBrain (read-only).
   { key: "accessEngineTasks", label: "Tasks" },
 ];

@@ -1817,6 +1817,58 @@ function IntegrationsTab({ workspaceId }: { workspaceId: string }) {
         Who can QUERY the data is per-user: tick the &ldquo;Finance&rdquo; column in
         Settings → Users (engine subdomain) — nobody has access until ticked.
       </p>
+
+      {/* Workspace-level data sources that have no connect flow, because there is
+          nothing per-workspace to authorise — they are configured server-side.
+          Listed anyway: "how do I make a folder visible to EngineAI?" is a real
+          question whose answer was previously tribal knowledge. */}
+      <div className="rounded-xl border p-4">
+        <div className="text-sm font-semibold">Google Drive</div>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          EngineAI reads Drive through its own service account, so there is nothing to connect
+          here. To make a document or folder readable, share it with the service account address
+          the same way you would share it with a colleague — sharing IS the permission decision,
+          and anything shared is readable by anyone who can use EngineAI in this workspace.
+        </p>
+      </div>
+
+      <div className="rounded-xl border p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold">Social accounts</div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              LinkedIn, X, Instagram, TikTok and the rest, used for scheduling and publishing.
+              Connected per account rather than per user.
+            </p>
+          </div>
+          <a
+            href="/accounts"
+            className="shrink-0 inline-flex items-center h-8 px-3 rounded-lg border text-xs font-medium hover:bg-muted"
+          >
+            Manage
+          </a>
+        </div>
+      </div>
+
+      {/* The personal services deliberately do NOT appear in this modal. They are
+          per-user connections living in MeetingBrain, so rendering them in a
+          workspace-scoped admin dialog would show whoever opened it their OWN
+          state dressed up as the workspace's. */}
+      <div className="rounded-xl border border-dashed p-4">
+        <div className="text-sm font-semibold">Gmail, Calendar, Slack, Microsoft 365</div>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          These are personal connections — each person connects their own, and only they can
+          query it, only in a private chat. They aren&rsquo;t managed here: see{" "}
+          <a href="/settings/connections" className="underline hover:text-foreground">
+            Settings → Connections
+          </a>{" "}
+          for your own, and the Mail, Calendar and M365 columns in{" "}
+          <a href="/settings/users" className="underline hover:text-foreground">
+            Settings → Users
+          </a>{" "}
+          to control who is allowed to query them at all.
+        </p>
+      </div>
     </div>
   );
 }
