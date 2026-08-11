@@ -492,12 +492,23 @@ export default function CommissionedCUsPage() {
   return (
     <div className="max-w-[1400px] space-y-5">
       {/* Header */}
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Commissioned Content Units</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          Task-level content units {isFiltered ? "for the selected period" : "across all time"}.
-          {!loading && ` ${totals.tasks} tasks across ${totals.contentItems} content items.`}
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Commissioned Content Units</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Task-level content units {isFiltered ? "for the selected period" : "across all time"}.
+            {!loading && ` ${totals.tasks} tasks across ${totals.contentItems} content items.`}
+          </p>
+        </div>
+        {globalCustomerId && (
+          <a
+            href={`/api/operations/client-export?clientId=${globalCustomerId}${dateFrom ? `&from=${dateFrom}` : ""}${dateTo ? `&to=${dateTo}` : ""}`}
+            className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-foreground text-background text-xs font-medium hover:opacity-90 transition-opacity"
+            title="Two-sheet workbook: content COMMISSIONED in the selected date range (not completed-in-range), with doc links and 1-year media download URLs"
+          >
+            <Download className="h-3.5 w-3.5" /> Client handover export
+          </a>
+        )}
       </div>
 
       {/* Date range + search */}

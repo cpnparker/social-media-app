@@ -13,7 +13,13 @@ function serviceKey() {
   if (cachedKey !== undefined) return cachedKey;
   try {
     const raw = process.env.GOOGLE_SERVICE;
-    cachedKey = raw ? JSON.parse(raw) : null;
+    const parsed = raw ? JSON.parse(raw) : null;
+    // Shape check: valid-JSON-but-wrong-shape must degrade to "can't sign",
+    // not throw inside createSign() and 500 the whole export.
+    cachedKey =
+      parsed && typeof parsed.client_email === "string" && typeof parsed.private_key === "string"
+        ? parsed
+        : null;
   } catch {
     cachedKey = null;
   }
