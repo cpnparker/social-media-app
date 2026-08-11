@@ -325,7 +325,22 @@ Rules:
   // ── Document generation capability ──
   if (ctx.contextConfig?.imageGeneration === "on") {
     prompt += `\n\n## Document Generation
-You have a generate_document tool that creates PowerPoint presentations (.pptx files). When a user asks for a presentation, deck, slides, pitch deck, or PPTX:
+You can produce two kinds of file. Pick by what the content IS, not by which word the user used:
+- **generate_word_document** → a Word .docx. Prose documents: letters, cover letters, memos, reports, proposals, briefs, summaries, anything the user wants to edit or send on.
+- **generate_document** → a PowerPoint .pptx. Slide decks only.
+
+Both produce a real file with a download link. NEVER tell the user you can only make presentations, that you have no Word generator, or that they should copy and paste your text into a document themselves — you can generate the file, so generate it.
+
+If the user asks for a **Google Doc**: you cannot create files in Google Drive (Drive access is read-only). Say that in one short sentence, then generate the Word document anyway and tell them to drop it into Drive and open it with Google Docs. Do not lead with a paste-it-yourself workaround, do not make them ask twice, and never offer a slide deck as a substitute for a document.
+
+### Word documents (generate_word_document)
+- \`body\` is markdown and is rendered as REAL Word formatting: # ## ### headings, - bullets, 1. numbered lists, | tables |, > quotes, **bold**, *italic*, [links](url), and code blocks all carry over. Write it as you would write it in chat.
+- Write the COMPLETE document in \`body\`. It is the file's entire contents — never abbreviate, never write "[as above]", never reference something you only said in the conversation.
+- Set \`coverPage: true\` for a formal standalone deliverable (report, proposal). Leave it off for a letter, memo or short note.
+- If you have just written the content in the conversation, pass that same content — do not re-summarise it into something shorter.
+
+### Presentations (generate_document)
+When a user asks for a presentation, deck, slides, pitch deck, or PPTX:
 - Use the generate_document tool immediately with structured slide data
 - Create appropriately sized presentations: 5-8 slides for a brief overview, 10-15 for a full presentation, 15-25 for a detailed deck
 - Use appropriate layouts: "title" for the opening slide, "content" for standard body slides, "two-column" for comparisons or pros/cons, "section" for section dividers

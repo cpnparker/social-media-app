@@ -920,6 +920,57 @@ const DOCUMENT_GEN_TOOL: Anthropic.Tool = {
   },
 };
 
+/* ─────────────── Word Document Tool ─────────────── */
+
+/** OpenAI-compatible tool definition for generate_word_document.
+ *
+ *  Takes markdown rather than a slide-shaped structure, because the model has
+ *  usually already written the prose in the conversation — asking it to
+ *  re-express that as a section tree loses formatting and invites paraphrase.
+ *  lib/documents/word.ts renders headings, lists, tables, quotes, code and
+ *  links as native Word constructs. */
+const WORD_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "generate_word_document",
+    description:
+      "Generate a Word document (.docx) when the user asks for a Word doc, document, report, letter, memo, proposal, brief, or a file they can edit or upload to Google Drive. Use this for prose documents; use generate_document for slide decks. The body is markdown and is rendered as real Word formatting — headings, bullet and numbered lists, tables, quotes and links all carry over.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: "Document title. Appears as the heading, the page header, and the filename.",
+        },
+        subtitle: {
+          type: "string",
+          description: "Optional one-line subtitle or standfirst under the title.",
+        },
+        body: {
+          type: "string",
+          description:
+            "The full document in markdown. Use # ## ### for headings, - for bullets, 1. for numbered lists, | tables |, > quotes, **bold**, *italic*, [links](url). Write the COMPLETE content — this is what the file will contain, so never abbreviate or write a placeholder.",
+        },
+        coverPage: {
+          type: "boolean",
+          description:
+            "true for a formal standalone deliverable (report, proposal) — centres the title and adds a date. false or omitted for a letter, memo or short note.",
+        },
+      },
+      required: ["title", "body"],
+    },
+  },
+};
+
+/** Anthropic tool definition for generate_word_document */
+const WORD_GEN_TOOL: Anthropic.Tool = {
+  name: "generate_word_document",
+  description: WORD_GEN_OPENAI_TOOL.function.description!,
+  input_schema: {
+    ...(WORD_GEN_OPENAI_TOOL.function.parameters as any),
+  },
+};
+
 /* ─────────────── Video Generation Tool (Design Mode) ─────────────── */
 
 /** OpenAI-compatible tool definition for generate_video (Runway). */
@@ -5598,6 +5649,7 @@ async function streamAnthropic(
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_TOOL);
     tools.push(DOCUMENT_GEN_TOOL);
+    tools.push(WORD_GEN_TOOL);
     tools.push(CHART_GEN_TOOL);
   }
   if (config.designMode) {
@@ -5746,7 +5798,7 @@ async function streamAnthropic(
               encoder.encode(`data: ${JSON.stringify({ generating_image: true })}\n\n`)
             );
           }
-          if (block.name === "generate_document") {
+          if (block.name === "generate_document" || block.name === "generate_word_document") {
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ generating_document: true })}\n\n`)
             );
@@ -6125,6 +6177,44 @@ async function streamAnthropic(
           console.error("[Artlist] License failed:", err.message);
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ artlist_error: err.message })}\n\n`));
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Artlist licensing failed: ${err.message}`, is_error: true });
+        }
+      } else if (tool.name === "generate_word_document") {
+        try {
+          const { generateWordDocument } = await import("@/lib/documents/word");
+          const { url, filename } = await generateWordDocument({
+            title: tool.input.title || "Document",
+            body: tool.input.body || "",
+            subtitle: tool.input.subtitle,
+            coverPage: tool.input.coverPage === true,
+            workspaceId: config.workspaceId,
+          });
+
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ document_ready: { url, filename } })}\n\n`
+            )
+          );
+
+          fullText += `\n\n\u{1F4C4} [Download ${filename}](${url})\n\n`;
+
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: `Word document generated: ${filename}. Download: ${url} — The download link is already shown to the user. Do NOT write another link.`,
+          });
+        } catch (err: any) {
+          console.error("[WordGen] Failed:", err.message);
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ document_error: err.message })}\n\n`
+            )
+          );
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: `Word document generation failed: ${err.message}`,
+            is_error: true,
+          });
         }
       } else if (tool.name === "generate_document") {
         try {
@@ -6783,6 +6873,7 @@ async function streamXAIChatCompletions(
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_OPENAI_TOOL);
     tools.push(DOCUMENT_GEN_OPENAI_TOOL);
+    tools.push(WORD_GEN_OPENAI_TOOL);
     tools.push(CHART_GEN_OPENAI_TOOL);
   }
   if (config.workspaceClientIds?.length) {
@@ -6916,7 +7007,7 @@ async function streamXAIChatCompletions(
               encoder.encode(`data: ${JSON.stringify({ generating_image: true })}\n\n`)
             );
           }
-          if (existing.name === "generate_document" && tc.function?.name) {
+          if ((existing.name === "generate_document" || existing.name === "generate_word_document") && tc.function?.name) {
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ generating_document: true })}\n\n`)
             );
@@ -7086,6 +7177,44 @@ async function streamXAIChatCompletions(
             role: "tool",
             tool_call_id: tc.id,
             content: `Image generation FAILED: ${err.message}. The user has already been shown this failure notice. Briefly acknowledge the failure and suggest a next step (retry, different phrasing, or a stylised look if the error mentions content policy). Do NOT claim an image was created. Do NOT include any image markdown or any image URL from earlier in the conversation.${firstImageFailure ? "" : " Do NOT call generate_image again this turn — tell the user it failed and stop."}`,
+          } as any);
+        }
+      } else if (tc.function.name === "generate_word_document") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const { generateWordDocument } = await import("@/lib/documents/word");
+          const { url, filename } = await generateWordDocument({
+            title: input.title || "Document",
+            body: input.body || "",
+            subtitle: input.subtitle,
+            coverPage: input.coverPage === true,
+            workspaceId: config.workspaceId,
+          });
+
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ document_ready: { url, filename } })}\n\n`
+            )
+          );
+
+          fullText += `\n\n\u{1F4C4} [Download ${filename}](${url})\n\n`;
+
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Word document generated: ${filename}. Download: ${url} — The download link is already shown to the user. Do NOT write another link.`,
+          } as any);
+        } catch (err: any) {
+          console.error("[WordGen/OpenAI] Failed:", err.message);
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ document_error: err.message })}\n\n`
+            )
+          );
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Word document generation failed: ${err.message}`,
           } as any);
         }
       } else if (tc.function.name === "generate_document") {
@@ -7543,6 +7672,7 @@ async function streamGemini(
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_OPENAI_TOOL);
     tools.push(DOCUMENT_GEN_OPENAI_TOOL);
+    tools.push(WORD_GEN_OPENAI_TOOL);
     tools.push(CHART_GEN_OPENAI_TOOL);
   }
   if (config.workspaceClientIds?.length) {
@@ -7653,7 +7783,7 @@ async function streamGemini(
               encoder.encode(`data: ${JSON.stringify({ generating_image: true })}\n\n`)
             );
           }
-          if (existing.name === "generate_document" && tc.function?.name) {
+          if ((existing.name === "generate_document" || existing.name === "generate_word_document") && tc.function?.name) {
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ generating_document: true })}\n\n`)
             );
@@ -7801,6 +7931,44 @@ async function streamGemini(
             role: "tool",
             tool_call_id: tc.id,
             content: `Image generation FAILED: ${err.message}. The user has already been shown this failure notice. Briefly acknowledge the failure and suggest a next step (retry, different phrasing, or a stylised look if the error mentions content policy). Do NOT claim an image was created. Do NOT include any image markdown or any image URL from earlier in the conversation.${firstImageFailure ? "" : " Do NOT call generate_image again this turn — tell the user it failed and stop."}`,
+          } as any);
+        }
+      } else if (tc.function.name === "generate_word_document") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const { generateWordDocument } = await import("@/lib/documents/word");
+          const { url, filename } = await generateWordDocument({
+            title: input.title || "Document",
+            body: input.body || "",
+            subtitle: input.subtitle,
+            coverPage: input.coverPage === true,
+            workspaceId: config.workspaceId,
+          });
+
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ document_ready: { url, filename } })}\n\n`
+            )
+          );
+
+          fullText += `\n\n\u{1F4C4} [Download ${filename}](${url})\n\n`;
+
+          geminiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Word document generated: ${filename}. Download: ${url} — The download link is already shown to the user. Do NOT write another link.`,
+          } as any);
+        } catch (err: any) {
+          console.error("[WordGen/Gemini] Failed:", err.message);
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ document_error: err.message })}\n\n`
+            )
+          );
+          geminiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Word document generation failed: ${err.message}`,
           } as any);
         }
       } else if (tc.function.name === "generate_document") {
@@ -8158,6 +8326,7 @@ async function streamOpenAI(
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_OPENAI_TOOL);
     tools.push(DOCUMENT_GEN_OPENAI_TOOL);
+    tools.push(WORD_GEN_OPENAI_TOOL);
     tools.push(CHART_GEN_OPENAI_TOOL);
   }
   if (config.workspaceClientIds?.length) {
@@ -8270,7 +8439,7 @@ async function streamOpenAI(
               encoder.encode(`data: ${JSON.stringify({ generating_image: true })}\n\n`)
             );
           }
-          if (existing.name === "generate_document" && tc.function?.name) {
+          if ((existing.name === "generate_document" || existing.name === "generate_word_document") && tc.function?.name) {
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ generating_document: true })}\n\n`)
             );
@@ -8417,6 +8586,44 @@ async function streamOpenAI(
             role: "tool",
             tool_call_id: tc.id,
             content: `Image generation FAILED: ${err.message}. The user has already been shown this failure notice. Briefly acknowledge the failure and suggest a next step (retry, different phrasing, or a stylised look if the error mentions content policy). Do NOT claim an image was created. Do NOT include any image markdown or any image URL from earlier in the conversation.${firstImageFailure ? "" : " Do NOT call generate_image again this turn — tell the user it failed and stop."}`,
+          } as any);
+        }
+      } else if (tc.function.name === "generate_word_document") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const { generateWordDocument } = await import("@/lib/documents/word");
+          const { url, filename } = await generateWordDocument({
+            title: input.title || "Document",
+            body: input.body || "",
+            subtitle: input.subtitle,
+            coverPage: input.coverPage === true,
+            workspaceId: config.workspaceId,
+          });
+
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ document_ready: { url, filename } })}\n\n`
+            )
+          );
+
+          fullText += `\n\n\u{1F4C4} [Download ${filename}](${url})\n\n`;
+
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Word document generated: ${filename}. Download: ${url} — The download link is already shown to the user. Do NOT write another link.`,
+          } as any);
+        } catch (err: any) {
+          console.error("[WordGen/OpenAI] Failed:", err.message);
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ document_error: err.message })}\n\n`
+            )
+          );
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Word document generation failed: ${err.message}`,
           } as any);
         }
       } else if (tc.function.name === "generate_document") {

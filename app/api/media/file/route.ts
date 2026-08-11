@@ -46,7 +46,22 @@ export async function GET(req: NextRequest) {
     return new NextResponse(result.stream as ReadableStream, {
       headers: {
         "Content-Type": result.blob.contentType || "application/octet-stream",
-        "Content-Disposition": blobPath.endsWith(".pptx") ? `attachment; filename="${blobPath.split("/").pop()}"` : "inline",
+        // Generated decks and documents download; everything else stays inline
+        // so images still render in <img> and an attached PDF still previews.
+        //
+        // No `filename` parameter, deliberately. A Content-Disposition filename
+        // BEATS the anchor's download attribute, and the only name available
+        // here is the opaque blob basename ("1770000000000-<uuid>.docx") — the
+        // readable title lives on the download card. Sending it made the saved
+        // filename worse than not sending it, including for the .pptx case that
+        // has been doing this all along.
+        //
+        // html/svg are forced to download regardless: Content-Type comes
+        // straight from blob metadata, text/html is an accepted upload type,
+        // and serving it inline from this origin would execute script against
+        // the app with the viewer's session (nosniff does not help — it stops
+        // sniffing, not an honestly-declared text/html).
+        "Content-Disposition": /\.(pptx|docx|html?|svg)$/i.test(blobPath) ? "attachment" : "inline",
         "Cache-Control": "private, max-age=3600",
         "X-Content-Type-Options": "nosniff",
       },

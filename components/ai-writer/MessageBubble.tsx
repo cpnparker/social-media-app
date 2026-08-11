@@ -962,9 +962,13 @@ function formatMarkdown(text: string, sources: ParsedSource[] = []): string {
     '<a href="$2" target="_blank" rel="noopener" class="ai-link">$1</a>'
   );
 
-  // Also handle download links without the emoji prefix (fallback)
+  // Also handle download links without the emoji prefix (fallback).
+  // Extension list, not a bare .pptx: a .docx link that misses both card
+  // regexes is not rendered at all — the generic link rule below only matches
+  // absolute http(s) URLs, so a relative /api/media/ link survives as literal
+  // markdown text and the user sees "[Download Report.docx](/api/media/...)".
   html = html.replace(
-    /\[Download ([^\]]+\.pptx)\]\((\/api\/media\/[^)]+)\)/g,
+    /\[Download ([^\]]+\.(?:pptx|docx|xlsx|pdf|csv))\]\((\/api\/media\/[^)]+)\)/g,
     (_m, filename, url) =>
       `<a href="${url}" download="${escapeHtml(filename)}" class="ai-download-card"><span class="ai-download-icon">📄</span><span class="ai-download-info"><span class="ai-download-name">${escapeHtml(filename)}</span><span class="ai-download-action">Click to download</span></span></a>`
   );
