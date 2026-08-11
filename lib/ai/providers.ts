@@ -394,12 +394,6 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "Claude Opus 5",
     description: "Complex agentic work, code & analysis",
   },
-  "claude-opus-4-8": {
-    provider: "anthropic",
-    apiModel: "claude-opus-4-8",
-    label: "Claude Opus 4.8",
-    description: "Top-tier reasoning, code & long-form",
-  },
   "claude-sonnet-5": {
     provider: "anthropic",
     apiModel: "claude-sonnet-5",
@@ -469,6 +463,22 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     hidden: true,
   },
   // Legacy mappings for old conversations
+  //
+  // Retired from the picker 2026-08-11: Opus 5 is the same $5/$25 with a newer
+  // knowledge cutoff, and Anthropic has moved 4.8 to its own legacy list.
+  //
+  // apiModel is deliberately left as claude-opus-4-8 rather than remapped to
+  // opus-5 like the entries below. 4.8 is still served, and the two are NOT
+  // interchangeable at runtime: 4.8 runs thinking-disabled, Opus 5 runs
+  // thinking-on against a 16000 max_tokens floor. Remapping would silently
+  // change the latency and cost profile of threads already in flight. New
+  // conversations simply can't choose it any more, which is the ask.
+  "claude-opus-4-8": {
+    provider: "anthropic",
+    apiModel: "claude-opus-4-8",
+    label: "Claude Opus 4.8",
+    legacy: true,
+  },
   "claude-opus-4-7": {
     provider: "anthropic",
     apiModel: "claude-opus-4-8",
