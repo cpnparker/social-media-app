@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import type { AIRole } from "@/lib/types/ai";
+import ConnectionsPanel from "@/components/connections/ConnectionsPanel";
 
 /* ─────────────── Types ─────────────── */
 
@@ -21,7 +22,7 @@ interface PersonaliseDialogProps {
   onClose: () => void;
 }
 
-type Tab = "context" | "company" | "roles";
+type Tab = "context" | "company" | "roles" | "connections";
 
 /* ─────────────── Main Dialog ─────────────── */
 
@@ -48,6 +49,7 @@ export default function PersonaliseDialog({
               { key: "context" as Tab, label: "Context" },
               { key: "company" as Tab, label: "Company" },
               { key: "roles" as Tab, label: "Roles" },
+              { key: "connections" as Tab, label: "Connections" },
             ] as const
           ).map((t) => (
             <button
@@ -67,6 +69,7 @@ export default function PersonaliseDialog({
 
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
+          {activeTab === "connections" && <ConnectionsPanel workspaceId={workspaceId} compact />}
           {activeTab === "context" && <ContextTab />}
           {activeTab === "company" && <CompanyTab workspaceId={workspaceId} />}
           {activeTab === "roles" && (
