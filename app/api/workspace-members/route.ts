@@ -388,8 +388,16 @@ export async function PATCH(req: NextRequest) {
               flag_access_engineai_live: accessEngineAiLive ? 1 : 0,
               flag_access_finance: accessFinance ? 1 : 0,
               flag_access_gmail: accessGmail ? 1 : 0,
-              flag_access_calendar: accessCalendar ? 1 : 0,
-              flag_access_microsoft: accessMicrosoft ? 1 : 0,
+              // Same guard as engine_tasks below, and for the same reason —
+              // naming these unconditionally meant that on any environment
+              // without the migration, ticking ANY box for a user with no
+              // users_access row failed the whole insert and granted nothing.
+              ...(accessCalendar !== undefined
+                ? { flag_access_calendar: accessCalendar ? 1 : 0 }
+                : {}),
+              ...(accessMicrosoft !== undefined
+                ? { flag_access_microsoft: accessMicrosoft ? 1 : 0 }
+                : {}),
               // Only sent when the admin actually touched this toggle. Naming a
               // column that does not exist yet fails the WHOLE insert, which
               // would break unrelated grants for the users who have no row.

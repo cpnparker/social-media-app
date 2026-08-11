@@ -47,26 +47,42 @@ export async function GET(_req: NextRequest) {
   // the older ones would let a missing migration deny all of them at once.
   const permissions = { gmail: false, calendar: false, microsoft: false };
   const workspaceId = _req.nextUrl.searchParams.get("workspaceId");
+  // A QUERY FAILURE IS NOT A DENIAL. supabase-js resolves with { data: null,
+  // error } rather than throwing, so a try/catch around these reads is dead
+  // code — every failure would silently collapse to "not permitted" and the
+  // page would tell the user to go and ask an admin for something no admin can
+  // grant (a missing column, an RLS denial, a timeout). Bind the error and
+  // treat it as UNKNOWN instead, which the page renders as "couldn't check".
+  let permissionsKnown = !!workspaceId;
   if (workspaceId) {
-    try {
-      const { data } = await intelligenceDb
-        .from("users_access")
-        .select("flag_access_gmail")
-        .eq("id_workspace", workspaceId)
-        .eq("user_target", userId)
-        .maybeSingle();
-      permissions.gmail = (data as any)?.flag_access_gmail === 1;
-    } catch { /* absent row or column = denied */ }
-    try {
-      const { data } = await intelligenceDb
-        .from("users_access")
-        .select("flag_access_calendar, flag_access_microsoft")
-        .eq("id_workspace", workspaceId)
-        .eq("user_target", userId)
-        .maybeSingle();
-      permissions.calendar = (data as any)?.flag_access_calendar === 1;
-      permissions.microsoft = (data as any)?.flag_access_microsoft === 1;
-    } catch { /* absent row or column = denied */ }
+    const { data: g, error: gErr } = await intelligenceDb
+      .from("users_access")
+      .select("flag_access_gmail")
+      .eq("id_workspace", workspaceId)
+      .eq("user_target", userId)
+      .maybeSingle();
+    if (gErr) {
+      console.warn("[Connections] gmail flag read failed:", gErr.message);
+      permissionsKnown = false;
+    } else {
+      permissions.gmail = (g as any)?.flag_access_gmail === 1;
+    }
+
+    // Second pass on purpose: an unknown column fails the WHOLE select, so the
+    // newer flags cannot be allowed to take the older one down with them.
+    const { data: cm, error: cmErr } = await intelligenceDb
+      .from("users_access")
+      .select("flag_access_calendar, flag_access_microsoft")
+      .eq("id_workspace", workspaceId)
+      .eq("user_target", userId)
+      .maybeSingle();
+    if (cmErr) {
+      console.warn("[Connections] calendar/microsoft flag read failed:", cmErr.message);
+      permissionsKnown = false;
+    } else {
+      permissions.calendar = (cm as any)?.flag_access_calendar === 1;
+      permissions.microsoft = (cm as any)?.flag_access_microsoft === 1;
+    }
   }
 
   // ── Connection side (MeetingBrain) ──
@@ -105,12 +121,13 @@ export async function GET(_req: NextRequest) {
 
   const merge = (name: "gmail" | "calendar" | "microsoft") => {
     const c = bridge.connections?.[name];
-    const permitted = permissions[name];
+    const permitted = permissionsKnown ? permissions[name] : null;
     return {
       connected: c?.connected ?? false,
       permitted,
       // Both halves, plus whatever MeetingBrain itself says about consent.
-      available: (c?.available ?? false) && permitted,
+      // Unknown permission is NOT treated as granted.
+      available: (c?.available ?? false) && permitted === true,
       account: c?.account ?? null,
       problem: c?.problem ?? (bridgeError ? "Couldn't reach MeetingBrain to check" : null),
       connectUrl: c?.connectUrl ?? null,
@@ -120,6 +137,7 @@ export async function GET(_req: NextRequest) {
   return NextResponse.json({
     linked: bridge.linked === true,
     bridgeError,
+    permissionsKnown,
     manageUrl: bridge.manageUrl || `${baseUrl.replace(/\/$/, "")}/profile/scans`,
     signInUrl: (bridge as any).signInUrl || `${baseUrl.replace(/\/$/, "")}/api/auth/signin`,
     connections: {

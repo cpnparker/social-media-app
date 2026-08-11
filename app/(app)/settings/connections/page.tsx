@@ -5,6 +5,7 @@ import { ExternalLink, Loader2, RefreshCw, Mail, Calendar, MessageSquare, Buildi
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 
 /**
  * Settings → Connections — the SIGNED-IN USER'S own connected services.
@@ -68,12 +69,32 @@ const SERVICES = [
   },
 ] as const;
 
-function StatusPill({ row }: { row: ConnectionRow | undefined }) {
+function StatusPill({ row, unknown }: { row: ConnectionRow | undefined; unknown?: boolean }) {
   if (!row) return null;
+  // The server could not reach MeetingBrain, so it has no idea what is
+  // connected. Saying "Not connected" here would be an assertion about
+  // something we failed to look up — and it contradicts the banner above.
+  if (unknown) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+        <AlertTriangle className="h-3.5 w-3.5" /> Couldn&rsquo;t check
+      </span>
+    );
+  }
   if (row.available) {
     return (
       <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
         <CheckCircle2 className="h-3.5 w-3.5" /> Available in chat
+      </span>
+    );
+  }
+  // `permitted === null` means we could not resolve the flag (no workspace, or
+  // Slack, which has no flag) — NOT that it was denied. Reporting that as
+  // "access not granted" would send the user to an admin over nothing.
+  if (row.connected && row.permitted === null) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+        <CheckCircle2 className="h-3.5 w-3.5" /> Connected
       </span>
     );
   }
@@ -104,19 +125,17 @@ function StatusPill({ row }: { row: ConnectionRow | undefined }) {
 export default function ConnectionsSettingsPage() {
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [loading, setLoading] = useState(true);
-  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
 
-  // The permission half is workspace-scoped, so the flags can only be resolved
-  // once we know which workspace the user is in.
-  useEffect(() => {
-    fetch("/api/me/workspaces")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        const first = d?.workspaces?.[0]?.id ?? d?.[0]?.id ?? null;
-        setWorkspaceId(first ? String(first) : null);
-      })
-      .catch(() => setWorkspaceId(null));
-  }, []);
+  // The permission half is keyed on (id_workspace, user_target), and the chat
+  // gate resolves it from conversation.id_workspace. So this must read the
+  // SELECTED workspace, not "the first one the API happened to return" —
+  // /api/me/workspaces has no ORDER BY, so [0] is not even stable between
+  // loads, and for anyone in two workspaces it would report the flags of a
+  // workspace they aren't working in. Every sibling settings page reads the
+  // context; doing the same also removes the two-phase load that used to fire
+  // this endpoint twice and let the responses race.
+  const wsCtx = useWorkspaceSafe();
+  const workspaceId = wsCtx?.selectedWorkspace?.id ? String(wsCtx.selectedWorkspace.id) : null;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -198,7 +217,7 @@ export default function ConnectionsSettingsPage() {
                         {loading && !status ? (
                           <span className="text-xs text-muted-foreground">Checking…</span>
                         ) : (
-                          <StatusPill row={row} />
+                          <StatusPill row={row} unknown={!!status?.bridgeError} />
                         )}
                       </div>
                       <p className="text-xs text-muted-foreground mt-1">{blurb}</p>
@@ -207,10 +226,10 @@ export default function ConnectionsSettingsPage() {
                           Connected as <span className="font-medium">{row.account}</span>
                         </p>
                       )}
-                      {row?.problem && !row.available && (
+                      {row?.problem && !row.available && !status?.bridgeError && (
                         <p className="text-xs mt-1.5 text-muted-foreground">{row.problem}</p>
                       )}
-                      {row?.connected && row?.permitted === false && (
+                      {row?.connected && row?.permitted === false && !status?.bridgeError && (
                         <p className="text-xs mt-1.5 text-amber-600 dark:text-amber-400">
                           Ask an admin to enable {name} for you in Settings → Users. Nothing to
                           reconnect — the connection is fine.
