@@ -3,6 +3,7 @@ import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
 import { fetchAllRows } from "@/lib/supabase-paginate";
 import { nextDay } from "@/lib/date-utils";
+import { canSignMedia, signMediaUrl } from "@/lib/gcs-sign";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -231,7 +232,43 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ tasks, contracts, totalTasks: tasks.length });
+    // ── 7. Final-revision media download links (single-client scope only) ──
+    // Signed URLs for the current revision's files, so customer-scoped CSV
+    // exports (e.g. offboarding) can include direct download links. Only for
+    // clientId-scoped requests: an unscoped range could span thousands of
+    // content items. Empty when GOOGLE_SERVICE isn't configured.
+    const mediaByContent: Record<string, { fileName: string; url: string }[]> = {};
+    if (clientId !== null && canSignMedia()) {
+      const mediaContentIds = Array.from(
+        new Set(tasks.filter((t) => t.source === "content" && t.contentId).map((t) => Number(t.contentId)))
+      );
+      const expires = Math.floor(Date.now() / 1000) + 365 * 24 * 3600;
+      const batchSize = 100;
+      for (let i = 0; i < mediaContentIds.length; i += batchSize) {
+        const batch = mediaContentIds.slice(i, i + batchSize);
+        const mediaRows = await fetchAllRows((s, e) =>
+          supabase
+            .from("app_media_content")
+            .select("id_content, file_name, file_path, order_sort")
+            .eq("flag_current", 1)
+            .in("id_content", batch)
+            .order("id_media", { ascending: true })
+            .range(s, e)
+        );
+        for (const m of mediaRows) {
+          if (!m.file_path) continue;
+          const url = signMediaUrl(m.file_path, expires);
+          if (!url) continue;
+          const key = String(m.id_content);
+          (mediaByContent[key] ||= []).push({ fileName: m.file_name || "", url });
+        }
+      }
+      for (const list of Object.values(mediaByContent)) {
+        list.sort((a, b) => a.fileName.localeCompare(b.fileName));
+      }
+    }
+
+    return NextResponse.json({ tasks, contracts, totalTasks: tasks.length, mediaByContent });
   } catch (error: any) {
     console.error("Commissioned CUs GET error:", error.message);
     return NextResponse.json(

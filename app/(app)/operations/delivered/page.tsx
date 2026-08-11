@@ -196,6 +196,7 @@ export default function DeliveredPage() {
 
   const [allTasks, setAllTasks] = useState<TaskRow[]>([]);
   const [contracts, setContracts] = useState<ContractRow[]>([]);
+  const [mediaByContent, setMediaByContent] = useState<Record<string, { fileName: string; url: string }[]>>({});
   const [loading, setLoading] = useState(true);
 
   const [dateFrom, setDateFrom] = useState(initRange.from);
@@ -245,6 +246,7 @@ export default function DeliveredPage() {
       const data = await res.json();
       setAllTasks(data.tasks || []);
       setContracts(data.contracts || []);
+      setMediaByContent(data.mediaByContent || {});
       setSelectedCustomerIds(new Set());
       autoSelectedRef.current = false;
       autoSelectedTaxonomyRef.current = { categories: false, formats: false };
@@ -720,7 +722,7 @@ export default function DeliveredPage() {
                   Content Delivered{selectionLabel}
                 </h2>
                 {customerContent.length > 0 && (
-                  <button onClick={() => downloadCSV(customerContent.map(c => ({ Content: c.title, Type: c.type, "Commissioned By": c.commissionedBy || "\u2014", CUs: (c.cus).toFixed(2), Completed: fmtDate(c.completedAt), Commissioned: fmtDate(c.createdAt), Link: c.contentId ? `https://app.thecontentengine.com/all/contents/${c.contentId}` : "" })), "content-delivered.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerContent.map(c => ({ Content: c.title, Type: c.type, "Commissioned By": c.commissionedBy || "\u2014", CUs: (c.cus).toFixed(2), Completed: fmtDate(c.completedAt), Commissioned: fmtDate(c.createdAt), Link: c.contentId ? `https://app.thecontentengine.com/all/contents/${c.contentId}` : "", "Media download URLs": (mediaByContent[c.contentId] || []).map(m => m.url).join("\n") })), "content-delivered.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
