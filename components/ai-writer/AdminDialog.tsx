@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { getSubdomainUrl } from "@/lib/subdomain";
 import { categorizeContentType, CATEGORY_ORDER, CATEGORY_ICONS } from "@/lib/content-type-utils";
 import {
   BarChart,
@@ -1842,7 +1843,7 @@ function IntegrationsTab({ workspaceId }: { workspaceId: string }) {
             </p>
           </div>
           <a
-            href="/accounts"
+            href={getSubdomainUrl("engine", "/accounts")}
             className="shrink-0 inline-flex items-center h-8 px-3 rounded-lg border text-xs font-medium hover:bg-muted"
           >
             Manage
@@ -1859,11 +1860,11 @@ function IntegrationsTab({ workspaceId }: { workspaceId: string }) {
         <p className="text-xs text-muted-foreground mt-0.5">
           These are personal connections — each person connects their own, and only they can
           query it, only in a private chat. They aren&rsquo;t managed here: see{" "}
-          <a href="/settings/connections" className="underline hover:text-foreground">
+          <a href={getSubdomainUrl("engine", "/settings/connections")} className="underline hover:text-foreground">
             Settings → Connections
           </a>{" "}
           for your own, and the Mail, Calendar and M365 columns in{" "}
-          <a href="/settings/users" className="underline hover:text-foreground">
+          <a href={getSubdomainUrl("engine", "/settings/users")} className="underline hover:text-foreground">
             Settings → Users
           </a>{" "}
           to control who is allowed to query them at all.

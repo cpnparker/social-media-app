@@ -108,14 +108,24 @@ export async function PATCH(req: NextRequest) {
         .update(updates)
         .eq("id_access", existing.id_access);
     } else {
-      // Create new row with defaults
+      // Create the row with NO access, matching what sign-in does for a new
+      // user (lib/auth.ts: "add as viewer with no access", every flag 0).
+      //
+      // This previously inserted flag_access_admin: 1 — along with engine and
+      // enginegpt — which meant anyone who reached this endpoint without an
+      // existing row granted THEMSELVES admin simply by saving a personal
+      // preference. flag_access_admin=1 opens the whole /settings area and the
+      // Users page, where every other user's access flags can be changed.
+      //
+      // This is a preferences endpoint. It has no business deciding access, and
+      // the sign-in path already establishes what a new row should look like.
       await intelligenceDb.from("users_access").insert({
         id_workspace: ws.id,
         user_target: userId,
-        flag_access_engine: 1,
-        flag_access_enginegpt: 1,
+        flag_access_engine: 0,
+        flag_access_enginegpt: 0,
         flag_access_operations: 0,
-        flag_access_admin: 1,
+        flag_access_admin: 0,
         flag_access_meetingbrain: 0,
         ...updates,
       });
