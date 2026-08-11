@@ -116,6 +116,14 @@ function formatTokens(n: number): string {
 
 const MODEL_LABELS: Record<string, string> = {
   "claude-sonnet-4-20250514": "Claude Sonnet 4",
+  // The current Anthropic line-up was missing here entirely, so every Opus,
+  // Fable and Haiku row in the charts rendered as a raw model id.
+  "claude-opus-5": "Claude Opus 5",
+  "claude-opus-4-8": "Claude Opus 4.8",
+  "claude-opus-4-7": "Claude Opus 4.7",
+  "claude-fable-5": "Claude Fable 5",
+  "claude-haiku-4-5": "Claude Haiku 4.5",
+  "deepseek-chat": "DeepSeek Chat",
   "claude-sonnet-5": "Claude Sonnet 5",
   "claude-sonnet-4-6": "Claude Sonnet 4.6",
   "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
@@ -146,9 +154,13 @@ const MODEL_COLORS: Record<string, string> = {
   "grok-3-fast": "#60A5FA",
   "grok-3-mini": "#93C5FD",
   "grok-imagine-image": "#818CF8",
+  "claude-opus-5": "#C2410C",
+  "claude-opus-4-8": "#EA580C",
+  "claude-fable-5": "#9A3412",
   "claude-sonnet-5": "#F97316",
   "claude-sonnet-4-6": "#FB923C",
   "claude-sonnet-4-20250514": "#FDBA74",
+  "claude-haiku-4-5": "#FED7AA",
   "gpt-4o": "#10B981",
   "gpt-4o-mini": "#34D399",
   "dall-e-3": "#A78BFA",

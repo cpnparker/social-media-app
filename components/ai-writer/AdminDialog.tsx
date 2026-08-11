@@ -137,8 +137,12 @@ function formatTokens(n: number): string {
 
 const MODEL_LABELS: Record<string, string> = {
   "claude-fable-5": "Claude Fable 5",
+  "claude-opus-5": "Claude Opus 5",
   "claude-opus-4-8": "Claude Opus 4.8",
   "claude-opus-4-7": "Claude Opus 4.7",
+  // sonnet-5 was missing here despite being the app's most-used Claude model
+  // (every grounded search, image-gen and mailbox turn lands on it).
+  "claude-sonnet-5": "Claude Sonnet 5",
   "claude-sonnet-4-6": "Claude Sonnet 4.6",
   "claude-sonnet-4-20250514": "Claude Sonnet 4",
   "claude-haiku-4-5": "Claude Haiku 4.5",
@@ -168,8 +172,10 @@ const CHART_COLORS: Record<string, string> = {
   "grok-imagine-image": "#818CF8",
   "grok-3": "#A78BFA",
   "claude-fable-5": "#9A3412",
+  "claude-opus-5": "#B23A0B",
   "claude-opus-4-8": "#C2410C",
   "claude-opus-4-7": "#EA580C",
+  "claude-sonnet-5": "#FA8231",
   "claude-sonnet-4-6": "#F97316",
   "claude-sonnet-4-20250514": "#FB923C",
   "claude-haiku-4-5": "#FDBA74",
@@ -183,8 +189,10 @@ const DEFAULT_CHART_COLORS = ["#6366F1", "#8B5CF6", "#06B6D4", "#14B8A6", "#F59E
 
 const MODEL_COLORS: Record<string, string> = {
   "claude-fable-5": "bg-orange-800",
+  "claude-opus-5": "bg-orange-700",
   "claude-opus-4-8": "bg-orange-700",
   "claude-opus-4-7": "bg-orange-600",
+  "claude-sonnet-5": "bg-orange-500",
   "claude-sonnet-4-6": "bg-orange-500",
   "claude-sonnet-4-20250514": "bg-orange-400",
   "claude-haiku-4-5": "bg-orange-300",

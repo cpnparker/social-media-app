@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { put } from "@vercel/blob";
 import { fetchBlobContent } from "./blob-utils";
-import { anthropicCallParams } from "./anthropic-params";
+import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
 
@@ -387,6 +387,12 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     apiModel: "claude-fable-5",
     label: "Claude Fable 5",
     description: "Anthropic's most powerful model",
+  },
+  "claude-opus-5": {
+    provider: "anthropic",
+    apiModel: "claude-opus-5",
+    label: "Claude Opus 5",
+    description: "Complex agentic work, code & analysis",
   },
   "claude-opus-4-8": {
     provider: "anthropic",
@@ -5694,7 +5700,7 @@ async function streamAnthropic(
     const suppressTools = config.sawUntrustedContent === true;
     const stream = anthropic.messages.stream({
       model: apiModel,
-      max_tokens: config.maxTokens || 4096,
+      max_tokens: anthropicMaxTokens(apiModel, config.maxTokens),
       ...anthropicModelParams(apiModel, config),
       system: systemText,
       messages: anthropicMessages,
@@ -6665,7 +6671,7 @@ async function streamAnthropic(
       }
       const finalStream = anthropic.messages.stream({
         model: apiModel,
-        max_tokens: config.maxTokens || 4096,
+        max_tokens: anthropicMaxTokens(apiModel, config.maxTokens),
         ...anthropicModelParams(apiModel, config),
         system: systemText,
         messages: anthropicMessages,

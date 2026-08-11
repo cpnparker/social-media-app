@@ -7,6 +7,7 @@
 export const AI_MODELS = [
   { id: "auto", label: "EngineAI Auto", provider: "auto", description: "Best model for each query" },
   { id: "claude-fable-5", label: "Claude Fable 5", provider: "anthropic", description: "Anthropic's most powerful model" },
+  { id: "claude-opus-5", label: "Claude Opus 5", provider: "anthropic", description: "Complex agentic work, code & analysis" },
   { id: "claude-opus-4-8", label: "Claude Opus 4.8", provider: "anthropic", description: "Top-tier reasoning, code & long-form" },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5", provider: "anthropic", description: "Complex reasoning & analysis" },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", provider: "anthropic", description: "Fast, cheap Claude" },

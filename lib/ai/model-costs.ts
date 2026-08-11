@@ -11,6 +11,7 @@ export const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: numb
   // Fable 5 note: classifier-flagged queries are served (and billed) as
   // Opus 4.8 by Anthropic — our per-model rate slightly overestimates those.
   "claude-fable-5": { inputPer1M: 1000, outputPer1M: 5000 },         // $10/$50
+  "claude-opus-5": { inputPer1M: 500, outputPer1M: 2500 },           // $5/$25
   "claude-opus-4-8": { inputPer1M: 500, outputPer1M: 2500 },         // $5/$25
   "claude-opus-4-7": { inputPer1M: 500, outputPer1M: 2500 },         // $5/$25 (legacy → opus-4-8)
   "claude-sonnet-5": { inputPer1M: 300, outputPer1M: 1500 },         // $3/$15 (intro $2/$10 through 2026-08-31)
