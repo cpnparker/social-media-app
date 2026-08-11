@@ -231,13 +231,16 @@ export default function DeliveredPage() {
   const userContentSort = useSort("createdAt", false);
 
   /* ─── Fetch ─── */
-  const fetchTasks = useCallback(async (from: string, to: string, excludeClients: boolean) => {
+  const fetchTasks = useCallback(async (from: string, to: string, excludeClients: boolean, clientId: string | null) => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (from) params.set("from", from);
       if (to) params.set("to", to);
       if (excludeClients) params.set("excludeClients", EXCLUDE_CLIENT_IDS);
+      // Scope the query server-side when a customer is selected — a wide
+      // date range over all clients is tens of MB; one client's is tiny.
+      if (clientId) params.set("clientId", clientId);
       const res = await fetch(`/api/operations/commissioned-cus?${params.toString()}`);
       const data = await res.json();
       setAllTasks(data.tasks || []);
@@ -254,8 +257,8 @@ export default function DeliveredPage() {
   }, []);
 
   useEffect(() => {
-    fetchTasks(dateFrom, dateTo, excludeTestClients);
-  }, [dateFrom, dateTo, excludeTestClients, fetchTasks]);
+    fetchTasks(dateFrom, dateTo, excludeTestClients, globalCustomerId);
+  }, [dateFrom, dateTo, excludeTestClients, globalCustomerId, fetchTasks]);
 
   const applyPreset = (preset: (typeof presets)[0]) => {
     const range = preset.getRange();
@@ -353,6 +356,19 @@ export default function DeliveredPage() {
       autoSelectedRef.current = true;
     }
   }, [customerList]);
+
+  // When the TopBar's customer filter changes, override the per-page
+  // customer multi-select so derived stats and contracts stay in sync.
+  // Without this, an earlier auto-select-all keeps every customer selected
+  // and Contract Activity shows unrelated clients' contracts.
+  useEffect(() => {
+    if (globalCustomerId) {
+      setSelectedCustomerIds(new Set([globalCustomerId]));
+    } else {
+      // Allow auto-select-all to re-run when the global filter is cleared
+      autoSelectedRef.current = false;
+    }
+  }, [globalCustomerId]);
 
   const selectAllCustomers = useCallback(() => {
     setSelectedCustomerIds(new Set(customerList.map((c) => c.id)));
@@ -583,7 +599,7 @@ export default function DeliveredPage() {
               <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Active Customers</h2>
                 {customerList.length > 0 && (
-                  <button onClick={() => downloadCSV(customerList.map(c => ({ Customer: c.name, CUs: (c.cus).toFixed(2), Tasks: c.taskCount })), "active-customers")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerList.map(c => ({ Customer: c.name, CUs: (c.cus).toFixed(2), Tasks: c.taskCount })), "active-customers.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -652,7 +668,7 @@ export default function DeliveredPage() {
                   Contract Activity{selectionLabel}
                 </h2>
                 {customerContracts.length > 0 && (
-                  <button onClick={() => downloadCSV(customerContracts.map(c => ({ Contract: c.contractName, "Total CUs": (c.totalContractCUs).toFixed(2), Completed: (c.completedContractCUs).toFixed(2), Remaining: (c.remaining).toFixed(2), "Period CUs": (c.periodCUs).toFixed(2) })), "contract-activity")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerContracts.map(c => ({ Contract: c.contractName, "Total CUs": (c.totalContractCUs).toFixed(2), Completed: (c.completedContractCUs).toFixed(2), Remaining: (c.remaining).toFixed(2), "Period CUs": (c.periodCUs).toFixed(2) })), "contract-activity.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -704,7 +720,7 @@ export default function DeliveredPage() {
                   Content Delivered{selectionLabel}
                 </h2>
                 {customerContent.length > 0 && (
-                  <button onClick={() => downloadCSV(customerContent.map(c => ({ Content: c.title, Type: c.type, "Commissioned By": c.commissionedBy || "\u2014", CUs: (c.cus).toFixed(2), Completed: fmtDate(c.completedAt), Commissioned: fmtDate(c.createdAt) })), "content-delivered")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerContent.map(c => ({ Content: c.title, Type: c.type, "Commissioned By": c.commissionedBy || "\u2014", CUs: (c.cus).toFixed(2), Completed: fmtDate(c.completedAt), Commissioned: fmtDate(c.createdAt), Link: c.contentId ? `https://app.thecontentengine.com/all/contents/${c.contentId}` : "" })), "content-delivered.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -799,7 +815,7 @@ export default function DeliveredPage() {
                 <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Team Deliveries</h2>
                   {teamList.length > 0 && (
-                    <button onClick={() => downloadCSV(teamList.map(u => ({ Name: u.name, Items: u.count, CUs: (u.cus).toFixed(2) })), "team-deliveries")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <button onClick={() => downloadCSV(teamList.map(u => ({ Name: u.name, Items: u.count, CUs: (u.cus).toFixed(2) })), "team-deliveries.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                       <Download className="h-3.5 w-3.5" />
                     </button>
                   )}
@@ -850,7 +866,7 @@ export default function DeliveredPage() {
                     {selectedCommissioner ? `Content \u2014 ${selectedCommissioner}` : "Content by User"}
                   </h2>
                   {commissionerContent.length > 0 && (
-                    <button onClick={() => downloadCSV(commissionerContent.map(c => ({ Content: c.title, Customer: c.customer, Type: c.type, CUs: (c.cus).toFixed(2) })), "content-by-user")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <button onClick={() => downloadCSV(commissionerContent.map(c => ({ Content: c.title, Customer: c.customer, Type: c.type, CUs: (c.cus).toFixed(2), Link: c.contentId ? `https://app.thecontentengine.com/all/contents/${c.contentId}` : "" })), "content-by-user.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                       <Download className="h-3.5 w-3.5" />
                     </button>
                   )}

@@ -234,13 +234,16 @@ export default function CommissionedCUsPage() {
   const userContentSort = useSort("createdAt", false);
 
   /* ─── Fetch ─── */
-  const fetchTasks = useCallback(async (from: string, to: string, excludeClients: boolean) => {
+  const fetchTasks = useCallback(async (from: string, to: string, excludeClients: boolean, clientId: string | null) => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (from) params.set("from", from);
       if (to) params.set("to", to);
       if (excludeClients) params.set("excludeClients", EXCLUDE_CLIENT_IDS);
+      // Scope the query server-side when a customer is selected — a wide
+      // date range over all clients is tens of MB; one client's is tiny.
+      if (clientId) params.set("clientId", clientId);
       const res = await fetch(`/api/operations/commissioned-cus?${params.toString()}`);
       const data = await res.json();
       setTasks(data.tasks || []);
@@ -257,8 +260,8 @@ export default function CommissionedCUsPage() {
   }, []);
 
   useEffect(() => {
-    fetchTasks(dateFrom, dateTo, excludeTestClients);
-  }, [dateFrom, dateTo, excludeTestClients, fetchTasks]);
+    fetchTasks(dateFrom, dateTo, excludeTestClients, globalCustomerId);
+  }, [dateFrom, dateTo, excludeTestClients, globalCustomerId, fetchTasks]);
 
   const applyPreset = (preset: (typeof presets)[0]) => {
     const range = preset.getRange();
@@ -723,7 +726,7 @@ export default function CommissionedCUsPage() {
                   Content Commissioned{selectionLabel}
                 </h2>
                 {customerContent.length > 0 && (
-                  <button onClick={() => downloadCSV(customerContent.map(row => ({ Content: row.title, Type: row.type, "Commissioned By": row.commissionedBy || "", CUs: (row.cus).toFixed(2), Commissioned: row.createdAt ? fmtDate(row.createdAt) : "" })), "content-commissioned.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerContent.map(row => ({ Content: row.title, Type: row.type, "Commissioned By": row.commissionedBy || "", CUs: (row.cus).toFixed(2), Commissioned: row.createdAt ? fmtDate(row.createdAt) : "", Link: row.contentId ? `https://app.thecontentengine.com/all/contents/${row.contentId}` : "" })), "content-commissioned.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}

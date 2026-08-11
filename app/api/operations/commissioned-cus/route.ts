@@ -19,6 +19,10 @@ export async function GET(req: NextRequest) {
   const from = searchParams.get("from"); // YYYY-MM-DD
   const to = searchParams.get("to"); // YYYY-MM-DD
   const excludeClientIds = searchParams.get("excludeClients"); // comma-separated IDs
+  // Optional single-client scope — a wide date range over all clients is a
+  // multi-MB payload; scoping server-side keeps customer-filtered views fast.
+  const clientIdParam = parseInt(searchParams.get("clientId") || "", 10);
+  const clientId = isNaN(clientIdParam) ? null : clientIdParam;
 
   try {
     // ── 1. Fetch ALL content tasks from the enriched view (paginated) ──
@@ -34,6 +38,7 @@ export async function GET(req: NextRequest) {
         .order("id_task", { ascending: true });
       if (from) q = q.gte("date_created", from);
       if (to) q = q.lt("date_created", nextDay(to));
+      if (clientId !== null) q = q.eq("id_client", clientId);
       return q.range(start, end);
     };
 
@@ -45,6 +50,7 @@ export async function GET(req: NextRequest) {
         .order("id_task", { ascending: true });
       if (from) q = q.gte("date_created", from);
       if (to) q = q.lt("date_created", nextDay(to));
+      if (clientId !== null) q = q.eq("id_client", clientId);
       return q.range(start, end);
     };
 
