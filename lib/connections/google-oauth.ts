@@ -29,7 +29,10 @@
  *     Engine's existing GOOGLE_CLIENT_ID/SECRET are used as the fallback and
  *     nothing extra is needed.
  */
-import { createHmac, timingSafeEqual } from "crypto";
+// State signing lives in ./state.ts — shared by the Google, Slack and Microsoft
+// flows so there is one implementation of the thing that binds a callback to
+// the user who started it, rather than three that can drift.
+export { signState, verifyState, stateIsStale } from "./state";
 
 /** Byte-for-byte MeetingBrain's sign-in scopes. A narrower set here would mint
  *  a grant that silently lacks a scope its scanners depend on; a wider one
@@ -60,39 +63,6 @@ export function isConfigured(): boolean {
  *  exactly, including host — Google compares strings, not intent. */
 export function callbackUrl(origin: string): string {
   return `${origin.replace(/\/$/, "")}/api/connections/google/callback`;
-}
-
-/* ─────────────── Signed state ─────────────── */
-
-/**
- * State carries the return path and the user it was started for, signed so the
- * callback cannot be replayed or retargeted. Same shape as the Xero connect
- * flow already in this repo.
- *
- * Binding the userId matters: without it, a callback could be completed in a
- * different browser session and attach someone else's Google grant to whoever
- * happened to be signed in.
- */
-export function signState(payload: Record<string, unknown>): string {
-  const secret = process.env.NEXTAUTH_SECRET || "";
-  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const sig = createHmac("sha256", secret).update(body).digest("base64url");
-  return `${body}.${sig}`;
-}
-
-export function verifyState(state: string): Record<string, any> | null {
-  const secret = process.env.NEXTAUTH_SECRET || "";
-  const [body, sig] = String(state || "").split(".");
-  if (!body || !sig) return null;
-  const expected = createHmac("sha256", secret).update(body).digest("base64url");
-  const a = Buffer.from(sig);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
-  try {
-    return JSON.parse(Buffer.from(body, "base64url").toString());
-  } catch {
-    return null;
-  }
 }
 
 /* ─────────────── Token exchange ─────────────── */

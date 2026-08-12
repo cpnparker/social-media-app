@@ -1,8 +1,10 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { meetingBrainDb } from "@/lib/supabase-meetingbrain";
+import { closingPage } from "@/lib/connections/closing-page";
+import { stateIsStale, verifyState } from "@/lib/connections/state";
 import {
-  GOOGLE_SCOPES, callbackUrl, exchangeCode, fetchGoogleEmail, verifyState,
+  GOOGLE_SCOPES, callbackUrl, exchangeCode, fetchGoogleEmail,
 } from "@/lib/connections/google-oauth";
 
 /**
@@ -20,29 +22,6 @@ import {
  * conversation they started from, not on a settings screen.
  */
 export const maxDuration = 30;
-
-/**
- * `status` matters even though a human is reading the HTML. Without it every
- * outcome returned 200 — an expired session, a forged state, a cancelled
- * consent — so logs and uptime checks saw a successful OAuth callback for
- * every failure. The page still renders either way; only the code differs.
- */
-function closingPage(ok: boolean, message: string, status = 200): NextResponse {
-  // The opener re-reads status on close, so there is nothing to post back —
-  // closing IS the signal. Escaped because `message` can carry provider text.
-  const safe = message.replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c] as string));
-  const html = `<!doctype html><meta charset="utf-8"><title>${ok ? "Connected" : "Couldn't connect"}</title>
-<style>body{font:15px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;height:100vh;color:#111;background:#fff}
-.b{max-width:26rem;padding:2rem;text-align:center}.t{font-weight:600;margin-bottom:.5rem}.m{color:#666;font-size:13px}
-@media(prefers-color-scheme:dark){body{background:#0b0b0c;color:#eee}.m{color:#999}}</style>
-<div class="b"><div class="t">${ok ? "Connected" : "Couldn’t connect"}</div><div class="m">${safe}</div></div>
-<script>try{window.close()}catch(e){}
-setTimeout(function(){try{window.close()}catch(e){}},${ok ? 900 : 4000});</script>`;
-  return new NextResponse(html, {
-    status,
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
-}
 
 export async function GET(req: NextRequest) {
   const session = await auth();
@@ -71,9 +50,7 @@ export async function GET(req: NextRequest) {
     console.warn(`[Connections/google] state user mismatch: state=${state.u} session=${sessionUserId}`);
     return closingPage(false, "That link was started by a different account. Close this window and try again.", 403);
   }
-  // 10 minutes is generous for a consent screen and short enough that a leaked
-  // URL in a history or a log is not a standing credential.
-  if (typeof state.t === "number" && Date.now() - state.t > 10 * 60_000) {
+  if (stateIsStale(state)) {
     return closingPage(false, "That took too long. Close this window and try again.", 400);
   }
 

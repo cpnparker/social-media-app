@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { isConfigured as googleConnectConfigured } from "@/lib/connections/google-oauth";
+import { isConfigured as slackConnectConfigured } from "@/lib/connections/slack-oauth";
+import { isConfigured as microsoftConnectConfigured } from "@/lib/connections/microsoft-oauth";
 
 /**
  * GET /api/connections/status — what the SIGNED-IN user is connected to.
@@ -120,12 +122,18 @@ export async function GET(_req: NextRequest) {
     }
   }
 
-  // Where "Connect" should send this user. Gmail and Calendar are both the
-  // Google grant, and EngineAI can now run that handshake itself — so the user
-  // stays inside EngineAI instead of being sent to MeetingBrain, which many of
-  // them cannot reach. Slack and Microsoft still hand off until their flows are
-  // built the same way; the fallback keeps them working rather than dead.
-  const engineGoogleConnect = googleConnectConfigured() ? "/api/connections/google/start" : null;
+  // Where "Connect" should send this user. EngineAI now runs all three
+  // handshakes itself, so nobody is sent to MeetingBrain — which most users
+  // cannot reach anyway. Each falls back to MeetingBrain's own page if its
+  // credentials are not configured on this deployment, so an unconfigured
+  // provider degrades to the old hand-off rather than to a dead button.
+  // Gmail and Calendar are one Google grant and therefore share a flow.
+  const engineConnect: Record<string, string | null> = {
+    gmail: googleConnectConfigured() ? "/api/connections/google/start" : null,
+    calendar: googleConnectConfigured() ? "/api/connections/google/start" : null,
+    slack: slackConnectConfigured() ? "/api/connections/slack/start" : null,
+    microsoft: microsoftConnectConfigured() ? "/api/connections/microsoft/start" : null,
+  };
 
   const merge = (name: "gmail" | "calendar" | "microsoft") => {
     const c = bridge.connections?.[name];
@@ -138,14 +146,11 @@ export async function GET(_req: NextRequest) {
       available: (c?.available ?? false) && permitted === true,
       account: c?.account ?? null,
       problem: c?.problem ?? (bridgeError ? "Couldn't reach MeetingBrain to check" : null),
-      connectUrl:
-        name === "gmail" || name === "calendar"
-          ? engineGoogleConnect ?? c?.connectUrl ?? null
-          : c?.connectUrl ?? null,
+      connectUrl: engineConnect[name] ?? c?.connectUrl ?? null,
       // Lets the UI say "you'll be sent to MeetingBrain" only when that is
       // actually true, rather than warning about a hand-off that no longer
       // happens.
-      connectInPlace: (name === "gmail" || name === "calendar") && !!engineGoogleConnect,
+      connectInPlace: !!engineConnect[name],
     };
   };
 
@@ -170,7 +175,8 @@ export async function GET(_req: NextRequest) {
           available: c?.available ?? false,
           account: c?.account ?? null,
           problem: c?.problem ?? (bridgeError ? "Couldn't reach MeetingBrain to check" : null),
-          connectUrl: c?.connectUrl ?? null,
+          connectUrl: engineConnect.slack ?? c?.connectUrl ?? null,
+          connectInPlace: !!engineConnect.slack,
         };
       })(),
     },
