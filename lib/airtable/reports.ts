@@ -163,6 +163,36 @@ type Num = number | undefined | typeof AMBIGUOUS;
 
 const isNumber = (v: Num): v is number => typeof v === "number";
 
+/**
+ * Find a month's row in Monthly resourcing, by its TEXT label.
+ *
+ * The first cut matched on the `Date` field, on the reasoning that a real date
+ * beats a text column whose format was unknown. That was wrong in a way worth
+ * recording: `Date` is populated on 31 of 66 rows, and every month after June
+ * 2025 has it empty. So the report refused every future month — the only ones
+ * anyone asks about — and explained itself by naming June 2025 as the plan's
+ * horizon, which read as a data-entry problem in the base rather than a bug
+ * here. A refusal is only as trustworthy as the column it is built on.
+ *
+ * `Month` is the table's primary field, populated on all 66 rows, and already
+ * in the exact form monthLabel() produces. `Order` is a hand-maintained
+ * spreadsheet-style key (A…Z, ZA…ZV, with a "ZE2" patched in) and is null on
+ * 14 rows, so it is not an identifier either.
+ */
+function findMonthRow(records: AirtableRecord[], month: string): AirtableRecord | undefined {
+  const want = month.trim().toLowerCase();
+  return records.find((r) => String(r.fields["Month"] ?? "").trim().toLowerCase() === want);
+}
+
+/** The last month present in the plan, by parsed label rather than by Date. */
+function planHorizon(records: AirtableRecord[]): string | null {
+  const parsed = records
+    .map((r) => parseMonthLabel(String(r.fields["Month"] ?? "")))
+    .filter((d): d is Date => !!d)
+    .sort((a, b) => b.getTime() - a.getTime());
+  return parsed.length ? monthLabel(parsed[0]) : null;
+}
+
 function readSchema(tables: AirtableTable[], name: string): AirtableTable {
   const t = tables.find((x) => x.name === name);
   if (!t) {
@@ -244,62 +274,21 @@ export async function capacityReport(opts: { month?: string; person?: string; no
 
   const warnings: string[] = [];
 
-  // Live roster only. "Live team" is the base's own definition of who counts.
-  const liveView = teamSchema.views?.some((v) => v.name === "Live team") ? "Live team" : undefined;
-  if (!liveView) {
-    warnings.push(
-      `The "Live team" view no longer exists in the base, so this covers every Team row including ` +
-        `leavers and scenario placeholders. Capacity totals will be too high.`
-    );
-  }
-
-  const team = await listRecords("Team", {
-    view: liveView,
-    fields: ["Name", "Team", "Job", "Engine_IDs"],
-  });
-  if (team.truncated) warnings.push("The Team roster was truncated — this is a partial roster, not the whole team.");
-
-  const wanted = opts.person?.trim().toLowerCase();
-  const roster = wanted
-    ? team.records.filter((r) => String(r.fields["Name"] || "").toLowerCase().includes(wanted))
-    : team.records;
-
-  if (wanted && !roster.length) {
-    throw new Error(
-      `No one on the live team matches "${opts.person}". Names come from Airtable's Team table; ` +
-        `check the spelling, or ask without a name for the whole roster.`
-    );
-  }
-
-  // Month rows. `Month-Team` is a formula key, so the reliable filter is the
-  // linked Months record — resolved via Monthly resourcing's real Date field
-  // rather than its text Month or its text Order.
-  const monthStart = parseMonthLabel(month)!;
   const monthlySchema = readSchema(tables, "Monthly resourcing");
-  assertFields(monthlySchema, ["Month", "Date"]);
-  const monthly = await listRecords("Monthly resourcing", { fields: ["Month", "Date"] });
-  const monthRecord = monthly.records.find((r) => {
-    const d = r.fields["Date"];
-    if (!d) return false;
-    const parsed = new Date(String(d));
-    return (
-      parsed.getUTCFullYear() === monthStart.getUTCFullYear() && parsed.getUTCMonth() === monthStart.getUTCMonth()
-    );
-  });
+  assertFields(monthlySchema, ["Month"]);
+  const monthly = await listRecords("Monthly resourcing", { fields: ["Month"] });
+  const monthRecord = findMonthRow(monthly.records, month);
 
   if (!monthRecord) {
     // The honest answer to "how much headroom in March 2028" is that the plan
     // does not go that far, not that everyone is free.
-    const horizon = monthly.records
-      .map((r) => (r.fields["Date"] ? new Date(String(r.fields["Date"])) : null))
-      .filter((d): d is Date => !!d && !Number.isNaN(d.getTime()))
-      .sort((a, b) => b.getTime() - a.getTime())[0];
+    const horizon = planHorizon(monthly.records);
     return ok(
       "capacity",
       { month, planLoaded: false, people: [], peopleWithoutPlan: [] },
       [
         `The resourcing plan has no row for ${month}` +
-          (horizon ? `; it currently runs to ${monthLabel(horizon)}.` : ".") +
+          (horizon ? `; it currently runs to ${horizon}.` : ".") +
           ` This means the plan is not loaded that far out — it does NOT mean there is capacity available.`,
       ]
     );
@@ -327,19 +316,65 @@ export async function capacityReport(opts: { month?: string; person?: string; no
     if (member) byMember.set(member, row);
   }
 
+  if (!byMember.size) {
+    // A month can exist in the plan with no capacity loaded against it. That
+    // is a different gap from "the plan does not reach that month", and it
+    // needs saying differently — otherwise it reads as "nobody is available".
+    return ok(
+      "capacity",
+      { month, planLoaded: false, people: [], peopleWithoutPlan: [] },
+      [
+        `${month} exists in the plan but has no team capacity loaded against it. Nobody's capacity has been ` +
+          `entered for that month — this does NOT mean the team is fully booked, and it does not mean they are free.`,
+      ]
+    );
+  }
+
+  const team = await listRecords("Team", { fields: ["Name", "Team", "Job", "Engine_IDs"] });
+  if (team.truncated) warnings.push("The Team roster was truncated — this is a partial roster, not the whole team.");
+  const teamById = new Map(team.records.map((r) => [r.id, r]));
+
+  // The ROSTER IS WHOEVER HAS A CAPACITY ROW THIS MONTH, not whoever appears in
+  // a view. The first cut filtered Team by the base's "Live team" view, on the
+  // reasoning that it excludes leavers and scenario placeholders. It does — but
+  // it holds 8 rows while 21 people have capacity loaded for September 2026, so
+  // it would have dropped 13 real people from the answer while looking
+  // complete. Capacity rows ARE the plan for a month; a leaver has none.
+  const wanted = opts.person?.trim().toLowerCase();
+  const rosterIds = Array.from(byMember.keys()).filter((id) => {
+    if (!wanted) return true;
+    const name = String(teamById.get(id)?.fields["Name"] || "");
+    return name.toLowerCase().includes(wanted);
+  });
+
+  if (wanted && !rosterIds.length) {
+    throw new Error(
+      `Nobody matching "${opts.person}" has capacity loaded for ${month}. Names come from Airtable's Team table; ` +
+        `check the spelling, or ask without a name for the whole roster.`
+    );
+  }
+
   const people: PersonCapacity[] = [];
   const peopleWithoutPlan: string[] = [];
 
-  for (const person of roster) {
-    const name = String(person.fields["Name"] || "(unnamed)");
-    const row = byMember.get(person.id);
-    if (!row) {
-      peopleWithoutPlan.push(name);
-      continue;
+  // Named separately: someone on the live roster with no capacity row for this
+  // month is invisible in the answer above, and that absence is worth stating.
+  // The "Live team" view is safe HERE precisely because it is narrow — it can
+  // only ever under-report a gap, never truncate the roster itself.
+  if (!wanted && teamSchema.views?.some((v) => v.name === "Live team")) {
+    const live = await listRecords("Team", { view: "Live team", fields: ["Name"] });
+    for (const person of live.records) {
+      if (!byMember.has(person.id)) peopleWithoutPlan.push(String(person.fields["Name"] || "(unnamed)"));
     }
+  }
+
+  for (const personId of rosterIds) {
+    const person = teamById.get(personId);
+    const name = String(person?.fields["Name"] || "(unnamed)");
+    const row = byMember.get(personId)!;
 
     // Single numeric Engine id. Absent means unlinked — left null, never 0.
-    const rawId = String(person.fields["Engine_IDs"] || "").trim();
+    const rawId = String(person?.fields["Engine_IDs"] || "").trim();
     const firstId = rawId.split(/[,;\s]+/).filter(Boolean)[0];
     const engineUserId = firstId && /^\d+$/.test(firstId) ? Number(firstId) : null;
 
@@ -372,8 +407,8 @@ export async function capacityReport(opts: { month?: string; person?: string; no
 
     people.push({
       name,
-      team: (person.fields["Team"] as string) || null,
-      job: (person.fields["Job"] as string) || null,
+      team: (person?.fields["Team"] as string) || null,
+      job: (person?.fields["Job"] as string) || null,
       engineUserId,
       disciplines,
     });
@@ -381,8 +416,8 @@ export async function capacityReport(opts: { month?: string; person?: string; no
 
   if (peopleWithoutPlan.length) {
     warnings.push(
-      `${peopleWithoutPlan.length} of ${roster.length} live team members have no resourcing row for ${month}: ` +
-        `${peopleWithoutPlan.join(", ")}. They are absent from the plan, not idle.`
+      `${peopleWithoutPlan.length} live team member(s) have no capacity row for ${month}: ` +
+        `${peopleWithoutPlan.join(", ")}. They are absent from the plan, not idle — do not read them as available.`
     );
   }
 
@@ -738,23 +773,16 @@ export async function monthlyOutlookReport(opts: { month?: string; now?: Date } 
     ...Object.values(freelancerCol).filter((x): x is string => !!x),
   ]);
 
-  const monthStart = parseMonthLabel(month)!;
+  // Matched on the text label, not Date — see findMonthRow. Date is empty on
+  // every month after June 2025, which is all the months anyone asks about.
   const rows = await listRecords("Monthly resourcing");
-  const row = rows.records.find((r) => {
-    const d = r.fields["Date"];
-    if (!d) return false;
-    const parsed = new Date(String(d));
-    return parsed.getUTCFullYear() === monthStart.getUTCFullYear() && parsed.getUTCMonth() === monthStart.getUTCMonth();
-  });
+  const row = findMonthRow(rows.records, month);
 
   if (!row) {
-    const horizon = rows.records
-      .map((r) => (r.fields["Date"] ? new Date(String(r.fields["Date"])) : null))
-      .filter((d): d is Date => !!d && !Number.isNaN(d.getTime()))
-      .sort((a, b) => b.getTime() - a.getTime())[0];
+    const horizon = planHorizon(rows.records);
     throw new Error(
       `The resourcing plan has no row for ${month}` +
-        (horizon ? `; it runs to ${monthLabel(horizon)}.` : ".") +
+        (horizon ? `; it runs to ${horizon}.` : ".") +
         ` No figures are available for that month — this is a gap in the plan, not zero demand.`
     );
   }

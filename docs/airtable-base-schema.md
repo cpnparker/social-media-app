@@ -2,6 +2,21 @@
 
 17 tables. Row counts are real (retrieved, not estimated).
 
+> **This file is a DIGEST, not the schema.** The field lists below are abridged
+> — grouped, elided with `…`, and summarised in prose. A name's absence here is
+> NOT evidence it is absent from the base.
+>
+> That distinction has already cost real work: an audit was pointed at this file
+> as ground truth and reported two blocking defects, both false, because
+> `Contracts Monthly.Customer`, `Contracts Monthly.Booking status` and the five
+> `<Discipline> capacity` rollups on `Monthly resourcing` are all real columns
+> that this digest never listed.
+>
+> **To check a field name, read the base**, not this file:
+> `GET /api/airtable/status?schema=1` as a workspace admin, or
+> Administration → Integrations → Airtable → Inspect base. `assertFields()`
+> checks against the live schema at runtime for the same reason.
+
 ## The spine
 
 **Contracts** `tblbUyXiJ6L6zSrfm` — 311 rows

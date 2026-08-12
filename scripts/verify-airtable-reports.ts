@@ -76,6 +76,49 @@ eq(ACTIVE_BOOKING_STATUSES.includes("Active - Late Delivery" as never), true, "l
 eq(DISCIPLINES.length, 5, "five disciplines");
 eq(DISCIPLINES[0], "Account Management", "AM is spelled as the base spells it");
 
+/* ── month row matching, against the base's REAL shape ──
+   These rows are copied from a live read of Monthly resourcing. The point is
+   the Date column: it is populated on 31 of 66 rows and empty on every month
+   after June 2025. Matching on it made the reports refuse every future month
+   while blaming the base for a horizon of June 2025. */
+{
+  const REAL_ROWS = [
+    { fields: { Month: "June 2025", Order: "ZD", Date: "2025-06-01" } },
+    { fields: { Month: "July 2025", Order: "ZE", Date: null } },
+    { fields: { Month: "August 2025", Order: "ZE2", Date: null } },
+    { fields: { Month: "September 2026", Order: "ZR", Date: null } },
+    { fields: { Month: "December 2026", Order: "ZU", Date: null } },
+    { fields: { Month: "January 2022", Order: null, Date: "2022-01-01" } },
+  ] as any[];
+
+  const find = (label: string) =>
+    REAL_ROWS.find((r) => String(r.fields["Month"] ?? "").trim().toLowerCase() === label.trim().toLowerCase());
+
+  eq(!!find("September 2026"), true, "September 2026 IS in the plan — the regression that shipped");
+  eq(!!find("september 2026"), true, "month matching is case-insensitive");
+  eq(!!find("December 2026"), true, "the plan reaches December 2026");
+  eq(!!find("March 2028"), false, "a month genuinely outside the plan is still not found");
+
+  const datedOnly = REAL_ROWS.filter((r) => r.fields["Date"]);
+  eq(datedOnly.length, 2, "only 2 of these 6 rows carry a Date");
+  eq(
+    !!datedOnly.find((r) => r.fields["Month"] === "September 2026"),
+    false,
+    "matching on Date cannot see September 2026 — this is why the report refused it"
+  );
+
+  // The horizon reported to the user comes from the labels, not the dates.
+  const horizon = REAL_ROWS.map((r) => parseMonthLabel(String(r.fields["Month"])))
+    .filter((d): d is Date => !!d)
+    .sort((a, b) => b.getTime() - a.getTime())[0];
+  eq(monthLabel(horizon), "December 2026", "horizon comes from labels, not from the sparse Date column");
+
+  const dateHorizon = REAL_ROWS.map((r) => (r.fields["Date"] ? new Date(String(r.fields["Date"])) : null))
+    .filter((d): d is Date => !!d)
+    .sort((a, b) => b.getTime() - a.getTime())[0];
+  eq(monthLabel(dateHorizon), "June 2025", "the Date column would have claimed June 2025 — the wrong answer users saw");
+}
+
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length) {
   for (const f of failures) console.log(`  ✗ ${f}`);
