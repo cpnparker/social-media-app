@@ -3,7 +3,7 @@ import { auth } from "@/lib/auth";
 import { verifyWorkspaceMembership } from "@/lib/permissions";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { airtableConfigured } from "@/lib/airtable/client";
-import { monthCoverage, probeIdentity, runPhase0 } from "@/lib/airtable/introspect";
+import { modelProbe, monthCoverage, probeIdentity, runPhase0 } from "@/lib/airtable/introspect";
 
 /**
  * GET /api/airtable/status[?workspaceId=…][&schema=1]
@@ -72,9 +72,10 @@ export async function GET(req: NextRequest) {
   const wantSchema = req.nextUrl.searchParams.get("schema") === "1";
   const wantProbe = req.nextUrl.searchParams.get("probe") === "1";
   const wantMonths = req.nextUrl.searchParams.get("months") === "1";
+  const wantModel = req.nextUrl.searchParams.get("model");
 
   // Without a diagnostic flag this is a cheap liveness check for the card.
-  if (!wantSchema && !wantProbe && !wantMonths) {
+  if (!wantSchema && !wantProbe && !wantMonths && !wantModel) {
     try {
       const findings = await runPhase0();
       return NextResponse.json({
@@ -93,6 +94,9 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    if (wantModel) {
+      return NextResponse.json({ configured: true, connected: true, ...(await modelProbe(wantModel)) });
+    }
     if (wantMonths) {
       return NextResponse.json({ configured: true, connected: true, ...(await monthCoverage()) });
     }

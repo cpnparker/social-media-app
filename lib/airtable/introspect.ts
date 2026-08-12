@@ -7,7 +7,7 @@
  * identity join is the part that fails silently and expensively, so a missing
  * email column is reported as a blocker rather than as an observation.
  */
-import { getBaseSchema, listRecords, type AirtableTable } from "./client";
+import { cellNumber, getBaseSchema, listRecords, type AirtableTable } from "./client";
 
 const EMAIL_HINTS = ["email", "e-mail", "mail"];
 const PERSON_HINTS = ["person", "people", "team", "staff", "member", "resource", "employee", "freelanc"];
@@ -295,6 +295,112 @@ export async function monthCoverage(): Promise<{ months: MonthCoverage[]; teamRe
     teamResourcingRows: resourcing.count,
     datePopulated: months.filter((m) => m.date).length,
   };
+}
+
+/**
+ * How capacity, allocation and demand actually relate — read from the data.
+ *
+ * Written after a capacity report shipped that subtracted a COMPANY-WIDE
+ * booked figure from ONE PERSON's capacity and reported the result as their
+ * headroom. Everyone came out negative, which is the signature of an
+ * aggregation-level mismatch rather than an overloaded team.
+ *
+ * The structural questions this settles, none of which the schema alone can
+ * answer:
+ *   1. Are `Team resourcing.* CUs booked` identical across every person in a
+ *      month? If so they are lookups through `Months` — a company total copied
+ *      onto each row — and are not per-person demand at any level.
+ *   2. Does that value equal `Monthly resourcing.<Discipline> CU booked`?
+ *      That confirms which column it is a lookup OF.
+ *   3. What is per-person ALLOCATION, then? `Account Manage` joins a person to
+ *      a contract with a CU value, which is the only per-person demand in the
+ *      base.
+ *   4. Are the freelancer estimates in the same units as capacity? A capacity
+ *      of 17 beside an estimate of 2,477 is not a forecast, it is two
+ *      different quantities printed in one table.
+ */
+export interface ModelProbe {
+  month: string;
+  monthly: Record<string, unknown>;
+  perPerson: {
+    name: string;
+    capacity: Record<string, number | null>;
+    booked: Record<string, number | null>;
+  }[];
+  /** Distinct values of each booked column across people. Length 1 = uniform. */
+  bookedDistinct: Record<string, unknown[]>;
+  allocation: {
+    person: string;
+    role: string | null;
+    liveOrScenario: string | null;
+    contentUnits: number | null;
+    bookedCurrentMonth: number | null;
+    contracts: number;
+  }[];
+}
+
+export async function modelProbe(month: string): Promise<ModelProbe> {
+  const CAP = [
+    "AM capacity",
+    "Text production capacity",
+    "Video production capacity",
+    "Visuals production capacity",
+    "Strategy production capacity",
+  ];
+  const BOOKED = ["Total CUs booked", "Text CUs booked", "Video CUs booked", "Visuals CUs booked", "Strategy CUs booked"];
+
+  const monthlyRows = await listRecords("Monthly resourcing");
+  const want = month.trim().toLowerCase();
+  const monthRow = monthlyRows.records.find((r) => String(r.fields["Month"] ?? "").trim().toLowerCase() === want);
+  if (!monthRow) {
+    const have = monthlyRows.records.map((r) => String(r.fields["Month"] ?? "")).filter(Boolean);
+    throw new Error(`No Monthly resourcing row for "${month}". Months present: ${have.slice(0, 80).join(", ")}`);
+  }
+
+  const team = await listRecords("Team", { fields: ["Name"] });
+  const teamNames = new Map(team.records.map((r) => [r.id, String(r.fields["Name"] ?? "")]));
+
+  const resourcing = await listRecords("Team resourcing");
+  const rows = resourcing.records.filter((r) => {
+    const months = r.fields["Months"];
+    return Array.isArray(months) && months.includes(monthRow.id);
+  });
+
+  const num = (v: unknown): number | null => {
+    const n = cellNumber(v);
+    return typeof n === "number" ? n : null;
+  };
+
+  const perPerson = rows.map((r) => {
+    const memberId = Array.isArray(r.fields["Team member"]) ? String((r.fields["Team member"] as unknown[])[0]) : "";
+    return {
+      name: teamNames.get(memberId) || "(unknown)",
+      capacity: Object.fromEntries(CAP.map((c) => [c, num(r.fields[c])])),
+      booked: Object.fromEntries(BOOKED.map((c) => [c, num(r.fields[c])])),
+    };
+  });
+
+  // The decisive test: if a booked column has ONE distinct value across all
+  // people, it is not describing individuals.
+  const bookedDistinct = Object.fromEntries(
+    BOOKED.map((c) => [c, Array.from(new Set(rows.map((r) => JSON.stringify(r.fields[c]) ?? "null"))).map((s) => JSON.parse(s ?? "null"))])
+  );
+
+  const allocRows = await listRecords("Account Manage");
+  const allocation = allocRows.records.map((r) => {
+    const memberId = Array.isArray(r.fields["Editorial team"]) ? String((r.fields["Editorial team"] as unknown[])[0]) : "";
+    const manage = r.fields["CU Manage"];
+    return {
+      person: teamNames.get(memberId) || "(unknown)",
+      role: (r.fields["Role"] as string) ?? null,
+      liveOrScenario: r.fields["live or scenario"] == null ? null : String(r.fields["live or scenario"]),
+      contentUnits: num(r.fields["Content Units"]),
+      bookedCurrentMonth: num(r.fields["CUs booked in current month"]),
+      contracts: Array.isArray(manage) ? manage.length : 0,
+    };
+  });
+
+  return { month, monthly: monthRow.fields, perPerson, bookedDistinct, allocation };
 }
 
 /** Full Phase 0: schema + analysis, optionally with row counts (extra API calls). */
