@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ExternalLink, Loader2, RefreshCw, Mail, Calendar, MessageSquare, Building2,
-  CheckCircle2, CircleSlash, AlertTriangle,
+  CheckCircle2, CircleSlash, AlertTriangle, ListChecks, FileText,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -56,6 +56,10 @@ interface StatusPayload {
 
 const TOGGLEABLE = new Set(["gmail", "calendar", "microsoft"]);
 
+/** Rows whose `account` field carries a COUNT ("12 open tasks") rather than an
+ *  identity, so it must not be rendered as "Connected as …". */
+const COUNT_ROWS = new Set(["tasks", "meetings"]);
+
 const SERVICES = [
   { key: "gmail", name: "Gmail", icon: Mail,
     blurb: "Search and read your own work mailbox in chat — “what did Ceri say about the renewal?”" },
@@ -65,6 +69,13 @@ const SERVICES = [
     blurb: "Read your own DMs, mentions and channels you're in." },
   { key: "microsoft", name: "Microsoft 365", icon: Building2,
     blurb: "Outlook mail and calendar, plus your Teams chats." },
+  // Both come from MeetingBrain over the shared database — no OAuth, nothing to
+  // authorise. Listed as two rows because they answer different questions, and
+  // last because they need no setup once Google is connected.
+  { key: "tasks", name: "MeetingBrain tasks", icon: ListChecks,
+    blurb: "Your open action items from meetings — “what have I got outstanding?”" },
+  { key: "meetings", name: "Meeting summaries", icon: FileText,
+    blurb: "Summaries and notes from your recent meetings, and what was decided." },
 ] as const;
 
 function StatusPill({ row, unknown }: { row: ConnectionRow | undefined; unknown?: boolean }) {
@@ -282,7 +293,13 @@ export default function ConnectionsPanel({
                     <p className="text-xs text-muted-foreground mt-1">{blurb}</p>
                     {row?.account && (
                       <p className="text-xs text-muted-foreground mt-1.5">
-                        Connected as <span className="font-medium">{row.account}</span>
+                        {COUNT_ROWS.has(key) ? (
+                          <span className="font-medium">{row.account}</span>
+                        ) : (
+                          <>
+                            Connected as <span className="font-medium">{row.account}</span>
+                          </>
+                        )}
                       </p>
                     )}
                     {row?.problem && !row.available && !status?.bridgeError && (

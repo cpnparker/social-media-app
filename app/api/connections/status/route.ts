@@ -167,6 +167,38 @@ export async function GET(_req: NextRequest) {
       // Slack has no EngineAI permission flag — access is governed by the
       // conversation being private, enforced at tool-registration time. So it
       // reports connection state only, and `permitted` is not claimed.
+      // MeetingBrain's own tasks and meeting summaries. One connection, two
+      // rows — a user asks about "my tasks" and "my meeting notes" as separate
+      // things, and a single combined row answers neither.
+      //
+      // No OAuth and no permission flag: reachable as soon as the person has a
+      // MeetingBrain account, and gated at query time by the conversation being
+      // private. So when they have no account the fix is not "connect
+      // MeetingBrain" — it is connecting Google, which creates the account as a
+      // side effect. Pointing them anywhere else would be a dead end.
+      ...Object.fromEntries(
+        (["tasks", "meetings"] as const).map((k) => {
+          const c = bridge.connections?.[k];
+          return [
+            k,
+            {
+              connected: c?.connected ?? false,
+              permitted: null as boolean | null,
+              available: c?.available ?? false,
+              account: c?.account ?? null,
+              problem:
+                c?.connected
+                  ? null
+                  : bridgeError
+                    ? "Couldn't reach MeetingBrain to check"
+                    : "Connect Google above — it sets up your MeetingBrain account too",
+              connectUrl: c?.connected ? null : engineConnect.gmail ?? null,
+              connectInPlace: !c?.connected && !!engineConnect.gmail,
+            },
+          ];
+        })
+      ),
+
       slack: (() => {
         const c = bridge.connections?.slack;
         return {
