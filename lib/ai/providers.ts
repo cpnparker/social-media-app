@@ -5106,9 +5106,36 @@ const QUERY_DRIVE_DOCS_TOOL: Anthropic.Tool = {
   input_schema: { ...(QUERY_DRIVE_DOCS_OPENAI_TOOL.function.parameters as any) },
 };
 
+/** The address a document must be shared with before EngineAI can read it.
+ *
+ *  Not a secret — a service-account address is an identifier you are meant to
+ *  hand out, and it is useless without the private key. Withholding it just
+ *  made "share it with EngineAI" an instruction nobody could follow. */
+function driveShareInstruction(): string {
+  // Read straight from the env rather than importing googleSaEmail() from
+  // lib/gdrive/auth: every other reference to that module here is a dynamic
+  // import, and this formatter is synchronous. Same value, same trim.
+  const addr = (process.env.GOOGLE_SA_EMAIL || "").trim();
+  return addr
+    ? `To give EngineAI access, the document's owner shares it (Viewer is enough) with: ${addr}\nGive the user that exact address — "share it with EngineAI" is not actionable on its own.`
+    : `Drive sharing is not configured on this deployment, so no address can be given. Say so rather than inventing one.`;
+}
+
 export function formatDriveDocsResult(result: { data: any; count: number; error?: string; notice?: string }): string {
-  if (result.notice) return result.notice;
+  if (result.notice) return `${result.notice}\n\n${driveShareInstruction()}`;
   if (result.error) return `Drive documents query failed: ${result.error}\nTell the user briefly — do not invent document contents.`;
+  // Nothing matched. This is the moment the user wants to DO something, so the
+  // answer has to carry the address rather than a vague "share it with me".
+  if (!result.count) {
+    return [
+      "No matching document is shared with EngineAI.",
+      "",
+      driveShareInstruction(),
+      "",
+      "A Drive URL alone is not enough — EngineAI cannot fetch a link, only documents shared with that address. Once shared it appears by name, usually within a minute.",
+      "Offer the alternative too: they can paste the text straight into the chat and you can work with it immediately.",
+    ].join("\n");
+  }
   // Anyone in the workspace can share a document with the service account and
   // its contents are then read aloud by the assistant — same trust level as mail.
   //

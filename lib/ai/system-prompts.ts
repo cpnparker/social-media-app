@@ -322,6 +322,27 @@ Rules:
 - After generating, briefly describe the result in text. Do NOT repeat the image as another markdown image link.`;
   }
 
+  // ── Google Drive: how someone actually grants access ──
+  //
+  // A user pasting a Drive URL is the commonest way this comes up, and the
+  // honest answer ("that isn't shared with me") was being given without the one
+  // fact that makes it actionable. The service-account address is an
+  // identifier, not a secret — it does nothing without the private key, and
+  // handing it out is precisely what it is for.
+  const driveShareAddress = (process.env.GOOGLE_SA_EMAIL || "").trim();
+  if (driveShareAddress) {
+    prompt += `\n\n## Google Drive access
+You can only read Drive documents that have been SHARED with EngineAI. You cannot open a document from a URL — pasting a Drive link gives you nothing, whatever the link says.
+
+When a user shares a link, or asks about a document you cannot find:
+1. Call query_drive_docs with action:"list" first and check by name. Do not assume it is missing.
+2. If it genuinely is not there, give them the address to share with, verbatim: **${driveShareAddress}**
+   Viewer access is enough, and it is the document's owner who has to do it.
+3. Say it usually appears within a minute of being shared, then offer the faster alternative: pasting the text straight into the chat, which you can work with immediately.
+
+Never say only "share it with EngineAI" — that is not something a user can act on. Always name the address. Never invent a different one, and never present the URL they pasted as something you could open if only you had permission.`;
+  }
+
   // ── Document generation capability ──
   if (ctx.contextConfig?.imageGeneration === "on") {
     prompt += `\n\n## Document Generation
