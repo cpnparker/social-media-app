@@ -728,8 +728,10 @@ export async function capacityReport(
         const cu = cellNumber(r.fields[cuCol]);
         const member = firstLink(r.fields["Editorial team"]);
         if (!member) {
-          // Allocated work with nobody attached. It is real planned load that
-          // will land on someone, so it is surfaced rather than dropped.
+          // Allocated work with nobody attached yet. This is typically a
+          // contract that has just been confirmed and not yet given an account
+          // manager — a specific assignment to make, rather than either a
+          // systemic gap or something to pass over in silence.
           if (isNumber(cu)) unassigned += cu;
           continue;
         }
@@ -819,8 +821,10 @@ export async function capacityReport(
     }
     if (unassignedCu) {
       warnings.push(
-        `${unassignedCu} CU of scenario account-management work has no manager attached. It is planned load ` +
-          `that will land on someone, and it is NOT included in anyone's figures above.`
+        `${unassignedCu} CU in the scenario plan has no account manager assigned — usually a contract confirmed ` +
+          `since the plan was last touched. Surface it as an action: someone needs assigning in Airtable. It is ` +
+          `not counted in anyone's figures above, so the per-person totals will rise once it is. Do not describe ` +
+          `it as unresourced or at risk, and do not spread it across the team as if it were already allocated.`
       );
     }
     const liveTotal = Array.from(liveAlloc.values()).reduce((a, b) => a + b.cu, 0);
@@ -881,7 +885,14 @@ export interface HorizonMonth {
     demandCu: number | null;
     shortfallCu: number | null;
     demandOverCapacity: number | null;
+    /** null for Account Management — see `remedy`. */
     freelancerCostChf: number | null;
+    /**
+     * What can actually be done about a shortfall in this discipline.
+     * Production can be bought in by the CU; account management cannot, so its
+     * only levers are delaying work or adding capacity.
+     */
+    remedy: "freelance" | "delay-or-add-capacity";
   }[];
 }
 
@@ -979,9 +990,15 @@ export async function horizonReport(
         demandCu: disciplineDemand,
         shortfallCu: shortfall,
         demandOverCapacity: loaded && disciplineDemand !== null ? disciplineDemand / capacity : null,
-        // AM shortfall is not a freelancer cost — account management is not
-        // bought in by the CU the way production is.
+        // Production shortfalls are priced; an AM shortfall is not, and the
+        // difference is not a gap in the data. Account management cannot be
+        // bought in by the CU the way production can, so the only levers are
+        // delaying work or adding capacity. Pricing it at 250 CHF/CU would
+        // invent a remedy that does not exist.
         freelancerCostChf: cols.freelancer && shortfall !== null ? shortfall * FREELANCER_CHF_PER_CU : null,
+        remedy: cols.freelancer
+          ? ("freelance" as const)
+          : ("delay-or-add-capacity" as const),
       };
     });
 
@@ -1033,6 +1050,20 @@ export async function horizonReport(
     `Demand basis: ${basis} — ${DEMAND_BASIS[basis].label}. Switching basis changes every figure here, so say ` +
       `which one you are quoting.`
   );
+
+  // Said explicitly because the absence of a cost figure beside an AM shortfall
+  // otherwise reads as missing data rather than as a different kind of problem.
+  const amShort = months.filter((m) => {
+    const am = m.disciplines.find((d) => d.discipline === "Account Management");
+    return am?.capacityLoaded && am.demandOverCapacity != null && am.demandOverCapacity > 1;
+  });
+  if (amShort.length) {
+    warnings.push(
+      `Account management is over capacity in ${amShort.map((m) => m.month).join(", ")}. There is no freelancer ` +
+        `cost against it because account management cannot be bought in by the CU the way production can — the ` +
+        `levers are delaying work or adding capacity. Report it as something to flag, not something to price.`
+    );
+  }
 
   return ok(
     "horizon",
