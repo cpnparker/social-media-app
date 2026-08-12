@@ -136,10 +136,64 @@ The consequence for the report layer, which holds either way:
 `Freelancers` has `Email` and is the separate people surface; staff and freelancers do not
 share an identity scheme.
 
+## Select options — read 2026-08-12, these are the literal filter values
+
+**`Contracts Monthly.Month`** is **year-qualified**: `January 2022` … `August 2027`, 68 options,
+`"<Month> <YYYY>"`. So `{Month} = "September 2026"` is unambiguous and the separate `Year`
+formula is redundant for filtering. This was the single largest correctness risk and it is closed.
+
+**`Contracts.Booking status`** — `Opportunity`, `Booked`, `Active`, `Ended`, `Active - Extended`,
+`Lost`, `Active - Late Delivery`.
+> **Active is THREE values.** `{Booking status} = "Active"` silently drops extended and
+> late-delivery contracts. Always match the set.
+
+**`Contracts.Contract status`** — `Contract signed`, `Contract sent`, `Proposal sent`,
+`Qualification`, `Lost`, `Approved by DM`. (Sales pipeline stage; orthogonal to Booking status.)
+
+**`Contracts.Contract type`** — `Member - extension`, `Trial`, `Project ` (trailing space —
+copy verbatim), `Member`, `Briefing`.
+**`Contracts.New or existing`** — `Renewal`, `New business`.
+**`Contracts.Payment term`** — `Annually`, `Quarterly`, `Monthly`, `Custom`.
+
+**`Team.Team`** — `Account Management`, `Text`, `Video`, `Visuals`, `Strategy`. The five
+disciplines, matching the capacity columns on Team resourcing.
+**`Team.Job`** — `Senior Account Manager`, `Account Manager`, `Content Manager`,
+`Hybrid writer/AM`, `Management`, `Writer`, `Video producer`, `Freelancer`, `Strategy Manager`,
+`Designer`.
+**`Team.Position`** — `CEO`, `Senior management`, `Management`, `Account manager`, `Writer`,
+`Associate`, `Hybrid Writer AM`, `Pod lead`, `Marketing manager`, `N/A`.
+
+**`Freelancer assignments.Format`** — `Text`, `Visual`, `Video`, `Account Management`, `Report`,
+`Other`, `Animation`, `Editing`, `Voiceover`, `Strategy`.
+> **Ten formats, five disciplines.** `Text`/`Video`/`Strategy` map straight across, `Visual`→Visuals,
+> `Account Management`→AM. `Report`, `Other`, `Animation`, `Editing`, `Voiceover` map to nothing.
+> The `Formats` table cannot help — one column, and `Format` is a singleSelect that does not link
+> to it. So the map is code-owned, and unmapped CUs go in a named bucket printed beside the gap,
+> never dropped.
+**`Freelancer assignments.Status`** — `Planned`, `Accepted-Booked`, `Completed`, `Invoiced`, `Paid`.
+**`Invoices.Status`** — `Late`, `AUTHORISED`, `PAID`, `DRAFT` (Xero's casing, plus a local `Late`).
+**`Account Manage.Role`** — `Account Manager`, `Content Manager`, `Senior AM`, `Strategy Manager`.
+
+## Field types that change the arithmetic
+
+`Team resourcing` pairs scalar capacity with **lookup** demand:
+
+| Column | Type | Reads as |
+|---|---|---|
+| `AM capacity`, `Text/Video/Visuals/Strategy production capacity` | `currency` | number |
+| `* capacity time (hours)` | `duration` | number |
+| `Total CUs booked`, `Text/Video/Visuals/Strategy CUs booked` | **`multipleLookupValues`** | **array** |
+| `Month order` | **`multipleLookupValues`** | **array** |
+
+So `capacity - booked` mixes a scalar with an array. `Number([5,3])` is `NaN`, `NaN || 0` is `0`,
+and the person on four contracts reads as fully idle while the person on one reads correctly.
+Every numeric read goes through `cellNumber()` (`lib/airtable/client.ts`), which returns
+`AMBIGUOUS` rather than a number. See `scripts/verify-airtable-cells.ts`.
+
+`Monthly resourcing.Order` is **`singleLineText`** — lexical sort puts "10" before "9". Order
+months by the real `Date` field (type `date`), never by `Order` or by the text `Month`.
+
 ## Still unverified
 
-- `Contracts Monthly.Month` singleSelect option strings ("January 2025"? "2025-01"?) — now
-  carried by the schema read, so `Inspect base` answers this without touching records
-- `Contract status` / `Booking status` option values — same
 - True row count of Contracts Monthly beyond the 2,500 page cap
 - Whether the populated `Engine_IDs` values all resolve to live `users.id_user` rows
