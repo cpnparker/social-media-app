@@ -114,12 +114,19 @@ function extractMonitorState(text: string): { state: { facts?: any; condition_me
 export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunResult> {
   const started = Date.now();
   try {
-    const [workspaceConfig, clientsRes, financeRes] = await Promise.all([
+    const [workspaceConfig, clientsRes, financeRes, resourcingRes] = await Promise.all([
       loadWorkspaceConfig(task.id_workspace),
       supabase.from("app_clients").select("id_client"),
       // Scheduled runs execute with the task OWNER's finance access — a
       // non-finance user's task must not reach Xero.
       intelligenceDb.from("users_access").select("flag_access_finance").eq("id_workspace", task.id_workspace).eq("user_target", task.user_created).maybeSingle(),
+      // Resourcing is read SEPARATELY, never folded into the select above. An
+      // unknown column fails the whole PostgREST select, and supabase-js
+      // resolves that as {data:null} rather than throwing — so widening the
+      // finance query would silently revoke Xero for every scheduled task on
+      // any deploy where this column does not exist yet, unattended and with
+      // nothing surfaced.
+      intelligenceDb.from("users_access").select("flag_access_resourcing").eq("id_workspace", task.id_workspace).eq("user_target", task.user_created).maybeSingle(),
     ]);
     const workspaceClientIds = (clientsRes.data || []).map((c: any) => c.id_client).filter(Boolean) as number[];
 
@@ -146,6 +153,7 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
       contentDetail: null,
       contextConfig,
       latestUserMessage: task.document_prompt,
+      resourcingAccess: !!(resourcingRes?.data as any)?.flag_access_resourcing,
     });
     if (queryRoute.hints.length) systemPrompt += `\n\n${queryRoute.hints.join("\n")}`;
     systemPrompt += BRIEF_STYLE;
@@ -206,6 +214,7 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
           conversationVisibility: runAudience,
           selectedClientId: task.id_client || undefined,
           financeAccess: !!financeRes?.data?.flag_access_finance,
+          resourcingAccess: !!(resourcingRes?.data as any)?.flag_access_resourcing,
           source: "scheduled-prompt",
         } as any,
         async (result) => {

@@ -208,6 +208,9 @@ export function buildSystemPrompt(ctx: {
    *  this flag lets the prompt tell the model up front instead of it finding
    *  out via a refused tool call. */
   conversationVisibility?: "private" | "team";
+  /** Mirrors the flag that registers query_resourcing, so the rules for reading
+   *  that data appear only where the tool does. */
+  resourcingAccess?: boolean;
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
 
@@ -341,6 +344,24 @@ When a user shares a link, or asks about a document you cannot find:
 3. Say it usually appears within a minute of being shared, then offer the faster alternative: pasting the text straight into the chat, which you can work with immediately.
 
 Never say only "share it with EngineAI" — that is not something a user can act on. Always name the address. Never invent a different one, and never present the URL they pasted as something you could open if only you had permission.`;
+  }
+
+  // ── Resourcing ──
+  // Gated on the same flag that registers the tool, so the rules and the
+  // capability appear and disappear together. The rules below are not style
+  // guidance: each one names a way this data produces a confident wrong answer.
+  if (ctx.resourcingAccess) {
+    prompt += `\n\n## Resourcing & contracts (query_resourcing)
+The TCE operations base holds contracts, resourcing and team delivery. Use \`query_resourcing\` for who has capacity, where freelancers are needed, how a client's delivery compares to plan, and which contracts are ending.
+
+These figures are the PLAN — sold, booked, budgeted. Engine holds what was actually delivered. Four rules, because each one is a way to be confidently wrong:
+
+1. **null is not zero.** A null figure means the plan has no row, or the base gave a value that could not be read unambiguously. Say "not recorded", never "0". This matters most for headroom: reporting an absent plan as zero booked describes an overloaded person as idle.
+2. **Never subtract Engine actuals from Airtable booked at PERSON level.** Airtable books one contract's CUs against every discipline that touches it; Engine attributes each task's CUs to one assignee. The difference is structural, not performance. At CLIENT level they are comparable.
+3. **Pass on every ⚠ caveat in the result.** Truncated fetches, people missing from the plan, freelancer CUs in unmapped formats, unmatched clients — these are the difference between an answer and a misleading one. Never summarise them away.
+4. **Never estimate.** If a report fails or a figure is missing, say so. Do not fall back on the cached client context above, and do not reason your way to a plausible number.
+
+Volumes are Content Units (CUs) unless a field says hours. Money is in CHF where a field says so, and contract currency otherwise — never convert between them.`;
   }
 
   // ── Document generation capability ──
@@ -941,6 +962,7 @@ When the user names a client, asks what they should know before speaking to some
 - \`search_memory\` — prior decisions and standing preferences.
 - \`query_drive_docs\` — briefs, plans and strategy documents the team has shared with EngineAI. Registered on every chain but previously named in no prompt, so it was never reached: if a question refers to a brief, a plan or "the document", call it with action:"list" then action:"read" rather than saying you cannot see their files.
 - \`query_xero\` (if available to this user) — unpaid invoices or forecast exposure, when money is relevant.
+- \`query_resourcing\` (if available to this user) — the contract's delivery against plan, and who is assigned to it.
 - \`web_search\` — recent news about the client organisation, funding, leadership changes, published positions. An outward-facing fact the user did not know is often the most valuable line in a briefing.
 
 **Then answer like a colleague who did the reading**, not a database:

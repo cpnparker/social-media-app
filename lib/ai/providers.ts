@@ -88,6 +88,11 @@ export interface AIProviderConfig {
    *  "Finance" column in Settings → Users). Gates the query_xero tool:
    *  without it, finance questions get no Xero access at all. */
   financeAccess?: boolean;
+  /** Per-user resourcing access (users_access.flag_access_resourcing). Gates
+   *  query_resourcing. Deliberately NOT gated on conversationVisibility, unlike
+   *  finance: capacity is a team conversation, and Chris chose team threads
+   *  explicitly. Money fields never leave the finance gate. */
+  resourcingAccess?: boolean;
   /** Per-user Gmail access flag (users_access.flag_access_gmail). */
   gmailAccess?: boolean;
   calendarAccess?: boolean;
@@ -4997,6 +5002,51 @@ const QUERY_XERO_TOOL: Anthropic.Tool = {
   input_schema: { ...(QUERY_XERO_OPENAI_TOOL.function.parameters as any) },
 };
 
+/* ─────────────── Resourcing Tool (read-only, Airtable) ─────────────── */
+
+export const QUERY_RESOURCING_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "query_resourcing",
+    description:
+      "Query the TCE operations & resourcing base (READ-ONLY): team capacity and headroom by person and discipline, " +
+      "company capacity vs demand by month, contracted/booked/delivered CUs per client, and contract health including " +
+      "renewals and contracts ending soon. Use for ANY question about who has capacity, where we need freelancers, " +
+      "how a client's delivery compares to plan, or which contracts are ending. These are PLAN figures — what was " +
+      "sold, booked and budgeted. Never estimate or invent numbers; if a figure comes back null it is unknown, not zero.",
+    parameters: {
+      type: "object",
+      properties: {
+        report: {
+          type: "string",
+          enum: ["capacity", "monthly_outlook", "client_plan_vs_actual", "contract_health"],
+          description:
+            "capacity = per-person capacity, booked and headroom by discipline for a month (optionally one person); " +
+            "monthly_outlook = company-wide capacity vs demand, gaps to target and freelancer estimates for a month; " +
+            "client_plan_vs_actual = contracted/booked/delivered CUs per contract for a month, with Engine's delivered figures alongside; " +
+            "contract_health = active contracts with dates, delivery percentage and renewal exposure.",
+        },
+        month: {
+          type: "string",
+          description:
+            'Month for capacity / monthly_outlook / client_plan_vs_actual. Accepts "September 2026", "2026-09", "this month", "next month" or "last month". Defaults to this month.',
+        },
+        person: { type: "string", description: "For capacity: narrow to one team member by name (partial match)." },
+        client: { type: "string", description: "For client_plan_vs_actual and contract_health: filter by client or contract name (partial match)." },
+        ending_within_days: { type: "number", description: "For contract_health: only contracts ending within this many days (e.g. 90)." },
+        include_ended: { type: "boolean", description: "For contract_health: include ended and lost contracts. Default false (active only)." },
+      },
+      required: ["report"],
+    },
+  },
+};
+
+const QUERY_RESOURCING_TOOL: Anthropic.Tool = {
+  name: "query_resourcing",
+  description: QUERY_RESOURCING_OPENAI_TOOL.function.description!,
+  input_schema: { ...(QUERY_RESOURCING_OPENAI_TOOL.function.parameters as any) },
+};
+
 export function formatXeroResult(report: string, result: { data: any; count: number; error?: string; notice?: string }): string {
   if (result.notice) return result.notice;
   if (result.error) {
@@ -5944,6 +5994,15 @@ async function streamAnthropic(
   // single-reader threads.
   if (config.workspaceId && config.financeAccess && config.conversationVisibility !== "team") {
     tools.push(QUERY_XERO_TOOL); // executor answers "not connected" gracefully
+  }
+  // Resourcing is gated per user but NOT per thread visibility, unlike finance
+  // above. Capacity planning is a team conversation — "who has room in
+  // September" is a question people ask each other — and Chris chose that
+  // explicitly. The exposure differs from Xero's too: this returns CUs, dates
+  // and headroom, never rates or contract values. Money stays behind the
+  // finance gate, which is unchanged.
+  if (config.resourcingAccess) {
+    tools.push(QUERY_RESOURCING_TOOL); // executor answers "not configured" gracefully
   }
   if (config.workspaceId) {
     tools.push(QUERY_DRIVE_DOCS_TOOL); // docs shared with the SA = workspace-readable by policy
@@ -6982,6 +7041,15 @@ async function streamAnthropic(
         } catch (err: any) {
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Xero error: ${err.message}`, is_error: true });
         }
+      } else if (tool.name === "query_resourcing") {
+        // No try/catch: queryResourcing is total by construction, so that a
+        // renamed Airtable column reaches the model through the formatter —
+        // with its provenance header and its "do not invent figures" line —
+        // rather than as a bare error string the catch would produce.
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
+        const { queryResourcing, formatResourcingResult } = await import("@/lib/airtable/query");
+        const outcome = await queryResourcing((tool.input || {}) as any);
+        toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: formatResourcingResult(outcome) });
       } else if (tool.name === "query_drive_docs") {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
@@ -7198,6 +7266,11 @@ async function streamXAIChatCompletions(
   // Single-reader threads only — see the note on the Anthropic chain above.
   if (config.workspaceId && config.financeAccess && config.conversationVisibility !== "team") {
     tools.push(QUERY_XERO_OPENAI_TOOL); // executor answers "not connected" gracefully
+  }
+  // Resourcing — see the note on the Anthropic chain above. Per user, but not
+  // per thread visibility.
+  if (config.resourcingAccess) {
+    tools.push(QUERY_RESOURCING_OPENAI_TOOL); // executor answers "not configured" gracefully
   }
   if (config.workspaceId) {
     tools.push(QUERY_DRIVE_DOCS_OPENAI_TOOL); // docs shared with the SA = workspace-readable by policy
@@ -7799,6 +7872,15 @@ async function streamXAIChatCompletions(
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Xero error: ${err.message}` } as any);
         }
+      } else if (tc.function.name === "query_resourcing") {
+        // No try/catch — queryResourcing is total, so a renamed Airtable column
+        // reaches the model through the formatter rather than as a bare string.
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
+        const { queryResourcing, formatResourcingResult } = await import("@/lib/airtable/query");
+        let parsed: any = {};
+        try { parsed = JSON.parse(tc.function.arguments || "{}"); } catch { /* malformed args → report:undefined → a clean "unknown report" */ }
+        const outcome = await queryResourcing(parsed);
+        openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatResourcingResult(outcome) } as any);
       } else if (tc.function.name === "query_drive_docs") {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
@@ -8043,6 +8125,11 @@ async function streamGemini(
   // Single-reader threads only — see the note on the Anthropic chain above.
   if (config.workspaceId && config.financeAccess && config.conversationVisibility !== "team") {
     tools.push(QUERY_XERO_OPENAI_TOOL); // executor answers "not connected" gracefully
+  }
+  // Resourcing — see the note on the Anthropic chain above. Per user, but not
+  // per thread visibility.
+  if (config.resourcingAccess) {
+    tools.push(QUERY_RESOURCING_OPENAI_TOOL); // executor answers "not configured" gracefully
   }
   if (config.workspaceId) {
     tools.push(QUERY_DRIVE_DOCS_OPENAI_TOOL); // docs shared with the SA = workspace-readable by policy
@@ -8591,6 +8678,15 @@ async function streamGemini(
         } catch (err: any) {
           geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Xero error: ${err.message}` } as any);
         }
+      } else if (tc.function.name === "query_resourcing") {
+        // No try/catch — queryResourcing is total, so a renamed Airtable column
+        // reaches the model through the formatter rather than as a bare string.
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
+        const { queryResourcing, formatResourcingResult } = await import("@/lib/airtable/query");
+        let parsed: any = {};
+        try { parsed = JSON.parse(tc.function.arguments || "{}"); } catch { /* malformed args → report:undefined → a clean "unknown report" */ }
+        const outcome = await queryResourcing(parsed);
+        geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatResourcingResult(outcome) } as any);
       } else if (tc.function.name === "query_drive_docs") {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
@@ -8746,6 +8842,11 @@ async function streamOpenAI(
   // Single-reader threads only — see the note on the Anthropic chain above.
   if (config.workspaceId && config.financeAccess && config.conversationVisibility !== "team") {
     tools.push(QUERY_XERO_OPENAI_TOOL); // executor answers "not connected" gracefully
+  }
+  // Resourcing — see the note on the Anthropic chain above. Per user, but not
+  // per thread visibility.
+  if (config.resourcingAccess) {
+    tools.push(QUERY_RESOURCING_OPENAI_TOOL); // executor answers "not configured" gracefully
   }
   if (config.workspaceId) {
     tools.push(QUERY_DRIVE_DOCS_OPENAI_TOOL); // docs shared with the SA = workspace-readable by policy
@@ -9295,6 +9396,15 @@ async function streamOpenAI(
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Xero error: ${err.message}` } as any);
         }
+      } else if (tc.function.name === "query_resourcing") {
+        // No try/catch — queryResourcing is total, so a renamed Airtable column
+        // reaches the model through the formatter rather than as a bare string.
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
+        const { queryResourcing, formatResourcingResult } = await import("@/lib/airtable/query");
+        let parsed: any = {};
+        try { parsed = JSON.parse(tc.function.arguments || "{}"); } catch { /* malformed args → report:undefined → a clean "unknown report" */ }
+        const outcome = await queryResourcing(parsed);
+        openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatResourcingResult(outcome) } as any);
       } else if (tc.function.name === "query_drive_docs") {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));

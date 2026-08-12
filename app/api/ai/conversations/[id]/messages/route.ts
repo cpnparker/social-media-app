@@ -1117,6 +1117,23 @@ export async function POST(
     }
 
 
+    // Read BEFORE the system prompt is built, unlike the other access flags
+    // below, because this one shapes the prompt as well as the tool list — the
+    // rules for reading plan figures have to appear wherever the tool does.
+    // Its own pass: an unknown column fails the WHOLE PostgREST select, so
+    // folding this into any other flag query would let a missing migration
+    // revoke finance, mail, calendar or Microsoft instead of just denying this.
+    let resourcingAccess = false;
+    try {
+      const { data: ra } = await intelligenceDb
+        .from("users_access")
+        .select("flag_access_resourcing")
+        .eq("id_workspace", conversation.id_workspace)
+        .eq("user_target", userId)
+        .maybeSingle();
+      resourcingAccess = (ra as any)?.flag_access_resourcing === 1;
+    } catch { /* pre-migration or no row = denied */ }
+
     let systemPrompt = buildSystemPrompt({
       notebookIndex: nbIndex,
       workspaceConfig,
@@ -1130,6 +1147,7 @@ export async function POST(
       role,
       selectedRoles: selectedRoles.length > 0 ? selectedRoles : undefined,
       latestUserMessage: userContent || "",
+      resourcingAccess,
       personalContext: isTeamThread ? null : (userPrefs?.information_personal_context || null),
       meetingBrainContext,
       region: userPrefs?.name_region || null,
@@ -1388,7 +1406,7 @@ export async function POST(
     // the "user navigated away mid-stream and lost their response" bug.
     // Named so the completion callback can read flags the tool executors set
     // on it during the turn (notably sawUntrustedContent after query_gmail).
-    const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, calendarAccess, microsoftAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
+    const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, calendarAccess, microsoftAccess, resourcingAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
         allowPersonalData: true };
 
     const aiStream = createStreamingResponse(
