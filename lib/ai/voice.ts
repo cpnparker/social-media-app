@@ -20,12 +20,11 @@ import {
 /**
  * The voice model, overridable without a deploy.
  *
- * `grok-voice-latest` is an alias, which is convenient until it is not: it
- * moves under you, and there is no way to tell from here which concrete model
- * it currently resolves to. xAI publishes `grok-voice-think-fast-1.0` and
- * `grok-voice-think-fast-2.0`, so the default now names a version explicitly —
- * and XAI_VOICE_MODEL overrides it, so a bad release can be rolled back by
- * changing an env var rather than shipping code.
+ * Verified against xAI's docs: `grok-voice-latest` was an alias for
+ * `grok-voice-think-fast-1.0` and moved to `grok-voice-think-fast-2.0` on
+ * 5 August 2026. Pinning 2.0 therefore names the same model the alias resolves
+ * to today, without the surprise when it next moves — and XAI_VOICE_MODEL
+ * overrides it, so a bad release is an env var change rather than a deploy.
  *
  * If this model id is ever wrong the mint fails with a clear 4xx from xAI
  * rather than degrading, so a mistake here is loud.
@@ -33,6 +32,12 @@ import {
 export const VOICE_MODEL = (process.env.XAI_VOICE_MODEL || "grok-voice-think-fast-2.0").trim();
 /**
  * The speaking voice, overridable without a deploy.
+ *
+ * `leo` is the British male voice — formal, and the only accented option among
+ * the five original voices (eve, ara, rex, sal, leo). xAI added 21 more in
+ * July 2026 (Lumen, Castor, Atlas, Carina, Orion, Luna and the rest); those are
+ * natively multilingual but their accents are undocumented, so `leo` is the
+ * only one that can be chosen FOR its accent rather than by ear.
  *
  * Set XAI_VOICE_NAME to try another. Two things learned the hard way:
  *
@@ -44,11 +49,11 @@ export const VOICE_MODEL = (process.env.XAI_VOICE_MODEL || "grok-voice-think-fas
  *    session route retries once on known-good values and surfaces xAI's own
  *    message. An unrecognised voice is therefore visible, not silent.
  */
-export const VOICE_NAME = (process.env.XAI_VOICE_NAME || "ara").trim();
+export const VOICE_NAME = (process.env.XAI_VOICE_NAME || "leo").trim();
 
 /** Known-good pair to fall back to when the configured one is rejected. */
 export const VOICE_MODEL_FALLBACK = "grok-voice-latest";
-export const VOICE_NAME_FALLBACK = "ara";
+export const VOICE_NAME_FALLBACK = "eve"; // xAI's documented default
 export const VOICE_SAMPLE_RATE = 24000;
 /** $0.05/min → tenths-of-cents per minute for ai_usage logging */
 export const VOICE_COST_TENTHS_PER_MIN = 50;
@@ -222,14 +227,26 @@ When the user clearly signals they're done ("OK thanks", "that's all", "perfect,
   // reaches for query_engine — which knows content units and nothing about
   // revenue — and then reports that the company has no financial data, because
   // from inside its tool list that is what it looks like.
+  // The RULE is unconditional; only the MENU is gated.
+  //
+  // The first cut nested both inside `if (financeAccess)`, which put the
+  // guardrail against this exact failure in front of only the users who could
+  // no longer hit it. Everyone else — no finance flag, or a finance holder in
+  // a shared thread — got the byte-identical prompt that produced the original
+  // wrong answer. A negative constraint about a missing tool is needed most
+  // precisely when the tool is missing.
+  lines.push(`
+# Money questions
+Anything about revenue, costs, profit, margin, invoices or the forecast comes ONLY from query_xero. NEVER answer a money question from query_engine — it knows content units and contracts, not money, so answering from it silently swaps "what are we earning" for "how much work is in the pipeline": a different question with a plausible-sounding number. If query_xero is not among your tools, say plainly that financial figures are not available to you in this conversation. Do NOT say the company has no financial data — that is a statement about your access, not about the business.`);
+
   if (ctx.financeAccess) {
     lines.push(`
-# Money questions
-query_xero is the ONLY source for anything financial, and it covers more than invoices:
+# The finance tool
+query_xero covers more than invoices:
 - report:"forecast" — the LIVE revenue forecast workbook: projected revenue by month and client, weighted scenarios, and COSTS. This is what answers "how is the forecast looking", "what does profit and loss look like for the year", "are we going to hit the number". Use the sheet parameter for a specific sheet, and the match parameter for specific row labels like "net profit" or "gross margin".
 - report:"profit_and_loss" — actual P&L for a period, as booked in Xero.
 - report:"unpaid_invoices", "aged_receivables", "revenue_by_client" — who owes what, and what has been invoiced.
-NEVER answer a money question from query_engine. It knows content units and contracts, not revenue or cost, so answering from it silently swaps "what are we earning" for "how much work is in the pipeline" — a different question with a plausible-sounding number. If the forecast call fails, say the forecast could not be reached; do NOT tell the user the company has no financial data.`);
+If a query_xero call fails, say the forecast could not be reached — do NOT fall back to query_engine and do NOT tell the user the company has no financial data.`);
   }
 
   if (ctx.resourcingAccess) {

@@ -149,6 +149,20 @@ export default function VoiceDock({
   const lastUserSpeechRef = useRef(0);
   /** Wake sessions: deadline for a follow-up after Orac finishes speaking. */
   const followUpDeadlineRef = useRef<number | null>(null);
+  /**
+   * Bumped on every barge-in. A tool call captures it when it starts and
+   * compares on resolve: if the user interrupted while the tool was in flight,
+   * the turn it belonged to is over and its continuation must not be created.
+   *
+   * Without this, barge-in cleared the QUEUED continuation but not the
+   * in-flight one — the tool resolved seconds later, found responseActiveRef
+   * false, and sent response.create while the user was still mid-sentence.
+   * Server VAD then created a response for that utterance too: two overlapping
+   * responses, which is precisely the split render that changes voice mid-reply.
+   * The slower the tool the wider the window, and query_xero fetching a
+   * spreadsheet is the slowest on this surface.
+   */
+  const turnEpochRef = useRef(0);
   /** The opening response (command answer or greeting) is sent exactly once,
    *  AFTER session.updated — sending before the config landed made the
    *  greeting speak in xAI's default voice ("two voices" bug). */
@@ -567,6 +581,9 @@ export default function VoiceDock({
               // tool output on its next (VAD-triggered) turn.
               responseActiveRef.current = false;
               pendingResponseCreateRef.current = false;
+              // Retire this turn: any tool still in flight belongs to it, and
+              // its result must not create a response over the new utterance.
+              turnEpochRef.current += 1;
               // New utterance starting — give id-less transcription events a
               // fresh fallback key so utterances never merge into each other.
               utteranceCounterRef.current += 1;
@@ -651,6 +668,7 @@ export default function VoiceDock({
               }
               pendingToolsRef.current += 1;
               setActiveTool(name);
+              const toolEpoch = turnEpochRef.current;
               try {
                 const toolRes = await fetch("/api/ai/voice/tools", {
                   method: "POST",
@@ -675,7 +693,15 @@ export default function VoiceDock({
                 pendingToolsRef.current -= 1;
                 if (pendingToolsRef.current === 0) {
                   setActiveTool(null);
-                  requestResponse(); // queued until the announcing response finishes
+                  // Only continue the turn this tool was called for. If the
+                  // user barged in while it was in flight, the tool OUTPUT is
+                  // still submitted above — the model will use it on its next
+                  // VAD-triggered turn, which is what the barge-in handler
+                  // intends — but creating a response here would race that
+                  // turn and split the reply across two renders.
+                  if (toolEpoch === turnEpochRef.current) {
+                    requestResponse(); // queued until the announcing response finishes
+                  }
                 }
               }
               break;
