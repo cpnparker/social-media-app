@@ -329,14 +329,28 @@ export interface ModelProbe {
   }[];
   /** Distinct values of each booked column across people. Length 1 = uniform. */
   bookedDistinct: Record<string, unknown[]>;
+  /**
+   * Account Manage rows, reading BOTH worlds.
+   *
+   * The live and scenario allocations live in separate column PAIRS on the same
+   * row — `Content Units`/`CU Manage` against `Scenario Content Units`/`Scenario
+   * CU Manage` — with `live or scenario` naming which pair is filled. Reading
+   * only the live pair made every scenario row look empty, which read as
+   * "scenario planning is not used" when it is how next month gets allocated.
+   */
   allocation: {
     person: string;
     role: string | null;
     liveOrScenario: string | null;
     contentUnits: number | null;
+    scenarioContentUnits: number | null;
     bookedCurrentMonth: number | null;
+    scenarioBookedCurrentMonth: number | null;
     contracts: number;
+    scenarioContracts: number;
   }[];
+  /** Live vs scenario totals per person, the comparison the user actually wants. */
+  allocationTotals: { person: string; live: number; scenario: number }[];
 }
 
 export async function modelProbe(month: string): Promise<ModelProbe> {
@@ -390,17 +404,33 @@ export async function modelProbe(month: string): Promise<ModelProbe> {
   const allocation = allocRows.records.map((r) => {
     const memberId = Array.isArray(r.fields["Editorial team"]) ? String((r.fields["Editorial team"] as unknown[])[0]) : "";
     const manage = r.fields["CU Manage"];
+    const scenarioManage = r.fields["Scenario CU Manage"];
     return {
       person: teamNames.get(memberId) || "(unknown)",
       role: (r.fields["Role"] as string) ?? null,
       liveOrScenario: r.fields["live or scenario"] == null ? null : String(r.fields["live or scenario"]),
       contentUnits: num(r.fields["Content Units"]),
+      scenarioContentUnits: num(r.fields["Scenario Content Units"]),
       bookedCurrentMonth: num(r.fields["CUs booked in current month"]),
+      scenarioBookedCurrentMonth: num(r.fields["Scenario CUs booked in current month"]),
       contracts: Array.isArray(manage) ? manage.length : 0,
+      scenarioContracts: Array.isArray(scenarioManage) ? scenarioManage.length : 0,
     };
   });
 
-  return { month, monthly: monthRow.fields, perPerson, bookedDistinct, allocation };
+  const totals = new Map<string, { live: number; scenario: number }>();
+  for (const a of allocation) {
+    const t = totals.get(a.person) || { live: 0, scenario: 0 };
+    t.live += a.contentUnits ?? 0;
+    t.scenario += a.scenarioContentUnits ?? 0;
+    totals.set(a.person, t);
+  }
+  const allocationTotals = Array.from(totals.entries())
+    .map(([person, t]) => ({ person, ...t }))
+    .filter((t) => t.live || t.scenario)
+    .sort((a, b) => b.scenario - a.scenario);
+
+  return { month, monthly: monthRow.fields, perPerson, bookedDistinct, allocation, allocationTotals };
 }
 
 /** Full Phase 0: schema + analysis, optionally with row counts (extra API calls). */

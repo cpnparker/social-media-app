@@ -291,6 +291,8 @@ export interface PersonCapacity {
 
 export interface CapacityData {
   month: string;
+  /** Which allocation world the AM figures describe. */
+  basis: "live" | "scenario";
   planLoaded: boolean;
   people: PersonCapacity[];
   /** Named, because "13 people have no row" is actionable and a silent gap is not. */
@@ -324,7 +326,9 @@ export interface CapacityData {
  * `Months` — the company total on every row — so it reported almost the entire
  * team as over capacity. See CAPACITY_COLUMNS above.
  */
-export async function capacityReport(opts: { month?: string; person?: string; now?: Date } = {}): Promise<ReportResult<CapacityData>> {
+export async function capacityReport(
+  opts: { month?: string; person?: string; basis?: "live" | "scenario"; now?: Date } = {}
+): Promise<ReportResult<CapacityData>> {
   const now = opts.now || new Date();
   const month = resolveMonth(opts.month, now);
   if (!month) {
@@ -369,7 +373,7 @@ export async function capacityReport(opts: { month?: string; person?: string; no
     const horizon = planHorizon(monthly.records);
     return ok(
       "capacity",
-      { month, planLoaded: false, people: [], peopleWithoutPlan: [], disciplineTotals: [] },
+      { month, basis: opts.basis === "scenario" ? "scenario" : "live", planLoaded: false, people: [], peopleWithoutPlan: [], disciplineTotals: [] },
       [
         `The resourcing plan has no row for ${month}` +
           (horizon ? `; it currently runs to ${horizon}.` : ".") +
@@ -409,7 +413,7 @@ export async function capacityReport(opts: { month?: string; person?: string; no
     // needs saying differently — otherwise it reads as "nobody is available".
     return ok(
       "capacity",
-      { month, planLoaded: false, people: [], peopleWithoutPlan: [], disciplineTotals: [] },
+      { month, basis: opts.basis === "scenario" ? "scenario" : "live", planLoaded: false, people: [], peopleWithoutPlan: [], disciplineTotals: [] },
       [
         `${month} exists in the plan but has no team capacity loaded against it. Nobody's capacity has been ` +
           `entered for that month — this does NOT mean the team is fully booked, and it does not mean they are free.`,
@@ -442,25 +446,44 @@ export async function capacityReport(opts: { month?: string; person?: string; no
   }
 
   // Per-person Account Management allocation — the only per-person demand the
-  // base holds. LIVE rows only: `Account Manage` carries a parallel set of
-  // Scenario rows for what-if planning, and counting those as real commitments
-  // would roughly double every manager's load.
+  // base holds, and it exists in two worlds at once.
+  //
+  // LIVE is what managers carry today. SCENARIO is how next month is being
+  // allocated, which is how the team sees where capacity will land before
+  // committing to it. They are separate COLUMN PAIRS on the same row —
+  // `Content Units`/`CU Manage` against `Scenario Content Units`/`Scenario CU
+  // Manage` — with `live or scenario` naming which pair is filled.
+  //
+  // So they are alternatives, not layers: scenario REPLACES live for the month
+  // it describes rather than adding to it. Summing both would report every
+  // manager at roughly double their real load.
   const allocSchema = readSchema(tables, "Account Manage");
-  assertFields(allocSchema, ["Editorial team", "CU Manage", "Content Units", "live or scenario"]);
-  const allocRows = await listRecords("Account Manage", {
-    fields: ["Editorial team", "CU Manage", "Content Units", "live or scenario"],
-  });
+  const ALLOC_FIELDS = [
+    "Editorial team",
+    "CU Manage",
+    "Content Units",
+    "Scenario CU Manage",
+    "Scenario Content Units",
+    "live or scenario",
+  ];
+  assertFields(allocSchema, ALLOC_FIELDS);
+  const allocRows = await listRecords("Account Manage", { fields: ALLOC_FIELDS });
   if (allocRows.truncated) {
     warnings.push("Account Manage was truncated — some account-management allocations are missing from this answer.");
   }
 
+  const useScenario = opts.basis === "scenario";
+  const cuField = useScenario ? "Scenario Content Units" : "Content Units";
+  const linkField = useScenario ? "Scenario CU Manage" : "CU Manage";
+  const wantWorld = useScenario ? "scenario" : "live";
+
   const allocationByPerson = new Map<string, { cu: number; contracts: number }>();
   for (const r of allocRows.records) {
-    if (String(r.fields["live or scenario"] ?? "").toLowerCase() !== "live") continue;
+    if (String(r.fields["live or scenario"] ?? "").toLowerCase() !== wantWorld) continue;
     const member = firstLink(r.fields["Editorial team"]);
     if (!member) continue;
-    const cu = cellNumber(r.fields["Content Units"]);
-    const contracts = Array.isArray(r.fields["CU Manage"]) ? (r.fields["CU Manage"] as unknown[]).length : 0;
+    const cu = cellNumber(r.fields[cuField]);
+    const contracts = Array.isArray(r.fields[linkField]) ? (r.fields[linkField] as unknown[]).length : 0;
     const acc = allocationByPerson.get(member) || { cu: 0, contracts: 0 };
     if (isNumber(cu)) acc.cu += cu;
     acc.contracts += contracts;
@@ -569,7 +592,7 @@ export async function capacityReport(opts: { month?: string; person?: string; no
     };
   });
 
-  return ok("capacity", { month, planLoaded: true, people, peopleWithoutPlan, disciplineTotals }, warnings);
+  return ok("capacity", { month, basis: wantWorld, planLoaded: true, people, peopleWithoutPlan, disciplineTotals }, warnings);
 }
 
 /* ─────────────── Report: client plan vs actual ─────────────── */
