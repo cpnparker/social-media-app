@@ -291,8 +291,9 @@ export interface PersonCapacity {
 
 export interface CapacityData {
   month: string;
-  /** Which allocation world the AM figures describe. */
-  basis: "live" | "scenario";
+  /** Which allocation world the AM figures describe, or null when neither
+   *  does — allocation exists only for this month (live) and next (scenario). */
+  basis: "live" | "scenario" | null;
   planLoaded: boolean;
   people: PersonCapacity[];
   /** Named, because "13 people have no row" is actionable and a silent gap is not. */
@@ -391,7 +392,7 @@ export async function capacityReport(
     const horizon = planHorizon(monthly.records);
     return ok(
       "capacity",
-      { month, basis: opts.basis === "scenario" ? "scenario" : "live", planLoaded: false, people: [], peopleWithoutPlan: [], disciplineTotals: [] },
+      { month, basis: null, planLoaded: false, people: [], peopleWithoutPlan: [], disciplineTotals: [] },
       [
         `The resourcing plan has no row for ${month}` +
           (horizon ? `; it currently runs to ${horizon}.` : ".") +
@@ -431,7 +432,7 @@ export async function capacityReport(
     // needs saying differently — otherwise it reads as "nobody is available".
     return ok(
       "capacity",
-      { month, basis: opts.basis === "scenario" ? "scenario" : "live", planLoaded: false, people: [], peopleWithoutPlan: [], disciplineTotals: [] },
+      { month, basis: null, planLoaded: false, people: [], peopleWithoutPlan: [], disciplineTotals: [] },
       [
         `${month} exists in the plan but has no team capacity loaded against it. Nobody's capacity has been ` +
           `entered for that month — this does NOT mean the team is fully booked, and it does not mean they are free.`,
@@ -490,13 +491,48 @@ export async function capacityReport(
     warnings.push("Account Manage was truncated — some account-management allocations are missing from this answer.");
   }
 
-  const useScenario = opts.basis === "scenario";
+  // NEITHER WORLD CARRIES A MONTH. Live is "as things stand now"; scenario is
+  // "the month ahead", rebuilt each month-end by copying scenario over live and
+  // starting a fresh one. So the world a question is about is decided by WHICH
+  // month is being asked about, not by a free choice:
+  //
+  //   this month  -> live       next month -> scenario
+  //   any other month -> NEITHER set of allocations describes it
+  //
+  // That last case is the one worth being strict about. Attaching scenario
+  // allocations to March 2027 would produce real numbers at the wrong grain,
+  // which is exactly the shape of the bug that put a company total in a
+  // person's headroom. Capacity is still reported for those months; allocation
+  // simply is not available, and the report says so.
+  const currentMonth = monthLabel(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
+  const aheadMonth = monthLabel(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)));
+  const impliedWorld: "live" | "scenario" | null =
+    month === currentMonth ? "live" : month === aheadMonth ? "scenario" : null;
+
+  const explicit = opts.basis === "live" || opts.basis === "scenario" ? opts.basis : null;
+  const wantWorld = explicit ?? impliedWorld;
+
+  if (explicit && impliedWorld && explicit !== impliedWorld) {
+    warnings.push(
+      `Account-management allocations were read from the ${explicit} plan, but ${month} is ` +
+        `${impliedWorld === "live" ? "the current month, which the live plan describes" : "next month, which the scenario plan describes"}. ` +
+        `Treat the allocation figures with care — they may not be about ${month}.`
+    );
+  } else if (!wantWorld) {
+    warnings.push(
+      `No account-management allocation is available for ${month}. Allocations exist in only two states — the ` +
+        `live plan for ${currentMonth} and the scenario plan for ${aheadMonth} — and neither describes ${month}. ` +
+        `Capacity below is real; allocation and headroom are simply not recorded that far out.`
+    );
+  }
+
+  const useScenario = wantWorld === "scenario";
   const cuField = useScenario ? "Scenario Content Units" : "Content Units";
   const linkField = useScenario ? "Scenario CU Manage" : "CU Manage";
-  const wantWorld = useScenario ? "scenario" : "live";
 
   const allocationByPerson = new Map<string, { cu: number; contracts: number }>();
   for (const r of allocRows.records) {
+    if (!wantWorld) break;
     if (String(r.fields["live or scenario"] ?? "").toLowerCase() !== wantWorld) continue;
     const member = firstLink(r.fields["Editorial team"]);
     if (!member) continue;

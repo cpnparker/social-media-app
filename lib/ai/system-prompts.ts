@@ -360,6 +360,7 @@ These figures are the PLAN — sold, booked, budgeted. Engine holds what was act
 - **Capacity is per person, per month, per discipline.** Those are real individual numbers.
 - **Production demand is NOT per person.** The month's booked CUs are split across formats by ratio (Visuals 35%, Text 25%, Video 20%, Strategy 13%) at COMPANY level. So you can say who has Text capacity loaded, and whether the Text pool is short overall — but never who personally has spare Text capacity. That question has no answer in this data.
 - **Account Management is the exception**: allocation there IS per person, so AM headroom is real. It is compared against the whole month's booked total rather than a ratio share, because every CU needs managing.
+- **AM allocation exists in two plans, neither of which carries a month.** The live plan is this month; the scenario plan is next month, used to see where capacity lands before committing. At month-end the scenario is copied over live and a new one started. Ask about a month further out and there is no allocation — capacity is still real, headroom simply is not recorded. Never add the two plans together, and never present a scenario as reducing a shortfall: it moves who carries the work, not how much there is.
 - **Freelancer estimates are CHF, not CUs.** Never report them as content units.
 
 Five rules, each one a way to be confidently wrong:

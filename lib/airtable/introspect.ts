@@ -418,17 +418,30 @@ export async function modelProbe(month: string): Promise<ModelProbe> {
     };
   });
 
+  // Totals respect `live or scenario`, which is derived from the LINK columns
+  // rather than the CU columns. A row can therefore carry Scenario Content
+  // Units with no Scenario CU Manage link and no world — an allocation with no
+  // contract attached. Summing the column blindly folded two such rows into
+  // the scenario totals, inflating two people by 4.5 and 4 CU. They are
+  // counted separately instead, because an orphaned allocation is a data
+  // question, not capacity.
   const totals = new Map<string, { live: number; scenario: number }>();
+  const orphaned: { person: string; cu: number; role: string | null }[] = [];
   for (const a of allocation) {
+    const world = (a.liveOrScenario || "").toLowerCase();
     const t = totals.get(a.person) || { live: 0, scenario: 0 };
-    t.live += a.contentUnits ?? 0;
-    t.scenario += a.scenarioContentUnits ?? 0;
+    if (world === "live") t.live += a.contentUnits ?? 0;
+    else if (world === "scenario") t.scenario += a.scenarioContentUnits ?? 0;
+    else if (a.contentUnits || a.scenarioContentUnits) {
+      orphaned.push({ person: a.person, cu: a.contentUnits ?? a.scenarioContentUnits ?? 0, role: a.role });
+    }
     totals.set(a.person, t);
   }
   const allocationTotals = Array.from(totals.entries())
     .map(([person, t]) => ({ person, ...t }))
     .filter((t) => t.live || t.scenario)
     .sort((a, b) => b.scenario - a.scenario);
+  (allocationTotals as any).orphaned = orphaned;
 
   return { month, monthly: monthRow.fields, perPerson, bookedDistinct, allocation, allocationTotals };
 }

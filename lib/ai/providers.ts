@@ -5036,7 +5036,7 @@ export const QUERY_RESOURCING_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           type: "string",
           enum: ["live", "scenario"],
           description:
-            "For capacity: which allocation world the account-management figures describe. \"live\" (default) is what managers carry today. \"scenario\" is the forward plan — the team allocates NEXT month's contracts in the scenario columns to see where capacity will land before committing. They are alternatives, not layers: never add them together. Affects account-management allocation only; company demand and every discipline shortfall are identical in both worlds, because moving a contract between managers does not create or destroy a CU.",
+            "For capacity: which account-management allocation plan to read. USUALLY OMIT THIS — the right plan follows from the month, and the report picks it: this month reads the live plan, next month reads the scenario plan, and any month further out has no allocation at all (capacity is still reported). The two plans are alternatives, not layers, and are never added together; at each month-end the scenario is copied over the live one and a fresh scenario is started. Allocation affects account management only — company demand and every discipline shortfall are identical in both plans, because moving a contract between managers does not create or destroy a CU.",
         },
         client: { type: "string", description: "For client_plan_vs_actual and contract_health: filter by client or contract name (partial match)." },
         ending_within_days: { type: "number", description: "For contract_health: only contracts ending within this many days (e.g. 90)." },
