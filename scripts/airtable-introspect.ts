@@ -3,124 +3,76 @@
  *
  *   AIRTABLE_PAT=... AIRTABLE_RESOURCING_BASE=app... npx tsx scripts/airtable-introspect.ts
  *
- * Prints every table, field and type in the base, then answers the three
- * questions the plan says decide the whole shape of the reports:
+ * Prints the base's tables and fields, then the three findings that decide the
+ * shape of every report downstream. The analysis itself lives in
+ * lib/airtable/introspect.ts, shared with GET /api/airtable/status?schema=1 so
+ * the CLI and the endpoint cannot drift.
  *
- *   1. Which table holds PEOPLE, and does it carry an EMAIL column? This is the
- *      one that can sink the design. Airtable identifies people by name, the
- *      Engine identifies them by id_user, and production has two distinct users
- *      called "Mike Parsons" and two called "Faher Elfayez". Joining on a
- *      display name would silently merge colleagues' capacity into one row.
- *   2. Which table holds monthly expectations, and at what GRAIN — per client,
- *      per person, per month?
- *   3. How does a row identify a CLIENT — a stable id, or a name we would have
- *      to match against app_clients?
+ * Note that AIRTABLE_PAT is stored Sensitive in Vercel and therefore cannot be
+ * pulled to a developer machine — by design. Unless you have the token to hand,
+ * the endpoint is the way to run this, because it runs where the credential is.
  *
- * Read-only. It lists schema and counts rows; it writes nothing and prints no
- * cell values, so it is safe to run against the live base.
+ * Read-only. Lists schema and counts rows; writes nothing and prints no cell
+ * values, so it is safe against the live base.
  */
-import { getBaseSchema, listRecords, airtableConfigured, type AirtableTable } from "../lib/airtable/client";
-
-const EMAIL_HINTS = ["email", "e-mail", "mail"];
-const PERSON_HINTS = ["person", "people", "team", "staff", "member", "resource", "employee"];
-const CLIENT_HINTS = ["client", "customer", "account", "company", "organisation", "organization"];
-const MONTH_HINTS = ["month", "period", "forecast", "plan", "expectation", "target", "quota", "capacity"];
-
-const has = (s: string, hints: string[]) => hints.some((h) => s.toLowerCase().includes(h));
-
-function describe(t: AirtableTable): void {
-  console.log(`\n  ${t.name}  (${t.fields.length} fields)`);
-  for (const f of t.fields) {
-    // linked-record fields are the ones that tell us how tables relate, so
-    // surface their target rather than just the type name.
-    const link = f.type === "multipleRecordLinks" ? ` → ${(f.options as any)?.linkedTableId || "?"}` : "";
-    console.log(`      ${f.name.padEnd(34)} ${f.type}${link}`);
-  }
-  if (t.views?.length) {
-    console.log(`      views: ${t.views.map((v) => v.name).join(", ")}`);
-  }
-}
+import { airtableConfigured } from "../lib/airtable/client";
+import { runPhase0 } from "../lib/airtable/introspect";
 
 async function main() {
   if (!airtableConfigured()) {
     console.error(
       "\nAIRTABLE_PAT and AIRTABLE_RESOURCING_BASE must both be set.\n" +
-        "Run with them inline, or add them to the Engine Vercel project and pull.\n"
+        "They are Sensitive in Vercel and cannot be pulled — pass them inline, or use\n" +
+        "GET /api/airtable/status?workspaceId=…&schema=1 as an admin instead.\n"
     );
     process.exit(1);
   }
 
   console.log("Reading base schema…");
-  const { tables } = await getBaseSchema();
-  console.log(`\n${tables.length} table(s) found.`);
+  const f = await runPhase0({ withCounts: true });
 
-  for (const t of tables) describe(t);
-
-  /* ── The three questions ── */
+  console.log(`\n${f.tables.length} table(s):`);
+  for (const t of f.tables) {
+    const count = t.countError ? `  (count failed: ${t.countError})` : t.rowCount !== undefined ? `  ${t.rowCount} rows${t.truncated ? " ⚠ TRUNCATED" : ""}` : "";
+    console.log(`\n  ${t.name}${count}`);
+    for (const field of t.fields) {
+      console.log(`      ${field.name.padEnd(34)} ${field.type}${field.linkedTableId ? ` → ${field.linkedTableId}` : ""}`);
+    }
+    if (t.views.length) console.log(`      views: ${t.views.join(", ")}`);
+  }
 
   console.log("\n" + "─".repeat(72));
   console.log("PHASE 0 FINDINGS");
   console.log("─".repeat(72));
 
-  // 1. People and the email column.
-  const peopleTables = tables.filter((t) => has(t.name, PERSON_HINTS));
   console.log("\n1. PEOPLE");
-  if (!peopleTables.length) {
-    console.log("   No obvious people/team table by name — needs a human eye over the list above.");
-  }
-  for (const t of peopleTables) {
-    const emailFields = t.fields.filter((f) => f.type === "email" || has(f.name, EMAIL_HINTS));
-    console.log(`   ${t.name}: ${emailFields.length ? `email column present → ${emailFields.map((f) => f.name).join(", ")}` : "⚠ NO EMAIL COLUMN"}`);
-    if (!emailFields.length) {
-      console.log("      ⚠ This blocks a safe identity join. Matching on display names WILL merge");
-      console.log("        colleagues — production has duplicate names. Adding an email column is");
-      console.log("        the first fix, before any report is built on this table.");
-    }
+  if (!f.people.length) console.log("   (no table matched on name — identify by eye above)");
+  for (const p of f.people) {
+    console.log(`   ${p.table}: ${p.emailFields.length ? `email → ${p.emailFields.join(", ")}` : "⚠ NO EMAIL COLUMN"}`);
   }
 
-  // 2. Monthly expectations and their grain.
   console.log("\n2. MONTHLY EXPECTATIONS / CAPACITY");
-  const monthTables = tables.filter((t) => has(t.name, MONTH_HINTS) || t.fields.some((f) => has(f.name, MONTH_HINTS)));
-  if (!monthTables.length) {
-    console.log("   Nothing matched on name — the forward-looking numbers may live as fields on");
-    console.log("   another table, or may not exist yet. This is the gap the integration exists to fill,");
-    console.log("   so worth confirming before building the monthly_plan report.");
-  }
-  for (const t of monthTables) {
-    const dateish = t.fields.filter((f) => ["date", "dateTime"].includes(f.type) || has(f.name, MONTH_HINTS));
-    const links = t.fields.filter((f) => f.type === "multipleRecordLinks");
-    console.log(`   ${t.name}`);
-    console.log(`      period fields: ${dateish.map((f) => f.name).join(", ") || "(none)"}`);
-    console.log(`      links to:      ${links.map((f) => f.name).join(", ") || "(none — grain may be flat)"}`);
+  if (!f.periodTables.length) console.log("   (nothing matched)");
+  for (const p of f.periodTables) {
+    console.log(`   ${p.table}`);
+    console.log(`      period fields: ${p.periodFields.join(", ") || "(none)"}`);
+    console.log(`      links to:      ${p.linkFields.join(", ") || "(none — grain may be flat)"}`);
   }
 
-  // 3. Client identity.
   console.log("\n3. CLIENT IDENTITY");
-  const clientTables = tables.filter((t) => has(t.name, CLIENT_HINTS));
-  if (!clientTables.length) {
-    console.log("   No obvious client table — clients may be a text field or a link elsewhere.");
-  }
-  for (const t of clientTables) {
-    const idish = t.fields.filter((f) => /\bid\b|code|ref/i.test(f.name));
-    console.log(`   ${t.name}: ${idish.length ? `possible stable id → ${idish.map((f) => f.name).join(", ")}` : "no id-like field — will have to match on normalised name against app_clients"}`);
+  if (!f.clientTables.length) console.log("   (no table matched on name)");
+  for (const c of f.clientTables) {
+    console.log(`   ${c.table}: ${c.idLikeFields.length ? `id-like → ${c.idLikeFields.join(", ")}` : "no id field — must match on normalised name"}`);
   }
 
-  /* ── Volume, to size the reports and confirm pagination behaviour ── */
-
-  console.log("\n4. ROW COUNTS (also proves pagination + rate limiting work)");
-  for (const t of tables) {
-    try {
-      // fields[] with a single field keeps the payload small; we only want counts.
-      const first = t.fields[0]?.name;
-      const res = await listRecords(t.name, first ? { fields: [first] } : {});
-      console.log(`   ${t.name.padEnd(34)} ${String(res.count).padStart(5)}${res.truncated ? "  ⚠ TRUNCATED — more than the page ceiling" : ""}`);
-    } catch (e: any) {
-      console.log(`   ${t.name.padEnd(34)}    ?  (${String(e?.message || e).slice(0, 80)})`);
-    }
+  if (f.warnings.length) {
+    console.log("\n" + "─".repeat(72));
+    console.log("WARNINGS");
+    console.log("─".repeat(72));
+    for (const w of f.warnings) console.log(`\n  • ${w}`);
   }
 
-  console.log("\nDone. Everything in the plan downstream of this is provisional until these");
-  console.log("findings are read — particularly the identity join in §6.\n");
+  console.log("\nEverything downstream of this in the plan is provisional until these are read.\n");
 }
 
 main().catch((e) => {

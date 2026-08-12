@@ -123,6 +123,8 @@ Every report returns `{ data, count, matched_total, truncated?, warning?, source
 
 **Phase 0 — discovery (½ day).** PAT + base id from you; introspect the schema; report back the actual tables and fields, and flag any missing email/id columns. Everything below is provisional until this lands.
 
+Run it from **Administration → Integrations → Airtable → Inspect base** (or `GET /api/airtable/status?schema=1` as a workspace owner/admin). It deliberately runs server-side rather than from a laptop: both credentials are stored *Sensitive* in Vercel, which means they cannot be pulled to a developer machine — correctly so. `scripts/airtable-introspect.ts` prints the same report for anyone who has the token in hand; both call the same `runPhase0()`, so they cannot drift.
+
 **Phase 1 — client and reports (1 day).** `lib/airtable/client.ts` with cache and backoff; `resourcing.ts` with the four reports; a `scripts/verify-resourcing.ts` assertion script in the `verify-engine-scoping.ts` style (no test runner in this repo). *Verify:* run each report against the live base and eyeball it against what you know to be true.
 
 **Phase 2 — the flag (½ day).** SQL for `flag_access_resourcing` (printed inline, Engine project, with the sanity check), the admin toggle, and the gate. *Verify:* enabled user gets data; non-enabled gets a clean refusal; absent row denies.

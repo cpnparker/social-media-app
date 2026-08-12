@@ -1737,6 +1737,135 @@ function RolesTab({ workspaceId }: { workspaceId: string }) {
    INTEGRATIONS TAB — external data connections (Xero)
    ═══════════════════════════════════════════════════ */
 
+/**
+ * Airtable — the operations & resourcing base.
+ *
+ * No connect button, because there is no OAuth: access is a personal access
+ * token held in the environment. What an admin actually needs from this card is
+ * different from Xero's — not "is it linked" but "does the base still look the
+ * way the reports expect", since Airtable columns get renamed by whoever is
+ * editing the base and a renamed column returns blanks rather than an error.
+ * So the action here is Inspect, and it is also how Phase 0 discovery is run.
+ */
+function AirtableCard({ workspaceId }: { workspaceId: string }) {
+  type Findings = {
+    configured: boolean;
+    connected: boolean;
+    hint?: string;
+    error?: string;
+    tableCount?: number;
+    warnings?: number;
+  };
+  type Schema = {
+    tables: { name: string; id: string; fields: { name: string; type: string }[]; rowCount?: number; truncated?: boolean; countError?: string }[];
+    warnings: string[];
+  };
+
+  const [status, setStatus] = useState<Findings | null>(null);
+  const [schema, setSchema] = useState<Schema | null>(null);
+  const [schemaError, setSchemaError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/airtable/status?workspaceId=${workspaceId}`);
+        if (res.ok && !cancelled) setStatus(await res.json());
+      } catch { /* transient */ }
+    })();
+    return () => { cancelled = true; };
+  }, [workspaceId]);
+
+  const inspect = async () => {
+    setLoading(true);
+    setSchemaError(null);
+    try {
+      const res = await fetch(`/api/airtable/status?workspaceId=${workspaceId}&schema=1`);
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || `Request failed (${res.status})`);
+      setSchema(json);
+    } catch (e) {
+      setSchemaError(e instanceof Error ? e.message : "Could not read the base");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold">Airtable — operations &amp; resourcing</div>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Read-only access to the base that holds contracts, resourcing and team delivery.
+            Authenticated by a server-side token rather than a login, so there is nothing to
+            connect — but the reports depend on specific column names, and this is where you
+            check they are still there.
+          </p>
+          {status && (
+            <p className="text-xs mt-2">
+              {status.connected ? (
+                <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                  Connected — {status.tableCount} table{status.tableCount === 1 ? "" : "s"}
+                </span>
+              ) : status.configured ? (
+                <span className="text-amber-600 dark:text-amber-400">
+                  Configured, but the base did not answer: {status.error}
+                </span>
+              ) : (
+                <span className="text-amber-600 dark:text-amber-400">{status.hint}</span>
+              )}
+            </p>
+          )}
+        </div>
+        <button
+          onClick={inspect}
+          disabled={loading || !status?.connected}
+          className="shrink-0 inline-flex items-center h-8 px-3 rounded-lg border text-xs font-medium hover:bg-muted disabled:opacity-50"
+        >
+          {loading ? "Reading…" : "Inspect base"}
+        </button>
+      </div>
+
+      {schemaError && (
+        <p className="text-xs text-red-500 mt-3">{schemaError}</p>
+      )}
+
+      {schema && (
+        <div className="mt-3 space-y-3">
+          {schema.warnings.length > 0 && (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 space-y-2">
+              {schema.warnings.map((w, i) => (
+                <p key={i} className="text-xs text-amber-700 dark:text-amber-400">{w}</p>
+              ))}
+            </div>
+          )}
+          <div className="max-h-72 overflow-y-auto rounded-lg border divide-y">
+            {schema.tables.map((t) => (
+              <div key={t.id} className="p-3">
+                <div className="text-xs font-medium">
+                  {t.name}
+                  <span className="ml-2 font-normal text-muted-foreground">
+                    {t.countError
+                      ? `count failed: ${t.countError}`
+                      : t.rowCount !== undefined
+                        ? `${t.rowCount} rows${t.truncated ? " — TRUNCATED" : ""}`
+                        : ""}
+                  </span>
+                </div>
+                <div className="mt-1 text-[11px] text-muted-foreground leading-relaxed">
+                  {t.fields.map((f) => `${f.name} (${f.type})`).join(" · ")}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function IntegrationsTab({ workspaceId }: { workspaceId: string }) {
   const [status, setStatus] = useState<{ configured: boolean; connected: boolean; tenantName: string | null; connectedAt: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1818,6 +1947,8 @@ function IntegrationsTab({ workspaceId }: { workspaceId: string }) {
         Who can QUERY the data is per-user: tick the &ldquo;Finance&rdquo; column in
         Settings → Users (engine subdomain) — nobody has access until ticked.
       </p>
+
+      <AirtableCard workspaceId={workspaceId} />
 
       {/* Workspace-level data sources that have no connect flow, because there is
           nothing per-workspace to authorise — they are configured server-side.
