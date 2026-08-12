@@ -21,7 +21,13 @@ import {
  */
 export const maxDuration = 30;
 
-function closingPage(ok: boolean, message: string): NextResponse {
+/**
+ * `status` matters even though a human is reading the HTML. Without it every
+ * outcome returned 200 — an expired session, a forged state, a cancelled
+ * consent — so logs and uptime checks saw a successful OAuth callback for
+ * every failure. The page still renders either way; only the code differs.
+ */
+function closingPage(ok: boolean, message: string, status = 200): NextResponse {
   // The opener re-reads status on close, so there is nothing to post back —
   // closing IS the signal. Escaped because `message` can carry provider text.
   const safe = message.replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c] as string));
@@ -32,26 +38,29 @@ function closingPage(ok: boolean, message: string): NextResponse {
 <div class="b"><div class="t">${ok ? "Connected" : "Couldn’t connect"}</div><div class="m">${safe}</div></div>
 <script>try{window.close()}catch(e){}
 setTimeout(function(){try{window.close()}catch(e){}},${ok ? 900 : 4000});</script>`;
-  return new NextResponse(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+  return new NextResponse(html, {
+    status,
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
 }
 
 export async function GET(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) {
-    return closingPage(false, "Your session expired. Close this window, sign in again and retry.");
+    return closingPage(false, "Your session expired. Close this window, sign in again and retry.", 401);
   }
 
   const params = req.nextUrl.searchParams;
   const err = params.get("error");
   if (err) {
     // access_denied is the user pressing Cancel — not a fault worth logging loudly.
-    return closingPage(false, err === "access_denied" ? "You cancelled, so nothing changed." : `Google returned: ${err}`);
+    return closingPage(false, err === "access_denied" ? "You cancelled, so nothing changed." : `Google returned: ${err}`, err === "access_denied" ? 200 : 400);
   }
 
   const code = params.get("code");
   const state = verifyState(params.get("state") || "");
   if (!code || !state) {
-    return closingPage(false, "That link was invalid or expired. Close this window and try again.");
+    return closingPage(false, "That link was invalid or expired. Close this window and try again.", 400);
   }
 
   // The state is bound to the user who STARTED the flow. Without this check a
@@ -60,17 +69,17 @@ export async function GET(req: NextRequest) {
   const sessionUserId = parseInt(session.user.id, 10);
   if (state.u !== sessionUserId) {
     console.warn(`[Connections/google] state user mismatch: state=${state.u} session=${sessionUserId}`);
-    return closingPage(false, "That link was started by a different account. Close this window and try again.");
+    return closingPage(false, "That link was started by a different account. Close this window and try again.", 403);
   }
   // 10 minutes is generous for a consent screen and short enough that a leaked
   // URL in a history or a log is not a standing credential.
   if (typeof state.t === "number" && Date.now() - state.t > 10 * 60_000) {
-    return closingPage(false, "That took too long. Close this window and try again.");
+    return closingPage(false, "That took too long. Close this window and try again.", 400);
   }
 
   const email = (session.user.email || "").toLowerCase();
   if (!email) {
-    return closingPage(false, "Your account has no email address, so there's nothing to link.");
+    return closingPage(false, "Your account has no email address, so there's nothing to link.", 400);
   }
 
   try {
@@ -84,7 +93,8 @@ export async function GET(req: NextRequest) {
       console.warn("[Connections/google] no refresh_token returned");
       return closingPage(
         false,
-        "Google didn't return a long-lived token. Remove EngineAI at myaccount.google.com/permissions and connect again."
+        "Google didn't return a long-lived token. Remove EngineAI at myaccount.google.com/permissions and connect again.",
+        502
       );
     }
 
@@ -95,7 +105,8 @@ export async function GET(req: NextRequest) {
     if (googleEmail && googleEmail !== email) {
       return closingPage(
         false,
-        `You authorised ${googleEmail}, but you're signed in here as ${email}. Connect the matching account.`
+        `You authorised ${googleEmail}, but you're signed in here as ${email}. Connect the matching account.`,
+        409
       );
     }
 
@@ -165,6 +176,6 @@ export async function GET(req: NextRequest) {
     return closingPage(true, "Google is connected. You can close this window.");
   } catch (e: any) {
     console.error("[Connections/google] failed:", e?.message);
-    return closingPage(false, `Couldn't complete the connection: ${String(e?.message || "unknown error").slice(0, 160)}`);
+    return closingPage(false, `Couldn't complete the connection: ${String(e?.message || "unknown error").slice(0, 160)}`, 500);
   }
 }
