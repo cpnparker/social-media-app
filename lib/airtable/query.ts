@@ -105,7 +105,11 @@ export async function queryResourcing(args: ResourcingArgs): Promise<ResourcingO
         return {
           ok: true,
           result: await horizonReport({
-            months: typeof args.months === "number" ? args.months : undefined,
+            // Coerced, not type-checked. Tool arguments are model output
+            // parsed from JSON, so "12" arrives as often as 12; the strict
+            // check silently discarded the requested span and answered about
+            // six months instead, with nothing in the payload saying so.
+            months: Number.isFinite(Number(args.months)) ? Number(args.months) : undefined,
             // An unrecognised basis falls back to forecast, not pipeline:
             // forecast is the weighted plan, pipeline is an unweighted ceiling
             // that would overstate every shortfall.

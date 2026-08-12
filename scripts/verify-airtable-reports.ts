@@ -7,9 +7,26 @@
  * is off by a word matches nothing and reports "no data"; a label that drops
  * the year would match four years at once. Both are silent.
  *
+ * SCOPE, stated plainly: the report bodies need Airtable credentials, so what
+ * runs here is the pure logic — month resolution, formula escaping, the
+ * vocabulary constants — imported from the real module. Blocks that reproduce
+ * an arithmetic relationship locally are PINNING THE MODEL, not testing the
+ * code path: they fail if the relationship stops holding, which is what caught
+ * two miscalculations, but they would not catch the report calling the wrong
+ * field. Runtime field names are guarded by assertFields against the live
+ * schema instead. Do not read a green run here as "the reports are correct".
+ *
  * No network, no credentials.
  */
-import { monthLabel, parseMonthLabel, resolveMonth, escapeFormulaValue, ACTIVE_BOOKING_STATUSES, DISCIPLINES } from "../lib/airtable/reports";
+import {
+  monthLabel,
+  parseMonthLabel,
+  resolveMonth,
+  escapeFormulaValue,
+  ACTIVE_BOOKING_STATUSES,
+  DISCIPLINES,
+  DEMAND_BASIS,
+} from "../lib/airtable/reports";
 
 let passed = 0;
 const failures: string[] = [];
@@ -124,6 +141,12 @@ eq(DISCIPLINES[0], "Account Management", "AM is spelled as the base spells it");
    quoting the wrong one misstates every shortfall. The relationships below are
    what proves booked+opps is unweighted. */
 {
+  // Against the real constant, so a renamed column fails here too.
+  eq(DEMAND_BASIS.booked.field, "Total CUs booked", "booked basis reads the committed total");
+  eq(DEMAND_BASIS.forecast.field, "CU forecasted smart", "forecast basis reads the weighted number");
+  eq(DEMAND_BASIS.pipeline.field, "CU: booked + opps", "pipeline basis reads the unweighted ceiling");
+  eq(Object.keys(DEMAND_BASIS).length, 3, "three bases, no more");
+
   const booked = 107.63333333;
   const forecastBooked = 99.98333333;
   const forecastOppsOverride = 15.8;
@@ -187,6 +210,55 @@ eq(DISCIPLINES[0], "Account Management", "AM is spelled as the base spells it");
     "scenario restates every allocation — a delta would be a fraction of live"
   );
   eq(liveTotal + scenarioTotal !== scenarioTotal, true, "the plans are never summed");
+}
+
+/* ── compare must not depend on the month asked about ──
+   The shipped bug: the live side was built from whatever plan the REQUESTED
+   month implied. Asking to compare "next month" — the obvious phrasing — made
+   both sides the scenario plan, so every delta came out zero and the model
+   reported "nothing moves" against a real 12.8 CU shift. Zero deltas are the
+   dangerous failure here: they read exactly like a valid answer. */
+{
+  const now = new Date(Date.UTC(2026, 7, 12));
+  const current = resolveMonth("this month", now)!;
+  const ahead = resolveMonth("next month", now)!;
+
+  // What the buggy version did: derive the world from the requested month.
+  const worldFromMonth = (m: string) => (m === current ? "live" : m === ahead ? "scenario" : null);
+  eq(worldFromMonth(ahead), "scenario", "requesting next month implies the scenario plan");
+  eq(
+    worldFromMonth(ahead) === "scenario",
+    true,
+    "so a compare that reused that world had scenario on BOTH sides"
+  );
+
+  // What it must do now: both sides fixed, whatever month was asked about.
+  const compareSides = (_requested: string) => ({ from: { month: current, world: "live" }, to: { month: ahead, world: "scenario" } });
+  for (const requested of [current, ahead, "October 2026", "March 2027", "July 2026"]) {
+    const sides = compareSides(requested);
+    eq(sides.from.world, "live", `from side stays live when asked about ${requested}`);
+    eq(sides.to.world, "scenario", `to side stays scenario when asked about ${requested}`);
+    eq(sides.from.month, "August 2026", `from month stays ${current} when asked about ${requested}`);
+    eq(sides.to.month, "September 2026", `to month stays ${ahead} when asked about ${requested}`);
+  }
+
+  // The deltas the corrected version must produce, from real figures.
+  const liveTotal = 102.75;
+  const scenarioTotal = 115.55;
+  eq(Math.round((scenarioTotal - liveTotal) * 100) / 100, 12.8, "the real shift between the plans is 12.8 CU");
+  eq(scenarioTotal - liveTotal !== 0, true, "a zero total delta means both sides read the same plan");
+
+  // Null capacity must sort last, not as zero: unknown is not "no headroom".
+  const rows = [
+    { name: "known short", toHeadroom: -7 },
+    { name: "unknown", toHeadroom: null as number | null },
+    { name: "known spare", toHeadroom: 8 },
+  ];
+  const sorted = [...rows].sort(
+    (a, b) => (a.toHeadroom ?? Number.POSITIVE_INFINITY) - (b.toHeadroom ?? Number.POSITIVE_INFINITY)
+  );
+  eq(sorted[0].name, "known short", "least headroom sorts first");
+  eq(sorted[2].name, "unknown", "unknown headroom sorts last, not as zero");
 }
 
 console.log(`\n${passed} passed, ${failures.length} failed`);

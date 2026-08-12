@@ -603,8 +603,13 @@ export async function capacityReport(
 
     const amCapacity = disciplines.find((d) => d.discipline === "Account Management")?.capacityCu ?? null;
     const alloc = allocationByPerson.get(personId);
+    // With no plan describing this month, allocation is UNKNOWN, not zero.
+    // Emitting allocatedCu 0 and headroomCu = full capacity would be the exact
+    // null-is-not-zero failure this file exists to prevent — and the worst
+    // version of it, since it reports everyone as completely free. A prose
+    // warning alongside is not enough: the numbers have to be absent.
     const accountManagement =
-      amCapacity === null && !alloc
+      !wantWorld || (amCapacity === null && !alloc)
         ? null
         : {
             capacityCu: amCapacity,
@@ -685,34 +690,73 @@ export async function capacityReport(
   // stops it differencing them anyway.
   let comparison: CapacityData["comparison"] = undefined;
   if (opts.basis === "compare") {
-    const aheadRecord = findMonthRow(monthly.records, aheadMonth);
-    const aheadCapacity = new Map<string, AirtableRecord>();
-    if (aheadRecord) {
-      for (const row of resourcing.records) {
-        const months = row.fields["Months"];
-        if (!Array.isArray(months) || !months.includes(aheadRecord.id)) continue;
-        const m = firstLink(row.fields["Team member"]);
-        if (m) aheadCapacity.set(m, row);
+    // BOTH SIDES ARE BUILT FROM SCRATCH HERE, independent of `month`.
+    //
+    // The first version reused `byMember` and `allocationByPerson` for the live
+    // side. Those are indexed against the REQUESTED month and the plan that
+    // month implies — so asking to compare with month="next month", which is
+    // the obvious way to phrase it, made both sides the scenario plan and every
+    // delta came out exactly zero. "Nothing moves between the plans", stated
+    // confidently, against a real 12.8 CU shift. Passing a far month was worse:
+    // the live side collapsed to zero allocation and everyone appeared to gain
+    // their entire scenario load.
+    //
+    // A comparison is always between the same two things — this month's live
+    // plan and next month's scenario — so nothing about it may depend on which
+    // month was asked about.
+    const capacityIndexFor = (label: string) => {
+      const rec = findMonthRow(monthly.records, label);
+      const index = new Map<string, AirtableRecord>();
+      if (rec) {
+        for (const row of resourcing.records) {
+          const months = row.fields["Months"];
+          if (!Array.isArray(months) || !months.includes(rec.id)) continue;
+          const m = firstLink(row.fields["Team member"]);
+          if (m) index.set(m, row);
+        }
       }
-    }
+      return { rec, index };
+    };
 
-    const scenarioAlloc = new Map<string, { cu: number; contracts: number }>();
-    let unassignedCu = 0;
-    for (const r of allocRows.records) {
-      if (String(r.fields["live or scenario"] ?? "").toLowerCase() !== "scenario") continue;
-      const cu = cellNumber(r.fields["Scenario Content Units"]);
-      const member = firstLink(r.fields["Editorial team"]);
-      if (!member) {
-        // Allocated work with nobody attached. It is real planned load that
-        // will land on someone, so it is surfaced rather than dropped.
-        if (isNumber(cu)) unassignedCu += cu;
-        continue;
+    const allocationFor = (world: "live" | "scenario") => {
+      const cuCol = world === "scenario" ? "Scenario Content Units" : "Content Units";
+      const linkCol = world === "scenario" ? "Scenario CU Manage" : "CU Manage";
+      const byPerson = new Map<string, { cu: number; contracts: number }>();
+      let unassigned = 0;
+      for (const r of allocRows.records) {
+        if (String(r.fields["live or scenario"] ?? "").toLowerCase() !== world) continue;
+        const cu = cellNumber(r.fields[cuCol]);
+        const member = firstLink(r.fields["Editorial team"]);
+        if (!member) {
+          // Allocated work with nobody attached. It is real planned load that
+          // will land on someone, so it is surfaced rather than dropped.
+          if (isNumber(cu)) unassigned += cu;
+          continue;
+        }
+        const contracts = Array.isArray(r.fields[linkCol]) ? (r.fields[linkCol] as unknown[]).length : 0;
+        const acc = byPerson.get(member) || { cu: 0, contracts: 0 };
+        if (isNumber(cu)) acc.cu += cu;
+        acc.contracts += contracts;
+        byPerson.set(member, acc);
       }
-      const contracts = Array.isArray(r.fields["Scenario CU Manage"]) ? (r.fields["Scenario CU Manage"] as unknown[]).length : 0;
-      const acc = scenarioAlloc.get(member) || { cu: 0, contracts: 0 };
-      if (isNumber(cu)) acc.cu += cu;
-      acc.contracts += contracts;
-      scenarioAlloc.set(member, acc);
+      return { byPerson, unassigned };
+    };
+
+    const live = capacityIndexFor(currentMonth);
+    const ahead = capacityIndexFor(aheadMonth);
+    const aheadRecord = ahead.rec;
+    const aheadCapacity = ahead.index;
+    const liveCapacity = live.index;
+    const liveAlloc = allocationFor("live").byPerson;
+    const scenarioSide = allocationFor("scenario");
+    const scenarioAlloc = scenarioSide.byPerson;
+    const unassignedCu = scenarioSide.unassigned;
+
+    if (!live.rec) {
+      warnings.push(
+        `${currentMonth} has no row in the plan, so the live side of this comparison has no capacity to ` +
+          `measure against. Allocation is shown; headroom on that side is not.`
+      );
     }
 
     const amCapacityOf = (row: AirtableRecord | undefined): number | null => {
@@ -721,9 +765,15 @@ export async function capacityReport(
       return isNumber(v) ? v : null;
     };
 
+    // Anyone with capacity OR allocation on either side. Building this from
+    // the allocation maps alone would drop a manager who has capacity in both
+    // months but is allocated nothing — precisely the person with the most
+    // headroom, and the one the question is usually about.
     const everyone = new Set<string>([
-      ...Array.from(allocationByPerson.keys()),
+      ...Array.from(liveAlloc.keys()),
       ...Array.from(scenarioAlloc.keys()),
+      ...Array.from(liveCapacity.keys()),
+      ...Array.from(aheadCapacity.keys()),
     ]);
 
     comparison = {
@@ -732,9 +782,9 @@ export async function capacityReport(
       unassignedCu,
       people: Array.from(everyone)
         .map((id) => {
-          const fromCapacity = amCapacityOf(byMember.get(id));
+          const fromCapacity = amCapacityOf(liveCapacity.get(id));
           const toCapacity = amCapacityOf(aheadCapacity.get(id));
-          const fromAllocated = allocationByPerson.get(id)?.cu ?? 0;
+          const fromAllocated = liveAlloc.get(id)?.cu ?? 0;
           const toAllocated = scenarioAlloc.get(id)?.cu ?? 0;
           const fromHeadroom = fromCapacity === null ? null : fromCapacity - fromAllocated;
           const toHeadroom = toCapacity === null ? null : toCapacity - toAllocated;
@@ -750,7 +800,15 @@ export async function capacityReport(
             headroomDelta: fromHeadroom === null || toHeadroom === null ? null : toHeadroom - fromHeadroom,
           };
         })
-        .sort((a, b) => (a.toHeadroom ?? 0) - (b.toHeadroom ?? 0)),
+        .filter((p) => p.fromCapacity !== null || p.toCapacity !== null || p.fromAllocated || p.toAllocated)
+        // A question about one person gets one person's comparison. Without
+        // this, `person` narrowed the roster above but not the table below, so
+        // asking about one manager returned the whole team's shift.
+        .filter((p) => (wanted ? p.name.toLowerCase().includes(wanted) : true))
+        // Least headroom first: the answer to "who is in trouble next month"
+        // should be the first row, not buried. Null capacity sorts last rather
+        // than as zero, since unknown is not the same as none.
+        .sort((a, b) => (a.toHeadroom ?? Number.POSITIVE_INFINITY) - (b.toHeadroom ?? Number.POSITIVE_INFINITY)),
     };
 
     if (!aheadRecord) {
@@ -765,10 +823,14 @@ export async function capacityReport(
           `that will land on someone, and it is NOT included in anyone's figures above.`
       );
     }
+    const liveTotal = Array.from(liveAlloc.values()).reduce((a, b) => a + b.cu, 0);
+    const scenarioTotal = Array.from(scenarioAlloc.values()).reduce((a, b) => a + b.cu, 0);
     warnings.push(
       `This compares ${currentMonth}'s live plan with ${aheadMonth}'s scenario plan — the two plans the base ` +
-        `holds. It shows work moving between managers, not work appearing or disappearing: the company total ` +
-        `and every discipline shortfall are set by contracts, not by who manages them.`
+        `holds. They cover DIFFERENT MONTHS as well as different allocations, so the totals differ legitimately: ` +
+        `${liveTotal} CU allocated in ${currentMonth} against ${scenarioTotal} CU in ${aheadMonth}. A person's ` +
+        `delta therefore mixes two things — work reassigned between managers, and next month simply carrying ` +
+        `more or less work than this one. Do not describe a rise as someone being given more of the same load.`
     );
   }
 
@@ -795,7 +857,7 @@ export async function capacityReport(
  * conversion. So `CU: booked + opps` is UNWEIGHTED, and presenting it as the
  * plan would overstate every shortfall by roughly the unconverted pipeline.
  */
-const DEMAND_BASIS = {
+export const DEMAND_BASIS = {
   booked: { field: "Total CUs booked", label: "booked work only" },
   forecast: { field: "CU forecasted smart", label: "booked plus opportunities weighted by conversion" },
   pipeline: { field: "CU: booked + opps", label: "booked plus ALL opportunities at full value — a ceiling, not a plan" },
@@ -807,10 +869,15 @@ export interface HorizonMonth {
   month: string;
   demandCu: number | null;
   targetCu: number | null;
+  /** True only when EVERY discipline has capacity entered for the month. */
   capacityLoaded: boolean;
+  /** Named, because a partly-loaded month is the dangerous case. */
+  disciplinesWithoutCapacity: Discipline[];
   disciplines: {
     discipline: Discipline;
     capacityCu: number | null;
+    /** False means nobody's capacity is entered — not that the team is zero. */
+    capacityLoaded: boolean;
     demandCu: number | null;
     shortfallCu: number | null;
     demandOverCapacity: number | null;
@@ -894,15 +961,24 @@ export async function horizonReport(
       // managing — while production formats take their ratio share.
       const ratio = cols.ratio ? num(rec, cols.ratio) : 1;
       const disciplineDemand = demand !== null && ratio !== null ? demand * ratio : null;
-      const shortfall =
-        disciplineDemand !== null && capacity !== null ? Math.max(0, disciplineDemand - capacity) : null;
+
+      // Zero capacity means NOBODY'S CAPACITY HAS BEEN ENTERED for this
+      // discipline this month — not that a team of zero people faces the whole
+      // demand. Treating it as real produced two contradictory claims in one
+      // payload: `demandOverCapacity` guarded against dividing by zero and so
+      // reported the discipline as never short, while `shortfallCu` billed its
+      // entire demand as freelancer cost. Both are now absent, which is the
+      // honest answer, and `loaded` says why.
+      const loaded = capacity !== null && capacity > 0;
+      const shortfall = loaded && disciplineDemand !== null ? Math.max(0, disciplineDemand - capacity) : null;
+
       return {
         discipline: d,
         capacityCu: capacity,
+        capacityLoaded: loaded,
         demandCu: disciplineDemand,
         shortfallCu: shortfall,
-        demandOverCapacity:
-          disciplineDemand !== null && capacity !== null && capacity !== 0 ? disciplineDemand / capacity : null,
+        demandOverCapacity: loaded && disciplineDemand !== null ? disciplineDemand / capacity : null,
         // AM shortfall is not a freelancer cost — account management is not
         // bought in by the CU the way production is.
         freelancerCostChf: cols.freelancer && shortfall !== null ? shortfall * FREELANCER_CHF_PER_CU : null,
@@ -913,7 +989,12 @@ export async function horizonReport(
       month: label,
       demandCu: demand,
       targetCu: num(rec, "CU Target"),
-      capacityLoaded: disciplines.some((d) => d.capacityCu !== null && d.capacityCu > 0),
+      // Per-discipline, not month-level. An ANY test called a month "loaded"
+      // when only one discipline had capacity, so the rest were silently
+      // charged their full demand and the "no capacity entered" warning never
+      // fired for them.
+      capacityLoaded: disciplines.every((d) => d.capacityLoaded),
+      disciplinesWithoutCapacity: disciplines.filter((d) => !d.capacityLoaded).map((d) => d.discipline),
       disciplines,
     });
   }
@@ -925,11 +1006,13 @@ export async function horizonReport(
         `the same as having no demand.`
     );
   }
-  const unloaded = months.filter((m) => !m.capacityLoaded).map((m) => m.month);
+  const unloaded = months.filter((m) => m.disciplinesWithoutCapacity.length);
   if (unloaded.length) {
     warnings.push(
-      `${unloaded.join(", ")} exist in the plan but have NO team capacity entered. Their shortfall figures are ` +
-        `therefore meaningless — do not read them as the team being fully short.`
+      "Some disciplines have NO capacity entered for these months, so they have no shortfall and no freelancer " +
+        "cost — absent, not zero, and NOT to be read as the team being fully short: " +
+        unloaded.map((m) => `${m.month} (${m.disciplinesWithoutCapacity.join(", ")})`).join("; ") +
+        `. The total freelancer cost below therefore covers only the disciplines that ARE loaded.`
     );
   }
 
@@ -938,13 +1021,12 @@ export async function horizonReport(
     month:
       months.find((m) => {
         const d = m.disciplines.find((x) => x.discipline === discipline);
-        return m.capacityLoaded && d?.demandOverCapacity != null && d.demandOverCapacity > 1;
+        return d?.capacityLoaded && d.demandOverCapacity != null && d.demandOverCapacity > 1;
       })?.month ?? null,
   }));
 
   const costs = months
-    .filter((m) => m.capacityLoaded)
-    .flatMap((m) => m.disciplines.map((d) => d.freelancerCostChf))
+    .flatMap((m) => m.disciplines.filter((d) => d.capacityLoaded).map((d) => d.freelancerCostChf))
     .filter((c): c is number => c !== null);
 
   warnings.push(
