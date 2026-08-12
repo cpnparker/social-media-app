@@ -30,6 +30,8 @@ export interface ResourcingArgs {
   client?: string;
   ending_within_days?: number;
   include_ended?: boolean;
+  /** Which allocation world the account-management figures describe. */
+  basis?: string;
 }
 
 export type ResourcingOutcome =
@@ -82,7 +84,17 @@ export async function queryResourcing(args: ResourcingArgs): Promise<ResourcingO
   try {
     switch (report) {
       case "capacity":
-        return { ok: true, result: await capacityReport({ month: args.month, person: args.person }) };
+        return {
+          ok: true,
+          result: await capacityReport({
+            month: args.month,
+            person: args.person,
+            // Anything other than "scenario" means live, including a model
+            // inventing a third value. Defaulting an unrecognised basis to the
+            // live world is the safe direction: live is what is committed.
+            basis: String(args.basis ?? "").toLowerCase() === "scenario" ? "scenario" : "live",
+          }),
+        };
       case "monthly_outlook":
         return { ok: true, result: await monthlyOutlookReport({ month: args.month }) };
       case "client_plan_vs_actual":

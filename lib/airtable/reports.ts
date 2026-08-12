@@ -363,8 +363,26 @@ export async function capacityReport(
   const warnings: string[] = [];
 
   const monthlySchema = readSchema(tables, "Monthly resourcing");
-  assertFields(monthlySchema, ["Month"]);
-  const monthly = await listRecords("Monthly resourcing", { fields: ["Month"] });
+  // Asserted AND fetched together, deliberately. The first version asserted
+  // only "Month" and fetched only "Month", then read five capacity and demand
+  // columns off the returned record further down. `fields[]` restricts the
+  // payload, so those five were never in it: every disciplineTotals row came
+  // back null. assertFields could not catch it because the names were never
+  // asserted, and the failure is invisible from the outside — the formatter
+  // tells the model "null means NOT KNOWN, never zero", so the model correctly
+  // reported "not recorded" for five columns that are fully populated.
+  //
+  // No field restriction here at all. The table is 66 rows and one page either
+  // way, so restricting bought nothing and cost exactly this.
+  const MONTHLY_FIELDS = [
+    "Month",
+    ...DISCIPLINES.flatMap((d) => {
+      const c = MONTHLY_DEMAND[d];
+      return [c.capacity, c.vsDemand, ...(c.freelancer ? [c.freelancer] : [])];
+    }),
+  ];
+  assertFields(monthlySchema, MONTHLY_FIELDS);
+  const monthly = await listRecords("Monthly resourcing");
   const monthRecord = findMonthRow(monthly.records, month);
 
   if (!monthRecord) {
@@ -561,6 +579,14 @@ export async function capacityReport(
       "person, not personal workloads, and who is 'most free' in a production discipline cannot be answered " +
       "from this base. Account Management is the exception: allocation there is per person."
   );
+  if (useScenario) {
+    warnings.push(
+      "These are SCENARIO account-management allocations — the forward plan, not what is committed today. " +
+        "Note that the discipline capacity-vs-demand figures below are IDENTICAL in the live and scenario " +
+        "worlds: moving a contract between managers does not create or destroy a CU, so scenario changes who " +
+        "carries the work, never how much of it there is. Do not present a scenario as reducing the shortfall."
+    );
+  }
   if (people.some((p) => p.accountManagement?.allocatedCu)) {
     warnings.push(
       "Account Management allocation is CURRENT STATE, not " +
