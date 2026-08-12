@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { getMeetingBrainDb } from "@/lib/ai/providers";
+import { meetingBrainDb } from "@/lib/supabase-meetingbrain";
 import {
   GOOGLE_SCOPES, callbackUrl, exchangeCode, fetchGoogleEmail, verifyState,
 } from "@/lib/connections/google-oauth";
@@ -99,7 +99,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const mb = getMeetingBrainDb();
+    const mb = meetingBrainDb;
 
     // Find, or create, the MeetingBrain user this grant belongs to. Creating one
     // is legitimate and expected: plenty of Engine users have never opened
