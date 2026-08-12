@@ -3,7 +3,7 @@ import { auth } from "@/lib/auth";
 import { verifyWorkspaceMembership } from "@/lib/permissions";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { airtableConfigured } from "@/lib/airtable/client";
-import { runPhase0 } from "@/lib/airtable/introspect";
+import { probeIdentity, runPhase0 } from "@/lib/airtable/introspect";
 
 /**
  * GET /api/airtable/status[?workspaceId=…][&schema=1]
@@ -69,9 +69,11 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Without ?schema=1 this is a cheap liveness check for the Integrations card.
   const wantSchema = req.nextUrl.searchParams.get("schema") === "1";
-  if (!wantSchema) {
+  const wantProbe = req.nextUrl.searchParams.get("probe") === "1";
+
+  // Without ?schema=1 or ?probe=1 this is a cheap liveness check for the card.
+  if (!wantSchema && !wantProbe) {
     try {
       const findings = await runPhase0();
       return NextResponse.json({
@@ -90,6 +92,9 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    if (wantProbe) {
+      return NextResponse.json({ configured: true, connected: true, identity: await probeIdentity() });
+    }
     const findings = await runPhase0({ withCounts: true });
     return NextResponse.json({ configured: true, connected: true, ...findings });
   } catch (e: any) {

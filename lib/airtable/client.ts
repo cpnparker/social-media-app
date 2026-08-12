@@ -164,9 +164,25 @@ async function airtableFetch(path: string, params: URLSearchParams): Promise<Air
  */
 export async function listRecords(
   table: string,
-  opts: { view?: string; fields?: string[]; filterByFormula?: string; maxRecords?: number; sort?: { field: string; direction?: "asc" | "desc" }[] } = {}
+  opts: {
+    view?: string;
+    fields?: string[];
+    filterByFormula?: string;
+    maxRecords?: number;
+    sort?: { field: string; direction?: "asc" | "desc" }[];
+    /**
+     * Raise the page ceiling for a table that is genuinely larger than the
+     * default guard. Contracts Monthly is the live example: it exceeded 2,500
+     * rows on the first read, so the default would report a truncated answer
+     * for any unfiltered query against it. Filtering is still the right fix —
+     * at 220ms between pages a 10,000-row fetch costs ~22s, which no chat turn
+     * should spend — so treat this as the escape hatch, not the default.
+     */
+    maxPages?: number;
+  } = {}
 ): Promise<ListResult> {
   const records: AirtableRecord[] = [];
+  const pageCeiling = Math.max(1, opts.maxPages ?? MAX_PAGES);
   let offset: string | undefined;
   let pages = 0;
 
@@ -186,7 +202,7 @@ export async function listRecords(
     records.push(...(page.records || []));
     offset = page.offset;
     pages++;
-  } while (offset && pages < MAX_PAGES);
+  } while (offset && pages < pageCeiling);
 
   return {
     records,
