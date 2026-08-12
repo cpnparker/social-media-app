@@ -93,12 +93,19 @@ export async function POST(req: NextRequest) {
     // has more than one reader. Reading raw type_visibility here treated those
     // as solo and unlocked personal-scope data for a voice turn that is then
     // persisted into a thread other people read.
-    const { count: shareCount } = await intelligenceDb
+    const { count: shareCount, error: shareErr } = await intelligenceDb
       .from("ai_shares")
       .select("id_conversation", { count: "exact", head: true })
       .eq("id_conversation", conversation.id_conversation);
     const isTeamThread =
       conversation.type_visibility === "team" ||
+      // FAIL CLOSED. supabase-js resolves a failed query as {count:null,error},
+      // and `(null || 0) > 0` is false — so discarding the error turned "we
+      // could not tell how many readers this thread has" into "it has one",
+      // unlocking finance, personal MeetingBrain, Slack DMs and private
+      // memories inside a thread other people read. Not knowing must mean
+      // treating it as shared.
+      shareErr != null ||
       (shareCount || 0) > 0 ||
       conversation.user_created !== userId;
 

@@ -143,6 +143,8 @@ export default function VoiceDock({
   const pendingToolsRef = useRef(0);
   const closingRef = useRef(false);
   const rafRef = useRef<number>(0);
+  /** Drives the wake-session closers independently of rAF — see shouldClose. */
+  const idleTimerRef = useRef<number | null>(null);
   // Graceful ending: set when the model calls end_conversation — the session
   // closes once its sign-off audio finishes playing.
   const endingRef = useRef(false);
@@ -163,6 +165,45 @@ export default function VoiceDock({
    * spreadsheet is the slowest on this surface.
    */
   const turnEpochRef = useRef(0);
+  /**
+   * Holds the live mic OFF until the wake engine's captured command has been
+   * flushed into the session.
+   *
+   * On the trained-wake path the same sentence otherwise reaches the server
+   * twice: the session mic starts appending at session.updated while the wake
+   * engine is still capturing, so a truncated live tail arrives first and the
+   * full buffer arrives after. Server VAD closes a turn on each and creates a
+   * response for BOTH — two concurrent responses, which is the split render
+   * that changes voice mid-reply. Neither responseActiveRef nor the turn epoch
+   * catches it, because the client created neither response.
+   */
+  const micHoldRef = useRef(false);
+  /**
+   * Identifies the CURRENT session. Bumped on every connect.
+   *
+   * VoiceDock stays mounted across sessions, so wsRef and the counters below
+   * are shared by all of them. A tool call still in flight when a session tears
+   * down would otherwise resolve into whatever socket wsRef points at NEXT:
+   * submitting a function_call_output whose call_id does not exist there, then
+   * creating a response for it — concurrently with the new session's own
+   * greeting. Two responses on turn one, from a conversation that already
+   * ended.
+   *
+   * Every post-await send is therefore conditional on still being the session
+   * that started the call.
+   */
+  const sessionSeqRef = useRef(0);
+  /**
+   * Outstanding tool calls PER TURN, rather than one counter for the session.
+   *
+   * A single counter handed the continuation decision to whichever call
+   * finished last, regardless of which turn owned it. With two tools straddling
+   * a barge-in, the live turn's tool would resolve first and be skipped for not
+   * being last, and the stale one would resolve last and be skipped for being
+   * the wrong epoch — so no continuation was ever created and the answer was
+   * silently dropped.
+   */
+  const pendingByEpochRef = useRef<Map<number, number>>(new Map());
   /** The opening response (command answer or greeting) is sent exactly once,
    *  AFTER session.updated — sending before the config landed made the
    *  greeting speak in xAI's default voice ("two voices" bug). */
@@ -254,6 +295,10 @@ export default function VoiceDock({
     if (closingRef.current) return;
     closingRef.current = true;
     cancelAnimationFrame(rafRef.current);
+    if (idleTimerRef.current !== null) {
+      clearInterval(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
     persistTranscript(true);
     try { wsRef.current?.close(); } catch { /* noop */ }
     wsRef.current = null;
@@ -340,6 +385,10 @@ export default function VoiceDock({
 
         const ws = new WebSocket(cfg.wsUrl, [`xai-client-secret.${cfg.token}`]);
         wsRef.current = ws;
+        // Claim the session identity here, beside the socket it names, so an
+        // in-flight tool call from a previous session can tell that its turn —
+        // and its socket — are gone.
+        sessionSeqRef.current += 1;
 
         // Opening turn: answer the wake-command immediately ("Orac, what
         // meetings have I had today") or give the short wake greeting.
@@ -351,7 +400,11 @@ export default function VoiceDock({
           if (initialAudioPromise) {
             const timeout = new Promise<null>((r) => setTimeout(() => r(null), 8000));
             const audio = await Promise.race([initialAudioPromise(), timeout]);
-            if (closingRef.current || ws.readyState !== WebSocket.OPEN) return;
+            // Released on EVERY path out of here, including the early returns
+            // and the timeout — a hold that leaks leaves the session deaf,
+            // which is worse than the double-send it prevents.
+            const releaseMic = () => { micHoldRef.current = false; };
+            if (closingRef.current || ws.readyState !== WebSocket.OPEN) { releaseMic(); return; }
             if (audio && audio.length > 0) {
               const rate = audioCtxRef.current?.sampleRate || 24000;
               const { resampleLinear } = await import("@/lib/voice/oww-detector");
@@ -368,8 +421,12 @@ export default function VoiceDock({
                 );
               }
               setStatusBoth("thinking");
+              // Release only AFTER the whole buffer is queued, so no live
+              // fragment can interleave with the flushed command.
+              releaseMic();
               return;
             }
+            releaseMic();
             // No command captured — fall through to the greeting
           }
           if (initialCommand) {
@@ -442,6 +499,17 @@ export default function VoiceDock({
             })
           );
 
+          // Arm the hold BEFORE the processor exists, so not a single live
+          // frame can reach the server ahead of the flushed wake command.
+          micHoldRef.current = !!initialAudioPromise;
+          // Per-session state, reset on connect. VoiceDock stays mounted
+          // across sessions, so a counter left non-zero by a previous
+          // session's abandoned tool call would wedge this one's
+          // continuations permanently.
+          pendingToolsRef.current = 0;
+          pendingByEpochRef.current = new Map();
+          turnEpochRef.current = 0;
+
           const source = ctx.createMediaStreamSource(stream);
           micSourceRef.current = source;
           const analyser = ctx.createAnalyser();
@@ -450,7 +518,11 @@ export default function VoiceDock({
           const processor = ctx.createScriptProcessor(2048, 1, 1);
           processorRef.current = processor;
           processor.onaudioprocess = (e) => {
-            if (pausedRef.current || ws.readyState !== WebSocket.OPEN) return;
+            // micHoldRef: on the wake path the captured command has not been
+            // flushed yet, and appending live audio now would deliver the same
+            // sentence twice. Dropped rather than queued on purpose — this is
+            // the tail of audio the wake engine already holds in full.
+            if (pausedRef.current || micHoldRef.current || ws.readyState !== WebSocket.OPEN) return;
             const f32 = e.inputBuffer.getChannelData(0);
             ws.send(
               JSON.stringify({
@@ -472,6 +544,33 @@ export default function VoiceDock({
           setTimeout(sendInitial, 2500);
 
           const data = new Uint8Array(analyser.frequencyBinCount);
+
+          /**
+           * Should this wake session close now?
+           *
+           * Lives OUTSIDE the animation frame because browsers stop rAF in a
+           * hidden tab. Both closers used to run only inside the tick, so
+           * switching tabs left the session open with the microphone streaming
+           * to xAI indefinitely — while the consent copy says it returns to
+           * local-only listening. Driven by an interval as well, which
+           * browsers throttle but do not stop.
+           */
+          const shouldClose = () => {
+            if (closingRef.current || !wakeSession || pausedRef.current) return false;
+            if (statusRef.current !== "listening") return false;
+            // Alexa-style follow-up window after Orac finishes speaking.
+            if (followUpDeadlineRef.current !== null && Date.now() > followUpDeadlineRef.current) return true;
+            // Absolute backstop, so a missed sign-off cannot leave it running.
+            return Date.now() - lastUserSpeechRef.current > SILENCE_END_MS;
+          };
+          const closeIfIdle = () => {
+            if (!shouldClose()) return false;
+            teardown();
+            onClose();
+            return true;
+          };
+          idleTimerRef.current = window.setInterval(closeIfIdle, 1000);
+
           const tick = () => {
             if (closingRef.current) return;
             analyser.getByteTimeDomainData(data);
@@ -482,31 +581,7 @@ export default function VoiceDock({
             }
             setLevel(Math.min(1, Math.sqrt(sum / data.length) * 4));
             setElapsed(Math.floor((Date.now() - sessionStartRef.current) / 1000));
-            // Wake sessions: Alexa-style follow-up window — close shortly
-            // after Orac finishes speaking unless the user follows up.
-            if (
-              wakeSession &&
-              !pausedRef.current &&
-              statusRef.current === "listening" &&
-              followUpDeadlineRef.current !== null &&
-              Date.now() > followUpDeadlineRef.current
-            ) {
-              teardown();
-              onClose();
-              return;
-            }
-            // Absolute inactivity backstop so a missed sign-off can't leave
-            // the meter running.
-            if (
-              wakeSession &&
-              !pausedRef.current &&
-              statusRef.current === "listening" &&
-              Date.now() - lastUserSpeechRef.current > SILENCE_END_MS
-            ) {
-              teardown();
-              onClose();
-              return;
-            }
+            if (closeIfIdle()) return;
             rafRef.current = requestAnimationFrame(tick);
           };
           rafRef.current = requestAnimationFrame(tick);
@@ -584,6 +659,12 @@ export default function VoiceDock({
               // Retire this turn: any tool still in flight belongs to it, and
               // its result must not create a response over the new utterance.
               turnEpochRef.current += 1;
+              // Speaking again cancels a pending goodbye. end_conversation set
+              // endingRef when the user said "thanks, that's all"; if they then
+              // interrupt with one more question, they get their answer and the
+              // session was killed the moment its audio drained — closing on an
+              // intent they had already abandoned.
+              endingRef.current = false;
               // New utterance starting — give id-less transcription events a
               // fresh fallback key so utterances never merge into each other.
               utteranceCounterRef.current += 1;
@@ -668,41 +749,71 @@ export default function VoiceDock({
               }
               pendingToolsRef.current += 1;
               setActiveTool(name);
+              // Both captured BEFORE the await: which turn asked for this, and
+              // which session. Everything after the await is checked against
+              // them, because both can change while a fetch is in flight.
               const toolEpoch = turnEpochRef.current;
+              const toolSession = sessionSeqRef.current;
+              const toolWs = ws;
+              pendingByEpochRef.current.set(toolEpoch, (pendingByEpochRef.current.get(toolEpoch) || 0) + 1);
+              let toolOutput: string;
               try {
                 const toolRes = await fetch("/api/ai/voice/tools", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ conversationId, name, arguments: msg.arguments }),
                 });
-                const { output } = await toolRes.json();
-                wsRef.current?.send(
-                  JSON.stringify({
-                    type: "conversation.item.create",
-                    item: { type: "function_call_output", call_id, output: output || "Tool returned no output." },
-                  })
-                );
-              } catch (err: any) {
-                wsRef.current?.send(
-                  JSON.stringify({
-                    type: "conversation.item.create",
-                    item: { type: "function_call_output", call_id, output: `Tool failed: ${err.message}` },
-                  })
-                );
-              } finally {
-                pendingToolsRef.current -= 1;
-                if (pendingToolsRef.current === 0) {
-                  setActiveTool(null);
-                  // Only continue the turn this tool was called for. If the
-                  // user barged in while it was in flight, the tool OUTPUT is
-                  // still submitted above — the model will use it on its next
-                  // VAD-triggered turn, which is what the barge-in handler
-                  // intends — but creating a response here would race that
-                  // turn and split the reply across two renders.
-                  if (toolEpoch === turnEpochRef.current) {
-                    requestResponse(); // queued until the announcing response finishes
-                  }
+                // A non-2xx was destructured as {output: undefined} and reached
+                // the model as "Tool returned no output." — indistinguishable
+                // from an empty result, so a 403 read as "there is no data".
+                if (!toolRes.ok) {
+                  const body = await toolRes.text().catch(() => "");
+                  let detail = body.slice(0, 300);
+                  try { detail = JSON.parse(body)?.error || detail; } catch { /* not JSON */ }
+                  toolOutput =
+                    `The ${name} tool could not run (HTTP ${toolRes.status}): ${detail || "no detail"}. ` +
+                    `Tell the user briefly that this could not be checked — do NOT answer from other data ` +
+                    `and do NOT say the information does not exist.`;
+                } else {
+                  const parsed = await toolRes.json().catch(() => null);
+                  toolOutput =
+                    parsed && typeof parsed.output === "string" && parsed.output
+                      ? parsed.output
+                      : `The ${name} tool returned nothing usable. Say you could not retrieve it; do NOT invent a figure.`;
                 }
+              } catch (err: any) {
+                toolOutput = `Tool failed: ${err?.message || err}. Say you could not retrieve it; do NOT invent a figure.`;
+              } finally {
+                const left = (pendingByEpochRef.current.get(toolEpoch) || 1) - 1;
+                if (left > 0) pendingByEpochRef.current.set(toolEpoch, left);
+                else pendingByEpochRef.current.delete(toolEpoch);
+                pendingToolsRef.current = Math.max(0, pendingToolsRef.current - 1);
+                if (pendingByEpochRef.current.size === 0) setActiveTool(null);
+              }
+
+              // The session that started this call must still be the live one.
+              // Otherwise the output would land in the NEXT session's socket,
+              // under a call_id that does not exist there, and the continuation
+              // below would speak an answer belonging to a finished conversation
+              // over the new session's greeting.
+              if (toolSession !== sessionSeqRef.current || closingRef.current || toolWs.readyState !== WebSocket.OPEN) {
+                break;
+              }
+
+              toolWs.send(
+                JSON.stringify({
+                  type: "conversation.item.create",
+                  item: { type: "function_call_output", call_id, output: toolOutput },
+                })
+              );
+
+              // Continue only the turn this tool belongs to, and only once its
+              // OWN outstanding calls are done. A barged-in turn still submits
+              // its output above — the model picks it up on the next VAD turn,
+              // as the barge-in handler intends — but must not create a
+              // response over the new utterance.
+              if (toolEpoch === turnEpochRef.current && !pendingByEpochRef.current.has(toolEpoch)) {
+                requestResponse();
               }
               break;
             }

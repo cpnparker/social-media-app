@@ -94,12 +94,19 @@ export async function POST(req: NextRequest) {
     // persisted into the owner's thread for all of them to read. Using raw
     // type_visibility here meant personal MeetingBrain tasks, Slack DMs and
     // private memories were fully unlocked inside a shared thread.
-    const { count: shareCount } = await intelligenceDb
+    const { count: shareCount, error: shareErr } = await intelligenceDb
       .from("ai_shares")
       .select("id_conversation", { count: "exact", head: true })
       .eq("id_conversation", conversationId);
     const visibility: "private" | "team" =
       conversation.type_visibility === "team" ||
+      // FAIL CLOSED — supabase-js resolves a failed query as {count:null,error},
+      // and `(null || 0) > 0` is false, so discarding the error turned "cannot
+      // tell how many readers" into "only one" and unlocked personal-scope data
+      // in a shared thread. This gate decides whether Slack DMs, personal
+      // MeetingBrain reports and finance figures are reachable; not knowing has
+      // to mean treating the thread as shared.
+      shareErr != null ||
       (shareCount || 0) > 0 ||
       conversation.user_created !== userId
         ? "team"
