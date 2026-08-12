@@ -13,9 +13,24 @@ import {
   SEARCH_MEMORY_OPENAI_TOOL,
   MEETINGBRAIN_OPENAI_TOOL,
   SLACK_OPENAI_TOOL,
+  QUERY_XERO_OPENAI_TOOL,
+  QUERY_RESOURCING_OPENAI_TOOL,
 } from "./providers";
 
-export const VOICE_MODEL = "grok-voice-latest";
+/**
+ * The voice model, overridable without a deploy.
+ *
+ * `grok-voice-latest` is an alias, which is convenient until it is not: it
+ * moves under you, and there is no way to tell from here which concrete model
+ * it currently resolves to. xAI publishes `grok-voice-think-fast-1.0` and
+ * `grok-voice-think-fast-2.0`, so the default now names a version explicitly —
+ * and XAI_VOICE_MODEL overrides it, so a bad release can be rolled back by
+ * changing an env var rather than shipping code.
+ *
+ * If this model id is ever wrong the mint fails with a clear 4xx from xAI
+ * rather than degrading, so a mistake here is loud.
+ */
+export const VOICE_MODEL = (process.env.XAI_VOICE_MODEL || "grok-voice-think-fast-2.0").trim();
 export const VOICE_NAME = "ara"; // warm, conversational — chosen 2026-06-10
 export const VOICE_SAMPLE_RATE = 24000;
 /** $0.05/min → tenths-of-cents per minute for ai_usage logging */
@@ -70,15 +85,50 @@ const VOICE_TOOL_DEFS: { type: string; function: { name: string; description?: s
   END_CONVERSATION_TOOL,
 ] as any[];
 
-/** Names the tools route will execute. Anything else is rejected. */
-export const VOICE_TOOL_NAMES = VOICE_TOOL_DEFS.map((t) => t.function!.name as string);
+/**
+ * Tools voice offers only to users holding the matching flag.
+ *
+ * This list exists because of a real failure. Asked what the forecast profit
+ * and loss looked like, voice answered with content-unit counts and then said
+ * the data did not exist. It does — the revenue forecast workbook is a report
+ * inside query_xero — but voice's tool list was a fixed array query_xero was
+ * never added to. The model gave the only answer its tools allowed, and
+ * reported a gap in its own capability as a gap in the company's data.
+ */
+const VOICE_GATED_TOOL_DEFS: { type: string; function: { name: string; description?: string; parameters?: unknown } }[] = [
+  QUERY_XERO_OPENAI_TOOL,
+  QUERY_RESOURCING_OPENAI_TOOL,
+] as any[];
+
+/**
+ * Names the tools route will ACCEPT. Membership is not entitlement — it only
+ * means the name is spellable. The route re-checks each gated tool's flag
+ * server-side, because this list travels to the browser and whatever comes
+ * back from there is a request, not a permission.
+ */
+export const VOICE_TOOL_NAMES = [...VOICE_TOOL_DEFS, ...VOICE_GATED_TOOL_DEFS].map(
+  (t) => t.function!.name as string
+);
+
+/** Which per-user flag each gated tool needs. */
+export const VOICE_GATED_TOOLS: Record<string, "finance" | "resourcing"> = {
+  query_xero: "finance",
+  query_resourcing: "resourcing",
+};
 
 /**
  * Realtime-API tool format: flattened {type, name, description, parameters}
  * (chat-completions nests these under `function`).
  */
-export function getVoiceTools() {
-  return VOICE_TOOL_DEFS.map((t) => ({
+export function getVoiceTools(access: { finance?: boolean; resourcing?: boolean } = {}) {
+  const defs = [
+    ...VOICE_TOOL_DEFS,
+    ...VOICE_GATED_TOOL_DEFS.filter((t) => {
+      const flag = VOICE_GATED_TOOLS[t.function!.name];
+      return flag === "finance" ? !!access.finance : flag === "resourcing" ? !!access.resourcing : false;
+    }),
+  ];
+  return defs.map((t) => ({
     type: "function",
     name: t.function!.name,
     description: t.function!.description,
@@ -102,6 +152,10 @@ export function buildVoiceInstructions(ctx: {
   /** All registered client names — lets the model normalize phonetic
    *  transcriptions ("Gelderma" → "Galderma") before searching. */
   clientRoster?: string[];
+  /** Mirrors the gated tools actually offered, so the guidance for a tool
+   *  never appears without the tool — or the tool without its guidance. */
+  financeAccess?: boolean;
+  resourcingAccess?: boolean;
 }): string {
   const lines: string[] = [];
 
@@ -146,6 +200,26 @@ Before any tool call, say a SHORT acknowledgment first ("let me check", "one sec
 
 # Ending the conversation
 When the user clearly signals they're done ("OK thanks", "that's all", "perfect, goodbye"), call end_conversation, then give ONE short warm sign-off ("Anytime — talk soon."). Don't call it for pauses, thinking out loud, or topic changes; if unsure, keep listening.`);
+
+  // Money and capacity questions, named explicitly. Without this the model
+  // reaches for query_engine — which knows content units and nothing about
+  // revenue — and then reports that the company has no financial data, because
+  // from inside its tool list that is what it looks like.
+  if (ctx.financeAccess) {
+    lines.push(`
+# Money questions
+query_xero is the ONLY source for anything financial, and it covers more than invoices:
+- report:"forecast" — the LIVE revenue forecast workbook: projected revenue by month and client, weighted scenarios, and COSTS. This is what answers "how is the forecast looking", "what does profit and loss look like for the year", "are we going to hit the number". Use the sheet parameter for a specific sheet, and the match parameter for specific row labels like "net profit" or "gross margin".
+- report:"profit_and_loss" — actual P&L for a period, as booked in Xero.
+- report:"unpaid_invoices", "aged_receivables", "revenue_by_client" — who owes what, and what has been invoiced.
+NEVER answer a money question from query_engine. It knows content units and contracts, not revenue or cost, so answering from it silently swaps "what are we earning" for "how much work is in the pipeline" — a different question with a plausible-sounding number. If the forecast call fails, say the forecast could not be reached; do NOT tell the user the company has no financial data.`);
+  }
+
+  if (ctx.resourcingAccess) {
+    lines.push(`
+# Capacity questions
+query_resourcing covers team capacity, contracts and delivery against plan: report:"capacity" for who has room, "horizon" for when we run short over the coming months, "monthly_outlook" for one month company-wide, "contract_health" for renewals and contracts ending. These are PLAN figures. Never present a null as zero — it means not recorded, and reporting an unrecorded plan as zero describes a fully booked person as free.`);
+  }
 
   if (ctx.clientRoster && ctx.clientRoster.length > 0) {
     lines.push(`

@@ -139,6 +139,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Could not start voice session" }, { status: 502 });
     }
 
+    // Per-user flags, each in its OWN select. An unknown column fails the whole
+    // PostgREST select, and supabase-js resolves that as {data:null} rather
+    // than throwing — so a combined query would let a missing migration revoke
+    // finance access silently rather than just deny the newer flag.
+    let financeAccess = false;
+    let resourcingAccess = false;
+    try {
+      const { data } = await intelligenceDb
+        .from("users_access")
+        .select("flag_access_finance")
+        .eq("id_workspace", conversation.id_workspace)
+        .eq("user_target", userId)
+        .maybeSingle();
+      financeAccess = (data as any)?.flag_access_finance === 1;
+    } catch { /* no row / pre-migration = denied */ }
+    try {
+      const { data } = await intelligenceDb
+        .from("users_access")
+        .select("flag_access_resourcing")
+        .eq("id_workspace", conversation.id_workspace)
+        .eq("user_target", userId)
+        .maybeSingle();
+      resourcingAccess = (data as any)?.flag_access_resourcing === 1;
+    } catch { /* no row / pre-migration = denied */ }
+
+    // Finance mirrors the text pipeline: a multi-reader thread is read by
+    // everyone, so receivables and forecasts do not belong in one. Resourcing
+    // is deliberately NOT visibility-gated — capacity is a team conversation.
+    const voiceFinance = financeAccess && !isTeamThread;
+
     const instructions = buildVoiceInstructions({
       userName: session.user?.name || null,
       workspaceName: null,
@@ -146,6 +176,8 @@ export async function POST(req: NextRequest) {
       clientId,
       clientRoster,
       isTeamThread,
+      financeAccess: voiceFinance,
+      resourcingAccess,
       now: new Date().toLocaleString("en-GB", {
         timeZone: "Europe/Zurich",
         weekday: "long",
@@ -164,7 +196,7 @@ export async function POST(req: NextRequest) {
       voice: VOICE_NAME,
       sampleRate: VOICE_SAMPLE_RATE,
       instructions,
-      tools: getVoiceTools(),
+      tools: getVoiceTools({ finance: voiceFinance, resourcing: resourcingAccess }),
       isTeamThread,
       clientId,
     });

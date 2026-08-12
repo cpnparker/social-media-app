@@ -6,7 +6,7 @@ import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { checkConversationAccess } from "@/lib/ai/access";
 import { hasEngineAiAccess } from "@/lib/permissions";
-import { VOICE_TOOL_NAMES } from "@/lib/ai/voice";
+import { VOICE_TOOL_NAMES, VOICE_GATED_TOOLS } from "@/lib/ai/voice";
 import {
   queryEngine,
   lookupClientContext,
@@ -16,6 +16,7 @@ import {
   formatToolResult,
   formatMeetingBrainResult,
   formatSlackResult,
+  formatXeroResult,
 } from "@/lib/ai/providers";
 
 export const maxDuration = 60;
@@ -105,6 +106,40 @@ export async function POST(req: NextRequest) {
         : "private";
     const workspaceId: string = conversation.id_workspace;
 
+    // The tool list was handed to the BROWSER at session mint. What comes back
+    // is a request, not a permission, so every gated tool is re-checked here
+    // against the flag — never against the fact that the name was offered.
+    // Each flag reads in its own select: an unknown column fails the whole
+    // PostgREST select, so a combined query would let a missing migration
+    // revoke finance rather than merely deny the newer flag.
+    const gate = VOICE_GATED_TOOLS[name];
+    if (gate) {
+      const column = gate === "finance" ? "flag_access_finance" : "flag_access_resourcing";
+      let granted = false;
+      try {
+        const { data } = await intelligenceDb
+          .from("users_access")
+          .select(column)
+          .eq("id_workspace", workspaceId)
+          .eq("user_target", userId)
+          .maybeSingle();
+        granted = (data as any)?.[column] === 1;
+      } catch { /* pre-migration or no row = denied */ }
+
+      // Finance additionally follows the text pipeline's audience rule: a
+      // multi-reader thread must not surface receivables or forecasts.
+      if (gate === "finance" && visibility === "team") granted = false;
+
+      if (!granted) {
+        return NextResponse.json({
+          output:
+            gate === "finance"
+              ? "You do not have finance access in this workspace, or this is a shared thread where financial figures are not available. Say so briefly — do NOT answer the question from other data."
+              : "You do not have resourcing access in this workspace. Say so briefly — do NOT answer the question from other data.",
+        });
+      }
+    }
+
     let output: string;
 
     switch (name) {
@@ -155,6 +190,24 @@ export async function POST(req: NextRequest) {
           visibility,
         });
         output = formatMeetingBrainResult(args.report, result);
+        break;
+      }
+      case "query_xero": {
+        const result =
+          args.report === "forecast"
+            ? await (await import("@/lib/finance/forecast")).queryForecast(args.sheet, args.match)
+            : await (await import("@/lib/xero/client")).queryXero(args.report, workspaceId, {
+                date_from: args.date_from,
+                date_to: args.date_to,
+                client_name: args.client_name,
+                audience: visibility === "team" ? "team" : "solo",
+              });
+        output = formatXeroResult(args.report, result);
+        break;
+      }
+      case "query_resourcing": {
+        const { queryResourcing, formatResourcingResult } = await import("@/lib/airtable/query");
+        output = formatResourcingResult(await queryResourcing(args));
         break;
       }
       case "query_slack": {
