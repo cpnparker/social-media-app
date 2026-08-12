@@ -3,7 +3,7 @@ import { auth } from "@/lib/auth";
 import { verifyWorkspaceMembership } from "@/lib/permissions";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { airtableConfigured } from "@/lib/airtable/client";
-import { probeIdentity, runPhase0 } from "@/lib/airtable/introspect";
+import { monthCoverage, probeIdentity, runPhase0 } from "@/lib/airtable/introspect";
 
 /**
  * GET /api/airtable/status[?workspaceId=…][&schema=1]
@@ -71,9 +71,10 @@ export async function GET(req: NextRequest) {
 
   const wantSchema = req.nextUrl.searchParams.get("schema") === "1";
   const wantProbe = req.nextUrl.searchParams.get("probe") === "1";
+  const wantMonths = req.nextUrl.searchParams.get("months") === "1";
 
-  // Without ?schema=1 or ?probe=1 this is a cheap liveness check for the card.
-  if (!wantSchema && !wantProbe) {
+  // Without a diagnostic flag this is a cheap liveness check for the card.
+  if (!wantSchema && !wantProbe && !wantMonths) {
     try {
       const findings = await runPhase0();
       return NextResponse.json({
@@ -92,6 +93,9 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    if (wantMonths) {
+      return NextResponse.json({ configured: true, connected: true, ...(await monthCoverage()) });
+    }
     if (wantProbe) {
       const view = req.nextUrl.searchParams.get("view") || undefined;
       return NextResponse.json({ configured: true, connected: true, identity: await probeIdentity({ view }) });

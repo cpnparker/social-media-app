@@ -248,6 +248,55 @@ export async function probeIdentity(opts: { view?: string } = {}): Promise<Ident
   return out;
 }
 
+export interface MonthCoverage {
+  /** The primary text label, verbatim — its format is not knowable from schema. */
+  month: string;
+  order: string | null;
+  /** The date field, which may or may not be populated on every row. */
+  date: string | null;
+  /** How many Team resourcing rows link to this month — i.e. is capacity loaded. */
+  capacityRows: number;
+}
+
+/**
+ * How far the resourcing plan actually reaches, and by which column.
+ *
+ * This exists because "the plan runs to June 2025" is a claim the reports make
+ * to justify refusing an answer, and a refusal built on a misread column is
+ * indistinguishable from a refusal built on a real gap. `Monthly resourcing`
+ * carries three candidate month identifiers — a text `Month` (the primary
+ * field), a text `Order`, and a `Date` — and only reading the rows tells you
+ * which are populated and which agree.
+ *
+ * Also counts the Team resourcing rows per month: a month can exist in the
+ * plan with no capacity loaded against it, which is a different gap and needs
+ * a different answer.
+ */
+export async function monthCoverage(): Promise<{ months: MonthCoverage[]; teamResourcingRows: number; datePopulated: number }> {
+  const monthly = await listRecords("Monthly resourcing", { fields: ["Month", "Order", "Date"] });
+  const resourcing = await listRecords("Team resourcing", { fields: ["Months"] });
+
+  const capacityByMonthId = new Map<string, number>();
+  for (const row of resourcing.records) {
+    const months = row.fields["Months"];
+    if (!Array.isArray(months)) continue;
+    for (const id of months) capacityByMonthId.set(String(id), (capacityByMonthId.get(String(id)) || 0) + 1);
+  }
+
+  const months = monthly.records.map((r) => ({
+    month: String(r.fields["Month"] ?? ""),
+    order: r.fields["Order"] == null ? null : String(r.fields["Order"]),
+    date: r.fields["Date"] == null ? null : String(r.fields["Date"]),
+    capacityRows: capacityByMonthId.get(r.id) || 0,
+  }));
+
+  return {
+    months,
+    teamResourcingRows: resourcing.count,
+    datePopulated: months.filter((m) => m.date).length,
+  };
+}
+
 /** Full Phase 0: schema + analysis, optionally with row counts (extra API calls). */
 export async function runPhase0(opts: { withCounts?: boolean } = {}): Promise<Phase0Findings> {
   const { tables } = await getBaseSchema();
