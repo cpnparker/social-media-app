@@ -34,20 +34,53 @@ export const DISCIPLINES = ["Account Management", "Text", "Video", "Visuals", "S
 export type Discipline = (typeof DISCIPLINES)[number];
 
 /**
- * Capacity and demand column names per discipline.
+ * Per-person capacity columns on `Team resourcing`.
  *
- * AM is the asymmetric one: `Team resourcing` has `AM capacity` but no
- * "AM CUs booked" lookup to sit beside it. That is a gap in the base, not an
- * oversight here — AM headroom is simply not derivable at person × month
- * grain, and the report says so rather than inventing it from a subtraction
- * with a missing operand.
+ * CAPACITY IS PER PERSON. DEMAND IS NOT — and the base's own column names hide
+ * that, which produced a live wrong answer worth recording here.
+ *
+ * `Team resourcing` sits beside `Total CUs booked`, `Text CUs booked` and the
+ * rest, which read like that person's bookings. They are not. The table has
+ * exactly two link fields — `Team member` and `Months` — and an Airtable
+ * lookup must traverse a link, so those columns are lookups through `Months`:
+ * the COMPANY-WIDE monthly figure, copied identically onto every person's row.
+ * Subtracting one from an individual's capacity produced a headroom figure
+ * that was negative for almost everybody, which is the signature of an
+ * aggregation-level mismatch rather than an overloaded team.
+ *
+ * How demand actually works, per the people who built the base: total booked
+ * CUs come from Contracts via Contracts Monthly, and are split across formats
+ * by the ratio fields on `Monthly resourcing` (`Text ratio`, `Video ratio`,
+ * `Visuals ratio`, `Strategy ratio`, `Social publishing ratio`) using average
+ * commissioning rates. That split is then compared against the SUM of team
+ * capacity for the format to give the monthly +/- and the freelancer need.
+ *
+ * So per-format demand is a company-level quantity by construction. There is
+ * no per-person production demand to compare against, and this file must not
+ * manufacture one. Account Management is the exception — allocation there is
+ * per person, through the `Account Manage` join — and is handled separately.
  */
-const CAPACITY_COLUMNS: Record<Discipline, { capacity: string; hours: string; booked: string | null }> = {
-  "Account Management": { capacity: "AM capacity", hours: "AM capacity time (hours)", booked: null },
-  Text: { capacity: "Text production capacity", hours: "Text production capacity time (hours)", booked: "Text CUs booked" },
-  Video: { capacity: "Video production capacity", hours: "Video production capacity time (hours)", booked: "Video CUs booked" },
-  Visuals: { capacity: "Visuals production capacity", hours: "Visuals production capacity time (hours)", booked: "Visuals CUs booked" },
-  Strategy: { capacity: "Strategy production capacity", hours: "Strategy production capacity time (hours)", booked: "Strategy CUs booked" },
+const CAPACITY_COLUMNS: Record<Discipline, { capacity: string; hours: string | null }> = {
+  "Account Management": { capacity: "AM capacity", hours: "AM capacity time (hours)" },
+  Text: { capacity: "Text production capacity", hours: "Text production capacity time (hours)" },
+  Video: { capacity: "Video production capacity", hours: "Video production capacity time (hours)" },
+  Visuals: { capacity: "Visuals production capacity", hours: "Visuals production capacity time (hours)" },
+  Strategy: { capacity: "Strategy production capacity", hours: "Strategy production capacity time (hours)" },
+};
+
+/**
+ * Company-level demand columns, where demand actually lives.
+ *
+ * Note `Social publishing ratio` has no capacity line to compare against — it
+ * is a fifth format in the ratio split but not a discipline anyone's capacity
+ * is recorded under.
+ */
+const MONTHLY_DEMAND: Record<Discipline, { capacity: string; vsDemand: string; freelancer: string | null; ratio: string | null }> = {
+  "Account Management": { capacity: "AM capacity", vsDemand: "AM capacity vs demand", freelancer: null, ratio: null },
+  Text: { capacity: "Text capacity", vsDemand: "Text capacity vs demand", freelancer: "Text freelancer estimate", ratio: "Text ratio" },
+  Video: { capacity: "Video capacity", vsDemand: "Video capacity vs demand", freelancer: "Video freelancer estimate", ratio: "Video ratio" },
+  Visuals: { capacity: "Visuals capacity", vsDemand: "Visuals capacity vs demand", freelancer: "Visuals freelancer estimate", ratio: "Visuals ratio" },
+  Strategy: { capacity: "Strategy capacity", vsDemand: "Strategy capacity vs demand", freelancer: "Strategy freelancer estimate", ratio: "Strategy ratio" },
 };
 
 /** Booking statuses that mean the work is live. "Active" alone is not enough. */
@@ -241,15 +274,19 @@ export interface PersonCapacity {
   /** Engine user id where the base carries one. Absent means unlinked — which
    *  is NOT the same as having delivered nothing. */
   engineUserId: number | null;
-  disciplines: {
-    discipline: Discipline;
+  disciplines: { discipline: Discipline; capacityCu: number | null; capacityHours: number | null }[];
+  /**
+   * Account Management only, and only where the person has live allocations.
+   * `allocatedCu` is CURRENT-STATE — `Account Manage` has no month link — so
+   * it is a person's standing load, not this month's.
+   */
+  accountManagement: {
     capacityCu: number | null;
-    capacityHours: number | null;
-    bookedCu: number | null;
+    allocatedCu: number;
     headroomCu: number | null;
-    /** Why a figure is missing, when it is. */
-    note: string | null;
-  }[];
+    contracts: number;
+    allocationIsCurrentState: true;
+  } | null;
 }
 
 export interface CapacityData {
@@ -258,14 +295,34 @@ export interface CapacityData {
   people: PersonCapacity[];
   /** Named, because "13 people have no row" is actionable and a silent gap is not. */
   peopleWithoutPlan: string[];
+  /**
+   * Where production demand actually lives: company-wide, per format.
+   * There is no per-person production demand in the base to put beside it.
+   */
+  disciplineTotals: {
+    discipline: Discipline;
+    capacityCu: number | null;
+    demandCu: number | null;
+    demandOverCapacity: number | null;
+    freelancerEstimateChf: number | null;
+  }[];
 }
 
 /**
- * Per-person capacity and headroom for a month.
+ * Per-person capacity for a month, and — for Account Management only — headroom.
  *
- * Reads the live roster only — `Team` mixes live staff with leavers and
- * scenario placeholders, and counting a scenario row as a real person inflates
- * every capacity total.
+ * The asymmetry is the base's, not this file's. Capacity is recorded per person
+ * per month for all five disciplines. DEMAND is recorded per person only for
+ * Account Management, through the `Account Manage` join; production demand is a
+ * company-wide figure derived by splitting the month's booked CUs across formats
+ * by ratio. So "who personally has spare Text capacity" is not a question this
+ * base can answer, and the honest report gives capacity pools per person plus
+ * the company-level shortfall per format.
+ *
+ * An earlier version answered it anyway, by subtracting `Team resourcing.Text
+ * CUs booked` from a person's Text capacity. That column is a lookup through
+ * `Months` — the company total on every row — so it reported almost the entire
+ * team as over capacity. See CAPACITY_COLUMNS above.
  */
 export async function capacityReport(opts: { month?: string; person?: string; now?: Date } = {}): Promise<ReportResult<CapacityData>> {
   const now = opts.now || new Date();
@@ -285,11 +342,15 @@ export async function capacityReport(opts: { month?: string; person?: string; no
   assertFields(resourcingSchema, [
     "Team member",
     "Months",
-    ...DISCIPLINES.flatMap((d) => [CAPACITY_COLUMNS[d].capacity, CAPACITY_COLUMNS[d].hours]),
-    ...DISCIPLINES.map((d) => CAPACITY_COLUMNS[d].booked).filter((x): x is string => !!x),
+    ...DISCIPLINES.flatMap((d) =>
+      [CAPACITY_COLUMNS[d].capacity, CAPACITY_COLUMNS[d].hours].filter((x): x is string => !!x)
+    ),
   ]);
-  // The pairing that makes headroom wrong if it ever changes: scalar capacity
-  // against lookup demand. Catch a swap here rather than in the arithmetic.
+  // Pins the fact that made the first version wrong: the `* CUs booked` columns
+  // are LOOKUPS through Months — a company total on every person's row — while
+  // capacity beside them is a per-person scalar. If someone ever turns one into
+  // a genuine per-person rollup, this fails loudly and the report can start
+  // using it. Until then it stays out of the arithmetic entirely.
   assertFieldTypes(resourcingSchema, {
     "Text CUs booked": "multipleLookupValues",
     "Text production capacity": "currency",
@@ -308,7 +369,7 @@ export async function capacityReport(opts: { month?: string; person?: string; no
     const horizon = planHorizon(monthly.records);
     return ok(
       "capacity",
-      { month, planLoaded: false, people: [], peopleWithoutPlan: [] },
+      { month, planLoaded: false, people: [], peopleWithoutPlan: [], disciplineTotals: [] },
       [
         `The resourcing plan has no row for ${month}` +
           (horizon ? `; it currently runs to ${horizon}.` : ".") +
@@ -321,9 +382,12 @@ export async function capacityReport(opts: { month?: string; person?: string; no
     fields: [
       "Team member",
       "Months",
+      // Capacity only. The `* CUs booked` lookups are deliberately NOT fetched:
+      // they are company totals, and having them in the payload at all is how
+      // they ended up in a per-person subtraction.
       ...DISCIPLINES.flatMap((d) => {
         const c = CAPACITY_COLUMNS[d];
-        return [c.capacity, c.hours, ...(c.booked ? [c.booked] : [])];
+        return c.hours ? [c.capacity, c.hours] : [c.capacity];
       }),
     ],
   });
@@ -345,7 +409,7 @@ export async function capacityReport(opts: { month?: string; person?: string; no
     // needs saying differently — otherwise it reads as "nobody is available".
     return ok(
       "capacity",
-      { month, planLoaded: false, people: [], peopleWithoutPlan: [] },
+      { month, planLoaded: false, people: [], peopleWithoutPlan: [], disciplineTotals: [] },
       [
         `${month} exists in the plan but has no team capacity loaded against it. Nobody's capacity has been ` +
           `entered for that month — this does NOT mean the team is fully booked, and it does not mean they are free.`,
@@ -377,6 +441,32 @@ export async function capacityReport(opts: { month?: string; person?: string; no
     );
   }
 
+  // Per-person Account Management allocation — the only per-person demand the
+  // base holds. LIVE rows only: `Account Manage` carries a parallel set of
+  // Scenario rows for what-if planning, and counting those as real commitments
+  // would roughly double every manager's load.
+  const allocSchema = readSchema(tables, "Account Manage");
+  assertFields(allocSchema, ["Editorial team", "CU Manage", "Content Units", "live or scenario"]);
+  const allocRows = await listRecords("Account Manage", {
+    fields: ["Editorial team", "CU Manage", "Content Units", "live or scenario"],
+  });
+  if (allocRows.truncated) {
+    warnings.push("Account Manage was truncated — some account-management allocations are missing from this answer.");
+  }
+
+  const allocationByPerson = new Map<string, { cu: number; contracts: number }>();
+  for (const r of allocRows.records) {
+    if (String(r.fields["live or scenario"] ?? "").toLowerCase() !== "live") continue;
+    const member = firstLink(r.fields["Editorial team"]);
+    if (!member) continue;
+    const cu = cellNumber(r.fields["Content Units"]);
+    const contracts = Array.isArray(r.fields["CU Manage"]) ? (r.fields["CU Manage"] as unknown[]).length : 0;
+    const acc = allocationByPerson.get(member) || { cu: 0, contracts: 0 };
+    if (isNumber(cu)) acc.cu += cu;
+    acc.contracts += contracts;
+    allocationByPerson.set(member, acc);
+  }
+
   const people: PersonCapacity[] = [];
   const peopleWithoutPlan: string[] = [];
 
@@ -404,29 +494,26 @@ export async function capacityReport(opts: { month?: string; person?: string; no
     const disciplines = DISCIPLINES.map((discipline) => {
       const cols = CAPACITY_COLUMNS[discipline];
       const capacity = cellNumber(row.fields[cols.capacity]);
-      const hours = cellNumber(row.fields[cols.hours]);
-      const booked: Num = cols.booked ? cellNumber(row.fields[cols.booked]) : undefined;
-
-      let note: string | null = null;
-      if (!cols.booked) {
-        note = "Booked CUs are not tracked per person for Account Management, so headroom cannot be calculated.";
-      } else if (booked === AMBIGUOUS) {
-        note = "Booked CUs came back as several values rather than one, so headroom is not calculated.";
-      } else if (booked === undefined && isNumber(capacity)) {
-        note = "No booked CUs recorded for this discipline this month.";
-      }
-
-      const headroom = isNumber(capacity) && isNumber(booked) ? capacity - booked : null;
-
+      const hours = cols.hours ? cellNumber(row.fields[cols.hours]) : undefined;
       return {
         discipline,
         capacityCu: isNumber(capacity) ? capacity : null,
         capacityHours: isNumber(hours) ? hours : null,
-        bookedCu: isNumber(booked) ? booked : null,
-        headroomCu: headroom,
-        note,
       };
-    }).filter((d) => d.capacityCu !== null || d.bookedCu !== null);
+    }).filter((d) => d.capacityCu !== null);
+
+    const amCapacity = disciplines.find((d) => d.discipline === "Account Management")?.capacityCu ?? null;
+    const alloc = allocationByPerson.get(personId);
+    const accountManagement =
+      amCapacity === null && !alloc
+        ? null
+        : {
+            capacityCu: amCapacity,
+            allocatedCu: alloc?.cu ?? 0,
+            headroomCu: amCapacity === null ? null : amCapacity - (alloc?.cu ?? 0),
+            contracts: alloc?.contracts ?? 0,
+            allocationIsCurrentState: true as const,
+          };
 
     people.push({
       name,
@@ -434,6 +521,7 @@ export async function capacityReport(opts: { month?: string; person?: string; no
       job: (person?.fields["Job"] as string) || null,
       engineUserId,
       disciplines,
+      accountManagement,
     });
   }
 
@@ -444,7 +532,44 @@ export async function capacityReport(opts: { month?: string; person?: string; no
     );
   }
 
-  return ok("capacity", { month, planLoaded: true, people, peopleWithoutPlan }, warnings);
+  warnings.push(
+    "Production capacity (Text, Video, Visuals, Strategy) is per person, but production DEMAND is not — the " +
+      "month's booked CUs are split across formats by ratio at company level. So these are capacity POOLS per " +
+      "person, not personal workloads, and who is 'most free' in a production discipline cannot be answered " +
+      "from this base. Account Management is the exception: allocation there is per person."
+  );
+  if (people.some((p) => p.accountManagement?.allocatedCu)) {
+    warnings.push(
+      "Account Management allocation is CURRENT STATE, not " +
+        month +
+        "'s — the Account Manage table has no month link. Read it as the standing load each manager carries " +
+        "today, set against the capacity they are expected to have in " +
+        month +
+        "."
+    );
+  }
+
+  // The company-level demand figures, so the per-person pools above are read
+  // against something. Without these, a reader sees "Text: 7 CU" and has no
+  // way to know the Text pool as a whole is 58% short.
+  const disciplineTotals = DISCIPLINES.map((discipline) => {
+    const cols = MONTHLY_DEMAND[discipline];
+    const capacity = cellNumber(monthRecord.fields[cols.capacity]);
+    const vs = cellNumber(monthRecord.fields[cols.vsDemand]);
+    const freelancer = cols.freelancer ? cellNumber(monthRecord.fields[cols.freelancer]) : undefined;
+    // Demand is not stored directly for AM; it is the whole month's booked
+    // total. Deriving it from capacity × ratio keeps one source of truth.
+    const demand = isNumber(capacity) && isNumber(vs) ? capacity * vs : null;
+    return {
+      discipline,
+      capacityCu: isNumber(capacity) ? capacity : null,
+      demandCu: demand,
+      demandOverCapacity: isNumber(vs) ? vs : null,
+      freelancerEstimateChf: isNumber(freelancer) ? freelancer : null,
+    };
+  });
+
+  return ok("capacity", { month, planLoaded: true, people, peopleWithoutPlan, disciplineTotals }, warnings);
 }
 
 /* ─────────────── Report: client plan vs actual ─────────────── */
@@ -743,8 +868,15 @@ export interface OutlookData {
   disciplines: {
     discipline: Discipline;
     capacityCu: number | null;
-    capacityVsDemandCu: number | null;
-    freelancerEstimateCu: number | null;
+    /** Demand ÷ capacity. Above 1.0 means the discipline is short. */
+    demandOverCapacity: number | null;
+    /** Derived as capacity × demandOverCapacity, so there is one source. */
+    demandCu: number | null;
+    /** CHF, NOT CUs — the base computes shortfall × 250 CHF/CU. Reading this
+     *  as CUs makes a 17-CU Text team look like it needs 2,477 CUs of freelance. */
+    freelancerEstimateChf: number | null;
+    /** Share of the month's booked CUs this format is assumed to take. */
+    ratio: number | null;
   }[];
   totals: {
     cuBooked: number | null;
@@ -752,9 +884,14 @@ export interface OutlookData {
     cuDelivered: number | null;
     cuTarget: number | null;
     cuGapBooked: number | null;
-    freelancerEstimateCu: number | null;
+    /** CHF, NOT CUs. */
+    freelancerEstimateChf: number | null;
     activeCustomers: number | null;
   };
+  /** Formats carrying a ratio but no capacity line — Social publishing and
+   *  Contract adjustment, 7% of every month's CUs. Reported so the four
+   *  production comparisons are not mistaken for the whole picture. */
+  ratioWithoutCapacity: { name: string; ratio: number | null; cu: number | null }[];
   freelancers: {
     committedCu: number | null;
     byDiscipline: { discipline: Discipline; cu: number }[];
@@ -816,6 +953,9 @@ export async function monthlyOutlookReport(opts: { month?: string; now?: Date } 
     ...Object.values(capacityCol),
     ...Object.values(capacityVsDemand),
     ...Object.values(freelancerCol).filter((x): x is string => !!x),
+    "Social publishing ratio",
+    "Contract adjustment ratio",
+    ...DISCIPLINES.map((d) => MONTHLY_DEMAND[d].ratio).filter((x): x is string => !!x),
   ]);
 
   // Matched on the text label, not Date — see findMonthRow. Date is empty on
@@ -878,21 +1018,39 @@ export async function monthlyOutlookReport(opts: { month?: string; now?: Date } 
     "monthly_outlook",
     {
       month,
-      disciplines: DISCIPLINES.map((d) => ({
-        discipline: d,
-        capacityCu: n(capacityCol[d]),
-        capacityVsDemandCu: n(capacityVsDemand[d]),
-        freelancerEstimateCu: freelancerCol[d] ? n(freelancerCol[d]!) : null,
-      })),
+      disciplines: DISCIPLINES.map((d) => {
+        const capacity = n(capacityCol[d]);
+        const vs = n(capacityVsDemand[d]);
+        return {
+          discipline: d,
+          capacityCu: capacity,
+          demandOverCapacity: vs,
+          demandCu: capacity !== null && vs !== null ? capacity * vs : null,
+          freelancerEstimateChf: freelancerCol[d] ? n(freelancerCol[d]!) : null,
+          ratio: MONTHLY_DEMAND[d].ratio ? n(MONTHLY_DEMAND[d].ratio!) : null,
+        };
+      }),
       totals: {
         cuBooked: n("Total CUs booked"),
         cuBookedPlusOpportunities: n("CU: booked + opps"),
         cuDelivered: n("CU: delivered"),
         cuTarget: n("CU Target"),
         cuGapBooked: n("CU Gap: booked"),
-        freelancerEstimateCu: n("Total freelancer estimate"),
+        freelancerEstimateChf: n("Total freelancer estimate"),
         activeCustomers: n("Active customers"),
       },
+      // 7% of the month's CUs are split to formats with no capacity line, so
+      // the four production comparisons above cover 93% of the work, not all
+      // of it. Stating that is the difference between a gap and a blind spot.
+      ratioWithoutCapacity: (["Social publishing ratio", "Contract adjustment ratio"] as const).map((field) => {
+        const ratio = n(field);
+        const booked = n("Total CUs booked");
+        return {
+          name: field.replace(/ ratio$/, ""),
+          ratio,
+          cu: ratio !== null && booked !== null ? booked * ratio : null,
+        };
+      }),
       freelancers: {
         committedCu,
         byDiscipline: Array.from(byDiscipline.entries()).map(([discipline, cu]) => ({ discipline, cu })),

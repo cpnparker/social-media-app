@@ -130,6 +130,83 @@ Team: `Live team capacity time (hours)`, `Scenario team capacity time (hours)`, 
 Team resourcing: `Define staff capacity (per team)`, `Teams - Account Management/Video/Visuals/Text/Strategy`
 Contracts Monthly: `SUMMARY Active and Opportunities by month`, `SUMMARY Resourcing`, `Active by month`
 
+## How capacity, demand and freelancer need actually relate
+
+Verified against September 2026 data on 2026-08-12; every relationship below
+reproduces to 10 decimal places.
+
+**Capacity is bottom-up and per person.** `Team resourcing.<X> capacity` for each
+person and month sums exactly to `Monthly resourcing.<X> capacity`:
+AM 101.5, Text 17, Video 15, Visuals 22, Strategy 11.5.
+
+**Demand is top-down and company-wide.** Contracts → Contracts Monthly →
+`Monthly resourcing.Total CUs booked` (107.633), then split across formats by the
+ratio fields using average commissioning rates:
+
+    <Format> CU booked  =  Total CUs booked × <Format> ratio
+
+    Visuals 0.35 · Text 0.25 · Video 0.20 · Strategy 0.13
+    Social publishing 0.03 · Contract adjustment 0.04     (sum = 1.00, `Total ratio check`)
+
+> **Social publishing and Contract adjustment have no capacity line.** 7% of every
+> month's CUs — 7.53 in September 2026 — are split off to formats nobody's capacity
+> is recorded under, so the four production comparisons cover 93% of the work.
+
+**Account Management is compared against the WHOLE total, not a ratio slice**, because
+every CU needs managing: `AM capacity vs demand` = 107.633 / 101.5 = 1.0604.
+
+**`<X> capacity vs demand` is DEMAND ÷ CAPACITY.** Above 1.0 means short. September
+2026: Visuals 1.71, Text 1.58, Video 1.44, Strategy 1.22, AM 1.06 — every discipline
+over capacity.
+
+**Freelancer estimates are CHF, not CUs.** `<X> freelancer estimate` = shortfall × **250**:
+Text 9.908 CU → 2,477.08; Visuals 15.672 → 3,917.92; Video 6.527 → 1,631.67;
+Strategy 2.492 → 623.08; total 8,649.75. Reading these as CUs makes a 17-CU Text team
+look like it needs 2,477 CUs of freelance — which is how the field was first mislabelled.
+
+### The trap: `Team resourcing.* CUs booked` is NOT per-person
+
+`Team resourcing` has exactly two link fields, `Team member` and `Months`, and an
+Airtable lookup must traverse a link. `Total CUs booked`, `Text CUs booked` and the
+rest are lookups through **`Months`** — the company monthly figure, copied identically
+onto every person's row. Probed across 21 people in September 2026, each column has
+exactly ONE distinct value, equal to its `Monthly resourcing` counterpart.
+
+Subtracting one from a person's capacity yields a headroom figure that is negative for
+almost everyone. That is the signature of an aggregation-level mismatch, not an
+overloaded team, and it shipped.
+
+### Where per-person demand DOES exist
+
+Only for Account Management, via the `Account Manage` join: `Editorial team` → Team,
+`CU Manage` → Contracts, `Content Units` = the CUs that person manages on that contract,
+`live or scenario` separating the two planning worlds. Live rows for September 2026 sum
+to 102.75 against 101.5 of AM capacity, and per person:
+
+| Person | AM capacity | Allocated | Headroom |
+|---|---|---|---|
+| Sharanya Bhattacharya | 16 | 8 | +8 |
+| Ed Brereton | 16 | 10 | +6 |
+| Prachi Srivastava | 2.5 | 0 | +2.5 |
+| Arne Dumez | 20 | 17.75 | +2.25 |
+| Charlie Avery | 10 | 10 | 0 |
+| Gabriella Beer | 12 | 14 | −2 |
+| Edward Brydon | 10 | 15 | −5 |
+| Catherine Allen | 0 | 6 | −6 |
+| Ceri Radford | 15 | 22 | −7 |
+
+> **`Account Manage` has no month link.** Allocation is CURRENT STATE, not per-month, so
+> comparing it against a future month's capacity is only valid as "who is loaded now
+> against what they are expected to carry then". Say so; do not present it as September's
+> allocation. `Scenario` rows carry no `Content Units` at all.
+
+**Production per-person demand does not exist anywhere.** Capacity is per person, demand
+is a company ratio split. "Who personally has spare Text capacity" is not answerable from
+this base — only "who has Text capacity loaded" and "is the Text pool short overall".
+
+`Production` (1 row) is abandoned and was deleted from the base on 2026-08-12; the table
+count went 17 → 16.
+
 ## Identity join — probed 2026-08-12
 
 `Team.Engine_IDs` holds **a single numeric Engine user id** (e.g. `12`), on every populated row.

@@ -354,14 +354,23 @@ Never say only "share it with EngineAI" — that is not something a user can act
     prompt += `\n\n## Resourcing & contracts (query_resourcing)
 The TCE operations base holds contracts, resourcing and team delivery. Use \`query_resourcing\` for who has capacity, where freelancers are needed, how a client's delivery compares to plan, and which contracts are ending.
 
-These figures are the PLAN — sold, booked, budgeted. Engine holds what was actually delivered. Four rules, because each one is a way to be confidently wrong:
+These figures are the PLAN — sold, booked, budgeted. Engine holds what was actually delivered.
 
-1. **null is not zero.** A null figure means the plan has no row, or the base gave a value that could not be read unambiguously. Say "not recorded", never "0". This matters most for headroom: reporting an absent plan as zero booked describes an overloaded person as idle.
-2. **Never subtract Engine actuals from Airtable booked at PERSON level.** Airtable books one contract's CUs against every discipline that touches it; Engine attributes each task's CUs to one assignee. The difference is structural, not performance. At CLIENT level they are comparable.
-3. **Pass on every ⚠ caveat in the result.** Truncated fetches, people missing from the plan, freelancer CUs in unmapped formats, unmatched clients — these are the difference between an answer and a misleading one. Never summarise them away.
-4. **Never estimate.** If a report fails or a figure is missing, say so. Do not fall back on the cached client context above, and do not reason your way to a plausible number.
+**How this base works**, because the answers are wrong if you assume otherwise:
+- **Capacity is per person, per month, per discipline.** Those are real individual numbers.
+- **Production demand is NOT per person.** The month's booked CUs are split across formats by ratio (Visuals 35%, Text 25%, Video 20%, Strategy 13%) at COMPANY level. So you can say who has Text capacity loaded, and whether the Text pool is short overall — but never who personally has spare Text capacity. That question has no answer in this data.
+- **Account Management is the exception**: allocation there IS per person, so AM headroom is real. It is compared against the whole month's booked total rather than a ratio share, because every CU needs managing.
+- **Freelancer estimates are CHF, not CUs.** Never report them as content units.
 
-Volumes are Content Units (CUs) unless a field says hours. Money is in CHF where a field says so, and contract currency otherwise — never convert between them.`;
+Five rules, each one a way to be confidently wrong:
+
+1. **null is not zero.** A null figure means the plan has no row, or the base gave a value that could not be read unambiguously. Say "not recorded", never "0". Reporting an absent plan as zero booked describes an overloaded person as idle.
+2. **Never present a company figure as a person's.** If a number is identical across everyone in a discipline, it is the discipline's total, not theirs.
+3. **Never subtract Engine actuals from Airtable booked at PERSON level.** Airtable books one contract's CUs against every discipline that touches it; Engine attributes each task's CUs to one assignee. The difference is structural, not performance. At CLIENT level they are comparable.
+4. **Pass on every ⚠ caveat in the result.** Truncated fetches, people missing from the plan, current-state AM allocation, unmapped freelancer formats, unmatched clients. Never summarise them away.
+5. **Never estimate.** If a report fails or a figure is missing, say so. Do not fall back on the cached client context above, and do not reason your way to a plausible number.
+
+Volumes are Content Units (CUs) unless a field says hours or CHF. Money is in CHF where a field says so, and contract currency otherwise — never convert between them.`;
   }
 
   // ── Document generation capability ──
