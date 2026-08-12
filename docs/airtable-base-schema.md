@@ -115,10 +115,31 @@ Team: `Live team capacity time (hours)`, `Scenario team capacity time (hours)`, 
 Team resourcing: `Define staff capacity (per team)`, `Teams - Account Management/Video/Visuals/Text/Strategy`
 Contracts Monthly: `SUMMARY Active and Opportunities by month`, `SUMMARY Resourcing`, `Active by month`
 
-## Open facts still unverified (need a data probe, not schema)
+## Identity join — probed 2026-08-12
 
-- `Team.Engine_IDs` — one id or several? numeric Engine user ids, or something else?
-- `Contracts Monthly.Month` singleSelect — what do the option strings look like ("January 2025"? "2025-01"?)
-- `Contract status` / `Booking status` option values — needed to filter active vs opportunity vs lost
-- Whether every Team row has an Engine_IDs value, or only some
-- True row count of Contracts Monthly beyond the 2500 cap
+`Team.Engine_IDs` holds **a single numeric Engine user id** (e.g. `12`), on every populated row.
+The column name is plural; the data is not. Parse defensively anyway — the name invites
+someone to type `12,34` eventually — but do not build the join around a list that isn't there.
+
+**Populated on 11 of 35 rows.** Team mixes live staff with leavers and scenario placeholders,
+so the live-roster coverage is better than 31% but is not 100%.
+
+The consequence for the report layer, which holds either way:
+
+> **The identity join is optional, never foundational.** Every Airtable-only report — roster
+> capacity, monthly outlook, contract health — works for all 35 rows without it, because
+> Airtable knows its own people by name. The id is needed for exactly two things: resolving
+> the signed-in Engine user to their Team row ("what is *my* workload"), and blending Engine
+> actuals into the Airtable plan. Both must fail by name — "your Engine account is not linked
+> to a Team row" — and never by returning zero, or by falling back to matching on display name.
+
+`Freelancers` has `Email` and is the separate people surface; staff and freelancers do not
+share an identity scheme.
+
+## Still unverified
+
+- `Contracts Monthly.Month` singleSelect option strings ("January 2025"? "2025-01"?) — now
+  carried by the schema read, so `Inspect base` answers this without touching records
+- `Contract status` / `Booking status` option values — same
+- True row count of Contracts Monthly beyond the 2,500 page cap
+- Whether the populated `Engine_IDs` values all resolve to live `users.id_user` rows

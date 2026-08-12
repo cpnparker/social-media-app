@@ -269,3 +269,58 @@ export function assertFields(table: AirtableTable, required: string[]): void {
     );
   }
 }
+
+/**
+ * Assert that fields still have the TYPE a report assumes, not just the name.
+ *
+ * Name-only checking misses the change that actually hurts. A lookup field
+ * returns an ARRAY; a rollup returns a scalar. Switch one to the other in the
+ * base — a thing done by dragging a column, with no warning — and every read
+ * keeps succeeding while the arithmetic downstream silently changes meaning.
+ * `Team resourcing`'s demand columns are lookups today, so this is not
+ * hypothetical.
+ */
+export function assertFieldTypes(table: AirtableTable, expected: Record<string, string>): void {
+  const byName = new Map(table.fields.map((f) => [f.name, f.type]));
+  const wrong = Object.entries(expected)
+    .filter(([name, type]) => byName.has(name) && byName.get(name) !== type)
+    .map(([name, type]) => `${name} is ${byName.get(name)}, expected ${type}`);
+  if (wrong.length) {
+    throw new Error(
+      `Airtable table "${table.name}" has field(s) of an unexpected type: ${wrong.join("; ")}. ` +
+        `A lookup returns an array where a rollup returns a number, so this changes results without erroring.`
+    );
+  }
+}
+
+/** A number that could not be read, and must not be silently treated as zero. */
+export const AMBIGUOUS = Symbol("airtable-ambiguous");
+
+/**
+ * Read a numeric cell, refusing to guess.
+ *
+ * The trap this exists for: Airtable lookup fields return arrays, and the
+ * reflexive `Number(v) || 0` turns `[5, 3]` into NaN and then into 0. Applied
+ * to a "CUs booked" lookup that means the busiest people — the ones linked to
+ * several contracts — read as zero booked, i.e. as fully idle. The error is
+ * invisible, and it points the wrong way: it invents capacity exactly where
+ * there is least.
+ *
+ * So a multi-value cell returns AMBIGUOUS rather than a number, and callers
+ * must exclude it from arithmetic and say so in the output. An empty cell
+ * returns undefined, which is also not zero — no row for a month means the
+ * plan is not loaded, not that the person has no capacity.
+ */
+export function cellNumber(raw: unknown): number | undefined | typeof AMBIGUOUS {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (Array.isArray(raw)) {
+    if (raw.length === 0) return undefined;
+    if (raw.length > 1) return AMBIGUOUS;
+    return cellNumber(raw[0]);
+  }
+  // Booleans coerce to 1/0 and would sail through the isFinite check below.
+  // An Airtable checkbox read as a quantity is a type confusion, not one CU.
+  if (typeof raw === "boolean") return AMBIGUOUS;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(n) ? n : AMBIGUOUS;
+}
