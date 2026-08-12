@@ -1,0 +1,124 @@
+# TCE Operations & Resourcing base — Phase 0 schema digest (read 2026-08-12)
+
+17 tables. Row counts are real (retrieved, not estimated).
+
+## The spine
+
+**Contracts** `tblbUyXiJ6L6zSrfm` — 311 rows
+Identity: `Contract ID` (number), `CRM ID` (text), `ID` (formula), `Customer ID` (lookup)
+Core: `Contract name`, `Customer`→Customer, `Contract status` (singleSelect), `Booking status` (singleSelect),
+`Contract type`, `New or existing`, `Start date`, `End date`, `Contract extension date`, `Payment term`
+Money: `Total contracted value (contract currency)`, `Total contracted value (CHF)`, `Contract currency`→Currency exchange,
+`Price per CU (CHF)`, `Contract price per CU (CHF)`, `Monthly management fee`, `Monthly service fee`, `Revenue 2023/2024/2025`
+Volume: `Contracted CUs`, `Commissioned CUs`, `Remaining CUs`, `Delivered CUs in Engine`, `Commissioned CUs in Engine`,
+`Forecasted CUs`, `Average CUs month`, `Contract delivered %`, `Contract commissioned %`, `Contract term delivered %`
+People (all →Team): `Account Manager`, `Senior Account Manager`, `Content Manager`, `Strategy Manager`,
+`Writer 1`, `Writer 2`, `Freelance writer`, plus `Scenarios *` variants of each
+Links: `Delivery months`→Contracts Monthly, `CU Management`→Account Manage, `CU Production`→Production,
+`Contract payments`→Invoices, `Freelancer assignments`→Freelancer assignments, `CRM contract`→Import from CRM
+Engine bridge: `Engine contract` (formula), `Delivered CUs in Engine`, `Renewal in Engine`
+Flags: `Contract ended`, `Contract ending soon`, `Contract ending soon (90 days)`, `Contract ending days`,
+`Is renewal`, `New business`, `Delivered after contract ended`, `CUs match`
+DENORMALISED MONTH COLUMNS: ~150 rollups named `<Month> <Year> contracted CU` / `booked CU` / `contracted CHF`,
+spanning January 2023 → September 2026. A human adds a new column every month. Do not build reports on these.
+
+**Contracts Monthly** `tble5uNG3aannvQyf` — **2500 rows, TRUNCATED (there are more)**
+The per-contract-per-month grain. `Contract`→Contracts, `Month` (singleSelect), `Order` (number),
+`Date` (lookup), `Delivery month` (formula), `Year` (formula), `Active in month` (formula)
+Three separately-owned volume columns, and the owner is named in the column:
+  `Contracted CU (SALES)` · `Booked CU (EDITORIAL)` · `Production CU (FINANCE)` · `Delivered CU`
+Time: `Contracted Time hours (SALES)`, `Booked Time hours (EDITORIAL)`, `Production time hours (FINANCE)`
+Forecast: `Forecasted CU de-risked (SALES)`, `... (BOOKED)`, `... (BOOKED and SALES)`, `... with manual override`,
+`Probability with override`, `Probability of conversion manual override`
+Revenue: `Contracted revenue (CHF)`, `Booked revenue (CHF)`, `Commissioned revenue (CHF) raw`,
+`Delivered revenue (CHF) raw`, `Forecasted revenue (CHF) ...`, `Revenue recognised`, `Rollover CUs`
+Link up: `Month targets`→Monthly resourcing
+
+## Resourcing
+
+**Team** `tblPjFckBAAvYaHiM` — 35 rows
+`Name`, `Job` (singleSelect), `Position` (singleSelect), `Team` (singleSelect), `Pod`→Pods, `FTE rate`
+**`Engine_IDs` (singleLineText) ← THE IDENTITY BRIDGE TO ENGINE. Not an email. Format unverified.**
+Quotas: `Production quota`, `Strategy production quota`, `Video production quota (current month)`,
+`Visuals production quota`, `Text quota (current month)`, `AM quota (current month)`, `AM quota (next month)`,
+`Quota %`, `Quota % Scenario`, `Reset quotas`
+Load: `CU Management total`, `CU Production total`, `Customers #`, `Contracts #`, `Writing for clients`
+Links: `Resourcing`→Team resourcing, plus live/scenario link pairs to Contracts
+
+**Team resourcing** `tblNgTWUWv5zXbTGg` — 336 rows
+Per person per month. `Team member`→Team, `Months`→Monthly resourcing, `Month-Team` (formula key), `Month order`
+Capacity, in BOTH CUs and hours, per discipline:
+  `AM capacity` / `AM capacity time (hours)`
+  `Text production capacity` / `... time (hours)`
+  `Video production capacity` / `... time (hours)`
+  `Visuals production capacity` / `... time (hours)`
+  `Strategy production capacity` / `... time (hours)`
+Demand lookups: `Total CUs booked`, `Text/Video/Visuals/Strategy CUs booked`
+
+**Monthly resourcing** `tblCovc88YOn0MdVO` — 66 rows ← company-level monthly rollup, small enough to fetch whole
+`Month` (text), `Date`, `Order`, `Order and month`, `Year`
+Capacity vs demand per discipline: `AM capacity vs demand`, `Text capacity vs demand`, `Video ...`,
+`Visuals ...`, `Strategy ...`, plus `* vs predicted demand` variants
+Freelancer: `Text/Video/Visuals/Strategy freelancer estimate` (+ predicted), `Total freelancer estimate`,
+`Total freelancing costs CHF (booked)`, `Total freelancing CUs`
+Targets & gaps: `CU: target`→Sales targets, `Revenue: target`, `CU Gap: forecasted`, `CHF GAP: forecasted`,
+`CU Gap: booked`, `CHF GAP: booked`, `CHF GAP: CU price`
+Actuals: `CU: booked + opps`, `CU: contracted`, `CU: delivered`, `Revenue: booked/contracted/delivered/forecasted`,
+`Commissioned CUs`, `Active customers`, `Opportunities customers`, `Average booked CU price (CHF)`
+Format mix ratios: `Text ratio`, `Video ratio`, `Visuals ratio`, `Strategy ratio`, `Social publishing ratio`,
+`Contract adjustment ratio`, `Total ratio check`
+
+## Assignment junctions
+
+**Account Manage** `tblQtCjgrIv7FQzBF` — 48 rows
+`Editorial team`→Team, `CU Manage`→Contracts, `Scenario CU Manage`→Contracts, `Content Units`,
+`Scenario Content Units`, `Role` (singleSelect), `live or scenario` (formula), `Time (hours)`,
+`CUs booked in current month`
+NOT a client table — it matched a "account" name heuristic. It is the person↔contract allocation join.
+
+**Production** `tblqZRZUpnwY4BETh` — **1 row** — same shape as Account Manage, effectively abandoned.
+
+## Clients, money, external systems
+
+**Customer** `tblj5u3r8C5EATeSD` — 125 rows
+`Customer` (name), **`Engine ID` (number)**, **`CRM ID` (number)** ← clean id join, no name matching needed
+`Pod`→Pods, `Contracts`, `Contracted CUs`, `Contracted value`, `Average price of CU`,
+`Earliest contract start date`, `Latest contract end date`, `Start year`, `Active` (formula),
+`Number of contracts`, `Revenue 2023/2024/2025`
+
+**Invoices** `tblRT8vNuhSR1eLa8` — 393 rows
+`Contract`→Contracts, `Customer` (lookup), `Status` (singleSelect), `Payment amount`, `Paid amount`,
+`Payment due date`, `Paid date`, `Invoice date`, `Period start date`, `Period end date`, `past due date`,
+**`Xero ID`, `Xero customer name`, `Currency`** ← direct bridge to the existing Xero integration
+
+**Freelancers** `tblnM50ItziG8SOZg` — 51 rows — `Name`, **`Email` (type email)**, `Rate per CU`, `Rate currency`
+**Freelancer assignments** `tbl117ELScIZLrKk6` — 321 rows — `Freelancer`→Freelancers, `Contract`→Contracts,
+`Commissioned by`→Team, `Contracting month`→Monthly resourcing, `Format` (singleSelect), `Status` (singleSelect),
+`CU`, `Total cost CHF`, `Rate per CU CHF`, `Assigned date`, `Engine content link` (url)
+
+**Import from CRM** `tbl3Uw4VIHD5e7zFN` — 115 rows — `Deal`, `Deal ID`, `Client ID`, `CUs`, `Amount`,
+`Status`, `Calculated status`, `Probability`, `create date`, `close date`, `Contracts`→Contracts
+**Sales targets** `tblJhPPK91fOomKme` — 60 rows — `Target CUs`, `Target CHFs`, `Target CUs price CHFs`, `Month`
+**Pods** `tblX9IrkqnxTt320f` — 6 rows — `Pod name`, `Pod lead`→Team, `Customers`
+**Currency exchange** `tblOxSaUKyqd0h0zp` — 7 rows — `Currency`, `Value`
+**Formats** `tblIPb6C9qFycOoR9` — 5 rows — `Format`
+
+## Views worth knowing (they encode business logic already)
+
+Contracts: `Active and extended`, `Opportunities`, `Lost`, `Resourcing summary`, `Resourcing needs resourcing`,
+`Resourcing scenarios summary`, `CHECK - ending soon (30 days)`, `CHECK - ending soon (90 days)`,
+`RENEWALS - opportunities`, `RENEWALS - missing (ending in 90 days)`, `Contracts missing from the Engine`,
+`Contracts in the Engine live`, `Contracts overdelivered`, `Not yet delivered CUs`
+Monthly resourcing: `Resourcing - Summary booked`, `Resourcing - Summary predicted`, `Resourcing - Capacity`,
+`Resourcing - Account Management`, `Resourcing - Text/Video/Visuals/Strategy`, `SALES report`, `FINANCE report`
+Team: `Live team capacity time (hours)`, `Scenario team capacity time (hours)`, `Live vs Scenario differences`
+Team resourcing: `Define staff capacity (per team)`, `Teams - Account Management/Video/Visuals/Text/Strategy`
+Contracts Monthly: `SUMMARY Active and Opportunities by month`, `SUMMARY Resourcing`, `Active by month`
+
+## Open facts still unverified (need a data probe, not schema)
+
+- `Team.Engine_IDs` — one id or several? numeric Engine user ids, or something else?
+- `Contracts Monthly.Month` singleSelect — what do the option strings look like ("January 2025"? "2025-01"?)
+- `Contract status` / `Booking status` option values — needed to filter active vs opportunity vs lost
+- Whether every Team row has an Engine_IDs value, or only some
+- True row count of Contracts Monthly beyond the 2500 cap

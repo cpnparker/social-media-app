@@ -93,7 +93,8 @@ export async function GET(req: NextRequest) {
 
   try {
     if (wantProbe) {
-      return NextResponse.json({ configured: true, connected: true, identity: await probeIdentity() });
+      const view = req.nextUrl.searchParams.get("view") || undefined;
+      return NextResponse.json({ configured: true, connected: true, identity: await probeIdentity({ view }) });
     }
     const findings = await runPhase0({ withCounts: true });
     return NextResponse.json({ configured: true, connected: true, ...findings });

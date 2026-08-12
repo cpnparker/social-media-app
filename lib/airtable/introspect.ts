@@ -10,7 +10,7 @@
 import { getBaseSchema, listRecords, type AirtableTable } from "./client";
 
 const EMAIL_HINTS = ["email", "e-mail", "mail"];
-const PERSON_HINTS = ["person", "people", "team", "staff", "member", "resource", "employee"];
+const PERSON_HINTS = ["person", "people", "team", "staff", "member", "resource", "employee", "freelanc"];
 const CLIENT_HINTS = ["client", "customer", "account", "company", "organisation", "organization"];
 const PERIOD_HINTS = ["month", "period", "forecast", "plan", "expectation", "target", "quota", "capacity"];
 const SELECT_TYPES = new Set(["singleSelect", "multipleSelects"]);
@@ -154,10 +154,22 @@ export function analyseSchema(tables: AirtableTable[]): Phase0Findings {
 export interface IdentityProbe {
   table: string;
   field: string;
+  /** Scoped to a view when one was named — "35 rows" means nothing if most
+   *  of them are leavers or scenario placeholders. */
+  view?: string;
   total: number;
   populated: number;
   /** Distinct shapes seen, not the values themselves — see below. */
   shapes: { pattern: string; example: string; count: number }[];
+  /**
+   * Who is missing the id, by display name.
+   *
+   * The coverage ratio says how big the problem is; this says whose row to
+   * open. Names of colleagues, to a workspace admin, on their own roster —
+   * which is a different thing from the address list the shapes rule exists
+   * to protect, and it is the only output here anyone can act on.
+   */
+  unlinked: string[];
 }
 
 /**
@@ -173,20 +185,37 @@ export interface IdentityProbe {
  * with one example per shape. That is enough to write the parser and stops a
  * diagnostic endpoint from turning into a staff-roster export.
  */
-export async function probeIdentity(): Promise<IdentityProbe[]> {
+export async function probeIdentity(opts: { view?: string } = {}): Promise<IdentityProbe[]> {
   const { tables } = await getBaseSchema();
   const { people } = analyseSchema(tables);
   const out: IdentityProbe[] = [];
 
   for (const p of people) {
+    const table = tables.find((t) => t.name === p.table);
+    // The primary field is whatever the base shows as the row's label. Reading
+    // it from primaryFieldId rather than guessing at a column called "Name"
+    // means this keeps working on a table that labels rows some other way.
+    const labelField = table?.fields.find((f) => f.id === table.primaryFieldId)?.name;
+
     for (const field of [...p.engineIdFields, ...p.emailFields]) {
-      const res = await listRecords(p.table, { fields: [field] });
+      // A view is only applied where it exists on this table, so naming
+      // "Live team" does not silently return the whole of some other table.
+      const view = opts.view && table?.views?.some((v) => v.name === opts.view) ? opts.view : undefined;
+      const res = await listRecords(p.table, {
+        fields: labelField && labelField !== field ? [field, labelField] : [field],
+        ...(view ? { view } : {}),
+      });
       const shapes = new Map<string, { example: string; count: number }>();
+      const unlinked: string[] = [];
       let populated = 0;
 
       for (const rec of res.records) {
         const raw = rec.fields[field];
-        if (raw === undefined || raw === null || raw === "") continue;
+        if (raw === undefined || raw === null || raw === "") {
+          const label = labelField ? rec.fields[labelField] : undefined;
+          unlinked.push(label ? String(label) : `(unnamed row ${rec.id})`);
+          continue;
+        }
         populated++;
         const value = String(raw);
         const pattern = value
@@ -205,11 +234,13 @@ export async function probeIdentity(): Promise<IdentityProbe[]> {
       out.push({
         table: p.table,
         field,
+        view,
         total: res.count,
         populated,
         shapes: Array.from(shapes.entries())
           .map(([pattern, v]) => ({ pattern, ...v }))
           .sort((a, b) => b.count - a.count),
+        unlinked: unlinked.sort(),
       });
     }
   }
