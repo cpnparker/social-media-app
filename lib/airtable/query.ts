@@ -13,6 +13,7 @@
  */
 import {
   capacityReport,
+  horizonReport,
   clientPlanVsActualReport,
   contractHealthReport,
   monthlyOutlookReport,
@@ -20,7 +21,7 @@ import {
 } from "./reports";
 import { airtableConfigured } from "./client";
 
-export const RESOURCING_REPORTS = ["capacity", "monthly_outlook", "client_plan_vs_actual", "contract_health"] as const;
+export const RESOURCING_REPORTS = ["capacity", "monthly_outlook", "horizon", "client_plan_vs_actual", "contract_health"] as const;
 export type ResourcingReport = (typeof RESOURCING_REPORTS)[number];
 
 export interface ResourcingArgs {
@@ -30,8 +31,10 @@ export interface ResourcingArgs {
   client?: string;
   ending_within_days?: number;
   include_ended?: boolean;
-  /** Which allocation world the account-management figures describe. */
+  /** capacity: which allocation plan. horizon: which demand basis. */
   basis?: string;
+  /** horizon: how many months ahead. */
+  months?: number;
 }
 
 export type ResourcingOutcome =
@@ -89,12 +92,27 @@ export async function queryResourcing(args: ResourcingArgs): Promise<ResourcingO
           result: await capacityReport({
             month: args.month,
             person: args.person,
-            // Anything other than "scenario" means live, including a model
-            // inventing a third value. Defaulting an unrecognised basis to the
-            // live world is the safe direction: live is what is committed.
-            basis: String(args.basis ?? "").toLowerCase() === "scenario" ? "scenario" : "live",
+            // undefined for anything unrecognised, which lets the report derive
+            // the plan from the month — the correct default, since neither plan
+            // carries a month and only one of them describes any given one.
+            basis: (["live", "scenario", "compare"] as const).find(
+              (b) => b === String(args.basis ?? "").toLowerCase()
+            ),
           }),
         };
+      case "horizon": {
+        const b = String(args.basis ?? "").toLowerCase();
+        return {
+          ok: true,
+          result: await horizonReport({
+            months: typeof args.months === "number" ? args.months : undefined,
+            // An unrecognised basis falls back to forecast, not pipeline:
+            // forecast is the weighted plan, pipeline is an unweighted ceiling
+            // that would overstate every shortfall.
+            basis: (["booked", "forecast", "pipeline"] as const).find((x) => x === b) ?? "forecast",
+          }),
+        };
+      }
       case "monthly_outlook":
         return { ok: true, result: await monthlyOutlookReport({ month: args.month }) };
       case "client_plan_vs_actual":

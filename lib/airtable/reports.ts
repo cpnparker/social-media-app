@@ -309,6 +309,28 @@ export interface CapacityData {
     demandOverCapacity: number | null;
     freelancerEstimateChf: number | null;
   }[];
+  /**
+   * Present only for basis "compare": this month's live plan against next
+   * month's scenario plan, differenced HERE rather than by the model across
+   * two payloads it cannot tell are at different grains.
+   */
+  comparison?: {
+    from: { month: string; basis: "live" };
+    to: { month: string; basis: "scenario" };
+    /** Scenario work with no manager attached — planned load with no owner. */
+    unassignedCu: number;
+    people: {
+      name: string;
+      fromCapacity: number | null;
+      fromAllocated: number;
+      fromHeadroom: number | null;
+      toCapacity: number | null;
+      toAllocated: number;
+      toHeadroom: number | null;
+      allocationDelta: number;
+      headroomDelta: number | null;
+    }[];
+  };
 }
 
 /**
@@ -328,7 +350,7 @@ export interface CapacityData {
  * team as over capacity. See CAPACITY_COLUMNS above.
  */
 export async function capacityReport(
-  opts: { month?: string; person?: string; basis?: "live" | "scenario"; now?: Date } = {}
+  opts: { month?: string; person?: string; basis?: "live" | "scenario" | "compare"; now?: Date } = {}
 ): Promise<ReportResult<CapacityData>> {
   const now = opts.now || new Date();
   const month = resolveMonth(opts.month, now);
@@ -654,7 +676,294 @@ export async function capacityReport(
     };
   });
 
-  return ok("capacity", { month, basis: wantWorld, planLoaded: true, people, peopleWithoutPlan, disciplineTotals }, warnings);
+  // ── compare: this month's live plan against next month's scenario ──
+  //
+  // Computed HERE, from fetches already made, rather than by returning two
+  // payloads for the model to subtract. Arithmetic across separate tool results
+  // is the pattern that produced the company-total-in-a-person's-headroom bug:
+  // the model cannot see that two numbers are at different grains, and nothing
+  // stops it differencing them anyway.
+  let comparison: CapacityData["comparison"] = undefined;
+  if (opts.basis === "compare") {
+    const aheadRecord = findMonthRow(monthly.records, aheadMonth);
+    const aheadCapacity = new Map<string, AirtableRecord>();
+    if (aheadRecord) {
+      for (const row of resourcing.records) {
+        const months = row.fields["Months"];
+        if (!Array.isArray(months) || !months.includes(aheadRecord.id)) continue;
+        const m = firstLink(row.fields["Team member"]);
+        if (m) aheadCapacity.set(m, row);
+      }
+    }
+
+    const scenarioAlloc = new Map<string, { cu: number; contracts: number }>();
+    let unassignedCu = 0;
+    for (const r of allocRows.records) {
+      if (String(r.fields["live or scenario"] ?? "").toLowerCase() !== "scenario") continue;
+      const cu = cellNumber(r.fields["Scenario Content Units"]);
+      const member = firstLink(r.fields["Editorial team"]);
+      if (!member) {
+        // Allocated work with nobody attached. It is real planned load that
+        // will land on someone, so it is surfaced rather than dropped.
+        if (isNumber(cu)) unassignedCu += cu;
+        continue;
+      }
+      const contracts = Array.isArray(r.fields["Scenario CU Manage"]) ? (r.fields["Scenario CU Manage"] as unknown[]).length : 0;
+      const acc = scenarioAlloc.get(member) || { cu: 0, contracts: 0 };
+      if (isNumber(cu)) acc.cu += cu;
+      acc.contracts += contracts;
+      scenarioAlloc.set(member, acc);
+    }
+
+    const amCapacityOf = (row: AirtableRecord | undefined): number | null => {
+      if (!row) return null;
+      const v = cellNumber(row.fields[CAPACITY_COLUMNS["Account Management"].capacity]);
+      return isNumber(v) ? v : null;
+    };
+
+    const everyone = new Set<string>([
+      ...Array.from(allocationByPerson.keys()),
+      ...Array.from(scenarioAlloc.keys()),
+    ]);
+
+    comparison = {
+      from: { month: currentMonth, basis: "live" },
+      to: { month: aheadMonth, basis: "scenario" },
+      unassignedCu,
+      people: Array.from(everyone)
+        .map((id) => {
+          const fromCapacity = amCapacityOf(byMember.get(id));
+          const toCapacity = amCapacityOf(aheadCapacity.get(id));
+          const fromAllocated = allocationByPerson.get(id)?.cu ?? 0;
+          const toAllocated = scenarioAlloc.get(id)?.cu ?? 0;
+          const fromHeadroom = fromCapacity === null ? null : fromCapacity - fromAllocated;
+          const toHeadroom = toCapacity === null ? null : toCapacity - toAllocated;
+          return {
+            name: String(teamById.get(id)?.fields["Name"] || "(unnamed)"),
+            fromCapacity,
+            fromAllocated,
+            fromHeadroom,
+            toCapacity,
+            toAllocated,
+            toHeadroom,
+            allocationDelta: toAllocated - fromAllocated,
+            headroomDelta: fromHeadroom === null || toHeadroom === null ? null : toHeadroom - fromHeadroom,
+          };
+        })
+        .sort((a, b) => (a.toHeadroom ?? 0) - (b.toHeadroom ?? 0)),
+    };
+
+    if (!aheadRecord) {
+      warnings.push(
+        `${aheadMonth} has no row in the plan, so the scenario side of this comparison has no capacity to ` +
+          `measure against. Allocation is shown; headroom is not.`
+      );
+    }
+    if (unassignedCu) {
+      warnings.push(
+        `${unassignedCu} CU of scenario account-management work has no manager attached. It is planned load ` +
+          `that will land on someone, and it is NOT included in anyone's figures above.`
+      );
+    }
+    warnings.push(
+      `This compares ${currentMonth}'s live plan with ${aheadMonth}'s scenario plan — the two plans the base ` +
+        `holds. It shows work moving between managers, not work appearing or disappearing: the company total ` +
+        `and every discipline shortfall are set by contracts, not by who manages them.`
+    );
+  }
+
+  return ok(
+    "capacity",
+    { month, basis: wantWorld, planLoaded: true, people, peopleWithoutPlan, disciplineTotals, comparison },
+    warnings
+  );
+}
+
+/* ─────────────── Report: horizon ─────────────── */
+
+/**
+ * Which total the format ratios get applied to.
+ *
+ * These are three different questions, not three precisions of one:
+ *   booked   — work that exists. The floor.
+ *   forecast — booked plus opportunities weighted by conversion. The plan.
+ *   pipeline — booked plus every opportunity at full value. The ceiling.
+ *
+ * Verified on September 2026: `CU forecasted booked` 99.983 + `CU forecasted
+ * contracted opportunities with manual override` 15.8 = `CU forecasted smart`
+ * 115.783 exactly, against 35.75 CU of raw opportunity — an implied 44%
+ * conversion. So `CU: booked + opps` is UNWEIGHTED, and presenting it as the
+ * plan would overstate every shortfall by roughly the unconverted pipeline.
+ */
+const DEMAND_BASIS = {
+  booked: { field: "Total CUs booked", label: "booked work only" },
+  forecast: { field: "CU forecasted smart", label: "booked plus opportunities weighted by conversion" },
+  pipeline: { field: "CU: booked + opps", label: "booked plus ALL opportunities at full value — a ceiling, not a plan" },
+} as const;
+
+export type DemandBasis = keyof typeof DEMAND_BASIS;
+
+export interface HorizonMonth {
+  month: string;
+  demandCu: number | null;
+  targetCu: number | null;
+  capacityLoaded: boolean;
+  disciplines: {
+    discipline: Discipline;
+    capacityCu: number | null;
+    demandCu: number | null;
+    shortfallCu: number | null;
+    demandOverCapacity: number | null;
+    freelancerCostChf: number | null;
+  }[];
+}
+
+export interface HorizonData {
+  basis: DemandBasis;
+  basisMeans: string;
+  from: string;
+  months: HorizonMonth[];
+  /** The month each discipline first goes over capacity — the actionable bit. */
+  firstShort: { discipline: Discipline; month: string | null }[];
+  /** Freelancer cost across the horizon, at the base's own 250 CHF/CU. */
+  totalFreelancerCostChf: number | null;
+}
+
+/** CHF per CU the base uses for freelancer estimates — verified, not assumed. */
+const FREELANCER_CHF_PER_CU = 250;
+
+/**
+ * Where capacity lands over the next several months, and when we first run short.
+ *
+ * Costs no more Airtable calls than a single month: `Monthly resourcing` is 66
+ * rows fetched whole either way, and the per-discipline capacity on it is
+ * already the rollup of every person's row.
+ *
+ * Deliberately does NOT touch Contracts Monthly. That table exceeds the page
+ * ceiling and would have to be fetched per month; the monthly rollups carry the
+ * same totals, and using them keeps this report's numbers identical to the ones
+ * in the base's own views.
+ */
+export async function horizonReport(
+  opts: { months?: number; basis?: DemandBasis; now?: Date } = {}
+): Promise<ReportResult<HorizonData>> {
+  const now = opts.now || new Date();
+  const basis: DemandBasis = opts.basis && opts.basis in DEMAND_BASIS ? opts.basis : "forecast";
+  const span = Math.min(Math.max(Math.floor(opts.months ?? 6), 1), 24);
+
+  const { tables } = await getBaseSchema();
+  const monthlySchema = readSchema(tables, "Monthly resourcing");
+  const ratioFields = DISCIPLINES.map((d) => MONTHLY_DEMAND[d].ratio).filter((x): x is string => !!x);
+  assertFields(monthlySchema, [
+    "Month",
+    "CU Target",
+    ...Object.values(DEMAND_BASIS).map((b) => b.field),
+    ...DISCIPLINES.map((d) => MONTHLY_DEMAND[d].capacity),
+    ...ratioFields,
+  ]);
+
+  const warnings: string[] = [];
+  const rows = await listRecords("Monthly resourcing");
+
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const wanted: string[] = [];
+  for (let i = 0; i < span; i++) {
+    wanted.push(monthLabel(new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + i, 1))));
+  }
+
+  const num = (rec: AirtableRecord, field: string): number | null => {
+    const v = cellNumber(rec.fields[field]);
+    return isNumber(v) ? v : null;
+  };
+
+  const months: HorizonMonth[] = [];
+  const missing: string[] = [];
+
+  for (const label of wanted) {
+    const rec = findMonthRow(rows.records, label);
+    if (!rec) {
+      missing.push(label);
+      continue;
+    }
+    const demand = num(rec, DEMAND_BASIS[basis].field);
+
+    const disciplines = DISCIPLINES.map((d) => {
+      const cols = MONTHLY_DEMAND[d];
+      const capacity = num(rec, cols.capacity);
+      // Account Management is measured against the WHOLE total — every CU needs
+      // managing — while production formats take their ratio share.
+      const ratio = cols.ratio ? num(rec, cols.ratio) : 1;
+      const disciplineDemand = demand !== null && ratio !== null ? demand * ratio : null;
+      const shortfall =
+        disciplineDemand !== null && capacity !== null ? Math.max(0, disciplineDemand - capacity) : null;
+      return {
+        discipline: d,
+        capacityCu: capacity,
+        demandCu: disciplineDemand,
+        shortfallCu: shortfall,
+        demandOverCapacity:
+          disciplineDemand !== null && capacity !== null && capacity !== 0 ? disciplineDemand / capacity : null,
+        // AM shortfall is not a freelancer cost — account management is not
+        // bought in by the CU the way production is.
+        freelancerCostChf: cols.freelancer && shortfall !== null ? shortfall * FREELANCER_CHF_PER_CU : null,
+      };
+    });
+
+    months.push({
+      month: label,
+      demandCu: demand,
+      targetCu: num(rec, "CU Target"),
+      capacityLoaded: disciplines.some((d) => d.capacityCu !== null && d.capacityCu > 0),
+      disciplines,
+    });
+  }
+
+  if (missing.length) {
+    warnings.push(
+      `${missing.length} of the next ${span} months are not in the plan at all (${missing.join(", ")}). ` +
+        `They are omitted below rather than shown as empty — the plan does not reach that far, which is not ` +
+        `the same as having no demand.`
+    );
+  }
+  const unloaded = months.filter((m) => !m.capacityLoaded).map((m) => m.month);
+  if (unloaded.length) {
+    warnings.push(
+      `${unloaded.join(", ")} exist in the plan but have NO team capacity entered. Their shortfall figures are ` +
+        `therefore meaningless — do not read them as the team being fully short.`
+    );
+  }
+
+  const firstShort = DISCIPLINES.map((discipline) => ({
+    discipline,
+    month:
+      months.find((m) => {
+        const d = m.disciplines.find((x) => x.discipline === discipline);
+        return m.capacityLoaded && d?.demandOverCapacity != null && d.demandOverCapacity > 1;
+      })?.month ?? null,
+  }));
+
+  const costs = months
+    .filter((m) => m.capacityLoaded)
+    .flatMap((m) => m.disciplines.map((d) => d.freelancerCostChf))
+    .filter((c): c is number => c !== null);
+
+  warnings.push(
+    `Demand basis: ${basis} — ${DEMAND_BASIS[basis].label}. Switching basis changes every figure here, so say ` +
+      `which one you are quoting.`
+  );
+
+  return ok(
+    "horizon",
+    {
+      basis,
+      basisMeans: DEMAND_BASIS[basis].label,
+      from: wanted[0],
+      months,
+      firstShort,
+      totalFreelancerCostChf: costs.length ? costs.reduce((a, b) => a + b, 0) : null,
+    },
+    warnings
+  );
 }
 
 /* ─────────────── Report: client plan vs actual ─────────────── */

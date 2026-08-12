@@ -5019,10 +5019,11 @@ export const QUERY_RESOURCING_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
       properties: {
         report: {
           type: "string",
-          enum: ["capacity", "monthly_outlook", "client_plan_vs_actual", "contract_health"],
+          enum: ["capacity", "monthly_outlook", "horizon", "client_plan_vs_actual", "contract_health"],
           description:
-            "capacity = per-person capacity, booked and headroom by discipline for a month (optionally one person); " +
-            "monthly_outlook = company-wide capacity vs demand, gaps to target and freelancer estimates for a month; " +
+            "capacity = per-person capacity by discipline for ONE month, plus real per-person headroom for account management; " +
+            "monthly_outlook = company-wide capacity vs demand, gaps to target and freelancer cost for ONE month; " +
+            "horizon = the next several months as a series: where capacity lands and WHEN each discipline first runs short. Use it for 'when do we run out', 'do we need freelancers', or anything spanning more than one month; " +
             "client_plan_vs_actual = contracted/booked/delivered CUs per contract for a month, with Engine's delivered figures alongside; " +
             "contract_health = active contracts with dates, delivery percentage and renewal exposure.",
         },
@@ -5032,11 +5033,15 @@ export const QUERY_RESOURCING_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             'Month for capacity / monthly_outlook / client_plan_vs_actual. Accepts "September 2026", "2026-09", "this month", "next month" or "last month". Defaults to this month.',
         },
         person: { type: "string", description: "For capacity: narrow to one team member by name (partial match)." },
+        months: {
+          type: "number",
+          description: "For horizon: how many months ahead to cover, starting from this month. Default 6, max 24.",
+        },
         basis: {
           type: "string",
-          enum: ["live", "scenario"],
+          enum: ["live", "scenario", "compare", "booked", "forecast", "pipeline"],
           description:
-            "For capacity: which account-management allocation plan to read. USUALLY OMIT THIS — the right plan follows from the month, and the report picks it: this month reads the live plan, next month reads the scenario plan, and any month further out has no allocation at all (capacity is still reported). The two plans are alternatives, not layers, and are never added together; at each month-end the scenario is copied over the live one and a fresh scenario is started. Allocation affects account management only — company demand and every discipline shortfall are identical in both plans, because moving a contract between managers does not create or destroy a CU.",
+            "Means different things per report. FOR HORIZON, which demand basis to model: 'forecast' (default) is booked work plus opportunities weighted by conversion probability — the honest planning number; 'booked' is committed work only, the floor; 'pipeline' is booked plus EVERY opportunity at full value, a ceiling rather than a plan (on September 2026 it overstates demand by 24%). FOR CAPACITY, which account-management allocation plan to read — usually omit it, since the right plan follows from the month — the right plan follows from the month, and the report picks it: this month reads the live plan, next month reads the scenario plan, and any month further out has no allocation at all (capacity is still reported); pass 'compare' to see this month's live plan against next month's scenario side by side, with the shift per person already worked out. The two plans are alternatives, not layers, and are never added together; at each month-end the scenario is copied over the live one and a fresh scenario is started. Allocation affects account management only — company demand and every discipline shortfall are identical in both plans, because moving a contract between managers does not create or destroy a CU.",
         },
         client: { type: "string", description: "For client_plan_vs_actual and contract_health: filter by client or contract name (partial match)." },
         ending_within_days: { type: "number", description: "For contract_health: only contracts ending within this many days (e.g. 90)." },
