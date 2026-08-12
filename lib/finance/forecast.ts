@@ -89,6 +89,31 @@ export function resolveSheet(visible: string[], want: string): string | undefine
   );
 }
 
+/**
+ * Does a row label satisfy any search term?
+ *
+ * Whole-string containment was the test, and it cost a real answer. Asked
+ * whether the Gavi IFFIm contract was in the forecast, the model searched
+ * "Gavi Ifim" — which is what speech-to-text makes of the name — against a row
+ * labelled "Gavi IFFIM". `"gavi iffim".includes("gavi ifim")` is false, one
+ * letter apart, so nothing matched and the model reported that the contract
+ * did not exist. It was there, carrying 49,672 CHF into 2026.
+ *
+ * So a term now matches if ANY of its words appears: "gavi ifim" finds the row
+ * on "gavi" alone. Words shorter than three characters are ignored, since a
+ * two-letter fragment matches most of the sheet and would flood the result
+ * rather than narrow it. Over-matching is the right way to fail here — a
+ * caller gets extra rows and can see them, where under-matching produced a
+ * confident denial.
+ */
+export function labelMatches(label: string, terms: string[]): boolean {
+  return terms.some((term) => {
+    if (label.includes(term)) return true;
+    const words = term.split(" ").filter((w) => w.length >= 3);
+    return words.length > 0 && words.some((w) => label.includes(w));
+  });
+}
+
 /** Serialize one sheet as trimmed pipe-separated rows the model can read.
  *  With `match`, return only the header block plus rows whose LABEL cells hit
  *  a term — a cross-scenario question wants one row from every sheet, not 110
@@ -117,7 +142,7 @@ export function serializeSheet(ws: XLSX.WorkSheet, match?: string[]): { rows: st
   const hits: string[] = [];
   for (const line of all.slice(4)) {
     const label = norm(line.split("|").slice(0, 2).join(" "));
-    if (terms.some((t) => label.includes(t))) hits.push(line);
+    if (labelMatches(label, terms)) hits.push(line);
     if (hits.length >= 40) break;
   }
   return { rows: [...head, ...hits].join("\n").slice(0, 7000), matched: hits.length };
@@ -134,6 +159,34 @@ const MAX_SHEETS_PER_CALL = 12;
  *  workbook fits — which is the only way a "compare every scenario" answer
  *  gets every scenario. */
 const MAX_SHEETS_FILTERED = 30;
+
+/**
+ * How this workbook is laid out, sent with every result.
+ *
+ * Written after the model was asked whether the Gavi IFFIm contract was in the
+ * forecast, looked in "Contract Details", found nothing, and said it was not
+ * there. "Contract Details" is a HIDDEN sheet holding older records; the live
+ * per-client rows are on "Monthly revenue", where Gavi appears twice — once
+ * carrying 49,672 CHF and once zeroed. Without a map of the workbook the model
+ * cannot tell a stale sheet from the current one, or a superseded row from a
+ * live one, and a confident "it is not in the forecast" is the result.
+ */
+const WORKBOOK_STRUCTURE = [
+  "WORKBOOK LAYOUT — read this before concluding something is absent:",
+  "• 'Monthly revenue' is where PER-CLIENT CONTRACT ROWS live. Columns B–M are January…December, N is the row Total.",
+  "  Columns P onward are contract terms: P Start Date, Q End Date, R Term (months), S CU, T CU/month rate,",
+  "  U total contract revenue in local currency, V per-month CHF, W/X currency, Y monthly CUs.",
+  "  P and Q are EXCEL DATE SERIALS, not amounts — 46266 is 1 September 2026, not 46,266 francs.",
+  "• A client can appear MORE THAN ONCE. Later rows are often a superseded or not-yet-live version of the",
+  "  same contract, recognisable by monthly cells of 0 and a Total of 0. A zero row does NOT mean the contract",
+  "  is worth nothing — check whether another row for the same client carries the figures, and report the one",
+  "  that does. Say so if both exist.",
+  "• 'Forecast Actual Booked' and the weighted scenario sheets are TOTALS, not per-client rows. A client name",
+  "  will usually not appear there, and its absence there says nothing about whether the contract exists.",
+  "• 'Contract Details' and 'Monthly revenue 2024' are HIDDEN sheets holding older records. Never conclude a",
+  "  contract is missing from them alone.",
+  "• Never report a contract as absent from the forecast without checking 'Monthly revenue' unfiltered.",
+].join("\n");
 
 export async function queryForecast(
   sheet?: string,
@@ -184,6 +237,7 @@ export async function queryForecast(
       return {
         data: {
           file: "Forecast 2026 (live from Google Drive)",
+          structure: WORKBOOK_STRUCTURE,
           available_sheets: visible,
           ...(filtered ? { row_filter: terms } : {}),
           ...(missing.length
@@ -211,12 +265,19 @@ export async function queryForecast(
     return {
       data: {
         file: "Forecast 2026 (live from Google Drive)",
+        structure: WORKBOOK_STRUCTURE,
         sheet: target,
         available_sheets: visible,
         ...(filtered ? { row_filter: terms } : {}),
         rows,
         ...(filtered && matched === 0
-          ? { note: `No row matched ${terms.map((t) => `"${t}"`).join(" / ")} — re-read this sheet without a row filter before reporting the figure as unavailable.` }
+          ? {
+              note:
+                `No row matched ${terms.map((t) => `"${t}"`).join(" / ")} on "${target}". This is NOT evidence the ` +
+                `figure is absent — spoken names arrive mis-transcribed and sheets label things differently. ` +
+                `Re-read "Monthly revenue" with NO row filter and look for the name yourself before saying it is ` +
+                `not in the forecast.`,
+            }
           : {}),
       },
       count: 1,
