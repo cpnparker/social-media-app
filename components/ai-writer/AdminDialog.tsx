@@ -1858,16 +1858,19 @@ function IntegrationsTab({ workspaceId }: { workspaceId: string }) {
       <div className="rounded-xl border border-dashed p-4">
         <div className="text-sm font-semibold">Gmail, Calendar, Slack, Microsoft 365</div>
         <p className="text-xs text-muted-foreground mt-0.5">
-          These are personal connections — each person connects their own, and only they can
-          query it, only in a private chat. They aren&rsquo;t managed here: see{" "}
-          <a href={getSubdomainUrl("engine", "/settings/connections")} className="underline hover:text-foreground">
-            Settings → Connections
-          </a>{" "}
-          for your own, and the Mail, Calendar and M365 columns in{" "}
+          Not managed here, and nothing for an admin to do. These are personal — each person
+          connects their own account and switches it on themselves, from the{" "}
+          <span className="font-medium text-foreground">avatar menu → Connections</span>, right
+          here in EngineAI. Only they can query it, and only in a private chat.
+        </p>
+        <p className="text-xs text-muted-foreground mt-2">
+          Admin access is reserved for connections that are genuinely workspace-wide and
+          sensitive — Xero above being the one that qualifies. You can still see and override
+          anyone&rsquo;s personal state in{" "}
           <a href={getSubdomainUrl("engine", "/settings/users")} className="underline hover:text-foreground">
             Settings → Users
-          </a>{" "}
-          to control who is allowed to query them at all.
+          </a>
+          .
         </p>
       </div>
     </div>

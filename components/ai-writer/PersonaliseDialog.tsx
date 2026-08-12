@@ -20,6 +20,9 @@ interface PersonaliseDialogProps {
   workspaceId: string;
   open: boolean;
   onClose: () => void;
+  /** Which tab to land on. "Connections" has its own menu entry, so opening
+   *  from there must not dump the user on Context and make them hunt. */
+  initialTab?: Tab;
 }
 
 type Tab = "context" | "company" | "roles" | "connections";
@@ -30,8 +33,16 @@ export default function PersonaliseDialog({
   workspaceId,
   open,
   onClose,
+  initialTab = "context",
 }: PersonaliseDialogProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("context");
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab);
+
+  // The dialog is mounted once and reopened, so without this it keeps whichever
+  // tab was last viewed — clicking "Connections" after visiting Context would
+  // reopen on Context.
+  useEffect(() => {
+    if (open) setActiveTab(initialTab);
+  }, [open, initialTab]);
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>

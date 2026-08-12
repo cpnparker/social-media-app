@@ -177,6 +177,7 @@ function EngineAIContent() {
   const [scheduledPrefill, setScheduledPrefill] = useState<{ title?: string; prompt?: string } | null>(null);
   const [adminDialogOpen, setAdminDialogOpen] = useState(false);
   const [personaliseDialogOpen, setPersonaliseDialogOpen] = useState(false);
+  const [personaliseTab, setPersonaliseTab] = useState<"context" | "company" | "roles" | "connections">("context");
   const [clientContextOpen, setClientContextOpen] = useState(false);
   const [editingConvId, setEditingConvId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
@@ -1065,11 +1066,22 @@ function EngineAIContent() {
                 </div>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  onClick={() => setPersonaliseDialogOpen(true)}
+                  onClick={() => { setPersonaliseTab("context"); setPersonaliseDialogOpen(true); }}
                   className="gap-2"
                 >
                   <Sparkles className="h-4 w-4" />
                   Personalise
+                </DropdownMenuItem>
+                {/* First-class entry, and NOT admin-gated. These are the user's
+                    own accounts; burying them as a tab inside Personalise meant
+                    people looked under Administration → Integrations instead,
+                    which most of them cannot even open. */}
+                <DropdownMenuItem
+                  onClick={() => { setPersonaliseTab("connections"); setPersonaliseDialogOpen(true); }}
+                  className="gap-2"
+                >
+                  <Link2 className="h-4 w-4" />
+                  Connections
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => setMemoryManagerOpen(true)}
@@ -1540,11 +1552,22 @@ function EngineAIContent() {
                 </div>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  onClick={() => setPersonaliseDialogOpen(true)}
+                  onClick={() => { setPersonaliseTab("context"); setPersonaliseDialogOpen(true); }}
                   className="gap-2"
                 >
                   <Sparkles className="h-4 w-4" />
                   Personalise
+                </DropdownMenuItem>
+                {/* First-class entry, and NOT admin-gated. These are the user's
+                    own accounts; burying them as a tab inside Personalise meant
+                    people looked under Administration → Integrations instead,
+                    which most of them cannot even open. */}
+                <DropdownMenuItem
+                  onClick={() => { setPersonaliseTab("connections"); setPersonaliseDialogOpen(true); }}
+                  className="gap-2"
+                >
+                  <Link2 className="h-4 w-4" />
+                  Connections
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => setMemoryManagerOpen(true)}
@@ -2622,6 +2645,7 @@ function EngineAIContent() {
       {/* Personalise Dialog */}
       {workspaceId && (
         <PersonaliseDialog
+          initialTab={personaliseTab}
           workspaceId={workspaceId}
           open={personaliseDialogOpen}
           onClose={() => setPersonaliseDialogOpen(false)}
