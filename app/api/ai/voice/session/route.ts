@@ -9,6 +9,8 @@ import {
   getVoiceTools,
   VOICE_MODEL,
   VOICE_NAME,
+  VOICE_MODEL_FALLBACK,
+  VOICE_NAME_FALLBACK,
   VOICE_SAMPLE_RATE,
 } from "@/lib/ai/voice";
 
@@ -102,22 +104,49 @@ export async function POST(req: NextRequest) {
 
     // Mint the ephemeral token (5 min TTL — covers connection setup; the
     // WebSocket session itself stays alive past token expiry).
-    const mintRes = await fetch("https://api.x.ai/v1/realtime/client_secrets", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.XAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      // Bake the voice into the session at creation so the very first
-      // response can never race the client's session.update and speak in a
-      // different voice ("two voices" bug). Verified 2026-06-11: xAI applies
-      // `voice` from the mint body (session.created echoes it); instructions
-      // are still delivered via session.update from the browser.
-      body: JSON.stringify({
-        expires_after: { seconds: 300 },
-        session: { type: "realtime", model: VOICE_MODEL, voice: VOICE_NAME },
-      }),
-    });
+    // Bake the voice into the session at creation so the very first response
+    // can never race the client's session.update and speak in a different
+    // voice ("two voices" bug). Verified 2026-06-11: xAI applies `voice` from
+    // the mint body (session.created echoes it); instructions are still
+    // delivered via session.update from the browser.
+    const mint = (model: string, voice: string) =>
+      fetch("https://api.x.ai/v1/realtime/client_secrets", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.XAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expires_after: { seconds: 300 },
+          session: { type: "realtime", model, voice },
+        }),
+      });
+
+    let activeModel = VOICE_MODEL;
+    let activeVoice = VOICE_NAME;
+    let mintRes = await mint(activeModel, activeVoice);
+
+    // A model or voice name is CONFIGURATION, and configuration can be wrong —
+    // both are env-overridable so they can be changed without a deploy, which
+    // is exactly what makes a typo reachable. xAI rejects an unknown value with
+    // a 4xx, so rather than leaving voice dead until someone notices, fall back
+    // once to the known-good pair and say loudly in the logs what was rejected.
+    // Not retried on 429 (credits) or 5xx (their outage) — neither is fixed by
+    // a different model name.
+    if (!mintRes.ok && mintRes.status >= 400 && mintRes.status < 500 && mintRes.status !== 429) {
+      const why = await mintRes.text().catch(() => "");
+      if (activeModel !== VOICE_MODEL_FALLBACK || activeVoice !== VOICE_NAME_FALLBACK) {
+        console.error(
+          `[Voice] xAI rejected model="${activeModel}" voice="${activeVoice}" (${mintRes.status}): ` +
+            `${why.slice(0, 300)} — falling back to ${VOICE_MODEL_FALLBACK}/${VOICE_NAME_FALLBACK}. ` +
+            `Check XAI_VOICE_MODEL / XAI_VOICE_NAME.`
+        );
+        activeModel = VOICE_MODEL_FALLBACK;
+        activeVoice = VOICE_NAME_FALLBACK;
+        mintRes = await mint(activeModel, activeVoice);
+      }
+    }
+
     if (!mintRes.ok) {
       const errText = await mintRes.text().catch(() => "");
       console.error(`[Voice] Ephemeral token mint failed (${mintRes.status}): ${errText.slice(0, 300)}`);
@@ -127,7 +156,7 @@ export async function POST(req: NextRequest) {
       const friendly =
         mintRes.status === 429
           ? "Voice unavailable: the xAI account is out of credits or hit its monthly limit — top up at console.x.ai"
-          : "Could not start voice session";
+          : `Could not start voice session (xAI ${mintRes.status})`;
       return NextResponse.json({ error: friendly }, { status: 503 });
     }
     const mintJson = await mintRes.json();
@@ -191,9 +220,16 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       token,
-      wsUrl: `wss://api.x.ai/v1/realtime?model=${VOICE_MODEL}`,
-      model: VOICE_MODEL,
-      voice: VOICE_NAME,
+      // activeModel, not VOICE_MODEL: after a fallback the socket must connect
+      // to the model the token was actually minted for, or the session is
+      // rejected at connect time and the fallback buys nothing.
+      wsUrl: `wss://api.x.ai/v1/realtime?model=${activeModel}`,
+      // What was ACTUALLY minted, which is not always what was configured —
+      // the client renders with these, so a fallback must be reflected here or
+      // session.update would immediately overwrite the working voice with the
+      // rejected one.
+      model: activeModel,
+      voice: activeVoice,
       sampleRate: VOICE_SAMPLE_RATE,
       instructions,
       tools: getVoiceTools({ finance: voiceFinance, resourcing: resourcingAccess }),

@@ -31,7 +31,24 @@ import {
  * rather than degrading, so a mistake here is loud.
  */
 export const VOICE_MODEL = (process.env.XAI_VOICE_MODEL || "grok-voice-think-fast-2.0").trim();
-export const VOICE_NAME = "ara"; // warm, conversational — chosen 2026-06-10
+/**
+ * The speaking voice, overridable without a deploy.
+ *
+ * Set XAI_VOICE_NAME to try another. Two things learned the hard way:
+ *
+ *  - DO NOT ask for an accent in the prompt. Instructing one destabilised the
+ *    render and is a known cause of the voice shifting mid-reply. If a
+ *    different accent is wanted, it has to come from a different VOICE, not
+ *    from instructions.
+ *  - A wrong name fails the mint rather than falling back quietly, so the
+ *    session route retries once on known-good values and surfaces xAI's own
+ *    message. An unrecognised voice is therefore visible, not silent.
+ */
+export const VOICE_NAME = (process.env.XAI_VOICE_NAME || "ara").trim();
+
+/** Known-good pair to fall back to when the configured one is rejected. */
+export const VOICE_MODEL_FALLBACK = "grok-voice-latest";
+export const VOICE_NAME_FALLBACK = "ara";
 export const VOICE_SAMPLE_RATE = 24000;
 /** $0.05/min → tenths-of-cents per minute for ai_usage logging */
 export const VOICE_COST_TENTHS_PER_MIN = 50;
