@@ -39,6 +39,10 @@ interface ConnectionRow {
   account: string | null;
   problem: string | null;
   connectUrl: string | null;
+  /** True when EngineAI runs the OAuth itself, so the user never leaves. False
+   *  for services that still hand off to MeetingBrain — worth saying out loud
+   *  rather than surprising them with a different product's login screen. */
+  connectInPlace?: boolean;
 }
 
 interface StatusPayload {
@@ -49,6 +53,8 @@ interface StatusPayload {
   signInUrl: string;
   connections: Record<string, ConnectionRow>;
 }
+
+const TOGGLEABLE = new Set(["gmail", "calendar", "microsoft"]);
 
 const SERVICES = [
   { key: "gmail", name: "Gmail", icon: Mail,
@@ -122,6 +128,7 @@ export default function ConnectionsPanel({
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [saving, setSaving] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -137,6 +144,32 @@ export default function ConnectionsPanel({
   }, [workspaceId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  /** Switch this service on or off for MYSELF. Their own data, their own call —
+   *  the hard gates (own account, private conversation, approved processor) are
+   *  enforced server-side regardless and are not what this controls. */
+  const toggle = async (service: string, next: boolean) => {
+    if (!workspaceId) return;
+    setSaving(service);
+    // Optimistic, so the switch responds immediately; the reload below is what
+    // makes it true, and a failure snaps it back.
+    setStatus((s) =>
+      s ? { ...s, connections: { ...s.connections, [service]: { ...s.connections[service], permitted: next, available: next && s.connections[service]?.connected } } } : s
+    );
+    try {
+      const res = await fetch("/api/connections/enable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ service, enabled: next, workspaceId }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+    } catch {
+      /* fall through to the reload, which restores the true state */
+    } finally {
+      setSaving(null);
+      void load();
+    }
+  };
 
   // Clear any popup watcher on unmount — the modal can close mid-flow.
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
@@ -196,9 +229,9 @@ export default function ConnectionsPanel({
 
       {compact && (
         <p className="text-xs text-muted-foreground">
-          Services EngineAI can read on your behalf, in a private chat only. Connecting opens
-          MeetingBrain in a new window — it holds the connection, and you&rsquo;ll come straight
-          back here.
+          Services EngineAI can read on your behalf, in a private chat only. Connect and switch
+          them on here — you don&rsquo;t need to go anywhere else, and nobody else can see or
+          query them.
         </p>
       )}
 
@@ -255,11 +288,34 @@ export default function ConnectionsPanel({
                     {row?.problem && !row.available && !status?.bridgeError && (
                       <p className="text-xs mt-1.5 text-muted-foreground">{row.problem}</p>
                     )}
-                    {row?.connected && row?.permitted === false && !status?.bridgeError && (
-                      <p className="text-xs mt-1.5 text-amber-600 dark:text-amber-400">
-                        Ask an admin to enable {name} for you in Settings → Users. Nothing to
-                        reconnect — the connection itself is fine.
-                      </p>
+                    {TOGGLEABLE.has(key) && row?.connected && !status?.bridgeError && (
+                      <label className="flex items-center gap-2 mt-2 cursor-pointer select-none">
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={row.permitted === true}
+                          disabled={saving === key}
+                          onClick={() => void toggle(key, row.permitted !== true)}
+                          className={cn(
+                            "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:opacity-50",
+                            row.permitted === true ? "bg-emerald-500" : "bg-muted-foreground/30"
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              "inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform",
+                              row.permitted === true ? "translate-x-5" : "translate-x-1"
+                            )}
+                          />
+                        </button>
+                        <span className="text-xs text-muted-foreground">
+                          {saving === key
+                            ? "Saving…"
+                            : row.permitted === true
+                              ? `Let EngineAI use my ${name.replace("Google ", "").toLowerCase()}`
+                              : `Turn on to use ${name} in chat`}
+                        </span>
+                      </label>
                     )}
                   </div>
                 </div>
@@ -275,8 +331,8 @@ export default function ConnectionsPanel({
                           : "bg-primary text-primary-foreground hover:opacity-90"
                       )}
                     >
-                      {row.connected ? "Manage" : "Connect"}
-                      <ExternalLink className="h-3 w-3" />
+                      {row.connected ? "Reconnect" : "Connect"}
+                      {!row.connectInPlace && <ExternalLink className="h-3 w-3" />}
                     </button>
                   )}
                 </div>

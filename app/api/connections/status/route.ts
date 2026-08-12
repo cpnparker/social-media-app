@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { isConfigured as googleConnectConfigured } from "@/lib/connections/google-oauth";
 
 /**
  * GET /api/connections/status — what the SIGNED-IN user is connected to.
@@ -119,6 +120,13 @@ export async function GET(_req: NextRequest) {
     }
   }
 
+  // Where "Connect" should send this user. Gmail and Calendar are both the
+  // Google grant, and EngineAI can now run that handshake itself — so the user
+  // stays inside EngineAI instead of being sent to MeetingBrain, which many of
+  // them cannot reach. Slack and Microsoft still hand off until their flows are
+  // built the same way; the fallback keeps them working rather than dead.
+  const engineGoogleConnect = googleConnectConfigured() ? "/api/connections/google/start" : null;
+
   const merge = (name: "gmail" | "calendar" | "microsoft") => {
     const c = bridge.connections?.[name];
     const permitted = permissionsKnown ? permissions[name] : null;
@@ -130,7 +138,14 @@ export async function GET(_req: NextRequest) {
       available: (c?.available ?? false) && permitted === true,
       account: c?.account ?? null,
       problem: c?.problem ?? (bridgeError ? "Couldn't reach MeetingBrain to check" : null),
-      connectUrl: c?.connectUrl ?? null,
+      connectUrl:
+        name === "gmail" || name === "calendar"
+          ? engineGoogleConnect ?? c?.connectUrl ?? null
+          : c?.connectUrl ?? null,
+      // Lets the UI say "you'll be sent to MeetingBrain" only when that is
+      // actually true, rather than warning about a hand-off that no longer
+      // happens.
+      connectInPlace: (name === "gmail" || name === "calendar") && !!engineGoogleConnect,
     };
   };
 
