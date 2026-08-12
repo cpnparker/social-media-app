@@ -58,6 +58,7 @@ interface WorkspaceMember {
   accessCalendar: boolean;
   accessMicrosoft: boolean;
   accessEngineTasks: boolean;
+  accessResourcing: boolean;
 }
 
 interface CustomerAssignment {
@@ -79,7 +80,8 @@ type AccessField =
   | "accessGmail"
   | "accessCalendar"
   | "accessMicrosoft"
-  | "accessEngineTasks";
+  | "accessEngineTasks"
+  | "accessResourcing";
 
 /* ─────────────── Config ─────────────── */
 
@@ -132,6 +134,8 @@ const accessFields: { key: AccessField; label: string }[] = [
   { key: "accessMicrosoft", label: "M365" },
   // Shows the user's Engine tasks inside MeetingBrain (read-only).
   { key: "accessEngineTasks", label: "Tasks" },
+  // Airtable operations base in chat: capacity, contracts, delivery vs plan.
+  { key: "accessResourcing", label: "Resourcing" },
 ];
 
 const appRoleOptions: { value: string; label: string; color: string; bg: string }[] = [

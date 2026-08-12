@@ -234,13 +234,43 @@ export interface AirtableTable {
  * what the reports can actually be built from, and it is also the runtime
  * guard against a renamed column.
  */
+let schemaCache: { at: number; value: { tables: AirtableTable[] } } | null = null;
+
 export async function getBaseSchema(): Promise<{ tables: AirtableTable[] }> {
-  await pace();
-  const res = await fetch(`${API}/meta/bases/${baseId()}/tables`, {
-    headers: { Authorization: `Bearer ${pat()}` },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  if (!res.ok) {
+  // Cached and retried like every other call. This one is easy to overlook
+  // because it does not go through airtableFetch — and it is the FIRST call
+  // every report makes, so without this a single transient 429 fails a report
+  // that the record fetches after it would have survived. It is also the call
+  // most likely to hit the rate limit, since four reports asking for the
+  // schema is four requests before any data moves.
+  if (schemaCache && Date.now() - schemaCache.at < CACHE_TTL_MS) return schemaCache.value;
+
+  let lastError = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await pace();
+    let res: Response;
+    try {
+      res = await fetch(`${API}/meta/bases/${baseId()}/tables`, {
+        headers: { Authorization: `Bearer ${pat()}` },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (err: any) {
+      lastError = err?.name === "TimeoutError" ? "timed out" : String(err?.message || err).slice(0, 120);
+      continue;
+    }
+
+    if (res.ok) {
+      const value = (await res.json()) as { tables: AirtableTable[] };
+      schemaCache = { at: Date.now(), value };
+      return value;
+    }
+
+    if (res.status === 429 || res.status >= 500) {
+      lastError = `HTTP ${res.status}`;
+      await new Promise((r) => setTimeout(r, 900 * (attempt + 1)));
+      continue;
+    }
+
     const body = await res.text().catch(() => "");
     throw new Error(
       res.status === 401 || res.status === 403
@@ -248,7 +278,8 @@ export async function getBaseSchema(): Promise<{ tables: AirtableTable[] }> {
         : `Could not read base schema (${res.status}): ${body.slice(0, 160)}`
     );
   }
-  return (await res.json()) as { tables: AirtableTable[] };
+
+  throw new Error(`Could not read base schema after retries: ${lastError}`);
 }
 
 /**

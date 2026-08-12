@@ -6043,6 +6043,10 @@ async function streamAnthropic(
   const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
     query_xero: 8, query_engine: 8, query_meetingbrain: 6, query_drive_docs: 6,
     search_notebook: 6,
+    // Four separate reports behind one tool name, so the default cap of 3
+    // makes "how are we tracking, and who is free to take it on" unanswerable
+    // — the turn runs out of calls before it runs out of questions.
+    query_resourcing: 8,
   };
   const budgetFor = (name: string) => READ_ONLY_TOOL_BUDGET[name] ?? MAX_CALLS_PER_TOOL;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -7306,6 +7310,10 @@ async function streamXAIChatCompletions(
   const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
     query_xero: 8, query_engine: 8, query_meetingbrain: 6, query_drive_docs: 6,
     search_notebook: 6,
+    // Four separate reports behind one tool name, so the default cap of 3
+    // makes "how are we tracking, and who is free to take it on" unanswerable
+    // — the turn runs out of calls before it runs out of questions.
+    query_resourcing: 8,
   };
   const budgetFor = (name: string) => READ_ONLY_TOOL_BUDGET[name] ?? MAX_CALLS_PER_TOOL;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {

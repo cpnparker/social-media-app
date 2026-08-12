@@ -41,7 +41,17 @@ type FailureKind = "config" | "input" | "schema" | "infra";
 /** Classify a failure so the formatter can say what to do about it. */
 function classify(message: string): FailureKind {
   if (/is missing expected field|no longer exists in the base|unexpected type/i.test(message)) return "schema";
-  if (/not a month I can resolve|No one on the live team matches|No contract matching|has no ".*" option/i.test(message)) return "input";
+  // "The plan has no row for March 2028" is a fact about the data, not a
+  // fault. Classified as infra it was rendered to the model as "the resourcing
+  // base could not be reached" — turning a correct, specific answer into a
+  // false report that a healthy system was down.
+  if (
+    /not a month I can resolve|Nobody matching|No contract matching|has no ".*" option|has no row for|No figures are available/i.test(
+      message
+    )
+  ) {
+    return "input";
+  }
   return "infra";
 }
 
@@ -54,12 +64,18 @@ export async function queryResourcing(args: ResourcingArgs): Promise<ResourcingO
     };
   }
 
-  const report = (args.report || "").trim() as ResourcingReport;
+  // String(), not .trim() on a possibly-non-string. The tool arguments are
+  // model output parsed from JSON, so `report` can arrive as a number, null,
+  // or an object, and `args` itself can be a non-object. `(args.report ||
+  // "").trim()` threw a TypeError on all of those — straight out of a function
+  // the four executors deliberately left unguarded on the strength of the
+  // promise above.
+  const report = String((args as ResourcingArgs | null)?.report ?? "").trim() as ResourcingReport;
   if (!RESOURCING_REPORTS.includes(report)) {
     return {
       ok: false,
       kind: "input",
-      error: `Unknown report "${args.report}". Available: ${RESOURCING_REPORTS.join(", ")}.`,
+      error: `Unknown report "${report || "(none given)"}". Available: ${RESOURCING_REPORTS.join(", ")}.`,
     };
   }
 

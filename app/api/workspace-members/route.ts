@@ -119,6 +119,7 @@ export async function GET() {
         accessGmail: access ? (access as any).flag_access_gmail === 1 : false,
         accessCalendar: access ? (access as any).flag_access_calendar === 1 : false,
         accessMicrosoft: access ? (access as any).flag_access_microsoft === 1 : false,
+        accessResourcing: access ? (access as any).flag_access_resourcing === 1 : false,
         accessEngineTasks: access ? (access as any).flag_access_engine_tasks === 1 : false,
       };
     });
@@ -256,7 +257,7 @@ export async function PATCH(req: NextRequest) {
   if (!guard.ok) return guard.res;
   try {
     const body = await req.json();
-    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain, accessRfpTool, accessAuthorityOn, accessEngineAiLive, accessFinance, accessGmail, accessCalendar, accessMicrosoft, accessEngineTasks } = body;
+    const { userId, userIds, role, accessEngine, accessEngineGpt, accessOperations, accessAdmin, accessMeetingBrain, accessRfpTool, accessAuthorityOn, accessEngineAiLive, accessFinance, accessGmail, accessCalendar, accessMicrosoft, accessEngineTasks, accessResourcing } = body;
 
     // Determine target user IDs — bulk or single
     const isBulk = Array.isArray(userIds) && userIds.length > 0;
@@ -327,7 +328,8 @@ export async function PATCH(req: NextRequest) {
       accessGmail !== undefined ||
       accessCalendar !== undefined ||
       accessMicrosoft !== undefined ||
-      accessEngineTasks !== undefined;
+      accessEngineTasks !== undefined ||
+      accessResourcing !== undefined;
 
     if (hasAccessUpdate) {
       // supabase-js resolves PostgREST failures as { error }; it does not
@@ -368,6 +370,7 @@ export async function PATCH(req: NextRequest) {
             if (accessCalendar !== undefined) updates.flag_access_calendar = accessCalendar ? 1 : 0;
             if (accessMicrosoft !== undefined) updates.flag_access_microsoft = accessMicrosoft ? 1 : 0;
             if (accessEngineTasks !== undefined) updates.flag_access_engine_tasks = accessEngineTasks ? 1 : 0;
+            if (accessResourcing !== undefined) updates.flag_access_resourcing = accessResourcing ? 1 : 0;
 
             const { error: updErr } = await intelligenceDb
               .from("users_access")
@@ -397,6 +400,9 @@ export async function PATCH(req: NextRequest) {
                 : {}),
               ...(accessMicrosoft !== undefined
                 ? { flag_access_microsoft: accessMicrosoft ? 1 : 0 }
+                : {}),
+              ...(accessResourcing !== undefined
+                ? { flag_access_resourcing: accessResourcing ? 1 : 0 }
                 : {}),
               // Only sent when the admin actually touched this toggle. Naming a
               // column that does not exist yet fails the WHOLE insert, which

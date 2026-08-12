@@ -209,6 +209,29 @@ function firstLink(raw: unknown): string | null {
   return Array.isArray(raw) && raw.length ? String(raw[0]) : null;
 }
 
+/**
+ * Resolve a LINK cell to human-readable names.
+ *
+ * This distinction is the difference between a report and a list of gibberish.
+ * A `multipleRecordLinks` field returns record IDs — `["recAbC123…"]` — whereas
+ * a `multipleLookupValues` field returns the values themselves. Both are
+ * arrays, so both survive a naive `Array.isArray(x) ? x[0] : x` unscathed, and
+ * only one of them yields a name. Printing "recAbC123" as a client name is
+ * merely embarrassing; the silent half is that a `client` filter compared
+ * against record IDs matches nothing and returns an empty set that reads as
+ * "no such contract".
+ */
+function linkNames(raw: unknown, names: Map<string, string>): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((id) => names.get(String(id)) || String(id)).filter(Boolean);
+}
+
+/** id → primary-field name, for resolving links. */
+async function nameIndex(table: string, primaryField: string): Promise<Map<string, string>> {
+  const res = await listRecords(table, { fields: [primaryField] });
+  return new Map(res.records.map((r) => [r.id, String(r.fields[primaryField] ?? "")]));
+}
+
 /* ─────────────── Report: capacity ─────────────── */
 
 export interface PersonCapacity {
@@ -524,15 +547,19 @@ export async function clientPlanVsActualReport(
     return isNumber(n) ? n : null;
   };
 
+  // Customer and Booking status here are LOOKUPS, which return the values
+  // themselves — unlike the same-named LINK fields on Contracts, which return
+  // record ids. Contract IS a link, so it needs resolving.
+  const contractNames = await nameIndex("Contracts", "Contract name");
+
   const planRows: ClientPlanRow[] = rows.records
     .map((r) => {
       const customerCell = r.fields["Customer"];
       const client = Array.isArray(customerCell) ? String(customerCell[0] ?? "") : String(customerCell ?? "");
-      const contractCell = r.fields["Contract"];
       return {
         client,
         engineClientId: engineIdByName.get(client.toLowerCase()) ?? null,
-        contract: Array.isArray(contractCell) ? `${contractCell.length} linked` : String(contractCell ?? ""),
+        contract: linkNames(r.fields["Contract"], contractNames).join(", "),
         bookingStatus: Array.isArray(r.fields["Booking status"])
           ? String((r.fields["Booking status"] as unknown[])[0] ?? "")
           : ((r.fields["Booking status"] as string) ?? null),
@@ -558,10 +585,18 @@ export async function clientPlanVsActualReport(
   if (range) {
     try {
       const actuals = await engineActuals(range.from, range.to);
-      const known = new Set(Array.from(engineIdByName.values()));
+      // Scoped to the SAME clients as the plan rows above when a client filter
+      // is in play. Without this, asking about one client returns that
+      // client's plan beside every client's delivered CUs — two numbers that
+      // invite exactly the comparison they cannot support.
+      const known = new Set(
+        wanted
+          ? planRows.map((r) => r.engineClientId).filter((id): id is number => id != null)
+          : Array.from(engineIdByName.values())
+      );
       for (const [engineClientId, row] of Array.from(actuals.byClient.entries())) {
         if (known.has(engineClientId)) engineDelivered.push({ engineClientId, cu: row.cu, taskCount: row.taskCount });
-        else unmatchedEngineClientIds.push(engineClientId);
+        else if (!wanted) unmatchedEngineClientIds.push(engineClientId);
       }
       if (unmatchedEngineClientIds.length) {
         warnings.push(
@@ -649,14 +684,24 @@ export async function contractHealthReport(
     const n = cellNumber(v);
     return isNumber(n) ? n : null;
   };
-  const firstOf = (v: unknown): string | null =>
+  // Customer and Account Manager are LINK fields, so the cells hold record ids
+  // rather than names. Resolving them is what makes the rows readable at all,
+  // and — less visibly — what makes the `client` filter below able to match.
+  const [customerNames, teamNames] = await Promise.all([
+    nameIndex("Customer", "Customer"),
+    nameIndex("Team", "Name"),
+  ]);
+
+  // Booking status and Contract status are plain selects on this table, not
+  // links, so they are read directly.
+  const selectValue = (v: unknown): string | null =>
     Array.isArray(v) ? (v.length ? String(v[0]) : null) : v == null ? null : String(v);
 
   let out: ContractHealthRow[] = rows.records.map((r) => ({
     contract: String(r.fields["Contract name"] || "(unnamed)"),
-    client: firstOf(r.fields["Customer"]) || "",
-    bookingStatus: firstOf(r.fields["Booking status"]),
-    contractStatus: firstOf(r.fields["Contract status"]),
+    client: linkNames(r.fields["Customer"], customerNames).join(", "),
+    bookingStatus: selectValue(r.fields["Booking status"]),
+    contractStatus: selectValue(r.fields["Contract status"]),
     startDate: (r.fields["Start date"] as string) || null,
     endDate: (r.fields["End date"] as string) || null,
     endingInDays: num(r.fields["Contract ending days"]),
@@ -664,7 +709,7 @@ export async function contractHealthReport(
     commissionedCu: num(r.fields["Commissioned CUs"]),
     remainingCu: num(r.fields["Remaining CUs"]),
     deliveredPct: num(r.fields["Contract delivered %"]),
-    accountManager: firstOf(r.fields["Account Manager"]),
+    accountManager: linkNames(r.fields["Account Manager"], teamNames).join(", ") || null,
   }));
 
   if (wanted) out = out.filter((r) => r.client.toLowerCase().includes(wanted) || r.contract.toLowerCase().includes(wanted));
