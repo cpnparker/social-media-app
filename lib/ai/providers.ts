@@ -443,11 +443,17 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "Grok 4 Fast",
     description: "Fast, affordable, web search",
   },
+  "grok-4-6": {
+    provider: "xai",
+    apiModel: "grok-4.6",
+    label: "Grok 4.6",
+    description: "xAI's flagship — most capable",
+  },
   "grok-4-3": {
     provider: "xai",
     apiModel: "grok-4.3",
     label: "Grok 4.3",
-    description: "xAI's flagship — strong & affordable",
+    description: "Strong and cheaper — half the input cost of 4.6",
   },
   "deepseek-chat": {
     provider: "deepseek",

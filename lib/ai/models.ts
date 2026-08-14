@@ -12,7 +12,8 @@ export const AI_MODELS = [
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", provider: "anthropic", description: "Fast, cheap Claude" },
   { id: "gpt-4o", label: "GPT-4o", provider: "openai", description: "OpenAI's versatile flagship" },
   { id: "grok-4-1-fast", label: "Grok 4 Fast", provider: "xai", description: "Fast, affordable, web search" },
-  { id: "grok-4-3", label: "Grok 4.3", provider: "xai", description: "xAI's flagship — strong & affordable" },
+  { id: "grok-4-6", label: "Grok 4.6", provider: "xai", description: "xAI's flagship — most capable" },
+  { id: "grok-4-3", label: "Grok 4.3", provider: "xai", description: "Strong and cheaper than 4.6" },
   { id: "gemini-3-flash", label: "Gemini 3 Flash", provider: "gemini", description: "Fast, large context window" },
   { id: "deepseek-chat", label: "DeepSeek Chat", provider: "deepseek", description: "Fast & cost-effective open model" },
 ] as const;

@@ -21,8 +21,20 @@ export const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: numb
   "gpt-4o": { inputPer1M: 250, outputPer1M: 1000 },                  // $2.50/$10
   "gpt-4o-mini": { inputPer1M: 15, outputPer1M: 60 },                // $0.15/$0.60
   "gpt-4.1": { inputPer1M: 200, outputPer1M: 800 },                  // $2/$8
-  "grok-4-1-fast": { inputPer1M: 20, outputPer1M: 50 },              // $0.20/$0.50
+  // RETIRED SLUG, STILL BILLED. xAI retired grok-4-1-fast-reasoning and
+  // -non-reasoning on 15 May 2026. The slugs still resolve — requests are
+  // redirected to grok-4.3 and billed AT GROK-4.3 RATES — so nothing broke and
+  // nothing surfaced, while this table went on recording $0.20/$0.50 for calls
+  // that cost $1.25/$2.50. Every ai_usage row for the fast model since then
+  // understated input by 6.25x and output by 5x, and the fast model is the
+  // workhorse: memory extraction, summaries, client context, meeting triggers,
+  // digests. Corrected to what is actually charged; the historic rows remain
+  // wrong and would need a backfill to fix.
+  "grok-4-1-fast": { inputPer1M: 125, outputPer1M: 250 },            // redirected to grok-4.3
+  "grok-4-1-fast-non-reasoning": { inputPer1M: 125, outputPer1M: 250 }, // redirected to grok-4.3
   "grok-4-3": { inputPer1M: 125, outputPer1M: 250 },                 // $1.25/$2.50
+  "grok-4-6": { inputPer1M: 200, outputPer1M: 600 },                 // $2/$6 — xAI's flagship
+  "grok-4-5": { inputPer1M: 200, outputPer1M: 600 },                 // $2/$6
   "grok-3": { inputPer1M: 300, outputPer1M: 1500 },                  // $3/$15
   "grok-3-mini": { inputPer1M: 30, outputPer1M: 50 },                // $0.30/$0.50
   "grok-4": { inputPer1M: 200, outputPer1M: 1000 },                  // $2/$10
