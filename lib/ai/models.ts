@@ -10,7 +10,7 @@ export const AI_MODELS = [
   { id: "claude-opus-5", label: "Claude Opus 5", provider: "anthropic", description: "Complex agentic work, code & analysis" },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5", provider: "anthropic", description: "Complex reasoning & analysis" },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", provider: "anthropic", description: "Fast, cheap Claude" },
-  { id: "gpt-4o", label: "GPT-4o", provider: "openai", description: "OpenAI's versatile flagship" },
+  { id: "gpt-5-6-terra", label: "GPT-5.6 Terra", provider: "openai", description: "OpenAI's balanced model" },
   { id: "grok-4-1-fast", label: "Grok 4 Fast", provider: "xai", description: "Fast, affordable, web search" },
   { id: "grok-4-6", label: "Grok 4.6", provider: "xai", description: "xAI's flagship — most capable" },
   { id: "grok-4-3", label: "Grok 4.3", provider: "xai", description: "Strong and cheaper than 4.6" },
@@ -48,6 +48,9 @@ export const DEFAULT_MODEL: AIModelId = "auto";
  * opposite line for routing, where the point is which model answers next.)
  */
 const LEGACY_MODEL_LABELS: Record<string, string> = {
+  "gpt-4o": "GPT-4o",
+  "gpt-4o-mini": "GPT-4o Mini",
+  "grok-4-1-fast-non-reasoning": "Grok 4 Fast",
   "claude-opus-4-8": "Claude Opus 4.8",
   "claude-opus-4-7": "Claude Opus 4.7",
   "claude-sonnet-4-6": "Claude Sonnet 4.6",

@@ -25,7 +25,7 @@ export const maxDuration = 60;
 //     → marks the session discarded; nothing else persists.
 
 const DIGEST_MODEL = "grok-4-1-fast";
-const DIGEST_API_MODEL = "grok-4-1-fast-non-reasoning";
+const DIGEST_API_MODEL = "grok-4.3"; // retired slug replaced 2026-08-14 — see lib/ai/model-costs.ts
 /** AssemblyAI streaming ≈ $0.27/hr with diarization → ~0.45¢/min ≈ 5 tenths-of-a-cent per minute. */
 const MEETING_STT_COST_TENTHS_PER_MIN = 5;
 

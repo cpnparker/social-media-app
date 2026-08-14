@@ -380,12 +380,21 @@ interface ModelInfo {
   description?: string;
   legacy?: boolean;
   hidden?: boolean; // Hide from user selector (used for background processing only)
+  /**
+   * xAI reasoning effort. "none" reproduces the behaviour of the retired
+   * grok-4-1-fast-non-reasoning slug, which is what the cheap workhorse path
+   * has always assumed. Without it, grok-4.3 reasons by default and bills the
+   * reasoning as OUTPUT tokens — so migrating off the retired slug without
+   * this would have raised cost rather than only correcting it.
+   */
+  reasoningEffort?: "none" | "low" | "high";
 }
 
 const MODEL_REGISTRY: Record<string, ModelInfo> = {
   "auto": {
     provider: "xai",
-    apiModel: "grok-4-1-fast-non-reasoning",
+    apiModel: "grok-4.3",
+    reasoningEffort: "none",
     label: "EngineAI Auto",
     description: "Best model for each query",
   },
@@ -425,23 +434,41 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "Gemini 3.1 Flash-Lite",
     hidden: true,
   },
+  "gpt-5-6-terra": {
+    provider: "openai",
+    apiModel: "gpt-5.6-terra",
+    label: "GPT-5.6 Terra",
+    description: "OpenAI's balanced model",
+  },
+  // Retired from the picker 2026-08-14. OpenAI no longer lists 4o among active
+  // models, and it cost MORE than the model replacing it ($2.50/$10 against
+  // Terra's $2/$12 on input, for a two-generation-older model). Remapped
+  // rather than left pointing at 4o, unlike the Opus 4.8 entry below: 4o has
+  // no behavioural contract worth preserving here, where 4.8 and Opus 5
+  // differ in thinking mode and token floor.
   "gpt-4o": {
     provider: "openai",
-    apiModel: "gpt-4o",
-    label: "GPT-4o",
-    description: "OpenAI's versatile flagship",
+    apiModel: "gpt-5.6-terra",
+    label: "GPT-5.6 Terra",
+    legacy: true,
   },
   "gpt-4o-mini": {
     provider: "openai",
-    apiModel: "gpt-4o-mini",
-    label: "GPT-4o Mini",
+    apiModel: "gpt-5.6-luna",
+    label: "GPT-5.6 Luna",
+    legacy: true,
     hidden: true,
   },
+  // The name is now historical. grok-4-1-fast-non-reasoning was retired on
+  // 15 May 2026 and every request has silently redirected to grok-4.3 since —
+  // this makes that explicit, and adds the "none" effort xAI's own migration
+  // guidance calls for so the path stays as fast and cheap as its name claims.
   "grok-4-1-fast": {
     provider: "xai",
-    apiModel: "grok-4-1-fast-non-reasoning",
+    apiModel: "grok-4.3",
+    reasoningEffort: "none",
     label: "Grok 4 Fast",
-    description: "Fast, affordable, web search",
+    description: "Fast and cheapest — no reasoning",
   },
   "grok-4-6": {
     provider: "xai",
@@ -455,11 +482,14 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "Grok 4.3",
     description: "Strong and cheaper — half the input cost of 4.6",
   },
+  // Retired from the picker 2026-08-14: nothing in the app selects these, and
+  // neither has been offered in MODEL_OPTIONS. Kept addressable so a saved
+  // preference still resolves rather than falling through to the default.
   "deepseek-chat": {
     provider: "deepseek",
     apiModel: "deepseek-chat",
     label: "DeepSeek Chat",
-    description: "Fast & cost-effective open model",
+    legacy: true,
   },
   "sonar": {
     provider: "perplexity",
@@ -524,7 +554,8 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
   },
   "grok-3": {
     provider: "xai",
-    apiModel: "grok-4-1-fast-non-reasoning",
+    apiModel: "grok-4.3",
+    reasoningEffort: "none",
     label: "Grok 4 Fast",
     legacy: true,
   },
@@ -5765,7 +5796,7 @@ export function createStreamingResponse(
             const status = anthropicErr?.status || 0;
             console.warn(`[AI] Anthropic failed (status=${status}, ${errMsg.slice(0, 150)}), falling back to Grok`);
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: "Claude unavailable — using Grok" })}\n\n`));
-            result = await streamXAI(messages, config, "grok-4-1-fast-non-reasoning", controller, encoder);
+            result = await streamXAI(messages, config, "grok-4.3", controller, encoder);
             console.log(`[AI] Grok fallback result: ${result.fullText.length} chars, ${result.inputTokens} in, ${result.outputTokens} out`);
           }
         } else if (modelInfo.provider === "gemini") {
@@ -7218,6 +7249,14 @@ async function streamXAIChatCompletions(
     ? { max_completion_tokens: config.maxTokens || 4096 }
     : { max_tokens: config.maxTokens || 4096 };
 
+  // Reasoning effort, resolved from the registry entry for the model actually
+  // being called. The cheap path asks for "none" — the behaviour the retired
+  // grok-4-1-fast-non-reasoning slug gave for free. Reasoning tokens bill as
+  // OUTPUT, so omitting this on grok-4.3 turns the cheapest path into one that
+  // thinks before every memory extraction and conversation summary.
+  const effort = Object.values(MODEL_REGISTRY).find((m) => m.apiModel === apiModel)?.reasoningEffort;
+  const reasoningParam = effort ? { reasoning_effort: effort } : {};
+
   // Build tools array if image generation is enabled
   const tools: OpenAI.Chat.ChatCompletionTool[] = [];
   if (config.imageGeneration) {
@@ -7337,6 +7376,7 @@ async function streamXAIChatCompletions(
     const stream = (await xai.chat.completions.create({
       model: apiModel,
       ...tokenParam,
+      ...reasoningParam,
       temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
       messages: openaiMessages,
       stream: true,

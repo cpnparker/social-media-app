@@ -25,7 +25,7 @@ export const maxDuration = 30;
 //       then one grok call picks the relevant category and writes the insight.
 //       Returns { card } (or { card: null }).
 const MODEL = "grok-4-1-fast";
-const API_MODEL = "grok-4-1-fast-non-reasoning";
+const API_MODEL = "grok-4.3"; // retired slug replaced 2026-08-14 — see lib/ai/model-costs.ts
 
 function getXAIClient() {
   if (!process.env.XAI_API_KEY) throw new Error("XAI_API_KEY is not set");

@@ -16,7 +16,7 @@ export const maxDuration = 30;
 // data, and returns fully assembled cards. Utterance batches are processed IN
 // MEMORY and never persisted (ephemeral-by-design).
 const T2_MODEL = "grok-4-1-fast";
-const T2_API_MODEL = "grok-4-1-fast-non-reasoning";
+const T2_API_MODEL = "grok-4.3"; // retired slug replaced 2026-08-14 — see lib/ai/model-costs.ts
 
 function getXAIClient() {
   if (!process.env.XAI_API_KEY) throw new Error("XAI_API_KEY is not set");
