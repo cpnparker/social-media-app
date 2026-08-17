@@ -4,11 +4,23 @@
 -- Requires scripts/add-meeting-visibility.sql to have been run first.
 --
 -- WHAT CHANGES. get_client_meetings shares a meeting only when it has an
--- attendee at a registered client domain — 140 meetings. This shares anything
--- the rule classifies as `team`, which adds internal group meetings: about
--- 1,150 events, an 8x expansion of what the whole company can read. That is
--- the decision recorded in docs/meetingbrain-meeting-visibility-spec.md, and
--- it is the point of the exercise, not a side effect.
+-- attendee at a registered client domain — 142 meetings. This shares anything
+-- the rule classifies as `team`, which adds internal group meetings.
+--
+-- MEASURED AFTER DEPLOYMENT: 532 meetings (142 client + 390 internal group),
+-- of which EngineAI's personnel carve-out withholds 97, so 435 reach the
+-- model. A 3.1x expansion.
+--
+-- NOT the ~1,150 an earlier version of this comment predicted. That figure was
+-- the count of EVENTS the rule classifies `team` (1,266), and this function is
+-- deliberately narrower: the summary and JSON-attendee gates below drop 734 of
+-- them. The caveat was written three paragraphs down and then not applied to
+-- the number — the two are five lines apart in the same file.
+--
+-- The 734 are mostly unprocessed meetings with no summary yet, so the shared
+-- set grows toward 1,266 as MeetingBrain processes more. This is not a static
+-- number and a sanity check that treats it as one will drift into a false
+-- alarm.
 --
 -- A NEW FUNCTION, not a replacement. get_client_meetings keeps working
 -- untouched, EngineAI falls back to it if this is absent, and rolling back is
@@ -141,9 +153,11 @@ NOTIFY pgrst, 'reload schema';
 -- SELECT 'get_visible_meetings', count(*) FROM meetingbrain.get_visible_meetings(
 --          'thecontentengine.com', ARRAY[...client domains...], NULL, 100000);
 --
--- EXPECTED on 17 Aug 2026: roughly 140 and roughly 1,150. The second figure is
--- before EngineAI's personnel carve-out, which removes about 115 more.
--- If the second is in the THOUSANDS, the client-domain list almost certainly
--- includes thecontentengine.com, which IS registered as a client website
+-- MEASURED on 17 Aug 2026: 142 and 532. The second figure is before EngineAI's
+-- personnel carve-out, which withholds a further 97.
+--
+-- It should grow slowly as unprocessed meetings acquire summaries. If it is in
+-- the THOUSANDS, the client-domain list almost certainly includes
+-- thecontentengine.com, which IS registered as a client website
 -- (app_clients.id_client 2) and makes every internal meeting look like client
 -- work.
