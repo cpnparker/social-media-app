@@ -1253,8 +1253,22 @@ export async function POST(
       resourcingAccess = (ra as any)?.flag_access_resourcing === 1;
     } catch { /* pre-migration or no row = denied */ }
 
+    // Recent-session ledger. Solo threads only — an episode is one person's
+    // working history, and a thread with more than one reader is not the place
+    // for it. Fails to an empty string, so chat never depends on it.
+    let episodeLedger = "";
+    if (!isTeamThread && !isIncognito && contextConfig.memory !== "off") {
+      try {
+        const { recentEpisodes, formatEpisodeLedger } = await import("@/lib/ai/episodes");
+        episodeLedger = formatEpisodeLedger(
+          await recentEpisodes(userId, conversation.id_workspace, conversationId)
+        );
+      } catch { /* no ledger is not an error */ }
+    }
+
     let systemPrompt = buildSystemPrompt({
       notebookIndex: nbIndex,
+      episodeLedger,
       workspaceConfig,
       clientContext,
       contentDetail,
@@ -1729,6 +1743,26 @@ export async function POST(
           }).catch((err) => {
             console.error("[Memory] Background extraction failed:", err);
           });
+        }
+
+        // Fire-and-forget: episodic capture — what was WORKED ON, for recall in
+        // later sessions. Behind the SAME gates as memory extraction, and one
+        // more: solo threads only. An episode is one person's working history,
+        // and a thread with more than one reader is not the place for it.
+        if (!turnHadThirdParty && memoryEnabled && !isMultiReaderThread && capturedText.length > 50) {
+          (async () => {
+            const { extractEpisode, recordEpisode } = await import("@/lib/ai/episodes");
+            const capture = await extractEpisode(userContent || "", capturedText);
+            // null is the common case and is meant to be — most turns are not
+            // worth recalling in a week.
+            if (!capture) return;
+            await recordEpisode({
+              workspaceId: conversation.id_workspace,
+              userId,
+              conversationId,
+              capture,
+            });
+          })().catch((err) => console.error("[Episodes] capture failed:", err));
         }
 
         // Fire-and-forget: background conversation summary update

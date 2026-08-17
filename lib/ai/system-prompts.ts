@@ -211,6 +211,16 @@ export function buildSystemPrompt(ctx: {
   /** Mirrors the flag that registers query_resourcing, so the rules for reading
    *  that data appear only where the tool does. */
   resourcingAccess?: boolean;
+  /**
+   * Pre-rendered ledger of what this user worked on in RECENT SESSIONS.
+   *
+   * Injected proactively rather than left to a tool call, which is the whole
+   * point: memories were already injected, prior conversations were not, so the
+   * model only knew about them if it thought to search — and it usually did
+   * not. Excludes the current conversation, so it is byte-stable for the life
+   * of a thread and sits inside the cached prefix.
+   */
+  episodeLedger?: string;
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
 
@@ -277,6 +287,14 @@ ${FORMATTING_GUIDELINES}`;
   const now = new Date();
   const dateStr = now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   prompt += `\n\nToday's date is ${dateStr}. Always use this as your reference for "today", "this week", "recent", etc. Your training data may be outdated — if the user asks about current events, recent news, industry trends, company information, market data, statistics, or anything that may have changed since your training cutoff, you MUST use web search to get up-to-date information before responding. Never present outdated training data as current fact. When writing content that includes factual claims about a client's industry, competitors, or market — search first, don't guess.`;
+
+  // ── Recent sessions ──
+  // Deliberately in the stable body rather than the volatile tail: the ledger
+  // excludes the current conversation, so nothing this thread does changes it,
+  // and it caches with the rest of the prefix.
+  if (ctx.episodeLedger) {
+    prompt += ctx.episodeLedger;
+  }
 
   // ── Company context (workspace-level "about us") ──
   // Identity-level: without this the model treats the company's own products
