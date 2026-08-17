@@ -6,6 +6,10 @@ import { normalizeContextConfig } from "@/lib/ai/system-prompts";
 import { supabase } from "@/lib/supabase";
 import { verifyWorkspaceMembership } from "@/lib/permissions";
 
+/** Company context ceiling. Enforced by REFUSING the write, never by trimming
+ *  it — see the check in PUT for why silent truncation is the dangerous option. */
+const COMPANY_CONTEXT_MAX = 8000;
+
 // GET /api/ai/settings — get workspace AI settings + context config + CU definitions
 export async function GET(req: NextRequest) {
   const session = await auth();
@@ -144,7 +148,25 @@ export async function PATCH(req: NextRequest) {
     if (model !== undefined) updateData.name_model = model;
     if (contextConfig !== undefined) updateData.config_context = contextConfig;
     if (cuDescription !== undefined) updateData.information_cu_description = cuDescription;
-    if (companyContext !== undefined) updateData.information_company_context = String(companyContext).slice(0, 8000);
+    // Refuse rather than truncate. This used to .slice(0, 8000) silently, which
+    // is the worst of the three options: the writer believed it was saved, and
+    // the model read a note that stopped mid-sentence as though it were the
+    // whole thing. A roster cut off after the sixth name looks exactly like a
+    // company with six people in it.
+    if (companyContext !== undefined) {
+      const text = String(companyContext);
+      if (text.length > COMPANY_CONTEXT_MAX) {
+        return NextResponse.json(
+          {
+            error: `Company context is ${text.length.toLocaleString()} characters — the limit is ${COMPANY_CONTEXT_MAX.toLocaleString()}. Nothing was saved. Please shorten it by ${(text.length - COMPANY_CONTEXT_MAX).toLocaleString()} characters; if it were cut off automatically, EngineAI would read the truncated version as complete.`,
+            limit: COMPANY_CONTEXT_MAX,
+            length: text.length,
+          },
+          { status: 400 }
+        );
+      }
+      updateData.information_company_context = text;
+    }
     if (maxTokens !== undefined) updateData.units_max_tokens = maxTokens;
     if (debugMode !== undefined) updateData.flag_debug = debugMode ? 1 : 0;
 

@@ -14,6 +14,14 @@ import { cn } from "@/lib/utils";
 import type { AIRole } from "@/lib/types/ai";
 import ConnectionsPanel from "@/components/connections/ConnectionsPanel";
 
+/** Mirrors COMPANY_CONTEXT_MAX in app/api/ai/settings/route.ts, which refuses
+ *  an over-length write rather than trimming it. */
+const COMPANY_CONTEXT_MAX = 8000;
+
+/** Mirrors PERSONAL_CONTEXT_MAX in app/api/me/preferences/route.ts. This one
+ *  used to be enforced ONLY here, which meant it was not enforced at all. */
+const PERSONAL_CONTEXT_MAX = 2000;
+
 /* ─────────────── Types ─────────────── */
 
 interface PersonaliseDialogProps {
@@ -129,11 +137,17 @@ function ContextTab() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ personalContext }),
       });
-      if (!res.ok) throw new Error("Failed to save");
+      // Surface the server's reason. The cap is now enforced server-side and
+      // refuses rather than trimming, so "Failed to save" alone would leave the
+      // user with no idea what to change.
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Failed to save");
+      }
       setSavedContext(personalContext);
       toast.success("Personal context saved");
-    } catch {
-      toast.error("Failed to save personal context");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to save personal context");
     } finally {
       setSaving(false);
     }
@@ -162,8 +176,24 @@ function ContextTab() {
         className="w-full h-40 rounded-lg border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none"
       />
 
-      <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={!isDirty || saving} size="sm">
+      <div className="flex items-center justify-between">
+        <span
+          className={`text-xs tabular-nums ${
+            personalContext.length > PERSONAL_CONTEXT_MAX
+              ? "text-destructive"
+              : personalContext.length > PERSONAL_CONTEXT_MAX * 0.9
+                ? "text-amber-600 dark:text-amber-500"
+                : "text-muted-foreground"
+          }`}
+        >
+          {personalContext.length.toLocaleString()} / {PERSONAL_CONTEXT_MAX.toLocaleString()}
+          {personalContext.length > PERSONAL_CONTEXT_MAX && " — too long to save"}
+        </span>
+        <Button
+          onClick={handleSave}
+          disabled={!isDirty || saving || personalContext.length > PERSONAL_CONTEXT_MAX}
+          size="sm"
+        >
           {saving ? (
             <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
           ) : (
@@ -250,8 +280,29 @@ function CompanyTab({ workspaceId }: { workspaceId: string }) {
         className="w-full h-56 rounded-lg border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none"
       />
 
-      <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={!isDirty || saving} size="sm">
+      {/* The count exists because the server used to trim this silently at
+          8000: you saved, saw a success toast, and EngineAI then read a note
+          that stopped mid-sentence as though it were the whole thing. The
+          server now refuses instead, and this shows the ceiling before you
+          reach it rather than after. */}
+      <div className="flex items-center justify-between">
+        <span
+          className={`text-xs tabular-nums ${
+            companyContext.length > COMPANY_CONTEXT_MAX
+              ? "text-destructive"
+              : companyContext.length > COMPANY_CONTEXT_MAX * 0.9
+                ? "text-amber-600 dark:text-amber-500"
+                : "text-muted-foreground"
+          }`}
+        >
+          {companyContext.length.toLocaleString()} / {COMPANY_CONTEXT_MAX.toLocaleString()}
+          {companyContext.length > COMPANY_CONTEXT_MAX && " — too long to save"}
+        </span>
+        <Button
+          onClick={handleSave}
+          disabled={!isDirty || saving || companyContext.length > COMPANY_CONTEXT_MAX}
+          size="sm"
+        >
           {saving ? (
             <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
           ) : (

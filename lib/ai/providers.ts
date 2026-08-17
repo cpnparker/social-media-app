@@ -572,8 +572,25 @@ export function getAvailableModels() {
     }));
 }
 
+/**
+ * Resolve a model id to its registry entry — as a COPY, never the entry itself.
+ *
+ * The copy is load bearing. createStreamingResponse applies the Control Centre
+ * override by assigning `modelInfo.apiModel = override`, and while this
+ * returned the shared object that assignment rewrote MODEL_REGISTRY itself, in
+ * place, for the whole process. On a warm serverless instance the effects
+ * outlived the request that caused them: every later turn on that instance kept
+ * using the overridden model, the override survived deletion of its own DB row,
+ * and the negative result ("no override") is cached — so nothing would ever put
+ * the entry back. The turn was still billed and labelled as the model the user
+ * picked, which is the part that makes it invisible.
+ *
+ * ModelInfo is flat scalars, so a shallow copy is a complete one. If a nested
+ * field is ever added, this needs to become a deep copy — or the mutation at
+ * the override site needs to stop being a mutation.
+ */
 export function getModelInfo(modelId: string): ModelInfo {
-  return MODEL_REGISTRY[modelId] || MODEL_REGISTRY["claude-sonnet-5"];
+  return { ...(MODEL_REGISTRY[modelId] || MODEL_REGISTRY["claude-sonnet-5"]) };
 }
 
 /* ─────────────── Provider Clients ─────────────── */
@@ -3698,6 +3715,40 @@ function qHash(q: unknown): string {
   return `${h.toString(36)}:${v.length}`;
 }
 
+/**
+ * Does this meeting look like it is ABOUT PEOPLE rather than about work?
+ *
+ * The system has exactly one axis for meeting data — audience, i.e. whose
+ * meeting it is — and none for what the meeting is about. So a client kickoff
+ * and a conversation about who is being made redundant are handled identically,
+ * and the second one gets summarised back into chat and used as raw material
+ * for whatever the user is writing.
+ *
+ * This does NOT restrict access, and must not: the caller is an attendee or
+ * owner, and reading your own meetings is the entire feature. It attaches a
+ * HANDLING NOTE, so the model knows the difference between material it may use
+ * to inform an answer and material it may reproduce in a document. The prompt
+ * rule that consumes it lives under "Who will read what you are writing".
+ *
+ * Deliberately conservative and title/summary-only. Screening the transcript
+ * would fire on any meeting where someone mentioned a leaver in passing, and a
+ * warning that appears on everything is a warning nobody reads.
+ */
+const PERSONNEL_MARKERS =
+  /\b(redundan\w*|restructur\w*|reorganis\w*|reorganiz\w*|lay ?off\w*|dismissal|termination|notice period|settlement agreement|severance|exit (interview|meeting|plan|process|and handover)|offboard\w*|leaver|departure|departing|last day|disciplinar\w*|grievance|performance (review|improvement|concern|issue)|pip\b|probation|salary|salaries|pay ?rise|pay ?review|remuneration|compensation review|bonus review|promotion|demotion|headcount|resignation|stepping (down|back)|garden leave|whistleblow\w*|tribunal|hr (issue|matter|meeting|case))\b/i;
+
+export function isPersonnelSensitive(...parts: (string | null | undefined)[]): boolean {
+  return PERSONNEL_MARKERS.test(parts.filter(Boolean).join(" ").slice(0, 4000));
+}
+
+/** The handling note attached to a personnel-sensitive meeting result. */
+const PERSONNEL_NOTICE = [
+  `HANDLING NOTE — this meeting record appears to concern PEOPLE rather than work (redundancy, departures, pay, performance, grievance or similar).`,
+  `The user is entitled to read it, so answer their question from it normally and do not refuse or hedge.`,
+  `But treat it as background, not as source material: if the user is drafting anything that will be read by someone else — a message, an email, an announcement, a document — do not carry named individuals, personnel actions, or anything anyone said here into that draft unless the user puts it there themselves. Do not summarise this material back to the user as evidence of your research either; it is one copy-paste from the thing they are writing.`,
+  `If specifics from this meeting genuinely belong in what they are writing, ask first and name what you would include.`,
+].join(" ");
+
 export function getMeetingBrainDb() {
   if (!_mbDb) {
     _mbDb = createMBClient(
@@ -4049,7 +4100,11 @@ export async function queryMeetingBrain(
           };
         });
         console.log(`[MeetingBrain] Meetings: ${data.length} (${d}d window)`);
-        return { data, count: data.length };
+        return {
+          data,
+          count: data.length,
+          hint: data.some((r: any) => isPersonnelSensitive(r.title, r.summary)) ? PERSONNEL_NOTICE : undefined,
+        };
       }
       case "upcoming_meetings": {
         const d = options.days || 14;
@@ -4151,7 +4206,15 @@ export async function queryMeetingBrain(
         const upcomingNote = data.some((d: any) => d.status !== "past")
           ? `NOTE: Some results are UPCOMING meetings that have not happened yet — they have no transcript or notes. When the user asks about a meeting they HAD (past tense), only consider results with status "past".`
           : undefined;
-        const hint = [fuzzyNote, upcomingNote].filter(Boolean).join("\n") || undefined;
+        // Search is the path that actually matters here: it is how a drafting
+        // turn stumbles into personnel material it never went looking for —
+        // one broad query ("restructure", "TCE 2026+") returning a spread of
+        // meetings, some of which are about people. meeting_details is the
+        // deliberate follow-up; this is the accident.
+        const sensitiveNote = data.some((r: any) => isPersonnelSensitive(r.title, r.summary))
+          ? PERSONNEL_NOTICE
+          : undefined;
+        const hint = [fuzzyNote, upcomingNote, sensitiveNote].filter(Boolean).join("\n") || undefined;
         console.log(`[MeetingBrain] Search q=${qHash(options.query)}: ${data.length} matches (${data.filter((d: any) => d.status !== "past").length} upcoming)`);
         return { data, count: data.length, hint };
       }
@@ -4253,10 +4316,18 @@ export async function queryMeetingBrain(
           external_summary: d.external_summary,
           tasks: d.tasks,
         };
-        const hint =
+        const notesHint =
           transcriptStatus !== "full" && hasNotes
             ? `IMPORTANT: This meeting has ${transcriptStatus === "none" ? "no transcript" : "only a stub transcript"}, but the summary/insights/coaching_notes/external_summary fields above ARE the meeting notes — they are the full record for this meeting. Answer the user's question from them. Do NOT tell the user the meeting has no notes or no record.`
             : undefined;
+        // Screen the TITLE and SUMMARY only — see isPersonnelSensitive. The
+        // note rides alongside the data rather than replacing it: this is a
+        // handling instruction, not a refusal.
+        const sensitive = isPersonnelSensitive(d.meeting_title, d.summary, d.key_topics);
+        if (sensitive) {
+          console.log(`[MeetingBrain] Personnel-sensitive meeting ${options.meetingId} — handling note attached`);
+        }
+        const hint = [sensitive ? PERSONNEL_NOTICE : null, notesHint].filter(Boolean).join("\n\n") || undefined;
         console.log(`[MeetingBrain] Details for ${options.meetingId}: ${d.meeting_title} (transcript=${transcriptStatus})`);
         return { data, count: 1, hint };
       }

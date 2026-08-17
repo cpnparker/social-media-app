@@ -97,6 +97,22 @@ const WEB_IMPLICIT_7 = /\b(what others are (doing|offering|charging|selling)|wha
 
 // Step 7 (continued): General research, buying decisions, product recommendations
 const WEB_IMPLICIT_8 = /\b(research|do (some|extensive|thorough|detailed) research|look into|find out about|investigate|look up)\b/i;
+
+/**
+ * "Compose something for me" — as opposed to "tell me something".
+ *
+ * Used ONLY at the Step 8 catch-all, never to override a positively identified
+ * intent. By the time it is consulted, every explicit and implicit web signal
+ * has already been tested and missed, so a match here means the user asked for
+ * writing and gave no reason to search. A prompt that wants both ("write a post
+ * about the latest GEO trends") trips WEB_IMPLICIT first and never reaches this.
+ *
+ * Deliberately anchored on the VERB. Matching the bare noun would swallow
+ * "what did the message from Siemens say", which is a lookup wearing a
+ * composition word.
+ */
+const COMPOSITION_REQUEST =
+  /\b(write|draft|compose|rewrite|reword|tighten|shorten|lengthen|polish|proofread|edit)\b[^.?!]{0,60}\b(message|email|note|memo|announcement|statement|post|reply|response|letter|comms|communication|update|brief|copy|caption|script|speech|agenda|summary|intro|outline|blurb|bio|newsletter|invite|invitation)\b/i;
 const WEB_IMPLICIT_9 = /\b(recommend(ation)?s?|best option|best choice|best deal|best value|top pick|worth buying|worth it|good (option|choice|deal|buy))\b/i;
 const WEB_IMPLICIT_10 = /\b(i want to buy|looking to buy|want to (purchase|get|order)|thinking of buying|planning to buy|considering buying|should i buy|i('m| am) (looking|trying) to (buy|get|find|purchase))\b/i;
 const WEB_IMPLICIT_11 = /\b(available (in|at|from|near)|in stock|where (can i|to) (buy|get|find|purchase|order)|where (is it|are they) (sold|available)|import (to|from))\b/i;
@@ -268,7 +284,21 @@ export function routeQuery(
   // ── Step 8: Default — web search ON for anything unclassified ──
   // Better to ground the model in real data than risk a hallucinated answer.
   // Only structured intents (workspace_data, meeting_data, conversational) stay off.
-  if (webAllowed) {
+  //
+  // EXCEPT pure composition. "Better to ground than hallucinate" is the right
+  // instinct for a QUESTION and the wrong one for "write me a message" — there
+  // is no fact to look up, so the search returns nothing useful and the turn
+  // pays for it three times over. Reaching Step 8 already means no explicit or
+  // implicit web signal was found (both are checked above), so a drafting
+  // request here genuinely has nothing to search for.
+  //
+  // The cost was not theoretical. An all-company message about a restructure
+  // landed here, and searchMode "on" then (a) forced the model to Claude
+  // Sonnet 5 via the anti-fabrication override in the messages route, (b)
+  // handed it a web_search tool it had no use for, and (c) doubled the output
+  // ceiling to 8192, which is a large part of why the reply ran long. None of
+  // those three were decisions anyone made about drafting.
+  if (webAllowed && !COMPOSITION_REQUEST.test(lower)) {
     const partial = { searchMode: "on" as const, suggestEngine: false, suggestMemory: wantsMemory, suggestMeetingBrain: false, intent: "general" as const };
     return { ...partial, hints: generateHints(partial) };
   }

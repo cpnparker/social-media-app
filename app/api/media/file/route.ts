@@ -26,6 +26,32 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Missing path parameter" }, { status: 400 });
   }
 
+  // ── Ownership ──
+  //
+  // Having a session used to be the whole check: any signed-in user who held a
+  // path could fetch the blob at it, including a member of a different
+  // workspace. Generated documents embed their workspace as a `w<uuid>` segment
+  // (lib/documents/word.ts), and those links are persisted into thread
+  // transcripts, so the path is not a secret among the people who can see the
+  // thread — it just isn't a credential either.
+  //
+  // Where the path names a workspace, require membership of THAT workspace.
+  // Paths without one (the flat `presentations/` prefix, images, uploads)
+  // cannot be attributed from the path alone and keep the previous
+  // session-only behaviour — narrowing this is tracked separately rather than
+  // guessed at here, since a wrong guess would break every legacy link.
+  const workspaceSegment = blobPath.match(/(?:^|\/)w([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/|$)/i);
+  if (workspaceSegment) {
+    const { verifyWorkspaceMembership } = await import("@/lib/permissions");
+    const role = await verifyWorkspaceMembership(Number(session.user.id), workspaceSegment[1]);
+    if (!role) {
+      // 404, not 403. A 403 would confirm that a file exists at this path to
+      // someone who has no business knowing that.
+      console.warn(`[Media File Proxy] Cross-workspace fetch denied for user ${session.user.id}`);
+      return NextResponse.json({ error: "File not found" }, { status: 404 });
+    }
+  }
+
   const isImage = blobPath.endsWith(".png") || blobPath.endsWith(".jpg") || blobPath.endsWith(".jpeg") || blobPath.endsWith(".gif") || blobPath.endsWith(".webp");
 
   try {

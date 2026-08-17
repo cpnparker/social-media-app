@@ -1215,7 +1215,11 @@ export async function POST(
     let wasAutoRouted = false;
     if (model === "auto") {
       const { routeModel } = await import("@/lib/ai/auto-router");
-      model = routeModel(userContent || "");
+      // The previous user message lets "tighten it up" inherit the routing of
+      // the thing it is tightening. Without it, every refinement of a
+      // high-stakes draft is classified as a trivial one-liner.
+      const priorUser = [...messages].reverse().find((m: any) => m.role === "user" && m.content !== userContent);
+      model = routeModel(userContent || "", typeof priorUser?.content === "string" ? priorUser.content : undefined);
       wasAutoRouted = true;
       console.log(`[Messages] Auto-routed → ${model}`);
     }

@@ -3,6 +3,10 @@ import { auth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 
+/** Mirrors the editor's own cap (app/(app)/ai-context). Enforced here too,
+ *  because a limit that lives only in the browser is not a limit. */
+const PERSONAL_CONTEXT_MAX = 2000;
+
 // GET /api/me/preferences — returns the current user's personal preferences
 export async function GET() {
   try {
@@ -78,8 +82,24 @@ export async function PATCH(req: NextRequest) {
       date_updated: new Date().toISOString(),
     };
 
+    // The 2000-char cap was enforced only in the browser, so anything reaching
+    // this route directly saved unbounded — the mirror image of the company
+    // context bug, which trimmed silently on the server instead. Both now
+    // refuse: the user is told, and the model never reads a half-sentence as a
+    // complete one.
     if (body.personalContext !== undefined) {
-      updates.information_personal_context = body.personalContext;
+      const text = String(body.personalContext ?? "");
+      if (text.length > PERSONAL_CONTEXT_MAX) {
+        return NextResponse.json(
+          {
+            error: `Personal context is ${text.length.toLocaleString()} characters — the limit is ${PERSONAL_CONTEXT_MAX.toLocaleString()}. Nothing was saved.`,
+            limit: PERSONAL_CONTEXT_MAX,
+            length: text.length,
+          },
+          { status: 400 }
+        );
+      }
+      updates.information_personal_context = text;
     }
     if (body.region !== undefined) {
       updates.name_region = body.region;

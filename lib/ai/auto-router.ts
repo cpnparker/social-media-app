@@ -44,6 +44,32 @@ const COMPLEX_WRITING_KEYWORDS = [
   "comprehensive", "in-depth", "detailed analysis",
 ];
 
+/**
+ * Writing that goes to OTHER PEOPLE, and is judged by them.
+ *
+ * These were missing entirely, so "write a powerful message to the whole
+ * company from the directors after a restructure" scored as an ordinary short
+ * prompt and routed to the cheap fast workhorse — the least capable leg — for
+ * one of the highest-stakes things anyone asks this product to write. The
+ * follow-up that refined it did the same.
+ *
+ * Stakes here are about AUDIENCE, not length or complexity: a 150-character
+ * all-company announcement after redundancies deserves the flagship far more
+ * than a 600-character question does, and only the length heuristic above was
+ * catching anything.
+ */
+const AUDIENCE_WRITING_KEYWORDS = [
+  "whole company", "all-company", "all company", "all staff", "all-hands",
+  "everyone at", "the entire team", "company-wide", "companywide",
+  "announcement", "announce to", "press release", "statement",
+  "message to the team", "message to the whole", "message to staff",
+  "note to the team", "memo", "newsletter",
+  "client email", "email to the client", "message to the client",
+  "write a message", "draft a message", "write an email", "draft an email",
+  "write a note", "draft a note", "write a post", "draft a post",
+  "write a letter", "draft a letter", "write a speech", "draft a speech",
+];
+
 const MATH_KEYWORDS = [
   "calculate", "solve", "prove", "formula", "equation",
   "derivative", "integral", "probability", "statistics",
@@ -100,10 +126,54 @@ function matchesAny(text: string, keywords: string[]): boolean {
 }
 
 /**
+ * A follow-up that operates on what was just produced, rather than asking for
+ * something new. "tighten it up", "make it shorter", "less formal", "try again".
+ *
+ * These carry no subject matter of their own, so classified alone they score as
+ * trivial and route to the cheap leg — which is how the SECOND draft of a
+ * sensitive all-company message came from the least capable model available,
+ * after the first had correctly reached the flagship. The refinement of a
+ * high-stakes piece is part of the same high-stakes piece.
+ */
+const REFINEMENT_PATTERNS = [
+  /^(now |ok,? |okay,? |and |but |also )?(can you |could you |please )?(tighten|shorten|lengthen|expand|rewrite|reword|redo|revise|refine|polish|punch|simplify|soften|sharpen|improve|fix|adjust|tweak|change|update|try)\b/i,
+  /\b(make it|keep it|a bit|a little|too) (short|long|brief|concise|punchy|formal|informal|casual|warm|direct|blunt|soft|strong)/i,
+  /^(try again|again|another version|different version|one more|same but|shorter|longer|less formal|more formal)\b/i,
+  /\b(do not|don'?t) (put|use|make|include)\b/i,
+];
+
+/** Short enough that it cannot be carrying its own subject matter. */
+const REFINEMENT_MAX_CHARS = 260;
+
+/**
  * Classify a user message and return the best model to use.
  * Exported for use in the messages API route.
+ *
+ * `previousUserMessage` lets a bare refinement inherit the routing of the thing
+ * it is refining. The inheritance is deliberately ONE-WAY: it can only raise
+ * the tier, never lower it, so the worst case is that a cheap follow-up becomes
+ * a capable one. The reverse — letting a trivial follow-up drag a complex
+ * thread down — is the failure this exists to prevent.
  */
-export function routeModel(userMessage: string): typeof FAST_MODEL | typeof REASONING_MODEL | typeof GROUNDED_MODEL {
+export function routeModel(
+  userMessage: string,
+  previousUserMessage?: string
+): typeof FAST_MODEL | typeof REASONING_MODEL | typeof GROUNDED_MODEL {
+  const own = routeOwn(userMessage);
+  if (own !== FAST_MODEL || !previousUserMessage) return own;
+
+  const trimmed = userMessage.trim();
+  const isRefinement =
+    trimmed.length <= REFINEMENT_MAX_CHARS &&
+    REFINEMENT_PATTERNS.some((p) => p.test(trimmed));
+  if (!isRefinement) return own;
+
+  // Route on what is being refined. Never recurses — the previous message is
+  // classified on its own merits only.
+  return routeOwn(previousUserMessage);
+}
+
+function routeOwn(userMessage: string): typeof FAST_MODEL | typeof REASONING_MODEL | typeof GROUNDED_MODEL {
   const lower = userMessage.toLowerCase();
 
   // Image generation → Claude (Grok hallucinates fake markdown images instead
@@ -120,6 +190,9 @@ export function routeModel(userMessage: string): typeof FAST_MODEL | typeof REAS
   if (matchesAny(lower, REASONING_KEYWORDS)) return REASONING_MODEL;
   if (matchesAny(lower, CODE_KEYWORDS)) return REASONING_MODEL;
   if (matchesAny(lower, COMPLEX_WRITING_KEYWORDS)) return REASONING_MODEL;
+  // Writing with an audience. Checked after code so "write a script" still
+  // reads as code when the rest of the prompt says so.
+  if (matchesAny(lower, AUDIENCE_WRITING_KEYWORDS)) return REASONING_MODEL;
   if (matchesAny(lower, MATH_KEYWORDS)) return REASONING_MODEL;
 
   // Multi-step pattern checks
