@@ -214,6 +214,18 @@ export function buildSystemPrompt(ctx: {
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
 
+  /**
+   * Sections that change from TURN TO TURN, held back and appended last.
+   *
+   * Everything before them is stable for a conversation (or, for the date
+   * line, for a day), which is what a prompt cache needs: caching matches on a
+   * PREFIX, so the longest stable run has to come first and anything volatile
+   * has to come after. A single section keyed off the user's latest message,
+   * placed in the middle, is enough to discard the entire cache on every topic
+   * change.
+   */
+  let volatileTail = "";
+
   const FORMATTING_GUIDELINES = `
 Guidelines:
 - Be direct, actionable, and creative — avoid generic advice
@@ -654,7 +666,21 @@ Same as Design Mode: direct, opinionated peer. Lead with the creative choice. Re
       };
       const label = categoryLabels[matchedCategory] || matchedCategory;
       const instructions = workspaceConfig.typeInstructions[matchedCategory];
-      prompt += `\n\n## ${label} Instructions\n${instructions}`;
+      // DEFERRED TO THE END OF THE PROMPT, not appended here.
+      //
+      // This is the only section chosen by keyword-matching the user's LATEST
+      // MESSAGE, so it changes whenever the topic does. Sitting mid-prompt, it
+      // invalidated the cached prefix AND everything after it — some 300 lines
+      // including the notebook index, the briefing rules and the database
+      // guidance. Prompt caching would have shipped, looked correct, and almost
+      // never hit, because a cache is a PREFIX match: one changed byte
+      // discards everything downstream of it.
+      //
+      // Moving it late does not weaken it. It lands immediately before the
+      // final reminder, at the end of the prompt — a position models weight
+      // heavily, not lightly — and nothing between here and there refers back
+      // to it.
+      volatileTail += `\n\n## ${label} Instructions\n${instructions}`;
     }
   }
 
@@ -899,9 +925,17 @@ Same as Design Mode: direct, opinionated peer. Lead with the creative choice. Re
     }
   }
 
-  // ── User & Workspace Memories (V2: tiered by strength) ──
+  // ── User & Workspace Memories ──
+  // Into the VOLATILE TAIL, not the body. Retrieval is scored on decay,
+  // reinforcement and recency (computeImportance), and the background
+  // extraction pass writes new memories after a turn — so the selected set can
+  // differ between one turn and the next. Mid-prompt that discards the cache
+  // from here down; at the tail it costs nothing.
+  //
+  // Safe to move: the block is self-contained, and its "how to use memories"
+  // guidance travels with it. Later placement does not weaken context.
   if (ctx.memories && ctx.memories.length > 0) {
-    prompt += `\n\n---\n## Memory\nContext from previous conversations, ranked by confidence. Higher tiers reflect well-established patterns.\n\n**Important:** Memories are things the user or team have said — they are NOT externally verified facts. When a memory contains a factual claim (e.g. a statistic or market figure), treat it as user-provided context. If writing content that includes such claims for publication, flag them: "[from team context — verify before publishing]".`;
+    volatileTail += `\n\n---\n## Memory\nContext from previous conversations, ranked by confidence. Higher tiers reflect well-established patterns.\n\n**Important:** Memories are things the user or team have said — they are NOT externally verified facts. When a memory contains a factual claim (e.g. a statistic or market figure), treat it as user-provided context. If writing content that includes such claims for publication, flag them: "[from team context — verify before publishing]".`;
 
     // Split into tiers by decayed strength
     const strong = ctx.memories.filter((m) => (m.strength ?? 1.0) >= 0.7);
@@ -924,12 +958,12 @@ Same as Design Mode: direct, opinionated peer. Lead with the creative choice. Re
         if (!tierGrouped[cat]) tierGrouped[cat] = [];
         tierGrouped[cat].push(mem.content);
       }
-      prompt += `\n\n### ${tierLabel}`;
+      volatileTail += `\n\n### ${tierLabel}`;
       for (const [category, items] of Object.entries(tierGrouped)) {
         const label = categoryLabels[category] || category;
-        prompt += `\n**${label}:**`;
+        volatileTail += `\n**${label}:**`;
         for (const item of items) {
-          prompt += `\n- ${item}`;
+          volatileTail += `\n- ${item}`;
         }
       }
     };
@@ -938,12 +972,12 @@ Same as Design Mode: direct, opinionated peer. Lead with the creative choice. Re
     if (moderate.length > 0) renderTier(moderate, "Developing");
     if (weak.length > 0) renderTier(weak, "Fading");
 
-    prompt += `\n\n**How to use memories:**`;
-    prompt += `\n- "Established" memories are well-confirmed patterns — lean on these confidently.`;
-    prompt += `\n- "Developing" memories are emerging signals — use when relevant but don't over-anchor on them.`;
-    prompt += `\n- "Fading" memories may be outdated — reference only if clearly relevant to the current topic.`;
-    prompt += `\n- If any memory conflicts with what the user is saying right now, follow the current conversation.`;
-    prompt += `\n- Never mention the memory system or that you "remember" something unless the user explicitly asks.`;
+    volatileTail += `\n\n**How to use memories:**`;
+    volatileTail += `\n- "Established" memories are well-confirmed patterns — lean on these confidently.`;
+    volatileTail += `\n- "Developing" memories are emerging signals — use when relevant but don't over-anchor on them.`;
+    volatileTail += `\n- "Fading" memories may be outdated — reference only if clearly relevant to the current topic.`;
+    volatileTail += `\n- If any memory conflicts with what the user is saying right now, follow the current conversation.`;
+    volatileTail += `\n- Never mention the memory system or that you "remember" something unless the user explicitly asks.`;
   }
 
   // ── Notebook ──
@@ -1202,6 +1236,11 @@ Search tips:
 - The tool searches memories, messages, AND thread summaries`;
 
   // ── Final factual accuracy reminder (recency-weighted — LLMs weight end of prompt highly) ──
+  // The volatile tail goes here — after every stable section, so the cacheable
+  // prefix is as long as it can be, and before the final reminder so that
+  // still has the last word.
+  prompt += volatileTail;
+
   prompt += `\n\n---\n**Final reminder:** Users publish your output. Every fabricated fact, URL, statistic, or citation damages their professional reputation. When uncertain: use [verify] markers, state limitations honestly, and never invent sources.`;
 
   return prompt;

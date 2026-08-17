@@ -6043,6 +6043,49 @@ export function createStreamingResponse(
 
 /* ─────────────── Anthropic Streaming ─────────────── */
 
+/**
+ * Anthropic prompt-cache breakpoints.
+ *
+ * Anthropic is the only chain needing explicit markers; xAI, OpenAI and Gemini
+ * cache implicitly on a stable prefix. A cache matches a PREFIX, so a
+ * breakpoint says "everything up to and including this point is reusable".
+ *
+ * Two breakpoints, in the order the API assembles the request — tools, then
+ * system, then messages:
+ *   1. the LAST tool definition  → caches the whole tools array
+ *   2. the system prompt          → caches tools + system
+ *
+ * That is the large, genuinely stable part: the tool schemas barely change, and
+ * buildSystemPrompt now holds every turn-varying section back to a tail
+ * (system-prompts.ts, `volatileTail`). No breakpoint is placed in `messages`:
+ * the conversation grows every turn, so a marker there writes a new cache each
+ * time and pays the 1.25x write premium for a prefix that is about to change.
+ *
+ * NOT free. A write costs 1.25x base input, a read 0.1x, so a cached prefix
+ * pays for itself on the SECOND request and loses money if there is never one.
+ * Applied only when there is enough prefix to be worth it — below Anthropic's
+ * ~1024-token minimum the marker is ignored and the premium is wasted.
+ *
+ * Silent in both directions: a misplaced marker returns 200 with zero cache
+ * creation, a changed prefix returns 200 with zero cache reads. The step-0
+ * logging is what makes either visible.
+ */
+const CACHE_MIN_CHARS = 6000; // ~1.5k tokens, comfortably over the minimum
+
+function cacheableSystem(systemText: string | undefined): any {
+  if (!systemText || systemText.length < CACHE_MIN_CHARS) return systemText;
+  return [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }];
+}
+
+function cacheableTools(tools: Anthropic.Tool[]): Anthropic.Tool[] {
+  if (tools.length === 0) return tools;
+  // Mark only the LAST tool: the breakpoint covers everything before it, so
+  // one marker caches the entire array.
+  return tools.map((t, i) =>
+    i === tools.length - 1 ? ({ ...t, cache_control: { type: "ephemeral" } } as any) : t
+  );
+}
+
 async function streamAnthropic(
   messages: AIMessage[],
   config: AIProviderConfig,
@@ -6230,10 +6273,10 @@ async function streamAnthropic(
       model: apiModel,
       max_tokens: anthropicMaxTokens(apiModel, config.maxTokens),
       ...anthropicModelParams(apiModel, config),
-      system: systemText,
+      system: cacheableSystem(systemText),
       messages: anthropicMessages,
       ...(tools.length > 0
-        ? { tools, ...(suppressTools ? { tool_choice: { type: "none" as const } } : {}) }
+        ? { tools: cacheableTools(tools), ...(suppressTools ? { tool_choice: { type: "none" as const } } : {}) }
         : {}),
     });
 
@@ -7281,12 +7324,12 @@ async function streamAnthropic(
         model: apiModel,
         max_tokens: anthropicMaxTokens(apiModel, config.maxTokens),
         ...anthropicModelParams(apiModel, config),
-        system: systemText,
+        system: cacheableSystem(systemText),
         messages: anthropicMessages,
         // tools MUST be passed when the history contains tool_use/tool_result
         // blocks — the API 400s otherwise. tool_choice "none" is what actually
         // forces a text-only response.
-        ...(tools.length > 0 ? { tools, tool_choice: { type: "none" as const } } : {}),
+        ...(tools.length > 0 ? { tools: cacheableTools(tools), tool_choice: { type: "none" as const } } : {}),
       });
 
       for await (const event of withStallGuard(finalStream)) {
@@ -7521,6 +7564,12 @@ async function streamXAIChatCompletions(
       messages: openaiMessages,
       stream: true,
       stream_options: { include_usage: true },
+      // Groups requests that share a prefix, so the provider routes them to the
+      // same cache. Nothing to enable beyond this — xAI, OpenAI and Gemini
+      // cache implicitly; the real work was making the prefix stable, which
+      // buildSystemPrompt now does by deferring every turn-varying section to
+      // a tail. Omitted when there is no conversation to key on.
+      ...(config.conversationId ? { prompt_cache_key: config.conversationId } : {}),
       ...(tools.length > 0 ? { tools } : {}),
       ...(config.webSearch ? { search_mode: "on" } : {}),
     } as any)) as unknown as AsyncIterable<any>;
@@ -9145,6 +9194,8 @@ async function streamOpenAI(
       messages: openaiMessages,
       stream: true,
       stream_options: { include_usage: true },
+      // Same implicit-caching grouping as the xAI chain above.
+      ...(config.conversationId ? { prompt_cache_key: config.conversationId } : {}),
       ...(tools.length > 0 ? { tools } : {}),
     } as any)) as unknown as AsyncIterable<any>;
 
