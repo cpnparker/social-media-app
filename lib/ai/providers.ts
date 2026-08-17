@@ -3803,28 +3803,6 @@ export function getMeetingBrainDb() {
  *  gate doesn't drop these real clients. CONFIRMED clients only — adding a
  *  non-client domain here leaks that org's meetings to the workspace. */
 /**
- * Hardcoded domains for clients whose registered website does not match the
- * domain they mail from.
- *
- * SUPERSEDED by intelligence.client_email_domains, which holds the same thing
- * as data a person can edit. These two exist because someone hit the problem
- * twice and fixed it by editing source and deploying; a third case (VARO,
- * Siemens, Zurich Instruments) is what finally made it a table.
- *
- * Kept only so behaviour does not change the moment the table ships empty.
- * Migrate them with type_source 'alias_migration', confirm them, then delete
- * this array — a list that lives in two places will disagree.
- *
- * NOTE these are client-scoped in name only: the array is a flat allowlist
- * with no client id, so it widens which meetings count as CLIENT meetings
- * without saying whose. The table fixes that too.
- */
-const CLIENT_DOMAIN_ALIASES = [
-  "beonemed.com", // BeOne Medicines (registered as beonemedicines.com)
-  "hiscox.com",   // Hiscox Insurance (registered with no website)
-];
-
-/**
  * Confirmed client email domains from intelligence.client_email_domains.
  *
  * ONLY flag_confirmed = 1. Inferred proposals are ignored until a person
@@ -3982,9 +3960,8 @@ async function loadClientDomains(internalDomain: string): Promise<string[]> {
       .map((c: any) => normalizeClientDomain(c.link_website))
       .filter((d: string | null): d is string => !!d && d !== caller),
     ...Array.from(confirmed.keys()),
-    ...CLIENT_DOMAIN_ALIASES,
   ]))
-    // Belt-and-braces: aliases and the caller's own domain go through the same
+    // Belt-and-braces: table domains and the caller's own go through the same
     // exclusions as registered websites.
     .filter((d) => !NON_CLIENT_HOSTS.has(d) && !INTERNAL_DOMAINS.includes(d) && d !== caller);
 }
