@@ -684,21 +684,110 @@ export async function POST(
     // Collapse consecutive user messages (orphaned messages from failed responses).
     // Keep only the last user message in each consecutive run to avoid the model
     // trying to answer 5+ unanswered questions at once and hitting timeouts.
+    // MERGES rather than discards. The original kept only the last message in a
+    // run of consecutive user messages, which quietly destroyed the commonest
+    // way anyone supplies material: paste a document, then ask about it in the
+    // next message. The paste was the one dropped. Short orphaned messages —
+    // what the guard was actually for, unanswered questions stacking up after a
+    // failed response — are still collapsed.
+    const ORPHAN_MAX_CHARS = 1200;
     const deduped: typeof effectiveHistory = [];
     for (let i = 0; i < effectiveHistory.length; i++) {
-      const isUser = effectiveHistory[i].role_message === "user";
+      const cur = effectiveHistory[i];
+      const isUser = cur.role_message === "user";
       const nextIsUser = i + 1 < effectiveHistory.length && effectiveHistory[i + 1].role_message === "user";
       if (isUser && nextIsUser) {
-        // Skip — keep only the last user message in a consecutive run
+        const text = (cur.document_message || "").trim();
+        const hasAttachments = Array.isArray((cur as any).attachments) && (cur as any).attachments.length > 0;
+        // Substantial content is carried forward into the next user message
+        // instead of being deleted; only short, answerable-in-passing ones go.
+        if (text.length > ORPHAN_MAX_CHARS || hasAttachments) {
+          const next = effectiveHistory[i + 1] as any;
+          next.document_message = `${text}\n\n${(next.document_message || "").trim()}`.trim();
+        }
         continue;
       }
-      deduped.push(effectiveHistory[i]);
+      deduped.push(cur);
     }
     if (deduped.length < effectiveHistory.length) {
       console.log(`[Messages] Collapsed ${effectiveHistory.length - deduped.length} orphaned user messages`);
     }
 
     const messages: AIMessage[] = [];
+
+    // ── Reference documents that fell out of the window ──
+    //
+    // The 20-message cap above is a blunt instrument, and it silently deleted
+    // the one kind of content people re-query for a whole session: material
+    // they PASTED IN. A handover note, an email thread, an extracted PDF —
+    // pasted once near the start, then referenced twenty turns later.
+    //
+    // The observed failure: a user pasted a colleague's handover, got correct
+    // answers about it for several turns, then later asked what was left on it
+    // and was told the handover "is not in the Engine task system" while the
+    // model went hunting through tools. It had not stopped understanding — the
+    // document had left the context, so from where it stood no handover
+    // existed. A confident wrong answer, from a silent deletion.
+    //
+    // The rolling summary does not save this. A summary is a paragraph ABOUT a
+    // conversation; it cannot carry a three-thousand-word document with
+    // per-person owners and deadlines, which is exactly what gets asked about.
+    //
+    // So large user messages are re-injected verbatim regardless of age. This
+    // runs at READ time, against the full stored history, which means it also
+    // repairs conversations that are ALREADY long — the document is still in
+    // ai_messages, it was only being dropped on the way to the model.
+    const REFERENCE_DOC_MIN_CHARS = 1200;   // well above an ordinary question
+    const REFERENCE_DOC_BUDGET = 60000;     // total chars of pinned material
+    const droppedCount = Math.max(0, history.length - effectiveHistory.length);
+
+    if (droppedCount > 0) {
+      const dropped = history.slice(0, history.length - effectiveHistory.length);
+      // Newest first: when the budget binds, the most recently pasted document
+      // is the one most likely to still be under discussion.
+      const docs: string[] = [];
+      let used = 0;
+      let omitted = 0;
+      for (let i = dropped.length - 1; i >= 0; i--) {
+        const m = dropped[i];
+        if (m.role_message !== "user") continue;
+        const text = (m.document_message || "").trim();
+        if (text.length < REFERENCE_DOC_MIN_CHARS) continue;
+        if (used + text.length > REFERENCE_DOC_BUDGET) { omitted++; continue; }
+        docs.unshift(text);
+        used += text.length;
+      }
+
+      if (docs.length > 0) {
+        messages.push({
+          role: "system" as const,
+          content:
+            `[Reference material the user pasted earlier in THIS conversation. It is no longer in the ` +
+            `visible message history because the conversation is long, so it is repeated here in full. ` +
+            `Treat it as something the user has already given you — when they refer to "the handover", ` +
+            `"the document", "that email" or similar, THIS is what they mean. Do not go looking for it ` +
+            `in a tool, and do not tell them you do not have it.` +
+            (omitted > 0
+              ? ` NOTE: ${omitted} further pasted document(s) could not be included here — say so if the ` +
+                `user seems to be asking about something you cannot see.`
+              : "") +
+            `]\n\n` +
+            docs.map((d, i) => `--- Pasted document ${i + 1} of ${docs.length} ---\n${d}`).join("\n\n"),
+        });
+      }
+
+      // Say that history was cut, whether or not any documents were pinned. A
+      // model that knows it is missing turns can ask; one that cannot tell the
+      // difference between "not said" and "not shown" answers as if it were
+      // never said.
+      messages.push({
+        role: "system" as const,
+        content:
+          `[${droppedCount} earlier message(s) in this conversation are not shown, to keep the context ` +
+          `manageable. If the user refers to something you cannot find, say you may not have it in view ` +
+          `and offer to have them re-share it — do NOT state that it does not exist.]`,
+      });
+    }
 
     // Inject summary as context if truncating
     if (shouldTruncate) {
