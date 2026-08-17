@@ -41,11 +41,20 @@ const LEDGER_LIMIT = 8;
 /**
  * The user's recent episodes, for injection.
  *
- * EXCLUDES the current conversation, deliberately, for two reasons. The user
- * does not need telling what they are doing right now — it is in the messages.
- * And excluding it keeps the ledger BYTE-STABLE for the life of a conversation,
- * so it sits inside the cached prompt prefix rather than invalidating it every
- * time this thread's own episode is rewritten.
+ * EXCLUDES the current conversation, deliberately. The user does not need
+ * telling what they are doing right now — it is in the messages above — and
+ * this thread rewrites its own episode after every turn, so including it would
+ * change the prompt prefix on every single turn and discard the cache each
+ * time.
+ *
+ * It does NOT make the ledger byte-stable, and an earlier version of this
+ * comment claimed it did. Two things still move it mid-conversation: an
+ * episode written by a DIFFERENT conversation (a second tab, a scheduled run),
+ * and the LEDGER_DAYS window rolling past midnight and dropping the oldest
+ * entry. Both invalidate the cached prefix when they happen. The point of the
+ * exclusion is that it removes the one source of churn that would fire on
+ * EVERY turn, leaving only ones that fire rarely — which is worth having, and
+ * is a smaller claim than the one it replaced.
  */
 export async function recentEpisodes(
   userId: number,
