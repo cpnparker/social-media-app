@@ -1,6 +1,6 @@
 # Per-meeting visibility in MeetingBrain
 
-**Status:** proposed, not built. Needs MeetingBrain schema + RPC changes; EngineAI consumption is a small diff on top.
+**Status:** the rule is DEPLOYED (`meetingbrain.get_meeting_visibility`, 17 Aug 2026) and verified against the live corpus — 12 assertions in `scripts/verify-meeting-visibility.ts`. Nothing calls it yet: EngineAI consumption and the `get_client_meetings` change are still to do.
 **Written:** 17 August 2026, against the live `meetingbrain` corpus (8,405 rows / 5,879 calendar events).
 **Origin:** an EngineAI session in which a director asked for an all-company message and the assistant grounded it in her own 1:1 records — a colleague's morale complaint about redundancies, two named departures and a promotion. Access was correct throughout; what was missing was any notion of what a meeting is *about*.
 
@@ -28,20 +28,25 @@ Two precedence decisions worth stating because they were genuine forks:
 
 ### What it does to the corpus
 
+Measured from the **deployed function**, not from a model of it:
+
 | | Events | |
 |---|---|---|
 | **team** — client (any size) | 410 | |
-| **team** — internal 3+ | 847 | |
-| private — internal 3+, personnel-flagged | 129 | ← what the carve-out holds back |
-| private — internal 1:1 / solo | 1,268 | |
-| private — vendor / other external | 181 | |
-| private — no attendee data | 3,044 | 52% of the corpus |
-| **Total team** | **1,257 (21%)** | |
-| **Total private** | **4,622 (79%)** | |
+| **team** — internal 3+ | 740 | |
+| private — internal 3+, personnel-flagged | 115 | ← what the carve-out holds back |
+| private — internal 1:1 / solo | 1,245 | |
+| private — external non-client | 325 | includes free-mail — see below |
+| private — no attendee data | 3,036 | 52% of the corpus |
+| | | *(5,871 events total; the corpus is live and drifts by a few a day)* |
+| **Total team** | **1,150 (20%)** | |
+| **Total private** | **4,721 (80%)** | |
 
-**This is an expansion of access, and that should be deliberate.** 140 meetings are readable company-wide today; the rule makes it 1,257 — roughly 9×. The gain is that team meetings stop being invisible to the team. The cost is that 847 internal meetings become readable by everyone, and the personnel screen is the only thing standing between that and a leadership conversation.
+**No free-mail carve-out.** An earlier TypeScript model treated a gmail/outlook attendee as "not really external", so an internal meeting with someone dialling in on a personal address stayed team-visible. The deployed SQL has no such exclusion, and verification found the two disagreeing on **144 events**. The SQL is right: a personal address on an otherwise-internal meeting is as likely to be a candidate, a freelancer or a private contact as a colleague on their phone. Wrongly private costs someone one request; wrongly team publishes an interview. The model was corrected to match, not the other way round.
 
-The personnel screen trips on **308 events (5%)** overall — low enough not to be noise — but changes the outcome for only **129**, because the rest were private under the shape rule anyway.
+**This is an expansion of access, and that should be deliberate.** 140 meetings are readable company-wide today; the rule makes it 1,150 — roughly 8×. The gain is that team meetings stop being invisible to the team. The cost is that 740 internal meetings become readable by everyone, and the personnel screen is the only thing standing between that and a leadership conversation.
+
+The personnel screen trips on **6.7%** of meetings overall — low enough to still mean something — but changes the outcome for only **115**, because the rest were private under the shape rule anyway. Two terms were removed after measuring which ones did the work: `pip` matched "pip install" across 94 rows, and bare `promotion` matched 78, which in a content marketing agency is overwhelmingly a campaign.
 
 ---
 
@@ -153,7 +158,7 @@ Three deployed functions read meetings. They deploy **manually via the Supabase 
 
 | Function | Change |
 |---|---|
-| `get_client_meetings` | Widen from "has a client attendee" to the full derived rule, so internal team meetings appear. This is the change that expands access from 140 to ~1,257 — verify the count before and after. |
+| `get_client_meetings` | Widen from "has a client attendee" to the full derived rule, so internal team meetings appear. This is the change that expands access from 140 to ~1,150 — verify the count before and after. Its body is in `scripts/fix-get-client-meetings-rpc.sql`. |
 | `get_meeting_details` | Return the derived `visibility`. Serve the owner/attendee their own meeting **regardless** — this is about third parties, never about locking someone out of their own record. |
 | `search_meetings` | Return `visibility` per row for labelling. Do **not** filter: the caller's own private meetings must stay findable by the caller. |
 
@@ -206,9 +211,9 @@ Kept deliberately — each was a confident claim that measurement disproved.
 
 ## Order of work
 
-1. Implement the derived rule as a SQL function and compare its output against `get_client_meetings` today. **Read-only, reversible.**
-2. Create the override table. Ships empty; nothing changes.
-3. Point `get_client_meetings` at the rule. **First behavioural change** — this is the 140 → ~1,257 expansion; verify deliberately.
+1. ~~Implement the derived rule as a SQL function.~~ **Done and verified 17 Aug 2026.**
+2. ~~Create the override table.~~ **Done. Ships empty, RLS on: the anon key cannot read it, write it, or call the function.**
+3. Point `get_client_meetings` at the rule. **First behavioural change** — this is the 140 → ~1,150 expansion; verify deliberately.
 4. Return `visibility` from `get_meeting_details` and `search_meetings`.
 5. EngineAI consumption.
 6. Capture calendar `visibility`/`sensitivity` at ingest, as an override signal.

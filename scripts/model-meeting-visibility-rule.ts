@@ -29,7 +29,14 @@ const url = process.env.NEXT_PUBLIC_SUPABASE_URL!, key = process.env.SUPABASE_SE
 const mb = createClient(url, key, { db: { schema: "meetingbrain" } });
 const pub = createClient(url, key);
 const INTERNAL = "thecontentengine.com";
-const FREEMAIL = new Set(["gmail.com","outlook.com","hotmail.com","icloud.com","yahoo.com","live.com","me.com"]);
+// NO free-mail carve-out, deliberately, and this cost a disagreement to
+// learn. An earlier version treated a gmail/outlook attendee as "not really
+// external", so an internal meeting with someone dialling in on a personal
+// address stayed team-visible. The deployed SQL has no such exclusion, and it
+// is right: a personal address on an otherwise-internal meeting is just as
+// likely a candidate, a freelancer or a private contact. Wrongly private costs
+// a colleague one request; wrongly team publishes an interview. 144 events
+// turned on this.
 
 async function main() {
   const { data: cl } = await pub.from("app_clients").select("link_website");
@@ -66,7 +73,7 @@ async function main() {
     if (e.em.size === 0) { privNoData++; continue; }
     const doms = new Set(Array.from(e.em).map((a: string) => a.split("@")[1]));
     const hasClient = Array.from(doms).some(d => clientDomains.has(d));
-    const otherExt = Array.from(doms).some(d => d !== INTERNAL && !clientDomains.has(d) && !FREEMAIL.has(d));
+    const otherExt = Array.from(doms).some(d => d !== INTERNAL && !clientDomains.has(d));
     if (hasClient) { openClient++; continue; }              // client wins, incl. 1:1
     if (otherExt) { privVendor++; continue; }
     if (e.em.size <= 2) { privOneToOne++; continue; }

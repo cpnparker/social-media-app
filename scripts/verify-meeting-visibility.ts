@@ -1,22 +1,34 @@
 /**
- * Verify meetingbrain.meeting_visibility after the migration.
+ * Verify meetingbrain.get_meeting_visibility after the migration.
  * `npx tsx scripts/verify-meeting-visibility.ts`
  *
- * The check that matters is the count. docs/meetingbrain-meeting-visibility-spec.md
- * measured two candidate backfills: the correct one seeds ~140 events from what
- * get_client_meetings actually returns, and the plausible-looking one (re-derive
- * the client-domain match in SQL) seeds ~2,835 — publishing roughly 2,700
- * meetings that are private today. Both run cleanly. Both report success. The
- * only way to tell them apart is to count afterwards, which is what this does.
+ * Three questions, in order of how badly a wrong answer would hurt:
  *
- * Nothing reads this table yet, so a wrong backfill is still fully reversible
- * at this point. That stops being true at spec step 3.
+ *  1. Does the deployed function agree with the model that justified it?
+ *     scripts/model-meeting-visibility-rule.ts computed the rule in TypeScript
+ *     and its numbers are what the decision was made on. If the SQL disagrees,
+ *     one of them is wrong and the spec is describing neither. This is the
+ *     check that matters: a per-event diff, not a total, because two different
+ *     classifications can sum to the same count.
  *
- * PRIVACY: counts, dates and column names only — never a meeting title,
- * summary, attendee or email.
+ *  2. Can the public anon key read or write the override table? That table
+ *     decides who may see a meeting; if a browser can write it, anyone can
+ *     share anyone's 1:1.
+ *
+ *  3. Does the function leak meeting content? It exists to classify, and it
+ *     should be impossible to get a title or a transcript out of it.
+ *
+ * The anon probes here are meaningful by construction: the override table has
+ * NO foreign key, so a rejected insert cannot be blamed on a constraint the
+ * way the episodes probe could. The probe row also uses a key nothing else
+ * holds, so the primary key cannot produce a false pass either.
+ *
+ * PRIVACY: counts, ids and classifications only. No titles, summaries,
+ * attendees or addresses are printed.
  */
 import { config } from "dotenv";
 import { createClient } from "@supabase/supabase-js";
+import { isPersonnelSensitive } from "../lib/ai/providers";
 
 config({ path: ".env.local" });
 
@@ -31,121 +43,202 @@ if (!SUPABASE_URL || !SERVICE_KEY) {
 const mb = createClient(SUPABASE_URL, SERVICE_KEY, { db: { schema: "meetingbrain" } });
 const mbAnon = ANON_KEY ? createClient(SUPABASE_URL, ANON_KEY, { db: { schema: "meetingbrain" } }) : null;
 const pub = createClient(SUPABASE_URL, SERVICE_KEY);
+
 const INTERNAL_DOMAIN = "thecontentengine.com";
+// See the note in model-meeting-visibility-rule.ts: no free-mail carve-out.
+// The deployed SQL treats any non-internal, non-client domain as external, and
+// that is the fail-safe reading.
+const PROBE_KEY = "__rls-probe-never-a-real-event__";
 
-/** What the correct backfill should produce, measured live rather than assumed. */
-const EXPECTED_TOLERANCE = 3; // multiple of the live shared count before it is "wrong"
-
-let pass = 0, fail = 0, warn = 0;
+let pass = 0, fail = 0;
 const failures: string[] = [];
 function check(name: string, ok: boolean, detail?: string) {
   if (ok) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; failures.push(`${name}${detail ? ` — ${detail}` : ""}`); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
-function note(msg: string) { warn++; console.log(`  ! ${msg}`); }
 
 async function clientDomains(): Promise<string[]> {
   const { data } = await pub.from("app_clients").select("link_website");
   const out = new Set<string>();
-  let malformed = 0;
   for (const c of data || []) {
     const w = (c as any).link_website;
     if (!w) continue;
     try {
       out.add(new globalThis.URL(String(w).startsWith("http") ? w : `https://${w}`).hostname.replace(/^www\./, "").toLowerCase());
-    } catch { malformed++; }
+    } catch { /* a malformed website is not a domain */ }
   }
-  if (malformed) console.warn(`    (${malformed} client website(s) unparseable)`);
-  if (!out.size) throw new Error("No client domains resolved — refusing to compare, every number would be wrong.");
+  // The caller's own domain IS registered as a client website (id_client 2).
+  // Leaving it in classifies every internal meeting as client work.
+  out.delete(INTERNAL_DOMAIN);
+  if (!out.size) throw new Error("No client domains resolved — refusing to verify, every number would be wrong.");
   return Array.from(out);
 }
 
 async function main() {
-  console.log("\n1. The table exists and has the shape the spec describes");
-  const { data: probe, error: probeErr } = await mb
-    .from("meeting_visibility")
-    .select("calendar_event_id, visibility, source, set_by, date_created, date_updated")
-    .limit(1);
-  check("meeting_visibility is readable", !probeErr, probeErr ? `${probeErr.code}: ${probeErr.message}` : undefined);
-  if (probeErr) {
-    console.log("\n  Cannot continue — has the CREATE TABLE from the spec been run?");
+  const domains = await clientDomains();
+  const domainSet = new Set(domains);
+  console.log(`\nclient domains: ${domains.length} (internal domain excluded)`);
+
+  // ── 1. The function exists and runs ──
+  console.log("\n1. The function is deployed");
+  const { data: vis, error: visErr } = await mb.rpc("get_meeting_visibility", {
+    p_internal_domain: INTERNAL_DOMAIN,
+    p_client_domains: domains,
+  });
+  check("get_meeting_visibility is callable", !visErr, visErr ? `${visErr.code}: ${visErr.message}` : undefined);
+  if (visErr) {
+    console.log("\n  Cannot continue — has scripts/add-meeting-visibility.sql been run?");
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exit(1);
   }
-  check("every column the spec defines exists", !probeErr);
+  const rows = (vis as any[]) || [];
+  console.log(`   returned ${rows.length} events`);
 
-  console.log("\n2. The count — the check that separates the two backfills");
-  const { count: total } = await mb.from("meeting_visibility").select("*", { count: "exact", head: true });
-  const { count: teamCount } = await mb
-    .from("meeting_visibility").select("*", { count: "exact", head: true }).eq("visibility", "team");
-  const { count: privateCount } = await mb
-    .from("meeting_visibility").select("*", { count: "exact", head: true }).eq("visibility", "private");
-
-  const domains = await clientDomains();
-  const { data: shared, error: sharedErr } = await mb.rpc("get_client_meetings", {
-    p_internal_domain: INTERNAL_DOMAIN,
-    p_client_domains: domains,
-    p_since: "2000-01-01T00:00:00Z",
-    p_limit: 100000,
-  });
-  const liveShared = sharedErr ? null : ((shared || []) as any[]).length;
-
-  console.log(`    rows total          : ${total ?? 0}`);
-  console.log(`    visibility = 'team' : ${teamCount ?? 0}`);
-  console.log(`    visibility='private': ${privateCount ?? 0}`);
-  console.log(`    get_client_meetings : ${liveShared ?? "unavailable"}   ← what is shared TODAY`);
-
-  if (total === 0) {
-    note("Table is empty — the schema is in, the backfill has not been run. That is a valid stopping point: absence means private, so nothing is exposed.");
-  } else if (liveShared == null) {
-    note("Could not read get_client_meetings, so the count cannot be compared. Do NOT proceed to spec step 3 until it can.");
-  } else {
-    check(
-      `'team' count is close to the live shared set (${liveShared}), not the domain-match figure`,
-      (teamCount ?? 0) <= liveShared * EXPECTED_TOLERANCE,
-      `${teamCount} team rows vs ${liveShared} actually shared — if this is in the thousands, the domain-matching backfill was run; delete WHERE source = 'backfill' and re-seed`
-    );
+  const dist = new Map<string, number>();
+  for (const r of rows) dist.set(r.reason, (dist.get(r.reason) || 0) + 1);
+  console.log("   distribution:");
+  for (const [k, n] of Array.from(dist.entries()).sort((a, b) => b[1] - a[1])) {
+    console.log(`     ${k.padEnd(22)} ${String(n).padStart(5)}`);
   }
-
-  console.log("\n3. Absence means private");
-  const { data: events } = await mb.from("processed_meeting").select("calendar_event_id").limit(10000);
-  const distinctEvents = new Set((events || []).map((e: any) => e.calendar_event_id).filter(Boolean));
-  const covered = total ?? 0;
-  console.log(`    distinct calendar events : ${distinctEvents.size}`);
-  console.log(`    events with a row        : ${covered}`);
-  console.log(`    implicitly private       : ${distinctEvents.size - covered}`);
+  const team = rows.filter((r) => r.visibility === "team").length;
+  console.log(`   team ${team} / private ${rows.length - team}`);
   check(
-    "the table does not claim to cover every event (absence is the private default)",
-    covered < distinctEvents.size || distinctEvents.size === 0,
-    covered >= distinctEvents.size ? "every event has an explicit row — check none were defaulted to 'team'" : undefined
+    "team count is in the expected range, not thousands more",
+    team > 0 && team < rows.length * 0.4,
+    `${team} of ${rows.length} — if this is far higher, the client-domain list probably includes ${INTERNAL_DOMAIN}`
   );
 
-  console.log("\n4. RLS — a meeting-privacy table must not be world-readable");
-  if (!mbAnon) {
-    note("NEXT_PUBLIC_SUPABASE_ANON_KEY not set locally, so the anon check could not run.");
-  } else {
-    const { data: anonRows, error: anonErr } = await mbAnon.from("meeting_visibility").select("calendar_event_id").limit(1);
-    check(
-      "the anon key cannot read meeting_visibility",
-      !!anonErr || (anonRows?.length ?? 0) === 0,
-      anonErr ? `blocked with ${anonErr.code}` : `RETURNED ${anonRows?.length} ROW(S)`
-    );
-    const { error: anonWriteErr } = await mbAnon.from("meeting_visibility").insert({
-      calendar_event_id: "rls-probe-should-never-exist",
-      visibility: "team",
-    });
-    check(
-      "the anon key cannot write meeting_visibility",
-      !!anonWriteErr,
-      anonWriteErr ? `blocked with ${anonWriteErr.code}` : "INSERT SUCCEEDED — anyone could share any meeting"
-    );
-    if (!anonWriteErr) {
-      await mb.from("meeting_visibility").delete().eq("calendar_event_id", "rls-probe-should-never-exist");
-      console.log("    (probe row removed)");
+  // ── 2. SQL agrees with the TypeScript model, per event ──
+  console.log("\n2. The deployed rule agrees with the model it was decided on");
+  let from = 0, pmRows: any[] = [];
+  for (;;) {
+    const { data } = await mb.from("processed_meeting").select("calendar_event_id, attendees").range(from, from + 999);
+    pmRows = pmRows.concat(data || []);
+    if (!data || data.length < 1000) break;
+    from += 1000;
+  }
+  const byEvent = new Map<string, Set<string>>();
+  for (const r of pmRows as any[]) {
+    if (!r.calendar_event_id) continue;
+    const text = typeof r.attendees === "string" ? r.attendees : JSON.stringify(r.attendees ?? "");
+    const em = (text.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || []).map((e: string) => e.toLowerCase());
+    const s = byEvent.get(r.calendar_event_id) || new Set<string>();
+    for (const a of em) s.add(a);
+    byEvent.set(r.calendar_event_id, s);
+  }
+  /** The same rule, in TypeScript. Must match the SQL for every event. */
+  function expected(em: Set<string>): string {
+    if (em.size === 0) return "no_attendee_data";
+    const doms = new Set(Array.from(em).map((a) => a.split("@")[1]));
+    if (Array.from(doms).some((d) => domainSet.has(d))) return "client_attendee";
+    if (Array.from(doms).some((d) => d !== INTERNAL_DOMAIN && !domainSet.has(d))) return "external_non_client";
+    return em.size >= 3 ? "internal_group" : "internal_small";
+  }
+  let disagree = 0;
+  const samples: string[] = [];
+  for (const r of rows) {
+    if (r.is_overridden) continue; // an override is meant to disagree
+    const em = byEvent.get(r.calendar_event_id);
+    if (!em) continue;
+    const exp = expected(em);
+    if (exp !== r.reason) {
+      disagree++;
+      // Ids only — a calendar event id is not meeting content.
+      if (samples.length < 5) samples.push(`${r.calendar_event_id}: sql=${r.reason} ts=${exp} n=${r.attendee_count}`);
     }
   }
+  check("SQL and TypeScript classify every event identically", disagree === 0, `${disagree} disagreements${samples.length ? `\n      ` + samples.join("\n      ") : ""}`);
+  check("every event in the corpus is classified", rows.length === byEvent.size, `${rows.length} classified vs ${byEvent.size} events`);
 
-  console.log(`\n${pass} passed, ${fail} failed${warn ? `, ${warn} note(s)` : ""}`);
+  // ── 3. The personnel carve-out on top ──
+  console.log("\n3. The personnel carve-out (applied by EngineAI, not the SQL)");
+  const titleByEvent = new Map<string, boolean>();
+  let from2 = 0, meta: any[] = [];
+  for (;;) {
+    const { data } = await mb.from("processed_meeting")
+      .select("calendar_event_id, meeting_title, summary, key_topics").range(from2, from2 + 999);
+    meta = meta.concat(data || []);
+    if (!data || data.length < 1000) break;
+    from2 += 1000;
+  }
+  for (const r of meta as any[]) {
+    if (!r.calendar_event_id) continue;
+    if (isPersonnelSensitive(r.meeting_title, r.summary, r.key_topics)) titleByEvent.set(r.calendar_event_id, true);
+  }
+  const heldBack = rows.filter((r) => r.reason === "internal_group" && titleByEvent.get(r.calendar_event_id)).length;
+  console.log(`   internal_group events flagged personnel: ${heldBack}`);
+  check("the carve-out holds back some but not most internal group meetings",
+    heldBack > 0 && heldBack < (dist.get("internal_group") || 0) * 0.5,
+    `${heldBack} of ${dist.get("internal_group")}`);
+
+  // ── 4. RLS on the override table ──
+  console.log("\n4. Anon-key lockout on the override table");
+  await mb.from("meeting_visibility_override").delete().eq("calendar_event_id", PROBE_KEY);
+  const { error: seedErr } = await mb.from("meeting_visibility_override")
+    .insert({ calendar_event_id: PROBE_KEY, visibility: "team", reason: "rls probe", set_by: 0 });
+  check("service role can write an override", !seedErr, seedErr?.message);
+
+  if (!mbAnon) {
+    check("anon key present to test with", false, "NEXT_PUBLIC_SUPABASE_ANON_KEY not set locally");
+  } else {
+    const { data: aRows, error: aErr } = await mbAnon
+      .from("meeting_visibility_override").select("calendar_event_id").eq("calendar_event_id", PROBE_KEY);
+    check("anon cannot read an override row that DEMONSTRABLY EXISTS",
+      !!aErr || (aRows?.length ?? 0) === 0,
+      aErr ? `blocked with ${aErr.code}` : `RETURNED ${aRows?.length} ROW(S)`);
+
+    // No FK on this table and a key nothing else holds, so only RLS or grants
+    // can reject this — unlike the episodes probe, which the FK was rejecting.
+    const { error: aWriteErr } = await mbAnon.from("meeting_visibility_override")
+      .insert({ calendar_event_id: PROBE_KEY + "-anon", visibility: "team", reason: "rls probe", set_by: 0 });
+    check("anon cannot write an override",
+      !!aWriteErr,
+      aWriteErr ? `blocked with ${aWriteErr.code}` : "INSERT SUCCEEDED — anyone could share anyone's meeting");
+    if (aWriteErr && /23503|23505/.test(aWriteErr.code || "")) {
+      check("the write was blocked by RLS/grants, not a constraint", false, `got ${aWriteErr.code}`);
+    }
+
+    const { data: fnRows, error: fnErr } = await mbAnon.rpc("get_meeting_visibility", {
+      p_internal_domain: INTERNAL_DOMAIN, p_client_domains: domains,
+    });
+    check("anon cannot call the classification function either",
+      !!fnErr || ((fnRows as any[])?.length ?? 0) === 0,
+      fnErr ? `blocked with ${fnErr.code}` : `RETURNED ${(fnRows as any[])?.length} ROW(S)`);
+  }
+
+  // ── 5. Overrides actually win ──
+  console.log("\n5. An override changes the answer");
+  const target = rows.find((r) => r.reason === "internal_small" && !r.is_overridden);
+  if (!target) {
+    check("a private event exists to override", false, "none found");
+  } else {
+    await mb.from("meeting_visibility_override").insert({
+      calendar_event_id: target.calendar_event_id, visibility: "team", reason: "rls probe", set_by: 0,
+    });
+    const { data: after } = await mb.rpc("get_meeting_visibility", {
+      p_internal_domain: INTERNAL_DOMAIN, p_client_domains: domains,
+    });
+    const now = ((after as any[]) || []).find((r) => r.calendar_event_id === target.calendar_event_id);
+    check("an override flips a private meeting to team and is labelled",
+      now?.visibility === "team" && now?.reason === "override" && now?.is_overridden === true,
+      JSON.stringify(now));
+    await mb.from("meeting_visibility_override").delete().eq("calendar_event_id", target.calendar_event_id);
+  }
+
+  // ── 6. No content escapes ──
+  console.log("\n6. The function returns no meeting content");
+  const cols = Object.keys(rows[0] || {});
+  const allowed = ["calendar_event_id", "visibility", "reason", "attendee_count", "has_client", "is_overridden"];
+  check("only classification fields are returned", cols.every((c) => allowed.includes(c)), cols.join(", "));
+  check("no title, summary, transcript or attendee field",
+    !cols.some((c) => /title|summary|transcript|attendee(?!_count)|insight|topic|note/i.test(c)), cols.join(", "));
+
+  // Cleanup
+  await mb.from("meeting_visibility_override").delete().eq("reason", "rls probe");
+  const { count: leftover } = await mb.from("meeting_visibility_override").select("*", { count: "exact", head: true });
+  console.log(`\n  cleanup: ${leftover ?? 0} override row(s) remain (0 expected on a fresh install)`);
+
+  console.log(`\n${pass} passed, ${fail} failed`);
   if (failures.length) {
     console.log("\nFailures:");
     for (const f of failures) console.log(`  - ${f}`);
