@@ -5817,8 +5817,25 @@ export async function searchMemory(
 
 export interface StreamResult {
   fullText: string;
+  /**
+   * BILLABLE UNCACHED input, normalised across providers.
+   *
+   * The two families report this differently and the difference is invisible
+   * until caching is switched on:
+   *   Anthropic  — `input_tokens` EXCLUDES cached tokens already.
+   *   OpenAI-shaped — `prompt_tokens` INCLUDES them.
+   * So the OpenAI-shaped chains subtract cached at the point of extraction,
+   * which is the only place the convention is known. Get this wrong and the
+   * ledger drifts in opposite directions per provider — understating on
+   * Anthropic, which would let spend run PAST the provider cap in
+   * lib/admin/service-control.ts rather than tripping it.
+   */
   inputTokens: number;
   outputTokens: number;
+  /** Tokens served from cache. Priced far below input when caching is live. */
+  cacheReadTokens: number;
+  /** Tokens written to cache. Anthropic bills these ABOVE base input. */
+  cacheWriteTokens: number;
 }
 
 /* ─────────────── Streaming Response (SSE) ─────────────── */
@@ -5842,7 +5859,7 @@ export function createStreamingResponse(
   return new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
-      let result: StreamResult = { fullText: "", inputTokens: 0, outputTokens: 0 };
+      let result: StreamResult = { fullText: "", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
       // Control Centre model override + global provider cap.
       // - Override > registry-resolved model.
@@ -6167,6 +6184,8 @@ async function streamAnthropic(
   let fullText = "";
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  let totalCacheWriteTokens = 0;
 
   // Tool use loop: Claude may request tool calls, which we execute and feed back.
   // Loop continues until the model's stop_reason is "end_turn" (no more tool calls).
@@ -6325,10 +6344,16 @@ async function streamAnthropic(
 
     // Get usage from this round
     const finalMessage = await stream.finalMessage();
+    // Anthropic reports input_tokens NET of cache, so these are added, never
+    // subtracted. Zero on both while no cache_control is sent — which is the
+    // point of shipping this first: it proves caching is off before anything
+    // claims to turn it on.
     totalInputTokens += finalMessage.usage?.input_tokens || 0;
     totalOutputTokens += finalMessage.usage?.output_tokens || 0;
+    totalCacheReadTokens += (finalMessage.usage as any)?.cache_read_input_tokens || 0;
+    totalCacheWriteTokens += (finalMessage.usage as any)?.cache_creation_input_tokens || 0;
 
-    console.log(`[Anthropic] Round ${round}: stop_reason=${finalMessage.stop_reason}, toolUseBlocks=${toolUseBlocks.length}, textLength=${fullText.length}`);
+    console.log(`[Anthropic] Round ${round}: stop_reason=${finalMessage.stop_reason}, toolUseBlocks=${toolUseBlocks.length}, textLength=${fullText.length}, in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens}`);
 
     // If no tool calls were made, we're done
     if (finalMessage.stop_reason !== "tool_use" || toolUseBlocks.length === 0) {
@@ -7280,6 +7305,8 @@ async function streamAnthropic(
       const finalMsg = await finalStream.finalMessage();
       totalInputTokens += finalMsg.usage?.input_tokens || 0;
       totalOutputTokens += finalMsg.usage?.output_tokens || 0;
+      totalCacheReadTokens += (finalMsg.usage as any)?.cache_read_input_tokens || 0;
+      totalCacheWriteTokens += (finalMsg.usage as any)?.cache_creation_input_tokens || 0;
       console.log(`[Anthropic] Forced final response: ${fullText.length} chars`);
     } catch (err: any) {
       console.error(`[Anthropic] Forced final response failed:`, err.message);
@@ -7293,7 +7320,13 @@ async function streamAnthropic(
     throw new StreamStallError();
   }
 
-  return { fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+  return {
+    fullText,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    cacheReadTokens: totalCacheReadTokens,
+    cacheWriteTokens: totalCacheWriteTokens,
+  };
 }
 
 /* ─────────────── xAI (Grok) Streaming ─────────────── */
@@ -7447,6 +7480,11 @@ async function streamXAIChatCompletions(
   let fullText = "";
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  // Only Anthropic reports cache WRITES. On this family a cached prefix is
+  // built server-side with no separate write charge, so this is
+  // structurally zero rather than merely unmeasured.
+  const totalCacheWriteTokens = 0;
 
   // Tool use loop: model may request tool calls, which we execute and feed back
   const MAX_TOOL_ROUNDS = 8;
@@ -7498,8 +7536,17 @@ async function streamXAIChatCompletions(
       if (!choice) {
         // Usage-only chunk
         if ((chunk as any).usage) {
-          totalInputTokens += (chunk as any).usage.prompt_tokens || 0;
-          totalOutputTokens += (chunk as any).usage.completion_tokens || 0;
+          {
+            // prompt_tokens INCLUDES cached tokens on this family, unlike
+            // Anthropic. Subtract at extraction — the only place the
+            // convention is known — so inputTokens means the same thing to
+            // every caller.
+            const u = (chunk as any).usage;
+            const cached = u.prompt_tokens_details?.cached_tokens || 0;
+            totalInputTokens += Math.max(0, (u.prompt_tokens || 0) - cached);
+            totalOutputTokens += u.completion_tokens || 0;
+            totalCacheReadTokens += cached;
+          }
         }
         continue;
       }
@@ -7573,8 +7620,13 @@ async function streamXAIChatCompletions(
 
       // Capture usage
       if ((chunk as any).usage) {
-        totalInputTokens += (chunk as any).usage.prompt_tokens || 0;
-        totalOutputTokens += (chunk as any).usage.completion_tokens || 0;
+        {
+          const u = (chunk as any).usage;
+          const cached = u.prompt_tokens_details?.cached_tokens || 0;
+          totalInputTokens += Math.max(0, (u.prompt_tokens || 0) - cached);
+          totalOutputTokens += u.completion_tokens || 0;
+          totalCacheReadTokens += cached;
+        }
       }
     }
     } catch (e) {
@@ -7594,7 +7646,7 @@ async function streamXAIChatCompletions(
     // Add web_search indicator detection (xAI specific)
     // Already handled inline above with the other tool indicators
 
-    console.log(`[xAI] Round ${round}: finishReason=${finishReason}, toolCalls=${toolCalls.size}, textLen=${fullText.length}`);
+    console.log(`[xAI] Round ${round}: finishReason=${finishReason}, toolCalls=${toolCalls.size}, textLen=${fullText.length}, in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens}`);
 
     // If no tool calls, we're done
     if (finishReason !== "tool_calls" || toolCalls.size === 0) {
@@ -8114,7 +8166,13 @@ async function streamXAIChatCompletions(
     }
   }
 
-  return { fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+  return {
+    fullText,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    cacheReadTokens: totalCacheReadTokens,
+    cacheWriteTokens: totalCacheWriteTokens,
+  };
 }
 
 /**
@@ -8159,6 +8217,7 @@ async function streamXAIResponses(
 
   let fullText = "";
   let inputTokens = 0;
+  let cacheReadTokens = 0;
   let outputTokens = 0;
   let searchEmitted = false;
 
@@ -8187,13 +8246,19 @@ async function streamXAIResponses(
     if (event.type === "response.completed") {
       const usage = (event as any).response?.usage;
       if (usage) {
-        inputTokens = usage.input_tokens || 0;
+        // The Responses API reports cached under input_tokens_details, not
+        // prompt_tokens_details — a third spelling across three APIs from two
+        // vendors. Subtracted for the same reason as the Chat Completions
+        // chains: input_tokens is gross here.
+        const cached = usage.input_tokens_details?.cached_tokens || 0;
+        inputTokens = Math.max(0, (usage.input_tokens || 0) - cached);
         outputTokens = usage.output_tokens || 0;
+        cacheReadTokens = cached;
       }
     }
   }
 
-  return { fullText, inputTokens, outputTokens };
+  return { fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0 };
 }
 
 /* ─────────────── Gemini Streaming ─────────────── */
@@ -8314,6 +8379,11 @@ async function streamGemini(
   let fullText = "";
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  // Only Anthropic reports cache WRITES. On this family a cached prefix is
+  // built server-side with no separate write charge, so this is
+  // structurally zero rather than merely unmeasured.
+  const totalCacheWriteTokens = 0;
 
   // Tool use loop: model may request tool calls, which we execute and feed back
   const MAX_TOOL_ROUNDS = 8;
@@ -8344,8 +8414,17 @@ async function streamGemini(
       const choice = chunk.choices?.[0];
       if (!choice) {
         if ((chunk as any).usage) {
-          totalInputTokens += (chunk as any).usage.prompt_tokens || 0;
-          totalOutputTokens += (chunk as any).usage.completion_tokens || 0;
+          {
+            // prompt_tokens INCLUDES cached tokens on this family, unlike
+            // Anthropic. Subtract at extraction — the only place the
+            // convention is known — so inputTokens means the same thing to
+            // every caller.
+            const u = (chunk as any).usage;
+            const cached = u.prompt_tokens_details?.cached_tokens || 0;
+            totalInputTokens += Math.max(0, (u.prompt_tokens || 0) - cached);
+            totalOutputTokens += u.completion_tokens || 0;
+            totalCacheReadTokens += cached;
+          }
         }
         continue;
       }
@@ -8417,8 +8496,13 @@ async function streamGemini(
       if (choice.finish_reason) finishReason = choice.finish_reason;
 
       if ((chunk as any).usage) {
-        totalInputTokens += (chunk as any).usage.prompt_tokens || 0;
-        totalOutputTokens += (chunk as any).usage.completion_tokens || 0;
+        {
+          const u = (chunk as any).usage;
+          const cached = u.prompt_tokens_details?.cached_tokens || 0;
+          totalInputTokens += Math.max(0, (u.prompt_tokens || 0) - cached);
+          totalOutputTokens += u.completion_tokens || 0;
+          totalCacheReadTokens += cached;
+        }
       }
     }
     } catch (e) {
@@ -8440,6 +8524,7 @@ async function streamGemini(
       break;
     }
 
+    console.log(`[Gemini] Round ${round}: textLen=${fullText.length}, in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens}`);
     // Round separator: the next round's narration must not jam straight into
     // this round's text ("…details directly.Found it…").
     if (fullText.trim() && !fullText.endsWith("\n")) {
@@ -8915,7 +9000,13 @@ async function streamGemini(
     }
   }
 
-  return { fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+  return {
+    fullText,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    cacheReadTokens: totalCacheReadTokens,
+    cacheWriteTokens: totalCacheWriteTokens,
+  };
 }
 
 /* ─────────────── OpenAI (GPT) Streaming ─────────────── */
@@ -9037,6 +9128,11 @@ async function streamOpenAI(
   let fullText = "";
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  // Only Anthropic reports cache WRITES. On this family a cached prefix is
+  // built server-side with no separate write charge, so this is
+  // structurally zero rather than merely unmeasured.
+  const totalCacheWriteTokens = 0;
 
   // Tool use loop: model may request tool calls, which we execute and feed back
   const MAX_TOOL_ROUNDS = 8;
@@ -9062,8 +9158,17 @@ async function streamOpenAI(
       const choice = chunk.choices?.[0];
       if (!choice) {
         if ((chunk as any).usage) {
-          totalInputTokens += (chunk as any).usage.prompt_tokens || 0;
-          totalOutputTokens += (chunk as any).usage.completion_tokens || 0;
+          {
+            // prompt_tokens INCLUDES cached tokens on this family, unlike
+            // Anthropic. Subtract at extraction — the only place the
+            // convention is known — so inputTokens means the same thing to
+            // every caller.
+            const u = (chunk as any).usage;
+            const cached = u.prompt_tokens_details?.cached_tokens || 0;
+            totalInputTokens += Math.max(0, (u.prompt_tokens || 0) - cached);
+            totalOutputTokens += u.completion_tokens || 0;
+            totalCacheReadTokens += cached;
+          }
         }
         continue;
       }
@@ -9136,8 +9241,13 @@ async function streamOpenAI(
       if (choice.finish_reason) finishReason = choice.finish_reason;
 
       if ((chunk as any).usage) {
-        totalInputTokens += (chunk as any).usage.prompt_tokens || 0;
-        totalOutputTokens += (chunk as any).usage.completion_tokens || 0;
+        {
+          const u = (chunk as any).usage;
+          const cached = u.prompt_tokens_details?.cached_tokens || 0;
+          totalInputTokens += Math.max(0, (u.prompt_tokens || 0) - cached);
+          totalOutputTokens += u.completion_tokens || 0;
+          totalCacheReadTokens += cached;
+        }
       }
     }
     } catch (e) {
@@ -9159,6 +9269,7 @@ async function streamOpenAI(
       break;
     }
 
+    console.log(`[OpenAI] Round ${round}: textLen=${fullText.length}, in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens}`);
     // Round separator: the next round's narration must not jam straight into
     // this round's text ("…details directly.Found it…").
     if (fullText.trim() && !fullText.endsWith("\n")) {
@@ -9633,7 +9744,13 @@ async function streamOpenAI(
     }
   }
 
-  return { fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+  return {
+    fullText,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    cacheReadTokens: totalCacheReadTokens,
+    cacheWriteTokens: totalCacheWriteTokens,
+  };
 }
 
 /* ─────────────── Perplexity Streaming ─────────────── */
@@ -9684,5 +9801,7 @@ async function streamPerplexity(
     }
   }
 
-  return { fullText, inputTokens, outputTokens };
+  // Perplexity offers no prompt caching, so these are structurally zero
+  // rather than unmeasured.
+  return { fullText, inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 };
 }
