@@ -152,6 +152,7 @@ const operationsItems: NavSubItem[] = [
     label: "Contracts",
     href: "/operations/contracts",
     children: [
+      { label: "Clients", href: "/operations/clients" },
       { label: "Contracts", href: "/operations/contracts" },
       { label: "Contracts Grid", href: "/operations/contracts-grid" },
       { label: "Formats", href: "/operations/formats" },
