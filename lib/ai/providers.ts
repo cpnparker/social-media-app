@@ -3777,10 +3777,69 @@ export function getMeetingBrainDb() {
  *  app_clients.link_website (or where the website is unset), so the privacy
  *  gate doesn't drop these real clients. CONFIRMED clients only — adding a
  *  non-client domain here leaks that org's meetings to the workspace. */
+/**
+ * Hardcoded domains for clients whose registered website does not match the
+ * domain they mail from.
+ *
+ * SUPERSEDED by intelligence.client_email_domains, which holds the same thing
+ * as data a person can edit. These two exist because someone hit the problem
+ * twice and fixed it by editing source and deploying; a third case (VARO,
+ * Siemens, Zurich Instruments) is what finally made it a table.
+ *
+ * Kept only so behaviour does not change the moment the table ships empty.
+ * Migrate them with type_source 'alias_migration', confirm them, then delete
+ * this array — a list that lives in two places will disagree.
+ *
+ * NOTE these are client-scoped in name only: the array is a flat allowlist
+ * with no client id, so it widens which meetings count as CLIENT meetings
+ * without saying whose. The table fixes that too.
+ */
 const CLIENT_DOMAIN_ALIASES = [
   "beonemed.com", // BeOne Medicines (registered as beonemedicines.com)
   "hiscox.com",   // Hiscox Insurance (registered with no website)
 ];
+
+/**
+ * Confirmed client email domains from intelligence.client_email_domains.
+ *
+ * ONLY flag_confirmed = 1. Inferred proposals are ignored until a person
+ * accepts them, because the inference collides on company-name tokens —
+ * "zurich" matches three different clients here and its top inferred domain
+ * belongs to the one that is NOT asking. Attributing a meeting to the wrong
+ * client shows one account team another's confidential material.
+ *
+ * Returns an empty map on any failure, including the table not existing yet:
+ * this ships before the migration, and callers already treat "no domains" as
+ * "block", never as "no filter".
+ */
+async function loadConfirmedClientDomains(): Promise<Map<string, number>> {
+  try {
+    const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+    const { data, error } = await intelligenceDb
+      .from("client_email_domains")
+      .select("id_client, domain")
+      .eq("flag_confirmed", 1);
+    if (error) return new Map();
+    const seen = new Map<string, number>();
+    const ambiguous = new Set<string>();
+    for (const r of (data || []) as any[]) {
+      const d = String(r.domain || "").trim().toLowerCase();
+      if (!d) continue;
+      if (seen.has(d) && seen.get(d) !== r.id_client) ambiguous.add(d);
+      seen.set(d, r.id_client);
+    }
+    // A domain claimed by two clients attributes to NEITHER — the same rule
+    // loadClientDomainMap already applies to duplicate websites. Guessing
+    // which one is how a meeting lands on the wrong account.
+    for (const d of Array.from(ambiguous)) {
+      console.warn(`[Clients] domain "${d}" is confirmed for more than one client — attributing it to none`);
+      seen.delete(d);
+    }
+    return seen;
+  } catch {
+    return new Map();
+  }
+}
 
 /** OUR OWN domains. Must never be treated as a client domain: several
  *  app_clients rows legitimately carry our own website, and the "exclude the
@@ -3850,6 +3909,22 @@ export async function loadClientDomainMap(internalDomain: string): Promise<Map<s
     }
     map.set(d, { id: (c as any).id_client, name: (c as any).name_client || "" });
   }
+
+  // Confirmed table domains, which unlike the website carry the client id
+  // explicitly. Same collision rule: a domain already claimed by a DIFFERENT
+  // client becomes the ambiguous sentinel rather than overwriting.
+  const confirmed = await loadConfirmedClientDomains();
+  const nameById = new Map((data || []).map((c: any) => [c.id_client, c.name_client || ""]));
+  for (const [d, idClient] of Array.from(confirmed.entries())) {
+    if (d === caller || NON_CLIENT_HOSTS.has(d) || INTERNAL_DOMAINS.includes(d)) continue;
+    const existing = map.get(d);
+    if (existing && existing.id !== idClient) {
+      console.warn(`[MeetingBrain] domain "${d}" is claimed by a website and by a different client's confirmed domain — left unattributed`);
+      map.set(d, { id: -1, name: "" });
+      continue;
+    }
+    map.set(d, { id: idClient, name: nameById.get(idClient) || "" });
+  }
   return map;
 }
 
@@ -3867,10 +3942,15 @@ async function loadClientDomains(internalDomain: string): Promise<string[]> {
     throw new Error("client-domain allowlist unavailable");
   }
   const caller = (internalDomain || "").trim().toLowerCase();
+  // Confirmed domains from the table sit alongside registered websites. The
+  // website is a marketing URL and a poor identity key; this is the field
+  // that exists to BE one.
+  const confirmed = await loadConfirmedClientDomains();
   return Array.from(new Set([
     ...(clientRows || [])
       .map((c: any) => normalizeClientDomain(c.link_website))
       .filter((d: string | null): d is string => !!d && d !== caller),
+    ...Array.from(confirmed.keys()),
     ...CLIENT_DOMAIN_ALIASES,
   ]))
     // Belt-and-braces: aliases and the caller's own domain go through the same
