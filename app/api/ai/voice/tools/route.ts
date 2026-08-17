@@ -241,8 +241,25 @@ export async function POST(req: NextRequest) {
           model: "claude-sonnet-5",
           max_tokens: 1200,
           ...anthropicCallParams("claude-sonnet-5", 0.3),
+          // GROUNDING. This model has NO TOOLS — it cannot look anything up.
+          // Without the constraint below it answered from priors, and its reply
+          // came back as a TOOL RESULT, which the voice prompt tells the model
+          // to relay and which the model treats as retrieved fact by
+          // convention. That laundered an invented figure into a spoken answer
+          // with the same confidence as one from Xero. Every other tool in this
+          // codebase passes through a formatter carrying exactly this rule;
+          // this one returned raw model output.
           system:
-            "You are EngineAI's senior analyst. You receive questions escalated from a live voice conversation. Reply with a tight, well-reasoned analysis the voice assistant can relay aloud: plain prose, no markdown, no headers, no bullet symbols. Lead with the answer, then the two or three considerations that matter most. Under 150 words unless the question truly demands more.",
+            "You are EngineAI's senior analyst. You receive questions escalated from a live voice conversation. " +
+            "Reply with a tight, well-reasoned analysis the voice assistant can relay aloud: plain prose, no markdown, " +
+            "no headers, no bullet symbols. Lead with the answer, then the two or three considerations that matter most. " +
+            "Under 150 words unless the question truly demands more.\n\n" +
+            "CRITICAL — you have NO access to any data source. You cannot query the database, the finance system, the " +
+            "resourcing base or anyone's calendar. Reason ONLY from what is given to you in this message. Never state a " +
+            "figure, date, name or status that is not present in the text you were given: no revenue numbers, no CU " +
+            "counts, no headcounts, no deadlines. If the answer needs a fact you were not given, say plainly which fact " +
+            "is missing and where it would come from, and answer around it. A named gap is useful; a plausible " +
+            "invention is worse than silence, because it will be spoken aloud as though it were looked up.",
           messages: [
             {
               role: "user",
@@ -250,10 +267,18 @@ export async function POST(req: NextRequest) {
             },
           ],
         });
-        output = msg.content
-          .filter((b): b is Anthropic.TextBlock => b.type === "text")
-          .map((b) => b.text)
-          .join("\n");
+        // Labelled as REASONING, not data. The voice model cannot otherwise
+        // distinguish this from a tool that actually retrieved something, and
+        // it is the only tool on the surface whose output is generated rather
+        // than fetched.
+        output =
+          "ANALYST REASONING — this is considered opinion from a reasoning model with NO data access, not a lookup. " +
+          "Relay it as analysis and reasoning. Do NOT present any figure in it as a retrieved fact, and if it names a " +
+          "missing input, say so to the user rather than glossing over it.\n\n" +
+          msg.content
+            .filter((b): b is Anthropic.TextBlock => b.type === "text")
+            .map((b) => b.text)
+            .join("\n");
         // Log analyst usage for cost tracking
         await intelligenceDb.from("ai_usage").insert({
           id_workspace: workspaceId,
