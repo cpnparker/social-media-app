@@ -38,6 +38,7 @@ import {
   Info,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import Link from "next/link";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 
 /* ─────────────── Types (mirror the API payload) ─────────────── */
@@ -131,13 +132,29 @@ export default function ClientSummaryPage() {
   const rows = useMemo(() => {
     const list = data?.rows ?? [];
     const needle = q.trim().toLowerCase();
-    if (!needle) return list;
-    return list.filter(
-      (r) =>
-        r.name?.toLowerCase().includes(needle) ||
-        r.accountManager?.toLowerCase().includes(needle) ||
-        r.industry?.toLowerCase().includes(needle)
-    );
+    const filtered = needle
+      ? list.filter(
+          (r) =>
+            r.name?.toLowerCase().includes(needle) ||
+            r.accountManager?.toLowerCase().includes(needle) ||
+            r.accountManagerEngine?.toLowerCase().includes(needle) ||
+            r.industry?.toLowerCase().includes(needle)
+        )
+      : list;
+
+    // Alphabetical, case- and accent-insensitive so "Ørsted" files under O
+    // rather than after Z — localeCompare with sensitivity:"base" does both.
+    //
+    // A row with no name sorts to the END rather than to either extreme
+    // (spec §5.2: a null sort key never interleaves and never leads). An
+    // unnamed client at the top of an alphabetical list reads as a data error
+    // in the list itself, which is the wrong thing to draw the eye.
+    return [...filtered].sort((a, b) => {
+      if (!a.name && !b.name) return 0;
+      if (!a.name) return 1;
+      if (!b.name) return -1;
+      return a.name.localeCompare(b.name, "en", { sensitivity: "base" });
+    });
   }, [data, q]);
 
   if (!workspaceId) {
@@ -190,7 +207,7 @@ export default function ClientSummaryPage() {
           <Input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Client, account manager, industry…"
+            placeholder="Search client, account manager, industry…"
             className="pl-8"
           />
         </div>
@@ -255,7 +272,12 @@ export default function ClientSummaryPage() {
                   <tr key={r.idClient} className="border-b last:border-0 hover:bg-muted/30">
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-2">
-                        <span className="font-medium">{r.name}</span>
+                        <Link
+                          href={`/operations/clients/${r.idClient}`}
+                          className="font-medium hover:underline"
+                        >
+                          {r.name}
+                        </Link>
                         {r.website && (
                           <a
                             href={r.website.startsWith("http") ? r.website : `https://${r.website}`}
