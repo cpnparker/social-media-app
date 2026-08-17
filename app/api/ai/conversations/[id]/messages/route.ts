@@ -738,22 +738,47 @@ export async function POST(
     // repairs conversations that are ALREADY long — the document is still in
     // ai_messages, it was only being dropped on the way to the model.
     const REFERENCE_DOC_MIN_CHARS = 1200;   // well above an ordinary question
-    const REFERENCE_DOC_BUDGET = 60000;     // total chars of pinned material
+    // ~240k chars is roughly 60k tokens: about 6% of a 1M-token window, and
+    // comfortably inside the 200k of the smallest model offered. The binding
+    // constraint is NOT the window, it is that there is no prompt caching on
+    // any chain yet, so every pinned character is billed at full input rate on
+    // every turn. At this budget that is a few cents a turn — acceptable for a
+    // working session on a document, which is exactly what it is for.
+    // If prompt caching lands, this can go up by an order of magnitude.
+    const REFERENCE_DOC_BUDGET = 240000;
     const droppedCount = Math.max(0, history.length - effectiveHistory.length);
 
     if (droppedCount > 0) {
       const dropped = history.slice(0, history.length - effectiveHistory.length);
       // Newest first: when the budget binds, the most recently pasted document
       // is the one most likely to still be under discussion.
+      // Superseded drafts are skipped, which matters more than the budget size.
+      // Someone working on a report pastes it repeatedly as it evolves — v1,
+      // v2, v3 — and each is a separate large message. Pinning all of them
+      // spends the budget several times over on the same document, and hands
+      // the model three versions of one thing to disagree with itself about.
+      // Two pastes are treated as versions of each other when their openings
+      // match: cheap, and it does not confuse two genuinely different documents
+      // that happen to share a phrase.
+      const fingerprint = (t: string) =>
+        t.replace(/\s+/g, " ").trim().slice(0, 400).toLowerCase();
+
       const docs: string[] = [];
+      const seen = new Set<string>();
       let used = 0;
       let omitted = 0;
+      let superseded = 0;
       for (let i = dropped.length - 1; i >= 0; i--) {
         const m = dropped[i];
         if (m.role_message !== "user") continue;
         const text = (m.document_message || "").trim();
         if (text.length < REFERENCE_DOC_MIN_CHARS) continue;
+        // Newest first, so the first version seen is the LATEST — earlier
+        // drafts of the same document are the ones dropped.
+        const fp = fingerprint(text);
+        if (seen.has(fp)) { superseded++; continue; }
         if (used + text.length > REFERENCE_DOC_BUDGET) { omitted++; continue; }
+        seen.add(fp);
         docs.unshift(text);
         used += text.length;
       }
@@ -767,6 +792,11 @@ export async function POST(
             `Treat it as something the user has already given you — when they refer to "the handover", ` +
             `"the document", "that email" or similar, THIS is what they mean. Do not go looking for it ` +
             `in a tool, and do not tell them you do not have it.` +
+            (superseded > 0
+              ? ` Where a document was pasted more than once as it was revised, only the LATEST version is ` +
+                `shown (${superseded} earlier draft(s) omitted) — work from what is here, and do not refer ` +
+                `to earlier versions you cannot see.`
+              : "") +
             (omitted > 0
               ? ` NOTE: ${omitted} further pasted document(s) could not be included here — say so if the ` +
                 `user seems to be asking about something you cannot see.`

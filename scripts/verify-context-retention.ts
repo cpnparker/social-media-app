@@ -27,27 +27,33 @@ const eq = (actual: unknown, expected: unknown, label: string) => {
 
 const MAX_HISTORY = 20;
 const REFERENCE_DOC_MIN_CHARS = 1200;
-const REFERENCE_DOC_BUDGET = 60000;
+const REFERENCE_DOC_BUDGET = 240000;
 const ORPHAN_MAX_CHARS = 1200;
 
 /** The pinning rule: which dropped user messages come back. */
-function pinnedDocs(history: Msg[]): { docs: string[]; omitted: number; droppedCount: number } {
+function pinnedDocs(history: Msg[]): { docs: string[]; omitted: number; superseded: number; droppedCount: number } {
   const effective = history.length > MAX_HISTORY ? history.slice(-MAX_HISTORY) : history;
   const droppedCount = Math.max(0, history.length - effective.length);
   const dropped = history.slice(0, history.length - effective.length);
+  const fingerprint = (t: string) => t.replace(/\s+/g, " ").trim().slice(0, 400).toLowerCase();
   const docs: string[] = [];
+  const seen = new Set<string>();
   let used = 0;
   let omitted = 0;
+  let superseded = 0;
   for (let i = dropped.length - 1; i >= 0; i--) {
     const m = dropped[i];
     if (m.role_message !== "user") continue;
     const text = (m.document_message || "").trim();
     if (text.length < REFERENCE_DOC_MIN_CHARS) continue;
+    const fp = fingerprint(text);
+    if (seen.has(fp)) { superseded++; continue; }
     if (used + text.length > REFERENCE_DOC_BUDGET) { omitted++; continue; }
+    seen.add(fp);
     docs.unshift(text);
     used += text.length;
   }
-  return { docs, omitted, droppedCount };
+  return { docs, omitted, superseded, droppedCount };
 }
 
 /** The orphan rule: merge substantial consecutive user messages, drop short ones. */
@@ -117,13 +123,42 @@ const a = (t: string): Msg => ({ role_message: "assistant", document_message: t 
 
 /* ── the budget binds newest-first, and says what it left out ── */
 {
-  const big = "x".repeat(25000);
-  const history: Msg[] = [u(big + "1"), u(big + "2"), u(big + "3")];
+  const big = (n: string) => `Document ${n}. ` + "x".repeat(100000);
+  const history: Msg[] = [u(big("A")), u(big("B")), u(big("C"))];
   for (let i = 0; i < 25; i++) { history.push(u(`q${i}`), a(`a${i}`)); }
   const { docs, omitted } = pinnedDocs(history);
-  eq(docs.length, 2, "two 25k documents fit inside the 60k budget");
+  eq(docs.length, 2, "two 100k documents fit inside the 240k budget");
   eq(omitted, 1, "the third is reported as omitted rather than silently dropped");
-  eq(docs[docs.length - 1].endsWith("3"), true, "the most recent paste is kept when the budget binds");
+  eq(docs[docs.length - 1].startsWith("Document C"), true, "the most recent paste is kept when the budget binds");
+}
+
+/* ── an evolving report: only the latest draft is pinned ──
+   The case that motivated raising the budget. Someone pastes a report as they
+   work on it; each paste is a separate large message. Pinning every draft
+   spends the budget several times on one document, and gives the model three
+   versions to contradict itself with. */
+{
+  const draft = (v: number) =>
+    "Q3 Client Report. Prepared for the board. " + "Section content here. ".repeat(80) + ` [revision ${v}]`;
+  const history: Msg[] = [u(draft(1)), a("ok"), u(draft(2)), a("ok"), u(draft(3)), a("ok")];
+  for (let i = 0; i < 22; i++) { history.push(u(`q${i}`), a(`a${i}`)); }
+
+  const { docs, superseded } = pinnedDocs(history);
+  eq(docs.length, 1, "three drafts of one report pin as ONE document");
+  eq(superseded, 2, "the two earlier drafts are reported as superseded");
+  eq(docs[0].endsWith("[revision 3]"), true, "and the version kept is the LATEST");
+}
+
+/* ── but genuinely different documents are both kept ── */
+{
+  const docA = "Handover note from Roberts. " + "Client actions and owners. ".repeat(60);
+  const docB = "Siemens purchase order QU-0016. " + "Line items and totals. ".repeat(60);
+  const history: Msg[] = [u(docA), a("ok"), u(docB), a("ok")];
+  for (let i = 0; i < 22; i++) { history.push(u(`q${i}`), a(`a${i}`)); }
+
+  const { docs, superseded } = pinnedDocs(history);
+  eq(docs.length, 2, "two different documents are both pinned");
+  eq(superseded, 0, "neither is mistaken for a draft of the other");
 }
 
 /* ── paste-then-ask: the document must survive ── */
