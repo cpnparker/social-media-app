@@ -3886,6 +3886,12 @@ const NON_CLIENT_HOSTS = new Set([
   "github.com", "google.com", "sites.google.com", "docs.google.com",
   "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com",
   "yahoo.com", "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com",
+  // PARTNERS, not clients. They attend client meetings alongside us, so their
+  // domain co-occurs with real client work constantly — tcdigitalmarketing.ch
+  // turns up in 67 distinct meetings, more than most actual clients — and the
+  // domain-inference pass proposed it against several unrelated accounts.
+  // Confirmed as a partner by Chris, 17 Aug 2026.
+  "tcdigitalmarketing.ch",
 ]);
 
 function normalizeClientDomain(url: string | null): string | null {

@@ -35,6 +35,10 @@ const mb = createClient(SUPABASE_URL, SERVICE_KEY, { db: { schema: "meetingbrain
 
 /** Ours. Never a client domain. Mirrors INTERNAL_DOMAINS in providers.ts. */
 const INTERNAL = new Set(["thecontentengine.com", "authorityon.ai", "zdigitalagency.com"]);
+/** Partners who attend client meetings with us. Their domain co-occurs with
+ *  real client work constantly, so inference proposes them against unrelated
+ *  accounts. Mirrors the entries in NON_CLIENT_HOSTS. */
+const PARTNERS = new Set(["tcdigitalmarketing.ch"]);
 const FREE = new Set([
   "gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com",
   "me.com", "aol.com", "proton.me", "protonmail.com", "live.com",
@@ -101,7 +105,7 @@ async function main() {
     const doms: string[] = Array.from(new Set<string>(
       (text.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || [])
         .map((e: string) => e.split("@")[1].toLowerCase())
-        .filter((d: string) => !INTERNAL.has(d) && !FREE.has(d))
+        .filter((d: string) => !INTERNAL.has(d) && !FREE.has(d) && !PARTNERS.has(d))
     ));
     return { title: String(r.meeting_title || "").toLowerCase(), doms };
   });
