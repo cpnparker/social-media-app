@@ -37,10 +37,14 @@ interface Payload {
     website: string | null; accountManagerEngine: string | null;
     accountManagerAirtable: string | null; accountManagerDisagrees: boolean;
   };
-  engine: { contracts: any[]; liveCount: number } | null;
+  engine: {
+    contracts: any[]; liveCount: number;
+    notStartedCount: number; allLiveNotStarted: boolean; startsOn: string | null;
+  } | null;
   delivery: {
     totalCu: number | null; byMonth: { month: string; cu: number }[];
     inFlight: number; spiked: number; missingUnits: number; lastCompleted: string | null;
+    everHadTasks: boolean;
   } | null;
   airtable: { live: any[]; upcoming: any[]; pipeline: any[]; history: any[] } | null;
   meetings: { state: "ok" | "no_domain" | "unavailable"; windowDays: number; rows: any[]; detail?: string };
@@ -234,6 +238,9 @@ export default function ClientDetailPage() {
             <div className="text-sm">
               <span className="font-medium tabular-nums">{num(data.delivery.totalCu)}</span>
               <span className="text-muted-foreground"> CU completed in the last 12 months</span>
+              {data.engine?.allLiveNotStarted && (
+                <Badge variant="outline" className="ml-2 text-xs font-normal">not started yet</Badge>
+              )}
               {data.delivery.inFlight > 0 && <span className="text-muted-foreground"> · {data.delivery.inFlight} in flight</span>}
               {/* Spiked work is shown, not hidden — cancelled work is signal. */}
               {data.delivery.spiked > 0 && <span className="text-muted-foreground"> · {data.delivery.spiked} spiked</span>}
@@ -251,6 +258,24 @@ export default function ClientDetailPage() {
                   );
                 })}
               </div>
+            ) : data.engine?.allLiveNotStarted ? (
+              // The distinction that matters most in a Tuesday meeting. Zero
+              // delivered against a contract that starts next month is the plan
+              // working, not an account in trouble — and the raw figures cannot
+              // tell those apart.
+              <div className="text-sm flex items-start gap-2">
+                <Info className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                <span>
+                  Nothing delivered yet because the work has not started —
+                  {data.engine.liveCount === 1 ? " this contract begins " : ` all ${data.engine.liveCount} live contracts begin `}
+                  <strong>{fmtDate(data.engine.startsOn)}</strong>. This is not a shortfall.
+                </span>
+              </div>
+            ) : !data.delivery.everHadTasks ? (
+              <Nothing>
+                No task has ever been recorded for this client in Engine — not merely none in the last 12 months.
+                {(data.engine?.liveCount ?? 0) > 0 && <> There {data.engine!.liveCount === 1 ? "is" : "are"} {data.engine!.liveCount} live Engine contract(s), so either the work is not tracked as content units or it has yet to be set up.</>}
+              </Nothing>
             ) : (
               <Nothing>
                 No task completed in the last 12 months.

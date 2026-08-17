@@ -123,6 +123,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     spiked: number;
     missingUnits: number;
     lastCompleted: string | null;
+    everHadTasks: boolean;
   } | null = null;
 
   try {
@@ -161,6 +162,9 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       totalCu: sawAnyUnit ? totalCu : null,
       byMonth: Array.from(byMonth.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([month, cu]) => ({ month, cu })),
       inFlight, spiked, missingUnits, lastCompleted,
+      // "No task has EVER existed" is a different fact from "nothing completed
+      // in the last twelve months", and only the second one is about pace.
+      everHadTasks: rows.length > 0,
     };
   } catch (e: any) {
     // Never a zero. The spec is explicit: a failed query must not read as "this
@@ -305,6 +309,21 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
 
   const engineContracts = (contractsRes.data || []) as any[];
   const isLive = (c: any) => c.flag_active === 1 && (!c.date_end || String(c.date_end).slice(0, 10) >= today);
+  /**
+   * Active, but its start date is in the future.
+   *
+   * This is the difference between "Siemens has delivered 0 of 14.4 CU" and
+   * "Siemens starts on 31 August". The first reads, in a Tuesday meeting, as an
+   * account in trouble. The second is the plan working exactly as intended.
+   * Two of the three clients that prompted this have contracts beginning after
+   * today, and nothing in the delivery figures could tell them apart.
+   */
+  const notStarted = engineContracts.filter(
+    (c) => isLive(c) && c.date_start && String(c.date_start).slice(0, 10) > today
+  );
+  const startsOn = notStarted
+    .map((c) => String(c.date_start).slice(0, 10))
+    .sort()[0] ?? null;
 
   return NextResponse.json({
     client: {
@@ -335,6 +354,12 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
             endDate: c.date_end || null,
           })),
           liveCount: engineContracts.filter(isLive).length,
+          // Live contracts whose start date has not arrived. When every live
+          // contract is in this set, zero delivery is CORRECT rather than a
+          // shortfall, and the page must say which it is.
+          notStartedCount: notStarted.length,
+          allLiveNotStarted: engineContracts.filter(isLive).length > 0 && notStarted.length === engineContracts.filter(isLive).length,
+          startsOn,
         },
     delivery,
     airtable: airtable.ok ? airtable : null,

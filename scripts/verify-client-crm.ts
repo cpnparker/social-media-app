@@ -77,6 +77,18 @@ check("page renders no_domain differently from zero rows",
 check("page never calls an unavailable source 'no meetings'",
   /unavailable[\s\S]{0,200}Not the same as no meetings/.test(page));
 
+// ── 5. Not-started contracts must not read as a shortfall ──
+console.log("\n5. Zero delivery on a not-yet-started contract");
+const detail = readFileSync("app/api/operations/clients/[id]/route.ts", "utf8");
+check("API computes which live contracts have not started", /notStarted\s*=/.test(detail));
+check("API exposes allLiveNotStarted", /allLiveNotStarted/.test(detail));
+check("API distinguishes 'never had tasks' from 'none recently'", /everHadTasks/.test(detail));
+check("page renders a not-started state before the generic empty one",
+  page.indexOf("allLiveNotStarted") > 0 && page.indexOf("allLiveNotStarted") < page.indexOf("No task completed in the last 12 months"));
+check("page says it is not a shortfall", /This is not a shortfall/.test(page));
+check("page separates 'never any task' from 'none in 12 months'",
+  /No task has ever been recorded/.test(page) && /No task completed in the last 12 months/.test(page));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
 process.exit(fail ? 1 : 0);
