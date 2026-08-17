@@ -4779,7 +4779,7 @@ const GMAIL_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           type: "string",
           enum: ["search_messages", "recent_messages", "thread", "unread_summary", "find_from_person"],
           description:
-            "search_messages: Gmail search (pass `query`, supports Gmail operators like from:/subject:/has:attachment). recent_messages: recent inbox, promotions/social excluded. thread: full conversation (pass `thread_id` from a previous result). unread_summary: unread count + headlines. find_from_person: correspondence with someone (pass `person` — a name or address).",
+            "search_messages: Gmail search (pass `query`, supports Gmail operators like from:/subject:/has:attachment). recent_messages: recent inbox, promotions/social excluded. thread: THE ONLY REPORT THAT RETURNS MESSAGE BODIES — pass `thread_id` from a previous result. unread_summary: unread count + headlines. find_from_person: correspondence with someone (pass `person` — a name or address). EVERY REPORT EXCEPT `thread` returns only headers and a short snippet, so to read what somebody actually wrote you must search first and then call `thread` with the thread_id. Never tell the user you cannot read a message until you have tried `thread`.",
         },
         query: { type: "string", description: "Gmail search query. Required for search_messages." },
         person: { type: "string", description: "Name or email address. Required for find_from_person." },
@@ -5111,6 +5111,11 @@ export function formatGmailResult(report: string, result: GmailQueryResult): str
     return `No matching mail found${report === "unread_summary" ? "" : " for that search"}. Say so plainly — do not invent messages. Suggest different search terms or a wider time window if useful.`;
   }
 
+  // Only the "thread" report carries bodies (MeetingBrain's gmail-query.ts
+  // passes includeBody=true there and false everywhere else). Everything else
+  // is metadata plus a ~500-char snippet.
+  const bodiesIncluded = report === "thread";
+
   const head =
     report === "unread_summary" && result.unreadTotal != null
       ? `${result.unreadTotal} unread in the inbox. Most recent:\n`
@@ -5123,7 +5128,24 @@ export function formatGmailResult(report: string, result: GmailQueryResult): str
   return fenceUntrusted(result.data, {
     source: "EMAIL CONTENT written by third parties",
     preamble: `${head}${result.count} message${result.count === 1 ? "" : "s"} from the user's own mailbox.`,
-    instructions: `${result.dropped ? `NOTE: ${result.dropped} further message(s) matched but could not be retrieved — say the list may be incomplete rather than presenting it as everything.\n` : ""}Answer the user's question from the above. Quote sparingly, attribute to the sender, and give dates. If you need the rest of a conversation, use report "thread" with its thread_id.`,
+    instructions: [
+      result.dropped
+        ? `NOTE: ${result.dropped} further message(s) matched but could not be retrieved — say the list may be incomplete rather than presenting it as everything.`
+        : "",
+      // WITHOUT THIS, the model concludes the tool is broken. Only "thread"
+      // returns message bodies; every search report returns a ~500-char
+      // snippet and no body field. A model that searched, saw no body and had
+      // no idea one was obtainable told the user "the tool isn't surfacing the
+      // message content" and asked them to paste it — twice — while the report
+      // that would have worked sat one call away. Saying what was WITHHELD is
+      // the whole fix; the old wording ("if you need the rest of a
+      // conversation…") read as an optional extra rather than the only route
+      // to the text.
+      bodiesIncluded
+        ? ""
+        : `THESE RESULTS CONTAIN NO MESSAGE BODIES — only a short snippet per message. That is how this report works; it is NOT a failure and the text IS retrievable. To read what someone actually wrote you MUST call query_gmail again with report "thread" and the thread_id from the message you want. Do that BEFORE saying you cannot read a message, and never ask the user to paste in text you can fetch yourself.`,
+      `Answer the user's question from the above. Quote sparingly, attribute to the sender, and give dates.`,
+    ].filter(Boolean).join("\n"),
   });
 }
 

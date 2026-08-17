@@ -1213,6 +1213,13 @@ export async function POST(
     // Resolve model — "auto" routes to the best model based on the prompt
     let model = body.model || conversation.name_model;
     let wasAutoRouted = false;
+    // Hoisted out of the auto-route block: the mailbox-inheritance check below
+    // needs the same history, and it runs after the access flags are read.
+    const priorUser: string[] = [...messages]
+      .reverse()
+      .filter((m: any) => m.role === "user" && typeof m.content === "string")
+      .map((m: any) => m.content as string)
+      .slice(0, 12);
     if (model === "auto") {
       const { routeModel } = await import("@/lib/ai/auto-router");
       // Prior user messages, most recent first, so "tighten it up" inherits the
@@ -1225,18 +1232,13 @@ export async function POST(
       // sent, but it also skipped genuine verbatim repeats, which is what made
       // saying the same thing twice route BETTER than rephrasing it. The
       // router's own refinement test handles the rest.
-      const priorUser = [...messages]
-        .reverse()
-        .filter((m: any) => m.role === "user" && typeof m.content === "string")
-        .map((m: any) => m.content as string)
-        .slice(0, 12);
       model = routeModel(userContent || "", priorUser);
       wasAutoRouted = true;
       console.log(`[Messages] Auto-routed → ${model}`);
     }
 
     // Route query to determine search mode and data source hints
-    const { routeQuery } = await import("@/lib/ai/query-router");
+    const { routeQuery, textNeedsMailbox } = await import("@/lib/ai/query-router");
     const queryRoute = routeQuery(userContent || "", contextConfig);
     console.log(`[Messages] Query route: intent=${queryRoute.intent}, searchMode=${queryRoute.searchMode}, hints=${queryRoute.hints.length}`);
 
@@ -1401,8 +1403,25 @@ export async function POST(
     // to reach, so moving the model would cost money and change nothing. This
     // sits here rather than beside the other routing because gmailAccess is
     // not known until now.
+    // A bare follow-up inherits the mailbox need, the same way it inherits the
+    // model tier. "Can you write a reply" carries no mail noun at all, so
+    // judged alone it loses the capability and drops to a chain that has no
+    // mailbox — which is exactly what happened: turn 1 found Sam's message,
+    // turn 2 was "Can you write a reply", and the reply came back "I don't
+    // have the full text" from a model that could never have had it.
+    //
+    // Bounded to the last few turns and to short messages, so a genuine change
+    // of subject does not keep paying for a capability it will not use.
+    const inheritsMailbox =
+      !queryRoute.needsMailbox &&
+      (userContent || "").trim().length <= 200 &&
+      priorUser.slice(0, 3).some((m: string) => textNeedsMailbox(m));
+    if (inheritsMailbox) {
+      console.log(`[Messages] Short follow-up inherits the mailbox need from an earlier turn`);
+    }
+
     if (
-      queryRoute.needsMailbox &&
+      (queryRoute.needsMailbox || inheritsMailbox) &&
       gmailAccess &&
       wasAutoRouted &&
       !isTeamThread &&

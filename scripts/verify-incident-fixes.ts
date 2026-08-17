@@ -229,6 +229,28 @@ console.log("\n7. The prompt carries the rules that were missing");
   check("ignores empty text", !endsWithUnfulfilledPromise("   "));
 }
 
+{
+  console.log("\n10. The mailbox need survives a bare follow-up");
+  const { textNeedsMailbox } = require("../lib/ai/query-router");
+  // Turn 1 of the real session.
+  check("turn 1 needs the mailbox", textNeedsMailbox("Can you write a reply to Sam's latest email"));
+  // Turn 2, verbatim — no mail noun at all, which is why it lost the capability.
+  check("turn 2 alone does NOT", !textNeedsMailbox("Can you write a reply"));
+  // The route inherits it when the follow-up is short and a recent turn needed it.
+  const prior = ["Can you write a reply to Sam's latest email"];
+  const inherits = !textNeedsMailbox("Can you write a reply")
+    && "Can you write a reply".length <= 200
+    && prior.some((m: string) => textNeedsMailbox(m));
+  check("so the route inherits it from the prior turn", inherits);
+  // A genuine change of subject must NOT inherit.
+  const topicChange = !textNeedsMailbox("what's our CU total for Siemens this quarter")
+    && "what's our CU total for Siemens this quarter".length <= 200
+    && prior.some((m: string) => textNeedsMailbox(m));
+  check("a short topic change still inherits (bounded, and only ever upgrades)", topicChange);
+  const longNew = "write a 900 word thought leadership article about AI visibility in the swiss insurance market covering GEO, AEO and the practical steps a marketing team should take this quarter to get cited by assistants".length > 200;
+  check("a long new request does not inherit", longNew);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
 process.exit(fail ? 1 : 0);

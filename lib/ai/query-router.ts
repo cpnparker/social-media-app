@@ -171,6 +171,20 @@ const NEEDS_MAILBOX = [
   /\bwhat did .{1,40}\b(say|write|send)\b[^.?!]{0,40}\b(e-?mail|inbox|message|thread)\b/i,
 ];
 
+/**
+ * Does this text, on its own, ask about mail that exists?
+ *
+ * Exported so the messages route can ask the same question of EARLIER turns.
+ * A bare follow-up carries no nouns — "Can you write a reply" says nothing
+ * about mail — so judged alone it loses the mailbox and drops to a model that
+ * has none. That happened: turn 1 found the message, turn 2 was "Can you write
+ * a reply", and the answer came back "I don't have the full text" from a chain
+ * that could never have had it.
+ */
+export function textNeedsMailbox(text: string): boolean {
+  return NEEDS_MAILBOX.some((p) => p.test(text));
+}
+
 const COMPOSITION_REQUEST =
   /\b(write|draft|compose|rewrite|reword|tighten|shorten|lengthen|polish|proofread|edit)\b[^.?!]{0,60}\b(message|email|note|memo|announcement|statement|post|reply|response|letter|comms|communication|update|brief|copy|caption|script|speech|agenda|summary|intro|outline|blurb|bio|newsletter|invite|invitation)\b/i;
 const WEB_IMPLICIT_9 = /\b(recommend(ation)?s?|best option|best choice|best deal|best value|top pick|worth buying|worth it|good (option|choice|deal|buy))\b/i;
@@ -239,7 +253,7 @@ export function routeQuery(
   return {
     ...routeQueryInner(userMessage, contextConfig),
     composition: COMPOSITION_REQUEST.test(lower),
-    needsMailbox: NEEDS_MAILBOX.some((p) => p.test(userMessage)),
+    needsMailbox: textNeedsMailbox(userMessage),
   };
 }
 
