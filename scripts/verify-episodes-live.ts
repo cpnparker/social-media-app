@@ -101,40 +101,23 @@ async function main() {
     }
     console.log(`    (${probe?.length ?? 0} existing row(s) visible)`);
 
-    // ── 2. RLS actually protects it from a browser ──
-    // The point of the exercise. If this passes, the table is genuinely
-    // private; if it fails, one person's working history is world-readable to
-    // anyone holding the public anon key, which is shipped in the browser
-    // bundle by design.
-    console.log("\n2. Anon-key lockout (this is what RLS is for)");
-    if (!anonDb) {
-      check("anon key present to test with", false, "NEXT_PUBLIC_SUPABASE_ANON_KEY not set locally");
-    } else {
-      const { data: anonRows, error: anonErr } = await anonDb.from("ai_episodes").select("id_episode").limit(1);
-      const blocked = !!anonErr || (anonRows?.length ?? 0) === 0;
-      check(
-        "anon key cannot read episodes",
-        blocked,
-        anonErr ? `blocked with ${anonErr.code}` : anonRows?.length ? `RETURNED ${anonRows.length} ROW(S)` : undefined
-      );
-      // Distinguish "RLS blocked it" from "the table happens to be empty",
-      // which look identical from here and are not the same guarantee.
-      const { error: anonWriteErr } = await anonDb.from("ai_episodes").insert({
-        id_workspace: "00000000-0000-0000-0000-000000000000",
-        user_episode: -1,
-        id_conversation_source: "00000000-0000-0000-0000-000000000000",
-        date_episode: "1970-01-01",
-        information_episode: "rls probe — should never be written",
-      });
-      check(
-        "anon key cannot write episodes",
-        !!anonWriteErr,
-        anonWriteErr ? `blocked with ${anonWriteErr.code}` : "INSERT SUCCEEDED — table is writable by anyone"
-      );
-    }
-
-    // ── 3. A real round trip ──
-    console.log("\n3. Write / read / update round trip");
+    // ── 2. A real round trip ──
+    // Deliberately BEFORE the RLS checks. Both anon probes below were
+    // previously vacuous and reported success anyway:
+    //
+    //   The READ probe passed whenever the table was EMPTY — no error, zero
+    //   rows, indistinguishable from RLS doing its job. On a fresh install it
+    //   could not have failed.
+    //
+    //   The WRITE probe inserted id_conversation_source "00000000-…", which
+    //   violates the NOT NULL foreign key to ai_conversations. Postgres
+    //   rejects that before RLS is ever consulted, so the probe returned an
+    //   error — and the assertion read that error as "blocked by RLS". It
+    //   would have passed on a table with RLS switched off entirely.
+    //
+    // So a row must exist first, and the write probe must use a VALID
+    // conversation id, or neither check is evidence of anything.
+    console.log("\n2. Write / read / update round trip");
     const { data: conv, error: convErr } = await db
       .from("ai_conversations")
       .select("id_conversation, id_workspace, user_created")
@@ -177,6 +160,51 @@ async function main() {
     if (full) {
       check("count_turns defaults to 1", (full as any).count_turns === 1, String((full as any).count_turns));
       check("data_entities round-trips as an array", Array.isArray((full as any).data_entities), JSON.stringify((full as any).data_entities));
+    }
+
+    // ── 3. RLS actually protects it from a browser ──
+    // Now meaningful: a row exists, so an empty result is RLS, not emptiness;
+    // and the write probe uses the real conversation id, so a rejection is RLS
+    // or grants rather than the foreign key.
+    console.log("\n3. Anon-key lockout (this is what RLS is for)");
+    if (!anonDb) {
+      check("anon key present to test with", false, "NEXT_PUBLIC_SUPABASE_ANON_KEY not set locally");
+    } else {
+      const { data: anonRows, error: anonErr } = await anonDb
+        .from("ai_episodes").select("id_episode").eq("id_episode", createdId);
+      check(
+        "anon key cannot read an episode that DEMONSTRABLY EXISTS",
+        !!anonErr || (anonRows?.length ?? 0) === 0,
+        anonErr ? `blocked with ${anonErr.code}` : `RETURNED ${anonRows?.length} ROW(S)`
+      );
+
+      // A valid FK, a valid workspace, a valid user — everything Postgres
+      // could legitimately reject on is satisfied, so only RLS or table grants
+      // can stop this. Uses tomorrow's date to avoid colliding with the
+      // one-per-day unique constraint, which would be another false pass.
+      const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+      const { error: anonWriteErr } = await anonDb.from("ai_episodes").insert({
+        id_workspace: (conv as any).id_workspace,
+        user_episode: (conv as any).user_created,
+        id_conversation_source: (conv as any).id_conversation,
+        date_episode: tomorrow,
+        information_episode: "rls probe — should never be written",
+      });
+      check(
+        "anon key cannot write episodes",
+        !!anonWriteErr,
+        anonWriteErr
+          ? `blocked with ${anonWriteErr.code}`
+          : "INSERT SUCCEEDED — anyone with the public anon key can write episodes"
+      );
+      // If it DID write, it is cleaned up in the finally block by marker.
+      if (anonWriteErr && /23503|23505/.test(anonWriteErr.code || "")) {
+        check(
+          "the write was blocked by RLS/grants, not by a constraint",
+          false,
+          `got ${anonWriteErr.code} (foreign key / unique) — this probe is not testing RLS`
+        );
+      }
     }
 
     // ── 4. The one-per-day constraint ──

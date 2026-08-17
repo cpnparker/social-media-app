@@ -37,21 +37,44 @@ const REFINE_PROMPT =
 
 const cfg: any = { webSearch: "auto", memory: "on", meetingBrain: "on" };
 
-console.log("\n1. Routing — the drafting turn no longer falls through the web-search catch-all");
+console.log("\n1. Routing — composition is flagged, but never loses its grounding");
 {
   const q = routeQuery(DRAFT_PROMPT, cfg);
-  check("search is OFF for a pure composition request", q.searchMode === "off", `searchMode=${q.searchMode}`);
-  // searchMode "on" was what forced Sonnet 5, added a web_search tool and
-  // doubled max_tokens to 8192. All three followed from this one flag.
+  check("the drafting turn is flagged as composition", q.composition === true);
   const m = routeModel(DRAFT_PROMPT);
   check("an all-company message reaches the flagship, not the cheap leg", m === "grok-4-6", m);
-  check(
-    "no model override fires (that only applies when search is on)",
-    !(q.searchMode === "on" && m.startsWith("grok"))
-  );
+  // The route suppresses the Sonnet override and the 8192 ceiling for a
+  // composition turn; searchMode itself is left alone.
+  const overrideFires = q.searchMode === "on" && m.startsWith("grok") && !q.composition;
+  check("the model override does NOT fire on a composition turn", !overrideFires);
+  check("the token ceiling is not doubled on a composition turn", !(q.searchMode === "on" && !q.composition));
 }
 
-console.log("\n2. Routing — the refinement inherits the stakes of what it refines");
+console.log("\n2. Topical drafting KEEPS web search (the regression this test missed)");
+{
+  // Every one of these lost web search under the first fix, and the original
+  // test did not catch it because it used the single wording that survived —
+  // "latest GEO RESEARCH" matches WEB_IMPLICIT_8, "latest GEO TRENDS" matches
+  // nothing. The test was tuned, accidentally, to the case that worked.
+  const TOPICAL = [
+    "write a post about the latest AI news",
+    "write a post about the latest GEO trends",
+    "draft a statement on the new Swiss data protection law",
+    "write a summary of what Anthropic announced",
+    "write a post about sustainability regulations coming in 2027",
+  ];
+  for (const p of TOPICAL) {
+    const q = routeQuery(p, cfg);
+    check(`grounded: "${p.slice(0, 44)}…"`, q.searchMode === "on", `searchMode=${q.searchMode}`);
+  }
+  // And the genuinely topic-free drafts are still flagged, so they keep the
+  // base ceiling and the model they were routed to.
+  for (const p of ["draft a reply to Ceri saying yes", "tighten up the message to the team"]) {
+    check(`flagged as composition: "${p.slice(0, 40)}…"`, routeQuery(p, cfg).composition === true);
+  }
+}
+
+console.log("\n3. Routing — the refinement inherits the stakes of what it refines");
 {
   const alone = routeModel(REFINE_PROMPT);
   const withPrior = routeModel(REFINE_PROMPT, DRAFT_PROMPT);
@@ -64,19 +87,20 @@ console.log("\n2. Routing — the refinement inherits the stakes of what it refi
   );
 }
 
-console.log("\n3. Routing — genuine web queries are untouched");
+console.log("\n4. Routing — genuine web queries are untouched");
 {
   for (const p of ["research the GEO market in switzerland", "what is the latest news on OpenAI"]) {
     const q = routeQuery(p, cfg);
     check(`search stays ON for "${p.slice(0, 32)}…"`, q.searchMode === "on", `searchMode=${q.searchMode}`);
   }
-  // A composition that DOES need grounding must still search: the implicit-web
-  // checks run before the catch-all, so this must not be swallowed.
-  const grounded = routeQuery("write a post about the latest GEO research", cfg);
-  check("a draft that explicitly needs research still searches", grounded.searchMode === "on", `searchMode=${grounded.searchMode}`);
+  // Deliberately the wording that FAILED: "trends" matches no implicit-web
+  // pattern, unlike "research". Asserting the easy one is what let the
+  // regression through.
+  const grounded = routeQuery("write a post about the latest GEO trends", cfg);
+  check("a topical draft searches even without a research keyword", grounded.searchMode === "on", `searchMode=${grounded.searchMode}`);
 }
 
-console.log("\n4. The model registry is no longer mutable through a returned reference");
+console.log("\n5. The model registry is no longer mutable through a returned reference");
 {
   const a = getModelInfo("claude-sonnet-5");
   const original = a.apiModel;
@@ -88,7 +112,7 @@ console.log("\n4. The model registry is no longer mutable through a returned ref
   check("two calls return distinct objects", a !== b);
 }
 
-console.log("\n5. Personnel-sensitivity screening");
+console.log("\n6. Personnel-sensitivity screening");
 {
   check("a redundancy conversation trips", isPersonnelSensitive("Restructure planning — who stays"));
   check("a morale/redundancy summary trips", isPersonnelSensitive(null, "low team morale from recent redundancies"));
@@ -101,7 +125,7 @@ console.log("\n5. Personnel-sensitivity screening");
   check("empty input does not trip", !isPersonnelSensitive(null, undefined, ""));
 }
 
-console.log("\n6. The prompt carries the rules that were missing");
+console.log("\n7. The prompt carries the rules that were missing");
 {
   const p = buildSystemPrompt({
     conversationVisibility: "private",

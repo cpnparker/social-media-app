@@ -1234,9 +1234,18 @@ export async function POST(
     // live results — it silently fills missing facts with plausible-sounding fabrications.
     // Claude's web_search tool is explicit and discrete: it can only cite what it fetched.
     // User-selected Grok models keep their native LiveSearch behaviour unchanged.
-    if (queryRoute.searchMode === "on" && wasAutoRouted && model.startsWith("grok")) {
+    //
+    // NOT for composition. The override exists because Grok's LiveSearch blends
+    // training data with live results and fabricates — a real hazard when the
+    // user asked a QUESTION. When they asked us to WRITE something, the model
+    // was chosen for the writing, and having search available should not
+    // silently replace it. This is what sent an all-company message to Sonnet 5
+    // via a search fallback on a prompt that had nothing to search for.
+    if (queryRoute.searchMode === "on" && wasAutoRouted && model.startsWith("grok") && !queryRoute.composition) {
       model = "claude-sonnet-5";
       console.log(`[Messages] Web search: auto-route override → claude-sonnet-5 (grounded tool-based search)`);
+    } else if (queryRoute.searchMode === "on" && wasAutoRouted && model.startsWith("grok")) {
+      console.log(`[Messages] Composition turn — keeping ${model}, search stays available`);
     }
 
 
@@ -1491,8 +1500,12 @@ export async function POST(
       }
     }
 
-    // Boost token limit for web search queries — citations + research responses run long.
-    const effectiveMaxTokens = queryRoute.searchMode === "on"
+    // Boost token limit for web search queries — citations + research responses
+    // run long. A DRAFT does not: the ceiling was doubling for "write a message
+    // to the team" purely because the catch-all had switched search on, and a
+    // reply with room to ramble takes it. Composition keeps the base ceiling
+    // even when search is available, alongside the length rule in the prompt.
+    const effectiveMaxTokens = queryRoute.searchMode === "on" && !queryRoute.composition
       ? Math.max(baseMaxTokens, 8192)
       : baseMaxTokens;
 

@@ -27,6 +27,20 @@ export interface QueryRoute {
   suggestMeetingBrain: boolean;
   intent: QueryIntent;
   hints: string[];
+  /**
+   * The user asked us to WRITE something, rather than to find something out.
+   *
+   * Kept separate from searchMode on purpose. An earlier version of this file
+   * used a composition match to switch search OFF, which stripped web grounding
+   * from "write a post about the latest AI news" — topical drafting is the core
+   * workflow of a content product, and the reply came back written from
+   * training data with no signal that nothing had been looked up.
+   *
+   * Composition never removes grounding now. It only suppresses the two things
+   * that had no business following from a search-mode flag: forcing the model,
+   * and doubling the output ceiling.
+   */
+  composition: boolean;
 }
 
 /* ─────────────── Pattern Constants ─────────────── */
@@ -101,11 +115,17 @@ const WEB_IMPLICIT_8 = /\b(research|do (some|extensive|thorough|detailed) resear
 /**
  * "Compose something for me" — as opposed to "tell me something".
  *
- * Used ONLY at the Step 8 catch-all, never to override a positively identified
- * intent. By the time it is consulted, every explicit and implicit web signal
- * has already been tested and missed, so a match here means the user asked for
- * writing and gave no reason to search. A prompt that wants both ("write a post
- * about the latest GEO trends") trips WEB_IMPLICIT first and never reaches this.
+ * Reported on QueryRoute.composition. It NEVER changes searchMode.
+ *
+ * An earlier comment here claimed that a prompt wanting both ("write a post
+ * about the latest GEO trends") trips WEB_IMPLICIT first and never reaches the
+ * catch-all. That was false, and it was offered as the proof that suppressing
+ * search here was safe: "trends" matches no implicit-web pattern (WEB_IMPLICIT
+ * wants "industry trend", WEB_IMPLICIT_6 wants "latest on"), so it fell
+ * straight through and lost its grounding. Only the near-identical "...latest
+ * GEO research" passes, because "research" is in WEB_IMPLICIT_8 — and that was
+ * the wording the regression test happened to use, so the test passed while
+ * the behaviour was broken.
  *
  * Deliberately anchored on the VERB. Matching the bare noun would swallow
  * "what did the message from Siemens say", which is a lookup wearing a
@@ -136,7 +156,7 @@ function hasDataKeywords(text: string): boolean {
 
 /* ─────────────── Hint Generation ─────────────── */
 
-function generateHints(route: Omit<QueryRoute, "hints">): string[] {
+function generateHints(route: Omit<QueryRoute, "hints" | "composition">): string[] {
   const hints: string[] = [];
   if (route.suggestEngine) {
     // This hint is promoted to a MUST-call list in the chat route, so whatever
@@ -172,6 +192,19 @@ export function routeQuery(
   userMessage: string,
   contextConfig: NormalizedContextConfig
 ): QueryRoute {
+  // Wrapped rather than threaded through seventeen return sites: a field that
+  // has to be remembered at every `return` is a field that will be forgotten at
+  // one of them, and the one it is forgotten at will be the one that matters.
+  return {
+    ...routeQueryInner(userMessage, contextConfig),
+    composition: COMPOSITION_REQUEST.test(userMessage.toLowerCase().trim()),
+  };
+}
+
+function routeQueryInner(
+  userMessage: string,
+  contextConfig: NormalizedContextConfig
+): Omit<QueryRoute, "composition"> {
   const lower = userMessage.toLowerCase().trim();
   const len = lower.length;
 
@@ -285,20 +318,19 @@ export function routeQuery(
   // Better to ground the model in real data than risk a hallucinated answer.
   // Only structured intents (workspace_data, meeting_data, conversational) stay off.
   //
-  // EXCEPT pure composition. "Better to ground than hallucinate" is the right
-  // instinct for a QUESTION and the wrong one for "write me a message" — there
-  // is no fact to look up, so the search returns nothing useful and the turn
-  // pays for it three times over. Reaching Step 8 already means no explicit or
-  // implicit web signal was found (both are checked above), so a drafting
-  // request here genuinely has nothing to search for.
+  // Composition does NOT change this. An earlier version skipped Step 8 for
+  // anything matching COMPOSITION_REQUEST, on the reasoning that "write me a
+  // message" has nothing to look up. That is true of "draft a reply to Ceri
+  // saying yes" and false of "write a post about the latest AI news" — and in
+  // a content marketing product the second is the core workflow. Measured, 13
+  // of 20 topical drafting prompts lost web search, and the reply came back
+  // written from training data with no signal that nothing had been looked up.
   //
-  // The cost was not theoretical. An all-company message about a restructure
-  // landed here, and searchMode "on" then (a) forced the model to Claude
-  // Sonnet 5 via the anti-fabrication override in the messages route, (b)
-  // handed it a web_search tool it had no use for, and (c) doubled the output
-  // ceiling to 8192, which is a large part of why the reply ran long. None of
-  // those three were decisions anyone made about drafting.
-  if (webAllowed && !COMPOSITION_REQUEST.test(lower)) {
+  // The three costs that provoked that change are real, but none of them
+  // belongs to searchMode: forcing the model, doubling the output ceiling, and
+  // the tool itself. The first two are now suppressed via `composition` in the
+  // messages route, which is where those decisions actually live.
+  if (webAllowed) {
     const partial = { searchMode: "on" as const, suggestEngine: false, suggestMemory: wantsMemory, suggestMeetingBrain: false, intent: "general" as const };
     return { ...partial, hints: generateHints(partial) };
   }
