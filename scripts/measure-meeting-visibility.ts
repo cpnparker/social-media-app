@@ -11,13 +11,25 @@
  *   - 20% of calendar events have more than one recorder, so a per-ROW flag is
  *     bypassable via a sibling row for one meeting in five.
  *   - get_client_meetings returns 140 meetings, while a domain-matching
- *     backfill would mark 2,835 as team. The obvious backfill over-promotes
- *     20x, silently.
+ *     backfill marks 410 — so re-deriving the backfill over-promotes ~3x even
+ *     when done correctly. Done NAIVELY it marks 2,835, because
+ *     thecontentengine.com is itself registered as a client website
+ *     (id_client 2) and every internal meeting then looks like client work.
+ *     Production filters the caller's own domain in both loadClientDomains and
+ *     loadClientDomainMap; this script does the same and prints both figures,
+ *     because the gap between them IS the finding.
  *
  * Run against the WHOLE corpus, not a sample. A 2,000-row sample understated
  * sibling-recorder events as 8.6% (true: 20%) and 1:1s as 47% of internal
  * meetings (true: 60%) — it was wrong about exactly the two populations the
  * design turns on.
+ *
+ * A NOTE ON A WRONG CONCLUSION, kept because the mistake is easy to repeat:
+ * an earlier version of this file reported that get_client_meetings "ignores
+ * p_since", on the evidence that asking for everything since 2000 returned
+ * only ~6 months. It does not. The corpus itself starts 2026-01-21 — the
+ * function was returning very nearly all of it. Always compare a suspicious
+ * range against the range of the underlying data before calling it a cap.
  *
  * PRIVACY: counts, dates and distributions only. This never prints a meeting
  * title, a summary, an attendee name or an email address — the questions here
@@ -65,6 +77,14 @@ async function clientDomains(): Promise<string[]> {
     }
   }
   if (malformed) console.warn(`  ! ${malformed} client website(s) could not be parsed into a domain`);
+  // The caller's OWN domain is registered as a client website (id_client 2 —
+  // one of the internal client ids), so leaving it in makes every internal
+  // meeting look like client work: 2,835 events instead of 410. Production
+  // filters it in both loadClientDomains and loadClientDomainMap. A
+  // measurement that does not is not measuring the same thing as the product.
+  if (out.delete(INTERNAL_DOMAIN)) {
+    console.log(`  (excluded "${INTERNAL_DOMAIN}" — it IS registered as a client website)`);
+  }
   if (!out.size) {
     // Refuse rather than measure nothing. An empty allowlist also makes
     // get_client_meetings fall back to "any external attendee", which silently
@@ -121,9 +141,12 @@ async function main() {
 
   // ── The backfill trap ──
   const domainMatched = new Set<string>();
+  const naiveMatched = new Set<string>(); // without the internal-domain filter
   for (const r of all) {
     if (!r.calendar_event_id) continue;
-    if (emailsOf(r.attendees).some((e) => domainSet.has(e.split("@")[1]))) domainMatched.add(r.calendar_event_id);
+    const doms = emailsOf(r.attendees).map((e) => e.split("@")[1]);
+    if (doms.some((d) => domainSet.has(d))) domainMatched.add(r.calendar_event_id);
+    if (doms.some((d) => domainSet.has(d) || d === INTERNAL_DOMAIN)) naiveMatched.add(r.calendar_event_id);
   }
   const { data: shared, error: sharedErr } = await mb.rpc("get_client_meetings", {
     p_internal_domain: INTERNAL_DOMAIN,
@@ -139,10 +162,11 @@ async function main() {
     const dates = s.map((r) => String(r.meeting_date || "").slice(0, 10)).filter(Boolean).sort();
     console.log(`  get_client_meetings returns      : ${s.length} meetings`);
     console.log(`  its actual date range            : ${dates[0]} → ${dates[dates.length - 1]}`);
-    console.log(`     (asked for everything since 2000-01-01 — p_since is not honoured)`);
-    console.log(`  a domain-matching backfill marks : ${domainMatched.size} events`);
-    const ratio = s.length ? Math.round(domainMatched.size / s.length) : 0;
-    console.log(`  → over-promotion factor          : ${ratio}x  ${ratio > 2 ? "  ⚠ DO NOT backfill by domain match" : ""}`);
+    console.log(`     (compare against the corpus range below before calling this a window)`);
+    console.log(`  a domain-matching backfill marks : ${domainMatched.size} events  (internal domain excluded)`);
+    console.log(`  ...without the internal-domain filter: ${naiveMatched.size} events  ← the trap`);
+    const ratio = s.length ? Math.round((domainMatched.size / s.length) * 10) / 10 : 0;
+    console.log(`  → over-promotion factor          : ${ratio}x${ratio > 1.5 ? "   ⚠ seed the backfill from the function's OWN output" : ""}`);
   }
 
   // ── The population this is for ──
@@ -158,6 +182,16 @@ async function main() {
     internalOnly++;
     if (new Set(em).size <= 2) internalSmall++;
   }
+  // The control for the mistake described in the header: a six-month result is
+  // only evidence of a cap if the data goes back further than six months.
+  const { data: oldestRow } = await mb.from("processed_meeting").select("meeting_date")
+    .order("meeting_date", { ascending: true }).limit(1);
+  const { data: newestRow } = await mb.from("processed_meeting").select("meeting_date")
+    .order("meeting_date", { ascending: false }).limit(1);
+  console.log(`\n── Corpus range (the control) ──`);
+  console.log(`  processed_meeting spans : ${String((oldestRow as any)?.[0]?.meeting_date || "").slice(0, 10)} → ${String((newestRow as any)?.[0]?.meeting_date || "").slice(0, 10)}`);
+  console.log(`  → if a function's range matches this, it is returning everything, not truncating.`);
+
   console.log(`\n── The sensitive population ──`);
   console.log(`  internal-only meetings   : ${internalOnly}`);
   console.log(`  ...with 1-2 attendees    : ${internalSmall} (${internalOnly ? Math.round((internalSmall / internalOnly) * 100) : 0}% of internal)`);

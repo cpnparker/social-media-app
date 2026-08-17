@@ -26,7 +26,7 @@ Everything below is measured against the **whole** `meetingbrain` corpus on 17 A
 | Internal-only meetings | **2,101** | The population this is for. |
 | …of those, 1–2 attendees | **1,268 (60%)** | The 1:1 band — the sensitive core — is the *majority* of internal meetings, not an edge case. |
 | `get_client_meetings` returns today | **140** | The real shared set. See the backfill trap. |
-| A domain-matching backfill would mark `team` | **2,835 (20×)** | The obvious backfill is catastrophically wrong. |
+| A domain-matching backfill would mark `team` | **410 (2.9×)**, or **2,835** naively | The obvious backfill over-promotes — and the internal domain is registered as a client website, which is how it reaches 2,835. |
 
 ---
 
@@ -55,7 +55,7 @@ The instinct is that default-private is safe but disruptive. Here it is safe *an
 | Returned by `get_client_meetings` (**140**) | **Yes** — workspace-shared | Classified `team` at backfill | none |
 | Empty attendees (36%) | **No** — cannot match a client domain, so owner-only already | `private` | **none in practice** |
 | Internal-only with attendees | Owner-only via personal reports, but reachable by a third party through the domain-gated path | `private` | **tightened — this is the point** |
-| Client-domain meetings outside the live function's window (~2,700) | **No** — the function does not return them | `private` | none |
+| Internal meetings that only *look* client-facing (~2,400) | **No** — the internal domain is registered as a client website, but the function filters it | `private` | none |
 
 So the 36% that cannot be auto-classified are *already* effectively private. Defaulting them to private changes nothing operationally while closing the third-party path for internal meetings. That third path is the confirmed-medium finding from the incident audit: an internal conversation becomes workspace-readable the moment one attendee is at a registered client domain — an ex-colleague now client-side, a consultant whose firm is in `app_clients`.
 
@@ -98,23 +98,31 @@ COMMENT ON TABLE meetingbrain.meeting_visibility IS
 
 ### Backfill — do NOT derive it from attendee domains
 
-The obvious backfill is "mark every meeting with a registered client attendee as `team`, since those are shared already". **That is wrong by a factor of twenty, and it was measured, not guessed:**
+The obvious backfill is "mark every meeting with a registered client attendee as `team`, since those are shared already". **It over-promotes either way, and it was measured, not guessed:**
 
 | | Events |
 |---|---|
 | `get_client_meetings` actually returns today | **140** |
-| A domain-matching backfill would mark `team` | **2,835** |
-| Over-promotion factor | **20×** |
+| Domain match, internal domain excluded | **410** (2.9×) |
+| Domain match, written naively | **2,835** (20×) |
 
-It would have published roughly **2,700 meetings that are currently private**, and it would have done so silently: the SQL runs, reports success, and the damage is only visible to whoever later notices their 1:1s in a colleague's search results. This is the failure this whole document exists to prevent, reproduced in the fix for it.
+Even the careful version publishes ~270 meetings that are private today. The naive version publishes ~2,700, and does it silently: the SQL runs, reports success, and the damage is visible only to whoever later notices their 1:1s in a colleague's search results. This is the failure the whole document exists to prevent, reproduced in the fix for it.
 
-**Why they diverge.** The deployed `get_client_meetings` is narrower than its parameters suggest. Measured against the live function:
+**Why they diverge — and a correction.** An earlier draft of this document blamed a date window, claiming `get_client_meetings` ignores `p_since` because asking for everything since 2000 returned only ~6 months. **That was wrong.** The corpus itself starts **2026-01-21**; only 13 meetings predate the function's oldest result. It was returning very nearly everything there is. `p_limit` is honoured too, and so is `p_since` on `search_meetings` (verified: a 2026-06-01 floor moves the oldest result to 2026-06-01). A suspicious range is only evidence of a cap if the underlying data goes back further — the measurement script now prints the corpus range next to it for exactly this reason.
 
-- It returns meetings dated **2026-01-27 → 2026-08-12** when asked for everything since **2000-01-01**. `p_since` is ignored or clamped to roughly a six-month window.
-- It returns the same 140 rows for `p_limit` 500 and 100,000, so `p_limit` is not honoured either.
-- Every returned row has both a `summary` and populated `external_attendees`, so unprocessed meetings are excluded. Only 1,270 of the 2,835 domain-matching events have a summary at all.
+The real cause is worse, because it is a trap anyone re-deriving the rule will fall into:
 
-Its true selection rule is not knowable from this repository — the function body is deployed, not checked in. **So the backfill must be seeded from what the function returns, not from a re-implementation of what it appears to do:**
+**`thecontentengine.com` is itself registered as a client website** — `app_clients.id_client 2`, one of the two internal client ids. So a naive "does an attendee sit at a registered client domain" match treats **every internal meeting** as client work:
+
+| Backfill rule | Events marked `team` |
+|---|---|
+| Naive domain match | **2,835** |
+| Domain match, internal domain excluded | **410** |
+| What `get_client_meetings` actually returns | **140** |
+
+EngineAI's production path is correct here — `loadClientDomains` and `loadClientDomainMap` both filter the caller's own domain, twice over. The 2,835 figure came from a measurement script that did not, which is precisely how the naive backfill would go wrong.
+
+Even done correctly the re-derivation over-promotes by **~3×** (410 vs 140): the deployed function applies further conditions — every returned row has both a `summary` and populated `external_attendees` — and its body is not in this repository. **So the backfill must be seeded from what the function returns, not from a re-implementation of what it appears to do:**
 
 ```sql
 -- Seed ONLY from the set that is demonstrably shared today. Re-implementing
@@ -138,17 +146,13 @@ SELECT count(*) AS team_rows FROM meetingbrain.meeting_visibility WHERE visibili
 
 **Expect ~140.** Anything in the thousands means the domain-matching version was run by mistake — delete every `source = 'backfill'` row and start again. Nothing reads this table until step 3, so that rollback is clean.
 
-One consequence to accept deliberately: because the live function has a ~6-month window, client meetings older than that are **not** shared today and will therefore backfill as private. That matches current behaviour exactly. If older client meetings should be shared, that is a change to `get_client_meetings`, not to this table.
+One consequence to accept deliberately: the ~270 events that carry a genuine client domain but are **not** returned by the function (410 minus 140) are not shared today and will backfill as private. That matches current behaviour exactly. If they should be shared, that is a change to `get_client_meetings` — decided and verified on its own — not something to smuggle in through a backfill.
 
 ---
 
-## Separate bug found while measuring this
+## Related finding
 
-`get_client_meetings` **ignores `p_since` and `p_limit`**. EngineAI passes both (`lib/ai/providers.ts`, the `client_meetings` report) and presents the result as the complete answer for the window the user asked about. So "what client meetings did we have last year" returns the last six months and reads as exhaustive.
-
-This is the same shape as the tool-result truncation already fixed elsewhere in EngineAI: a capped query reported as a complete one. It is independent of visibility work and should be fixed on its own — either honour the parameters in the function, or have it return the window it actually applied so EngineAI can say so.
-
-### And the empty-allowlist fallback is real
+### The empty-allowlist fallback is real
 
 `lib/ai/providers.ts` warns never to pass a null or empty `p_client_domains`, because the function then treats *any* non-internal external attendee as a client. That warning was demonstrated accidentally while writing this document: a bug in the measurement script produced an empty domain list, and `get_client_meetings` returned **209** meetings instead of **140** — a 49% widening, with no error and no indication that the allowlist had been ignored.
 
