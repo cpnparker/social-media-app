@@ -10,10 +10,20 @@ export function logAiUsage(opts: {
   userId?: number;
   model: string;
   source: string;
+  /** BILLABLE UNCACHED input — normalised in providers.ts, not gross prompt tokens. */
   inputTokens: number;
   outputTokens: number;
+  /** Optional so the ~40 background callers need no change; they do not cache. */
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }): void {
-  const costTenths = calculateCostTenths(opts.model, opts.inputTokens, opts.outputTokens);
+  const costTenths = calculateCostTenths(
+    opts.model,
+    opts.inputTokens,
+    opts.outputTokens,
+    opts.cacheReadTokens || 0,
+    opts.cacheWriteTokens || 0
+  );
 
   Promise.resolve(
     intelligenceDb.from("ai_usage").insert({

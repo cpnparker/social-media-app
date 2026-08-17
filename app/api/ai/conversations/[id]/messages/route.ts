@@ -1534,7 +1534,7 @@ export async function POST(
       // gate personal reports server-side via conversationVisibility, while the
       // workspace-shared client_meetings report stays available to everyone.
       aiConfigRef,
-      async ({ fullText, inputTokens, outputTokens }) => {
+      async ({ fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
           let assistantErr: any = null;
@@ -1572,7 +1572,21 @@ export async function POST(
           if (updateErr) console.error("[Messages] Failed to update conversation:", updateErr);
 
           // Log AI usage for cost tracking
-          const costTenths = calculateCostTenths(model, inputTokens, outputTokens);
+          // inputTokens is already NET of cache — normalised per provider in
+          // providers.ts, since the two families report it differently.
+          const costTenths = calculateCostTenths(
+            model,
+            inputTokens,
+            outputTokens,
+            cacheReadTokens || 0,
+            cacheWriteTokens || 0
+          );
+          if ((cacheReadTokens || 0) > 0 || (cacheWriteTokens || 0) > 0) {
+            console.log(
+              `[Messages] Cache: read=${cacheReadTokens || 0} write=${cacheWriteTokens || 0} ` +
+              `uncached_in=${inputTokens} model=${model}`
+            );
+          }
           const { error: usageErr } = await intelligenceDb
             .from("ai_usage")
             .insert({
