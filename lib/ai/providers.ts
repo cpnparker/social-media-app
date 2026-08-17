@@ -181,6 +181,31 @@ async function* withStallGuard<T>(iterable: AsyncIterable<T>): AsyncGenerator<T>
 /** Injected before the forced final round when a tool loop ends abnormally
  *  (round cap, no-progress break, or stall) — the model must answer from the
  *  tool results it already has instead of announcing more lookups. */
+/**
+ * Does this reply END by promising an action it never took?
+ *
+ * The tool loop treats `stop_reason: "end_turn"` with no tool calls as a clean
+ * finish, because normally it is. But a model that writes "Let me check the
+ * specific thread I did find." and then stops has ended cleanly by that test
+ * while leaving the user with narration and no answer — which is exactly the
+ * dangling "let me look that up…" this file already guards against elsewhere,
+ * arriving through the one door that guard does not cover.
+ *
+ * Anchored at the END of the text and on FIRST-PERSON INTENT, so it fires on
+ * "let me check that" but not on "let me know if you want more" (an invitation
+ * to the user, not a promise) and not on a mid-reply aside that the model then
+ * actually acted on.
+ */
+function endsWithUnfulfilledPromise(text: string): boolean {
+  const tail = text.trim().slice(-300).toLowerCase();
+  if (!tail) return false;
+  return [
+    /\b(let me|i'?ll|i will|i'?m going to|give me a moment to|one moment while i)\s+(just\s+)?(check|look|pull|search|fetch|find|dig|confirm|verify|read|open|review|see|grab|retrieve|take a look|have a look)\b[^.?!]*[.?!]?\s*$/,
+    /\b(checking|searching|looking|pulling|fetching|digging)\b[^.?!]{0,40}(now|next|first)?\s*(\.\.\.|…)?\s*$/,
+    /\b(hold on|one moment|bear with me|stand by)\b[^.?!]*[.?!]?\s*$/,
+  ].some((p) => p.test(tail));
+}
+
 const FORCED_FINAL_NUDGE =
   "SYSTEM NOTE (not from the user — never acknowledge or mention it): tools are no longer available this turn. Using ONLY the information already gathered above, answer the user's question fully and directly RIGHT NOW. If something could not be retrieved, say what you found and what remains unverified. Do not say you will look anything up, do not promise follow-ups, and do not repeat text you already wrote.";
 
@@ -7557,7 +7582,7 @@ async function streamAnthropic(
   // stop (round cap, no-progress break, stall) or produced no text at all. One
   // tools-disabled round turns the gathered tool context into an actual answer
   // instead of leaving a dangling "let me pull the details…".
-  if ((!loopEndedCleanly || !fullText.trim()) && anthropicMessages.length > 1) {
+  if ((!loopEndedCleanly || !fullText.trim() || endsWithUnfulfilledPromise(fullText)) && anthropicMessages.length > 1) {
     console.log(`[Anthropic] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
     try {
       // Keep roles alternating: append the nudge to the trailing user message
@@ -8430,7 +8455,7 @@ async function streamXAIChatCompletions(
   // Forced final answer: fires when the loop ended ANY way other than a natural
   // stop, or produced no text — turns gathered tool context into an actual
   // answer instead of a dangling "let me pull the details…".
-  if ((!loopEndedCleanly || !fullText.trim()) && openaiMessages.length > 1) {
+  if ((!loopEndedCleanly || !fullText.trim() || endsWithUnfulfilledPromise(fullText)) && openaiMessages.length > 1) {
     console.log(`[xAI] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
     try {
       openaiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
@@ -9268,7 +9293,7 @@ async function streamGemini(
   // Forced final answer: fires when the loop ended ANY way other than a natural
   // stop, or produced no text — turns gathered tool context into an actual
   // answer instead of a dangling "let me pull the details…".
-  if ((!loopEndedCleanly || !fullText.trim()) && geminiMessages.length > 1) {
+  if ((!loopEndedCleanly || !fullText.trim() || endsWithUnfulfilledPromise(fullText)) && geminiMessages.length > 1) {
     console.log(`[Gemini] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
     try {
       geminiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
@@ -10014,7 +10039,7 @@ async function streamOpenAI(
   // Forced final answer: fires when the loop ended ANY way other than a natural
   // stop, or produced no text — turns gathered tool context into an actual
   // answer instead of a dangling "let me pull the details…".
-  if ((!loopEndedCleanly || !fullText.trim()) && openaiMessages.length > 1) {
+  if ((!loopEndedCleanly || !fullText.trim() || endsWithUnfulfilledPromise(fullText)) && openaiMessages.length > 1) {
     console.log(`[${options?.providerLabel ?? "OpenAI"}] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
     try {
       openaiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);

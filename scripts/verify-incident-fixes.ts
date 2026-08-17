@@ -177,9 +177,58 @@ console.log("\n7. The prompt carries the rules that were missing");
   check("length follows the form", /LENGTH follows the FORM/.test(p));
 }
 
-console.log(`\n${pass} passed, ${fail} failed`);
-if (failures.length) {
-  console.log("\nFailures:");
-  for (const f of failures) console.log(`  - ${f}`);
+
+
+/* ─────────── Mailbox routing + the dangling-promise guard ─────────── */
+{
+  console.log("\n8. A turn that needs the mailbox reaches a model that has one");
+  const MAIL: [string, boolean][] = [
+    // Chris's actual prompt. It matched the audience-writing keywords, routed
+    // to Grok, and had to tell him his inbox was unavailable on that model.
+    ["can you write an email to reply to Kaisa's latest email. doesn't need to be long", true],
+    ["can you check the latest emails with Beone and write a follow-up", true],
+    ["what did Kaisa say in her last email?", true],
+    ["check my inbox for anything from Samantha", true],
+    ["reply to her email", true],
+    // Composing outbound mail needs no mailbox — routing these to Claude would
+    // be paying for a capability the turn never uses.
+    ["write an email to the whole company about the restructure", false],
+    ["draft an email introducing our GEO service", false],
+    ["write a post about the latest AI news", false],
+  ];
+  for (const [p, want] of MAIL) {
+    check(`needsMailbox=${want}: "${p.slice(0, 44)}…"`, routeQuery(p, cfg).needsMailbox === want);
+  }
 }
+
+{
+  console.log("\n9. A reply that promises an action it never took is not 'finished'");
+  // Not exported — mirrored here so the property is pinned even though the
+  // implementation lives inside providers.ts.
+  const endsWithUnfulfilledPromise = (text: string): boolean => {
+    const tail = text.trim().slice(-300).toLowerCase();
+    if (!tail) return false;
+    return [
+      /\b(let me|i'?ll|i will|i'?m going to|give me a moment to|one moment while i)\s+(just\s+)?(check|look|pull|search|fetch|find|dig|confirm|verify|read|open|review|see|grab|retrieve|take a look|have a look)\b[^.?!]*[.?!]?\s*$/,
+      /\b(checking|searching|looking|pulling|fetching|digging)\b[^.?!]{0,40}(now|next|first)?\s*(\.\.\.|…)?\s*$/,
+      /\b(hold on|one moment|bear with me|stand by)\b[^.?!]*[.?!]?\s*$/,
+    ].some((p) => p.test(tail));
+  };
+  // The real stalled reply, verbatim.
+  check("catches the reply that actually stalled",
+    endsWithUnfulfilledPromise("Neither search actually surfaced a direct thread with Samantha at BeOne about the retainer continuation. Let me check the specific thread I did find."));
+  check("catches 'I'll pull the details'", endsWithUnfulfilledPromise("Found two contracts. I'll pull the details."));
+  check("catches a trailing 'checking now…'", endsWithUnfulfilledPromise("Right — checking now…"));
+  // Must NOT fire: these are complete answers.
+  check("ignores 'let me know if…' (an invitation, not a promise)",
+    !endsWithUnfulfilledPromise("Here's the draft. Let me know if you want it shorter."));
+  check("ignores a mid-reply aside that was then acted on",
+    !endsWithUnfulfilledPromise("Let me check the contract. I did — it runs to 30 September and has 5 CUs left."));
+  check("ignores an ordinary finished answer",
+    !endsWithUnfulfilledPromise("The contract runs to 30 September with 5 CUs remaining."));
+  check("ignores empty text", !endsWithUnfulfilledPromise("   "));
+}
+
+console.log(`\n${pass} passed, ${fail} failed`);
+if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
 process.exit(fail ? 1 : 0);

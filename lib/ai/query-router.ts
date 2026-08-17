@@ -41,6 +41,23 @@ export interface QueryRoute {
    * and doubling the output ceiling.
    */
   composition: boolean;
+  /**
+   * This turn needs the user's own MAILBOX, not just any data source.
+   *
+   * Separate from every other signal because it is about CAPABILITY, not
+   * stakes or grounding. query_gmail is registered only on Claude chains — the
+   * mailbox processor terms are the ones we hold for Anthropic — so a turn
+   * that needs mail and lands on Grok cannot do the job however capable that
+   * model is.
+   *
+   * This was not a theoretical gap. "can you write an email to reply to
+   * Kaisa's latest email" matched the audience-writing keywords, routed to
+   * Grok as high-stakes drafting, and the reply had to tell the user their
+   * inbox was unavailable on this model — while four other phrasings of the
+   * same request reached Claude and worked. On EngineAI Auto that reads as
+   * the product being unreliable, which is exactly what it was.
+   */
+  needsMailbox: boolean;
 }
 
 /* ─────────────── Pattern Constants ─────────────── */
@@ -131,6 +148,29 @@ const WEB_IMPLICIT_8 = /\b(research|do (some|extensive|thorough|detailed) resear
  * "what did the message from Siemens say", which is a lookup wearing a
  * composition word.
  */
+/**
+ * The user is asking about MAIL THEY HAVE, as opposed to mail they want written.
+ *
+ * "write an email to Kaisa" needs no mailbox. "reply to Kaisa's latest email"
+ * does — the reply cannot be written without reading what it answers. The
+ * distinction is possessive/referential language about existing mail, not the
+ * word "email" itself, which appears in both.
+ */
+const NEEDS_MAILBOX = [
+  /\b(my|the|latest|last|recent|her|his|their|any)\s+(e-?mails?|inbox|messages?)\b/i,
+  /\b(check|read|search|look at|find|pull|fetch|see)\b[^.?!]{0,40}\b(e-?mail|inbox|mailbox)\b/i,
+  /\b(reply|respond|replying|responding|follow[- ]?up)\b[^.?!]{0,40}\b(to )?(her|his|their|the|that|this)\b[^.?!]{0,30}\b(e-?mail|message|thread)\b/i,
+  // "from" and "with" mean mail that EXISTS. "to" means one being written —
+  // "write an email to the whole company" needs no mailbox at all, and
+  // including it here sent every outbound draft to a Claude model for nothing.
+  /\b(e-?mails?|thread)\s+(from|with)\s+\w/i,
+  /\bin my (inbox|mail|e-?mail)\b/i,
+  // Requires the mail context to be present too: "what did we say in the
+  // meeting" is a meeting question, and routing it for the mailbox would be
+  // paying Claude rates to read nothing.
+  /\bwhat did .{1,40}\b(say|write|send)\b[^.?!]{0,40}\b(e-?mail|inbox|message|thread)\b/i,
+];
+
 const COMPOSITION_REQUEST =
   /\b(write|draft|compose|rewrite|reword|tighten|shorten|lengthen|polish|proofread|edit)\b[^.?!]{0,60}\b(message|email|note|memo|announcement|statement|post|reply|response|letter|comms|communication|update|brief|copy|caption|script|speech|agenda|summary|intro|outline|blurb|bio|newsletter|invite|invitation)\b/i;
 const WEB_IMPLICIT_9 = /\b(recommend(ation)?s?|best option|best choice|best deal|best value|top pick|worth buying|worth it|good (option|choice|deal|buy))\b/i;
@@ -156,7 +196,7 @@ function hasDataKeywords(text: string): boolean {
 
 /* ─────────────── Hint Generation ─────────────── */
 
-function generateHints(route: Omit<QueryRoute, "hints" | "composition">): string[] {
+function generateHints(route: Omit<QueryRoute, "hints" | "composition" | "needsMailbox">): string[] {
   const hints: string[] = [];
   if (route.suggestEngine) {
     // This hint is promoted to a MUST-call list in the chat route, so whatever
@@ -195,16 +235,18 @@ export function routeQuery(
   // Wrapped rather than threaded through seventeen return sites: a field that
   // has to be remembered at every `return` is a field that will be forgotten at
   // one of them, and the one it is forgotten at will be the one that matters.
+  const lower = userMessage.toLowerCase().trim();
   return {
     ...routeQueryInner(userMessage, contextConfig),
-    composition: COMPOSITION_REQUEST.test(userMessage.toLowerCase().trim()),
+    composition: COMPOSITION_REQUEST.test(lower),
+    needsMailbox: NEEDS_MAILBOX.some((p) => p.test(userMessage)),
   };
 }
 
 function routeQueryInner(
   userMessage: string,
   contextConfig: NormalizedContextConfig
-): Omit<QueryRoute, "composition"> {
+): Omit<QueryRoute, "composition" | "needsMailbox"> {
   const lower = userMessage.toLowerCase().trim();
   const len = lower.length;
 

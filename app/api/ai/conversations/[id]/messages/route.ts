@@ -1381,6 +1381,38 @@ export async function POST(
         }
       } catch { /* still no access */ }
     }
+
+    // ── Capability beats stakes: a turn that needs the mailbox must reach a
+    //    model that HAS one ──
+    //
+    // query_gmail is registered only on Claude chains (the mailbox processor
+    // terms are the ones we hold for Anthropic), so a mail turn that lands on
+    // Grok cannot do the job however capable that model is — it can only
+    // apologise. On EngineAI Auto that reads as the product being unreliable,
+    // because the same request works or fails depending on phrasing.
+    //
+    // It bit a real turn: "can you write an email to reply to Kaisa's latest
+    // email" matched the audience-writing keywords, routed to Grok as
+    // high-stakes drafting, and had to tell the user their inbox was
+    // unavailable — while four other phrasings of the same request reached
+    // Claude and worked.
+    //
+    // Deliberately gated on gmailAccess. Without the flag there is no mailbox
+    // to reach, so moving the model would cost money and change nothing. This
+    // sits here rather than beside the other routing because gmailAccess is
+    // not known until now.
+    if (
+      queryRoute.needsMailbox &&
+      gmailAccess &&
+      wasAutoRouted &&
+      !isTeamThread &&
+      !model.startsWith("claude")
+    ) {
+      const before = model;
+      model = "claude-sonnet-5";
+      console.log(`[Messages] Mailbox needed → ${before} → ${model} (query_gmail is Claude-only)`);
+    }
+
     // Calendar + Microsoft, in their own pass so a missing migration can only
     // ever deny these two. Explicit `=== 1`, and any error leaves both false.
     try {
