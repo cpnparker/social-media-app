@@ -8325,6 +8325,12 @@ async function streamGemini(
       temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
       messages: geminiMessages,
       stream: true,
+      // Without this the OpenAI streaming contract emits NO usage chunk, so the
+      // token guards below never fire and every Gemini turn wrote
+      // units_input=0, units_output=0, units_cost_tenths=0 into ai_usage —
+      // Gemini has simply been free in the ledger. The xAI and OpenAI chains
+      // have always sent it; this one was missed.
+      stream_options: { include_usage: true },
       ...(tools.length > 0 ? { tools } : {}),
     } as any)) as unknown as AsyncIterable<any>;
 

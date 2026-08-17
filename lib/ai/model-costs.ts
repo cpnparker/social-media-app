@@ -18,6 +18,12 @@ export const MODEL_COSTS: Record<string, { inputPer1M: number; outputPer1M: numb
   "claude-sonnet-4-6": { inputPer1M: 300, outputPer1M: 1500 },       // $3/$15
   "claude-sonnet-4-20250514": { inputPer1M: 300, outputPer1M: 1500 },
   "claude-haiku-4-5": { inputPer1M: 100, outputPer1M: 500 },         // $1/$5
+  // Keyed by the REGISTRY id, which is what route.ts prices by — not by
+  // apiModel. Added dotted-only, these fell through to the Sonnet fallback at
+  // the bottom of this file and billed $3/$15 instead of $2/$12. Both spellings
+  // are kept: the registry id is what the ledger looks up, the apiModel is what
+  // shows in provider-side reporting.
+  "gpt-5-6-terra": { inputPer1M: 200, outputPer1M: 1200 },           // $2/$12
   "gpt-5.6-terra": { inputPer1M: 200, outputPer1M: 1200 },           // $2/$12
   "gpt-5.6-luna": { inputPer1M: 20, outputPer1M: 120 },              // $0.20/$1.20
   "gpt-5.6-sol": { inputPer1M: 500, outputPer1M: 3000 },             // $5/$30
