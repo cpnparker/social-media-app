@@ -63,6 +63,31 @@ ORDER BY name_model;
 -- ── 3. Confirm ──
 -- recorded_tenths should now equal correct_tenths, and no OTHER model should
 -- have moved — the second row set is the guard against a mis-scoped WHERE.
+--
+-- RUN 17 AUG 2026. It worked: 71,103 of 71,337 in-scope rows match exactly,
+-- and every historical day is clean. But the two totals did NOT come out equal,
+-- and the residual is the interesting part rather than a rounding artefact:
+--
+--   recorded 446,553   correct 448,012   gap 1,459 tenths ($1.46)
+--
+-- All 234 mismatching rows are dated 14 Aug onward and are STILL ARRIVING —
+-- the newest was written the same morning this was checked. They carry
+-- type_source 'dashboard', 'email', 'slack', 'meeting' and 'dedup', none of
+-- which exist in this repository: EngineAI writes 'client-context',
+-- 'memory-*', 'summary-*', 'engineai-meeting' and 'episode-extract'.
+--
+-- So they are MeetingBrain's, written into this shared table by a SECOND
+-- codebase with its OWN copy of the rate table — one that still prices the
+-- retired grok fast slug at $0.20/$0.50. The 14 Aug start is exactly when
+-- EngineAI's forward fix (f7a8701) landed: from that day the two systems
+-- disagree, and only one of them was corrected.
+--
+-- A backfill cannot fix this. It corrects history up to the moment it runs,
+-- and the writer keeps producing understated rows afterwards. MeetingBrain's
+-- rate table has to be corrected in MeetingBrain, and this script re-run once
+-- afterwards to mop up the rows written in between. Until then MeetingBrain's
+-- own cost reporting understates by about 8.4% (15,935 recorded against 17,404
+-- correct, across 2,950 rows since 1 Aug).
 SELECT
   'grok fast (corrected)' AS scope,
   sum(units_cost_tenths)  AS recorded_tenths,
@@ -77,3 +102,29 @@ SELECT
   NULL
 FROM intelligence.ai_usage
 WHERE name_model NOT IN ('grok-4-1-fast', 'grok-4-1-fast-non-reasoning');
+
+
+-- ── 4. Who is still writing understated rows? ──
+-- Run this any time. Every row it returns is a writer that has NOT been fixed:
+-- the cost it recorded disagrees with what the token counts imply at grok-4.3
+-- rates. An empty result means every system writing to this table agrees.
+--
+-- Ordered by how recent the newest bad row is, because that is the question —
+-- not "was there ever a discrepancy" but "is one still being created".
+SELECT
+  type_source,
+  count(*)                                                        AS wrong_rows,
+  max(date_created)                                               AS newest_wrong_row,
+  sum(round(units_input * 0.00125 + units_output * 0.0025)
+      - units_cost_tenths)                                        AS understated_tenths
+FROM intelligence.ai_usage
+WHERE name_model IN ('grok-4-1-fast', 'grok-4-1-fast-non-reasoning')
+  AND date_created >= '2026-05-15'
+  AND units_cost_tenths
+      IS DISTINCT FROM round(units_input * 0.00125 + units_output * 0.0025)
+GROUP BY type_source
+ORDER BY newest_wrong_row DESC;
+
+-- As of 17 Aug 2026 this returns dashboard / email / slack / meeting / dedup —
+-- all MeetingBrain. When MeetingBrain's rate table is corrected, re-run step 2
+-- once to mop up, then this query should come back empty and stay empty.
