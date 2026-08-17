@@ -6,11 +6,22 @@
 -- Design and measurements: docs/meetingbrain-meeting-visibility-spec.md
 --
 -- ADDITIVE ONLY. This creates one table and one function. It does NOT touch
--- get_client_meetings, get_meeting_details or search_meetings — their bodies
--- are deployed rather than checked into the repo, and replacing a function
--- nobody can read is how a working system breaks quietly. Nothing calls the
--- new function until EngineAI is pointed at it, so this script is inert on
+-- get_client_meetings, get_meeting_details or search_meetings. Nothing calls
+-- the new function until EngineAI is pointed at it, so this script is inert on
 -- its own and reversible by dropping both objects.
+--
+-- (An earlier version of this header justified that by saying the existing
+-- bodies are not in the repo. That was wrong — get_client_meetings is in
+-- scripts/fix-get-client-meetings-rpc.sql. Staying additive is still the right
+-- call, for the ordinary reason that a separate function can be verified and
+-- rolled back independently of one that is already serving traffic.)
+--
+-- Worth knowing when reading the rule below: attendees is stored as a JSON
+-- ARRAY STRING and the deployed RPC parses it with jsonb_array_elements,
+-- reading a->>'email'. This function instead regex-matches addresses out of
+-- the raw text, which is deliberate — it also catches rows whose attendees
+-- field is not valid JSON, which the deployed function's `LIKE '[%'` gate
+-- silently drops.
 --
 -- WHAT THE RULE IS (decided 17 Aug 2026):
 --   client attendee, any size        -> team     (client beats 1:1)

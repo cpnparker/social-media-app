@@ -81,7 +81,20 @@ Had visibility been materialised, the obvious backfill would be "mark everything
 
 **`thecontentengine.com` is itself registered as a client website** — `app_clients.id_client 2`, one of the two internal client ids. So a naive match treats *every internal meeting* as client work. EngineAI's production path is correct (`loadClientDomains` and `loadClientDomainMap` both filter the caller's own domain, twice over); the 2,835 came from a measurement script that did not — an accidental live demonstration of the exact failure.
 
-Deriving at read time makes this unreachable: there is no backfill to get wrong.
+**The remaining 410 vs 140 gap is fully explained**, and no longer by guesswork. The function body IS in this repository — `scripts/fix-get-client-meetings-rpc.sql` — which an earlier draft asserted it was not, using that claimed unknowability as an argument. Reading it (`:71-90`), three gates the naive re-derivation omits:
+
+```sql
+WHERE pm.attendees IS NOT NULL
+  AND pm.attendees LIKE '[%'      -- attendees must parse as a JSON array
+  AND pm.summary IS NOT NULL      -- unprocessed meetings excluded
+  AND (p_since IS NULL OR pm.meeting_date >= p_since)
+```
+
+plus `DISTINCT ON (calendar_event_id)`. Unprocessed meetings and non-JSON attendee fields are dropped, and siblings collapse. That is 410 → 140.
+
+Two things follow. The third line **honours `p_since`**, independently confirming correction 1 below by reading rather than by measurement. And `attendees` is a JSON array string parsed with `jsonb_array_elements(...)->>'email'` — whereas the new rule regex-matches addresses out of the raw text, which is deliberate: it also classifies rows whose attendee field is not valid JSON, which the `LIKE '[%'` gate silently drops.
+
+Deriving at read time makes the backfill question unreachable anyway: there is no backfill to get wrong.
 
 ---
 
@@ -187,6 +200,7 @@ Kept deliberately — each was a confident claim that measurement disproved.
 1. **"`get_client_meetings` ignores `p_since`."** It does not. The corpus starts **2026-01-21**; only 13 meetings predate the function's oldest result, so it was returning nearly everything. `p_limit` is honoured too, and `search_meetings` honours `p_since`. A suspicious range is evidence of a cap only if the underlying data goes back further — the measurement script now prints the corpus range beside every function range.
 2. **Sampling.** A 2,000-row sample put sibling-recorder events at 8.6% (true: **20%**) and 1:1s at 47% of internal meetings (true: **60%**) — wrong about exactly the two populations the design turns on. All figures are now whole-corpus.
 3. **The 20× over-promotion was blamed on a date window.** The real cause is the internal domain being registered as a client website.
+4. **"The function body is not in this repository."** It is: `scripts/fix-get-client-meetings-rpc.sql`. Two conclusions rested on that premise — the diagnosis of the 410 vs 140 gap, and the decision to stay additive rather than modify the function — and neither was checked against an `ls scripts/`. Both survived on other grounds, which is the least useful way for a false premise to behave: it leaves no symptom.
 
 ---
 

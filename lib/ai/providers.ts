@@ -3730,12 +3730,23 @@ function qHash(q: unknown): string {
  * to inform an answer and material it may reproduce in a document. The prompt
  * rule that consumes it lives under "Who will read what you are writing".
  *
- * Deliberately conservative and title/summary-only. Screening the transcript
- * would fire on any meeting where someone mentioned a leaver in passing, and a
- * warning that appears on everything is a warning nobody reads.
+ * Deliberately conservative. Measured against the whole corpus it fires on
+ * 7.1% of meetings when given title + summary + key_topics, and 0.1% on titles
+ * alone — low enough to still mean something when it appears.
+ *
+ * Two terms were removed after measuring which ones did the work:
+ *   `pip\b` matched "pip install" and the name Pip — 94 rows, nearly all of
+ *   them noise. It is now the unambiguous "performance improvement plan".
+ *   Bare `promotion` matched 78 rows, and in a CONTENT MARKETING agency a
+ *   promotion is overwhelmingly a campaign, not a job title. It now requires
+ *   job context ("promoted to a senior role", "internal promotion").
+ *
+ * `restructur\w*` is kept broad at 2% even though a website restructure trips
+ * it: over-caution is the safe direction here, and the incident that prompted
+ * this was literally a restructure.
  */
 const PERSONNEL_MARKERS =
-  /\b(redundan\w*|restructur\w*|reorganis\w*|reorganiz\w*|lay ?off\w*|dismissal|termination|notice period|settlement agreement|severance|exit (interview|meeting|plan|process|and handover)|offboard\w*|leaver|departure|departing|last day|disciplinar\w*|grievance|performance (review|improvement|concern|issue)|pip\b|probation|salary|salaries|pay ?rise|pay ?review|remuneration|compensation review|bonus review|promotion|demotion|headcount|resignation|stepping (down|back)|garden leave|whistleblow\w*|tribunal|hr (issue|matter|meeting|case))\b/i;
+  /\b(redundan\w*|restructur\w*|reorganis\w*|reorganiz\w*|lay ?off\w*|dismissal|termination|notice period|settlement agreement|severance|exit (interview|meeting|plan|process|and handover)|offboard\w*|leaver|departure|departing|last day|disciplinar\w*|grievance|performance (review|improvement|concern|issue)|performance improvement plan|probation|salary|salaries|pay ?rise|pay ?review|remuneration|compensation review|bonus review|(promoted|promotion) to (a )?(new |senior |lead |head )?(role|position|title)|internal promotion|demotion|headcount|resignation|stepping (down|back)|garden leave|whistleblow\w*|tribunal|hr (issue|matter|meeting|case))\b/i;
 
 export function isPersonnelSensitive(...parts: (string | null | undefined)[]): boolean {
   return PERSONNEL_MARKERS.test(parts.filter(Boolean).join(" ").slice(0, 4000));
@@ -4100,10 +4111,16 @@ export async function queryMeetingBrain(
           };
         });
         console.log(`[MeetingBrain] Meetings: ${data.length} (${d}d window)`);
+        let personnelRows = 0;
+        for (const r of data as any[]) {
+          if (isPersonnelSensitive(r.title, r.summary)) { r.personnel_sensitive = true; personnelRows++; }
+        }
         return {
           data,
           count: data.length,
-          hint: data.some((r: any) => isPersonnelSensitive(r.title, r.summary)) ? PERSONNEL_NOTICE : undefined,
+          hint: personnelRows
+            ? `${personnelRows} of these ${data.length} result(s) are marked personnel_sensitive: true. The note below applies to THOSE ROWS ONLY.\n\n${PERSONNEL_NOTICE}`
+            : undefined,
         };
       }
       case "upcoming_meetings": {
@@ -4211,8 +4228,19 @@ export async function queryMeetingBrain(
         // one broad query ("restructure", "TCE 2026+") returning a spread of
         // meetings, some of which are about people. meeting_details is the
         // deliberate follow-up; this is the accident.
-        const sensitiveNote = data.some((r: any) => isPersonnelSensitive(r.title, r.summary))
-          ? PERSONNEL_NOTICE
+        //
+        // Flagged PER ROW. This previously used .some(), so one personnel
+        // meeting in a batch of forty attached a notice saying "this meeting
+        // record" — singular — to the whole set, and the model could not tell
+        // which of the forty it meant. Over-caution across an entire result
+        // set is its own failure: a rule that appears to cover everything gets
+        // applied to nothing.
+        let sensitiveCount = 0;
+        for (const r of data as any[]) {
+          if (isPersonnelSensitive(r.title, r.summary)) { r.personnel_sensitive = true; sensitiveCount++; }
+        }
+        const sensitiveNote = sensitiveCount
+          ? `${sensitiveCount} of these ${data.length} result(s) are marked personnel_sensitive: true. The note below applies to THOSE ROWS ONLY — the rest are ordinary meetings.\n\n${PERSONNEL_NOTICE}`
           : undefined;
         const hint = [fuzzyNote, upcomingNote, sensitiveNote].filter(Boolean).join("\n") || undefined;
         console.log(`[MeetingBrain] Search q=${qHash(options.query)}: ${data.length} matches (${data.filter((d: any) => d.status !== "past").length} upcoming)`);
@@ -4323,7 +4351,16 @@ export async function queryMeetingBrain(
         // Screen the TITLE and SUMMARY only — see isPersonnelSensitive. The
         // note rides alongside the data rather than replacing it: this is a
         // handling instruction, not a refusal.
-        const sensitive = isPersonnelSensitive(d.meeting_title, d.summary, d.key_topics);
+        // Screen everything the payload SHIPS, not just its headline fields.
+        // This returns up to 100k chars of transcript plus insights and
+        // next_steps, and personnel content lives in the transcript far more
+        // often than in a meeting title — an audit found the richest
+        // personnel-bearing fields sitting outside the screen entirely. One
+        // regex over one meeting is free, and a false positive here only adds
+        // a handling note.
+        const sensitive = isPersonnelSensitive(
+          d.meeting_title, d.summary, d.key_topics, d.insights, d.next_steps, transcript
+        );
         if (sensitive) {
           console.log(`[MeetingBrain] Personnel-sensitive meeting ${options.meetingId} — handling note attached`);
         }
