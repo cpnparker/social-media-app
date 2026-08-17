@@ -136,7 +136,11 @@ function matchesAny(text: string, keywords: string[]): boolean {
  * high-stakes piece is part of the same high-stakes piece.
  */
 const REFINEMENT_PATTERNS = [
-  /^(now |ok,? |okay,? |and |but |also )?(can you |could you |please )?(tighten|shorten|lengthen|expand|rewrite|reword|redo|revise|refine|polish|punch|simplify|soften|sharpen|improve|fix|adjust|tweak|change|update|try)\b/i,
+  // "trim" and "condense" were missing, so "trim it down" read as a fresh topic
+  // and the walk-back stopped there — found by asserting that rephrasing a
+  // refinement routes the same as repeating it verbatim, which it did not.
+  // Deliberately NOT including "cut": "cut the budget" is a subject, not an edit.
+  /^(now |ok,? |okay,? |and |but |also )?(can you |could you |please )?(tighten|shorten|trim|condense|lengthen|expand|rewrite|reword|redo|revise|refine|polish|punch|simplify|soften|sharpen|improve|fix|adjust|tweak|change|update|try)\b/i,
   /\b(make it|keep it|a bit|a little|too) (short|long|brief|concise|punchy|formal|informal|casual|warm|direct|blunt|soft|strong)/i,
   /^(try again|again|another version|different version|one more|same but|shorter|longer|less formal|more formal)\b/i,
   /\b(do not|don'?t) (put|use|make|include)\b/i,
@@ -149,28 +153,46 @@ const REFINEMENT_MAX_CHARS = 260;
  * Classify a user message and return the best model to use.
  * Exported for use in the messages API route.
  *
- * `previousUserMessage` lets a bare refinement inherit the routing of the thing
- * it is refining. The inheritance is deliberately ONE-WAY: it can only raise
- * the tier, never lower it, so the worst case is that a cheap follow-up becomes
- * a capable one. The reverse — letting a trivial follow-up drag a complex
- * thread down — is the failure this exists to prevent.
+ * `priorUserMessages` (most recent first) lets a bare refinement inherit the
+ * routing of the thing it is refining. The inheritance is deliberately ONE-WAY:
+ * it can only raise the tier, never lower it, so the worst case is that a cheap
+ * follow-up becomes a capable one. The reverse — letting a trivial follow-up
+ * drag a complex thread down — is the failure this exists to prevent.
  */
 export function routeModel(
   userMessage: string,
-  previousUserMessage?: string
+  priorUserMessages?: string[]
 ): typeof FAST_MODEL | typeof REASONING_MODEL | typeof GROUNDED_MODEL {
   const own = routeOwn(userMessage);
-  if (own !== FAST_MODEL || !previousUserMessage) return own;
+  if (own !== FAST_MODEL || !priorUserMessages?.length) return own;
+  if (!isRefinement(userMessage)) return own;
 
-  const trimmed = userMessage.trim();
-  const isRefinement =
-    trimmed.length <= REFINEMENT_MAX_CHARS &&
-    REFINEMENT_PATTERNS.some((p) => p.test(trimmed));
-  if (!isRefinement) return own;
+  // Walk back to what is actually being refined — the most recent prior
+  // message that is NOT itself a refinement.
+  //
+  // Looking at exactly ONE prior message was not enough, and the failure was
+  // quiet. "write a powerful message to the whole company" → flagship;
+  // "shorten it" → inherits; "make it a bit warmer" → its predecessor is now
+  // "shorten it", which scores as trivial, so the THIRD draft of a sensitive
+  // all-company message landed on the cheapest model available.
+  //
+  // It also inverted the incentive: repeating yourself verbatim held the high
+  // tier (the caller skips messages identical to the current one, so the
+  // lookup reached past them to the original), while rephrasing each time
+  // collapsed to the cheap leg. Saying the same thing three times should not
+  // route better than saying it three different ways.
+  for (const prior of priorUserMessages) {
+    if (isRefinement(prior)) continue;
+    return routeOwn(prior);
+  }
+  // Every prior message was a refinement too — nothing substantive to inherit.
+  return own;
+}
 
-  // Route on what is being refined. Never recurses — the previous message is
-  // classified on its own merits only.
-  return routeOwn(previousUserMessage);
+/** A follow-up that operates on the last output rather than introducing a topic. */
+function isRefinement(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.length <= REFINEMENT_MAX_CHARS && REFINEMENT_PATTERNS.some((p) => p.test(trimmed));
 }
 
 function routeOwn(userMessage: string): typeof FAST_MODEL | typeof REASONING_MODEL | typeof GROUNDED_MODEL {

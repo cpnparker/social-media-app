@@ -77,13 +77,37 @@ console.log("\n2. Topical drafting KEEPS web search (the regression this test mi
 console.log("\n3. Routing — the refinement inherits the stakes of what it refines");
 {
   const alone = routeModel(REFINE_PROMPT);
-  const withPrior = routeModel(REFINE_PROMPT, DRAFT_PROMPT);
+  const withPrior = routeModel(REFINE_PROMPT, [DRAFT_PROMPT]);
   check("classified alone it still looks trivial", alone === "grok-4-1-fast", alone);
   check("with the prior turn it inherits the flagship", withPrior === "grok-4-6", withPrior);
   // One-way only: a trivial thread must never drag a complex follow-up down.
   check(
     "inheritance never DOWNGRADES a turn that earned a better model",
-    routeModel(DRAFT_PROMPT, "thanks!") === "grok-4-6"
+    routeModel(DRAFT_PROMPT, ["thanks!"]) === "grok-4-6"
+  );
+  // THE CASE THAT WAS BROKEN: by the third turn the immediate predecessor is
+  // itself a refinement, so a single-message lookup scored it as trivial and
+  // the third draft of a sensitive message landed on the cheapest model.
+  check(
+    "a refinement OF a refinement still inherits (walks back)",
+    routeModel("make it a bit warmer", ["shorten it", DRAFT_PROMPT]) === "grok-4-6",
+    routeModel("make it a bit warmer", ["shorten it", DRAFT_PROMPT])
+  );
+  check(
+    "four turns deep it still holds",
+    routeModel("try again", ["make it warmer", "shorten it", DRAFT_PROMPT]) === "grok-4-6"
+  );
+  // Repetition must not beat rephrasing. Both chains refine the same draft, so
+  // both must land on the same model.
+  check(
+    "saying it verbatim routes the same as rephrasing it",
+    routeModel("shorten it", ["shorten it", "shorten it", DRAFT_PROMPT]) ===
+      routeModel("make it shorter", ["trim it down", "tighten it", DRAFT_PROMPT])
+  );
+  // Nothing substantive to inherit — must not invent a tier.
+  check(
+    "an all-refinement history does not escalate",
+    routeModel("shorten it", ["tighten it", "try again"]) === "grok-4-1-fast"
   );
 }
 

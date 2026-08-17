@@ -181,12 +181,13 @@ export async function extractEpisode(
       ],
     } as any);
 
-    const raw = res.choices?.[0]?.message?.content || "";
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    const parsed = JSON.parse(match[0]);
-    if (!parsed?.worked || typeof parsed.worked !== "string") return null;
-
+    // Log the call BEFORE anything can return early. The call is billed the
+    // moment it returns, whatever it says — and this prompt is deliberately
+    // written to answer {"worked": null} for most turns ("be willing to record
+    // nothing"). Logging after the parse therefore recorded the MINORITY of
+    // calls and hid the rest: the usage dashboard would have shown episode
+    // capture costing a fraction of what it does, which is exactly the class
+    // of billing blindness this codebase has already been caught by once.
     const { logAiUsage } = await import("./usage-logger");
     logAiUsage({
       model: "grok-4-3",
@@ -194,6 +195,12 @@ export async function extractEpisode(
       inputTokens: res.usage?.prompt_tokens || 0,
       outputTokens: res.usage?.completion_tokens || 0,
     });
+
+    const raw = res.choices?.[0]?.message?.content || "";
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    const parsed = JSON.parse(match[0]);
+    if (!parsed?.worked || typeof parsed.worked !== "string") return null;
 
     return {
       worked: parsed.worked.slice(0, 300),
@@ -214,13 +221,30 @@ export async function extractEpisode(
  * update is WITHIN a day only — yesterday's record is never touched, because
  * overwriting across days is how a memory system quietly rewrites history.
  */
+/**
+ * Today's date in the workspace's timezone.
+ *
+ * NOT new Date().toISOString().slice(0,10) — that is UTC, and on Vercel the
+ * server clock IS UTC, so anything worked on after 01:00 Zurich time in summer
+ * was being filed under the previous day. A ledger that says "on 16 August you
+ * were…" about work done on the 17th is wrong in the one field the whole
+ * feature retrieves on. lib/date-utils.ts warns about the same expression for
+ * the same reason, and the rest of the app treats Europe/Zurich as the
+ * workspace clock (see the scheduling and voice paths).
+ *
+ * en-CA gives YYYY-MM-DD, which is what the date column wants.
+ */
+export function workspaceToday(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Zurich" });
+}
+
 export async function recordEpisode(opts: {
   workspaceId: string;
   userId: number;
   conversationId: string;
   capture: EpisodeCapture;
 }): Promise<void> {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = workspaceToday();
 
   const { data: existing, error: readErr } = await intelligenceDb
     .from("ai_episodes")

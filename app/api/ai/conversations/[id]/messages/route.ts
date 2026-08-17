@@ -1215,11 +1215,22 @@ export async function POST(
     let wasAutoRouted = false;
     if (model === "auto") {
       const { routeModel } = await import("@/lib/ai/auto-router");
-      // The previous user message lets "tighten it up" inherit the routing of
-      // the thing it is tightening. Without it, every refinement of a
-      // high-stakes draft is classified as a trivial one-liner.
-      const priorUser = [...messages].reverse().find((m: any) => m.role === "user" && m.content !== userContent);
-      model = routeModel(userContent || "", typeof priorUser?.content === "string" ? priorUser.content : undefined);
+      // Prior user messages, most recent first, so "tighten it up" inherits the
+      // routing of the thing it is tightening. The router walks back past
+      // refinements to the last substantive message, which one prior message
+      // could not do — by the third turn the predecessor is itself a
+      // refinement and scores as trivial.
+      //
+      // No `!== userContent` filter here: it existed to skip the message being
+      // sent, but it also skipped genuine verbatim repeats, which is what made
+      // saying the same thing twice route BETTER than rephrasing it. The
+      // router's own refinement test handles the rest.
+      const priorUser = [...messages]
+        .reverse()
+        .filter((m: any) => m.role === "user" && typeof m.content === "string")
+        .map((m: any) => m.content as string)
+        .slice(0, 12);
+      model = routeModel(userContent || "", priorUser);
       wasAutoRouted = true;
       console.log(`[Messages] Auto-routed → ${model}`);
     }
