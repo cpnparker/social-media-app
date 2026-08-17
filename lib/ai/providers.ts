@@ -3755,6 +3755,40 @@ function normalizeClientDomain(url: string | null): string | null {
  *  aliases), excluding our own. THE definition of "a client meeting" — shared
  *  by client_meetings and by the meeting_details team-thread check so the two
  *  can never drift apart. */
+/**
+ * Registered client domain -> the client it belongs to.
+ *
+ * loadClientDomains() throws this away, keeping only the allowlist, which is
+ * all the privacy gate needs. But it means a client meeting comes back with no
+ * indication of WHICH client it was with: the RPC matches on domain internally
+ * and returns only attendee text. Anything asking "what has been happening with
+ * this client" therefore has no join key, which is what blocked the client
+ * summary section.
+ */
+export async function loadClientDomainMap(internalDomain: string): Promise<Map<string, { id: number; name: string }>> {
+  const { supabase: publicDb } = await import("@/lib/supabase");
+  const { data, error } = await publicDb.from("app_clients").select("id_client, name_client, link_website");
+  if (error) throw new Error("client-domain map unavailable");
+  const caller = (internalDomain || "").trim().toLowerCase();
+  const map = new Map<string, { id: number; name: string }>();
+  for (const c of data || []) {
+    const d = normalizeClientDomain((c as any).link_website);
+    if (!d || d === caller) continue;
+    if (NON_CLIENT_HOSTS.has(d) || INTERNAL_DOMAINS.includes(d)) continue;
+    // First registration of a domain wins, and a collision is logged rather
+    // than silently overwritten — two clients sharing a website is a data
+    // question, and picking one at random would attribute meetings to the
+    // wrong company.
+    if (map.has(d)) {
+      console.warn(`[MeetingBrain] domain "${d}" is registered to more than one client — meetings for it are left unattributed`);
+      map.set(d, { id: -1, name: "" }); // sentinel: ambiguous, never attributed
+      continue;
+    }
+    map.set(d, { id: (c as any).id_client, name: (c as any).name_client || "" });
+  }
+  return map;
+}
+
 async function loadClientDomains(internalDomain: string): Promise<string[]> {
   const { supabase: publicDb } = await import("@/lib/supabase");
   const { data: clientRows, error } = await publicDb.from("app_clients").select("link_website");
@@ -4272,19 +4306,63 @@ export async function queryMeetingBrain(
         });
 
         if (!mtgErr) {
+          // WHICH client was each meeting with?
+          //
+          // The RPC matches on the domain allowlist internally but returns only
+          // attendee text, so nothing downstream could tell one client's
+          // meetings from another's. Attribution is done here, from domains in
+          // the attendee string, and ONLY from domains: matching on company
+          // NAME is what merges two clients who share a word, and this codebase
+          // has already been bitten by name matching more than once.
+          //
+          // Where no domain can be extracted, clientId is null and stays null.
+          // An unattributed meeting is visible as unattributed; a guessed one
+          // is not.
+          const domainMap = await loadClientDomainMap(internalDomain).catch(() => new Map());
+          const attributeClient = (attendeeText: unknown) => {
+            const text = typeof attendeeText === "string" ? attendeeText : Array.isArray(attendeeText) ? attendeeText.join(" ") : "";
+            if (!text) return null;
+            const hits = new Map<number, string>();
+            const emails = text.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || [];
+            for (const email of emails) {
+              const domain = email.split("@")[1];
+              const hit = domainMap.get(normalizeClientDomain(domain) || "");
+              // id -1 is the ambiguous sentinel from a domain registered twice.
+              if (hit && hit.id > 0) hits.set(hit.id, hit.name);
+            }
+            if (hits.size !== 1) return null; // none, or a meeting spanning two clients
+            const [[id, name]] = Array.from(hits.entries());
+            return { id, name };
+          };
+
+          let unattributed = 0;
           const data = (meetings || []).map((r: any) => {
             const isRecent = new Date(r.meeting_date) >= twoWeeksBack;
+            // Attribution runs on EVERY meeting, not just recent ones. The
+            // attendee string was previously dropped past 14 days, which left a
+            // 90-day question with no join key for 76 of its 90 days — a client
+            // met three weeks ago read as never met at all.
+            const client = attributeClient(r.external_attendees);
+            if (!client) unattributed++;
             return {
               meeting_id: r.meeting_id,
               title: r.meeting_title,
               date: r.meeting_date?.slice(0, 10),
+              client_id: client?.id ?? null,
+              client_name: client?.name ?? null,
               summary: isRecent ? r.summary?.slice(0, 400) : r.summary?.slice(0, 150),
               key_topics: isRecent ? r.key_topics?.slice(0, 200) : r.key_topics?.slice(0, 100),
               next_steps: isRecent ? (r.next_steps?.slice(0, 200) || null) : undefined,
+              // Full attendee detail still narrows to recent meetings — that
+              // cap is about payload size, and attribution no longer depends
+              // on it.
               attendees: isRecent ? r.external_attendees : undefined,
             };
           });
-          console.log(`[MeetingBrain] Client meetings: ${data.length} (live, domain=${internalDomain}, ${windowDays}d)`);
+          console.log(
+            `[MeetingBrain] Client meetings: ${data.length} (live, domain=${internalDomain}, ${windowDays}d, ` +
+            `${data.length - unattributed} attributed to a client, ${unattributed} not)`
+          );
           // Always state the window. Without it "no client meetings" reads as
           // "we have never met them" rather than "not in the last N days".
           const atCap = data.length >= CLIENT_MEETINGS_LIMIT;
@@ -4293,7 +4371,16 @@ export async function queryMeetingBrain(
             count: data.length,
             hint:
               `This covers the last ${windowDays} days only` +
-              (atCap ? `, and hit the ${CLIENT_MEETINGS_LIMIT}-meeting cap, so older ones in that window are missing` : "") +
+              (atCap
+                ? `, and hit the ${CLIENT_MEETINGS_LIMIT}-meeting cap — the cap drops the OLDEST meetings first, so a ` +
+                  `client can look quiet purely because the window was busy. Never conclude a relationship has gone ` +
+                  `quiet from a capped result`
+                : "") +
+              (unattributed > 0
+                ? `. ${unattributed} of these could not be matched to a specific client (no recognisable client domain ` +
+                  `among the attendees), so they are NOT counted under any client — do not treat a client's meeting ` +
+                  `list here as complete`
+                : "") +
               `. If nothing came back for a client, say you found nothing in that window — do NOT say the relationship has gone quiet or that no meeting exists. Pass a larger "days" value to look further back.`,
           };
         }
@@ -4307,8 +4394,12 @@ export async function queryMeetingBrain(
           .from("ai_client_meetings")
           .select("id_client, meeting_id, meeting_title, meeting_date, meeting_summary, key_topics, next_steps, attendees_external")
           .eq("id_workspace", options.workspaceId)
+          // The requested window was never applied here, so a 7-day question
+          // and a 365-day question returned the identical most-recent 100 rows,
+          // and the answer was framed by whatever the caller had asked for.
+          .gte("meeting_date", since.toISOString())
           .order("meeting_date", { ascending: false })
-          .limit(100);
+          .limit(CLIENT_MEETINGS_LIMIT);
         if (syncErr) return fail(syncErr.message);
         const data = (synced || []).map((r: any) => {
           const isRecent = new Date(r.meeting_date) >= twoWeeksBack;
@@ -4323,8 +4414,19 @@ export async function queryMeetingBrain(
             attendees: isRecent ? r.attendees_external : undefined,
           };
         });
-        console.log(`[MeetingBrain] Client meetings: ${data.length} (synced fallback)`);
-        return { data, count: data.length };
+        console.log(`[MeetingBrain] Client meetings: ${data.length} (synced fallback, ${windowDays}d)`);
+        // Say that this is the mirror, not the live source. It substituted
+        // silently before, so a transient RPC failure served a synced copy as
+        // though it were live — and the copy can lag, and covers fewer clients
+        // than the live query does.
+        return {
+          data,
+          count: data.length,
+          hint:
+            `NOTE: the live meetings query failed, so this came from a SYNCED COPY that can lag behind and may not ` +
+            `cover every client. Treat it as indicative, say it may be incomplete, and do not state that a client ` +
+            `has no meetings on the strength of it. This covers the last ${windowDays} days.`,
+        };
       }
       default: return fail(`Unknown report: "${report}" — valid reports are my_tasks, meetings, upcoming_meetings, search_meetings, meeting_details, client_meetings`, "invalid_call");
     }
