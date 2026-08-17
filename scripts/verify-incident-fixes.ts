@@ -206,19 +206,38 @@ console.log("\n7. The prompt carries the rules that were missing");
   // Not exported — mirrored here so the property is pinned even though the
   // implementation lives inside providers.ts.
   const endsWithUnfulfilledPromise = (text: string): boolean => {
-    const tail = text.trim().slice(-300).toLowerCase();
-    if (!tail) return false;
-    return [
-      /\b(let me|i'?ll|i will|i'?m going to|give me a moment to|one moment while i)\s+(just\s+)?(check|look|pull|search|fetch|find|dig|confirm|verify|read|open|review|see|grab|retrieve|take a look|have a look)\b[^.?!]*[.?!]?\s*$/,
-      /\b(checking|searching|looking|pulling|fetching|digging)\b[^.?!]{0,40}(now|next|first)?\s*(\.\.\.|…)?\s*$/,
-      /\b(hold on|one moment|bear with me|stand by)\b[^.?!]*[.?!]?\s*$/,
-    ].some((p) => p.test(tail));
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    const parts = trimmed.split(/(?<=[.!?])\s+|\n+/).filter((x) => x.trim());
+    const last = (parts[parts.length - 1] || "").trim().toLowerCase();
+    if (!last || last.length > 220) return false;
+  // "Right - checking now..." and "Fair challenge - let me try": a short
+  // interjection before a dash is throat-clearing, not the sentence. Strip it,
+  // or the gerund test never sees the verb it is looking for.
+  const core = last.replace(/^[^\u2014\u2013-]{0,24}[\u2014\u2013-]+\s*/, "") || last;
+    const ACTION = "check|look|pull|search|fetch|find|dig|confirm|verify|read|open|review|see|grab|retrieve|gather|compile|draft|write up|try|attempt|have a look|take a look";
+    if (new RegExp(`^(?:just |quickly |now |first )?(${ACTION.replace(/\|/g, "ing|")}ing)\\b`).test(core)) return true;
+    if (/^(one moment|hold on|bear with me|stand by|give me a second|give me a moment)\b/.test(core)) return true;
+    if (/\blet me know\b/.test(core)) return false;
+    return new RegExp(
+      `\\b(let me|i'?ll|i will|i'?m going to|i am going to|going to|about to)\\s+(?:\\w+\\s+){0,2}(${ACTION})\\b`
+    ).test(core);
   };
-  // The real stalled reply, verbatim.
-  check("catches the reply that actually stalled",
-    endsWithUnfulfilledPromise("Neither search actually surfaced a direct thread with Samantha at BeOne about the retainer continuation. Let me check the specific thread I did find."));
+  // Every one of these is a REAL stall from Chris's sessions. The first
+  // version of this guard caught only the second, because it was written from
+  // that single example — and the other three shipped looking fixed.
+  const REAL_STALLS = [
+    "She's already replied — 26 minutes after your email went out. Pulling the full message before drafting a reply.",
+    "Neither search actually surfaced a direct thread with Samantha at BeOne about the retainer continuation. Let me check the specific thread I did find.",
+    "I need Kaisa's latest message before I draft anything. Checking Slack, meetings, and the Zurich Instruments record for it.",
+    "Fair challenge — let me actually try rather than assume.",
+  ];
+  for (const t of REAL_STALLS) {
+    check(`catches: "…${t.slice(-46)}"`, endsWithUnfulfilledPromise(t));
+  }
   check("catches 'I'll pull the details'", endsWithUnfulfilledPromise("Found two contracts. I'll pull the details."));
   check("catches a trailing 'checking now…'", endsWithUnfulfilledPromise("Right — checking now…"));
+  check("catches a gerund opening the last sentence", endsWithUnfulfilledPromise("Found the contract. Pulling the delivery figures now."));
   // Must NOT fire: these are complete answers.
   check("ignores 'let me know if…' (an invitation, not a promise)",
     !endsWithUnfulfilledPromise("Here's the draft. Let me know if you want it shorter."));
@@ -249,6 +268,30 @@ console.log("\n7. The prompt carries the rules that were missing");
   check("a short topic change still inherits (bounded, and only ever upgrades)", topicChange);
   const longNew = "write a 900 word thought leadership article about AI visibility in the swiss insurance market covering GEO, AEO and the practical steps a marketing team should take this quarter to get cited by assistants".length > 200;
   check("a long new request does not inherit", longNew);
+}
+
+{
+  console.log("\n11. A truncated round is not a finished answer");
+  // Mirrors stoppedAbnormally() in providers.ts.
+  const stoppedAbnormally = (reason: string | null | undefined): boolean => {
+    if (!reason) return false;
+    return /^(max_tokens|length|MAX_TOKENS|content_filter|SAFETY|RECITATION|refusal|PROHIBITED_CONTENT|MALFORMED_FUNCTION_CALL)$/i.test(String(reason).trim());
+  };
+  // Truncation, per provider. Every one of these was being recorded as a
+  // clean finish, so the forced-final guard never fired and the user got a
+  // reply cut off mid-sentence presented as complete.
+  for (const r of ["max_tokens", "length", "MAX_TOKENS"]) {
+    check(`truncation "${r}" is abnormal`, stoppedAbnormally(r));
+  }
+  for (const r of ["content_filter", "SAFETY", "RECITATION", "refusal"]) {
+    check(`filtered/refused "${r}" is abnormal`, stoppedAbnormally(r));
+  }
+  // Genuine finishes must still be treated as finished, or every turn pays for
+  // a needless extra call.
+  for (const r of ["end_turn", "stop", "STOP", "tool_use", "tool_calls"]) {
+    check(`natural stop "${r}" is NOT abnormal`, !stoppedAbnormally(r));
+  }
+  check("an absent reason is not abnormal", !stoppedAbnormally(null) && !stoppedAbnormally(undefined) && !stoppedAbnormally(""));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

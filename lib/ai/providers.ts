@@ -185,25 +185,68 @@ async function* withStallGuard<T>(iterable: AsyncIterable<T>): AsyncGenerator<T>
  * Does this reply END by promising an action it never took?
  *
  * The tool loop treats `stop_reason: "end_turn"` with no tool calls as a clean
- * finish, because normally it is. But a model that writes "Let me check the
- * specific thread I did find." and then stops has ended cleanly by that test
- * while leaving the user with narration and no answer — which is exactly the
- * dangling "let me look that up…" this file already guards against elsewhere,
- * arriving through the one door that guard does not cover.
+ * finish, because normally it is. A model that writes "Pulling the full
+ * message before drafting a reply." and then stops has ended cleanly by that
+ * test while leaving the user with narration and no answer.
  *
- * Anchored at the END of the text and on FIRST-PERSON INTENT, so it fires on
- * "let me check that" but not on "let me know if you want more" (an invitation
- * to the user, not a promise) and not on a mid-reply aside that the model then
- * actually acted on.
+ * Works on the FINAL SENTENCE, not a character window. The first version of
+ * this used a 40-character cap after the verb and was tuned to the single
+ * example I had ("Let me check the specific thread I did find."). It missed
+ * three of five real stalls, including the one that prompted the rewrite —
+ * "Pulling the full message before drafting a reply." is 41 characters past
+ * the verb. Tuning a guard to one instance of the thing it guards against is
+ * how it ships looking finished.
+ *
+ * Two shapes, both anchored on the last sentence:
+ *   1. a GERUND opening it — "Pulling the…", "Checking Slack…". This is the
+ *      commonest phrasing and the old version could not see it at all.
+ *   2. first-person INTENT — "let me check", "I'll pull", "I'm going to look".
+ *
+ * "let me know" is excluded explicitly: it invites the user to act, it does
+ * not promise that we will.
  */
+/**
+ * Did this round stop because the model had FINISHED, or because something cut
+ * it off?
+ *
+ * The loops all asked "was it a tool call?" and treated every other outcome as
+ * a natural finish. That silently included TRUNCATION: Anthropic's
+ * "max_tokens", OpenAI/xAI's "length", Gemini's "MAX_TOKENS". A reply cut off
+ * mid-sentence was therefore recorded as a complete answer, the forced-final
+ * guard declined to fire (it only runs on an unclean stop or empty text), and
+ * the user was left with whatever had streamed before the ceiling — which
+ * looks exactly like the model narrating an intention and then stopping.
+ *
+ * Present in all four chains, so it is fixed in all four.
+ *
+ * Also catches the content filters and Gemini's RECITATION, where the honest
+ * outcome is likewise "this did not finish" rather than a shrug.
+ */
+function stoppedAbnormally(reason: string | null | undefined): boolean {
+  if (!reason) return false;
+  return /^(max_tokens|length|MAX_TOKENS|content_filter|SAFETY|RECITATION|refusal|PROHIBITED_CONTENT|MALFORMED_FUNCTION_CALL)$/i.test(String(reason).trim());
+}
+
 function endsWithUnfulfilledPromise(text: string): boolean {
-  const tail = text.trim().slice(-300).toLowerCase();
-  if (!tail) return false;
-  return [
-    /\b(let me|i'?ll|i will|i'?m going to|give me a moment to|one moment while i)\s+(just\s+)?(check|look|pull|search|fetch|find|dig|confirm|verify|read|open|review|see|grab|retrieve|take a look|have a look)\b[^.?!]*[.?!]?\s*$/,
-    /\b(checking|searching|looking|pulling|fetching|digging)\b[^.?!]{0,40}(now|next|first)?\s*(\.\.\.|…)?\s*$/,
-    /\b(hold on|one moment|bear with me|stand by)\b[^.?!]*[.?!]?\s*$/,
-  ].some((p) => p.test(tail));
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  // Last sentence, however it is punctuated. Bullet lists and headings end in
+  // newlines rather than full stops, so split on both.
+  const parts = trimmed.split(/(?<=[.!?])\s+|\n+/).filter((x) => x.trim());
+  const last = (parts[parts.length - 1] || "").trim().toLowerCase();
+  if (!last || last.length > 220) return false;
+  // "Right - checking now..." and "Fair challenge - let me try": a short
+  // interjection before a dash is throat-clearing, not the sentence. Strip it,
+  // or the gerund test never sees the verb it is looking for.
+  const core = last.replace(/^[^\u2014\u2013-]{0,24}[\u2014\u2013-]+\s*/, "") || last;   // a long closing sentence is an answer, not a promise
+
+  const ACTION = "check|look|pull|search|fetch|find|dig|confirm|verify|read|open|review|see|grab|retrieve|gather|compile|draft|write up|try|attempt|have a look|take a look";
+  if (new RegExp(`^(?:just |quickly |now |first )?(${ACTION.replace(/\|/g, "ing|")}ing)\\b`).test(core)) return true;
+  if (/^(one moment|hold on|bear with me|stand by|give me a second|give me a moment)\b/.test(core)) return true;
+  if (/\blet me know\b/.test(core)) return false;   // an invitation, not a promise
+  return new RegExp(
+    `\\b(let me|i'?ll|i will|i'?m going to|i am going to|going to|about to)\\s+(?:\\w+\\s+){0,2}(${ACTION})\\b`
+  ).test(core);
 }
 
 const FORCED_FINAL_NUDGE =
@@ -6678,9 +6721,15 @@ async function streamAnthropic(
 
     console.log(`[Anthropic] Round ${round}: stop_reason=${finalMessage.stop_reason}, toolUseBlocks=${toolUseBlocks.length}, textLength=${fullText.length}, in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens}`);
 
-    // If no tool calls were made, we're done
+    // If no tool calls were made, we're done — UNLESS the round was cut off
+    // rather than finished. A max_tokens stop is not an answer, and calling it
+    // one is what let a truncated reply reach the user as though complete.
     if (finalMessage.stop_reason !== "tool_use" || toolUseBlocks.length === 0) {
-      loopEndedCleanly = true;
+      if (stoppedAbnormally(finalMessage.stop_reason)) {
+        console.warn(`[Anthropic] Round ${round} was CUT OFF (stop_reason=${finalMessage.stop_reason}) — not a finished answer; forcing a final pass`);
+      } else {
+        loopEndedCleanly = true;
+      }
       break;
     }
 
@@ -7977,9 +8026,14 @@ async function streamXAIChatCompletions(
 
     console.log(`[xAI] Round ${round}: finishReason=${finishReason}, toolCalls=${toolCalls.size}, textLen=${fullText.length}, in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens}`);
 
-    // If no tool calls, we're done
+    // If no tool calls, we're done — UNLESS the round was cut off rather than
+    // finished. A "length" finish is truncation, not an answer.
     if (finishReason !== "tool_calls" || toolCalls.size === 0) {
-      loopEndedCleanly = true;
+      if (stoppedAbnormally(finishReason)) {
+        console.warn(`[Chain] Round ${round} was CUT OFF (finishReason=${finishReason}) — not a finished answer; forcing a final pass`);
+      } else {
+        loopEndedCleanly = true;
+      }
       break;
     }
 
@@ -8847,9 +8901,14 @@ async function streamGemini(
     }
     if (stalled) break;
 
-    // If no tool calls, we're done
+    // If no tool calls, we're done — UNLESS the round was cut off rather than
+    // finished. A "length" finish is truncation, not an answer.
     if (finishReason !== "tool_calls" || toolCalls.size === 0) {
-      loopEndedCleanly = true;
+      if (stoppedAbnormally(finishReason)) {
+        console.warn(`[Chain] Round ${round} was CUT OFF (finishReason=${finishReason}) — not a finished answer; forcing a final pass`);
+      } else {
+        loopEndedCleanly = true;
+      }
       break;
     }
 
@@ -9594,9 +9653,14 @@ async function streamOpenAI(
     }
     if (stalled) break;
 
-    // If no tool calls, we're done
+    // If no tool calls, we're done — UNLESS the round was cut off rather than
+    // finished. A "length" finish is truncation, not an answer.
     if (finishReason !== "tool_calls" || toolCalls.size === 0) {
-      loopEndedCleanly = true;
+      if (stoppedAbnormally(finishReason)) {
+        console.warn(`[Chain] Round ${round} was CUT OFF (finishReason=${finishReason}) — not a finished answer; forcing a final pass`);
+      } else {
+        loopEndedCleanly = true;
+      }
       break;
     }
 
