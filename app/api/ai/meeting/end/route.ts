@@ -220,7 +220,17 @@ export async function POST(req: NextRequest) {
           .select("information_company_context")
           .eq("id_workspace", meetingSession.id_workspace)
           .maybeSingle();
-        companyCtx = String(st?.information_company_context || "").slice(0, 3500);
+        // Say so when it is cut. This is a prompt-budget cap, not the silent
+        // write-truncation fixed in the settings route — no data is lost — but
+        // the reading hazard is the same one: the longest stored context is
+        // 4,111 chars against this 3,500 ceiling, so it IS firing, and a note
+        // that stops mid-sentence reads to the model as a complete note.
+        const fullCtx = String(st?.information_company_context || "");
+        companyCtx =
+          fullCtx.length > 3500
+            ? fullCtx.slice(0, 3500) +
+              `\n\n[This company note was cut off here to fit — ${fullCtx.length - 3500} more characters exist. Do not treat the list above as complete.]`
+            : fullCtx;
       } catch { /* optional */ }
       try {
         const xai = getXAIClient();
