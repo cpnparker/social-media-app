@@ -78,7 +78,9 @@ export interface AIProviderConfig {
   /** Conversation visibility. In "team" conversations, personal-scope tool reports
    *  (personal MeetingBrain meetings/tasks, all Slack reports) are blocked so one
    *  user's private data can't land in a thread every workspace member can read.
-   *  client_meetings stays available — that report is workspace-shared by design. */
+   *  client_meetings stays available — everything it returns is workspace-visible
+   *  by the derived rule (client meetings, plus internal group meetings of 3+),
+   *  and personnel-sensitive internal ones are dropped before they reach here. */
   conversationVisibility?: "private" | "team";
   /** Expose the create_scheduled_task tool (NL scheduling of recurring prompts).
    *  Set ONLY by the interactive chat route — never by the headless scheduled
@@ -3682,7 +3684,7 @@ export const MEETINGBRAIN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         report: {
           type: "string",
           enum: ["my_tasks", "meetings", "upcoming_meetings", "search_meetings", "meeting_details", "client_meetings"],
-          description: "my_tasks = open tasks/action items, meetings = recent past meetings with summaries, upcoming_meetings = scheduled future meetings, search_meetings = search by keyword, meeting_details = full meeting details including transcript (requires meeting_id), client_meetings = summaries of meetings with external client attendees across the workspace",
+          description: "my_tasks = open tasks/action items, meetings = recent past meetings with summaries, upcoming_meetings = scheduled future meetings, search_meetings = search by keyword, meeting_details = full meeting details including transcript (requires meeting_id), client_meetings = workspace-visible meetings across the whole company: BOTH client meetings (external client attendees) AND internal team meetings of 3+ colleagues. Each row carries meeting_kind — read it before describing a meeting, because calling an internal standup a client meeting is a mistake the user may not catch. Internal 1:1s, vendor meetings and anything that looks like a personnel matter are excluded",
         },
         query: { type: "string", description: "Search keyword for search_meetings" },
         meeting_id: { type: "string", description: "Meeting ID for meeting_details (from search_meetings results)" },
@@ -3990,7 +3992,7 @@ export async function queryMeetingBrain(
         ``,
         `Tell the user (briefly, friendly):`,
         `- Personal meetings and tasks can only be discussed in a private conversation — ask them to switch to or start a private chat for that.`,
-        `- If they're after a CLIENT meeting, you can use report: "client_meetings" right here — client meetings are shared with the whole workspace.`,
+        `- If they're after a CLIENT meeting or an INTERNAL TEAM meeting (3+ colleagues), you can use report: "client_meetings" right here — both are shared with the whole workspace. Only 1:1s and personnel matters stay private.`,
       ].join("\n"),
     };
   }
@@ -4406,12 +4408,57 @@ export async function queryMeetingBrain(
         const twoWeeksBack = new Date(); twoWeeksBack.setDate(twoWeeksBack.getDate() - 14);
         const CLIENT_MEETINGS_LIMIT = 100;
 
-        const { data: meetings, error: mtgErr } = await mbDb.rpc("get_client_meetings", {
+        // Prefer the widened function: it shares anything the derived
+        // visibility rule calls `team`, which is client meetings PLUS internal
+        // group meetings — roughly 1,150 events against get_client_meetings'
+        // 140. Falls back to the narrower function when it is not deployed, so
+        // this ships before the migration and simply does less.
+        //
+        // The PERSONNEL CARVE-OUT is applied below, in TypeScript, because
+        // isPersonnelSensitive has exactly one implementation and duplicating
+        // it in SQL would let the two drift. That means the RPC hands back
+        // personnel-sensitive internal meetings and this code must DROP them —
+        // not merely annotate them. An annotation is advice; this is access.
+        let usedVisibilityRule = true;
+        let { data: meetings, error: mtgErr } = await mbDb.rpc("get_visible_meetings", {
           p_internal_domain: internalDomain,
           p_client_domains: clientDomains,
           p_since: since.toISOString(),
           p_limit: CLIENT_MEETINGS_LIMIT,
         });
+        if (mtgErr) {
+          console.warn(`[MeetingBrain] get_visible_meetings unavailable (${mtgErr.message.slice(0, 80)}) — falling back to client-only`);
+          usedVisibilityRule = false;
+          ({ data: meetings, error: mtgErr } = await mbDb.rpc("get_client_meetings", {
+            p_internal_domain: internalDomain,
+            p_client_domains: clientDomains,
+            p_since: since.toISOString(),
+            p_limit: CLIENT_MEETINGS_LIMIT,
+          }));
+        }
+
+        // Drop personnel-sensitive INTERNAL meetings before anything else sees
+        // them. Client meetings are never dropped: they are client work, the
+        // team is entitled to them, and a client meeting that happens to
+        // mention a departure is still client work. This is the carve-out the
+        // rule specifies — "personnel beats team" — and it is the only thing
+        // standing between an all-hands-readable list and a leadership
+        // conversation about who is leaving.
+        let withheldPersonnel = 0;
+        if (usedVisibilityRule && Array.isArray(meetings)) {
+          meetings = (meetings as any[]).filter((r) => {
+            if (r.is_client_meeting) return true;
+            if (r.visibility_reason === "override") return true;  // a human said so
+            if (isPersonnelSensitive(r.meeting_title, r.summary, r.key_topics, r.next_steps)) {
+              withheldPersonnel++;
+              return false;
+            }
+            return true;
+          });
+          if (withheldPersonnel) {
+            console.log(`[MeetingBrain] client_meetings: withheld ${withheldPersonnel} personnel-sensitive internal meeting(s)`);
+          }
+        }
 
         if (!mtgErr) {
           // WHICH client was each meeting with?
@@ -4465,6 +4512,14 @@ export async function queryMeetingBrain(
               // cap is about payload size, and attribution no longer depends
               // on it.
               attendees: isRecent ? r.external_attendees : undefined,
+              // Which KIND of meeting this is. Without it the model presents an
+              // internal standup as client work, because the report is named
+              // "client_meetings" and every row used to be one.
+              meeting_kind:
+                r.visibility_reason === "internal_group" ? "internal team meeting"
+                : r.visibility_reason === "override" ? "shared by an explicit decision"
+                : r.visibility_reason ? "client meeting"
+                : undefined,
             };
           });
           console.log(
@@ -4474,10 +4529,17 @@ export async function queryMeetingBrain(
           // Always state the window. Without it "no client meetings" reads as
           // "we have never met them" rather than "not in the last N days".
           const atCap = data.length >= CLIENT_MEETINGS_LIMIT;
+          const internalCount = data.filter((d: any) => d.meeting_kind === "internal team meeting").length;
           return {
             data,
             count: data.length,
             hint:
+              (usedVisibilityRule
+                ? `This list is workspace-visible meetings, which is BOTH client meetings AND internal team meetings (3+ colleagues) — ${internalCount} of these ${data.length} are internal. Check meeting_kind before describing one: calling an internal standup a client meeting is wrong in a way the user may not catch. ` +
+                  (withheldPersonnel > 0
+                    ? `${withheldPersonnel} internal meeting(s) were WITHHELD from this list because they appear to concern people rather than work (redundancy, departures, pay, performance). Do not speculate about what they were; if the user needs them, they can open them in a private conversation. `
+                    : "")
+                : `This list is CLIENT meetings only — the workspace-visibility rule is not deployed on this database, so internal team meetings are not included and "nothing found" does not mean nothing happened. `) +
               `This covers the last ${windowDays} days only` +
               (atCap
                 ? `, and hit the ${CLIENT_MEETINGS_LIMIT}-meeting cap — the cap drops the OLDEST meetings first, so a ` +
