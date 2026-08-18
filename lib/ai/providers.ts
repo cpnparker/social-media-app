@@ -1139,9 +1139,9 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             properties: {
               layout: {
                 type: "string",
-                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "closing"],
+                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "closing"],
                 description:
-                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
+                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
               },
               title: { type: "string", description: "Slide heading." },
               subtitle: {
@@ -1157,6 +1157,35 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                 description: "Main text. Put each bullet on its own line; a single line stays as a paragraph.",
               },
               bodyRight: { type: "string", description: "Right-hand column text. two-column layout only." },
+              tracks: {
+                type: "array",
+                description:
+                  "Workstreams for the timeline-parallel layout, one entry per track (two or three reads best). Ignored by every other layout. Bars are positioned and sized by real dates, so overlapping phases genuinely overlap on the slide.",
+                items: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string", description: "Track name, shown at the left. Keep it to two or three words." },
+                    phases: {
+                      type: "array",
+                      description: "Phases within this track.",
+                      items: {
+                        type: "object",
+                        properties: {
+                          start: { type: "string", description: "ISO date, YYYY-MM-DD. REQUIRED — the layout positions by real dates and cannot interpret 'late August'." },
+                          end: { type: "string", description: "ISO date, YYYY-MM-DD. Omit for a single-day milestone, which draws as a dot rather than a bar." },
+                          label: { type: "string", description: "Short phase name. Long labels are placed beside the bar rather than inside it." },
+                        },
+                        required: ["start", "label"],
+                      },
+                    },
+                  },
+                  required: ["name", "phases"],
+                },
+              },
+              today: {
+                type: "string",
+                description: "ISO date for the 'today' rule on timeline-parallel. Defaults to the real today; drawn only when it falls inside the plotted range.",
+              },
               milestones: {
                 type: "array",
                 description:

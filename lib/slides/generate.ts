@@ -15,7 +15,7 @@
  */
 
 import {
-  COLOR, GRID, CANVAS, TYPE, TIMELINE, LAYOUT_STYLE, LOGO_PLACEMENT,
+  COLOR, GRID, CANVAS, TYPE, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, LAYOUT_STYLE, LOGO_PLACEMENT,
   rgb, logoUrl, type SlideLayout, type TypeStyle,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
@@ -34,6 +34,20 @@ export interface Milestone {
   highlight?: boolean;
 }
 
+export interface TrackPhase {
+  /** ISO date, YYYY-MM-DD. Required — proportional positioning is the whole
+   *  point of this layout, and it cannot be derived from "late August". */
+  start: string;
+  /** ISO date. Omit for a single-day milestone, which renders as a dot. */
+  end?: string;
+  label: string;
+}
+
+export interface Track {
+  name: string;
+  phases: TrackPhase[];
+}
+
 export interface SlideInput {
   layout?: SlideLayout;
   title?: string;
@@ -42,6 +56,10 @@ export interface SlideInput {
   body?: string;
   bodyRight?: string;
   milestones?: Milestone[];
+  tracks?: Track[];
+  /** ISO date for the "today" rule. Defaults to the real today; drawn only if
+   *  it falls inside the plotted range. */
+  today?: string;
   notes?: string;
 }
 
@@ -171,7 +189,7 @@ function logoRequests(objectId: string, pageObjectId: string, layout: SlideLayou
 function filledShape(
   objectId: string,
   pageObjectId: string,
-  shapeType: "RECTANGLE" | "ELLIPSE",
+  shapeType: "RECTANGLE" | "ROUND_RECTANGLE" | "ELLIPSE",
   color: string,
   box: { x: number; y: number; width: number; height: number }
 ): Req[] {
@@ -248,6 +266,212 @@ function timelineRequests(
       }, { align: "CENTER" }),
     );
   });
+  return requests;
+}
+
+/** Parse an ISO date to a UTC timestamp. UTC deliberately: these are calendar
+ *  dates, and a local-midnight reading shifts them a day either side of the
+ *  meridian, which would silently move a milestone on the chart. */
+function isoDate(s: string | undefined): number | null {
+  if (!s) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s.trim());
+  if (!m) return null;
+  const t = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  return Number.isFinite(t) ? t : null;
+}
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+/** Month-start ticks across the range. Months are the right grain for a
+ *  programme measured in weeks; days would be unreadable and quarters useless. */
+function monthTicks(min: number, max: number): { t: number; label: string }[] {
+  const out: { t: number; label: string }[] = [];
+  const d = new Date(min);
+  let y = d.getUTCFullYear();
+  let mo = d.getUTCMonth();
+  // Start at the first month boundary at or after `min`.
+  if (d.getUTCDate() !== 1) { mo += 1; if (mo > 11) { mo = 0; y += 1; } }
+  for (let guard = 0; guard < 60; guard++) {
+    const t = Date.UTC(y, mo, 1);
+    if (t > max) break;
+    // Year only in January (and on the first tick), so the axis does not repeat
+    // "26" six times — and so "Jul 26" is never misread as the 26th of July.
+    out.push({ t, label: mo === 0 || out.length === 0 ? `${MONTHS[mo]} ${y}` : MONTHS[mo] });
+    mo += 1; if (mo > 11) { mo = 0; y += 1; }
+  }
+  return out;
+}
+
+/** Two or more workstreams on one shared, date-proportional axis.
+ *
+ *  Two things make this readable rather than merely correct:
+ *
+ *  1. Phases that overlap in time are packed onto SUB-ROWS within their track.
+ *     Drawn on one row they simply cover each other, which hides the overlap —
+ *     the one thing the slide exists to show.
+ *  2. A phase label goes INSIDE its bar when the bar is wide enough for it, and
+ *     to the right when it is not, bounded by the next bar's start. Labels
+ *     floated above collide as soon as two phases begin close together.
+ */
+function parallelTimelineRequests(
+  page: string,
+  id: (s: string) => string,
+  tracks: Track[],
+  todayIso?: string
+): Req[] {
+  const requests: Req[] = [];
+  const P = TIMELINE_PARALLEL;
+
+  interface Placed {
+    start: number; end: number | null; label: string; row: number;
+    barX: number; barW: number; isPoint: boolean;
+    inside: boolean; labelX: number; labelW: number; footprintEnd: number;
+  }
+
+  const stamps: number[] = [];
+  const parsed = tracks.map((tr) => {
+    const items = tr.phases
+      .map((ph) => {
+        const s = isoDate(ph.start);
+        if (s === null) return null;
+        const e = isoDate(ph.end);
+        stamps.push(s);
+        if (e !== null) stamps.push(e);
+        return { start: s, end: e !== null && e > s ? e : null, label: ph.label };
+      })
+      .filter(Boolean) as { start: number; end: number | null; label: string }[];
+    items.sort((a, b) => a.start - b.start);
+    return { name: tr.name, items };
+  });
+
+  // Without at least two distinct dates there is no range to be proportional
+  // to. Nothing is drawn rather than something wrong.
+  if (stamps.length < 2) return requests;
+  let min = Math.min(...stamps);
+  let max = Math.max(...stamps);
+  if (max === min) return requests;
+  const pad = (max - min) * P.rangePad;
+  min -= pad; max += pad;
+
+  const plotX = GRID.margin + P.labelGutter;
+  const plotW = GRID.contentWidth - P.labelGutter;
+  const x = (t: number) => plotX + ((t - min) / (max - min)) * plotW;
+
+  // Roboto at this size averages a little over half the point size per
+  // character; good enough to decide inside-vs-outside without font metrics.
+  const textWidth = (s: string) => s.length * 4.3;
+
+  // Packing happens in PIXELS, not dates, and against each phase's FOOTPRINT —
+  // the bar plus whatever room its label needs beside it. Packing on dates
+  // alone was not enough: a one-day phase produces an eight-point bar whose
+  // label is ten times wider, so two phases a week apart do not overlap as
+  // dates and collide badly as drawn.
+  const placedTracks = parsed.map((tr) => {
+    const rowEnds: number[] = [];
+    const items: Placed[] = tr.items.map((it) => {
+      const isPoint = it.end === null;
+      const barX = isPoint ? x(it.start) - P.pointSize / 2 : x(it.start);
+      const barW = isPoint ? P.pointSize : Math.max(P.minBarWidth, x(it.end!) - x(it.start));
+      const natural = textWidth(it.label) + 10;
+      const inside = !isPoint && barW >= natural + 4;
+      const labelX = barX + barW + 6;
+      const labelW = inside ? barW - 12 : Math.min(natural, 150);
+      const footprintEnd = inside ? barX + barW : labelX + labelW;
+
+      let row = rowEnds.findIndex((end) => barX >= end);
+      if (row === -1) { row = rowEnds.length; rowEnds.push(footprintEnd + 8); }
+      else rowEnds[row] = footprintEnd + 8;
+
+      return { ...it, row, barX, barW, isPoint, inside, labelX, labelW, footprintEnd };
+    });
+    return { name: tr.name, items, rows: Math.max(1, rowEnds.length) };
+  });
+
+  let cursorY = P.bandY;
+  placedTracks.forEach((tr, ti) => {
+    const color = TRACK_COLORS[ti % TRACK_COLORS.length];
+    const trackHeight = tr.rows * P.rowHeight;
+
+    // A white band behind each track, with the slide's off-white showing
+    // through the gap between. Without it, a track that packs onto three rows
+    // reads as six loose bars rather than as two workstreams.
+    requests.push(
+      ...filledShape(id(`band${ti}`), page, "RECTANGLE", COLOR.white, {
+        x: GRID.margin,
+        y: cursorY - P.bandPadding,
+        width: GRID.contentWidth,
+        height: trackHeight + P.bandPadding,
+      })
+    );
+
+    requests.push(
+      ...textBox(id(`tn${ti}`), page, tr.name, TYPE.trackName, {
+        x: GRID.margin,
+        y: cursorY + trackHeight / 2 - 12,
+        width: P.labelGutter - 12,
+        height: 24,
+      })
+    );
+
+    tr.items.forEach((it, pi) => {
+      const barY = cursorY + it.row * P.rowHeight;
+
+      requests.push(
+        ...filledShape(
+          id(`p${ti}_${pi}`), page,
+          it.isPoint ? "ELLIPSE" : "ROUND_RECTANGLE", color,
+          {
+            x: it.barX,
+            y: it.isPoint ? barY + P.barHeight / 2 - P.pointSize / 2 : barY,
+            width: it.barW,
+            height: it.isPoint ? P.pointSize : P.barHeight,
+          }
+        ),
+        ...textBox(
+          id(`pl${ti}_${pi}`), page, it.label,
+          it.inside ? TYPE.phaseInBar : TYPE.phaseLabel,
+          {
+            x: it.inside ? it.barX + 6 : it.labelX,
+            y: barY + (it.inside ? 4 : 3),
+            width: it.labelW,
+            height: P.barHeight,
+          }
+        )
+      );
+    });
+
+    cursorY += trackHeight + P.trackGap;
+  });
+
+  const axisY = cursorY - P.trackGap + P.axisGap;
+  requests.push(
+    ...filledShape(id("paxis"), page, "RECTANGLE", COLOR.periwinkle, {
+      x: plotX, y: axisY, width: plotW, height: P.axisThickness,
+    })
+  );
+  monthTicks(min, max).forEach((tick, i) => {
+    requests.push(
+      ...textBox(id(`tick${i}`), page, tick.label, TYPE.axisTick, {
+        x: x(tick.t) - 24, y: axisY + 5, width: 48, height: P.tickLabelHeight,
+      }, { align: "CENTER" })
+    );
+  });
+
+  // "Today" rule last, so it sits above the bars.
+  const now = new Date();
+  const today = isoDate(todayIso) ??
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  if (today > min && today < max) {
+    const tx = x(today);
+    requests.push(
+      ...filledShape(id("today"), page, "RECTANGLE", COLOR.coral, {
+        x: tx, y: P.bandY - 8, width: 1.4, height: axisY - P.bandY + 8,
+      }),
+      ...textBox(id("todaylbl"), page, "Today", TYPE.todayLabel, {
+        x: tx - 22, y: P.bandY - 22, width: 44, height: 14,
+      }, { align: "CENTER" })
+    );
+  }
   return requests;
 }
 
@@ -337,6 +561,20 @@ export function buildSlideRequests(slide: SlideInput, index: number): Req[] {
         x: GRID.margin, y: GRID.bodyY - 8, width: GRID.contentWidth, height: 24,
       }),
       ...timelineRequests(page, id, slide.milestones || []),
+    );
+  } else if (layout === "timeline-parallel") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+      }),
+      ...textBox(id("sub"), page, slide.subtitle, bodyStyle, {
+        x: GRID.margin, y: GRID.bodyY - 8, width: GRID.contentWidth, height: 24,
+      }),
+      ...parallelTimelineRequests(page, id, slide.tracks || [], slide.today),
     );
   } else if (layout === "two-column") {
     requests.push(

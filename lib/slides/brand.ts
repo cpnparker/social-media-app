@@ -131,6 +131,11 @@ export const TYPE: Record<string, TypeStyle> = {
   milestoneDate: { font: "Roboto", size: 9, bold: true, color: COLOR.blue, caps: true },
   milestoneName: { font: "Playfair Display", size: 12, color: COLOR.navy },
   milestoneText: { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
+  trackName:     { font: "Roboto", size: 8, bold: true, color: COLOR.navy, caps: true },
+  phaseLabel:    { font: "Roboto", size: 8, bold: true, color: COLOR.navy },
+  phaseInBar:    { font: "Roboto", size: 8, color: COLOR.white },
+  axisTick:      { font: "Roboto", size: 7, weight: 300, color: COLOR.ink },
+  todayLabel:    { font: "Roboto", size: 7, bold: true, color: COLOR.coral, caps: true },
 };
 
 /* ─────────────── Logo ─────────────── */
@@ -180,10 +185,11 @@ export type SlideLayout =
   | "case-study"
   | "dark-index"
   | "timeline"
+  | "timeline-parallel"
   | "closing";
 
 export const LAYOUTS: SlideLayout[] = [
-  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "closing",
+  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "closing",
 ];
 
 /** Horizontal timeline: an axis rule with evenly spaced milestone markers.
@@ -206,6 +212,40 @@ export const TIMELINE = {
   slotGutter: 10,
 } as const;
 
+/** Parallel tracks against ONE shared, date-proportional axis.
+ *
+ *  The single-track `timeline` spaces milestones evenly by slot, which is right
+ *  when a deck is showing sequence. This layout exists for the case that cannot
+ *  express: two workstreams running at once, where the point IS that a phase on
+ *  one track overlaps a phase on the other. Even spacing would hide exactly the
+ *  thing the slide is meant to show, so here position is proportional to real
+ *  dates and a bar's width is its actual duration. */
+export const TIMELINE_PARALLEL = {
+  /** Left column holding the track names. */
+  labelGutter: 1.28 * IN,
+  bandY: 2.15 * IN,
+  /** One sub-row: a bar plus the breathing room under it. Tracks grow downward
+   *  as overlapping phases are packed onto extra rows. */
+  rowHeight: 30,
+  barHeight: 20,
+  trackGap: 20,
+  /** Breathing room inside each track's background band. */
+  bandPadding: 8,
+  axisGap: 0.16 * IN,
+  axisThickness: 1,
+  tickLabelHeight: 0.24 * IN,
+  /** Zero-duration milestones render as a dot rather than a hairline bar. */
+  pointSize: 11,
+  minBarWidth: 6,
+  /** Padding either side of the data range, as a fraction of its span, so the
+   *  first and last bars do not touch the plot edges. */
+  rangePad: 0.04,
+} as const;
+
+/** One colour per track. White text sits on every one of these at full
+ *  contrast, which is why the lighter brand accents are not in the list. */
+export const TRACK_COLORS = [COLOR.blue, COLOR.navy, COLOR.forest, COLOR.coral] as const;
+
 /** Background and logo treatment per archetype. `background: null` means the
  *  slide expects a full-bleed photograph; we fall back to navy when no image is
  *  supplied, which is the least-bad neutral rather than a white slide. */
@@ -222,5 +262,6 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   "case-study": { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "dark-index": { background: COLOR.navy,     logo: "white", logoPlacement: "content", onDark: true },
   timeline:     { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  "timeline-parallel": { background: COLOR.offWhite, logo: "navy", logoPlacement: "content", onDark: false },
   closing:      { background: null,           logo: "white", logoPlacement: "closing", onDark: true },
 };
