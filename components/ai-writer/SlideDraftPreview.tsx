@@ -10,8 +10,10 @@
  * approximated per element.
  */
 
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
+import SlideLightbox from "./SlideLightbox";
 
 const BASE_W = 720;
 const BASE_H = 405;
@@ -52,13 +54,21 @@ function fontStack(font?: string): string {
   return "'Roboto', 'Helvetica Neue', Arial, sans-serif";
 }
 
-function SlideThumb({ slide, index }: { slide: PreviewSlide; index: number }) {
-  const scale = THUMB_W / BASE_W;
+function SlideThumb({
+  slide, index, width = THUMB_W, onClick,
+}: {
+  slide: PreviewSlide; index: number; width?: number; onClick?: () => void;
+}) {
+  const scale = width / BASE_W;
   return (
     <div
-      className="rounded border overflow-hidden shrink-0 bg-white"
-      style={{ width: THUMB_W, height: BASE_H * scale }}
+      className={`rounded border overflow-hidden shrink-0 bg-white ${onClick ? "cursor-zoom-in hover:ring-2 hover:ring-primary/40 transition-shadow" : ""}`}
+      style={{ width, height: BASE_H * scale }}
       aria-label={`Slide ${index + 1}`}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } } : undefined}
     >
       <div
         style={{
@@ -121,6 +131,15 @@ export default function SlideDraftPreview({
   disabled?: boolean;
 }) {
   const count = draft.preview.slides.length;
+  const [zoom, setZoom] = useState<number | null>(null);
+  // Bounded so a slide stays whole on screen: the point of a full view is
+  // reading it without scrolling to find the rest of it. Measured only once a
+  // slide has been clicked, which cannot happen during server rendering.
+  const zoomWidth = zoom === null ? 0 : Math.min(
+    1100,
+    window.innerWidth - 140,
+    (window.innerHeight - 180) * (BASE_W / BASE_H)
+  );
   return (
     <div className="flex-1 min-w-0 rounded-lg border bg-muted/30 px-3 py-3">
       <div className="flex items-center justify-between gap-3 mb-3">
@@ -138,11 +157,19 @@ export default function SlideDraftPreview({
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {draft.preview.slides.map((s, i) => <SlideThumb key={i} slide={s} index={i} />)}
+        {draft.preview.slides.map((s, i) => (
+          <SlideThumb key={i} slide={s} index={i} onClick={() => setZoom(i)} />
+        ))}
       </div>
 
+      {zoom !== null && (
+        <SlideLightbox index={zoom} count={count} onClose={() => setZoom(null)} onIndex={setZoom}>
+          <SlideThumb slide={draft.preview.slides[zoom]} index={zoom} width={zoomWidth} />
+        </SlideLightbox>
+      )}
+
       <p className="text-xs text-muted-foreground mt-2.5">
-        Ask for any changes and the preview updates. Nothing reaches your Drive until you create it.
+        Click a slide to read it full size. Ask for any changes and the preview updates — nothing reaches your Drive until you create it.
       </p>
     </div>
   );

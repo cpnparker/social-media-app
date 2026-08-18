@@ -68,6 +68,7 @@ import MessageBubble from "./MessageBubble";
 import ChatInput, { type ChatInputHandle } from "./ChatInput";
 import ShareDialog from "./ShareDialog";
 import SlideDraftPreview, { type SlideDraft } from "./SlideDraftPreview";
+import SlideLightbox from "./SlideLightbox";
 import type { AIConversation, AIMessageRow, Attachment } from "@/lib/types/ai";
 
 interface CustomerOption {
@@ -151,6 +152,7 @@ export default function ChatPanel({
   // button or asks for changes, which replace it with a new draft.
   const [slidesDraft, setSlidesDraft] = useState<SlideDraft | null>(null);
   const [slidesDraftMessageId, setSlidesDraftMessageId] = useState<string | null>(null);
+  const [slidesZoom, setSlidesZoom] = useState<number | null>(null);
   const [publishingSlides, setPublishingSlides] = useState(false);
   const [slidesPreview, setSlidesPreview] = useState<
     { url: string; title: string; slideCount: number; updated: boolean; thumbnails: string[] } | null
@@ -1753,11 +1755,12 @@ export default function ChatPanel({
                   {slidesPreview.thumbnails.length > 0 ? (
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                       {slidesPreview.thumbnails.map((src, i) => (
-                        <a key={src} href={slidesPreview.url} target="_blank" rel="noopener noreferrer"
-                           className="block rounded border overflow-hidden hover:opacity-80 transition-opacity">
+                        <button key={src} type="button" onClick={() => setSlidesZoom(i)}
+                                aria-label={`Slide ${i + 1}`}
+                                className="block rounded border overflow-hidden cursor-zoom-in hover:ring-2 hover:ring-primary/40 transition-shadow">
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img src={src} alt={`Slide ${i + 1}`} className="w-full h-auto block" loading="lazy" />
-                        </a>
+                        </button>
                       ))}
                     </div>
                   ) : (
@@ -1765,8 +1768,27 @@ export default function ChatPanel({
                       Preview unavailable — the deck itself is fine, open it above.
                     </p>
                   )}
+                  {slidesPreview.thumbnails.length > 0 && (
+                    <p className="text-xs text-muted-foreground mt-2.5">Click a slide to read it full size.</p>
+                  )}
                 </div>
               </div>
+            )}
+            {slidesPreview && slidesZoom !== null && (
+              <SlideLightbox
+                index={slidesZoom}
+                count={slidesPreview.thumbnails.length}
+                onClose={() => setSlidesZoom(null)}
+                onIndex={setSlidesZoom}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={slidesPreview.thumbnails[slidesZoom]}
+                  alt={`Slide ${slidesZoom + 1}`}
+                  className="block rounded shadow-2xl"
+                  style={{ maxWidth: "min(1100px, calc(100vw - 140px))", maxHeight: "calc(100vh - 180px)" }}
+                />
+              </SlideLightbox>
             )}
             {slidesReauth && (
               <div className="flex items-start gap-3 px-4 py-3">
