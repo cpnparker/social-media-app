@@ -1292,8 +1292,23 @@ export async function POST(
       } catch { /* no ledger is not an error */ }
     }
 
+    // Who is away, from the HR calendar. Fetched here because the prompt
+    // builder is synchronous, and cached for 30 minutes inside the module so
+    // this costs one request per instance per half hour rather than one a turn.
+    //
+    // Fails to a block that SAYS it could not check, never to silence: "no
+    // feed" and "nobody is away" must not look the same to the model. That is
+    // the same rule the meetings panel follows, and the reason is the same —
+    // EngineAI asserting that someone is available when it simply did not know.
+    let absenceBlock = "";
+    try {
+      const { fetchAbsences, formatAbsenceBlock, workspaceToday } = await import("@/lib/hr/absences");
+      absenceBlock = formatAbsenceBlock(await fetchAbsences(), workspaceToday());
+    } catch { /* a missing calendar must never cost the user their turn */ }
+
     let systemPrompt = buildSystemPrompt({
       notebookIndex: nbIndex,
+      absenceBlock,
       episodeLedger,
       workspaceConfig,
       clientContext,

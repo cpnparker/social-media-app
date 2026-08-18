@@ -212,6 +212,14 @@ export function buildSystemPrompt(ctx: {
    *  that data appear only where the tool does. */
   resourcingAccess?: boolean;
   /**
+   * Pre-rendered "who is away" block from the HR calendar.
+   *
+   * Fetched in the route because this builder is synchronous. Sits next to the
+   * date rule for a reason: the two together are what stop a holiday claim
+   * read in a 10-day-old email being repeated as current fact.
+   */
+  absenceBlock?: string;
+  /**
    * Pre-rendered ledger of what this user worked on in RECENT SESSIONS.
    *
    * Injected proactively rather than left to a tool call, which is the whole
@@ -303,6 +311,13 @@ ${FORMATTING_GUIDELINES}`;
 State the conversion rather than the phrase: say "on holiday 10-14 August, back on the 17th (from Rob's email of 7 August)", never "they are on holiday next week". Repeating a stale relative phrase makes a past fact sound like a present one, and the reader cannot tell from your answer that you were quoting.
 
 If a converted date has already passed and the fact still matters — someone's availability, a deadline, a delivery date — say that it may no longer hold and offer to check, rather than presenting it as current.`;
+
+  // ── Who is away ──
+  // Immediately after the date rule, because it is the concrete answer to the
+  // question that rule only teaches the model to ask.
+  if (ctx.absenceBlock) {
+    prompt += ctx.absenceBlock;
+  }
 
   // ── Recent sessions ──
   // Deliberately in the stable body rather than the volatile tail: the ledger
