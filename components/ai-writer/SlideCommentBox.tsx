@@ -13,10 +13,12 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 
 export default function SlideCommentBox({
-  slideNumber, slideTitle, onSubmit, onCancel, dark,
+  slideNumber, slideTitle, onSubmit, onCancel, dark, noun = "Slide", placeholder,
 }: {
   slideNumber: number;
   slideTitle?: string;
+  noun?: string;
+  placeholder?: string;
   onSubmit: (text: string) => void;
   onCancel: () => void;
   /** Over the lightbox the surface is dark; in the card it is not. */
@@ -38,7 +40,7 @@ export default function SlideCommentBox({
   return (
     <div className={`rounded-lg border p-2.5 ${dark ? "bg-black/40 border-white/15" : "bg-background"}`}>
       <label className={`block text-xs mb-1.5 ${dark ? "text-white/70" : "text-muted-foreground"}`}>
-        Slide {slideNumber}{slideTitle ? ` — ${slideTitle}` : ""}: what should change?
+        {noun} {slideNumber}{slideTitle ? ` — ${slideTitle}` : ""}: what should change?
       </label>
       <textarea
         ref={ref}
@@ -51,7 +53,7 @@ export default function SlideCommentBox({
           if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onCancel(); }
         }}
         rows={2}
-        placeholder="e.g. tighten the subtitle, drop the third bullet, make the dates bolder"
+        placeholder={placeholder || "e.g. tighten the subtitle, drop the third bullet, make the dates bolder"}
         className={`w-full resize-none rounded border px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary/40 ${
           dark ? "bg-black/30 border-white/15 text-white placeholder:text-white/40" : "bg-background"
         }`}

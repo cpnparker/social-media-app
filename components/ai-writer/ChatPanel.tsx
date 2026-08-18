@@ -310,6 +310,21 @@ export default function ChatPanel({
   // "↓" pill button lets user jump to bottom manually.
 
   /**
+   * Turn a comment on an image into an edit of THAT image.
+   *
+   * The url is the whole point: without it the model generates a fresh image
+   * and the user loses the one they were reacting to, which reads as having
+   * been ignored. `source_image_url` routes it through the edit path instead.
+   */
+  const sendImageComment = (src: string, text: string) => {
+    void handleSend(
+      `Edit this image: ${text}\n\n` +
+      `Use generate_image with source_image_url set to ${src} so it is edited rather than remade. ` +
+      `Keep everything I have not asked you to change.`
+    );
+  };
+
+  /**
    * Turn a comment on one slide into a properly scoped instruction.
    *
    * The user should only have to write the change, not locate it. The slide
@@ -1578,6 +1593,11 @@ export default function ChatPanel({
                   model={msg.model}
                   attachments={msg.attachments}
                   userName={msg.createdByName}
+                  onImageComment={
+                    // Viewers can look but not ask for changes — a comment
+                    // sends a message, and that is an edit of the thread.
+                    msg.role === "assistant" && myPermission !== "view" ? sendImageComment : undefined
+                  }
                   onFactCheck={
                     msg.role === "assistant" && !isStreaming && !isFactChecking && myPermission !== "view" && !msg.content.includes("## 🔍 Fact Check") && msg.status !== "failed"
                       ? () => handleFactCheck(msg.id, msg.content)
@@ -1737,6 +1757,7 @@ export default function ChatPanel({
               <MessageBubble
                 role="assistant"
                 content={streamingContent}
+                onImageComment={sendImageComment}
                 model={isFactChecking ? "claude-sonnet-4-6" : conversation.model}
                 isStreaming
                 workspaceId={conversation?.workspaceId ?? null}

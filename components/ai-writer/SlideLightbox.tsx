@@ -17,13 +17,16 @@ import { useCallback, useEffect } from "react";
 import { X, ChevronLeft, ChevronRight } from "lucide-react";
 
 export default function SlideLightbox({
-  index, count, onClose, onIndex, children, footer,
+  index, count, onClose, onIndex, children, footer, noun = "Slide",
 }: {
   index: number;
   count: number;
   onClose: () => void;
   onIndex: (next: number) => void;
   children: React.ReactNode;
+  /** What is being viewed. The overlay is shared by decks and images, and
+   *  "Slide 1 of 1" over a photograph is just wrong. */
+  noun?: string;
   /** Rendered under the slide — used for the per-slide comment box, so a
    *  change can be asked for at the moment the slide is legible enough to
    *  judge, rather than after closing and hunting for the right thumbnail. */
@@ -59,13 +62,13 @@ export default function SlideLightbox({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label={`Slide ${index + 1} of ${count}`}
+      aria-label={`${noun} ${index + 1} of ${count}`}
       onClick={onClose}
       className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center p-4 sm:p-8"
     >
       <div className="flex items-center justify-between w-full max-w-[1100px] mb-3">
         <span className="text-xs text-white/70 tabular-nums">
-          Slide {index + 1} of {count}
+          {noun} {index + 1} of {count}
         </span>
         <button
           onClick={onClose}
@@ -80,7 +83,7 @@ export default function SlideLightbox({
         <button
           onClick={(e) => { e.stopPropagation(); go(-1); }}
           disabled={index === 0}
-          aria-label="Previous slide"
+          aria-label={`Previous ${noun.toLowerCase()}`}
           className="shrink-0 h-10 w-10 rounded-full flex items-center justify-center text-white/80 hover:text-white hover:bg-white/10 disabled:opacity-25 disabled:hover:bg-transparent"
         >
           <ChevronLeft className="h-6 w-6" />
@@ -94,7 +97,7 @@ export default function SlideLightbox({
         <button
           onClick={(e) => { e.stopPropagation(); go(1); }}
           disabled={index === count - 1}
-          aria-label="Next slide"
+          aria-label={`Next ${noun.toLowerCase()}`}
           className="shrink-0 h-10 w-10 rounded-full flex items-center justify-center text-white/80 hover:text-white hover:bg-white/10 disabled:opacity-25 disabled:hover:bg-transparent"
         >
           <ChevronRight className="h-6 w-6" />

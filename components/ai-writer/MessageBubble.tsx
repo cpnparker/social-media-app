@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo } from "react";
+import SlideLightbox from "./SlideLightbox";
+import SlideCommentBox from "./SlideCommentBox";
 import { User, Bot, FileText, ExternalLink, ChevronDown, ChevronUp, ShieldCheck, Copy, Check, RotateCcw, Pencil, X, ThumbsUp, ThumbsDown, CalendarClock, NotebookPen, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -32,6 +34,9 @@ interface MessageBubbleProps {
   messageId?: string;
   conversationId?: string;
   conversationTitle?: string | null;
+  /** Change request aimed at one image in this message. Given the image's URL
+   *  so the model can edit that exact file rather than generating another. */
+  onImageComment?: (src: string, text: string) => void;
 }
 
 interface ParsedSource {
@@ -59,6 +64,7 @@ export default function MessageBubble({
   messageId,
   conversationId,
   conversationTitle,
+  onImageComment,
 }: MessageBubbleProps) {
   const isUser = role === "user";
   const [copied, setCopied] = useState(false);
@@ -66,6 +72,11 @@ export default function MessageBubble({
   const [editText, setEditText] = useState(content);
   const editRef = useRef<HTMLTextAreaElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  // Images rendered in this message, and which one is open full size. Collected
+  // from the DOM at click time rather than parsed out of the markdown: the
+  // rendered HTML is the thing the user actually clicked.
+  const [imageUrls, setImageUrls] = useState<string[]>([]);
+  const [imageZoom, setImageZoom] = useState<number | null>(null);
 
   // Auto-retry failed images (blob may take a moment to propagate)
   useEffect(() => {
@@ -379,8 +390,51 @@ export default function MessageBubble({
               onMouseOut={(e) => {
                 if ((e.target as HTMLElement).closest("a.ai-cite")) setCitePreview(null);
               }}
+              onClickCapture={(e) => {
+                const el = e.target as HTMLElement;
+                if (el.tagName !== "IMG" || !contentRef.current) return;
+                const all = Array.from(
+                  contentRef.current.querySelectorAll<HTMLImageElement>("img")
+                ).map((n) => n.currentSrc || n.src);
+                const i = all.indexOf((el as HTMLImageElement).currentSrc || (el as HTMLImageElement).src);
+                if (i === -1) return;
+                e.preventDefault();
+                setImageUrls(all);
+                setImageZoom(i);
+              }}
               dangerouslySetInnerHTML={htmlProp}
             />
+            {imageZoom !== null && imageUrls[imageZoom] && (
+              <SlideLightbox
+                noun="Image"
+                index={imageZoom}
+                count={imageUrls.length}
+                onClose={() => setImageZoom(null)}
+                onIndex={setImageZoom}
+                footer={onImageComment ? (
+                  <SlideCommentBox
+                    key={imageZoom}
+                    noun="Image"
+                    slideNumber={imageZoom + 1}
+                    placeholder="e.g. warmer light, lose the text, make it portrait"
+                    onSubmit={(text) => {
+                      onImageComment(imageUrls[imageZoom], text);
+                      setImageZoom(null);
+                    }}
+                    onCancel={() => setImageZoom(null)}
+                    dark
+                  />
+                ) : undefined}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={imageUrls[imageZoom]}
+                  alt={`Image ${imageZoom + 1}`}
+                  className="block rounded shadow-2xl"
+                  style={{ maxWidth: "min(1100px, calc(100vw - 140px))", maxHeight: "calc(100vh - 260px)" }}
+                />
+              </SlideLightbox>
+            )}
             {citePreview && (() => {
               const src = sources.find((s) => s.number === citePreview.num);
               if (!src) return null;

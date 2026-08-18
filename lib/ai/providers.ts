@@ -1080,6 +1080,11 @@ const IMAGE_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           description:
             "Set true when the user wants their ATTACHED image(s) used as the basis or reference — editing, restyling, incorporating a logo, likeness-preserving portraits. The most recent user-attached images are passed to the generator automatically.",
         },
+        source_image_url: {
+          type: "string",
+          description:
+            "The URL of an image YOU generated earlier that the user now wants CHANGED — 'make it warmer', 'lose the text', 'same but portrait'. Pass the exact URL and the image is edited rather than remade, so everything they did not ask you to change stays put. Without it you produce a different image and they lose the one they liked. `use_attached_images` is for images the USER attached; this is for images you produced.",
+        },
       },
       required: ["prompt"],
     },
@@ -7171,7 +7176,11 @@ async function streamAnthropic(
           const prompt = tool.input.prompt || "Generate an image";
           const size = tool.input.size || "1024x1024";
           const brand = config.designMode ? await loadBrandContext(config.workspaceId, config.selectedClientId) : null;
-          const refUrls = tool.input.use_attached_images ? recentImageAttachmentUrls(messages) : undefined;
+          // An explicit source wins: the user is pointing at one specific image,
+          // which is more precise than "whatever was attached most recently".
+          const refUrls = tool.input.source_image_url
+            ? [tool.input.source_image_url as string]
+            : tool.input.use_attached_images ? recentImageAttachmentUrls(messages) : undefined;
           const imageUrl = await generateImage(prompt, size, "anthropic", brand, refUrls);
 
           // Persist to ai_design_assets in design mode.
@@ -8562,7 +8571,7 @@ async function streamXAIChatCompletions(
           const input = JSON.parse(tc.function.arguments);
           const prompt = input.prompt || "Generate an image";
           const size = input.size || "1024x1024";
-          const imageUrl = await generateImage(prompt, size, "xai", undefined, input.use_attached_images ? recentImageAttachmentUrls(messages) : undefined);
+          const imageUrl = await generateImage(prompt, size, "xai", undefined, input.source_image_url ? [input.source_image_url as string] : input.use_attached_images ? recentImageAttachmentUrls(messages) : undefined);
 
           controller.enqueue(
             encoder.encode(
@@ -9514,7 +9523,7 @@ async function streamGemini(
           const prompt = input.prompt || "Generate an image";
           const size = input.size || "1024x1024";
           // Gemini delegates to OpenAI/DALL-E for image generation
-          const imageUrl = await generateImage(prompt, size, "gemini", undefined, input.use_attached_images ? recentImageAttachmentUrls(messages) : undefined);
+          const imageUrl = await generateImage(prompt, size, "gemini", undefined, input.source_image_url ? [input.source_image_url as string] : input.use_attached_images ? recentImageAttachmentUrls(messages) : undefined);
 
           controller.enqueue(
             encoder.encode(
@@ -10354,7 +10363,7 @@ async function streamOpenAI(
           const input = JSON.parse(tc.function.arguments);
           const prompt = input.prompt || "Generate an image";
           const size = input.size || "1024x1024";
-          const imageUrl = await generateImage(prompt, size, "openai", undefined, input.use_attached_images ? recentImageAttachmentUrls(messages) : undefined);
+          const imageUrl = await generateImage(prompt, size, "openai", undefined, input.source_image_url ? [input.source_image_url as string] : input.use_attached_images ? recentImageAttachmentUrls(messages) : undefined);
 
           controller.enqueue(
             encoder.encode(

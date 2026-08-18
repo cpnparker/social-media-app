@@ -498,7 +498,12 @@ When the user specifically wants a .pptx file rather than a Google Slides link:
 
   // ── Chart generation capability ──
   if (ctx.contextConfig?.imageGeneration === "on") {
-    prompt += `\n\n## Chart Generation
+    prompt += `\n\n### Editing an image you already made
+When the user reacts to an image you generated — "make it warmer", "lose the text", "same but portrait", or a comment sent from the image itself — call generate_image again with \`source_image_url\` set to that image's URL. That EDITS it, so everything they did not ask you to change stays as it was. Generating afresh instead hands them a different image and loses the one they were happy with, which reads as ignoring them.
+
+Describe in \`prompt\` what to change and what to keep. \`use_attached_images\` is for images the USER attached; \`source_image_url\` is for images you produced.
+
+## Chart Generation
 You have a generate_chart tool that creates data-accurate charts and graphs.
 
 CRITICAL: When the user asks for a chart, graph, or visualization — you MUST call generate_chart. Do NOT show a table instead. Do NOT say "daily breakdown unavailable". Do NOT suggest the user check elsewhere.
