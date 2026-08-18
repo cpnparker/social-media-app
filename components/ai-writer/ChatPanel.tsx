@@ -143,6 +143,12 @@ export default function ChatPanel({
   // deck. Held in state (not a toast) because it carries the only action that
   // fixes it, and a toast the user misses leaves them stuck.
   const [slidesReauth, setSlidesReauth] = useState<{ message: string; reason: string } | null>(null);
+  // Thumbnails of the deck just built or edited. The markdown link still goes
+  // into the message itself, so history keeps a way back to the file; this is
+  // the at-a-glance look at what actually landed.
+  const [slidesPreview, setSlidesPreview] = useState<
+    { url: string; title: string; slideCount: number; updated: boolean; thumbnails: string[] } | null
+  >(null);
   const [reauthBusy, setReauthBusy] = useState(false);
   const reauthPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [isQueryingEngine, setIsQueryingEngine] = useState(false);
@@ -501,10 +507,17 @@ export default function ChatPanel({
               toast.error(`Document generation failed: ${parsed.document_error}`);
             } else if (parsed.slides_ready) {
               setIsGeneratingDocument(false);
-              const deckUrl = parsed.slides_ready.url;
-              const deckTitle = parsed.slides_ready.title;
-              if (deckUrl) {
-                fullText += `\n\n📊 [Open ${deckTitle} in Google Slides](${deckUrl})\n\n`;
+              const deck = parsed.slides_ready;
+              if (deck.url) {
+                setSlidesReauth(null);
+                setSlidesPreview({
+                  url: deck.url,
+                  title: deck.title,
+                  slideCount: deck.slideCount ?? 0,
+                  updated: !!deck.updated,
+                  thumbnails: deck.thumbnails || [],
+                });
+                fullText += `\n\n📊 [${deck.updated ? "Updated" : "Open"} ${deck.title} in Google Slides](${deck.url})\n\n`;
                 setStreamingContent(fullText);
               }
             } else if (parsed.slides_reauth) {
@@ -1618,6 +1631,42 @@ export default function ChatPanel({
                 isStreaming
                 workspaceId={conversation?.workspaceId ?? null}
               />
+            )}
+            {slidesPreview && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                  <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <div className="flex-1 min-w-0 rounded-lg border bg-muted/30 px-3 py-3">
+                  <div className="flex items-center justify-between gap-3 mb-2.5">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{slidesPreview.title}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {slidesPreview.updated ? "Updated in place" : "New deck"}
+                        {slidesPreview.slideCount ? ` · ${slidesPreview.slideCount} slides` : ""}
+                      </p>
+                    </div>
+                    <a href={slidesPreview.url} target="_blank" rel="noopener noreferrer" className="shrink-0">
+                      <Button size="sm" variant="outline">Open in Slides</Button>
+                    </a>
+                  </div>
+                  {slidesPreview.thumbnails.length > 0 ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {slidesPreview.thumbnails.map((src, i) => (
+                        <a key={src} href={slidesPreview.url} target="_blank" rel="noopener noreferrer"
+                           className="block rounded border overflow-hidden hover:opacity-80 transition-opacity">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={src} alt={`Slide ${i + 1}`} className="w-full h-auto block" loading="lazy" />
+                        </a>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Preview unavailable — the deck itself is fine, open it above.
+                    </p>
+                  )}
+                </div>
+              </div>
             )}
             {slidesReauth && (
               <div className="flex items-start gap-3 px-4 py-3">

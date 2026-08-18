@@ -5,7 +5,7 @@ import { fetchBlobContent } from "./blob-utils";
 import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
-import { generateSlides } from "@/lib/slides/generate";
+import { generateSlides, updateSlides } from "@/lib/slides/generate";
 import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
 import { isReconnectable } from "@/lib/slides/reauth";
 
@@ -1178,7 +1178,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   function: {
     name: "generate_slides",
     description:
-      "Create a Google Slides presentation in the user's own Google Drive, branded to The Content Engine. Use this when the user wants a deck they can edit, share or present from — 'make me a deck', 'build a presentation', 'put this into slides', or anything mentioning Google Slides. Use generate_document instead only when they specifically want a .pptx file to download. Returns a link to the new deck.",
+      "Create OR UPDATE a Google Slides presentation in the user's own Google Drive, branded to The Content Engine. Use this when the user wants a deck they can edit, share or present from — 'make me a deck', 'build a presentation', 'put this into slides', or anything mentioning Google Slides. To CHANGE a deck you built earlier in this conversation — 'make it more visual', 'add a slide', 'redo the timeline' — pass that deck's presentationId so the user's existing file and link are kept. Use generate_document instead only when they specifically want a .pptx file to download.",
     parameters: {
       type: "object",
       properties: {
@@ -1186,9 +1186,14 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           type: "string",
           description: "Presentation title. Used on the cover slide and as the Drive filename.",
         },
+        presentationId: {
+          type: "string",
+          description:
+            "Pass this to REPLACE the contents of a deck you already built in this conversation, keeping the user's file, link and comments. Take it from the previous generate_slides result. Whenever the user asks to change, improve, extend or restyle a deck that already exists, pass it — creating a second deck instead leaves them looking at a stale file and is the wrong outcome. Omit only for a genuinely new deck. NOTE: `slides` REPLACES every slide, so send the complete deck, not just the changed slides.",
+        },
         slides: {
           type: "array",
-          description: "The slides to build, in order.",
+          description: "The slides to build, in order. On an update this replaces the deck's entire contents, so always send every slide you want the deck to end up with.",
           items: {
             type: "object",
             properties: {
@@ -3622,6 +3627,29 @@ interface ThemeColors {
   background: string;
   titleFont: string;
   bodyFont: string;
+}
+
+/** Update when the model supplied a deck id, create otherwise.
+ *
+ *  If the id cannot be opened — a deck from an older conversation, or one this
+ *  app did not create, which drive.file cannot reach — a new deck is made
+ *  rather than dead-ending. That fallback is reported rather than silent: the
+ *  whole complaint that prompted this was a second deck appearing while the
+ *  user watched an unchanged one. */
+async function buildOrUpdateSlides(
+  title: string,
+  slides: any[],
+  userEmail: string,
+  presentationId?: string
+): Promise<Awaited<ReturnType<typeof generateSlides>> & { fellBack?: boolean }> {
+  if (presentationId) {
+    const updated = await updateSlides(presentationId, title, slides, userEmail);
+    if (updated.ok || !updated.notFound) return updated;
+    console.warn(`[Slides] ${presentationId} not updatable — creating a new deck`);
+    const created = await generateSlides(title, slides, userEmail);
+    return { ...created, fellBack: true };
+  }
+  return generateSlides(title, slides, userEmail);
 }
 
 const THEMES: Record<string, ThemeColors> = {
@@ -7390,10 +7418,11 @@ async function streamAnthropic(
         }
       } else if (tool.name === "generate_slides") {
         try {
-          const result = await generateSlides(
+          const result = await buildOrUpdateSlides(
             tool.input.title || "Presentation",
             tool.input.slides || [],
-            config.userEmail || ""
+            config.userEmail || "",
+            tool.input.presentationId
           );
 
           if (!result.ok) {
@@ -7419,16 +7448,24 @@ async function streamAnthropic(
           } else {
             controller.enqueue(
               encoder.encode(
-                `data: ${JSON.stringify({ slides_ready: { url: result.url, title: result.title } })}\n\n`
+                `data: ${JSON.stringify({
+                  slides_ready: {
+                    url: result.url,
+                    title: result.title,
+                    slideCount: result.slideCount,
+                    updated: !!result.updated,
+                    thumbnails: result.thumbnails || [],
+                  },
+                })}\n\n`
               )
             );
 
-            fullText += `\n\n\ud83d\udcca [Open ${result.title} in Google Slides](${result.url})\n\n`;
+            fullText += `\n\n\ud83d\udcca [${result.updated ? "Updated" : "Open"} ${result.title} in Google Slides](${result.url})\n\n`;
 
             toolResults.push({
               type: "tool_result",
               tool_use_id: tool.id,
-              content: `Google Slides deck created in the user's Drive with ${result.slideCount} slide(s): ${result.url} — The link is already shown to the user. Do NOT write another link.`,
+              content: `Google Slides deck ${result.updated ? "UPDATED IN PLACE" : "created"} in the user's Drive with ${result.slideCount} slide(s). presentationId: ${result.presentationId} — pass this id back to generate_slides for any further change to this deck.${(result as any).fellBack ? " IMPORTANT: the deck you asked to update could not be opened, so this is a NEW deck at a NEW link. Tell the user plainly that their earlier deck is unchanged." : ""} A link and a slide preview are already shown to the user, so do NOT write another link.`,
             });
           }
         } catch (err: any) {
@@ -8570,10 +8607,11 @@ async function streamXAIChatCompletions(
       } else if (tc.function.name === "generate_slides") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const result = await generateSlides(
+          const result = await buildOrUpdateSlides(
             input.title || "Presentation",
             input.slides || [],
-            config.userEmail || ""
+            config.userEmail || "",
+            input.presentationId
           );
 
           if (!result.ok) {
@@ -8597,16 +8635,24 @@ async function streamXAIChatCompletions(
           } else {
             controller.enqueue(
               encoder.encode(
-                `data: ${JSON.stringify({ slides_ready: { url: result.url, title: result.title } })}\n\n`
+                `data: ${JSON.stringify({
+                  slides_ready: {
+                    url: result.url,
+                    title: result.title,
+                    slideCount: result.slideCount,
+                    updated: !!result.updated,
+                    thumbnails: result.thumbnails || [],
+                  },
+                })}\n\n`
               )
             );
 
-            fullText += `\n\n\ud83d\udcca [Open ${result.title} in Google Slides](${result.url})\n\n`;
+            fullText += `\n\n\ud83d\udcca [${result.updated ? "Updated" : "Open"} ${result.title} in Google Slides](${result.url})\n\n`;
 
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Google Slides deck created in the user's Drive with ${result.slideCount} slide(s): ${result.url} — The link is already shown to the user. Do NOT write another link.`,
+              content: `Google Slides deck ${result.updated ? "UPDATED IN PLACE" : "created"} in the user's Drive with ${result.slideCount} slide(s). presentationId: ${result.presentationId} — pass this id back to generate_slides for any further change to this deck.${(result as any).fellBack ? " IMPORTANT: the deck you asked to update could not be opened, so this is a NEW deck at a NEW link. Tell the user plainly that their earlier deck is unchanged." : ""} A link and a slide preview are already shown to the user, so do NOT write another link.`,
             } as any);
           }
         } catch (err: any) {
@@ -9492,10 +9538,11 @@ async function streamGemini(
       } else if (tc.function.name === "generate_slides") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const result = await generateSlides(
+          const result = await buildOrUpdateSlides(
             input.title || "Presentation",
             input.slides || [],
-            config.userEmail || ""
+            config.userEmail || "",
+            input.presentationId
           );
 
           if (!result.ok) {
@@ -9519,16 +9566,24 @@ async function streamGemini(
           } else {
             controller.enqueue(
               encoder.encode(
-                `data: ${JSON.stringify({ slides_ready: { url: result.url, title: result.title } })}\n\n`
+                `data: ${JSON.stringify({
+                  slides_ready: {
+                    url: result.url,
+                    title: result.title,
+                    slideCount: result.slideCount,
+                    updated: !!result.updated,
+                    thumbnails: result.thumbnails || [],
+                  },
+                })}\n\n`
               )
             );
 
-            fullText += `\n\n\ud83d\udcca [Open ${result.title} in Google Slides](${result.url})\n\n`;
+            fullText += `\n\n\ud83d\udcca [${result.updated ? "Updated" : "Open"} ${result.title} in Google Slides](${result.url})\n\n`;
 
             geminiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Google Slides deck created in the user's Drive with ${result.slideCount} slide(s): ${result.url} — The link is already shown to the user. Do NOT write another link.`,
+              content: `Google Slides deck ${result.updated ? "UPDATED IN PLACE" : "created"} in the user's Drive with ${result.slideCount} slide(s). presentationId: ${result.presentationId} — pass this id back to generate_slides for any further change to this deck.${(result as any).fellBack ? " IMPORTANT: the deck you asked to update could not be opened, so this is a NEW deck at a NEW link. Tell the user plainly that their earlier deck is unchanged." : ""} A link and a slide preview are already shown to the user, so do NOT write another link.`,
             } as any);
           }
         } catch (err: any) {
@@ -10304,10 +10359,11 @@ async function streamOpenAI(
       } else if (tc.function.name === "generate_slides") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const result = await generateSlides(
+          const result = await buildOrUpdateSlides(
             input.title || "Presentation",
             input.slides || [],
-            config.userEmail || ""
+            config.userEmail || "",
+            input.presentationId
           );
 
           if (!result.ok) {
@@ -10331,16 +10387,24 @@ async function streamOpenAI(
           } else {
             controller.enqueue(
               encoder.encode(
-                `data: ${JSON.stringify({ slides_ready: { url: result.url, title: result.title } })}\n\n`
+                `data: ${JSON.stringify({
+                  slides_ready: {
+                    url: result.url,
+                    title: result.title,
+                    slideCount: result.slideCount,
+                    updated: !!result.updated,
+                    thumbnails: result.thumbnails || [],
+                  },
+                })}\n\n`
               )
             );
 
-            fullText += `\n\n\ud83d\udcca [Open ${result.title} in Google Slides](${result.url})\n\n`;
+            fullText += `\n\n\ud83d\udcca [${result.updated ? "Updated" : "Open"} ${result.title} in Google Slides](${result.url})\n\n`;
 
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Google Slides deck created in the user's Drive with ${result.slideCount} slide(s): ${result.url} — The link is already shown to the user. Do NOT write another link.`,
+              content: `Google Slides deck ${result.updated ? "UPDATED IN PLACE" : "created"} in the user's Drive with ${result.slideCount} slide(s). presentationId: ${result.presentationId} — pass this id back to generate_slides for any further change to this deck.${(result as any).fellBack ? " IMPORTANT: the deck you asked to update could not be opened, so this is a NEW deck at a NEW link. Tell the user plainly that their earlier deck is unchanged." : ""} A link and a slide preview are already shown to the user, so do NOT write another link.`,
             } as any);
           }
         } catch (err: any) {

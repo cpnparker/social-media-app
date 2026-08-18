@@ -19,6 +19,7 @@ import {
   rgb, logoUrl, type SlideLayout, type TypeStyle,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
+import { captureThumbnails } from "@/lib/slides/preview";
 
 const SLIDES_API = "https://slides.googleapis.com/v1/presentations";
 const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
@@ -73,6 +74,12 @@ export interface SlidesResult {
   /** Set only when the failure is a connection state the user can fix. The
    *  chat layer uses it to offer a reconnect button instead of an error. */
   reason?: SlidesAuthFailure;
+  /** True when an existing deck was edited rather than a new one created. */
+  updated?: boolean;
+  /** The deck to update could not be opened — caller may create instead. */
+  notFound?: boolean;
+  /** Slide thumbnails, in order, for the in-chat preview. */
+  thumbnails?: string[];
 }
 
 /* ─────────────── Request builders ─────────────── */
@@ -477,11 +484,14 @@ function parallelTimelineRequests(
 
 /** One slide → its full request list. Exported so the layout geometry can be
  *  exercised without a Google round-trip; nothing else should call it. */
-export function buildSlideRequests(slide: SlideInput, index: number): Req[] {
+export function buildSlideRequests(slide: SlideInput, index: number, run = "r0"): Req[] {
   const layout: SlideLayout = slide.layout || (index === 0 ? "cover" : "content");
   const style = LAYOUT_STYLE[layout];
-  const page = `slide_${index}`;
-  const id = (suffix: string) => `s${index}_${suffix}`;
+  // Object ids are scoped to this RUN, not just the slide index. On an update
+  // the deck still holds the previous run's shapes when the new ones are
+  // created, and Slides rejects a batch that reuses an existing objectId.
+  const page = `${run}_s${index}`;
+  const id = (suffix: string) => `${run}_s${index}_${suffix}`;
 
   const requests: Req[] = [
     {
@@ -667,6 +677,84 @@ async function googleFetch(url: string, token: string, init: RequestInit = {}) {
   return { ok: res.ok, status: res.status, json };
 }
 
+/** Short unique prefix for one generation run. Base36 of the clock plus a few
+ *  random characters: unique enough within a single presentation, and short
+ *  enough to leave room under the 50-character objectId limit. */
+function runId(): string {
+  return `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+}
+
+/** Replace every slide in an existing deck, keeping the FILE.
+ *
+ *  This is the difference between "make it more visual" changing the deck the
+ *  user has open and handing them a second link to a near-identical file. The
+ *  URL, revision history and any comments survive; only the slides are swapped.
+ *
+ *  New slides are created first and the old ones deleted in the same batch, so
+ *  the deck is never momentarily empty and the whole swap is one atomic update.
+ */
+export async function updateSlides(
+  presentationId: string,
+  title: string,
+  slides: SlideInput[],
+  userEmail: string
+): Promise<SlidesResult> {
+  const auth = await getUserGoogleToken(userEmail);
+  if (!auth.ok || !auth.accessToken) {
+    const reason = auth.reason as SlidesAuthFailure;
+    return { ok: false, error: authFailureMessage(reason), reason };
+  }
+  const token = auth.accessToken;
+
+  const existing = await googleFetch(
+    `${SLIDES_API}/${presentationId}?fields=slides(objectId)`, token
+  );
+  if (!existing.ok) {
+    // 404 here usually means the deck was created by something other than this
+    // app: drive.file only reaches files we made. Reported, not worked around.
+    return {
+      ok: false,
+      notFound: existing.status === 404 || existing.status === 403,
+      error: `Could not open that deck to update it: ${existing.json?.error?.message || `HTTP ${existing.status}`}`,
+    };
+  }
+  const oldIds: string[] = (existing.json?.slides || []).map((s: any) => s.objectId);
+
+  const run = runId();
+  const requests: Req[] = slides.flatMap((slide, i) => buildSlideRequests(slide, i, run));
+  for (const objectId of oldIds) requests.push({ deleteObject: { objectId } });
+
+  const updated = await googleFetch(`${SLIDES_API}/${presentationId}:batchUpdate`, token, {
+    method: "POST",
+    body: JSON.stringify({ requests }),
+  });
+  if (!updated.ok) {
+    const detail = updated.json?.error?.message || `HTTP ${updated.status}`;
+    console.warn(`[Slides] update failed: ${detail}`);
+    // No cleanup here, deliberately: the batch is atomic, so a failure leaves
+    // the user's existing deck exactly as it was. Deleting would destroy it.
+    return { ok: false, error: `Could not update the slides: ${detail}` };
+  }
+
+  // Keep the filename in step with the deck's own title.
+  await googleFetch(`${DRIVE_API}/${presentationId}?supportsAllDrives=true`, token, {
+    method: "PATCH",
+    body: JSON.stringify({ name: title }),
+  });
+
+  await applySpeakerNotes(presentationId, slides, token);
+
+  return {
+    ok: true,
+    presentationId,
+    url: `https://docs.google.com/presentation/d/${presentationId}/edit`,
+    title,
+    slideCount: slides.length,
+    updated: true,
+    thumbnails: await captureThumbnails(presentationId, token),
+  };
+}
+
 export async function generateSlides(
   title: string,
   slides: SlideInput[],
@@ -700,7 +788,8 @@ export async function generateSlides(
   const presentationId: string = created.json.presentationId;
   const defaultSlideId: string | undefined = created.json.slides?.[0]?.objectId;
 
-  const requests: Req[] = slides.flatMap((slide, i) => buildSlideRequests(slide, i));
+  const run = runId();
+  const requests: Req[] = slides.flatMap((slide, i) => buildSlideRequests(slide, i, run));
   // Delete Slides' own starter slide LAST — removing it first would leave the
   // deck momentarily empty, and insertionIndex is evaluated as requests apply.
   if (defaultSlideId) requests.push({ deleteObject: { objectId: defaultSlideId } });
@@ -730,5 +819,6 @@ export async function generateSlides(
     url: `https://docs.google.com/presentation/d/${presentationId}/edit`,
     title,
     slideCount: slides.length,
+    thumbnails: await captureThumbnails(presentationId, token),
   };
 }
