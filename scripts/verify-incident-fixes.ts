@@ -294,6 +294,27 @@ console.log("\n7. The prompt carries the rules that were missing");
   check("an absent reason is not abnormal", !stoppedAbnormally(null) && !stoppedAbnormally(undefined) && !stoppedAbnormally(""));
 }
 
+{
+  console.log("\n12. EngineAI always knows what day it is — and whose 'next week' it is reading");
+  const src = require("fs").readFileSync("lib/ai/system-prompts.ts", "utf8");
+  // The server clock on Vercel is UTC. Without an explicit timeZone the prompt
+  // told the model it was YESTERDAY between midnight and 02:00 Zurich.
+  check("the date is computed in Europe/Zurich", src.includes('const TZ = "Europe/Zurich"') && /const dateStr = .*timeZone: TZ/.test(src));
+  check("an ISO form and a time are given too", /isoToday = .*timeZone: TZ/.test(src) && /timeStr = .*timeZone: TZ/.test(src));
+  const late = new Date("2026-08-18T23:30:00Z");   // 01:30 Zurich, the NEXT day
+  check("proof the old expression was wrong overnight",
+    late.toLocaleDateString("en-CA", { timeZone: "Europe/Zurich" }) !== late.toISOString().slice(0, 10));
+
+  // The failure Chris actually hit: "next week" in a 7 August email carried
+  // forward to 18 August as though it still applied.
+  check("relative dates in retrieved material are anchored to their source",
+    src.includes("RELATIVE DATES INSIDE RETRIEVED MATERIAL ARE ANCHORED"));
+  check("the conversion must be stated, not the phrase repeated",
+    src.includes("State the conversion rather than the phrase"));
+  check("a date that has passed is flagged, not asserted as current",
+    src.includes("may no longer hold and offer to check"));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
 process.exit(fail ? 1 : 0);

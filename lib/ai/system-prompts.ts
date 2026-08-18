@@ -286,9 +286,23 @@ ${FORMATTING_GUIDELINES}`;
   }
 
   // ── Current date ──
+  //
+  // Europe/Zurich explicitly. Without the timeZone this used the SERVER's zone,
+  // which on Vercel is UTC — so between midnight and 02:00 Zurich in summer the
+  // model was told it was YESTERDAY. lib/date-utils.ts warns about the same
+  // expression, and the episodic-memory path had the identical bug.
   const now = new Date();
-  const dateStr = now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-  prompt += `\n\nToday's date is ${dateStr}. Always use this as your reference for "today", "this week", "recent", etc. Your training data may be outdated — if the user asks about current events, recent news, industry trends, company information, market data, statistics, or anything that may have changed since your training cutoff, you MUST use web search to get up-to-date information before responding. Never present outdated training data as current fact. When writing content that includes factual claims about a client's industry, competitors, or market — search first, don't guess.`;
+  const TZ = "Europe/Zurich";
+  const dateStr = now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: TZ });
+  const timeStr = now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: TZ });
+  const isoToday = now.toLocaleDateString("en-CA", { timeZone: TZ });
+  prompt += `\n\nToday is ${dateStr} (${isoToday}), ${timeStr} Europe/Zurich. Always use this as your reference for "today", "this week", "recent", etc. Your training data may be outdated — if the user asks about current events, recent news, industry trends, company information, market data, statistics, or anything that may have changed since your training cutoff, you MUST use web search to get up-to-date information before responding. Never present outdated training data as current fact. When writing content that includes factual claims about a client's industry, competitors, or market — search first, don't guess.
+
+**RELATIVE DATES INSIDE RETRIEVED MATERIAL ARE ANCHORED TO THAT MATERIAL, NOT TO TODAY.** An email, meeting note, Slack message or document was written on a particular day, and every "next week", "tomorrow", "yesterday", "on Monday", "in a fortnight" or "by the end of the month" in it means what it meant THEN. Convert it before you use it: an email sent on 7 August saying "both are on holiday next week and back on the 17th" means 10-14 August, back on the 17th — which, today being ${dateStr}, has already passed.
+
+State the conversion rather than the phrase: say "on holiday 10-14 August, back on the 17th (from Rob's email of 7 August)", never "they are on holiday next week". Repeating a stale relative phrase makes a past fact sound like a present one, and the reader cannot tell from your answer that you were quoting.
+
+If a converted date has already passed and the fact still matters — someone's availability, a deadline, a delivery date — say that it may no longer hold and offer to check, rather than presenting it as current.`;
 
   // ── Recent sessions ──
   // Deliberately in the stable body rather than the volatile tail: the ledger
