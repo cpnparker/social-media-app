@@ -36,17 +36,17 @@ const MUST_BLOCK = new Set([
 ]);
 
 console.log(`\n1. Every registered tool is classified (${registered.size} tools)`);
-for (const t of [...registered].sort()) {
+for (const t of Array.from(registered).sort()) {
   if (readSet.has(t) && MUST_BLOCK.has(t)) fail(`${t} is in BOTH lists`);
   else if (!readSet.has(t) && !MUST_BLOCK.has(t)) fail(`${t} is unclassified — decide read vs blocked in POST_TAINT_READ_TOOLS`);
 }
 if (!failures) pass(`all ${registered.size} classified: ${readSet.size} read, ${MUST_BLOCK.size} blocked`);
 
 console.log(`\n2. Nothing that sends, publishes or schedules is readable`);
-for (const t of MUST_BLOCK) {
+for (const t of Array.from(MUST_BLOCK)) {
   if (readSet.has(t)) fail(`${t} must never be post-taint readable`);
 }
-if (![...MUST_BLOCK].some((t) => readSet.has(t))) pass("web_search, create_scheduled_task and all generate_* stay blocked");
+if (!Array.from(MUST_BLOCK).some((t) => readSet.has(t))) pass("web_search, create_scheduled_task and all generate_* stay blocked");
 
 console.log(`\n3. The reported bug: Slack survives an email read`);
 readSet.has("query_slack")
