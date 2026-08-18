@@ -67,6 +67,7 @@ import { AI_MODELS, getModelLabel } from "@/lib/ai/models";
 import MessageBubble from "./MessageBubble";
 import ChatInput, { type ChatInputHandle } from "./ChatInput";
 import ShareDialog from "./ShareDialog";
+import SlideDraftPreview, { type SlideDraft } from "./SlideDraftPreview";
 import type { AIConversation, AIMessageRow, Attachment } from "@/lib/types/ai";
 
 interface CustomerOption {
@@ -146,6 +147,10 @@ export default function ChatPanel({
   // Thumbnails of the deck just built or edited. The markdown link still goes
   // into the message itself, so history keeps a way back to the file; this is
   // the at-a-glance look at what actually landed.
+  // A deck rendered but NOT written to Drive. Held until the user presses the
+  // button or asks for changes, which replace it with a new draft.
+  const [slidesDraft, setSlidesDraft] = useState<SlideDraft | null>(null);
+  const [publishingSlides, setPublishingSlides] = useState(false);
   const [slidesPreview, setSlidesPreview] = useState<
     { url: string; title: string; slideCount: number; updated: boolean; thumbnails: string[] } | null
   >(null);
@@ -299,6 +304,42 @@ export default function ChatPanel({
   // Simple rule: scroll to bottom ONCE when user sends a message.
   // Never auto-scroll during streaming. User reads at their own pace.
   // "↓" pill button lets user jump to bottom manually.
+
+  /**
+   * Put the reviewed draft into Drive. Only ever reached from the button.
+   *
+   * On failure the draft is deliberately KEPT — the user has been iterating on
+   * it, and clearing it because a network call failed would throw that away.
+   */
+  const publishSlidesDraft = useCallback(async () => {
+    if (!slidesDraft) return;
+    setPublishingSlides(true);
+    try {
+      const res = await fetch("/api/slides/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: slidesDraft.title, slides: slidesDraft.slides }),
+      });
+      const j = await res.json();
+      if (!res.ok) {
+        // A connection problem is fixable, so it gets the reconnect card
+        // rather than a toast the user cannot act on.
+        if (j.reconnectable) setSlidesReauth({ message: j.error, reason: j.reason || "needs_reconnect" });
+        else toast.error(j.error || "Couldn't create the deck.");
+        return;
+      }
+      setSlidesDraft(null);
+      setSlidesPreview({
+        url: j.url, title: j.title, slideCount: j.slideCount ?? 0,
+        updated: !!j.updated, thumbnails: j.thumbnails || [],
+      });
+      toast.success("Deck created in your Google Drive.");
+    } catch {
+      toast.error("Couldn't reach Google. Try again in a moment.");
+    } finally {
+      setPublishingSlides(false);
+    }
+  }, [slidesDraft]);
 
   /**
    * Reconnect Google from inside the conversation.
@@ -505,11 +546,19 @@ export default function ChatPanel({
             } else if (parsed.document_error) {
               setIsGeneratingDocument(false);
               toast.error(`Document generation failed: ${parsed.document_error}`);
+            } else if (parsed.slides_draft) {
+              setIsGeneratingDocument(false);
+              setSlidesReauth(null);
+              // A new draft supersedes the last one; two previews of the same
+              // deck on screen is the confusion this whole flow removes.
+              setSlidesPreview(null);
+              setSlidesDraft(parsed.slides_draft);
             } else if (parsed.slides_ready) {
               setIsGeneratingDocument(false);
               const deck = parsed.slides_ready;
               if (deck.url) {
                 setSlidesReauth(null);
+                setSlidesDraft(null);
                 setSlidesPreview({
                   url: deck.url,
                   title: deck.title,
@@ -1631,6 +1680,18 @@ export default function ChatPanel({
                 isStreaming
                 workspaceId={conversation?.workspaceId ?? null}
               />
+            )}
+            {slidesDraft && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                  <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <SlideDraftPreview
+                  draft={slidesDraft}
+                  publishing={publishingSlides}
+                  onPublish={publishSlidesDraft}
+                />
+              </div>
             )}
             {slidesPreview && (
               <div className="flex items-start gap-3 px-4 py-3">

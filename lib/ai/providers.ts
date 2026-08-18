@@ -6,6 +6,7 @@ import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
 import { generateSlides, updateSlides } from "@/lib/slides/generate";
+import { toPreviewModel } from "@/lib/slides/preview-model";
 import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
 import { isReconnectable } from "@/lib/slides/reauth";
 
@@ -1178,7 +1179,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   function: {
     name: "generate_slides",
     description:
-      "Create OR UPDATE a Google Slides presentation in the user's own Google Drive, branded to The Content Engine. Use this when the user wants a deck they can edit, share or present from — 'make me a deck', 'build a presentation', 'put this into slides', or anything mentioning Google Slides. To CHANGE a deck you built earlier in this conversation — 'make it more visual', 'add a slide', 'redo the timeline' — pass that deck's presentationId so the user's existing file and link are kept. Use generate_document instead only when they specifically want a .pptx file to download.",
+      "Build a branded Content Engine slide deck and show it to the user as a PREVIEW in the chat. Nothing is written to their Google Drive — they review the preview, ask for changes, and press a button to create it when they are happy. Use this whenever a deck, presentation, slides or pitch deck is wanted. Call it again with revised slides for every change they ask for; each call replaces the preview, which costs them nothing. Set publish:true ONLY when they explicitly say to create, upload, save or send it to Drive now. Use generate_document instead only when they specifically want a .pptx file to download.",
     parameters: {
       type: "object",
       properties: {
@@ -1186,10 +1187,15 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           type: "string",
           description: "Presentation title. Used on the cover slide and as the Drive filename.",
         },
+        publish: {
+          type: "boolean",
+          description:
+            "Leave this out for a preview, which is the normal case. Set true ONLY when the user has explicitly asked for the deck to be created, uploaded or saved to Drive now — 'create it', 'upload that', 'yes go ahead'. Never set it on a first draft: the point of the preview is that they get to change their mind before a file exists.",
+        },
         presentationId: {
           type: "string",
           description:
-            "Pass this to REPLACE the contents of a deck you already built in this conversation, keeping the user's file, link and comments. Take it from the previous generate_slides result. Whenever the user asks to change, improve, extend or restyle a deck that already exists, pass it — creating a second deck instead leaves them looking at a stale file and is the wrong outcome. Omit only for a genuinely new deck. NOTE: `slides` REPLACES every slide, so send the complete deck, not just the changed slides.",
+            "The id of a deck ALREADY created in Drive in this conversation. Pass it so a further change edits that file in place, keeping the user's link, comments and history. Omit while the deck is still only a preview.",
         },
         slides: {
           type: "array",
@@ -3650,6 +3656,15 @@ async function buildOrUpdateSlides(
     return { ...created, fellBack: true };
   }
   return generateSlides(title, slides, userEmail);
+}
+
+/** A deck the user can look at and argue with before it exists as a file. */
+function buildSlidesDraft(title: string, slides: any[]) {
+  return {
+    title,
+    slides,
+    preview: toPreviewModel(slides),
+  };
 }
 
 const THEMES: Record<string, ThemeColors> = {
@@ -7418,9 +7433,27 @@ async function streamAnthropic(
         }
       } else if (tool.name === "generate_slides") {
         try {
+          const deckTitle = tool.input.title || "Presentation";
+          const deckSlides = tool.input.slides || [];
+
+          // Draft is the default. A file appears only when a person asked for
+          // one, which is what keeps a user's Drive free of half-agreed decks.
+          if (!tool.input.publish && !tool.input.presentationId) {
+            const draft = buildSlidesDraft(deckTitle, deckSlides);
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
+            );
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: tool.id,
+              content: `Draft deck rendered as a ${deckSlides.length}-slide preview in the chat. NOTHING has been written to Drive. The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
+            });
+            continue;
+          }
+
           const result = await buildOrUpdateSlides(
-            tool.input.title || "Presentation",
-            tool.input.slides || [],
+            deckTitle,
+            deckSlides,
             config.userEmail || "",
             tool.input.presentationId
           );
@@ -8607,9 +8640,27 @@ async function streamXAIChatCompletions(
       } else if (tc.function.name === "generate_slides") {
         try {
           const input = JSON.parse(tc.function.arguments);
+          const deckTitle = input.title || "Presentation";
+          const deckSlides = input.slides || [];
+
+          // Draft is the default. A file appears only when a person asked for
+          // one, which is what keeps a user's Drive free of half-agreed decks.
+          if (!input.publish && !input.presentationId) {
+            const draft = buildSlidesDraft(deckTitle, deckSlides);
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
+            );
+            openaiMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: `Draft deck rendered as a ${deckSlides.length}-slide preview in the chat. NOTHING has been written to Drive. The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
+            } as any);
+            continue;
+          }
+
           const result = await buildOrUpdateSlides(
-            input.title || "Presentation",
-            input.slides || [],
+            deckTitle,
+            deckSlides,
             config.userEmail || "",
             input.presentationId
           );
@@ -9538,9 +9589,27 @@ async function streamGemini(
       } else if (tc.function.name === "generate_slides") {
         try {
           const input = JSON.parse(tc.function.arguments);
+          const deckTitle = input.title || "Presentation";
+          const deckSlides = input.slides || [];
+
+          // Draft is the default. A file appears only when a person asked for
+          // one, which is what keeps a user's Drive free of half-agreed decks.
+          if (!input.publish && !input.presentationId) {
+            const draft = buildSlidesDraft(deckTitle, deckSlides);
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
+            );
+            geminiMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: `Draft deck rendered as a ${deckSlides.length}-slide preview in the chat. NOTHING has been written to Drive. The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
+            } as any);
+            continue;
+          }
+
           const result = await buildOrUpdateSlides(
-            input.title || "Presentation",
-            input.slides || [],
+            deckTitle,
+            deckSlides,
             config.userEmail || "",
             input.presentationId
           );
@@ -10359,9 +10428,27 @@ async function streamOpenAI(
       } else if (tc.function.name === "generate_slides") {
         try {
           const input = JSON.parse(tc.function.arguments);
+          const deckTitle = input.title || "Presentation";
+          const deckSlides = input.slides || [];
+
+          // Draft is the default. A file appears only when a person asked for
+          // one, which is what keeps a user's Drive free of half-agreed decks.
+          if (!input.publish && !input.presentationId) {
+            const draft = buildSlidesDraft(deckTitle, deckSlides);
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
+            );
+            openaiMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: `Draft deck rendered as a ${deckSlides.length}-slide preview in the chat. NOTHING has been written to Drive. The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
+            } as any);
+            continue;
+          }
+
           const result = await buildOrUpdateSlides(
-            input.title || "Presentation",
-            input.slides || [],
+            deckTitle,
+            deckSlides,
             config.userEmail || "",
             input.presentationId
           );
