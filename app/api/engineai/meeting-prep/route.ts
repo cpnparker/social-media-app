@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
-import { createStreamingResponse, type AIMessage } from "@/lib/ai/providers";
+import { createStreamingResponse, type AIMessage, localStamp } from "@/lib/ai/providers";
 import { buildSystemPrompt, normalizeContextConfig } from "@/lib/ai/system-prompts";
 
 /**
@@ -119,7 +119,11 @@ export async function POST(req: NextRequest) {
     `Prepare ${user.name_user || userEmail} for this meeting. Write the brief they would want ten minutes beforehand.`,
     ``,
     `MEETING: ${body.meetingTitle || "(untitled)"}`,
-    body.meetingDate ? `WHEN: ${body.meetingDate}` : "",
+    // Resolved to Europe/Zurich here rather than handed over raw. MeetingBrain
+    // sends the stored timestamptz, i.e. a UTC instant, and a model asked to
+    // convert one reaches for Zurich's STANDARD +1 rather than its summer +2 —
+    // which is how an 08:45 meeting came back briefed as 07:45.
+    body.meetingDate ? `WHEN: ${localStamp(body.meetingDate) || body.meetingDate} (Europe/Zurich — use exactly this, do not convert it)` : "",
     attendeeLines ? `ATTENDEES:\n${attendeeLines}` : "",
     ``,
     `FIRST, WORK OUT WHAT KIND OF MEETING THIS IS from the attendees and the title, and say which in one line at the top. Getting this wrong is the main way a prep brief becomes useless — a prospect briefed as a client reads as though we already have a contract with them.`,

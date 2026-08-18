@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
-import { queryEngine, queryMeetingBrain } from "@/lib/ai/providers";
+import { queryEngine, queryMeetingBrain, localDay } from "@/lib/ai/providers";
 
 export const maxDuration = 30;
 
@@ -231,7 +231,7 @@ export async function POST(req: NextRequest) {
           body: {
             meetings: meetingRows.map((m: any) => ({
               title: m.meeting_title,
-              date: m.meeting_date?.slice(0, 10),
+              date: localDay(m.meeting_date),
               summary: (m.meeting_summary || "").slice(0, 400),
               next_steps: (m.next_steps || "").slice(0, 600),
               attendees: m.attendees_external || null,
@@ -242,7 +242,7 @@ export async function POST(req: NextRequest) {
           receipt: {
             record_type: "ai_client_meetings",
             meeting_title: meetingRows[0].meeting_title,
-            meeting_date: meetingRows[0].meeting_date?.slice(0, 10),
+            meeting_date: localDay(meetingRows[0].meeting_date),
           },
         });
       }

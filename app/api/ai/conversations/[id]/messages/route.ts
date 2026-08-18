@@ -4,7 +4,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { checkConversationAccess } from "@/lib/ai/access";
 import { hasEngineAiAccess } from "@/lib/permissions";
 import { supabase } from "@/lib/supabase";
-import { createStreamingResponse, type AIMessage, type AIAttachment } from "@/lib/ai/providers";
+import { createStreamingResponse, type AIMessage, type AIAttachment, localDay } from "@/lib/ai/providers";
 import { buildSystemPrompt, normalizeContextConfig, isFullDetail, type NormalizedContextConfig, type DetailLevel } from "@/lib/ai/system-prompts";
 import { notebookIndex } from "@/lib/notebook/search";
 import { fetchBlobContent } from "@/lib/ai/blob-utils";
@@ -1083,7 +1083,7 @@ export async function POST(
           let meeting_context: string | null = null;
           if (meetings && meetings.length > 0) {
             meeting_context = meetings.map((m: any) => {
-              let text = `## ${m.meeting_title} (${m.meeting_date?.slice(0, 10)})`;
+              let text = `## ${m.meeting_title} (${localDay(m.meeting_date)})`;
               if (m.attendees_external) text += `\nClient attendees: ${m.attendees_external}`;
               if (m.meeting_summary) text += `\n${m.meeting_summary}`;
               if (m.key_topics) {
@@ -1158,7 +1158,7 @@ export async function POST(
       let meeting_context: string | null = null;
       if (mtgData && mtgData.length > 0) {
         meeting_context = mtgData.map((m: any) => {
-          let text = `## ${m.meeting_title} (${m.meeting_date?.slice(0, 10)})`;
+          let text = `## ${m.meeting_title} (${localDay(m.meeting_date)})`;
           if (m.attendees_external) text += `\nClient attendees: ${m.attendees_external}`;
           if (m.meeting_summary) text += `\n${m.meeting_summary}`;
           if (m.key_topics) { try { const t = JSON.parse(m.key_topics); if (Array.isArray(t)) text += `\nKey topics: ${t.slice(0, 5).join(", ")}`; } catch { /* skip */ } }

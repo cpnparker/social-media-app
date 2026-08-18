@@ -5,7 +5,7 @@ import { anthropicCallParams } from "@/lib/ai/anthropic-params";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
-import { queryEngine, queryMeetingBrain, searchMemory } from "@/lib/ai/providers";
+import { queryEngine, queryMeetingBrain, searchMemory, localDay } from "@/lib/ai/providers";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 
 export const maxDuration = 30;
@@ -189,7 +189,7 @@ export async function POST(req: NextRequest) {
       ]);
       contracts = c; pipeline = p; unitsRes = u;
       clientName = (client as any)?.data?.name_client || "the client";
-      recentMeetings = ((meetings as any)?.data || []).map((m: any) => ({ title: m.meeting_title, date: m.meeting_date?.slice(0, 10), next_steps: (m.next_steps || "").slice(0, 300) }));
+      recentMeetings = ((meetings as any)?.data || []).map((m: any) => ({ title: m.meeting_title, date: localDay(m.meeting_date), next_steps: (m.next_steps || "").slice(0, 300) }));
       recentContent = ((content as any)?.data || []).slice(0, 8).map((c2: any) => ({ name: c2.name_content, type: c2.type_content }));
     } else {
       const [c, p, u] = await Promise.all([
