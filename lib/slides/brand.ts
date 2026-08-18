@@ -151,10 +151,19 @@ export const LOGO_PLACEMENT = {
   closing: { x: 4.32 * IN, y: 4.47 * IN, width: 1.47 * IN, height: 0.57 * IN },
 } as const;
 
-/** createImage needs a publicly fetchable raster URL — Slides fetches it
- *  server-side, so a relative path or an SVG will not do. */
+const PUBLIC_ORIGIN = "https://ai.thecontentengine.com";
+
+/** createImage needs a publicly fetchable raster URL — Google fetches it from
+ *  its own servers, so a relative path or an SVG will not do.
+ *
+ *  NEXTAUTH_URL is localhost in development, and Slides rejects the whole
+ *  batchUpdate with "Localhost image URLs are invalid" — which fails the entire
+ *  deck over the logo. Any non-public origin therefore falls back to production,
+ *  where these assets are served from `public/assets`. */
 export function logoUrl(variant: "white" | "navy"): string {
-  const base = (process.env.NEXTAUTH_URL || "https://ai.thecontentengine.com").replace(/\/$/, "");
+  const configured = (process.env.NEXTAUTH_URL || "").replace(/\/$/, "");
+  const isPublic = /^https:\/\//.test(configured) && !/localhost|127\.0\.0\.1|0\.0\.0\.0/.test(configured);
+  const base = isPublic ? configured : PUBLIC_ORIGIN;
   return `${base}${variant === "white" ? LOGO.whitePath : LOGO.navyPath}`;
 }
 
