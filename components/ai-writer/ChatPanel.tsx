@@ -310,6 +310,26 @@ export default function ChatPanel({
   // "↓" pill button lets user jump to bottom manually.
 
   /**
+   * Turn a comment on one slide into a properly scoped instruction.
+   *
+   * The user should only have to write the change, not locate it. The slide
+   * number and title come from what they clicked, and the reminder to resend
+   * the whole deck is here rather than left to the model: `slides` replaces
+   * every slide, so a revision that returns only the changed one silently
+   * deletes the rest.
+   */
+  // Deliberately NOT memoised: handleSend is rebuilt every render and closes
+  // over the current conversation and messages. A useCallback here would pin
+  // the first render's copy and send into a stale thread.
+  const sendSlideComment = (deckTitle: string, index: number, slideTitle: string | undefined, text: string) => {
+    const which = slideTitle ? `slide ${index + 1} ("${slideTitle}")` : `slide ${index + 1}`;
+    void handleSend(
+      `On ${which} of "${deckTitle}": ${text}\n\n` +
+      `Change only that slide. Leave every other slide exactly as it is, and resend the complete deck.`
+    );
+  };
+
+  /**
    * Restore the deck card from the stored messages.
    *
    * Only the LAST deck in the thread is shown. Every revision writes its own
@@ -1731,6 +1751,9 @@ export default function ChatPanel({
                   draft={slidesDraft}
                   publishing={publishingSlides}
                   onPublish={publishSlidesDraft}
+                  onSlideComment={(i, text) =>
+                    sendSlideComment(slidesDraft.title, i, (slidesDraft.slides?.[i] as any)?.title, text)
+                  }
                 />
               </div>
             )}

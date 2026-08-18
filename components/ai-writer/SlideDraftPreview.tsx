@@ -14,6 +14,8 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import SlideLightbox from "./SlideLightbox";
+import SlideCommentBox from "./SlideCommentBox";
+import { MessageSquarePlus } from "lucide-react";
 
 const BASE_W = 720;
 const BASE_H = 405;
@@ -55,14 +57,16 @@ function fontStack(font?: string): string {
 }
 
 function SlideThumb({
-  slide, index, width = THUMB_W, onClick,
+  slide, index, width = THUMB_W, onClick, onComment,
 }: {
-  slide: PreviewSlide; index: number; width?: number; onClick?: () => void;
+  slide: PreviewSlide; index: number; width?: number;
+  onClick?: () => void; onComment?: () => void;
 }) {
   const scale = width / BASE_W;
   return (
+    <div className="relative shrink-0 group" style={{ width }}>
     <div
-      className={`rounded border overflow-hidden shrink-0 bg-white ${onClick ? "cursor-zoom-in hover:ring-2 hover:ring-primary/40 transition-shadow" : ""}`}
+      className={`rounded border overflow-hidden bg-white ${onClick ? "cursor-zoom-in hover:ring-2 hover:ring-primary/40 transition-shadow" : ""}`}
       style={{ width, height: BASE_H * scale }}
       aria-label={`Slide ${index + 1}`}
       role={onClick ? "button" : undefined}
@@ -119,19 +123,45 @@ function SlideThumb({
         })}
       </div>
     </div>
+      {onComment && (
+        // Always in the DOM rather than mounted on hover, so it is reachable by
+        // keyboard and does not vanish from under a moving cursor.
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onComment(); }}
+          aria-label={`Comment on slide ${index + 1}`}
+          title="Ask for a change to this slide"
+          className="absolute top-1.5 right-1.5 h-7 w-7 rounded-md bg-background/90 border shadow-sm flex items-center justify-center
+                     opacity-0 group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-primary/40 transition-opacity"
+        >
+          <MessageSquarePlus className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
   );
 }
 
 export default function SlideDraftPreview({
-  draft, onPublish, publishing, disabled,
+  draft, onPublish, publishing, disabled, onSlideComment,
 }: {
   draft: SlideDraft;
   onPublish: () => void;
   publishing: boolean;
   disabled?: boolean;
+  /** Sends a change request scoped to one slide. */
+  onSlideComment?: (index: number, text: string) => void;
 }) {
   const count = draft.preview.slides.length;
   const [zoom, setZoom] = useState<number | null>(null);
+  const [commentOn, setCommentOn] = useState<number | null>(null);
+  const slideTitle = (i: number) => (draft.slides?.[i] as any)?.title as string | undefined;
+  const submitComment = (i: number) => (text: string) => {
+    onSlideComment?.(i, text);
+    // Both surfaces close: the request is now in the conversation, and the
+    // preview it refers to is about to be replaced.
+    setCommentOn(null);
+    setZoom(null);
+  };
   // Bounded so a slide stays whole on screen: the point of a full view is
   // reading it without scrolling to find the rest of it. Measured only once a
   // slide has been clicked, which cannot happen during server rendering.
@@ -158,18 +188,42 @@ export default function SlideDraftPreview({
 
       <div className="flex flex-wrap gap-2">
         {draft.preview.slides.map((s, i) => (
-          <SlideThumb key={i} slide={s} index={i} onClick={() => setZoom(i)} />
+          <SlideThumb key={i} slide={s} index={i} onClick={() => setZoom(i)}
+                      onComment={onSlideComment ? () => setCommentOn(i) : undefined} />
         ))}
       </div>
 
+      {commentOn !== null && (
+        <div className="mt-2.5">
+          <SlideCommentBox
+            slideNumber={commentOn + 1}
+            slideTitle={slideTitle(commentOn)}
+            onSubmit={submitComment(commentOn)}
+            onCancel={() => setCommentOn(null)}
+          />
+        </div>
+      )}
+
       {zoom !== null && (
-        <SlideLightbox index={zoom} count={count} onClose={() => setZoom(null)} onIndex={setZoom}>
+        <SlideLightbox
+          index={zoom} count={count} onClose={() => setZoom(null)} onIndex={setZoom}
+          footer={onSlideComment ? (
+            <SlideCommentBox
+              key={zoom}
+              slideNumber={zoom + 1}
+              slideTitle={slideTitle(zoom)}
+              onSubmit={submitComment(zoom)}
+              onCancel={() => setZoom(null)}
+              dark
+            />
+          ) : undefined}
+        >
           <SlideThumb slide={draft.preview.slides[zoom]} index={zoom} width={zoomWidth} />
         </SlideLightbox>
       )}
 
       <p className="text-xs text-muted-foreground mt-2.5">
-        Click a slide to read it full size. Ask for any changes and the preview updates — nothing reaches your Drive until you create it.
+        Click a slide to read it full size, or use the comment button on a slide to ask for a change to just that one. Nothing reaches your Drive until you create it.
       </p>
     </div>
   );

@@ -17,13 +17,17 @@ import { useCallback, useEffect } from "react";
 import { X, ChevronLeft, ChevronRight } from "lucide-react";
 
 export default function SlideLightbox({
-  index, count, onClose, onIndex, children,
+  index, count, onClose, onIndex, children, footer,
 }: {
   index: number;
   count: number;
   onClose: () => void;
   onIndex: (next: number) => void;
   children: React.ReactNode;
+  /** Rendered under the slide — used for the per-slide comment box, so a
+   *  change can be asked for at the moment the slide is legible enough to
+   *  judge, rather than after closing and hunting for the right thumbnail. */
+  footer?: React.ReactNode;
 }) {
   const go = useCallback((delta: number) => {
     // Clamped rather than wrapping: a deck is a sequence, and looping from the
@@ -33,7 +37,11 @@ export default function SlideLightbox({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const typing = !!el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable);
       if (e.key === "Escape") onClose();
+      // Arrow keys move the caret while someone is writing a comment.
+      else if (typing) return;
       else if (e.key === "ArrowRight") go(1);
       else if (e.key === "ArrowLeft") go(-1);
     };
@@ -92,6 +100,12 @@ export default function SlideLightbox({
           <ChevronRight className="h-6 w-6" />
         </button>
       </div>
+
+      {footer && (
+        <div onClick={(e) => e.stopPropagation()} className="w-full max-w-[1100px] mt-4">
+          {footer}
+        </div>
+      )}
     </div>
   );
 }
