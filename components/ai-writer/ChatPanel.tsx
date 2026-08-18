@@ -139,6 +139,12 @@ export default function ChatPanel({
   const [isSearchingWeb, setIsSearchingWeb] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isGeneratingDocument, setIsGeneratingDocument] = useState(false);
+  // A slide request that failed on the Google connection rather than on the
+  // deck. Held in state (not a toast) because it carries the only action that
+  // fixes it, and a toast the user misses leaves them stuck.
+  const [slidesReauth, setSlidesReauth] = useState<{ message: string; reason: string } | null>(null);
+  const [reauthBusy, setReauthBusy] = useState(false);
+  const reauthPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [isQueryingEngine, setIsQueryingEngine] = useState(false);
   const [isSearchingMemory, setIsSearchingMemory] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
@@ -287,6 +293,53 @@ export default function ChatPanel({
   // Simple rule: scroll to bottom ONCE when user sends a message.
   // Never auto-scroll during streaming. User reads at their own pace.
   // "↓" pill button lets user jump to bottom manually.
+
+  /**
+   * Reconnect Google from inside the conversation.
+   *
+   * The consent round-trip returns to our own callback, which closes itself, so
+   * the popup closing is the only signal available — same approach as the
+   * connections panel. Closing is NOT success, though: someone can dismiss the
+   * window early or approve the wrong Google account, so the capability
+   * endpoint is asked whether the scope actually landed before the prompt is
+   * cleared. Anything else would tell the user they are ready when they are not.
+   */
+  const reconnectGoogle = useCallback(() => {
+    const url = "/api/connections/google/start";
+    const w = window.open(url, "engine-google-connect", "width=520,height=720");
+    if (!w) {
+      window.location.href = url;
+      return;
+    }
+    setReauthBusy(true);
+    if (reauthPollRef.current) clearInterval(reauthPollRef.current);
+    reauthPollRef.current = setInterval(() => {
+      if (!w.closed) return;
+      if (reauthPollRef.current) clearInterval(reauthPollRef.current);
+      reauthPollRef.current = null;
+      // Google's consent can land a moment after the window goes.
+      setTimeout(async () => {
+        try {
+          const res = await fetch("/api/slides/capability");
+          const j = await res.json();
+          if (j.canCreate) {
+            setSlidesReauth(null);
+            toast.success("Google reconnected — ask for the deck again and I'll build it.");
+          } else {
+            setSlidesReauth({ message: j.message || "That didn't complete. Try connecting again, and make sure you approve the Google account you use here.", reason: j.reason || "needs_reconnect" });
+          }
+        } catch {
+          toast.error("Couldn't confirm the connection. Try again in a moment.");
+        } finally {
+          setReauthBusy(false);
+        }
+      }, 800);
+    }, 700);
+  }, []);
+
+  // The conversation can unmount mid-flow; leaving the watcher running would
+  // poll a window handle that no longer matters.
+  useEffect(() => () => { if (reauthPollRef.current) clearInterval(reauthPollRef.current); }, []);
 
   const scrollToBottom = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -454,6 +507,12 @@ export default function ChatPanel({
                 fullText += `\n\n📊 [Open ${deckTitle} in Google Slides](${deckUrl})\n\n`;
                 setStreamingContent(fullText);
               }
+            } else if (parsed.slides_reauth) {
+              setIsGeneratingDocument(false);
+              setSlidesReauth({
+                message: parsed.slides_reauth.message,
+                reason: parsed.slides_reauth.reason,
+              });
             } else if (parsed.slides_error) {
               // Usually a fixable connection state ("reconnect Google"), not a
               // crash — so the message is shown as-is rather than wrapped in
@@ -1559,6 +1618,24 @@ export default function ChatPanel({
                 isStreaming
                 workspaceId={conversation?.workspaceId ?? null}
               />
+            )}
+            {slidesReauth && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                  <Link2 className="h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <div className="flex-1 min-w-0 rounded-lg border bg-muted/40 px-3 py-2.5">
+                  <p className="text-sm text-foreground/90">{slidesReauth.message}</p>
+                  <div className="mt-2.5 flex items-center gap-2">
+                    <Button size="sm" onClick={reconnectGoogle} disabled={reauthBusy}>
+                      {reauthBusy ? "Waiting for Google…" : slidesReauth.reason === "not_connected" ? "Connect Google" : "Reconnect Google"}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setSlidesReauth(null)} disabled={reauthBusy}>
+                      Not now
+                    </Button>
+                  </div>
+                </div>
+              </div>
             )}
             <div ref={messagesEndRef} />
           </div>

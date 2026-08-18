@@ -15,13 +15,24 @@
  */
 
 import {
-  COLOR, GRID, CANVAS, TYPE, LAYOUT_STYLE, LOGO_PLACEMENT,
+  COLOR, GRID, CANVAS, TYPE, TIMELINE, LAYOUT_STYLE, LOGO_PLACEMENT,
   rgb, logoUrl, type SlideLayout, type TypeStyle,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
 
 const SLIDES_API = "https://slides.googleapis.com/v1/presentations";
 const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
+
+export interface Milestone {
+  /** Shown above the axis, e.g. "3 July" or "18–24 August". */
+  date: string;
+  /** Shown below the marker. */
+  title: string;
+  /** Optional supporting line under the title. */
+  detail?: string;
+  /** Draws a larger marker — for the phase that is current or next. */
+  highlight?: boolean;
+}
 
 export interface SlideInput {
   layout?: SlideLayout;
@@ -30,6 +41,7 @@ export interface SlideInput {
   eyebrow?: string;
   body?: string;
   bodyRight?: string;
+  milestones?: Milestone[];
   notes?: string;
 }
 
@@ -40,6 +52,9 @@ export interface SlidesResult {
   title?: string;
   slideCount?: number;
   error?: string;
+  /** Set only when the failure is a connection state the user can fix. The
+   *  chat layer uses it to offer a reconnect button instead of an error. */
+  reason?: SlidesAuthFailure;
 }
 
 /* ─────────────── Request builders ─────────────── */
@@ -150,6 +165,92 @@ function logoRequests(objectId: string, pageObjectId: string, layout: SlideLayou
   ];
 }
 
+/** A filled shape with no outline — the axis rule and the milestone markers.
+ *  Slides gives new shapes a default border, which reads as a stray hairline at
+ *  this size, so the outline is explicitly turned off rather than left. */
+function filledShape(
+  objectId: string,
+  pageObjectId: string,
+  shapeType: "RECTANGLE" | "ELLIPSE",
+  color: string,
+  box: { x: number; y: number; width: number; height: number }
+): Req[] {
+  return [
+    {
+      createShape: {
+        objectId,
+        shapeType,
+        elementProperties: {
+          pageObjectId,
+          size: { width: pt(box.width), height: pt(box.height) },
+          transform: { scaleX: 1, scaleY: 1, translateX: box.x, translateY: box.y, unit: "PT" },
+        },
+      },
+    },
+    {
+      updateShapeProperties: {
+        objectId,
+        shapeProperties: {
+          shapeBackgroundFill: { solidFill: { color: { rgbColor: rgb(color) } } },
+          outline: { propertyState: "NOT_RENDERED" },
+        },
+        fields: "shapeBackgroundFill.solidFill.color,outline.propertyState",
+      },
+    },
+  ];
+}
+
+/** A real horizontal timeline: one axis, evenly spaced markers, labels above
+ *  and below. Milestones are spaced by slot rather than by date, because these
+ *  decks show sequence and ownership, not duration — proportional spacing would
+ *  crush three August dates against one another to no benefit. */
+function timelineRequests(
+  page: string,
+  id: (s: string) => string,
+  milestones: Milestone[]
+): Req[] {
+  const requests: Req[] = [];
+  const n = milestones.length;
+  if (!n) return requests;
+
+  requests.push(
+    ...filledShape(id("axis"), page, "RECTANGLE", COLOR.periwinkle, {
+      x: GRID.margin,
+      y: TIMELINE.axisY - TIMELINE.axisThickness / 2,
+      width: GRID.contentWidth,
+      height: TIMELINE.axisThickness,
+    })
+  );
+
+  const slot = GRID.contentWidth / n;
+  const labelWidth = slot - TIMELINE.slotGutter;
+
+  milestones.forEach((m, i) => {
+    const centre = GRID.margin + slot * (i + 0.5);
+    const size = m.highlight ? TIMELINE.markerSizeHighlight : TIMELINE.markerSize;
+    const labelX = centre - labelWidth / 2;
+
+    requests.push(
+      ...filledShape(id(`dot${i}`), page, "ELLIPSE", m.highlight ? COLOR.blue : COLOR.navy, {
+        x: centre - size / 2,
+        y: TIMELINE.axisY - size / 2,
+        width: size,
+        height: size,
+      }),
+      ...textBox(id(`d${i}`), page, m.date, TYPE.milestoneDate, {
+        x: labelX, y: TIMELINE.dateY, width: labelWidth, height: TIMELINE.dateHeight,
+      }, { align: "CENTER" }),
+      ...textBox(id(`t${i}`), page, m.title, TYPE.milestoneName, {
+        x: labelX, y: TIMELINE.titleY, width: labelWidth, height: TIMELINE.titleHeight,
+      }, { align: "CENTER" }),
+      ...textBox(id(`x${i}`), page, m.detail, TYPE.milestoneText, {
+        x: labelX, y: TIMELINE.detailY, width: labelWidth, height: TIMELINE.detailHeight,
+      }, { align: "CENTER" }),
+    );
+  });
+  return requests;
+}
+
 /** One slide → its full request list. Exported so the layout geometry can be
  *  exercised without a Google round-trip; nothing else should call it. */
 export function buildSlideRequests(slide: SlideInput, index: number): Req[] {
@@ -222,6 +323,20 @@ export function buildSlideRequests(slide: SlideInput, index: number): Req[] {
         x: GRID.margin, y: CANVAS.height / 2 + 55,
         width: GRID.contentWidth, height: 60,
       }),
+    );
+  } else if (layout === "timeline") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+      }),
+      ...textBox(id("sub"), page, slide.subtitle, bodyStyle, {
+        x: GRID.margin, y: GRID.bodyY - 8, width: GRID.contentWidth, height: 24,
+      }),
+      ...timelineRequests(page, id, slide.milestones || []),
     );
   } else if (layout === "two-column") {
     requests.push(
@@ -324,7 +439,8 @@ export async function generateSlides(
 
   const auth = await getUserGoogleToken(userEmail);
   if (!auth.ok || !auth.accessToken) {
-    return { ok: false, error: authFailureMessage(auth.reason as SlidesAuthFailure) };
+    const reason = auth.reason as SlidesAuthFailure;
+    return { ok: false, error: authFailureMessage(reason), reason };
   }
   const token = auth.accessToken;
 

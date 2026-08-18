@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
 import { generateSlides } from "@/lib/slides/generate";
 import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
+import { isReconnectable } from "@/lib/slides/reauth";
 
 /* ─────────────── Types ─────────────── */
 
@@ -1138,9 +1139,9 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             properties: {
               layout: {
                 type: "string",
-                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "closing"],
+                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "closing"],
                 description:
-                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
+                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
               },
               title: { type: "string", description: "Slide heading." },
               subtitle: {
@@ -1156,6 +1157,21 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                 description: "Main text. Put each bullet on its own line; a single line stays as a paragraph.",
               },
               bodyRight: { type: "string", description: "Right-hand column text. two-column layout only." },
+              milestones: {
+                type: "array",
+                description:
+                  "Points on the timeline, in order. REQUIRED for the timeline layout and ignored by every other layout — a timeline described as bullet points in `body` is not a timeline, so use this instead. Three to five reads best.",
+                items: {
+                  type: "object",
+                  properties: {
+                    date: { type: "string", description: "Shown above the axis, e.g. '3 July' or '18–24 August'." },
+                    title: { type: "string", description: "Short name of the phase, shown under the marker." },
+                    detail: { type: "string", description: "One supporting sentence under the title." },
+                    highlight: { type: "boolean", description: "true for the phase that is current or next — draws a larger, brighter marker. Use on at most one." },
+                  },
+                  required: ["date", "title"],
+                },
+              },
               notes: { type: "string", description: "Speaker notes for this slide." },
             },
             required: ["title"],
@@ -7272,15 +7288,24 @@ async function streamAnthropic(
           );
 
           if (!result.ok) {
-            // Not an exception — a connection state the user can fix. Relay it
-            // as an action rather than reporting a failure they cannot act on.
+            // A connection the user can fix gets a button, not an error toast —
+            // the chat is where they asked, so it is where the fix belongs.
+            const fixable = isReconnectable(result.reason);
             controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ slides_error: result.error })}\n\n`)
+              encoder.encode(
+                `data: ${JSON.stringify(
+                  fixable
+                    ? { slides_reauth: { message: result.error, reason: result.reason } }
+                    : { slides_error: result.error }
+                )}\n\n`
+              )
             );
             toolResults.push({
               type: "tool_result",
               tool_use_id: tool.id,
-              content: `RELAY THIS TO THE USER, as an action they can take: ${result.error}`,
+              content: fixable
+                ? `RELAY THIS TO THE USER in one short sentence: ${result.error} A reconnect button is ALREADY shown to them, so do not paste a link or describe where Settings is.`
+                : `RELAY THIS TO THE USER, as an action they can take: ${result.error}`,
             });
           } else {
             controller.enqueue(
@@ -8443,13 +8468,22 @@ async function streamXAIChatCompletions(
           );
 
           if (!result.ok) {
+            const fixable = isReconnectable(result.reason);
             controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ slides_error: result.error })}\n\n`)
+              encoder.encode(
+                `data: ${JSON.stringify(
+                  fixable
+                    ? { slides_reauth: { message: result.error, reason: result.reason } }
+                    : { slides_error: result.error }
+                )}\n\n`
+              )
             );
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `RELAY THIS TO THE USER, as an action they can take: ${result.error}`,
+              content: fixable
+                ? `RELAY THIS TO THE USER in one short sentence: ${result.error} A reconnect button is ALREADY shown to them, so do not paste a link or describe where Settings is.`
+                : `RELAY THIS TO THE USER, as an action they can take: ${result.error}`,
             } as any);
           } else {
             controller.enqueue(
@@ -9356,13 +9390,22 @@ async function streamGemini(
           );
 
           if (!result.ok) {
+            const fixable = isReconnectable(result.reason);
             controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ slides_error: result.error })}\n\n`)
+              encoder.encode(
+                `data: ${JSON.stringify(
+                  fixable
+                    ? { slides_reauth: { message: result.error, reason: result.reason } }
+                    : { slides_error: result.error }
+                )}\n\n`
+              )
             );
             geminiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `RELAY THIS TO THE USER, as an action they can take: ${result.error}`,
+              content: fixable
+                ? `RELAY THIS TO THE USER in one short sentence: ${result.error} A reconnect button is ALREADY shown to them, so do not paste a link or describe where Settings is.`
+                : `RELAY THIS TO THE USER, as an action they can take: ${result.error}`,
             } as any);
           } else {
             controller.enqueue(
@@ -10159,13 +10202,22 @@ async function streamOpenAI(
           );
 
           if (!result.ok) {
+            const fixable = isReconnectable(result.reason);
             controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ slides_error: result.error })}\n\n`)
+              encoder.encode(
+                `data: ${JSON.stringify(
+                  fixable
+                    ? { slides_reauth: { message: result.error, reason: result.reason } }
+                    : { slides_error: result.error }
+                )}\n\n`
+              )
             );
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `RELAY THIS TO THE USER, as an action they can take: ${result.error}`,
+              content: fixable
+                ? `RELAY THIS TO THE USER in one short sentence: ${result.error} A reconnect button is ALREADY shown to them, so do not paste a link or describe where Settings is.`
+                : `RELAY THIS TO THE USER, as an action they can take: ${result.error}`,
             } as any);
           } else {
             controller.enqueue(

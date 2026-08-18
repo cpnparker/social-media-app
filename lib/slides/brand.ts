@@ -128,6 +128,9 @@ export const TYPE: Record<string, TypeStyle> = {
   caption:       { font: "Roboto", size: 8, weight: 300, color: COLOR.ink },
   statistic:     { font: "Poppins", size: 30, color: COLOR.white },
   source:        { font: "Roboto", size: 7, color: COLOR.ink },
+  milestoneDate: { font: "Roboto", size: 9, bold: true, color: COLOR.blue, caps: true },
+  milestoneName: { font: "Playfair Display", size: 12, color: COLOR.navy },
+  milestoneText: { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
 };
 
 /* ─────────────── Logo ─────────────── */
@@ -176,11 +179,32 @@ export type SlideLayout =
   | "two-column"
   | "case-study"
   | "dark-index"
+  | "timeline"
   | "closing";
 
 export const LAYOUTS: SlideLayout[] = [
-  "cover", "section", "content", "two-column", "case-study", "dark-index", "closing",
+  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "closing",
 ];
+
+/** Horizontal timeline: an axis rule with evenly spaced milestone markers.
+ *
+ *  Exists because a timeline drawn as a bullet list is not a timeline. The
+ *  text-only layouts could not express one, so the model described a visual it
+ *  had no way to produce. */
+export const TIMELINE = {
+  axisY: 2.85 * IN,
+  axisThickness: 2,
+  markerSize: 13,
+  markerSizeHighlight: 19,
+  dateY: 2.25 * IN,      // above the axis
+  dateHeight: 0.28 * IN,
+  titleY: 3.15 * IN,     // below the axis
+  titleHeight: 0.34 * IN,
+  detailY: 3.52 * IN,
+  detailHeight: 0.95 * IN,
+  /** Gutter between adjacent milestone columns, so labels cannot collide. */
+  slotGutter: 10,
+} as const;
 
 /** Background and logo treatment per archetype. `background: null` means the
  *  slide expects a full-bleed photograph; we fall back to navy when no image is
@@ -197,5 +221,6 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   "two-column": { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "case-study": { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "dark-index": { background: COLOR.navy,     logo: "white", logoPlacement: "content", onDark: true },
+  timeline:     { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   closing:      { background: null,           logo: "white", logoPlacement: "closing", onDark: true },
 };
