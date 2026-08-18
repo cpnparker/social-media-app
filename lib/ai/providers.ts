@@ -1179,7 +1179,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   function: {
     name: "generate_slides",
     description:
-      "Build a branded Content Engine slide deck and show it to the user as a PREVIEW in the chat. Nothing is written to their Google Drive — they review the preview, ask for changes, and press a button to create it when they are happy. Use this whenever a deck, presentation, slides or pitch deck is wanted. Call it again with revised slides for every change they ask for; each call replaces the preview, which costs them nothing. Set publish:true ONLY when they explicitly say to create, upload, save or send it to Drive now. Use generate_document instead only when they specifically want a .pptx file to download.",
+      "CALL THIS whenever a deck, presentation, slides, or a preview of any of those is wanted. It RENDERS the slides as actual images in the chat — rendering is something only this tool can do, so writing out what the slides would contain shows the user nothing at all. The rendered deck is a preview: it is not written to Google Drive, so the user reviews it, asks for changes, and presses a button to create it when happy. Call the tool again with the full revised slide list for every change they ask for. Set publish:true ONLY when they explicitly say to create, upload, save or send it to Drive now. Use generate_document instead only when they specifically want a .pptx file to download.",
     parameters: {
       type: "object",
       properties: {
