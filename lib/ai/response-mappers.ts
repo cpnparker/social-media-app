@@ -44,6 +44,7 @@ export function mapMessage(row: any) {
     createdAt: row.date_created,
     status: (row.status_message as "pending" | "complete" | "failed" | undefined) ?? "complete",
     rating: (row.rating_message as 1 | -1 | null | undefined) ?? null,
+    slidesDraft: row.slides_draft ?? null,
   };
 }
 

@@ -150,6 +150,7 @@ export default function ChatPanel({
   // A deck rendered but NOT written to Drive. Held until the user presses the
   // button or asks for changes, which replace it with a new draft.
   const [slidesDraft, setSlidesDraft] = useState<SlideDraft | null>(null);
+  const [slidesDraftMessageId, setSlidesDraftMessageId] = useState<string | null>(null);
   const [publishingSlides, setPublishingSlides] = useState(false);
   const [slidesPreview, setSlidesPreview] = useState<
     { url: string; title: string; slideCount: number; updated: boolean; thumbnails: string[] } | null
@@ -207,6 +208,7 @@ export default function ChatPanel({
       const data = await res.json();
       setConversation(data.conversation);
       setMessages(data.messages || []);
+      hydrateSlidesFromMessages(data.messages || []);
       if (data.conversation.myPermission) setMyPermission(data.conversation.myPermission);
       if (data.conversation.shares) setShares(data.conversation.shares);
     } catch (err) {
@@ -306,6 +308,38 @@ export default function ChatPanel({
   // "↓" pill button lets user jump to bottom manually.
 
   /**
+   * Restore the deck card from the stored messages.
+   *
+   * Only the LAST deck in the thread is shown. Every revision writes its own
+   * draft, so rendering all of them would stack five near-identical previews
+   * and put the user back to working out which one is current — the confusion
+   * this flow exists to remove. A deck that was published shows as published.
+   */
+  const hydrateSlidesFromMessages = useCallback((rows: AIMessageRow[]) => {
+    const withDeck = [...rows].reverse().find((m) => m.slidesDraft);
+    if (!withDeck?.slidesDraft) {
+      setSlidesDraft(null); setSlidesDraftMessageId(null); setSlidesPreview(null);
+      return;
+    }
+    const deck = withDeck.slidesDraft;
+    if (deck.published?.url) {
+      setSlidesDraft(null);
+      setSlidesDraftMessageId(null);
+      setSlidesPreview({
+        url: deck.published.url,
+        title: deck.title,
+        slideCount: deck.published.slideCount ?? deck.slides.length,
+        updated: false,
+        thumbnails: deck.published.thumbnails || [],
+      });
+      return;
+    }
+    setSlidesPreview(null);
+    setSlidesDraft({ title: deck.title, slides: deck.slides, preview: deck.preview });
+    setSlidesDraftMessageId(withDeck.id);
+  }, []);
+
+  /**
    * Put the reviewed draft into Drive. Only ever reached from the button.
    *
    * On failure the draft is deliberately KEPT — the user has been iterating on
@@ -318,7 +352,11 @@ export default function ChatPanel({
       const res = await fetch("/api/slides/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: slidesDraft.title, slides: slidesDraft.slides }),
+        body: JSON.stringify({
+          title: slidesDraft.title,
+          slides: slidesDraft.slides,
+          messageId: slidesDraftMessageId,
+        }),
       });
       const j = await res.json();
       if (!res.ok) {
@@ -339,7 +377,7 @@ export default function ChatPanel({
     } finally {
       setPublishingSlides(false);
     }
-  }, [slidesDraft]);
+  }, [slidesDraft, slidesDraftMessageId]);
 
   /**
    * Reconnect Google from inside the conversation.
@@ -553,6 +591,7 @@ export default function ChatPanel({
               // deck on screen is the confusion this whole flow removes.
               setSlidesPreview(null);
               setSlidesDraft(parsed.slides_draft);
+              setSlidesDraftMessageId(assistantIdRef.current || null);
             } else if (parsed.slides_ready) {
               setIsGeneratingDocument(false);
               const deck = parsed.slides_ready;

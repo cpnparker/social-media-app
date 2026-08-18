@@ -90,4 +90,13 @@ export interface AIMessageRow {
   status?: "pending" | "complete" | "failed";
   /** User feedback: 1 = helpful, -1 = not helpful, null = unrated */
   rating?: 1 | -1 | null;
+  /** A rendered-but-unsaved slide deck, and once created, where it landed.
+   *  Stored on the message so the preview survives a reload and is visible to
+   *  everyone the conversation is shared with, not just its author. */
+  slidesDraft?: {
+    title: string;
+    slides: any[];
+    preview: { width: number; height: number; slides: any[] };
+    published?: { url: string; presentationId: string; slideCount: number; thumbnails: string[] };
+  } | null;
 }

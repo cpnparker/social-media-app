@@ -57,6 +57,11 @@ export interface AIProviderConfig {
   workspaceId?: string;
   userId?: number;
   userEmail?: string;
+  /** Called when a slide draft is rendered, so the route can persist it on the
+   *  assistant message. Without this the preview lives only in the browser that
+   *  generated it: a reload loses it, and nobody the conversation is shared
+   *  with ever sees the deck they are supposed to be reviewing. */
+  onSlidesDraft?: (draft: { title: string; slides: any[]; preview: any }) => void;
   selectedClientId?: number;
   /** type_source string used for ai_usage logging + Control Centre lookups.
    *  Defaults to "enginegpt" (the user-facing chat). Set to a different
@@ -7440,6 +7445,7 @@ async function streamAnthropic(
           // one, which is what keeps a user's Drive free of half-agreed decks.
           if (!tool.input.publish && !tool.input.presentationId) {
             const draft = buildSlidesDraft(deckTitle, deckSlides);
+            config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
             );
@@ -8647,6 +8653,7 @@ async function streamXAIChatCompletions(
           // one, which is what keeps a user's Drive free of half-agreed decks.
           if (!input.publish && !input.presentationId) {
             const draft = buildSlidesDraft(deckTitle, deckSlides);
+            config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
             );
@@ -9596,6 +9603,7 @@ async function streamGemini(
           // one, which is what keeps a user's Drive free of half-agreed decks.
           if (!input.publish && !input.presentationId) {
             const draft = buildSlidesDraft(deckTitle, deckSlides);
+            config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
             );
@@ -10435,6 +10443,7 @@ async function streamOpenAI(
           // one, which is what keeps a user's Drive free of half-agreed decks.
           if (!input.publish && !input.presentationId) {
             const draft = buildSlidesDraft(deckTitle, deckSlides);
+            config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
             );

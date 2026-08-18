@@ -1636,12 +1636,16 @@ export async function POST(
     const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, calendarAccess, microsoftAccess, resourcingAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
         allowPersonalData: true };
 
+    // The last slide draft rendered this turn, persisted with the assistant
+    // message so the preview outlives the browser tab that produced it.
+    let lastSlidesDraft: any = null;
+
     const aiStream = createStreamingResponse(
       messages,
       // userEmail is passed for team threads too: the MeetingBrain/Slack tools
       // gate personal reports server-side via conversationVisibility, while the
       // workspace-shared client_meetings report stays available to everyone.
-      aiConfigRef,
+      { ...aiConfigRef, onSlidesDraft: (draft: any) => { lastSlidesDraft = draft; } },
       async ({ fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
@@ -1672,6 +1676,17 @@ export async function POST(
           }
           pendingComplete = true;
           if (assistantErr) console.error("[Messages] Failed to save assistant message:", assistantErr);
+
+          // Written separately and tolerated on failure. Folding it into the
+          // update above would mean a deployment that runs before the column
+          // exists loses the whole assistant message, not just its preview.
+          if (lastSlidesDraft && pendingMessageId) {
+            const { error: draftErr } = await intelligenceDb
+              .from("ai_messages")
+              .update({ slides_draft: lastSlidesDraft })
+              .eq("id_message", pendingMessageId);
+            if (draftErr) console.warn("[Messages] Slide draft not stored:", draftErr.message);
+          }
 
           const { error: updateErr } = await intelligenceDb
             .from("ai_conversations")
