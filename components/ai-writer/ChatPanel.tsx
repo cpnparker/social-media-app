@@ -446,6 +446,20 @@ export default function ChatPanel({
             } else if (parsed.document_error) {
               setIsGeneratingDocument(false);
               toast.error(`Document generation failed: ${parsed.document_error}`);
+            } else if (parsed.slides_ready) {
+              setIsGeneratingDocument(false);
+              const deckUrl = parsed.slides_ready.url;
+              const deckTitle = parsed.slides_ready.title;
+              if (deckUrl) {
+                fullText += `\n\n📊 [Open ${deckTitle} in Google Slides](${deckUrl})\n\n`;
+                setStreamingContent(fullText);
+              }
+            } else if (parsed.slides_error) {
+              // Usually a fixable connection state ("reconnect Google"), not a
+              // crash — so the message is shown as-is rather than wrapped in
+              // "generation failed", which would bury the action.
+              setIsGeneratingDocument(false);
+              toast.error(parsed.slides_error);
             } else if (parsed.querying_engine) {
               setIsQueryingEngine(true);
             } else if (parsed.query_result) {

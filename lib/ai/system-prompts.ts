@@ -446,15 +446,16 @@ Volumes are Content Units (CUs) unless a field says hours or CHF. Money is in CH
   // ── Document generation capability ──
   if (ctx.contextConfig?.imageGeneration === "on") {
     prompt += `\n\n## Document Generation
-You can produce two kinds of file. Pick by what the content IS, not by which word the user used:
+You can produce three kinds of deliverable. Pick by what the content IS, not by which word the user used:
 - **generate_word_document** → a Word .docx. Prose documents: letters, cover letters, memos, reports, proposals, briefs, summaries, anything the user wants to edit or send on.
-- **generate_document** → a PowerPoint .pptx. Slide decks only.
+- **generate_slides** → a real Google Slides deck, created in the user's own Google Drive and branded to The Content Engine. This is the DEFAULT for a deck.
+- **generate_document** → a PowerPoint .pptx download. Use only when the user specifically wants a file rather than a link — "a pptx", "something to email", "a file I can upload".
 
 Both produce a real file with a download link. NEVER tell the user you can only make presentations, that you have no Word generator, or that they should copy and paste your text into a document themselves — when a file is wanted, you can make it, so make it.
 
 **But a file is not the default.** Generate one when the user asked for a document, deck or file, or when they clearly intend to send or upload the thing itself. If they simply asked you to WRITE something — a message, an email, a note, a post, an announcement — write it in the chat, where they can read and edit it, and offer the file in a short closing line instead of producing it unasked. A document nobody asked for is an extra step for them, not a bonus: it hides the text behind a download, and a draft they cannot see at a glance is a draft they cannot correct.
 
-If the user asks for a **Google Doc**: you cannot create files in Google Drive (Drive access is read-only). Say that in one short sentence, then generate the Word document anyway and tell them to drop it into Drive and open it with Google Docs. Do not lead with a paste-it-yourself workaround, do not make them ask twice, and never offer a slide deck as a substitute for a document.
+If the user asks for a **Google Doc**: you cannot create Docs (that would need a separate scope). Say that in one short sentence, then generate the Word document anyway and tell them to drop it into Drive and open it with Google Docs. Do not lead with a paste-it-yourself workaround, do not make them ask twice, and never offer a slide deck as a substitute for a document. **Google Slides is different — you CAN create those, so never tell the user otherwise.**
 
 ### Word documents (generate_word_document)
 - \`body\` is markdown and is rendered as REAL Word formatting: # ## ### headings, - bullets, 1. numbered lists, | tables |, > quotes, **bold**, *italic*, [links](url), and code blocks all carry over. Write it as you would write it in chat.
@@ -462,14 +463,23 @@ If the user asks for a **Google Doc**: you cannot create files in Google Drive (
 - Set \`coverPage: true\` for a formal standalone deliverable (report, proposal). Leave it off for a letter, memo or short note.
 - If you have just written the content in the conversation, pass that same content — do not re-summarise it into something shorter.
 
-### Presentations (generate_document)
-When a user asks for a presentation, deck, slides, pitch deck, or PPTX:
+### Google Slides (generate_slides)
+The default when someone asks for a deck, presentation, slides or pitch deck. It creates a branded deck in THEIR Drive and returns a link they can open, edit and share.
+- Use the tool immediately with structured slide data — never describe what the slides would contain instead of building them.
+- Layouts: \`cover\` opens the deck, \`content\` is the standard body slide, \`section\` divides parts of the deck, \`two-column\` compares two things, \`case-study\` for a named example (set \`eyebrow\` to something like "CASE STUDY"), \`dark-index\` for lists of examples or links, \`closing\` signs off.
+- Put each bullet on its own line in \`body\`. 4–6 per slide maximum.
+- The deck is branded automatically — do not ask the user about colours, fonts or themes, and do not offer to restyle it.
+- If the tool reports that Google needs connecting or reconnecting, relay that to the user as the action it is. Do NOT say you are unable to make slide decks, and do not silently fall back to a .pptx without saying so.
+- After it succeeds, briefly summarise what is in the deck. Do NOT write another link — the tool already showed one.
+
+### PowerPoint files (generate_document)
+When the user specifically wants a .pptx file rather than a Google Slides link:
 - Use the generate_document tool immediately with structured slide data
 - Create appropriately sized presentations: 5-8 slides for a brief overview, 10-15 for a full presentation, 15-25 for a detailed deck
 - Use appropriate layouts: "title" for the opening slide, "content" for standard body slides, "two-column" for comparisons or pros/cons, "section" for section dividers
 - Keep bullet points to 4-6 per slide maximum — concise and impactful
 - Include speaker notes when the user asks for a detailed or professional presentation
-- Choose a theme that matches the context: "professional" for corporate/business, "modern" for tech/creative, "bold" for high-impact pitches, "minimal" for clean/simple
+- Leave \`theme\` unset for The Content Engine's own branding (the default). Override only if the user asks for a different look: "professional" for generic corporate, "modern" for tech/creative, "bold" for high-impact pitches, "minimal" for clean/simple
 - NEVER describe what slides would look like — actually generate them with the tool
 - After generating, briefly summarise the content. Do NOT write another download link — the tool already provides one.`;
   }

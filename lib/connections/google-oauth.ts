@@ -34,9 +34,29 @@
 // the user who started it, rather than three that can drift.
 export { signState, verifyState, stateIsStale } from "./state";
 
-/** Byte-for-byte MeetingBrain's sign-in scopes. A narrower set here would mint
- *  a grant that silently lacks a scope its scanners depend on; a wider one
- *  would ask users for more than they already gave. */
+/** Scope needed to create a Google Slides deck in the user's own Drive.
+ *
+ *  `drive.file` is sufficient on its own — presentations.create and
+ *  presentations.batchUpdate both accept it — and it is classified
+ *  NON-SENSITIVE, so it carries no OAuth verification requirement. The
+ *  alternatives both do: `presentations` is sensitive (app review, ~10 days)
+ *  and `drive` is restricted (review plus an annual CASA assessment).
+ *
+ *  Its limitation is the reason lib/slides/ builds decks from tokens in code
+ *  rather than copying a template: drive.file reaches only files this app
+ *  created, so files.copy against a shared template deck returns 404. */
+export const SLIDES_SCOPE = "https://www.googleapis.com/auth/drive.file";
+
+/** MeetingBrain's sign-in scopes, plus what EngineAI needs on top.
+ *
+ *  Was byte-for-byte MeetingBrain's list. Adding is safe where narrowing would
+ *  not be: this stays a strict SUPERSET, so no MeetingBrain scanner can
+ *  silently lose a scope it depends on, and the start route already sends
+ *  include_granted_scopes=true so a re-consent returns old AND new scopes
+ *  rather than replacing them. Existing refresh tokens keep working untouched.
+ *
+ *  Never REMOVE an entry here — a narrower grant would mint tokens that fail
+ *  over in MeetingBrain rather than here, where nobody would think to look. */
 export const GOOGLE_SCOPES = [
   "openid",
   "email",
@@ -45,6 +65,7 @@ export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/documents.readonly",
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/drive.metadata.readonly",
+  SLIDES_SCOPE,
 ].join(" ");
 
 export function googleClientId(): string {

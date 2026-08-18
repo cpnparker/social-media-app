@@ -5,6 +5,8 @@ import { fetchBlobContent } from "./blob-utils";
 import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
+import { generateSlides } from "@/lib/slides/generate";
+import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
 
 /* ─────────────── Types ─────────────── */
 
@@ -225,6 +227,59 @@ async function* withStallGuard<T>(iterable: AsyncIterable<T>): AsyncGenerator<T>
 function stoppedAbnormally(reason: string | null | undefined): boolean {
   if (!reason) return false;
   return /^(max_tokens|length|MAX_TOKENS|content_filter|SAFETY|RECITATION|refusal|PROHIBITED_CONTENT|MALFORMED_FUNCTION_CALL)$/i.test(String(reason).trim());
+}
+
+/**
+ * Tools that may still run AFTER the hard taint is set.
+ *
+ * The taint fires when third-party text — a mailbox, a calendar invite, Outlook
+ * or Teams — enters the context, and it used to block EVERY subsequent tool.
+ * That was too blunt and it broke ordinary work. Ask about an email thread and
+ * then about the related Slack message, and the second half of the question
+ * simply could not be answered: the model replied "I don't have Ceri's Slack
+ * message", which reads as a missing integration rather than a rule that had
+ * just fired. Slack was never unreachable — it had been switched off for the
+ * rest of the turn by an email read three messages earlier.
+ *
+ * What the taint actually guards is EXFILTRATION and PERSISTENCE: text planted
+ * by a stranger steering a web_search at evil.tld/?d=<secrets>, or creating a
+ * scheduled task that keeps running long after the turn ends. Both stay blocked.
+ *
+ * A READ of the user's own data can do neither. It has no attacker-controllable
+ * destination, it returns into a context that is already tainted, and the only
+ * reader is the person whose data it is. So reads continue, bounded by
+ * MAX_POST_TAINT_CALLS so planted text cannot drive an unbounded fetch loop.
+ *
+ * DELIBERATELY ABSENT: web_search (the exfiltration path, including Anthropic's
+ * server-side one), create_scheduled_task (outlives the turn) and every
+ * generate_* tool (side effects and spend). If a tool is ever added that can
+ * SEND, POST, SCHEDULE or PUBLISH, it does not belong on this list.
+ */
+const POST_TAINT_READ_TOOLS = new Set([
+  "query_gmail",
+  "query_slack",
+  "query_meetingbrain",
+  "query_calendar",
+  "query_microsoft",
+  "query_engine",
+  "query_resourcing",
+  "query_xero",
+  "query_drive_docs",
+  "search_notebook",
+  "lookup_client_context",
+]);
+
+/** Total reads permitted after the taint: enough to finish a real question,
+ *  few enough that planted text cannot drive a fetch loop. */
+const MAX_POST_TAINT_CALLS = 6;
+
+/** What the model is told when a tool is refused post-taint. Says WHICH rule
+ *  fired, so the answer to the user can be honest about the gap rather than
+ *  claiming the source does not exist. */
+function postTaintRefusal(toolName: string): string {
+  return POST_TAINT_READ_TOOLS.has(toolName)
+    ? `No further lookups this turn — the post-email allowance (${MAX_POST_TAINT_CALLS}) is used up. Answer now from what you have, and say plainly what you could not check rather than promising to fetch it.`
+    : `"${toolName}" cannot run once third-party content has been read this turn: it can reach outside this conversation or persist beyond it, and anything it did could be following an instruction planted in that content. Answer from what you already have, and tell the user this specific step was blocked — do NOT say the source is unavailable or that you have no access to it.`;
 }
 
 function endsWithUnfulfilledPromise(text: string): boolean {
@@ -1031,9 +1086,9 @@ const DOCUMENT_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         },
         theme: {
           type: "string",
-          enum: ["professional", "modern", "bold", "minimal"],
+          enum: ["tce", "professional", "modern", "bold", "minimal"],
           description:
-            "Visual theme for the presentation. professional = navy/white corporate, modern = gradient/rounded, bold = dark background/high contrast, minimal = clean white/grey. Default: professional",
+            "Visual theme for the presentation. tce = The Content Engine brand (blue/navy, Playfair Display + Roboto) — use this for anything client-facing or TCE's own. professional = navy/white corporate, modern = gradient/rounded, bold = dark background/high contrast, minimal = clean white/grey. Default: tce",
         },
       },
       required: ["title", "slides"],
@@ -1048,6 +1103,76 @@ const DOCUMENT_GEN_TOOL: Anthropic.Tool = {
     "Generate a PowerPoint presentation (.pptx) file when the user asks for a presentation, deck, slides, or pptx. Create structured slide content with appropriate layouts.",
   input_schema: {
     ...(DOCUMENT_GEN_OPENAI_TOOL.function.parameters as any),
+  },
+};
+
+/* ─────────────── Google Slides Tool ─────────────── */
+
+/** OpenAI-compatible tool definition for generate_slides.
+ *
+ *  Sibling of generate_document, deliberately near-identical in shape so the
+ *  model does not have to learn two ways to describe a deck. The difference is
+ *  the destination: this creates a real Google Slides file in the USER'S OWN
+ *  Drive, branded to The Content Engine, rather than a .pptx to download.
+ *
+ *  The layout enum is the seven archetypes extracted from TCE's own decks —
+ *  see docs/tce-slide-brand.md. */
+const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "generate_slides",
+    description:
+      "Create a Google Slides presentation in the user's own Google Drive, branded to The Content Engine. Use this when the user wants a deck they can edit, share or present from — 'make me a deck', 'build a presentation', 'put this into slides', or anything mentioning Google Slides. Use generate_document instead only when they specifically want a .pptx file to download. Returns a link to the new deck.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: "Presentation title. Used on the cover slide and as the Drive filename.",
+        },
+        slides: {
+          type: "array",
+          description: "The slides to build, in order.",
+          items: {
+            type: "object",
+            properties: {
+              layout: {
+                type: "string",
+                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "closing"],
+                description:
+                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
+              },
+              title: { type: "string", description: "Slide heading." },
+              subtitle: {
+                type: "string",
+                description: "Cover/closing: the line under the title, rendered in caps. Section: a short standfirst.",
+              },
+              eyebrow: {
+                type: "string",
+                description: "Short label above the title, rendered in caps — e.g. 'CASE STUDY', 'STRATEGY'.",
+              },
+              body: {
+                type: "string",
+                description: "Main text. Put each bullet on its own line; a single line stays as a paragraph.",
+              },
+              bodyRight: { type: "string", description: "Right-hand column text. two-column layout only." },
+              notes: { type: "string", description: "Speaker notes for this slide." },
+            },
+            required: ["title"],
+          },
+        },
+      },
+      required: ["title", "slides"],
+    },
+  },
+};
+
+/** Anthropic tool definition for generate_slides */
+const SLIDES_GEN_TOOL: Anthropic.Tool = {
+  name: "generate_slides",
+  description: SLIDES_GEN_OPENAI_TOOL.function.description!,
+  input_schema: {
+    ...(SLIDES_GEN_OPENAI_TOOL.function.parameters as any),
   },
 };
 
@@ -3400,6 +3525,20 @@ interface ThemeColors {
 }
 
 const THEMES: Record<string, ThemeColors> = {
+  // The Content Engine's own brand, so a .pptx and a Google Slides deck of the
+  // same content look like the same deck. Values come from lib/slides/brand.ts
+  // rather than being retyped here — the two paths diverging is exactly the
+  // failure this shares a source to avoid.
+  tce: {
+    primary: BRAND_COLOR.blue,
+    secondary: BRAND_COLOR.navy,
+    accent: BRAND_COLOR.lime,
+    text: BRAND_COLOR.navy,
+    textLight: BRAND_COLOR.greyLight,
+    background: BRAND_COLOR.offWhite,
+    titleFont: "Playfair Display",
+    bodyFont: "Roboto",
+  },
   professional: {
     primary: "1B2A4A",
     secondary: "2C5F8A",
@@ -3445,12 +3584,12 @@ const THEMES: Record<string, ThemeColors> = {
 async function generateDocument(
   title: string,
   slides: SlideInput[],
-  theme: string = "professional"
+  theme: string = "tce"
 ): Promise<{ url: string; filename: string }> {
   const PptxGenJS = (await import("pptxgenjs")).default;
   const pres = new PptxGenJS();
 
-  const colors = THEMES[theme] || THEMES.professional;
+  const colors = THEMES[theme] || THEMES.tce;
   const isDark = theme === "bold";
 
   pres.title = title;
@@ -6469,6 +6608,7 @@ async function streamAnthropic(
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_TOOL);
     tools.push(DOCUMENT_GEN_TOOL);
+    tools.push(SLIDES_GEN_TOOL);
     tools.push(WORD_GEN_TOOL);
     tools.push(CHART_GEN_TOOL);
   }
@@ -6610,12 +6750,7 @@ async function streamAnthropic(
     query_resourcing: 8,
   };
   const budgetFor = (name: string) => READ_ONLY_TOOL_BUDGET[name] ?? MAX_CALLS_PER_TOOL;
-  /** Mailbox reads permitted AFTER the hard taint is set. The contract needs
-   *  exactly one (search -> thread); two allows a correction, and more would
-   *  let injected mail text drive an unbounded read loop. */
-  const MAX_MAIL_FOLLOW_UPS = 2;
-  let mailFollowUpsUsed = 0;
-  const toolsIncludeGmail = tools.some((t: any) => t?.name === "query_gmail");
+  let postTaintCallsUsed = 0;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     // HARD taint: suppress tool use for the rest of the turn. The executor
     // guard alone cannot reach Anthropic's SERVER-side tools — web_search runs
@@ -6624,31 +6759,28 @@ async function streamAnthropic(
     // stay for API validity (dropping it 400s when history holds tool_use
     // blocks).
     //
-    // ONE EXCEPTION, and it is why turns were dying mid-sentence: query_gmail
-    // itself. The mailbox contract REQUIRES two rounds — search returns headers
-    // and a snippet, and only report "thread" returns the body — so a taint set
-    // by the first call made the second one impossible. The model, correctly
-    // following its instructions, announced "Pulling the full message…" and
-    // then had no tools with which to do it. That is the stall: not a model
-    // wandering off, but a contract the runtime had made unsatisfiable.
+    // READS SURVIVE IT — see POST_TAINT_READ_TOOLS. Two separate failures came
+    // from blocking them. The mailbox contract needs TWO rounds (search returns
+    // headers and a snippet, only report "thread" returns the body), so a taint
+    // set by the first call made the second impossible: the model announced
+    // "Pulling the full message…" and had no tools left with which to do it.
+    // And a question that spans email and Slack lost its second half entirely,
+    // reported to the user as though Slack were not connected.
     //
-    // Letting query_gmail through does not widen the risk the taint exists to
-    // manage. That risk is EXFILTRATION — mailbox text steering a subsequent
-    // web_search or an outbound tool. query_gmail reads the user's own mailbox
-    // through one fixed endpoint, carries no attacker-controllable destination,
-    // and returns to the same already-tainted context. The dangerous tools stay
-    // gone: below, the tool list is narrowed to query_gmail alone, which drops
-    // the server-side web_search entirely rather than relying on tool_choice.
+    // Neither widens the risk the taint manages. That risk is EXFILTRATION and
+    // PERSISTENCE; these tools read the user's own data through fixed
+    // endpoints, carry no attacker-controllable destination, and return into a
+    // context that is already tainted.
     const tainted = config.sawUntrustedContent === true;
-    const mailFollowUpsLeft = MAX_MAIL_FOLLOW_UPS - mailFollowUpsUsed;
-    const allowMailFollowUp = tainted && mailFollowUpsLeft > 0 && toolsIncludeGmail;
-    const suppressTools = tainted && !allowMailFollowUp;
-    // When the mail follow-up is allowed, the model sees ONLY query_gmail —
-    // the server-side web_search is physically absent rather than merely
-    // discouraged, so the exfiltration path the taint guards is closed by
-    // construction and not by instruction.
-    const roundTools = allowMailFollowUp
-      ? tools.filter((t: any) => t?.name === "query_gmail")
+    const allowPostTaintReads = tainted && postTaintCallsUsed < MAX_POST_TAINT_CALLS;
+    const suppressTools = tainted && !allowPostTaintReads;
+    // Once tainted the model sees ONLY the read tools, so Anthropic's
+    // SERVER-side web_search — which runs inside the API call, where no
+    // executor guard of ours can reach it — is physically absent rather than
+    // merely discouraged. This narrowing is the enforcement point; tool_choice
+    // is not.
+    const roundTools = allowPostTaintReads
+      ? tools.filter((t: any) => POST_TAINT_READ_TOOLS.has(t?.name))
       : tools;
     const stream = anthropic.messages.stream({
       model: apiModel,
@@ -6688,7 +6820,7 @@ async function streamAnthropic(
               encoder.encode(`data: ${JSON.stringify({ generating_image: true })}\n\n`)
             );
           }
-          if (block.name === "generate_document" || block.name === "generate_word_document") {
+          if (block.name === "generate_document" || block.name === "generate_word_document" || block.name === "generate_slides") {
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ generating_document: true })}\n\n`)
             );
@@ -6817,10 +6949,6 @@ async function streamAnthropic(
     // still applies in full to every SUBSEQUENT round, which is where a
     // planted instruction could actually act.
     const taintedBeforeBatch = config.sawUntrustedContent === true;
-    if (taintedBeforeBatch && toolUseBlocks.some((b: any) => b?.name === "query_gmail")) {
-      mailFollowUpsUsed++;
-      console.log(`[Anthropic] Mail follow-up ${mailFollowUpsUsed}/${MAX_MAIL_FOLLOW_UPS} permitted after the hard taint`);
-    }
     for (const tool of toolUseBlocks) {
       // No-progress guard: skip a repeat/over-cap tool call and nudge the model
       // to answer (still push a tool_result so the API conversation stays valid).
@@ -6828,22 +6956,27 @@ async function streamAnthropic(
       // context. Refuse every further tool call so an instruction planted in
       // a message body cannot chain the rest of the belt (finance, Drive,
       // scheduled tasks, memory) or use a tool as an exfiltration channel.
-      // The mailbox follow-up the contract requires is permitted; everything
-      // else stays blocked. Without this the model was handed query_gmail by
-      // the round above and then refused by the executor — the same stall, one
+      // Reads of the user's own data continue; anything that could send,
+      // publish, schedule or spend does not. This must agree with the tool
+      // narrowing above — when it did not, the model was handed a tool by the
+      // round and then refused by the executor, which is the same stall one
       // layer down.
-      const isPermittedMailFollowUp =
-        taintedBeforeBatch && tool.name === "query_gmail" && mailFollowUpsUsed <= MAX_MAIL_FOLLOW_UPS;
-      if (taintedBeforeBatch && !isPermittedMailFollowUp) {
+      const isPermittedRead =
+        POST_TAINT_READ_TOOLS.has(tool.name) && postTaintCallsUsed < MAX_POST_TAINT_CALLS;
+      if (taintedBeforeBatch && !isPermittedRead) {
         toolResults.push({
           type: "tool_result",
           tool_use_id: tool.id,
-          content: tool.name === "query_gmail"
-            ? `No further mailbox reads this turn — the follow-up allowance (${MAX_MAIL_FOLLOW_UPS}) is used up. Answer the user now from what you already have, and say which message you could not open rather than promising to fetch it.`
-            : `No further tool calls are allowed after reading email — email content is untrusted. Answer the user now using what you already have.`,
+          content: postTaintRefusal(tool.name),
           is_error: true,
         });
         continue;
+      }
+      // Counted per call as it is permitted, not per batch: counting the batch
+      // up-front would refuse calls that were still inside the budget.
+      if (taintedBeforeBatch) {
+        postTaintCallsUsed++;
+        console.log(`[Anthropic] post-taint read ${postTaintCallsUsed}/${MAX_POST_TAINT_CALLS}: ${tool.name}`);
       }
       const toolSig = `${tool.name}:${JSON.stringify(tool.input ?? {})}`;
       const toolCount = (toolCallCounts.get(tool.name) || 0) + 1;
@@ -7127,6 +7260,52 @@ async function streamAnthropic(
             type: "tool_result",
             tool_use_id: tool.id,
             content: `Word document generation failed: ${err.message}`,
+            is_error: true,
+          });
+        }
+      } else if (tool.name === "generate_slides") {
+        try {
+          const result = await generateSlides(
+            tool.input.title || "Presentation",
+            tool.input.slides || [],
+            config.userEmail || ""
+          );
+
+          if (!result.ok) {
+            // Not an exception — a connection state the user can fix. Relay it
+            // as an action rather than reporting a failure they cannot act on.
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ slides_error: result.error })}\n\n`)
+            );
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: tool.id,
+              content: `RELAY THIS TO THE USER, as an action they can take: ${result.error}`,
+            });
+          } else {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ slides_ready: { url: result.url, title: result.title } })}\n\n`
+              )
+            );
+
+            fullText += `\n\n\ud83d\udcca [Open ${result.title} in Google Slides](${result.url})\n\n`;
+
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: tool.id,
+              content: `Google Slides deck created in the user's Drive with ${result.slideCount} slide(s): ${result.url} — The link is already shown to the user. Do NOT write another link.`,
+            });
+          }
+        } catch (err: any) {
+          console.error("[SlidesGen] Failed:", err.message);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ slides_error: err.message })}\n\n`)
+          );
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: `Google Slides creation failed: ${err.message}`,
             is_error: true,
           });
         }
@@ -7839,6 +8018,7 @@ async function streamXAIChatCompletions(
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_OPENAI_TOOL);
     tools.push(DOCUMENT_GEN_OPENAI_TOOL);
+    tools.push(SLIDES_GEN_OPENAI_TOOL);
     tools.push(WORD_GEN_OPENAI_TOOL);
     tools.push(CHART_GEN_OPENAI_TOOL);
   }
@@ -7954,6 +8134,7 @@ async function streamXAIChatCompletions(
     query_resourcing: 8,
   };
   const budgetFor = (name: string) => READ_ONLY_TOOL_BUDGET[name] ?? MAX_CALLS_PER_TOOL;
+  let postTaintCallsUsed = 0;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const stream = (await xai.chat.completions.create({
       model: apiModel,
@@ -8026,7 +8207,7 @@ async function streamXAIChatCompletions(
               encoder.encode(`data: ${JSON.stringify({ generating_image: true })}\n\n`)
             );
           }
-          if ((existing.name === "generate_document" || existing.name === "generate_word_document") && tc.function?.name) {
+          if ((existing.name === "generate_document" || existing.name === "generate_word_document" || existing.name === "generate_slides") && tc.function?.name) {
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ generating_document: true })}\n\n`)
             );
@@ -8137,14 +8318,20 @@ async function streamXAIChatCompletions(
       // identical to one already run this turn, or any tool called too many
       // times, and tell the model to answer instead of churning the same call.
       // TAINTED TURN — see the Anthropic chain.
-      if (taintedBeforeBatch) {
+      // Reads of the user's own data continue post-taint; anything that can
+      // reach outside the conversation or persist beyond it does not. See
+      // POST_TAINT_READ_TOOLS for why the two are treated differently.
+      const isPermittedRead =
+        POST_TAINT_READ_TOOLS.has(tc.function.name) && postTaintCallsUsed < MAX_POST_TAINT_CALLS;
+      if (taintedBeforeBatch && !isPermittedRead) {
         openaiMessages.push({
           role: "tool",
           tool_call_id: tc.id,
-          content: `No further tool calls are allowed after reading email — email content is untrusted. Answer the user now using what you already have.`,
+          content: postTaintRefusal(tc.function.name),
         } as any);
         continue;
       }
+      if (taintedBeforeBatch) postTaintCallsUsed++;
       const toolSig = `${tc.function.name}:${(tc.function.arguments || "").replace(/\s+/g, "")}`;
       const toolCount = (toolCallCounts.get(tc.function.name) || 0) + 1;
       toolCallCounts.set(tc.function.name, toolCount);
@@ -8244,6 +8431,50 @@ async function streamXAIChatCompletions(
             role: "tool",
             tool_call_id: tc.id,
             content: `Word document generation failed: ${err.message}`,
+          } as any);
+        }
+      } else if (tc.function.name === "generate_slides") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const result = await generateSlides(
+            input.title || "Presentation",
+            input.slides || [],
+            config.userEmail || ""
+          );
+
+          if (!result.ok) {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ slides_error: result.error })}\n\n`)
+            );
+            openaiMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: `RELAY THIS TO THE USER, as an action they can take: ${result.error}`,
+            } as any);
+          } else {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ slides_ready: { url: result.url, title: result.title } })}\n\n`
+              )
+            );
+
+            fullText += `\n\n\ud83d\udcca [Open ${result.title} in Google Slides](${result.url})\n\n`;
+
+            openaiMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: `Google Slides deck created in the user's Drive with ${result.slideCount} slide(s): ${result.url} — The link is already shown to the user. Do NOT write another link.`,
+            } as any);
+          }
+        } catch (err: any) {
+          console.error("[SlidesGen] Failed:", err.message);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ slides_error: err.message })}\n\n`)
+          );
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Google Slides creation failed: ${err.message}`,
           } as any);
         }
       } else if (tc.function.name === "generate_document") {
@@ -8749,6 +8980,7 @@ async function streamGemini(
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_OPENAI_TOOL);
     tools.push(DOCUMENT_GEN_OPENAI_TOOL);
+    tools.push(SLIDES_GEN_OPENAI_TOOL);
     tools.push(WORD_GEN_OPENAI_TOOL);
     tools.push(CHART_GEN_OPENAI_TOOL);
   }
@@ -8841,6 +9073,7 @@ async function streamGemini(
   // Tool use loop: model may request tool calls, which we execute and feed back
   const MAX_TOOL_ROUNDS = 8;
   let loopEndedCleanly = false; // natural stop — anything else forces a final answer
+  let postTaintCallsUsed = 0;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const stream = (await client.chat.completions.create({
       model: apiModel,
@@ -8908,7 +9141,7 @@ async function streamGemini(
               encoder.encode(`data: ${JSON.stringify({ generating_image: true })}\n\n`)
             );
           }
-          if ((existing.name === "generate_document" || existing.name === "generate_word_document") && tc.function?.name) {
+          if ((existing.name === "generate_document" || existing.name === "generate_word_document" || existing.name === "generate_slides") && tc.function?.name) {
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ generating_document: true })}\n\n`)
             );
@@ -9014,14 +9247,20 @@ async function streamGemini(
       // anthropic<->xai, so neither of these chains can be tainted today. It is
       // here so that widening the model gate cannot silently open the hole —
       // the earlier claim that this closed an existing gap was wrong.
-      if (taintedBeforeBatch) {
+      // Reads of the user's own data continue post-taint; anything that can
+      // reach outside the conversation or persist beyond it does not. See
+      // POST_TAINT_READ_TOOLS for why the two are treated differently.
+      const isPermittedRead =
+        POST_TAINT_READ_TOOLS.has(tc.function.name) && postTaintCallsUsed < MAX_POST_TAINT_CALLS;
+      if (taintedBeforeBatch && !isPermittedRead) {
         geminiMessages.push({
           role: "tool",
           tool_call_id: tc.id,
-          content: `No further tool calls are allowed after reading email — email content is untrusted. Answer the user now using what you already have.`,
+          content: postTaintRefusal(tc.function.name),
         } as any);
         continue;
       }
+      if (taintedBeforeBatch) postTaintCallsUsed++;
       if (tc.function.name === "generate_image") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -9105,6 +9344,50 @@ async function streamGemini(
             role: "tool",
             tool_call_id: tc.id,
             content: `Word document generation failed: ${err.message}`,
+          } as any);
+        }
+      } else if (tc.function.name === "generate_slides") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const result = await generateSlides(
+            input.title || "Presentation",
+            input.slides || [],
+            config.userEmail || ""
+          );
+
+          if (!result.ok) {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ slides_error: result.error })}\n\n`)
+            );
+            geminiMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: `RELAY THIS TO THE USER, as an action they can take: ${result.error}`,
+            } as any);
+          } else {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ slides_ready: { url: result.url, title: result.title } })}\n\n`
+              )
+            );
+
+            fullText += `\n\n\ud83d\udcca [Open ${result.title} in Google Slides](${result.url})\n\n`;
+
+            geminiMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: `Google Slides deck created in the user's Drive with ${result.slideCount} slide(s): ${result.url} — The link is already shown to the user. Do NOT write another link.`,
+            } as any);
+          }
+        } catch (err: any) {
+          console.error("[SlidesGen] Failed:", err.message);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ slides_error: err.message })}\n\n`)
+          );
+          geminiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Google Slides creation failed: ${err.message}`,
           } as any);
         }
       } else if (tc.function.name === "generate_document") {
@@ -9503,6 +9786,7 @@ async function streamOpenAI(
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_OPENAI_TOOL);
     tools.push(DOCUMENT_GEN_OPENAI_TOOL);
+    tools.push(SLIDES_GEN_OPENAI_TOOL);
     tools.push(WORD_GEN_OPENAI_TOOL);
     tools.push(CHART_GEN_OPENAI_TOOL);
   }
@@ -9595,6 +9879,7 @@ async function streamOpenAI(
   // Tool use loop: model may request tool calls, which we execute and feed back
   const MAX_TOOL_ROUNDS = 8;
   let loopEndedCleanly = false; // natural stop — anything else forces a final answer
+  let postTaintCallsUsed = 0;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const stream = (await client.chat.completions.create({
       model: apiModel,
@@ -9660,7 +9945,7 @@ async function streamOpenAI(
               encoder.encode(`data: ${JSON.stringify({ generating_image: true })}\n\n`)
             );
           }
-          if ((existing.name === "generate_document" || existing.name === "generate_word_document") && tc.function?.name) {
+          if ((existing.name === "generate_document" || existing.name === "generate_word_document" || existing.name === "generate_slides") && tc.function?.name) {
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ generating_document: true })}\n\n`)
             );
@@ -9766,14 +10051,20 @@ async function streamOpenAI(
       // anthropic<->xai, so neither of these chains can be tainted today. It is
       // here so that widening the model gate cannot silently open the hole —
       // the earlier claim that this closed an existing gap was wrong.
-      if (taintedBeforeBatch) {
+      // Reads of the user's own data continue post-taint; anything that can
+      // reach outside the conversation or persist beyond it does not. See
+      // POST_TAINT_READ_TOOLS for why the two are treated differently.
+      const isPermittedRead =
+        POST_TAINT_READ_TOOLS.has(tc.function.name) && postTaintCallsUsed < MAX_POST_TAINT_CALLS;
+      if (taintedBeforeBatch && !isPermittedRead) {
         openaiMessages.push({
           role: "tool",
           tool_call_id: tc.id,
-          content: `No further tool calls are allowed after reading email — email content is untrusted. Answer the user now using what you already have.`,
+          content: postTaintRefusal(tc.function.name),
         } as any);
         continue;
       }
+      if (taintedBeforeBatch) postTaintCallsUsed++;
       if (tc.function.name === "generate_image") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -9856,6 +10147,50 @@ async function streamOpenAI(
             role: "tool",
             tool_call_id: tc.id,
             content: `Word document generation failed: ${err.message}`,
+          } as any);
+        }
+      } else if (tc.function.name === "generate_slides") {
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const result = await generateSlides(
+            input.title || "Presentation",
+            input.slides || [],
+            config.userEmail || ""
+          );
+
+          if (!result.ok) {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ slides_error: result.error })}\n\n`)
+            );
+            openaiMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: `RELAY THIS TO THE USER, as an action they can take: ${result.error}`,
+            } as any);
+          } else {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ slides_ready: { url: result.url, title: result.title } })}\n\n`
+              )
+            );
+
+            fullText += `\n\n\ud83d\udcca [Open ${result.title} in Google Slides](${result.url})\n\n`;
+
+            openaiMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: `Google Slides deck created in the user's Drive with ${result.slideCount} slide(s): ${result.url} — The link is already shown to the user. Do NOT write another link.`,
+            } as any);
+          }
+        } catch (err: any) {
+          console.error("[SlidesGen] Failed:", err.message);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ slides_error: err.message })}\n\n`)
+          );
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Google Slides creation failed: ${err.message}`,
           } as any);
         }
       } else if (tc.function.name === "generate_document") {
