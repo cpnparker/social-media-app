@@ -4874,7 +4874,7 @@ const CALENDAR_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           type: "string",
           enum: ["upcoming_events", "day_agenda", "search_events", "event_details"],
           description:
-            "upcoming_events: next N days. day_agenda: one day in full (pass `date`, omitted = today). search_events: free-text search either side of today (pass `query`). event_details: one event (pass `event_id` from a previous result).",
+            "upcoming_events: what is STILL TO COME, starting from the current time — it EXCLUDES anything earlier today. day_agenda: one whole day including meetings that have already happened (pass `date`, omitted = today) — USE THIS for \"what am I doing today\", \"what was on this morning\", or any question about a meeting that may already be over; upcoming_events would silently drop it. search_events: free-text search either side of today (pass `query`). event_details: one event (pass `event_id` from a previous result).",
         },
         query: { type: "string", description: "Search text. Required for search_events." },
         date: { type: "string", description: "YYYY-MM-DD. day_agenda only; omitted means today." },
@@ -5017,8 +5017,23 @@ function formatBridgeResult(service: "calendar" | "microsoft", report: string, r
     return `No matching ${service === "calendar" ? "calendar entries" : "Microsoft 365 items"} found. Say so plainly — do not invent any.`;
   }
 
+  // upcoming_events queries from NOW, not from the start of the day
+  // (MeetingBrain's calendar-query.ts uses `timeMin: now`). So a "what are my
+  // meetings today" answered with this report silently omits everything
+  // earlier — and the model, having asked for "today", presents what it gets
+  // as the whole day.
+  //
+  // That is not hypothetical: a user asked what was on today at midday, got
+  // the four remaining entries, and the 09:00 client run-through — the meeting
+  // the question actually turned on — was simply absent. Nothing in the result
+  // said the window started at the current time.
+  const windowStartsNow = report === "upcoming_events";
+  const nowNote = windowStartsNow
+    ? ` THIS REPORT STARTS FROM THE CURRENT TIME and therefore EXCLUDES anything earlier today. It is "what is left", not "what was on". If the user asked about TODAY, or about a meeting that may already have happened, this list is incomplete — call query_calendar again with report "day_agenda" (which covers the whole day) before answering, and never present this as the day's full schedule.`
+    : "";
+
   return fenceUntrusted(result.data, {
-    preamble: `${result.count} ${service === "calendar" ? "calendar entr" + (result.count === 1 ? "y" : "ies") : "item(s)"} for report "${report}".`,
+    preamble: `${result.count} ${service === "calendar" ? "calendar entr" + (result.count === 1 ? "y" : "ies") : "item(s)"} for report "${report}".${nowNote}`,
     source:
       service === "calendar"
         ? "the user's own Google Calendar — titles, descriptions and attendee lists written by whoever created each invite, who may be outside this workspace"
