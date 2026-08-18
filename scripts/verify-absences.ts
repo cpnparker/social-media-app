@@ -15,7 +15,7 @@
  * PRIVACY: this is colleagues' leave. Nothing here prints a full name.
  */
 import { readFileSync, existsSync } from "fs";
-import { parseIcs, coalesce, splitAbsences, parseSummary, addDays } from "../lib/hr/absences";
+import { parseIcs, coalesce, splitAbsences, parseSummary, addDays, isUnparsedLeaveType } from "../lib/hr/absences";
 
 let pass = 0, fail = 0;
 const check = (n: string, ok: boolean, d?: string) => { console.log(`  ${ok ? "✓" : "✗"} ${n}${d ? ` — ${d}` : ""}`); ok ? pass++ : fail++; };
@@ -58,7 +58,38 @@ const { current, soon } = splitAbsences(real, today);
 console.log(`   today=${today}  away now: ${current.length}  starting within 14d: ${soon.length}`);
 // Names redacted — this is colleagues' leave.
 console.log(`   sample ranges (names redacted): ${real.slice(0,3).map((a) => `${a.from}..${a.to} (${a.type})`).join("  |  ")}`);
-check("distinct people found", new Set(real.map((a) => a.name)).size > 1, `${new Set(real.map((a) => a.name)).size} people`);
+const people = Array.from(new Set(real.map((a) => a.name)));
+check("distinct people found", people.length > 1, `${people.length} people`);
+
+// THE CHECK THAT CAUGHT THE REAL BUG. Unrecognised leave types fall through to
+// "the whole summary is the name", which invented colleagues that looked
+// entirely ordinary in the output — "Jess Foley life event day", "Katie Romvari
+// public holiday (non-deductible)". Counting names looked fine; only counting
+// names PER FIRST NAME exposed it. A first pass reported 32 people for a
+// company of 14.
+const byFirst = new Map<string, Set<string>>();
+for (const n of people) {
+  const f = n.split(/\s+/)[0];
+  byFirst.set(f, (byFirst.get(f) || new Set<string>()).add(n));
+}
+// Two genuine Eds exist, so allow a first name to map to at most two people.
+const fragmented = Array.from(byFirst.entries()).filter(([, set]) => set.size > 2);
+check("no first name maps to more than two people (fragmentation guard)",
+  fragmented.length === 0, fragmented.map(([f, s2]) => `${f}x${s2.size}`).join(", "));
+
+// A name containing a leave word is a parse failure, not a colleague.
+const leaky = people.filter((n) => /(holiday|leave|time off|time in lieu|life event|sick|absent|deductible)/i.test(n));
+check("no name contains a leave-type word", leaky.length === 0, `${leaky.length} such`);
+check("no name is a company-wide label",
+  !people.some((n) => /^(company|restricted date|bank holiday|office)/i.test(n)));
+check("every name looks like a person (2-4 words, no punctuation)",
+  people.every((n) => { const w = n.split(/\s+/); return w.length >= 2 && w.length <= 4 && !/[():–—]/.test(n); }),
+  people.filter((n) => { const w = n.split(/\s+/); return w.length < 2 || w.length > 4 || /[():–—]/.test(n); }).join(" | "));
+
+// A NEW CharlieHR type must fail loudly rather than become a colleague.
+const unparsed = raw.filter((a) => isUnparsedLeaveType(a));
+check("every entry's leave type was recognised", unparsed.length === 0,
+  `${unparsed.length} unrecognised — add the type to LEAVE_TYPES`);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
