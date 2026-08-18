@@ -250,6 +250,11 @@ pptx path re-themed separately (step 7) so both share `brand.ts` and cannot dive
 The thing genuinely lost either way is a template a designer can restyle without a deploy.
 Worth revisiting later via a Picker-based "use my template" flow if that becomes a real need.
 
+## Build status — shipped 2026-08-18
+
+All steps below are implemented. Two console changes are still required before
+the feature works end to end; see "Still to do outside the code".
+
 ## Build steps
 
 1. **`lib/slides/brand.ts`** — the §2–§4 tokens as typed constants: palette, type scale,
@@ -283,3 +288,47 @@ Worth revisiting later via a Picker-based "use my template" flow if that becomes
 - Should decks be client-brandable (`ai_client_context.visual_identity` already models
   per-client palettes in `lib/ai/branded-prompt.ts`), or always TCE-branded? TCE-only is the
   smaller first cut.
+
+## What shipped
+
+| File | Role |
+|---|---|
+| `lib/slides/brand.ts` | Palette, type scale, grid geometry, logo placements, seven layout archetypes |
+| `lib/slides/token.ts` | Reads the user's Google grant from `meetingbrain.account`, refreshes it, gates on scope |
+| `lib/slides/generate.ts` | `presentations.create` → one `batchUpdate`, plus a second pass for speaker notes |
+| `lib/ai/providers.ts` | `generate_slides` tool, 4 registration + 4 dispatch + 4 indicator sites, `tce` pptx theme |
+| `lib/ai/system-prompts.ts` | Routing: Slides is the default for a deck, .pptx only when a file is asked for |
+| `components/ai-writer/ChatPanel.tsx` | `slides_ready` / `slides_error` stream events |
+| `public/assets/logo_engine_lockup_{white,navy}.png` | The 2.29:1 lockup, extracted from the source deck |
+
+### Two things the extraction got wrong, caught by rendering the geometry
+
+Worth recording, because both looked correct as numbers and only failed as pixels:
+
+1. **Cover geometry must come from the cover SLIDE, not its layout.** The layout
+   placeholder puts the title at y=0.81in, but every real cover overrides it to
+   2.12in to clear the centred logo. Using the placeholder value drove the title
+   straight through the logo.
+2. **The two-column layout's own 1.26in column start assumes a higher title.**
+   With the 1.22in title band used elsewhere, columns must start at 1.85in.
+
+The eyebrow was also widened to full content width, which ran it under the
+top-right logo; it is now capped at 8.15in.
+
+### Note: `generate_slides` is blocked post-taint
+
+Commit `7c37697` added `scripts/verify-post-taint-policy.ts`, which requires every
+registered tool to be classified. `generate_slides` sits in `MUST_BLOCK` with the
+other `generate_*` tools — it writes to Drive, so it must not run in a turn where
+third-party text has already entered the context.
+
+## Still to do outside the code
+
+1. **Enable the Google Slides API** on the Cloud project behind the MeetingBrain
+   OAuth client. Without it, `presentations.create` returns a disabled-API error
+   (the generator detects this case and says so plainly).
+2. **Add `drive.file` to the OAuth consent screen's registered scopes** for that
+   same client. No verification is needed — it is non-sensitive — but it must be
+   listed for the consent screen to offer it.
+3. Existing connected users must reconnect Google once. They are detected by the
+   stored scope and prompted; nobody is broken in the meantime.
