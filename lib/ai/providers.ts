@@ -5157,7 +5157,15 @@ export function formatGmailResult(report: string, result: GmailQueryResult): str
   // Only the "thread" report carries bodies (MeetingBrain's gmail-query.ts
   // passes includeBody=true there and false everywhere else). Everything else
   // is metadata plus a ~500-char snippet.
-  const bodiesIncluded = report === "thread";
+  const bodiesIncluded = report === "thread" || report === "search_messages";
+
+  // MeetingBrain caps a body at MAX_BODY (2000 chars) and appends
+  // "… (truncated)". Detecting it matters because RETRYING CHANGES NOTHING —
+  // the cap is applied at the source, before EngineAI sees the message. A real
+  // turn called the same thread twice, got the identical cut both times, and
+  // told the user it could not read the email; the answer was already as
+  // complete as that tool can make it.
+  const truncatedBody = JSON.stringify(result.data ?? "").includes("(truncated)");
 
   const head =
     report === "unread_summary" && result.unreadTotal != null
@@ -5184,6 +5192,9 @@ export function formatGmailResult(report: string, result: GmailQueryResult): str
       // the whole fix; the old wording ("if you need the rest of a
       // conversation…") read as an optional extra rather than the only route
       // to the text.
+      truncatedBody
+        ? `AT LEAST ONE MESSAGE BODY WAS CUT SHORT at 2000 characters — look for "… (truncated)" at the end of a body. CALLING THIS TOOL AGAIN WILL RETURN THE SAME CUT: the cap is applied before EngineAI receives the message, so a retry is wasted. Use what you have, and if the missing part matters — a date, a figure, a decision — say plainly WHICH message was cut and what you could not see, then ask the user to paste that part. Do not guess at the remainder, and do not describe the message as unreadable when you have most of it.`
+        : "",
       bodiesIncluded
         ? ""
         : `THESE RESULTS CONTAIN NO MESSAGE BODIES — only a short snippet per message. That is how this report works; it is NOT a failure and the text IS retrievable. To read what someone actually wrote you MUST call query_gmail again with report "thread" and the thread_id from the message you want. Do that BEFORE saying you cannot read a message, and never ask the user to paste in text you can fetch yourself.`,

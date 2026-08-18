@@ -1,8 +1,8 @@
 # Brief for a MeetingBrain session
 
-Two jobs, both in `/Users/chris/meetingbrain`, both driven by work done in the EngineAI repo (`/Users/chris/social-media-app`) on 17 August 2026. Every file path, line number and figure below was verified against the live code and the live database on that date — none of it is inferred. Re-check anything that looks stale before acting on it.
+Three jobs, all in `/Users/chris/meetingbrain`, all driven by work done in the EngineAI repo (`/Users/chris/social-media-app`) on 17 August 2026. Every file path, line number and figure below was verified against the live code and the live database on that date — none of it is inferred. Re-check anything that looks stale before acting on it.
 
-Job 2 is a one-line fix with unambiguous evidence. Job 1 is the real work. Do Job 2 first; it takes a minute and stops a meter running.
+Jobs 2 and 3 are one-line fixes with unambiguous evidence and should be done first — one stops a meter running, the other stops users copy-pasting emails the product already fetched. Job 1 is the real work.
 
 ---
 
@@ -123,7 +123,44 @@ Ask Chris to re-run step 2 of `social-media-app/scripts/backfill-grok-fast-cost.
 
 ---
 
-## Ground rules that apply to both jobs
+## Job 3 — Raise the email body cap (one line, and it is biting daily)
+
+### The bug
+
+`lib/gmail-query.ts:20`:
+
+```ts
+const MAX_BODY = 2000;
+```
+
+Every message body is cut to 2,000 characters with `"… (truncated)"` appended (`:77-79`). Two thousand characters is roughly 300 words — shorter than an ordinary business email.
+
+### Why it matters more than the number suggests
+
+A real case, 18 Aug 2026. A client email of ~2,400 characters was cut at 2,000. Everything before the cut was preamble; what was lost was the **proposed meeting dates** and a **handover note naming who was covering while the sender was away**. The assistant reported the truncation honestly, called the thread a second time hoping for more, got the identical cut, and asked the user to paste the message in. The user had to copy an email into a chat window that had already fetched it.
+
+Truncation lands on the END of an email, which in business correspondence is where the asks, dates and decisions live. A cap that removes the last 20% removes most of the value.
+
+### The fix
+
+Raise it, and vary it by report — `thread` is a deliberate request for one conversation, whereas a search can return 25 messages:
+
+```ts
+const MAX_BODY = 2000;          // search results: many messages, keep them light
+const MAX_BODY_THREAD = 12000;  // an explicitly requested conversation
+```
+
+`getThread` (`:216-234`) passes `toSummary(m, true)`; give it the larger cap. `searchMessages` (`:192`) can stay at the smaller one.
+
+12,000 characters is roughly 1,800 words — long enough for essentially any real email including a quoted reply chain, and a 20-message thread still caps at ~240KB, which is within a single tool result.
+
+### Keep the marker
+
+`"… (truncated)"` must stay. EngineAI now detects it and tells the model that retrying will return the same cut — the retry loop above happened because nothing said so. Silent truncation would be worse than the current cap.
+
+---
+
+## Ground rules that apply to all three jobs
 
 - **Never print or log meeting content.** Titles, summaries, transcripts and attendee lists are other people's data. Counts, shapes and column names answer almost every question worth asking.
 - **The database has no local Postgres credentials.** SQL is run by hand in the Supabase SQL Editor. Print it inline in chat rather than only writing a file, name the target project, and include a sanity check.
