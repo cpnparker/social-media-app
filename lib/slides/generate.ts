@@ -15,7 +15,8 @@
  */
 
 import {
-  COLOR, GRID, CANVAS, TYPE, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, LAYOUT_STYLE, LOGO_PLACEMENT,
+  COLOR, GRID, CANVAS, TYPE, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
+  SERIES_LIGHT, SERIES_DARK, LAYOUT_STYLE, LOGO_PLACEMENT,
   rgb, logoUrl, type SlideLayout, type TypeStyle,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
@@ -67,6 +68,14 @@ export interface SlideInput {
   /** Thumbnails for the image-grid layout. */
   images?: { url?: string; query?: string; caption?: string }[];
   resolvedImages?: { url: string; caption?: string }[];
+  /** Big numbers for the stat layout — three at most, or none of them lands. */
+  stats?: { value: string; label: string; detail?: string }[];
+  /** Data for bar-chart and line-chart. */
+  chart?: {
+    series: { name: string; points: { label: string; value: number }[] }[];
+    /** Printed under the plot. A chart without one invites the question. */
+    source?: string;
+  };
   /** ISO date for the "today" rule. Defaults to the real today; drawn only if
    *  it falls inside the plotted range. */
   today?: string;
@@ -558,6 +567,90 @@ function backdropRequests(
   ];
 }
 
+/** Format a number the way a reader says it, not the way a machine stores it. */
+function formatValue(v: number): string {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(1).replace(/\.0$/, "")}bn`;
+  if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
+  if (abs >= 1_000) return `${(v / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+  return String(Number(v.toFixed(2)));
+}
+
+/** Up to three headline numbers.
+ *
+ *  Often the honest answer when a deck reaches for a chart: a single figure
+ *  with a caption carries a point that a plot of one bar only decorates. */
+function statRequests(
+  page: string, id: (s: string) => string,
+  stats: { value: string; label: string; detail?: string }[]
+): Req[] {
+  const shown = stats.slice(0, 3);
+  if (!shown.length) return [];
+  const out: Req[] = [];
+  const cell = (GRID.contentWidth - CHART.statGap * (shown.length - 1)) / shown.length;
+
+  shown.forEach((s, i) => {
+    const x = GRID.margin + i * (cell + CHART.statGap);
+    out.push(
+      ...textBox(id(`sv${i}`), page, s.value, TYPE.statValue, {
+        x, y: CHART.statY, width: cell, height: CHART.statValueHeight,
+      }),
+      ...textBox(id(`sl${i}`), page, s.label, TYPE.statLabel, {
+        x, y: CHART.statY + CHART.statValueHeight, width: cell, height: CHART.statLabelHeight,
+      }),
+      ...textBox(id(`sd${i}`), page, s.detail, TYPE.statDetail, {
+        x, y: CHART.statY + CHART.statValueHeight + CHART.statLabelHeight + 4,
+        width: cell, height: CHART.statDetailHeight,
+      }),
+    );
+  });
+  return out;
+}
+
+/** Horizontal bars, sorted, with the value printed at the end of each.
+ *
+ *  Horizontal because category names are words, and words fit beside a bar but
+ *  not under one. Sorted because the ranking IS the message; input order makes
+ *  the reader do the sorting. Values printed directly, so no axis scale is
+ *  needed and the gridlines that would carry it can go — ink belongs to data. */
+function barChartRequests(
+  page: string, id: (s: string) => string,
+  chart: NonNullable<SlideInput["chart"]>, onDark: boolean
+): Req[] {
+  const series = chart.series?.[0];
+  if (!series?.points?.length) return [];
+  const palette = onDark ? SERIES_DARK : SERIES_LIGHT;
+  const points = [...series.points].sort((a, b) => b.value - a.value).slice(0, 8);
+  const max = Math.max(...points.map((p) => Math.abs(p.value))) || 1;
+
+  const plotX = GRID.margin + CHART.labelGutter;
+  const plotW = GRID.contentWidth - CHART.labelGutter - 52;
+  const rowH = CHART.barHeight + CHART.barGap;
+  const out: Req[] = [];
+
+  points.forEach((p, i) => {
+    const y = CHART.plotY + i * rowH;
+    const w = Math.max(2, (Math.abs(p.value) / max) * plotW);
+    out.push(
+      ...textBox(id(`bl${i}`), page, p.label, TYPE.chartCategory, {
+        x: GRID.margin, y: y + 5, width: CHART.labelGutter - 10, height: CHART.barHeight,
+      }),
+      ...filledShape(id(`bb${i}`), page, "RECTANGLE", palette[0], {
+        x: plotX, y, width: w, height: CHART.barHeight,
+      }),
+      ...textBox(id(`bv${i}`), page, formatValue(p.value), TYPE.chartValue, {
+        x: plotX + w + CHART.valueGap, y: y + 5, width: 60, height: CHART.barHeight,
+      }),
+    );
+  });
+
+  out.push(...textBox(id("csrc"), page, chart.source, TYPE.chartAxis, {
+    x: GRID.margin, y: CHART.plotY + points.length * rowH + 8,
+    width: GRID.contentWidth, height: 16,
+  }));
+  return out;
+}
+
 /** One slide → its full request list. Exported so the layout geometry can be
  *  exercised without a Google round-trip; nothing else should call it. */
 export function buildSlideRequests(slide: SlideInput, index: number, run = "r0"): Req[] {
@@ -653,6 +746,18 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       }),
       ...timelineRequests(page, id, slide.milestones || []),
     );
+  } else if (layout === "stat" || layout === "bar-chart") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+      }),
+    );
+    if (layout === "stat") requests.push(...statRequests(page, id, slide.stats || []));
+    else if (slide.chart) requests.push(...barChartRequests(page, id, slide.chart, onDark));
   } else if (layout === "timeline-parallel") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {

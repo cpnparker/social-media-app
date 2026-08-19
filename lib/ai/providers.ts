@@ -1216,9 +1216,9 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             properties: {
               layout: {
                 type: "string",
-                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "closing"],
+                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "closing"],
                 description:
-                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
+                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
               },
               title: { type: "string", description: "Slide heading." },
               subtitle: {
@@ -1253,6 +1253,48 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                     url: { type: "string", description: "An exact image URL." },
                     caption: { type: "string", description: "Short label under the thumbnail." },
                   },
+                },
+              },
+              stats: {
+                type: "array",
+                description: "Headline figures for the stat layout — three at most, or none of them lands. Ignored by other layouts.",
+                items: {
+                  type: "object",
+                  properties: {
+                    value: { type: "string", description: "The number as it should read: '64 GW', '70%', '2.4x'. Keep it short — it is set very large." },
+                    label: { type: "string", description: "What the number is, in a few words. Shown in caps under it." },
+                    detail: { type: "string", description: "One optional supporting sentence." },
+                  },
+                  required: ["value", "label"],
+                },
+              },
+              chart: {
+                type: "object",
+                description: "Data for bar-chart. Ignored by other layouts. Bars are sorted and labelled automatically, so send the numbers, not a ranking.",
+                properties: {
+                  series: {
+                    type: "array",
+                    description: "One entry — bar-chart plots a single series.",
+                    items: {
+                      type: "object",
+                      properties: {
+                        name: { type: "string", description: "What is being measured." },
+                        points: {
+                          type: "array",
+                          items: {
+                            type: "object",
+                            properties: {
+                              label: { type: "string", description: "Category name, shown beside its bar." },
+                              value: { type: "number", description: "The value. Numbers only — no units or commas." },
+                            },
+                            required: ["label", "value"],
+                          },
+                        },
+                      },
+                      required: ["name", "points"],
+                    },
+                  },
+                  source: { type: "string", description: "Where the figures come from. Print one whenever you have it." },
                 },
               },
               tracks: {

@@ -144,6 +144,13 @@ export const TYPE: Record<string, TypeStyle> = {
   featureBody:   { font: "Roboto", size: 11, color: COLOR.greyLight },
   gridCaption:   { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
   credit:        { font: "Roboto", size: 6, weight: 300, color: COLOR.greyLight },
+  statValue:     { font: "Poppins", size: 54, color: COLOR.white },
+  statLabel:     { font: "Roboto", size: 10, bold: true, color: COLOR.lime, caps: true },
+  statDetail:    { font: "Roboto", size: 9, weight: 300, color: COLOR.greyLight },
+  chartCategory: { font: "Roboto", size: 9, weight: 300, color: COLOR.navy },
+  chartValue:    { font: "Roboto", size: 9, bold: true, color: COLOR.navy },
+  chartAxis:     { font: "Roboto", size: 7, weight: 300, color: COLOR.ink },
+  chartSeries:   { font: "Roboto", size: 8, bold: true, color: COLOR.navy },
 };
 
 /* ─────────────── Logo ─────────────── */
@@ -197,10 +204,12 @@ export type SlideLayout =
   | "image-split"
   | "image-grid"
   | "feature"
+  | "stat"
+  | "bar-chart"
   | "closing";
 
 export const LAYOUTS: SlideLayout[] = [
-  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "closing",
+  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "closing",
 ];
 
 /** Horizontal timeline: an axis rule with evenly spaced milestone markers.
@@ -277,6 +286,40 @@ export const IMAGE = {
   gridCaptionHeight: 0.22 * IN,
 } as const;
 
+/** Series colours for charts, VALIDATED rather than chosen.
+ *
+ *  The brand accents fail as a categorical chart palette and are not used here:
+ *  #C0FF7E is 1.15:1 against a light slide and #114535 reads grey. They are
+ *  display accents for large shapes on blue, not 2px lines on off-white.
+ *
+ *  These two sets pass all six checks of the dataviz validator — lightness
+ *  band, chroma floor, colour-blind separation, normal-vision floor and
+ *  contrast — against their respective surfaces, keeping brand blue as series
+ *  one. Their ORDER is load-bearing: red beside orange fails CVD separation at
+ *  deltaE 1.8, and the same five reordered pass at 13.8. Re-run
+ *  scripts/validate_palette.js before touching either. */
+export const SERIES_LIGHT = ["3950FF", "B36B00", "00998A", "8E44AD", "D6342A"] as const;
+export const SERIES_DARK  = ["6B7BFF", "B87C1C", "1CA48F", "9A70C6", "E8604F"] as const;
+
+/** Charts sit in the same body band as prose, so a deck reads consistently. */
+export const CHART = {
+  plotY: 1.95 * IN,
+  plotHeight: 2.75 * IN,
+  /** Room for category names down the left of a bar chart. */
+  labelGutter: 2.05 * IN,
+  barHeight: 22,
+  barGap: 10,
+  /** Axis and gridlines stay recessive — ink belongs to the data. */
+  axisThickness: 1,
+  valueGap: 8,
+  /** Big numbers, up to three across. */
+  statY: 1.9 * IN,
+  statValueHeight: 0.95 * IN,
+  statLabelHeight: 0.3 * IN,
+  statDetailHeight: 0.7 * IN,
+  statGap: 0.3 * IN,
+} as const;
+
 /** One colour per track. White text sits on every one of these at full
  *  contrast, which is why the lighter brand accents are not in the list. */
 export const TRACK_COLORS = [COLOR.blue, COLOR.navy, COLOR.forest, COLOR.coral] as const;
@@ -302,5 +345,7 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   "image-grid":  { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   // Full-bleed photograph with a scrim — text is always light on it.
   feature:       { background: null,           logo: "white", logoPlacement: "content", onDark: true },
+  stat:          { background: COLOR.navy,     logo: "white", logoPlacement: "content", onDark: true },
+  "bar-chart":   { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   closing:      { background: null,           logo: "white", logoPlacement: "closing", onDark: true },
 };
