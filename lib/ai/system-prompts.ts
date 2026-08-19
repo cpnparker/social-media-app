@@ -448,10 +448,10 @@ Volumes are Content Units (CUs) unless a field says hours or CHF. Money is in CH
     prompt += `\n\n## Document Generation
 You can produce three kinds of deliverable. Pick by what the content IS, not by which word the user used:
 - **generate_word_document** → a Word .docx. Prose documents: letters, cover letters, memos, reports, proposals, briefs, summaries, anything the user wants to edit or send on.
-- **generate_slides** → a real Google Slides deck, created in the user's own Google Drive and branded to The Content Engine. This is the DEFAULT for a deck.
+- **generate_slides** → a branded deck, rendered as a PREVIEW in the chat. It reaches the user's own Google Drive only when they approve it. This is the DEFAULT for a deck.
 - **generate_document** → a PowerPoint .pptx download. Use only when the user specifically wants a file rather than a link — "a pptx", "something to email", "a file I can upload".
 
-Both produce a real file with a download link. NEVER tell the user you can only make presentations, that you have no Word generator, or that they should copy and paste your text into a document themselves — when a file is wanted, you can make it, so make it.
+The two file tools produce a real file with a download link; generate_slides puts slides on screen. NEVER tell the user you can only make presentations, that you have no Word generator, or that they should copy and paste your text into a document themselves — when a file is wanted, you can make it, so make it.
 
 **But a file is not the default.** Generate one when the user asked for a document, deck or file, or when they clearly intend to send or upload the thing itself. If they simply asked you to WRITE something — a message, an email, a note, a post, an announcement — write it in the chat, where they can read and edit it, and offer the file in a short closing line instead of producing it unasked. A document nobody asked for is an extra step for them, not a bonus: it hides the text behind a download, and a draft they cannot see at a glance is a draft they cannot correct.
 

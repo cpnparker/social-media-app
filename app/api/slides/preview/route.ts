@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { toPreviewModel } from "@/lib/slides/preview-model";
+import { draftPreview } from "@/lib/slides/preview-model";
 
 /**
  * POST /api/slides/preview — re-derive the preview from a spec.
@@ -32,5 +32,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "No slides" }, { status: 400 });
   }
   // Pure function of the spec — no I/O, and images are already resolved on it.
-  return NextResponse.json({ preview: toPreviewModel(body.slides) });
+  // It returns the SPEC as well as the drawing, because an edit can push a body
+  // past its box and splitting is part of the layout: publishing split it and
+  // this did not, so the deck gained a slide the preview never showed.
+  const { slides, preview } = draftPreview(body.slides);
+  return NextResponse.json({ slides, preview });
 }

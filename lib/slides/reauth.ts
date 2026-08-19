@@ -11,7 +11,9 @@ import type { SlidesAuthFailure } from "@/lib/slides/token";
 export const GOOGLE_CONNECT_URL = "/api/connections/google/start";
 
 /** `refresh_failed` counts: a revoked or expired grant is fixed by reconnecting.
- *  `not_configured` does not — that is a deployment problem, not the user's. */
+ *  `not_configured` does not — that is a deployment problem, not the user's, and
+ *  neither does `unavailable`, which means we could not reach the grant store:
+ *  reconnecting a working account cannot fix a database blip. */
 const FIXABLE: SlidesAuthFailure[] = ["needs_reconnect", "not_connected", "refresh_failed"];
 
 export function isReconnectable(reason?: string | null): reason is SlidesAuthFailure {

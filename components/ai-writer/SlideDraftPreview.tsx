@@ -32,6 +32,7 @@ const THUMB_W = 330;
 // no server code is pulled into the bundle.
 export type { PreviewElement, PreviewSlide } from "@/lib/slides/preview-model";
 import type { PreviewSlide } from "@/lib/slides/preview-model";
+import { SLIDES_TEXT_INSET, BULLET_INDENT, runsOf } from "@/lib/slides/preview-style";
 
 export interface SlideDraft {
   title: string;
@@ -46,6 +47,27 @@ function fontStack(font?: string): string {
   if (font === "Playfair Display") return "'Playfair Display', Georgia, 'Times New Roman', serif";
   if (font === "Poppins") return "'Poppins', 'Helvetica Neue', Arial, sans-serif";
   return "'Roboto', 'Helvetica Neue', Arial, sans-serif";
+}
+
+/** Where this line starts in the box's whole text, which is what link ranges
+ *  are measured against. */
+function lineOffset(lines: string[], index: number): number {
+  let at = 0;
+  for (let i = 0; i < index; i++) at += lines[i].length + 1;   // +1 for the newline
+  return at;
+}
+
+/** A line, with the linked words underlined exactly as Slides underlines them. */
+function renderRuns(
+  line: string, offset: number, links?: { start: number; end: number; url: string }[]
+) {
+  const runs = runsOf(line, offset, links);
+  if (runs.length === 1 && !runs[0].url) return line;
+  return runs.map((run, i) =>
+    run.url
+      ? <span key={i} style={{ textDecoration: "underline" }}>{run.text}</span>
+      : <span key={i}>{run.text}</span>
+  );
 }
 
 function SlideThumb({
@@ -98,7 +120,10 @@ function SlideThumb({
                 ...base,
                 background: el.fill || "transparent",
                 opacity: el.opacity ?? 1,
-                borderRadius: el.kind === "ellipse" ? "50%" : el.arrow ? 0 : el.rounded ? 8 : 2,
+                // A RECTANGLE has square corners in Slides. The 2px default here
+                // was a house style the deck does not share — visible on the
+                // chart bars, the stat rules and every scrim.
+                borderRadius: el.kind === "ellipse" ? "50%" : el.rounded ? 8 : 0,
                 // Slides draws a RIGHT_ARROW as an arrow; a preview that draws
                 // a rectangle turns the process layout's direction — the whole
                 // reason that layout exists — into a row of blocks.
@@ -122,7 +147,8 @@ function SlideThumb({
               // API, so every box has them. Drawing text flush gave the preview
               // 14pt of width per box that the deck does not have, which is
               // enough for a title to wrap here and not there.
-              paddingLeft: 7.2, paddingRight: 7.2, paddingTop: 3.6, paddingBottom: 3.6,
+              paddingLeft: SLIDES_TEXT_INSET.x, paddingRight: SLIDES_TEXT_INSET.x,
+              paddingTop: SLIDES_TEXT_INSET.y, paddingBottom: SLIDES_TEXT_INSET.y,
               boxSizing: "border-box" as const,
               color: el.color,
               fontFamily: fontStack(el.font),
@@ -130,7 +156,13 @@ function SlideThumb({
               fontWeight: el.weight || 400,
               lineHeight: (el.lineSpacing ?? 115) / 100,
               textAlign: el.align === "center" ? "center" : el.align === "end" ? "right" : "left",
-              overflow: "hidden",
+              // VISIBLE, because Slides does not reflow, shrink or clip: it
+              // draws the text and lets it run off the slide. Clipping it here
+              // made an overflowing body look like a tidy, complete slide — the
+              // preview flattering the deck, which is the one direction it is
+              // not allowed to be wrong in. The thumbnail's own frame still
+              // cuts it at the canvas edge, exactly as Slides does.
+              overflow: "visible",
               whiteSpace: "pre-wrap",
               // Mirrors Slides' contentAlignment: MIDDLE. Without it a centred
               // body renders top-aligned here and the preview stops predicting
@@ -140,12 +172,24 @@ function SlideThumb({
                 : {}),
             }}>
               {lines.length > 1
-                ? lines.map((line, li) => (
-                    <div key={li} style={li < lines.length - 1 ? { marginBottom: gap } : undefined}>
-                      {el.bullets ? `• ${line}` : line}
-                    </div>
-                  ))
-                : el.text}
+                ? lines.map((line, li) => {
+                    const spacing = li < lines.length - 1 ? { marginBottom: gap } : undefined;
+                    const drawn = renderRuns(line, lineOffset(lines, li), el.links);
+                    // Slides hangs a bullet: the glyph sits at the box's inset
+                    // and every wrapped line lines up under the TEXT, not under
+                    // the dot. An inline "• " prefix returned each continuation
+                    // to the left edge and gave the preview 18pt of width the
+                    // deck does not have, so the two disagreed about where
+                    // every bullet wraps.
+                    if (!el.bullets) return <div key={li} style={spacing}>{drawn}</div>;
+                    return (
+                      <div key={li} style={{ ...spacing, display: "flex" }}>
+                        <span style={{ flex: `0 0 ${BULLET_INDENT}px` }}>•</span>
+                        <span style={{ flex: "1 1 auto", minWidth: 0 }}>{drawn}</span>
+                      </div>
+                    );
+                  })
+                : renderRuns(el.text || "", 0, el.links)}
             </div>
           );
         })}
@@ -200,7 +244,7 @@ export default function SlideDraftPreview({
   /** Sends a change request scoped to one slide. */
   onSlideComment?: (index: number, text: string) => void;
   /** Direct edits, applied locally without involving the model. */
-  onEdit?: (next: SlideDraft) => void;
+  onEdit?: (next: SlideDraft | ((cur: SlideDraft) => SlideDraft)) => void;
 }) {
   const count = draft.preview.slides.length;
   // One overlay, three modes. Editing used to open a form BELOW the grid, which
@@ -283,7 +327,12 @@ export default function SlideDraftPreview({
                   });
                   const j = await res.json();
                   if (!res.ok) { toast.error(j.error || "Couldn't change the image."); return; }
-                  onEdit(setSlideImage(draft, zoom, j.url, query, j.credit, j.logo));
+                  // Patched against the draft as it is when the picture ARRIVES,
+                  // not as it was when it was asked for. Generating one takes
+                  // tens of seconds, and the panel stays open and typeable
+                  // throughout — so applying to the captured draft threw away
+                  // every word written while waiting.
+                  onEdit((cur) => setSlideImage(cur, zoom, j.url, query, j.credit, j.logo));
                 }}
                 onMove={(delta) => {
                   onEdit(moveSlide(draft, zoom, delta));

@@ -151,10 +151,18 @@ export default function ChatPanel({
   // A deck rendered but NOT written to Drive. Held until the user presses the
   // button or asks for changes, which replace it with a new draft.
   const [slidesDraft, setSlidesDraft] = useState<SlideDraft | null>(null);
+  // The draft as it is RIGHT NOW, for edits that resolve asynchronously. An
+  // image takes tens of seconds to generate, and the patch used to be applied
+  // to the draft captured when the request started — so every word typed while
+  // the picture was being made was thrown away when it arrived.
+  const slidesDraftRef = useRef<SlideDraft | null>(null);
+  slidesDraftRef.current = slidesDraft;
   const [slidesDraftMessageId, setSlidesDraftMessageId] = useState<string | null>(null);
   const [slidesZoom, setSlidesZoom] = useState<number | null>(null);
   const previewRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const draftSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Warn once per thread, not once per keystroke. */
+  const draftUnsavedWarnedRef = useRef(false);
   const [publishingSlides, setPublishingSlides] = useState(false);
   const [slidesPreview, setSlidesPreview] = useState<
     { url: string; title: string; slideCount: number; updated: boolean; thumbnails: string[] } | null
@@ -206,6 +214,8 @@ export default function ChatPanel({
   // Fetch conversation and messages
   const fetchConversation = useCallback(async () => {
     setLoading(true);
+    // The warning is per-thread: a new conversation deserves to be told once.
+    draftUnsavedWarnedRef.current = false;
     try {
       const res = await fetch(`/api/ai/conversations/${conversationId}`);
       if (!res.ok) return;
@@ -333,8 +343,12 @@ export default function ChatPanel({
    * needs no re-layout — then saved, because a draft that loses its edits on
    * reload is the same fault that moving drafts onto the message fixed.
    */
-  const applyDraftEdit = useCallback(async (next: SlideDraft) => {
+  const applyDraftEdit = useCallback(async (patch: SlideDraft | ((cur: SlideDraft) => SlideDraft)) => {
+    const current = slidesDraftRef.current;
+    if (typeof patch === "function" && !current) return;
+    const next = typeof patch === "function" ? patch(current as SlideDraft) : patch;
     setSlidesDraft(next);
+    slidesDraftRef.current = next;
 
     // Re-derive the drawing from the spec. The local patch updates words
     // instantly, which keeps typing responsive, but it cannot know that a bar's
@@ -359,7 +373,16 @@ export default function ChatPanel({
       }
     }, 350);
 
-    if (!slidesDraftMessageId) return;
+    if (!slidesDraftMessageId) {
+      // No message to save against — an incognito thread, or a draft whose
+      // pending row never landed. The edit works and will not survive a
+      // reload, and saying nothing let people lose an afternoon's tidying.
+      if (!draftUnsavedWarnedRef.current) {
+        draftUnsavedWarnedRef.current = true;
+        toast.warning("Changes to this deck won't be saved if you reload.");
+      }
+      return;
+    }
     // Debounced, like the preview refresh above it. This fires from a
     // textarea's onChange, so typing "Revenue" used to issue seven concurrent
     // read-modify-writes of the whole draft with no version on any of them —
@@ -470,7 +493,13 @@ export default function ChatPanel({
         url: j.url, title: j.title, slideCount: j.slideCount ?? 0,
         updated: !!j.updated, thumbnails: j.thumbnails || [],
       });
-      toast.success("Deck created in your Google Drive.");
+      if (j.warning) toast.warning(j.warning);
+      const gained = j.splitFrom ? (j.slideCount ?? 0) - j.splitFrom : 0;
+      toast.success(
+        gained > 0
+          ? `Deck created in your Google Drive — ${j.slideCount} slides. ${gained === 1 ? "One slide was" : `${gained} slides were`} added because a body was too long for its box.`
+          : "Deck created in your Google Drive."
+      );
     } catch {
       toast.error("Couldn't reach Google. Try again in a moment.");
     } finally {

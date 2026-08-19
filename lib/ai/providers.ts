@@ -5,7 +5,8 @@ import { fetchBlobContent } from "./blob-utils";
 import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
-import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides } from "@/lib/slides/generate";
+import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings } from "@/lib/slides/generate";
+import { createToolLoopGuard } from "@/lib/ai/tool-loop-guard";
 import { toPreviewModel } from "@/lib/slides/preview-model";
 import { signedMediaUrl } from "@/lib/media/signed";
 import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
@@ -1186,10 +1187,11 @@ const DOCUMENT_GEN_TOOL: Anthropic.Tool = {
  *
  *  Sibling of generate_document, deliberately near-identical in shape so the
  *  model does not have to learn two ways to describe a deck. The difference is
- *  the destination: this creates a real Google Slides file in the USER'S OWN
- *  Drive, branded to The Content Engine, rather than a .pptx to download.
+ *  the destination: this renders a branded PREVIEW in the chat, which becomes a
+ *  real file in the USER'S OWN Drive only when they press the button — rather
+ *  than a .pptx to download. Nothing is written to Drive by default.
  *
- *  The layout enum is the seven archetypes extracted from TCE's own decks —
+ *  The layout enum is the archetypes extracted from TCE's own decks —
  *  see docs/tce-slide-brand.md. */
 const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   type: "function",
@@ -3818,10 +3820,7 @@ async function buildOrUpdateSlides(
  *  it falls into unprompted, and it cannot see its own output. A number it has
  *  to read is harder to ignore than an instruction it read once. */
 function visualAudit(slides: any[]): string {
-  const visual = slides.filter((s) =>
-    s?.resolvedImage || s?.resolvedImages?.length || s?.chart || s?.stats?.length ||
-    s?.milestones?.length || s?.tracks?.length
-  ).length;
+  const visual = slides.filter((s) => isVisualSlide(s)).length;
   const share = slides.length ? Math.round((visual / slides.length) * 100) : 0;
   if (share >= 50) return `${visual} of ${slides.length} slides carry a picture, chart or timeline (${share}%).`;
   return (
@@ -7644,7 +7643,7 @@ async function streamAnthropic(
             toolResults.push({
               type: "tool_result",
               tool_use_id: tool.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
             });
             continue;
           }
@@ -8878,7 +8877,7 @@ async function streamXAIChatCompletions(
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
             } as any);
             continue;
           }
@@ -9556,6 +9555,8 @@ async function streamGemini(
   const MAX_TOOL_ROUNDS = 8;
   let loopEndedCleanly = false; // natural stop — anything else forces a final answer
   let postTaintCallsUsed = 0;
+  // One guard per turn, shared shape with the other chains.
+  const toolLoopGuard = createToolLoopGuard();
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const stream = (await client.chat.completions.create({
       model: apiModel,
@@ -9742,6 +9743,15 @@ async function streamGemini(
         } as any);
         continue;
       }
+      // The same no-progress guard the other chains carry — see
+      // lib/ai/tool-loop-guard.ts. It was absent here, so a model could call one
+      // tool with identical arguments until the round cap ran out and then
+      // answer from a wall of repeated results.
+      const blockedCall = toolLoopGuard.blockFor(tc.function.name, tc.function.arguments);
+      if (blockedCall) {
+        geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: blockedCall } as any);
+        continue;
+      }
       if (taintedBeforeBatch) postTaintCallsUsed++;
       if (tc.function.name === "generate_image") {
         try {
@@ -9845,7 +9855,7 @@ async function streamGemini(
             geminiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
             } as any);
             continue;
           }
@@ -10416,6 +10426,8 @@ async function streamOpenAI(
   const MAX_TOOL_ROUNDS = 8;
   let loopEndedCleanly = false; // natural stop — anything else forces a final answer
   let postTaintCallsUsed = 0;
+  // One guard per turn, shared shape with the other chains.
+  const toolLoopGuard = createToolLoopGuard();
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const stream = (await client.chat.completions.create({
       model: apiModel,
@@ -10600,6 +10612,13 @@ async function streamOpenAI(
         } as any);
         continue;
       }
+      // The same no-progress guard the other chains carry — see
+      // lib/ai/tool-loop-guard.ts.
+      const blockedCall = toolLoopGuard.blockFor(tc.function.name, tc.function.arguments);
+      if (blockedCall) {
+        openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: blockedCall } as any);
+        continue;
+      }
       if (taintedBeforeBatch) postTaintCallsUsed++;
       if (tc.function.name === "generate_image") {
         try {
@@ -10702,7 +10721,7 @@ async function streamOpenAI(
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
             } as any);
             continue;
           }

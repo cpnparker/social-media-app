@@ -11,7 +11,8 @@
  * once, which is a thing to run rather than to remember.
  */
 import {
-  buildSlideRequests, textBandsFor, type SlideInput,
+  buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
+  type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
@@ -122,6 +123,27 @@ const STRESS: SlideInput[] = [
       { start: "2026-06-01", label: "A late milestone with a long label" } ] })) },
   { layout: "logo-wall", title: "Clients whose marks we do not have",
     logos: [{ name: "Holcim", resolvedUrl: "logo.png" }, { name: "Siemens Energy" }, { name: "Hiscox" }] },
+  { layout: "timeline", title: "Eight milestones in six slots",
+    milestones: Array.from({ length: 8 }, (_, i) => ({
+      date: `${i + 1} July`, title: "Questionnaire and baseline", detail: "Baseline collection begins across every market." })) },
+  { layout: "timeline-parallel", title: "Seven years and a backwards phase", today: "2026-08-19",
+    tracks: [
+      { name: "Programme", phases: [{ start: "2026-01-01", end: "2033-06-30", label: "Long haul" }] },
+      { name: "Second", phases: [
+        { start: "2027-01-01", end: "2029-06-30", label: "Middle" },
+        { start: "2030-01-01", end: "2026-01-01", label: "Runs backwards" } ] } ] },
+  { layout: "timeline-parallel", title: "A fortnight", today: "2026-09-15",
+    tracks: [{ name: "Sprint", phases: [{ start: "2026-09-10", end: "2026-09-25", label: "Build" }] }] },
+  { layout: "stacked-bar", title: "Six parts and a category only the sixth carries",
+    chart: { source: "Source: delivery data", series: [
+      { name: "Articles", points: [{ label: "Holcim", value: 38 }] },
+      { name: "Video", points: [{ label: "Holcim", value: 26 }] },
+      { name: "Infographics", points: [{ label: "Holcim", value: 19 }] },
+      { name: "Social", points: [{ label: "Holcim", value: 12 }] },
+      { name: "Newsletters", points: [{ label: "Holcim", value: 8 }] },
+      { name: "Events", points: [{ label: "Holcim", value: 5 }, { label: "Siemens", value: 30 }] } ] } },
+  { layout: "process", title: "Seven stages in five boxes", stages: Array.from({ length: 7 }, (_, i) => ({
+      name: `Stage ${i + 1}`, caption: "What happens at this point in the work." })) },
 ];
 
 /* 1. Nothing may fall off the canvas. */
@@ -253,6 +275,86 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     }
   }
   if (failures === before6) pass("every text band on cover, closing and feature clears 4.5:1");
+
+  /* 7. A slide that drops data has to SAY it dropped data.
+   *
+   *  Asserted on the string, not on the geometry: a check that only measured
+   *  boxes passed a build with the note deleted, because the layout is
+   *  perfectly valid without it. Silence is the defect. */
+  const before7 = failures;
+  console.log(`\n7. Dropped data is admitted on the slide`);
+  const saysSomething = (slide: SlideInput, pattern: RegExp, what: string) => {
+    const said = buildSlideRequests(slide, 0, "n")
+      .filter((r: any) => r.insertText)
+      .map((r: any) => r.insertText.text as string);
+    if (!said.some((t) => pattern.test(t))) fail(`${what}: nothing on the slide says so (${pattern})`);
+  };
+  const manyPoints = Array.from({ length: 12 }, (_, i) => ({ label: `C${i + 1}`, value: 100 - i * 5 }));
+  saysSomething({ layout: "bar-chart", title: "T", chart: { series: [{ name: "Revenue", points: manyPoints }] } },
+    /top 8 of 12/, "a 12-bar chart truncated to 8");
+  saysSomething({ layout: "bar-chart", title: "T", chart: { series: [
+    { name: "Revenue", points: manyPoints }, { name: "Cost", points: [{ label: "C1", value: 4 }] } ] } },
+    /of 2 series/, "a bar chart handed two series");
+  saysSomething({ layout: "timeline", title: "T", milestones: Array.from({ length: 8 }, (_, i) => ({
+    date: `${i + 1} July`, title: "Setup", detail: "Detail." })) },
+    /6 of 8 milestones/, "a timeline of 8 milestones");
+  saysSomething({ layout: "process", title: "T", stages: Array.from({ length: 7 }, (_, i) => ({ name: `S${i}` })) },
+    /first 5 of 7 stages/, "a process of 7 stages");
+  saysSomething({ layout: "timeline-parallel", title: "T", tracks: [
+    { name: "A", phases: [{ start: "2026-01-01", end: "2026-06-01", label: "Fine" }] },
+    { name: "B", phases: [{ start: "2026-02-01", end: "2026-01-01", label: "Backwards" }] } ] },
+    /unusable dates/, "a phase whose end precedes its start");
+  // And a single-series chart that fits must say NOTHING — a note on every
+  // slide is noise, and noise is how a real one goes unread.
+  const quiet = buildSlideRequests(
+    { layout: "bar-chart", title: "T", chart: { source: "Source: x", series: [{ name: "Revenue", points: manyPoints.slice(0, 4) }] } },
+    0, "n"
+  ).filter((r: any) => r.insertText).map((r: any) => r.insertText.text as string);
+  if (quiet.some((t) => /Showing/.test(t))) fail("a chart that dropped nothing still printed a note");
+  if (failures === before7) pass("every truncation names itself, and nothing else does");
+
+  /* 8. A date that is not the date it claims must not be plotted. */
+  const before8 = failures;
+  console.log(`\n8. Impossible dates are refused, not rolled over`);
+  for (const bad of ["2026-13-05", "2026-02-30", "2026-09-31", "2026-00-15", "2026-08-00"]) {
+    if (isoDate(bad) !== null) fail(`${bad} was accepted (Date.UTC rolls it into a different date)`);
+  }
+  for (const good of ["2026-08-19", "2028-02-29", "2026-08-19T10:30:00Z"]) {
+    if (isoDate(good) === null) fail(`${good} was refused`);
+  }
+  if (failures === before8) pass("out-of-range components are refused, real dates and datetimes are not");
+
+  /* 9. The splitter measures the box the layout actually draws into. */
+  const before9 = failures;
+  console.log(`\n9. A body is split against its OWN box, not the widest one`);
+  const eleven = Array.from({ length: 11 }, (_, i) => `Bullet ${i + 1}: ${"x".repeat(110)}`).join("\n");
+  const wide = splitOverflowingSlides([{ layout: "content", title: "T", body: eleven }]);
+  const narrow = splitOverflowingSlides([{ layout: "image-split", title: "T", body: eleven }]);
+  if (narrow.length <= wide.length) {
+    fail(`a half-width layout split into ${narrow.length} where the full-width one split into ${wide.length}`);
+  }
+  const short = splitOverflowingSlides([{ layout: "content", title: "T", body: "One\nTwo\nThree" }]);
+  if (short.length !== 1) fail("a three-bullet slide was split");
+  if (splitOverflowingSlides(narrow).length !== narrow.length) fail("splitting is not a fixpoint");
+  if (failures === before9) pass("half-width layouts split sooner, short slides not at all, and it settles");
+
+  /* 10. Every layout that shows something is counted as visual. */
+  const before10 = failures;
+  console.log(`\n10. The visual audit recognises the visual layouts`);
+  const visualFixtures: [string, SlideInput][] = [
+    ["cards", { layout: "cards", title: "T", cards: [{ marker: "01", title: "A" }] }],
+    ["logo-wall", { layout: "logo-wall", title: "T", logos: [{ name: "Holcim" }] }],
+    ["process", { layout: "process", title: "T", stages: [{ name: "A" }, { name: "B" }] }],
+    ["quote", { layout: "quote", quote: { text: "A line.", name: "A Person" } }],
+    ["stat", { layout: "stat", title: "T", stats: [{ value: "1", label: "One" }] }],
+  ];
+  for (const [name, slide] of visualFixtures) {
+    if (!isVisualSlide(slide)) fail(`${name} is not counted as a visual slide`);
+  }
+  if (isVisualSlide({ layout: "content", title: "T", body: "Just words" })) {
+    fail("a prose slide is counted as visual");
+  }
+  if (failures === before10) pass("cards, logo walls, processes, quotes and stats all count");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);

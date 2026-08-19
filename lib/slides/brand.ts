@@ -145,8 +145,15 @@ export interface TypeStyle {
 }
 
 export const TYPE: Record<string, TypeStyle> = {
-  coverTitle:    { font: "Playfair Display", size: 33, color: COLOR.white },
-  coverKicker:   { font: "Roboto", size: 11, bold: true, color: COLOR.lime, caps: true },
+  /** The documented scale is 30pt for a cover title and 12pt regular for its
+   *  kicker (docs/tce-slide-brand.md). Both had drifted — 33pt, and a kicker
+   *  that had plainly been copied from the eyebrow token, bold and 11pt and
+   *  lime, where lime is scoped to callouts on blue and to the divider
+   *  numerals. The one departure we keep is white rather than the source's
+   *  #EBEBEB: the baked gradient is solved for white, and anything dimmer lands
+   *  under the 4.5:1 the layout check asserts. */
+  coverTitle:    { font: "Playfair Display", size: 30, color: COLOR.white },
+  coverKicker:   { font: "Roboto", size: 12, color: COLOR.white, caps: true },
   sectionTitle:  { font: "Playfair Display", size: 26, color: COLOR.white },
   slideTitle:    { font: "Playfair Display", size: 20, color: COLOR.navy },
   slideTitleDark:{ font: "Playfair Display", size: 20, color: COLOR.white },
@@ -171,6 +178,10 @@ export const TYPE: Record<string, TypeStyle> = {
   featureBody:   { font: "Roboto", size: 11, color: COLOR.greyLight },
   gridCaption:   { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
   credit:        { font: "Roboto", size: 6, weight: 300, color: COLOR.greyLight },
+  /** The same line on a LIGHT ground. The token above is #EBEBEB, which is
+   *  invisible on off-white — so an image-split slide could not print the
+   *  photographer's name anywhere a reader would find it. */
+  creditOnLight: { font: "Roboto", size: 6, weight: 300, color: COLOR.ink },
   statValue:     { font: "Poppins", size: 54, color: COLOR.white },
   statLabel:     { font: "Roboto", size: 10, bold: true, color: COLOR.lime, caps: true },
   statDetail:    { font: "Roboto", size: 9, weight: 300, color: COLOR.greyLight },
@@ -181,7 +192,12 @@ export const TYPE: Record<string, TypeStyle> = {
   cardMarker:    { font: "Roboto", size: 9, bold: true, color: COLOR.white, caps: true },
   cardTitle:     { font: "Playfair Display", size: 13, color: COLOR.navy },
   cardBody:      { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
-  quoteMark:     { font: "Playfair Display", size: 54, color: COLOR.blue },
+  // Periwinkle, not brand blue: blue on navy is 2.4:1, under even the 3:1 floor
+  // for a graphic. The mark has to be seen and must not compete with the words,
+  // and periwinkle is accent3 in both themes — the blue family the original
+  // choice was reaching for, at 4.4:1. Lightening the navy ground instead was
+  // not an option: the change of ground is why this layout exists.
+  quoteMark:     { font: "Playfair Display", size: 54, color: COLOR.periwinkle },
   quoteText:     { font: "Playfair Display", size: 22, color: COLOR.white },
   quoteName:     { font: "Roboto", size: 10, bold: true, color: COLOR.lime, caps: true },
   quoteRole:     { font: "Roboto", size: 9, weight: 300, color: COLOR.greyLight },
@@ -275,6 +291,14 @@ export const TIMELINE = {
   detailHeight: 0.95 * IN,
   /** Gutter between adjacent milestone columns, so labels cannot collide. */
   slotGutter: 10,
+  /** At six the column is 111.8pt and the label box 101.8pt — about fourteen
+   *  characters of 12pt Playfair per line, which is the last count where a
+   *  milestone's name and a sentence of detail both stay readable at brand type
+   *  size. Past it the name wraps to three lines and runs into the detail
+   *  beneath it. The tool schema already asks for three to five. */
+  maxMilestones: 6,
+  /** The gap between the name and the detail beneath it. */
+  bandGap: 2,
 } as const;
 
 /** Parallel tracks against ONE shared, date-proportional axis.

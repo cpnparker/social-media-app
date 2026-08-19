@@ -20,7 +20,12 @@ export type SlidesAuthFailure =
   | "not_connected"   // no Google grant at all
   | "needs_reconnect" // grant predates the drive.file scope
   | "refresh_failed"  // refresh token rejected or revoked
-  | "not_configured"; // no OAuth client on this deployment
+  | "not_configured"  // no OAuth client on this deployment
+  /** We could not find OUT. A database blip on the grant store is our fault
+   *  and nothing the user can act on — telling them to reconnect a perfectly
+   *  good Google account sends them to fix something that is not broken, and if
+   *  they do reconnect it still will not work. */
+  | "unavailable";
 
 export interface SlidesAuth {
   ok: boolean;
@@ -41,14 +46,23 @@ interface AccountRow {
  *  401 halfway through a deck, which leaves a half-built file behind. */
 const EXPIRY_SKEW_SECONDS = 60;
 
-async function loadAccount(userEmail: string): Promise<AccountRow | null> {
+/** "No grant" and "could not ask" are different answers and were conflated:
+ *  `userErr || !user` returned null for both, so a Supabase outage was reported
+ *  as an unconnected Google account. */
+type AccountLookup = { ok: true; account: AccountRow | null } | { ok: false };
+
+async function loadAccount(userEmail: string): Promise<AccountLookup> {
   const mb = meetingBrainDb;
   const { data: user, error: userErr } = await mb
     .from("users")
     .select("id")
     .eq("email", userEmail.toLowerCase())
     .maybeSingle();
-  if (userErr || !user) return null;
+  if (userErr) {
+    console.warn(`[Slides] meetingbrain.users lookup failed for ${userEmail}: ${userErr.message}`);
+    return { ok: false };
+  }
+  if (!user) return { ok: true, account: null };
 
   const { data: account, error: accErr } = await mb
     .from("account")
@@ -56,8 +70,11 @@ async function loadAccount(userEmail: string): Promise<AccountRow | null> {
     .eq("user_id", (user as any).id)
     .eq("provider", "google")
     .maybeSingle();
-  if (accErr || !account) return null;
-  return account as unknown as AccountRow;
+  if (accErr) {
+    console.warn(`[Slides] meetingbrain.account lookup failed for ${userEmail}: ${accErr.message}`);
+    return { ok: false };
+  }
+  return { ok: true, account: (account as unknown as AccountRow) ?? null };
 }
 
 /** Whether this user's stored grant covers slide creation.
@@ -74,7 +91,9 @@ export function grantCoversSlides(scope: string | null | undefined): boolean {
 /** Cheap pre-flight, so the chat tool can be gated without a token round-trip. */
 export async function canGenerateSlides(userEmail: string): Promise<SlidesAuth> {
   if (!googleClientId() || !googleClientSecret()) return { ok: false, reason: "not_configured" };
-  const account = await loadAccount(userEmail);
+  const lookup = await loadAccount(userEmail);
+  if (!lookup.ok) return { ok: false, reason: "unavailable" };
+  const account = lookup.account;
   if (!account || !account.refresh_token) return { ok: false, reason: "not_connected" };
   if (!grantCoversSlides(account.scope)) return { ok: false, reason: "needs_reconnect" };
   return { ok: true };
@@ -83,7 +102,9 @@ export async function canGenerateSlides(userEmail: string): Promise<SlidesAuth> 
 export async function getUserGoogleToken(userEmail: string): Promise<SlidesAuth> {
   if (!googleClientId() || !googleClientSecret()) return { ok: false, reason: "not_configured" };
 
-  const account = await loadAccount(userEmail);
+  const lookup = await loadAccount(userEmail);
+  if (!lookup.ok) return { ok: false, reason: "unavailable" };
+  const account = lookup.account;
   if (!account || !account.refresh_token) return { ok: false, reason: "not_connected" };
   if (!grantCoversSlides(account.scope)) return { ok: false, reason: "needs_reconnect" };
 
@@ -135,5 +156,7 @@ export function authFailureMessage(reason: SlidesAuthFailure): string {
       return "Your Google connection has expired or been revoked. Reconnect it in Settings → Connections.";
     case "not_configured":
       return "Google Slides creation isn't configured on this deployment.";
+    case "unavailable":
+      return "I couldn't check your Google connection just now — that's a problem at our end, not yours. Try again in a moment.";
   }
 }

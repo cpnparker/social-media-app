@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
   // Record where the draft landed, so reopening the thread shows the created
   // deck rather than offering to create it a second time.
   if (body.messageId) {
-    const { data: row } = await intelligenceDb
+    const { data: row, error: readErr } = await intelligenceDb
       .from("ai_messages")
       .select("document_message")
       .eq("id_message", body.messageId)
@@ -94,23 +94,48 @@ export async function POST(req: NextRequest) {
       // deck — it built a second one, which is precisely the duplicate the
       // whole presentationId round-trip exists to prevent.
       const marker = `\n\n\ud83d\udcca [Open ${result.title} in Google Slides](${result.url})\n\n`;
-      const prose = (row as any).document_message || "";
-      const { error } = await intelligenceDb
-        .from("ai_messages")
-        .update({
-          document_message: prose.includes(result.url!) ? prose : prose + marker,
-          slides_draft: {
-            ...draft,
-            published: {
-              url: result.url,
-              presentationId: result.presentationId,
-              slideCount: result.slideCount,
-              thumbnails: result.thumbnails || [],
-            },
+      const payload: Record<string, unknown> = {
+        slides_draft: {
+          ...draft,
+          published: {
+            url: result.url,
+            presentationId: result.presentationId,
+            slideCount: result.slideCount,
+            thumbnails: result.thumbnails || [],
           },
-        })
-        .eq("id_message", body.messageId);
-      if (error) console.warn(`[Slides] could not mark draft published: ${error.message}`);
+        },
+      };
+      // Only touch the prose when we actually READ it. Falling back to "" would
+      // replace the assistant's message with the bare link.
+      if (!readErr && row) {
+        const prose = (row as any).document_message || "";
+        payload.document_message = prose.includes(result.url!) ? prose : prose + marker;
+      } else {
+        console.warn(`[Slides] could not read message prose for ${body.messageId}: ${readErr?.message || "no row"} — link not appended`);
+      }
+
+      // Retried once, then reported. This write is what stops the button
+      // offering to build a deck that already exists, so losing it silently
+      // means the next press makes a SECOND deck in the user's Drive.
+      let writeErr = (await intelligenceDb.from("ai_messages").update(payload)
+        .eq("id_message", body.messageId)).error;
+      if (writeErr) {
+        writeErr = (await intelligenceDb.from("ai_messages").update(payload)
+          .eq("id_message", body.messageId)).error;
+      }
+      if (writeErr) {
+        console.error(`[Slides] could not mark draft published: ${writeErr.message}`);
+        return NextResponse.json({
+          url: result.url,
+          presentationId: result.presentationId,
+          title: result.title,
+          slideCount: result.slideCount,
+          updated: !!result.updated,
+          thumbnails: result.thumbnails || [],
+          // The deck EXISTS. Saying otherwise would send them to build it again.
+          warning: "The deck was created, but this conversation couldn't record it — reload before creating another, or you may end up with two.",
+        });
+      }
     }
   }
 
@@ -121,5 +146,9 @@ export async function POST(req: NextRequest) {
     slideCount: result.slideCount,
     updated: !!result.updated,
     thumbnails: result.thumbnails || [],
+    // A body too long for its box becomes two slides at build time. Saying so
+    // is the difference between a deck that gained a slide and a deck that
+    // gained a slide for a reason.
+    splitFrom: (result.slideCount || 0) > slides.length ? slides.length : undefined,
   });
 }

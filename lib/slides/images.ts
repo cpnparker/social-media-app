@@ -29,6 +29,23 @@ export interface ResolvedImage {
   scrim: number;
   /** Which lockup reads against THIS picture's top-right corner. */
   logo?: "white" | "navy";
+  /** Found, but it cannot be made safe to put text on — the bake failed, and on
+   *  a text-bearing layout the baked gradient IS the contrast mechanism. */
+  unusable?: string;
+  /** Used as it came: the crop failed, so Slides will letterbox it. Ugly, but
+   *  nothing on it is unreadable. */
+  degraded?: string;
+}
+
+/** A picture that has been CHOSEN but not yet cropped or darkened.
+ *
+ *  The two halves are separate because only choosing can fail, and the grid
+ *  needs to know how many pictures it actually got before it can decide what
+ *  shape to crop them to. */
+export interface ImageSource {
+  url: string;
+  source: ResolvedImage["source"];
+  credit?: string;
 }
 
 export type ImageGenerator = (prompt: string) => Promise<string>;
@@ -214,10 +231,10 @@ async function bakeBackdrop(
      *  slide across the middle, a feature slide starts at the very top. */
     textBands?: TextBand[];
   }
-): Promise<{ url: string; logo: "white" | "navy" } | null> {
+): Promise<{ ok: true; url: string; logo: "white" | "navy" } | { ok: false; reason: string }> {
   try {
     const input = await safeFetchBuffer(imageUrl, 15_000);
-    if (!input) return null;
+    if (!input) return { ok: false, reason: "the image could not be fetched" };
     const sharp = (await import("sharp")).default;
 
     const W = 1600;
@@ -256,10 +273,10 @@ async function bakeBackdrop(
       contentType: "image/jpeg",
       addRandomSuffix: true,
     });
-    return { url: signedMediaUrl(blob.pathname), logo };
+    return { ok: true, url: signedMediaUrl(blob.pathname), logo };
   } catch (err: any) {
     console.warn(`[SlideImages] backdrop bake failed: ${err?.message}`);
-    return null;
+    return { ok: false, reason: err?.message || "the image could not be prepared" };
   }
 }
 
@@ -429,27 +446,51 @@ export interface ImageRequest {
   query?: string;
 }
 
-export async function resolveImage(
+export interface ImageTreatment {
+  aspect: number; gradient: boolean; logoRegion?: LogoRegion; fit?: "cover" | "contain";
+  textBands?: TextBand[];
+  /** This image must be a REAL mark, so the search and the generator are both
+   *  off. A client logo that cannot be found has to be absent: standing an
+   *  Unsplash photograph or an invented image in for someone's trademark puts
+   *  a false claim on a credibility slide, in front of the client it names. */
+  trademark?: boolean;
+}
+
+/**
+ * Crop and darken a chosen picture.
+ *
+ * Split out from the choosing because a failed bake is NOT a failed
+ * resolution — it always yields something — and the image grid has to know how
+ * many pictures it actually got before it can decide what shape to crop them
+ * to. Six asked for and four found used to bake a 1.70 crop into a 2.29 cell.
+ */
+export async function bakeImageSource(
+  src: ImageSource, treatment: ImageTreatment
+): Promise<ResolvedImage> {
+  const baked = await bakeBackdrop(src.url, treatment);
+  if (baked.ok) {
+    return { url: baked.url, source: src.source, credit: src.credit, scrim: 0, logo: baked.logo };
+  }
+  // On a text-bearing layout the baked gradient IS the contrast mechanism —
+  // the flat scrim rectangle it replaced is gone. So an unbaked photograph
+  // there is not "a bit rough", it is white type on raw daylight, and the
+  // slide is better off on its designed navy ground. Elsewhere the bake is
+  // only a crop, and the raw file letterboxes: ugly, but nothing is unreadable.
+  return treatment.gradient
+    ? { url: src.url, source: src.source, credit: src.credit, scrim: 0, unusable: baked.reason }
+    : { url: src.url, source: src.source, credit: src.credit, scrim: 0, degraded: baked.reason };
+}
+
+/** Which picture to use — owned, then stock, then generated. The only half of
+ *  resolution that can come back empty-handed. */
+export async function selectImageSource(
   req: ImageRequest,
   generate?: ImageGenerator,
-  treatment: {
-    aspect: number; gradient: boolean; logoRegion?: LogoRegion; fit?: "cover" | "contain";
-    textBands?: TextBand[];
-    /** This image must be a REAL mark, so the search and the generator are both
-     *  off. A client logo that cannot be found has to be absent: standing an
-     *  Unsplash photograph or an invented image in for someone's trademark puts
-     *  a false claim on a credibility slide, in front of the client it names. */
-    trademark?: boolean;
-  } = { aspect: 16 / 9, gradient: true }
-): Promise<ResolvedImage | null> {
-  const finish = async (
+  opts: { trademark?: boolean } = {}
+): Promise<ImageSource | null> {
+  const finish = (
     url: string, source: ResolvedImage["source"], credit?: string
-  ): Promise<ResolvedImage> => {
-    const baked = await bakeBackdrop(url, treatment);
-    // Falling back to the raw image keeps a picture on the slide when baking
-    // fails; it will letterbox, which is visibly wrong but better than blank.
-    return { url: baked?.url || url, source, credit, scrim: 0, logo: baked?.logo };
-  };
+  ): ImageSource => ({ url, source, credit });
 
   if (req.url) return finish(req.url, "supplied");
   const query = req.query?.trim();
@@ -465,7 +506,7 @@ export async function resolveImage(
     return finish(best.item.url, "owned");
   }
 
-  if (treatment.trademark) {
+  if (opts.trademark) {
     console.warn(`[SlideImages] no owned mark for "${query}" — a logo is never searched or generated`);
     return null;
   }
@@ -502,6 +543,17 @@ export async function resolveImage(
     }
   }
   return null;
+}
+
+/** Choose a picture and prepare it. Kept as a literal composition of the two
+ *  halves, so the only way to change what it does is a typo. */
+export async function resolveImage(
+  req: ImageRequest,
+  generate?: ImageGenerator,
+  treatment: ImageTreatment = { aspect: 16 / 9, gradient: true }
+): Promise<ResolvedImage | null> {
+  const src = await selectImageSource(req, generate, { trademark: treatment.trademark });
+  return src ? bakeImageSource(src, treatment) : null;
 }
 
 /** Navy at the measured opacity, in the shape Slides wants for a solid fill. */

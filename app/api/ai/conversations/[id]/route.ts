@@ -166,8 +166,12 @@ export async function GET(
       const draft = message.slidesDraft;
       if (!draft?.slides?.length || draft.published?.url) continue;
       try {
-        const { toPreviewModel } = await import("@/lib/slides/preview-model");
-        draft.preview = toPreviewModel(draft.slides);
+        const { draftPreview } = await import("@/lib/slides/preview-model");
+        // Normalises the spec as well as redrawing it, so reopening a thread
+        // cannot show a preview the publish would not match.
+        const rebuilt = draftPreview(draft.slides);
+        draft.slides = rebuilt.slides;
+        draft.preview = rebuilt.preview;
       } catch (err: any) {
         console.warn(`[Slides] could not rebuild preview for ${message.id}: ${err?.message}`);
       }

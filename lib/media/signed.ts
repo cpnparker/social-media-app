@@ -45,9 +45,12 @@ export function signedMediaUrl(blobPath: string, origin?: string): string {
   return `${(origin || publicOrigin()).replace(/\/$/, "")}/api/media/signed?${params}`;
 }
 
-export function verifyMediaSignature(blobPath: string, exp: string, sig: string): boolean {
+export function verifyMediaSignature(
+  blobPath: string, exp: string, sig: string, opts?: { allowExpired?: boolean }
+): boolean {
   const expiry = Number(exp);
-  if (!Number.isFinite(expiry) || expiry * 1000 < Date.now()) return false;
+  if (!Number.isFinite(expiry)) return false;
+  if (!opts?.allowExpired && expiry * 1000 < Date.now()) return false;
   const expected = Buffer.from(sign(blobPath, expiry));
   const given = Buffer.from(sig);
   // Compared as BYTES. timingSafeEqual throws on a length mismatch rather than
@@ -57,4 +60,36 @@ export function verifyMediaSignature(blobPath: string, exp: string, sig: string)
   // malformed signature into a 500 instead of a 404.
   if (expected.length !== given.length) return false;
   return crypto.timingSafeEqual(expected, given);
+}
+
+/**
+ * Reissue a URL this module minted, expired or not.
+ *
+ * A draft outlives its pictures: the capability URLs last thirty days and the
+ * draft sitting in the thread does not expire at all, so a deck reopened five
+ * weeks later published with links Google could only 404 — and one unfetchable
+ * image fails the WHOLE batchUpdate, so the deck did not build at all.
+ *
+ * Reissuing on a VERIFIED signature and never on a bare path: the HMAC is the
+ * proof that we granted this blob before, so this extends a grant we already
+ * made. Signing whatever path a caller hands over would turn this into an
+ * oracle for the entire private store. Anything we did not mint is returned
+ * untouched.
+ */
+export function refreshSignedMediaUrl(url: string): string {
+  try {
+    if (typeof url !== "string" || !url.includes("/api/media/signed")) return url;
+    const u = new URL(url);
+    if (u.pathname !== "/api/media/signed") return url;
+    const path = u.searchParams.get("path");
+    const exp = u.searchParams.get("exp");
+    const sig = u.searchParams.get("sig");
+    if (!path || !exp || !sig) return url;
+    if (!verifyMediaSignature(path, exp, sig, { allowExpired: true })) return url;
+    return signedMediaUrl(path);
+  } catch {
+    // secret() throws when NEXTAUTH_SECRET is absent, and this runs on the
+    // conversation-read path: a missing env var must not stop a thread loading.
+    return url;
+  }
 }

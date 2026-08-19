@@ -21,8 +21,13 @@ import {
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
 import { captureThumbnails } from "@/lib/slides/preview";
-import { resolveImage, type ImageGenerator, type TextBand } from "@/lib/slides/images";
+import {
+  resolveImage, selectImageSource, bakeImageSource,
+  type ImageGenerator, type ImageSource, type TextBand,
+} from "@/lib/slides/images";
 import { resolveIcon } from "@/lib/slides/icons";
+import { SLIDES_TEXT_INSET, BULLET_INDENT } from "@/lib/slides/preview-style";
+import { refreshSignedMediaUrl } from "@/lib/media/signed";
 
 const SLIDES_API = "https://slides.googleapis.com/v1/presentations";
 const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
@@ -69,6 +74,13 @@ export interface SlideInput {
   /** Set when resolution ran and found nothing, so publishing does not quietly
    *  search again and build a deck different from the one that was approved. */
   imageUnavailable?: boolean;
+  /** Why the picture could not be used, when it was found but could not be
+   *  prepared. Reported to the model so it can tell the user. */
+  imageError?: string;
+  /** How many grid thumbnails were asked for and not found. */
+  imagesDropped?: number;
+  /** The layout name the model asked for, when it was not one we have. */
+  layoutAsked?: string;
   /** Thumbnails for the image-grid layout. */
   images?: { url?: string; query?: string; caption?: string }[];
   resolvedImages?: { url: string; caption?: string }[];
@@ -354,7 +366,13 @@ function timelineRequests(
   milestones: Milestone[]
 ): Req[] {
   const requests: Req[] = [];
-  const n = milestones.length;
+  // Bounded, because the columns are the canvas width divided by the count and
+  // nothing else gives. At eight the column is 84pt — about nine characters of
+  // 12pt Playfair — so "Questionnaire" wraps to three lines and runs straight
+  // through the detail beneath it, on every one of the eight.
+  const shown = milestones.slice(0, TIMELINE.maxMilestones);
+  const droppedMilestones = milestones.length - shown.length;
+  const n = shown.length;
   if (!n) return requests;
 
   requests.push(
@@ -369,7 +387,19 @@ function timelineRequests(
   const slot = GRID.contentWidth / n;
   const labelWidth = slot - TIMELINE.slotGutter;
 
-  milestones.forEach((m, i) => {
+  // The name's band grows to fit the longest name, and the detail starts under
+  // it. Both were fixed constants, so a two-line name overlapped its own
+  // detail rather than pushing it down.
+  let titleLines = 1;
+  for (let i = 0; i < n; i++) {
+    titleLines = Math.max(titleLines, estimateLines(shown[i].title, labelWidth, TYPE.milestoneName.size));
+  }
+  const titleHeight = Math.max(TIMELINE.titleHeight, drawnTextHeight(titleLines, TYPE.milestoneName.size));
+  const detailY = TIMELINE.titleY + titleHeight + TIMELINE.bandGap;
+  const noteReserve = droppedMilestones > 0 ? 20 : 0;
+  const detailHeight = Math.max(24, CANVAS.height - GRID.margin - noteReserve - detailY);
+
+  shown.forEach((m, i) => {
     const centre = GRID.margin + slot * (i + 0.5);
     const size = m.highlight ? TIMELINE.markerSizeHighlight : TIMELINE.markerSize;
     const labelX = centre - labelWidth / 2;
@@ -385,45 +415,105 @@ function timelineRequests(
         x: labelX, y: TIMELINE.dateY, width: labelWidth, height: TIMELINE.dateHeight,
       }, { align: "CENTER" }),
       ...textBox(id(`t${i}`), page, m.title, TYPE.milestoneName, {
-        x: labelX, y: TIMELINE.titleY, width: labelWidth, height: TIMELINE.titleHeight,
+        x: labelX, y: TIMELINE.titleY, width: labelWidth, height: titleHeight,
       }, { align: "CENTER" }),
       ...textBox(id(`x${i}`), page, m.detail, TYPE.milestoneText, {
-        x: labelX, y: TIMELINE.detailY, width: labelWidth, height: TIMELINE.detailHeight,
+        x: labelX, y: detailY, width: labelWidth, height: detailHeight,
       }, { align: "CENTER" }),
     );
   });
+
+  if (droppedMilestones > 0) {
+    requests.push(...noteBox(
+      id("mdrop"), page,
+      `Showing ${n} of ${milestones.length} milestones`,
+      CANVAS.height - GRID.margin - 16
+    ));
+  }
   return requests;
 }
 
 /** Parse an ISO date to a UTC timestamp. UTC deliberately: these are calendar
  *  dates, and a local-midnight reading shifts them a day either side of the
  *  meridian, which would silently move a milestone on the chart. */
-function isoDate(s: string | undefined): number | null {
+export function isoDate(s: string | undefined): number | null {
   if (!s) return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s.trim());
   if (!m) return null;
-  const t = Date.UTC(+m[1], +m[2] - 1, +m[3]);
-  return Number.isFinite(t) ? t : null;
+  const y = +m[1], mo = +m[2], d = +m[3];
+  const t = Date.UTC(y, mo - 1, d);
+  if (!Number.isFinite(t)) return null;
+  // Date.UTC NORMALISES rather than rejects: "2026-13-05" becomes 5 Jan 2027
+  // and "2026-02-30" becomes 2 March. Read it back — a date that does not
+  // round-trip is not the date the text says, and plotting it puts a confident
+  // wrong mark on an axis every other track is then scaled against.
+  //
+  // The prefix match stays unanchored on purpose, so "2026-08-19T10:30:00Z"
+  // still parses; a model emits those.
+  const back = new Date(t);
+  if (back.getUTCFullYear() !== y || back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== d) {
+    return null;
+  }
+  return t;
 }
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-/** Month-start ticks across the range. Months are the right grain for a
- *  programme measured in weeks; days would be unreadable and quarters useless. */
-function monthTicks(min: number, max: number): { t: number; label: string }[] {
+/** The tick label's box, and the room one label needs to itself. */
+const TICK_LABEL_WIDTH = 48;
+const TICK_MIN_GAP = 56;
+const AVG_MONTH = (365.2425 / 12) * 86400000;
+
+/** Ticks across the range at the finest grain whose labels do not collide —
+ *  months, then 2, 3 or 6 months, then years, then decades.
+ *
+ *  A fixed month grain was both unreadable AND incomplete on a long programme:
+ *  a seven-year plan drew sixty labels five points apart in forty-eight point
+ *  boxes, and then stopped, so everything past the fifth year had no axis at
+ *  all. The grain is chosen from the space available instead. */
+function monthTicks(
+  min: number, max: number, plotW: number
+): { t: number; label: string }[] {
   const out: { t: number; label: string }[] = [];
-  const d = new Date(min);
-  let y = d.getUTCFullYear();
-  let mo = d.getUTCMonth();
-  // Start at the first month boundary at or after `min`.
-  if (d.getUTCDate() !== 1) { mo += 1; if (mo > 11) { mo = 0; y += 1; } }
-  for (let guard = 0; guard < 60; guard++) {
+  const span = max - min;
+  if (!(span > 0) || !(plotW > 0)) return out;
+
+  const needMonths = (TICK_MIN_GAP / plotW) * (span / AVG_MONTH);
+  const STEPS = [1, 2, 3, 6, 12, 24, 60, 120, 300, 600, 1200];
+  let step = 0;
+  for (let i = 0; i < STEPS.length; i++) {
+    if (STEPS[i] >= needMonths) { step = STEPS[i]; break; }
+  }
+  if (!step) step = Math.ceil(needMonths / 12) * 12;
+
+  // Walk an absolute month index snapped up to the step grid, so quarters land
+  // on Jan/Apr/Jul/Oct and year steps land on Januaries.
+  const start = new Date(min);
+  let index = start.getUTCFullYear() * 12 + start.getUTCMonth();
+  if (start.getUTCDate() !== 1) index += 1;
+  index = Math.ceil(index / step) * step;
+
+  for (let guard = 0; guard < 400; guard++) {
+    const y = Math.floor(index / 12), mo = index % 12;
     const t = Date.UTC(y, mo, 1);
     if (t > max) break;
-    // Year only in January (and on the first tick), so the axis does not repeat
-    // "26" six times — and so "Jul 26" is never misread as the 26th of July.
-    out.push({ t, label: mo === 0 || out.length === 0 ? `${MONTHS[mo]} ${y}` : MONTHS[mo] });
-    mo += 1; if (mo > 11) { mo = 0; y += 1; }
+    if (t >= min) {
+      // Year only in January (and on the first tick), so the axis does not
+      // repeat "26" six times — and so "Jul 26" is never misread as a date.
+      // At a year-or-coarser grain every label carries its year.
+      const withYear = step >= 12 || mo === 0 || out.length === 0;
+      out.push({ t, label: withYear ? `${MONTHS[mo]} ${y}` : MONTHS[mo] });
+    }
+    index += step;
+  }
+  // A range shorter than a month can produce no boundary at all. An axis with
+  // no labels is a rule with no meaning, so fall back to naming its ends.
+  if (out.length < 2) {
+    const label = (t: number) => {
+      const d = new Date(t);
+      return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
+    };
+    return [{ t: min, label: label(min) }, { t: max, label: label(max) }];
   }
   return out;
 }
@@ -458,12 +548,18 @@ function parallelTimelineRequests(
   }
 
   const stamps: number[] = [];
+  let droppedPhases = 0;
   const parsed = tracks.map((tr) => {
     const items = tr.phases
       .map((ph) => {
         const s = isoDate(ph.start);
-        if (s === null) return null;
-        const e = isoDate(ph.end);
+        // An end that was SUPPLIED but does not parse, or that falls before its
+        // start, is not a phase that can be placed. Letting it fall through to
+        // `end: null` drew it as a dot on its start date — claiming a
+        // single-day milestone the input never described — and its stamp still
+        // stretched the shared axis every other track is scaled against.
+        const e = ph.end ? isoDate(ph.end) : null;
+        if (s === null || (ph.end && (e === null || e < s))) { droppedPhases += 1; return null; }
         stamps.push(s);
         if (e !== null) stamps.push(e);
         return { start: s, end: e !== null && e > s ? e : null, label: ph.label };
@@ -549,7 +645,7 @@ function parallelTimelineRequests(
   let shown = placedTracks;
   let trackGap: number = P.trackGap;
   let rowHeight: number = P.rowHeight;
-  let noteReserve = 0;
+  let noteReserve = droppedPhases > 0 ? 16 : 0;
   for (let guard = 0; guard < 24; guard += 1) {
     const rows = shown.reduce((n, t) => n + t.rows, 0) || 1;
     const budget =
@@ -630,19 +726,23 @@ function parallelTimelineRequests(
       x: plotX, y: axisY, width: plotW, height: P.axisThickness,
     })
   );
-  monthTicks(min, max).forEach((tick, i) => {
+  monthTicks(min, max, plotW).forEach((tick, i) => {
     requests.push(
       ...textBox(id(`tick${i}`), page, tick.label, TYPE.axisTick, {
-        x: x(tick.t) - 24, y: axisY + 5, width: 48, height: P.tickLabelHeight,
+        x: x(tick.t) - TICK_LABEL_WIDTH / 2, y: axisY + 5, width: TICK_LABEL_WIDTH,
+        height: P.tickLabelHeight,
       }, { align: "CENTER" })
     );
   });
 
-  if (droppedTracks > 0) {
+  const noteParts: string[] = [];
+  if (droppedTracks > 0) noteParts.push(`${shown.length} of ${placedTracks.length} tracks`);
+  if (droppedPhases > 0) {
+    noteParts.push(`${droppedPhases} phase${droppedPhases === 1 ? "" : "s"} with unusable dates omitted`);
+  }
+  if (noteParts.length) {
     requests.push(...noteBox(
-      id("pdrop"), page,
-      `Showing ${shown.length} of ${placedTracks.length} tracks`,
-      axisY + 5 + P.tickLabelHeight
+      id("pdrop"), page, `Showing ${noteParts.join(" · ")}`, axisY + 5 + P.tickLabelHeight
     ));
   }
 
@@ -751,11 +851,24 @@ function backdropRequests(
         },
       },
     },
-    ...textBox(id("credit"), page, img.credit, TYPE.credit, {
-      x: GRID.margin, y: IMAGE.creditY,
-      width: GRID.contentWidth, height: IMAGE.creditHeight,
-    }, { align: "END" }),
+    ...creditRequests(id("credit"), page, img.credit, { x: GRID.margin, width: GRID.contentWidth }, true),
   ];
+}
+
+/** The photographer's line.
+ *
+ *  Its own helper because the split layout needs it too and did not have it:
+ *  the resolver produced a credit for every Unsplash photograph and only the
+ *  full-bleed path ever drew one, so half the stock pictures in a deck went out
+ *  uncredited. textBox returns [] for an empty string, so owned, supplied and
+ *  generated images still draw nothing. */
+function creditRequests(
+  objectId: string, page: string, credit: string | undefined,
+  box: { x: number; width: number }, onDark: boolean
+): Req[] {
+  return textBox(objectId, page, credit, onDark ? TYPE.credit : TYPE.creditOnLight, {
+    x: box.x, y: IMAGE.creditY, width: box.width, height: IMAGE.creditHeight,
+  }, { align: "END" });
 }
 
 /** Format a number the way a reader says it, not the way a machine stores it. */
@@ -820,6 +933,60 @@ function statRequests(
   return out;
 }
 
+/** The layout to draw, from whatever the model actually said.
+ *
+ *  `LAYOUT_STYLE[slide.layout]` was read straight from the tool argument, so a
+ *  name outside the enum returned undefined and the next line threw — taking
+ *  out the WHOLE deck, not one slide, and surfacing as "Google Slides creation
+ *  failed" for a call that never reached Google. The aliases are the sibling
+ *  .pptx tool's enum, which the model sees in the same turn and reaches for. */
+const LAYOUT_ALIASES: Record<string, SlideLayout> = {
+  title: "cover", blank: "content", bullets: "content", text: "content",
+  image: "feature", photo: "feature", chart: "bar-chart", divider: "section",
+  agenda: "content", "thank-you": "closing", end: "closing",
+};
+
+export function layoutOf(raw: string | undefined, index: number): SlideLayout {
+  if (raw && Object.prototype.hasOwnProperty.call(LAYOUT_STYLE, raw)) return raw as SlideLayout;
+  return LAYOUT_ALIASES[(raw || "").toLowerCase()] ?? (index === 0 ? "cover" : "content");
+}
+
+/** A deliberately generous estimate of how many lines a string takes in a box,
+ *  and how far down the box its last line reaches.
+ *
+ *  Generous because the consequence of under-estimating is text running off the
+ *  slide, and the consequence of over-estimating is a little white space. Slides
+ *  does not reflow or shrink to fit — it draws and lets it run — so nothing
+ *  downstream corrects a bad guess.
+ *
+ *  Exported so the layout check measures with the same primitive the layout
+ *  does; two estimators would drift and the check would stop meaning anything. */
+export const TEXT_INSET_X = SLIDES_TEXT_INSET.x * 2;
+export const TEXT_INSET_Y = SLIDES_TEXT_INSET.y * 2;
+const PER_CHAR = 0.55;              // widest average advance across the deck's faces
+const LINE_LEAD = 1.45;             // 115% paragraph spacing on a ~1.26em face
+
+export function estimateLines(
+  text: string | undefined, boxWidth: number, size: number, bullets = false
+): number {
+  const s = (text ?? "").trim();
+  if (!s) return 0;
+  const usable = Math.max(size, boxWidth - TEXT_INSET_X - (bullets ? BULLET_INDENT : 0));
+  const perLine = Math.max(1, Math.floor(usable / (size * PER_CHAR)));
+  const paras = s.split("\n");
+  let lines = 0;
+  for (let i = 0; i < paras.length; i++) {
+    lines += Math.max(1, Math.ceil(paras[i].trim().length / perLine));
+  }
+  return lines;
+}
+
+/** Where the last line's ink lands, measured from the top of the box. */
+export function drawnTextHeight(lines: number, size: number, spaceBelow = 0): number {
+  if (lines <= 0) return 0;
+  return TEXT_INSET_Y + lines * size * LINE_LEAD + Math.max(0, lines - 1) * spaceBelow;
+}
+
 /** How many rows a chart may draw, and how tall each may be.
  *
  *  Nothing on a slide is allowed to grow past the canvas. The bar chart used to
@@ -868,18 +1035,43 @@ function fitRows(
  *  Its own box with no spec path, so it is never editable and never written
  *  back into the source string. Silence here was the real defect: a deck that
  *  quietly drops four categories reads as the whole picture. */
+/** Wide enough for its own text, so a two-clause note is not clipped by a
+ *  fixed slot. Right-aligned to the content edge, so growing it grows leftwards
+ *  and it can never leave the canvas. */
+function noteWidth(text: string): number {
+  if (!text) return 0;
+  const measured = Math.ceil(text.length * TYPE.chartAxis.size * 0.55 + 15);
+  return Math.min(GRID.contentWidth - 140, Math.max(NOTE_WIDTH, measured));
+}
+
 function noteBox(objectId: string, page: string, text: string, y: number): Req[] {
   if (!text) return [];
+  const w = noteWidth(text);
   return textBox(objectId, page, text, TYPE.chartAxis, {
-    x: GRID.margin + GRID.contentWidth - NOTE_WIDTH, y, width: NOTE_WIDTH, height: 16,
+    x: GRID.margin + GRID.contentWidth - w, y, width: w, height: 16,
   }, { align: "END" });
 }
 
-function droppedNote(
-  objectId: string, page: string, dropped: number, total: number, y: number
-): Req[] {
-  if (dropped <= 0) return [];
-  return noteBox(objectId, page, `Showing the top ${total - dropped} of ${total}`, y);
+function clip(s: string, n: number): string {
+  return s.length <= n ? s : `${s.slice(0, n - 1)}…`;
+}
+
+/** What a bar chart is NOT showing, in one line.
+ *
+ *  Both clauses matter and neither was said. Truncation to the top eight was
+ *  silent, and a second series was discarded entirely — this layout draws one
+ *  series by design, and a model that sends two got a slide that looked like
+ *  the whole picture. */
+export function barChartNote(
+  chart: NonNullable<SlideInput["chart"]>, total: number, drawn: number
+): string {
+  const parts: string[] = [];
+  const supplied = chart.series?.length || 0;
+  if (supplied > 1) {
+    parts.push(`“${clip(chart.series?.[0]?.name || "the first series", 18)}” of ${supplied} series`);
+  }
+  if (total > drawn) parts.push(`${supplied > 1 ? "" : "the "}top ${drawn} of ${total}`);
+  return parts.length ? `Showing ${parts.join(" · ")}` : "";
 }
 
 /** Horizontal bars, sorted, with the value printed at the end of each.
@@ -956,12 +1148,12 @@ function barChartRequests(
   }
 
   const srcY = plotTop + points.length * fit.rowH + 8;
-  const dropped = ranked.length - points.length;
+  const note = barChartNote(chart, ranked.length, points.length);
   out.push(...textBox(id("csrc"), page, chart.source, TYPE.chartAxis, {
     x: GRID.margin, y: srcY,
-    width: GRID.contentWidth - (dropped ? NOTE_WIDTH : 0), height: 16,
+    width: GRID.contentWidth - (note ? noteWidth(note) : 0), height: 16,
   }));
-  out.push(...droppedNote(id("cdrop"), page, dropped, ranked.length, srcY));
+  out.push(...noteBox(id("cdrop"), page, note, srcY));
   return out;
 }
 
@@ -978,31 +1170,64 @@ function stackedBarRequests(
   page: string, id: (s: string) => string,
   chart: NonNullable<SlideInput["chart"]>, onDark: boolean
 ): Req[] {
-  const series = (chart.series || []).filter((s) => s.points?.length).slice(0, 5);
-  if (!series.length) return [];
+  const supplied = (chart.series || []).filter((s) => s.points?.length);
+  if (!supplied.length) return [];
   const palette = onDark ? SERIES_DARK : SERIES_LIGHT;
 
-  // Categories come from the FIRST series; a later one missing a category
-  // simply contributes nothing to that bar rather than shifting the others.
-  const allCategories = series[0].points.map((p) => p.label);
+  // A stacked bar cannot draw a negative part — there is no direction for it to
+  // go — so negatives leave the DRAWING and the TOTAL alike, and are counted so
+  // the slide can say so. Counting them in the total while skipping them in the
+  // drawing was worse than either: the printed total contradicted the bar
+  // beside it, and because the scale came from those totals a single negative
+  // could push a bar clean off the right-hand edge of the slide.
+  let negatives = 0;
+  const valuesOf = (list: typeof supplied) => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < list.length; i++) {
+      const pts = list[i].points || [];
+      for (let j = 0; j < pts.length; j++) {
+        if (pts[j].value < 0) { negatives += 1; continue; }
+        // Duplicate labels SUM. `find` returned the first and lost the rest, so
+        // [{Other,10},{Other,15}] drew 10 twice and printed a total short by 15.
+        m.set(pts[j].label, (m.get(pts[j].label) || 0) + pts[j].value);
+      }
+    }
+    return m;
+  };
+
+  // Five colours in the palette, and `palette[si % length]` would paint a sixth
+  // part in the FIRST part's blue. Dropping the sixth instead left a printed
+  // total that excluded it — a wrong number on the slide, not just a missing
+  // one. So the remainder is grouped, which is coarser but true.
+  const MAX_PARTS = palette.length;
+  const folded = Math.max(0, supplied.length - MAX_PARTS);
+  const parts: { name: string; values: Map<string, number> }[] = [];
+  for (let i = 0; i < Math.min(supplied.length, MAX_PARTS); i++) {
+    parts.push({ name: supplied[i].name, values: valuesOf([supplied[i]]) });
+  }
+  if (folded > 0) parts.push({ name: "Other", values: valuesOf(supplied.slice(MAX_PARTS)) });
+  const series = parts;
+  // "Other" is not a series, so it does not take a series colour.
+  const fillFor = (si: number) => (si < MAX_PARTS ? palette[si] : (onDark ? COLOR.greyLight : COLOR.ink));
+
+  // Categories are the UNION of every part's labels, in first-appearance order.
+  // Taking them from the first series alone dropped any category the first
+  // series happened not to carry — silently, and from the totals as well.
+  // Derived from the aggregation rather than a second pass over the raw points,
+  // so a label carried only by negative values cannot enter as an empty row.
+  const union = new Map<string, number>();
+  for (let i = 0; i < series.length; i++) {
+    const keys = Array.from(series[i].values.keys());
+    for (let j = 0; j < keys.length; j++) union.set(keys[j], 1);
+  }
+  const allCategories = Array.from(union.keys());
   // The legend and the source line sit under the plot, so both are inside the
   // budget the rows have to fit. There was no budget at all before: ten
   // categories put two rows and the whole legend off the bottom of the slide.
   const fit = fitRows(allCategories.length, MAX_BARS, CHART.barHeight, CHART.barGap, STACK_TAIL);
   const categories = allCategories.slice(0, fit.count);
 
-  // A stacked bar cannot draw a negative part — there is no direction for it to
-  // go — so negatives are excluded from the DRAWING and from the TOTAL alike.
-  // Counting them in the total while skipping them in the drawing was worse
-  // than either: the printed total contradicted the bar beside it, and because
-  // the scale came from those totals a single negative could push a bar clean
-  // off the right-hand edge of the slide.
-  let negatives = 0;
-  const partOf = (cat: string, s: (typeof series)[number]) => {
-    const v = s.points.find((p) => p.label === cat)?.value ?? 0;
-    if (v < 0) { negatives += 1; return 0; }
-    return v;
-  };
+  const partOf = (cat: string, s: (typeof series)[number]) => s.values.get(cat) ?? 0;
   const totals = categories.map((c) => series.reduce((sum, s) => sum + partOf(c, s), 0));
   const max = Math.max(...totals) || 1;
 
@@ -1024,7 +1249,7 @@ function stackedBarRequests(
       const v = partOf(cat, s);
       if (v <= 0) return;
       const w = (v / max) * plotW;
-      out.push(...filledShape(id(`kb${ci}_${si}`), page, "RECTANGLE", palette[si % palette.length], {
+      out.push(...filledShape(id(`kb${ci}_${si}`), page, "RECTANGLE", fillFor(si), {
         x, y, width: Math.max(1, w - GAP), height: fit.barH,
       }));
       x += w;
@@ -1056,7 +1281,7 @@ function stackedBarRequests(
     }
     const ly = legendTop + legendRow * LEGEND_ROW_HEIGHT;
     out.push(
-      ...filledShape(id(`kk${si}`), page, "RECTANGLE", palette[si % palette.length], {
+      ...filledShape(id(`kk${si}`), page, "RECTANGLE", fillFor(si), {
         x: lx, y: ly + 4, width: 9, height: 9,
       }),
       ...textBox(id(`kn${si}`), page, s.name, TYPE.chartAxis, {
@@ -1068,15 +1293,74 @@ function stackedBarRequests(
   const legendY = legendTop + legendRow * LEGEND_ROW_HEIGHT;
 
   const srcY = legendY + 20;
-  const dropped = allCategories.length - categories.length;
-  const note = dropped > 0
-    ? `Showing the top ${categories.length} of ${allCategories.length}`
-    : negatives > 0 ? "Negative values not shown" : "";
+  const note = stackedNote(allCategories.length, categories.length, supplied.length, folded, negatives);
   out.push(...textBox(id("ksrc"), page, chart.source, TYPE.chartAxis, {
-    x: GRID.margin, y: srcY, width: GRID.contentWidth - (note ? NOTE_WIDTH : 0), height: 16,
+    x: GRID.margin, y: srcY, width: GRID.contentWidth - (note ? noteWidth(note) : 0), height: 16,
   }));
   out.push(...noteBox(id("kdrop"), page, note, srcY));
   return out;
+}
+
+/** What a stacked bar is not showing, in one line and in priority order —
+ *  a dropped category first, then a folded part, then a negative. Only the
+ *  first that applies is said: the slot is one line, and three clauses read as
+ *  a disclaimer rather than a fact. */
+export function stackedNote(
+  categories: number, drawn: number, suppliedParts: number, folded: number, negatives: number
+): string {
+  if (categories > drawn) return `Showing the top ${drawn} of ${categories}`;
+  if (folded > 0) return `Showing ${suppliedParts - folded} of ${suppliedParts} parts, rest as “Other”`;
+  if (negatives > 0) return "Negative values not shown";
+  return "";
+}
+
+/** Does this slide show the reader something other than words?
+ *
+ *  Read by the audit that tells the model how visual a deck is, so a miscount
+ *  is not cosmetic: cards, logo walls, process diagrams and quotes were all
+ *  counted as prose, so a deck that was five-sixths visual was reported as
+ *  "ONLY 1 of 6 (17%)" and the model dutifully told the user it was flat and
+ *  offered to fix slides that were already fine. */
+export function isVisualSlide(slide: SlideInput | undefined): boolean {
+  if (!slide) return false;
+  const cards = slide.cards || [];
+  const logos = slide.logos || [];
+  return Boolean(
+    slide.resolvedImage ||
+    (slide.resolvedImages && slide.resolvedImages.length) ||
+    slide.chart ||
+    (slide.stats && slide.stats.length) ||
+    (slide.milestones && slide.milestones.length) ||
+    (slide.tracks && slide.tracks.length) ||
+    // The process layout draws its chevrons from the stages alone, and a quote
+    // is a designed slide on navy whether or not it carries a portrait.
+    (slide.stages && slide.stages.length) ||
+    slide.quote ||
+    cards.some((c) => (c.resolvedImage && c.resolvedImage.url) || c.resolvedIcon || c.marker) ||
+    logos.some((l) => l.resolvedUrl || l.name)
+  );
+}
+
+/** What the deck could not do, in a sentence the model can relay.
+ *
+ *  The slide says it too — a truncated chart carries its own note — but the
+ *  model is the one having the conversation, and a user who is told "four of
+ *  your six pictures could not be found" can supply them. Silence here meant
+ *  the model described a deck that was quietly missing things. */
+export function deckWarnings(slides: SlideInput[]): string {
+  const notes: string[] = [];
+  for (let i = 0; i < slides.length; i++) {
+    const s = slides[i];
+    const n = i + 1;
+    if (s.layoutAsked) notes.push(`slide ${n} asked for layout "${s.layoutAsked}", drawn as "${s.layout}"`);
+    if (s.imageUnavailable) notes.push(`slide ${n} has no photograph — ${s.imageError || "none could be found"}`);
+    if (s.imagesDropped) {
+      const asked = (s.images || []).length;
+      notes.push(`slide ${n} shows ${asked - s.imagesDropped} of ${asked} thumbnails; the rest could not be found`);
+    }
+  }
+  if (!notes.length) return "";
+  return ` TELL THE USER, briefly and without apologising: ${notes.join("; ")}.`;
 }
 
 /** Card geometry, computed in ONE place — the thumbnail's box decides the crop
@@ -1268,10 +1552,14 @@ function quoteRequests(
  *  Drawn rather than bulleted for the same reason a timeline is: a process has
  *  direction, and a list does not show it. Reuses the connector primitives the
  *  timelines already prove. */
+/** Five stages fill the width; a sixth would be a 100pt box with a two-word
+ *  caption. Bounded, and said out loud rather than quietly trimmed. */
+const MAX_STAGES = 5;
+
 function processRequests(
   page: string, id: (s: string) => string, stages: NonNullable<SlideInput["stages"]>
 ): Req[] {
-  const shown = stages.slice(0, 5);
+  const shown = stages.slice(0, MAX_STAGES);
   if (!shown.length) return [];
   const gaps = shown.length - 1;
   const boxW = (GRID.contentWidth - gaps * PROCESS.connectorWidth) / shown.length;
@@ -1310,6 +1598,13 @@ function processRequests(
       );
     }
   });
+
+  if (stages.length > shown.length) {
+    out.push(...noteBox(
+      id("sdrop"), page, `Showing the first ${shown.length} of ${stages.length} stages`,
+      CANVAS.height - GRID.margin - 16
+    ));
+  }
   return out;
 }
 
@@ -1358,7 +1653,7 @@ function logoWallRequests(
 /** One slide → its full request list. Exported so the layout geometry can be
  *  exercised without a Google round-trip; nothing else should call it. */
 export function buildSlideRequests(slide: SlideInput, index: number, run = "r0"): Req[] {
-  const layout: SlideLayout = slide.layout || (index === 0 ? "cover" : "content");
+  const layout: SlideLayout = layoutOf(slide.layout, index);
   const style = LAYOUT_STYLE[layout];
   // Object ids are scoped to this RUN, not just the slide index. On an update
   // the deck still holds the previous run's shapes when the new ones are
@@ -1557,6 +1852,12 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         x: IMAGE.splitTextX, y: GRID.bodyY,
         width: IMAGE.splitTextWidth, height: GRID.bodyHeight,
       }, { bullets: true }),
+      // In the TEXT column, not on the picture. On the picture it would sit
+      // beside what it credits, but this layout resolves with gradient:false —
+      // nothing measures that corner, so a 6pt light line over an unknown
+      // photograph is exactly the invisible credit this is here to stop.
+      ...creditRequests(id("credit"), page, slide.resolvedImage?.credit,
+        { x: IMAGE.splitTextX, width: IMAGE.splitTextWidth }, false),
     );
   } else if (layout === "image-grid") {
     requests.push(
@@ -1697,44 +1998,112 @@ async function googleFetch(url: string, token: string, init: RequestInit = {}) {
  * error than dropping the words that did not.
  */
 export function splitOverflowingSlides(slides: SlideInput[]): SlideInput[] {
-  const CHARS_PER_LINE = 118;   // 671pt of Roboto Light at 10pt, with margin
-  const MAX_LINES = 11;         // 202pt of body box at ~11.5pt line height
-
-  const linesFor = (text: string) =>
-    text.split("\n").reduce((n, line) => n + Math.max(1, Math.ceil(line.length / CHARS_PER_LINE)), 0);
-
   const out: SlideInput[] = [];
-  for (const slide of slides) {
-    const body = slide.body;
-    // Only prose layouts overflow this way; a chart's geometry is bounded.
-    const splittable = !slide.chart && !slide.stats && !slide.milestones && !slide.tracks;
-    if (!body || !splittable || linesFor(body) <= MAX_LINES) {
-      out.push(slide);
-      continue;
+  for (let i = 0; i < slides.length; i++) {
+    // A FIXPOINT, not one pass. Splitting a body in two used to assume the
+    // remainder fitted; a body three times the box produced one full slide and
+    // one that still overflowed.
+    const pending: SlideInput[] = [slides[i]];
+    for (let guard = 0; guard < 12 && pending.length; guard += 1) {
+      const slide = pending.shift() as SlideInput;
+      const pieces = splitOnce(slide, out.length);
+      if (pieces.length === 1) { out.push(pieces[0]); continue; }
+      out.push(pieces[0]);
+      pending.unshift(...pieces.slice(1));
     }
-
-    const lines = body.split("\n");
-    const first: string[] = [];
-    let used = 0;
-    while (lines.length && used + Math.max(1, Math.ceil(lines[0].length / CHARS_PER_LINE)) <= MAX_LINES) {
-      const line = lines.shift()!;
-      used += Math.max(1, Math.ceil(line.length / CHARS_PER_LINE));
-      first.push(line);
-    }
-    // A single bullet longer than a whole slide cannot be split by lines; let
-    // it through rather than emitting an empty slide and looping.
-    if (!first.length) { out.push(slide); continue; }
-
-    out.push({ ...slide, body: first.join("\n") });
-    out.push({
-      ...slide,
-      title: `${slide.title || ""} (continued)`.trim(),
-      body: lines.join("\n"),
-      // The picture, eyebrow and speaker notes belong to the first half only.
-      image: undefined, resolvedImage: undefined, eyebrow: undefined, notes: undefined,
-    });
+    // Whatever the guard did not resolve still belongs in the deck.
+    for (let j = 0; j < pending.length; j++) out.push(pending[j]);
   }
   return out;
+}
+
+/** The box a layout actually draws `body` into, found by PROBING the builder.
+ *
+ *  Measured rather than listed, the same trick textBandsFor uses, because the
+ *  estimate has to follow the geometry: the splitter measured every body
+ *  against the full 671pt content width, and image-split draws it into 315pt.
+ *  A body it judged to be eight lines was sixteen in the box it landed in, so
+ *  the slide that most needed splitting was the one never split. */
+const PROBE = "\u241E";
+
+function bodyBox(
+  slide: SlideInput, index: number, field: "body" | "bodyRight"
+): { width: number; height: number; size: number; bullets: boolean } | undefined {
+  const probe: any = { ...slide, resolvedImage: undefined };
+  probe[field] = `${PROBE}\n${PROBE}`;
+  const reqs = buildSlideRequests(probe, index, "m") as any[];
+  let id: string | undefined;
+  for (const r of reqs) {
+    if (r.insertText && String(r.insertText.text).indexOf(PROBE) >= 0) { id = r.insertText.objectId; break; }
+  }
+  if (!id) return undefined;   // this layout does not draw that field at all
+  let width = 0, height = 0, size = TYPE.body.size, bullets = false;
+  for (const r of reqs) {
+    if (r.createShape && r.createShape.objectId === id) {
+      width = r.createShape.elementProperties.size.width.magnitude;
+      height = r.createShape.elementProperties.size.height.magnitude;
+    }
+    if (r.updateTextStyle && r.updateTextStyle.objectId === id && r.updateTextStyle.style?.fontSize) {
+      size = r.updateTextStyle.style.fontSize.magnitude;
+    }
+    if (r.createParagraphBullets && r.createParagraphBullets.objectId === id) bullets = true;
+  }
+  return { width, height, size, bullets };
+}
+
+/** How much room a block of paragraphs needs in a given box. */
+function blockHeight(
+  paras: string[], box: { width: number; size: number; bullets: boolean }
+): number {
+  let lines = 0;
+  for (let i = 0; i < paras.length; i++) {
+    lines += Math.max(1, estimateLines(paras[i], box.width, box.size, box.bullets));
+  }
+  return drawnTextHeight(lines, box.size, SPACE_BELOW) - drawnTextHeight(0, box.size);
+}
+
+const SPACE_BELOW = 6;
+
+/** One split, or none. */
+function splitOnce(slide: SlideInput, index: number): SlideInput[] {
+  const body = slide.body;
+  // Only prose layouts overflow this way; a chart's geometry is bounded.
+  const splittable = !slide.chart && !slide.stats && !slide.milestones && !slide.tracks &&
+    !slide.cards && !slide.quote && !slide.stages && !slide.logos;
+  if (!body || !splittable) return [slide];
+
+  const box = bodyBox(slide, index, "body");
+  if (!box || box.width <= 0) return [slide];
+
+  const paras = body.split("\n");
+  if (blockHeight(paras, box) <= box.height) return [slide];
+
+  const first: string[] = [];
+  for (let i = 0; i < paras.length; i++) {
+    const next = first.concat(paras[i]);
+    if (first.length && blockHeight(next, box) > box.height) break;
+    first.push(paras[i]);
+  }
+  const rest = paras.slice(first.length);
+  // A single paragraph taller than the whole box cannot be split by lines; let
+  // it through rather than emitting an empty slide and looping.
+  if (!first.length || !rest.length) return [slide];
+
+  return [
+    { ...slide, body: first.join("\n") },
+    {
+      ...slide,
+      // "(continued)" once, however many times a body has to be split — a
+      // fixpoint over a very long body otherwise produced "T (continued)
+      // (continued) (continued)".
+      title: /\(continued\)\s*$/.test(slide.title || "")
+        ? slide.title
+        : `${slide.title || ""} (continued)`.trim(),
+      body: rest.join("\n"),
+      // The picture, eyebrow and speaker notes belong to the first half only.
+      image: undefined, resolvedImage: undefined, eyebrow: undefined, notes: undefined,
+    },
+  ];
 }
 
 /**
@@ -1792,10 +2161,48 @@ export function textBandsFor(slide: SlideInput, index: number): TextBand[] {
   return merged;
 }
 
+/** Reissue the capability URLs a persisted draft carries.
+ *
+ *  They last thirty days; the draft in the thread lasts for ever. A deck
+ *  reopened five weeks later handed Google links it could only 404 — and one
+ *  unfetchable image fails the whole batchUpdate, so the deck did not build at
+ *  all rather than building with a gap. Anything not minted by us passes
+ *  through untouched. */
+export function refreshDeckImageUrls(slides: SlideInput[]): void {
+  for (let i = 0; i < slides.length; i++) {
+    const s: any = slides[i];
+    if (s.resolvedImage?.url) s.resolvedImage.url = refreshSignedMediaUrl(s.resolvedImage.url);
+    if (s.quote?.resolvedImage?.url) {
+      s.quote.resolvedImage.url = refreshSignedMediaUrl(s.quote.resolvedImage.url);
+    }
+    for (const r of s.resolvedImages || []) if (r?.url) r.url = refreshSignedMediaUrl(r.url);
+    for (const l of s.logos || []) if (l?.resolvedUrl) l.resolvedUrl = refreshSignedMediaUrl(l.resolvedUrl);
+    for (const c of s.cards || []) {
+      if (c?.resolvedImage?.url) c.resolvedImage.url = refreshSignedMediaUrl(c.resolvedImage.url);
+      if (c?.resolvedIcon) c.resolvedIcon = refreshSignedMediaUrl(c.resolvedIcon);
+    }
+  }
+}
+
 export async function resolveDeckImages(
   slides: SlideInput[],
   generate?: ImageGenerator
 ): Promise<void> {
+  // Normalise the layout name ONCE, here, because every build path goes through
+  // this function. A slide asking for "title" or "bullets" — names the sibling
+  // .pptx tool uses, which the model sees in the same turn — is drawn as the
+  // nearest real layout instead of throwing, and the substitution is recorded
+  // on the slide so the deck can be described accurately afterwards.
+  slides.forEach((slide, i) => {
+    const asked = slide.layout as string | undefined;
+    const used = layoutOf(asked, i);
+    if (asked && asked !== used) {
+      slide.layoutAsked = asked;
+      console.warn(`[Slides] slide ${i + 1}: unknown layout "${asked}" — drawn as "${used}"`);
+    }
+    slide.layout = used;
+  });
+
   await Promise.all(
     slides.map(async (slide, slideIndex) => {
       // `imageUnavailable` means we already tried and could not find one. It
@@ -1813,7 +2220,7 @@ export async function resolveDeckImages(
         const split = slide.layout === "image-split";
         // Tell the baker where this layout's lockup will land, so it measures
         // the part of the picture the mark actually sits on.
-        const style = LAYOUT_STYLE[slide.layout || "content"];
+        const style = LAYOUT_STYLE[layoutOf(slide.layout, slideIndex)];
         const place = LOGO_PLACEMENT[style.logoPlacement];
         const r = await resolveImage(slide.image, generate, {
           aspect: split ? IMAGE.splitWidth / CANVAS.height : CANVAS.width / CANVAS.height,
@@ -1824,8 +2231,17 @@ export async function resolveDeckImages(
             w: place.width / CANVAS.width, h: place.height / CANVAS.height,
           },
         });
-        if (r) slide.resolvedImage = { url: r.url, scrim: r.scrim, credit: r.credit, logo: r.logo };
-        else slide.imageUnavailable = true;
+        // `unusable` means the bake failed on a picture that CARRIES TEXT. The
+        // baked gradient is the contrast mechanism there — the flat scrim
+        // rectangle it replaced is gone — so using the raw file would put white
+        // type on raw daylight. The designed navy ground is better, and the
+        // reason is recorded rather than swallowed.
+        if (r && !r.unusable) {
+          slide.resolvedImage = { url: r.url, scrim: r.scrim, credit: r.credit, logo: r.logo };
+        } else {
+          slide.imageUnavailable = true;
+          slide.imageError = r?.unusable || "no image could be found for it";
+        }
       }
       if (slide.quote?.image && !slide.quote.resolvedImage) {
         const r = await resolveImage(slide.quote.image, generate, { aspect: 1, gradient: false });
@@ -1855,19 +2271,31 @@ export async function resolveDeckImages(
         }));
       }
       if (slide.images?.length && !slide.resolvedImages) {
-        const cellAspect = gridGeometry(
-          slide.images.length, slide.images.some((i) => i.caption)
-        ).aspect;
-        const out = await Promise.all(
-          slide.images.slice(0, 12).map(async (spec) => {
-            // Cropped to the CELL's own shape, from the same calculation the
-            // drawing uses. No text sits on a grid cell, so no gradient.
-            const r = await resolveImage(spec, generate, { aspect: cellAspect, gradient: false });
-            return r ? { url: r.url, caption: spec.caption } : null;
-          })
-        );
-        const kept = out.filter(Boolean) as { url: string; caption?: string }[];
-        if (kept.length) slide.resolvedImages = kept;
+        const specs = slide.images.slice(0, 12);
+        // WHICH pictures we get has to be settled before the shape to crop them
+        // to can be. The crop came from the requested set and the cells from the
+        // survivors, so six asked for and four found baked a 1.70 crop into a
+        // 2.29 cell — and Slides letterboxes rather than stretches, which is
+        // 57pt of dead ground per cell. The caption flip does the same thing:
+        // whether ANY image carries a caption changes the cell height, and it
+        // was read over the requested set too.
+        const found = (await Promise.all(specs.map(async (spec) => {
+          const src = await selectImageSource(spec, generate);
+          return src ? { src, caption: spec.caption } : null;
+        }))).filter(Boolean) as { src: ImageSource; caption?: string }[];
+
+        if (found.length) {
+          const aspect = gridGeometry(found.length, found.some((f) => f.caption)).aspect;
+          // No text sits on a grid cell, so no gradient.
+          slide.resolvedImages = await Promise.all(found.map(async (f) => ({
+            url: (await bakeImageSource(f.src, { aspect, gradient: false })).url,
+            caption: f.caption,
+          })));
+        }
+        if (found.length < specs.length) {
+          slide.imagesDropped = specs.length - found.length;
+          console.warn(`[SlideImages] grid: ${slide.imagesDropped} of ${specs.length} images not found`);
+        }
       }
     })
   );
@@ -1918,6 +2346,7 @@ export async function updateSlides(
   const oldIds: string[] = (existing.json?.slides || []).map((s: any) => s.objectId);
 
   slides = splitOverflowingSlides(slides);
+  refreshDeckImageUrls(slides);
   await resolveDeckImages(slides, generateImageFn);
 
   const run = runId();
@@ -1990,6 +2419,7 @@ export async function generateSlides(
   const defaultSlideId: string | undefined = created.json.slides?.[0]?.objectId;
 
   slides = splitOverflowingSlides(slides);
+  refreshDeckImageUrls(slides);
   await resolveDeckImages(slides, generateImageFn);
 
   const run = runId();

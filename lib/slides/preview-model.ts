@@ -13,7 +13,7 @@
  * would stop predicting the deck — which would make it worse than useless.
  */
 
-import { buildSlideRequests, type SlideInput } from "@/lib/slides/generate";
+import { buildSlideRequests, splitOverflowingSlides, type SlideInput } from "@/lib/slides/generate";
 import { CANVAS } from "@/lib/slides/brand";
 
 export interface PreviewElement {
@@ -49,6 +49,11 @@ export interface PreviewElement {
   caps?: boolean;
   /** Text is centred vertically inside its box. */
   vCenter?: boolean;
+  /** The runs inside this box that carry a link. Slides underlines exactly
+   *  these words and nothing else, so they are recorded as ranges rather than
+   *  as a flag on the box: underlining the whole box would be a different kind
+   *  of wrong from not underlining it at all. */
+  links?: { start: number; end: number; url: string }[];
   /** Points of space after each paragraph, and the line-spacing percentage.
    *  Both are set on every text box in the deck; dropping them made a body of
    *  bullets render tighter here than it does in Slides, which is how a block
@@ -195,7 +200,21 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
         // A run-scoped style (FIXED_RANGE) is skipped outright: the preview
         // draws a box in one style, so a style covering three words of it
         // cannot be represented and must not be allowed to redefine the box.
-        if (body.textRange?.type === "FIXED_RANGE") continue;
+        if (body.textRange?.type === "FIXED_RANGE") {
+          // A run-scoped style must not redefine the box — that is what wiped
+          // the typography off a linked title. But the RANGE is worth keeping:
+          // Slides underlines those words, and a preview that draws them plain
+          // is a preview of a slide the user is not going to get.
+          const url = body.style?.link?.url;
+          if (url && typeof body.textRange.startIndex === "number") {
+            (el.links ||= []).push({
+              start: body.textRange.startIndex,
+              end: body.textRange.endIndex,
+              url,
+            });
+          }
+          continue;
+        }
         const st = body.style || {};
         if (st.weightedFontFamily?.fontFamily) el.font = st.weightedFontFamily.fontFamily;
         if (st.weightedFontFamily?.weight) el.weight = st.weightedFontFamily.weight;
@@ -241,4 +260,19 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
   });
 
   return { width: CANVAS.width, height: CANVAS.height, slides: out };
+}
+
+/** The spec that will be drawn, and its drawing.
+ *
+ *  One entry point for both, because splitting IS part of the layout decision
+ *  and the two halves had drifted: publishing re-split an over-long body into
+ *  two slides while the preview endpoint did not split at all, so a deck could
+ *  arrive in Drive with a slide the preview never showed. The caller gets back
+ *  the spec that was drawn, so what publishes is what was shown.
+ *
+ *  Still pure and still no I/O — a continuation drops its picture, so nothing
+ *  needs resolving. */
+export function draftPreview(slides: SlideInput[]): { slides: SlideInput[]; preview: PreviewDeck } {
+  const split = splitOverflowingSlides(slides);
+  return { slides: split, preview: toPreviewModel(split) };
 }
