@@ -718,9 +718,17 @@ function statRequests(
   // two-line value in a one-line box overflowed downward straight through its
   // own label and detail. Poppins runs about 0.58 of the point size per
   // character, so the size that fits is solvable rather than guessable.
+  //
+  // Two corrections after seeing this rendered by Google rather than estimated:
+  // a text box carries a default inset of 0.1in on each side, so the usable
+  // width is ~15pt less than the box; and Poppins runs nearer 0.62 of the point
+  // size per character than the 0.58 first assumed. At 0.58 with no inset
+  // allowance, "92.5 GW" was computed to fit at 50pt and wrapped anyway.
+  const INSET = 15;
+  const PER_CHAR = 0.62;
   const longest = Math.max(...shown.map((s) => s.value.length), 1);
-  const fitted = Math.min(TYPE.statValue.size, Math.floor((cell - 6) / (longest * 0.58)));
-  const valueStyle = { ...TYPE.statValue, size: Math.max(22, fitted) };
+  const fitted = Math.floor((cell - INSET) / (longest * PER_CHAR));
+  const valueStyle = { ...TYPE.statValue, size: Math.max(22, Math.min(TYPE.statValue.size, fitted)) };
 
   shown.forEach((s, i) => {
     const x = GRID.margin + i * (cell + CHART.statGap);
