@@ -15,7 +15,8 @@
  * close a cycle.
  */
 
-import { list } from "@vercel/blob";
+import { list, put } from "@vercel/blob";
+import { signedMediaUrl } from "@/lib/media/signed";
 import { searchStockPhoto, trackStockUse } from "@/lib/integrations/unsplash";
 import { COLOR } from "@/lib/slides/brand";
 
@@ -141,6 +142,99 @@ export async function scrimFor(imageUrl: string): Promise<number> {
   }
 }
 
+/**
+ * Crop a photograph to the slide's aspect and, for text-bearing layouts, burn
+ * a gradient scrim into it.
+ *
+ * Both of the visible faults came from doing this in Slides instead. Slides
+ * LETTERBOXES an image into the box it is given, so a 3:2 photograph on a 16:9
+ * canvas showed 112pt of navy as bars down the sides. And a gradient cannot be
+ * drawn at all — the API has solid fills only — so the scrim was one flat
+ * rectangle, dark enough to guarantee contrast everywhere and therefore dark
+ * enough to bury the picture. Stacked rectangles do not rescue it: their alpha
+ * accumulates and the steps read as stripes at any count worth using.
+ *
+ * Baked, all three problems disappear at once: the crop is exact, the gradient
+ * is smooth, and the preview shows the identical file the deck gets.
+ *
+ * Rehosting rather than hotlinking is a deliberate departure from Unsplash's
+ * guideline, taken because Slides copies the image into the presentation at
+ * insertion regardless — the hotlink never survives into the deck, so it buys
+ * the photographer nothing here. What does matter to them we still do: the
+ * download endpoint is pinged and the credit is printed on the slide.
+ */
+async function bakeBackdrop(
+  imageUrl: string,
+  opts: { aspect: number; gradient: boolean }
+): Promise<{ url: string } | null> {
+  try {
+    const res = await fetch(imageUrl, { signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) return null;
+    const sharp = (await import("sharp")).default;
+    const input = Buffer.from(await res.arrayBuffer());
+
+    const W = 1600;
+    const H = Math.round(W / opts.aspect);
+    // `cover` crops to fill rather than fitting inside — the whole point.
+    let pipeline = sharp(input).resize(W, H, { fit: "cover", position: "attention" });
+
+    if (opts.gradient) {
+      const peak = await gradientPeakFor(input, sharp);
+      // A real linear gradient, rasterised once and composited. Transparent at
+      // the top so the photograph keeps its colour where no text sits.
+      const overlay = Buffer.from(
+        `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+           <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+             <stop offset="0%" stop-color="#023250" stop-opacity="0.10"/>
+             <stop offset="42%" stop-color="#023250" stop-opacity="0.16"/>
+             <stop offset="72%" stop-color="#023250" stop-opacity="${(peak * 0.75).toFixed(2)}"/>
+             <stop offset="100%" stop-color="#023250" stop-opacity="${peak.toFixed(2)}"/>
+           </linearGradient></defs>
+           <rect width="${W}" height="${H}" fill="url(#g)"/>
+         </svg>`
+      );
+      pipeline = pipeline.composite([{ input: overlay, blend: "over" }]);
+    }
+
+    const out = await pipeline.jpeg({ quality: 86 }).toBuffer();
+    const blob = await put(`slides/backdrops/${Date.now()}.jpg`, out, {
+      access: "private",
+      contentType: "image/jpeg",
+      addRandomSuffix: true,
+    });
+    return { url: signedMediaUrl(blob.pathname) };
+  } catch (err: any) {
+    console.warn(`[SlideImages] backdrop bake failed: ${err?.message}`);
+    return null;
+  }
+}
+
+/** How dark the foot of the gradient must be for white text to clear 4.5:1
+ *  there. Measured on the bottom third — the only place a baked gradient is
+ *  asked to carry text. */
+async function gradientPeakFor(input: Buffer, sharp: any): Promise<number> {
+  try {
+    const meta = await sharp(input).metadata();
+    const H = meta.height || 0;
+    const band = Math.max(1, Math.floor(H * 0.4));
+    const { data, info } = await sharp(input)
+      .extract({ left: 0, top: H - band, width: meta.width || 1, height: band })
+      .resize(48, 24, { fit: "fill" })
+      .removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const lums: number[] = [];
+    for (let i = 0; i < info.width * info.height; i++) {
+      lums.push(luminance(data[i * 3], data[i * 3 + 1], data[i * 3 + 2]));
+    }
+    lums.sort((a, b) => a - b);
+    const bright = lums[Math.floor(lums.length * 0.9)] ?? 1;
+    if (bright <= MAX_BACKGROUND_L) return 0.45;
+    const alpha = (bright - MAX_BACKGROUND_L) / (bright - NAVY_L);
+    return Math.min(0.92, Math.max(0.5, Number(alpha.toFixed(2))));
+  } catch {
+    return 0.75;
+  }
+}
+
 /* ─────────────── Resolution ─────────────── */
 
 export interface ImageRequest {
@@ -152,11 +246,19 @@ export interface ImageRequest {
 
 export async function resolveImage(
   req: ImageRequest,
-  generate?: ImageGenerator
+  generate?: ImageGenerator,
+  treatment: { aspect: number; gradient: boolean } = { aspect: 16 / 9, gradient: true }
 ): Promise<ResolvedImage | null> {
-  if (req.url) {
-    return { url: req.url, source: "supplied", scrim: await scrimFor(req.url) };
-  }
+  const finish = async (
+    url: string, source: ResolvedImage["source"], credit?: string
+  ): Promise<ResolvedImage> => {
+    const baked = await bakeBackdrop(url, treatment);
+    // Falling back to the raw image keeps a picture on the slide when baking
+    // fails; it will letterbox, which is visibly wrong but better than blank.
+    return { url: baked?.url || url, source, credit, scrim: 0 };
+  };
+
+  if (req.url) return finish(req.url, "supplied");
   const query = req.query?.trim();
   if (!query) return null;
 
@@ -167,7 +269,7 @@ export async function resolveImage(
     .sort((a, b) => b.score - a.score)[0];
   if (best && best.score >= 0.5) {
     console.log(`[SlideImages] "${query}" → owned (${best.item.name})`);
-    return { url: best.item.url, source: "owned", scrim: await scrimFor(best.item.url) };
+    return finish(best.item.url, "owned");
   }
 
   // 2. Stock
@@ -175,12 +277,7 @@ export async function resolveImage(
   if (stock?.url) {
     console.log(`[SlideImages] "${query}" → stock`);
     void trackStockUse(stock.downloadLocation);
-    return {
-      url: stock.url,
-      source: "stock",
-      credit: `Photo: ${stock.credit} / Unsplash`,
-      scrim: await scrimFor(stock.url),
-    };
+    return finish(stock.url, "stock", `Photo: ${stock.credit} / Unsplash`);
   }
 
   // 3. Generated
@@ -200,7 +297,7 @@ export async function resolveImage(
       }
       if (url) {
         console.log(`[SlideImages] "${query}" → generated (no owned or stock match)`);
-        return { url, source: "generated", scrim: await scrimFor(url) };
+        return finish(url, "generated");
       }
     } catch (err: any) {
       console.warn(`[SlideImages] generation failed: ${err?.message}`);

@@ -93,7 +93,10 @@ function SlideThumb({
           };
           if (el.kind === "image") {
             // eslint-disable-next-line @next/next/no-img-element
-            return <img key={i} src={el.src} alt="" style={{ ...base, objectFit: "contain" }} />;
+            // cover, not contain: the backdrop is pre-cropped to the canvas, and
+            // contain would letterbox anything that is not — which is exactly the
+            // bars this fixed in the deck.
+            return <img key={i} src={el.src} alt="" style={{ ...base, objectFit: "cover" }} />;
           }
           if (el.kind === "rect" || el.kind === "ellipse") {
             return (

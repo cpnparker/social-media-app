@@ -535,6 +535,8 @@ function gridRequests(
 function backdropRequests(
   page: string, id: (s: string) => string, slide: SlideInput
 ): Req[] {
+  // The image arrives pre-cropped to the canvas and with its gradient already
+  // burnt in, so there is no scrim shape here any more — see lib/slides/images.
   const img = slide.resolvedImage;
   if (!img) return [];
   return [
@@ -547,31 +549,6 @@ function backdropRequests(
           size: { width: pt(CANVAS.width), height: pt(CANVAS.height) },
           transform: { scaleX: 1, scaleY: 1, translateX: 0, translateY: 0, unit: "PT" },
         },
-      },
-    },
-    // The scrim is not decoration: it is what keeps white text at 4.5:1 over a
-    // photograph nobody vetted. Its opacity was measured from the image itself.
-    {
-      createShape: {
-        objectId: id("scrim"),
-        shapeType: "RECTANGLE",
-        elementProperties: {
-          pageObjectId: page,
-          size: { width: pt(CANVAS.width), height: pt(CANVAS.height) },
-          transform: { scaleX: 1, scaleY: 1, translateX: 0, translateY: 0, unit: "PT" },
-        },
-      },
-    },
-    {
-      updateShapeProperties: {
-        objectId: id("scrim"),
-        shapeProperties: {
-          shapeBackgroundFill: {
-            solidFill: { color: { rgbColor: rgb(COLOR.navy) }, alpha: img.scrim },
-          },
-          outline: { propertyState: "NOT_RENDERED" },
-        },
-        fields: "shapeBackgroundFill.solidFill,outline.propertyState",
       },
     },
     ...textBox(id("credit"), page, img.credit, TYPE.credit, {
@@ -630,11 +607,11 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       ...textBox(id("title"), page, slide.title, TYPE.coverTitle, {
         x: GRID.coverTitleX, y: GRID.coverTitleY,
         width: GRID.coverTitleWidth, height: GRID.coverTitleHeight,
-      }, { align: "CENTER" }),
+      }),
       ...textBox(id("sub"), page, slide.subtitle, TYPE.coverKicker, {
         x: GRID.coverKickerX, y: GRID.coverKickerY,
         width: GRID.coverKickerWidth, height: GRID.coverKickerHeight,
-      }, { align: "CENTER" }),
+      }),
     );
   } else if (layout === "closing") {
     requests.push(

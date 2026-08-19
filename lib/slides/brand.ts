@@ -68,17 +68,21 @@ export const GRID = {
   eyebrowY: 0.3 * IN,
   eyebrowHeight: 0.25 * IN,
 
-  /** Cover geometry comes from the deck's actual cover slide, NOT from its
-   *  layout placeholder. The placeholder puts the title at 0.81in, but every
-   *  real cover overrides it to sit below the centred logo — using the
-   *  placeholder value puts the title straight through the logo. */
-  coverTitleX: 1.75 * IN,
-  coverTitleWidth: 6.43 * IN,
-  coverTitleY: 2.12 * IN,
-  coverTitleHeight: 2.26 * IN,
-  coverKickerX: 1.52 * IN,
-  coverKickerWidth: 7.17 * IN,
-  coverKickerY: 5.07 * IN,
+  /** Cover text sits BOTTOM-LEFT, in the foot of the baked gradient.
+   *
+   *  The source deck centres it mid-canvas, which works over the flat washes
+   *  their designer chose by hand. Over a photograph it does not: the middle is
+   *  the brightest, most detailed part of most images, so centring forces a
+   *  scrim heavy enough to destroy the picture. Anchoring the text where the
+   *  gradient is darkest lets the photograph stay vivid and the words stay
+   *  readable, which is the trade the whole layout exists to make. */
+  coverTitleX: 0.62 * IN,
+  coverTitleWidth: 7.4 * IN,
+  coverTitleY: 3.34 * IN,
+  coverTitleHeight: 1.35 * IN,
+  coverKickerX: 0.64 * IN,
+  coverKickerWidth: 7.4 * IN,
+  coverKickerY: 4.78 * IN,
   coverKickerHeight: 0.3 * IN,
 
   /** Closing slide sits higher than the cover, to clear the logo at 4.47in. */
@@ -114,8 +118,8 @@ export interface TypeStyle {
 }
 
 export const TYPE: Record<string, TypeStyle> = {
-  coverTitle:    { font: "Playfair Display", size: 30, color: COLOR.greyLight },
-  coverKicker:   { font: "Roboto", size: 12, color: COLOR.greyLight, caps: true },
+  coverTitle:    { font: "Playfair Display", size: 33, color: COLOR.white },
+  coverKicker:   { font: "Roboto", size: 11, bold: true, color: COLOR.lime, caps: true },
   sectionTitle:  { font: "Playfair Display", size: 26, color: COLOR.white },
   slideTitle:    { font: "Playfair Display", size: 20, color: COLOR.navy },
   slideTitleDark:{ font: "Playfair Display", size: 20, color: COLOR.white },
@@ -260,10 +264,10 @@ export const IMAGE = {
   splitTextX: 5.28 * IN,
   splitTextWidth: 4.38 * IN,
   /** Text on a photo starts below the logo band and ends above the credit. */
-  overlayTitleY: 3.05 * IN,
-  overlayTitleHeight: 1.25 * IN,
-  overlayBodyY: 4.35 * IN,
-  overlayBodyHeight: 0.55 * IN,
+  overlayTitleY: 3.42 * IN,
+  overlayTitleHeight: 1.2 * IN,
+  overlayBodyY: 4.66 * IN,
+  overlayBodyHeight: 0.5 * IN,
   creditY: 5.3 * IN,
   creditHeight: 0.18 * IN,
   /** Grid of examples — the format galleries. */
