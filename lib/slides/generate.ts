@@ -16,7 +16,7 @@
 
 import {
   COLOR, GRID, CANVAS, TYPE, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
-  SERIES_LIGHT, SERIES_DARK, CARDS, LAYOUT_STYLE, LOGO_PLACEMENT,
+  SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, LAYOUT_STYLE, LOGO_PLACEMENT,
   rgb, logoUrl, type SlideLayout, type TypeStyle,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
@@ -84,6 +84,12 @@ export interface SlideInput {
     resolvedImage?: { url: string };
     resolvedIcon?: string;
   }[];
+  /** A pull quote and who said it. */
+  quote?: { text: string; name?: string; role?: string; image?: { url?: string; query?: string }; resolvedImage?: { url: string } };
+  /** Stages, left to right. Three to five reads best. */
+  stages?: { name: string; caption?: string }[];
+  /** Client marks for logo-wall. Fitted whole, never cropped. */
+  logos?: { url?: string; query?: string; name?: string; resolvedUrl?: string }[];
   /** Big numbers for the stat layout — three at most, or none of them lands. */
   stats?: { value: string; label: string; detail?: string }[];
   /** Data for bar-chart and line-chart. */
@@ -306,7 +312,7 @@ function logoRequests(
 function filledShape(
   objectId: string,
   pageObjectId: string,
-  shapeType: "RECTANGLE" | "ROUND_RECTANGLE" | "ELLIPSE",
+  shapeType: "RECTANGLE" | "ROUND_RECTANGLE" | "ELLIPSE" | "RIGHT_ARROW",
   color: string,
   box: { x: number; y: number; width: number; height: number }
 ): Req[] {
@@ -1005,6 +1011,128 @@ function cardsRequests(
   return out;
 }
 
+/** A pull quote, set large on navy with the speaker beneath.
+ *
+ *  Their deck names people — a Chief Sustainability Officer, a former CEO — and
+ *  had nowhere to put them; a testimonial buried in body copy is not a
+ *  testimonial. The change of ground is what makes this land as a moment
+ *  rather than as another content slide. */
+function quoteRequests(
+  page: string, id: (s: string) => string, q: NonNullable<SlideInput["quote"]>
+): Req[] {
+  const out: Req[] = [
+    ...textBox(id("qm"), page, "“", TYPE.quoteMark, {
+      x: QUOTE.markX, y: QUOTE.markY, width: QUOTE.markWidth, height: QUOTE.markHeight,
+    }),
+    ...textBox(id("qt"), page, q.text, TYPE.quoteText, {
+      x: QUOTE.textX, y: QUOTE.textY,
+      width: q.resolvedImage ? QUOTE.textWidth - 2.1 * 72 : QUOTE.textWidth,
+      height: QUOTE.textHeight,
+    }),
+    ...textBox(id("qn"), page, q.name, TYPE.quoteName, {
+      x: QUOTE.textX, y: QUOTE.attributionY, width: QUOTE.textWidth, height: QUOTE.attributionHeight,
+    }),
+    ...textBox(id("qr"), page, q.role, TYPE.quoteRole, {
+      x: QUOTE.textX, y: QUOTE.roleY, width: QUOTE.textWidth, height: QUOTE.roleHeight,
+    }),
+  ];
+  if (q.resolvedImage?.url) {
+    out.push({
+      createImage: {
+        objectId: id("qp"), url: q.resolvedImage.url,
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(QUOTE.portrait.size), height: pt(QUOTE.portrait.size) },
+          transform: { scaleX: 1, scaleY: 1, translateX: QUOTE.portrait.x, translateY: QUOTE.portrait.y, unit: "PT" },
+        },
+      },
+    });
+  }
+  return out;
+}
+
+/** Stages carried left to right by a rule and a chevron.
+ *
+ *  Drawn rather than bulleted for the same reason a timeline is: a process has
+ *  direction, and a list does not show it. Reuses the connector primitives the
+ *  timelines already prove. */
+function processRequests(
+  page: string, id: (s: string) => string, stages: NonNullable<SlideInput["stages"]>
+): Req[] {
+  const shown = stages.slice(0, 5);
+  if (!shown.length) return [];
+  const gaps = shown.length - 1;
+  const boxW = (GRID.contentWidth - gaps * PROCESS.connectorWidth) / shown.length;
+  const out: Req[] = [];
+
+  shown.forEach((stage, i) => {
+    const x = GRID.margin + i * (boxW + PROCESS.connectorWidth);
+    out.push(
+      ...filledShape(id(`pb${i}`), page, "ROUND_RECTANGLE", COLOR.blue, {
+        x, y: PROCESS.y, width: boxW, height: PROCESS.boxHeight,
+      }),
+      ...textBox(id(`pn${i}`), page, stage.name, TYPE.stageName, {
+        x: x + 8, y: PROCESS.y + PROCESS.boxHeight / 2 - 9, width: boxW - 16, height: 20,
+      }, { align: "CENTER" }),
+      ...textBox(id(`pc${i}`), page, stage.caption, TYPE.stageCaption, {
+        x, y: PROCESS.captionY, width: boxW, height: PROCESS.captionHeight,
+      }, { align: "CENTER" }),
+    );
+
+    if (i < gaps) {
+      const cx = x + boxW;
+      const midY = PROCESS.y + PROCESS.boxHeight / 2;
+      out.push(
+        ...filledShape(id(`pr${i}`), page, "RECTANGLE", COLOR.periwinkle, {
+          x: cx + 3, y: midY - PROCESS.connectorThickness / 2,
+          width: PROCESS.connectorWidth - 6 - PROCESS.chevron, height: PROCESS.connectorThickness,
+        }),
+        // RIGHT_ARROW, not TRIANGLE. Slides draws a triangle pointing UP, so
+        // the first render had five arrowheads aimed at the ceiling on a
+        // left-to-right process — correct geometry, wrong direction.
+        ...filledShape(id(`pa${i}`), page, "RIGHT_ARROW", COLOR.periwinkle, {
+          x: cx + PROCESS.connectorWidth - 3 - PROCESS.chevron,
+          y: midY - PROCESS.chevron / 2,
+          width: PROCESS.chevron, height: PROCESS.chevron,
+        }),
+      );
+    }
+  });
+  return out;
+}
+
+/** Client marks on a clean ground, fitted whole. */
+function logoWallRequests(
+  page: string, id: (s: string) => string,
+  logos: NonNullable<SlideInput["logos"]>
+): Req[] {
+  const shown = logos.filter((l) => l.resolvedUrl).slice(0, 12);
+  if (!shown.length) return [];
+  const cols = Math.min(shown.length, shown.length <= 4 ? shown.length : shown.length <= 8 ? 4 : 6);
+  const rows = Math.ceil(shown.length / cols);
+  const cellW = (GRID.contentWidth - LOGO_WALL.gap * (cols - 1)) / cols;
+  const cellH = (LOGO_WALL.height - LOGO_WALL.gap * (rows - 1)) / rows;
+
+  return shown.flatMap((logo, i) => {
+    const c = i % cols, r = Math.floor(i / cols);
+    return [{
+      createImage: {
+        objectId: id(`lw${i}`), url: logo.resolvedUrl!,
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(cellW - LOGO_WALL.inset * 2), height: pt(cellH - LOGO_WALL.inset * 2) },
+          transform: {
+            scaleX: 1, scaleY: 1,
+            translateX: GRID.margin + c * (cellW + LOGO_WALL.gap) + LOGO_WALL.inset,
+            translateY: LOGO_WALL.y + r * (cellH + LOGO_WALL.gap) + LOGO_WALL.inset,
+            unit: "PT",
+          },
+        },
+      },
+    }];
+  });
+}
+
 /** One slide → its full request list. Exported so the layout geometry can be
  *  exercised without a Google round-trip; nothing else should call it. */
 export function buildSlideRequests(slide: SlideInput, index: number, run = "r0"): Req[] {
@@ -1099,6 +1227,27 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: 20,
       }),
       ...timelineRequests(page, id, slide.milestones || []),
+    );
+  } else if (layout === "quote") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...(slide.quote ? quoteRequests(page, id, slide.quote) : []),
+    );
+  } else if (layout === "process" || layout === "logo-wall") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+      }),
+      ...(layout === "process"
+        ? processRequests(page, id, slide.stages || [])
+        : logoWallRequests(page, id, slide.logos || [])),
     );
   } else if (layout === "cards") {
     requests.push(
@@ -1383,6 +1532,19 @@ export async function resolveDeckImages(
           },
         });
         if (r) slide.resolvedImage = { url: r.url, scrim: r.scrim, credit: r.credit, logo: r.logo };
+      }
+      if (slide.quote?.image && !slide.quote.resolvedImage) {
+        const r = await resolveImage(slide.quote.image, generate, { aspect: 1, gradient: false });
+        if (r) slide.quote.resolvedImage = { url: r.url };
+      }
+      if (slide.logos?.length) {
+        await Promise.all(slide.logos.map(async (l) => {
+          if (l.resolvedUrl) return;
+          // contain, never cover: a cropped client mark is a misused trademark.
+          const r = await resolveImage({ url: l.url, query: l.query }, generate,
+            { aspect: 2, gradient: false, fit: "contain" });
+          if (r) l.resolvedUrl = r.url;
+        }));
       }
       if (slide.cards?.length) {
         const cardAspect = cardGeometry(slide.cards.length).aspect;

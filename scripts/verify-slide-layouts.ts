@@ -79,6 +79,17 @@ const DECK: SlideInput[] = [
       { marker: "02", title: "Questionnaire", body: "Short.", resolvedImage: { url: "p.jpg" } },
       { marker: "03", title: "Briefing", body: "Short.", resolvedImage: { url: "p.jpg" } },
       { marker: "04", title: "Calibration", body: "Short.", resolvedImage: { url: "p.jpg" } } ] },
+  { layout: "quote", eyebrow: "Client",
+    quote: { text: "Daily, high-quality content changed how the market talks about us, and it did so faster than any campaign we have run.",
+             name: "Nollaig Forrest", role: "Chief Sustainability Officer, Holcim" } },
+  { layout: "process", eyebrow: "How it works", title: LONG, stages: [
+      { name: "Ideation", caption: "What stories to tell and how to tell them." },
+      { name: "Commissioning", caption: "Formats, briefs and talent." },
+      { name: "Production", caption: "Workflow, oversight and approvals." },
+      { name: "Distribution", caption: "Planning, publishing and campaigns." },
+      { name: "Analytics", caption: "Insights fed back into the process." } ] },
+  { layout: "logo-wall", eyebrow: "Clients", title: LONG,
+    logos: Array.from({ length: 8 }, (_, i) => ({ name: `Client ${i + 1}`, resolvedUrl: "logo.png" })) },
   { layout: "closing", title: "Thank You", subtitle: "www.thecontentengine.com", resolvedImage: PHOTO_DARK },
 ];
 

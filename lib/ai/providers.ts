@@ -1216,9 +1216,9 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             properties: {
               layout: {
                 type: "string",
-                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "cards", "closing"],
+                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "cards", "quote", "process", "logo-wall", "closing"],
                 description:
-                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. cards = two to six repeated blocks across the slide — pillars, product types, numbered steps, a portfolio of formats. Reach for it whenever a slide would otherwise be a list of things that are the same KIND of thing; supply `cards`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
+                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. cards = two to six repeated blocks across the slide — pillars, product types, numbered steps, a portfolio of formats. Reach for it whenever a slide would otherwise be a list of things that are the same KIND of thing; supply `cards`. quote = a pull quote on navy with the speaker named beneath — use it for a client testimonial or an executive line, never for your own copy; supply `quote`. process = stages carried left to right by arrows, for a way of working; supply `stages`. logo-wall = client marks on a clean ground, the credibility slide; supply `logos`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
               },
               title: { type: "string", description: "Slide heading." },
               subtitle: {
@@ -1252,6 +1252,40 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                     query: { type: "string", description: "What this thumbnail should show." },
                     url: { type: "string", description: "An exact image URL." },
                     caption: { type: "string", description: "Short label under the thumbnail." },
+                  },
+                },
+              },
+              quote: {
+                type: "object",
+                description: "A pull quote for the quote layout. Attribute it to a real named person — an unattributed quote reads as invented.",
+                properties: {
+                  text: { type: "string", description: "The quote itself, without surrounding quotation marks — the layout draws those." },
+                  name: { type: "string", description: "Who said it." },
+                  role: { type: "string", description: "Their job title and company." },
+                  image: { type: "object", description: "An optional portrait.", properties: { query: { type: "string" }, url: { type: "string" } } },
+                },
+                required: ["text"],
+              },
+              stages: {
+                type: "array",
+                description: "Stages for the process layout, in order — three to five reads best. Ignored by other layouts.",
+                items: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string", description: "The stage, in one or two words." },
+                    caption: { type: "string", description: "One short line on what happens there." },
+                  },
+                  required: ["name"],
+                },
+              },
+              logos: {
+                type: "array",
+                description: "Client marks for logo-wall, up to twelve. Give a `url` for each — a logo must be the real mark, so do not describe one and expect it to be found or generated. Ignored by other layouts.",
+                items: {
+                  type: "object",
+                  properties: {
+                    url: { type: "string", description: "Direct URL to the logo image." },
+                    name: { type: "string", description: "The client's name, for reference." },
                   },
                 },
               },

@@ -170,7 +170,7 @@ export interface LogoRegion { x: number; y: number; w: number; h: number }
 
 async function bakeBackdrop(
   imageUrl: string,
-  opts: { aspect: number; gradient: boolean; logoRegion?: LogoRegion }
+  opts: { aspect: number; gradient: boolean; logoRegion?: LogoRegion; fit?: "cover" | "contain" }
 ): Promise<{ url: string; logo: "white" | "navy" } | null> {
   try {
     const res = await fetch(imageUrl, { signal: AbortSignal.timeout(15_000) });
@@ -180,8 +180,13 @@ async function bakeBackdrop(
 
     const W = 1600;
     const H = Math.round(W / opts.aspect);
-    // `cover` crops to fill rather than fitting inside — the whole point.
-    let pipeline = sharp(input).resize(W, H, { fit: "cover", position: "attention" });
+    // `cover` crops to fill, which is right for a photograph and WRONG for a
+    // logo: cropping a client's mark is a misuse of their trademark, not a
+    // design choice. `contain` fits it whole on white instead.
+    const fit = opts.fit ?? "cover";
+    let pipeline = fit === "contain"
+      ? sharp(input).resize(W, H, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
+      : sharp(input).resize(W, H, { fit: "cover", position: "attention" });
 
     let logo: "white" | "navy" = "white";
     if (opts.gradient) {
@@ -329,7 +334,7 @@ export interface ImageRequest {
 export async function resolveImage(
   req: ImageRequest,
   generate?: ImageGenerator,
-  treatment: { aspect: number; gradient: boolean; logoRegion?: LogoRegion } =
+  treatment: { aspect: number; gradient: boolean; logoRegion?: LogoRegion; fit?: "cover" | "contain" } =
     { aspect: 16 / 9, gradient: true }
 ): Promise<ResolvedImage | null> {
   const finish = async (

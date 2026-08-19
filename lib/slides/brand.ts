@@ -160,6 +160,12 @@ export const TYPE: Record<string, TypeStyle> = {
   cardMarker:    { font: "Roboto", size: 9, bold: true, color: COLOR.white, caps: true },
   cardTitle:     { font: "Playfair Display", size: 13, color: COLOR.navy },
   cardBody:      { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
+  quoteMark:     { font: "Playfair Display", size: 54, color: COLOR.blue },
+  quoteText:     { font: "Playfair Display", size: 22, color: COLOR.white },
+  quoteName:     { font: "Roboto", size: 10, bold: true, color: COLOR.lime, caps: true },
+  quoteRole:     { font: "Roboto", size: 9, weight: 300, color: COLOR.greyLight },
+  stageName:     { font: "Roboto", size: 9, bold: true, color: COLOR.white, caps: true },
+  stageCaption:  { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
 };
 
 /* ─────────────── Logo ─────────────── */
@@ -217,10 +223,13 @@ export type SlideLayout =
   | "bar-chart"
   | "stacked-bar"
   | "cards"
+  | "quote"
+  | "process"
+  | "logo-wall"
   | "closing";
 
 export const LAYOUTS: SlideLayout[] = [
-  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "cards", "closing",
+  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "cards", "quote", "process", "logo-wall", "closing",
 ];
 
 /** Horizontal timeline: an axis rule with evenly spaced milestone markers.
@@ -298,6 +307,49 @@ export const IMAGE = {
   gridHeight: 3.2 * IN,
   gridGap: 0.12 * IN,
   gridCaptionHeight: 0.22 * IN,
+} as const;
+
+/** A pull quote. Large, set in the display face, with the speaker beneath. */
+export const QUOTE = {
+  // The mark sits ABOVE the quote, on the same left edge, rather than beside
+  // it. Beside it, a 72pt glyph's box ran into the text box — caught by the
+  // layout check on the first run, which is what that check is for.
+  markX: 1.35 * IN,
+  markY: 1.28 * IN,
+  markWidth: 1.0 * IN,
+  markHeight: 0.6 * IN,
+  textX: 1.35 * IN,
+  textWidth: 7.6 * IN,
+  textY: 1.98 * IN,
+  textHeight: 1.85 * IN,
+  attributionY: 4.0 * IN,
+  attributionHeight: 0.26 * IN,
+  roleY: 4.28 * IN,
+  roleHeight: 0.26 * IN,
+  /** A portrait, when there is one, sits right of the quote. */
+  portrait: { x: 7.9 * IN, y: 1.75 * IN, size: 1.6 * IN },
+} as const;
+
+/** Stages joined left to right. */
+export const PROCESS = {
+  y: 2.25 * IN,
+  boxHeight: 0.78 * IN,
+  /** The rule and chevron that carry the eye from one stage to the next. */
+  connectorWidth: 0.34 * IN,
+  connectorThickness: 2,
+  chevron: 9,
+  captionY: 3.2 * IN,
+  captionHeight: 0.9 * IN,
+} as const;
+
+/** Client marks on a clean ground. Never cropped — a cropped logo is a
+ *  misused trademark, not a design choice. */
+export const LOGO_WALL = {
+  y: 1.9 * IN,
+  height: 3.0 * IN,
+  gap: 0.3 * IN,
+  /** Each mark is fitted inside its cell with room around it. */
+  inset: 0.12 * IN,
 } as const;
 
 /** Repeated blocks across the content band — the deck's most-used device.
@@ -385,5 +437,10 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   "bar-chart":   { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "stacked-bar": { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   cards:         { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  // A quote sits on navy: it is a moment of emphasis, and the change of ground
+  // is what makes it land as one rather than as another content slide.
+  quote:         { background: COLOR.navy,     logo: "white", logoPlacement: "content", onDark: true },
+  process:       { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  "logo-wall":   { background: COLOR.white,    logo: "navy",  logoPlacement: "content", onDark: false },
   closing:      { background: null,           logo: "white", logoPlacement: "closing", onDark: true },
 };
