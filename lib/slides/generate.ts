@@ -1732,6 +1732,15 @@ export function textBandsFor(slide: SlideInput, index: number): TextBand[] {
     const bottom = Math.max(0, Math.min(1, (y + h) / CANVAS.height));
     if (bottom > top) raw.push({ top, bottom });
   }
+  // The photo credit is added by hand, because it is the one box that cannot be
+  // derived: it exists only once the image has been resolved, and this runs to
+  // decide how to bake that image. White 6pt type on an unmeasured foot is
+  // exactly the case that leaves a photographer's name invisible.
+  raw.push({
+    top: IMAGE.creditY / CANVAS.height,
+    bottom: (IMAGE.creditY + IMAGE.creditHeight) / CANVAS.height,
+  });
+
   // Merged, because eight overlapping boxes is eight measurements of nearly the
   // same pixels.
   raw.sort((a, b) => a.top - b.top);
