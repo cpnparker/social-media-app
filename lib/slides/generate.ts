@@ -213,9 +213,13 @@ function logoRequests(
   const style = LAYOUT_STYLE[layout];
   if (!style.logo) return [];
   const place = LOGO_PLACEMENT[style.logoPlacement];
-  // On a photograph the picture decides, not the layout: a white lockup on a
-  // pale sky measured 1.23:1, which is invisible.
-  const variant = slide?.resolvedImage?.logo ?? style.logo;
+  // The picture only gets a say where the logo actually SITS on it — the
+  // full-bleed layouts. On image-split the photograph fills the left half while
+  // the lockup sits top-right over off-white, so letting a dark photo ask for
+  // the white mark put a white logo on a near-white ground: invisible, and
+  // introduced by the fix for the opposite problem.
+  const overPhoto = style.background === null;
+  const variant = (overPhoto && slide?.resolvedImage?.logo) || style.logo;
   return [
     {
       createImage: {
