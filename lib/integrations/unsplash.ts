@@ -41,18 +41,20 @@ function headers() {
   };
 }
 
-/** Terms that push results away from portraits and towards the environmental,
- *  architectural and abstract imagery that is safe in a client deck. */
-const SAFER_SUBJECTS = "architecture OR landscape OR texture OR abstract OR workspace";
-
 export async function searchStockPhoto(
   query: string,
   orientation: "landscape" | "portrait" | "squarish" = "landscape"
 ): Promise<StockPhoto | null> {
   if (!unsplashConfigured()) return null;
   try {
+    // The query goes through UNCHANGED. Unsplash search takes plain terms and
+    // has no boolean operators, so an appended "architecture OR landscape OR
+    // texture" is not a filter — it is five more search words, and they drag
+    // every result towards offices whatever the slide actually asked for.
+    // Steering away from recognisable people belongs in the tool schema and
+    // system prompt, where it already is, not smuggled into the query string.
     const params = new URLSearchParams({
-      query: `${query} ${SAFER_SUBJECTS}`,
+      query,
       orientation,
       per_page: "10",
       content_filter: "high",
@@ -73,6 +75,7 @@ export async function searchStockPhoto(
     const hit = (json?.results || [])[0];
     if (!hit) return null;
 
+    console.log(`[Unsplash] "${query}" → ${hit.user?.name || "unknown"} (${json.total ?? "?"} results)`);
     return {
       url: hit.urls?.regular,
       downloadLocation: hit.links?.download_location,

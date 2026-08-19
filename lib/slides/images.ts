@@ -141,12 +141,14 @@ export async function resolveImage(
     .map((item) => ({ item, score: scoreMatch(item.name, query) }))
     .sort((a, b) => b.score - a.score)[0];
   if (best && best.score >= 0.5) {
+    console.log(`[SlideImages] "${query}" → owned (${best.item.name})`);
     return { url: best.item.url, source: "owned", scrim: await scrimFor(best.item.url) };
   }
 
   // 2. Stock
   const stock = await searchStockPhoto(query);
   if (stock?.url) {
+    console.log(`[SlideImages] "${query}" → stock`);
     void trackStockUse(stock.downloadLocation);
     return {
       url: stock.url,
@@ -163,7 +165,10 @@ export async function resolveImage(
         `${query}. Editorial photography for a corporate presentation slide. ` +
         `Wide composition with calm, uncluttered space for text. No words, letters or logos in the image.`
       );
-      if (url) return { url, source: "generated", scrim: await scrimFor(url) };
+      if (url) {
+        console.log(`[SlideImages] "${query}" → generated (no owned or stock match)`);
+        return { url, source: "generated", scrim: await scrimFor(url) };
+      }
     } catch (err: any) {
       console.warn(`[SlideImages] generation failed: ${err?.message}`);
     }
