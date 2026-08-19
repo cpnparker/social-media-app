@@ -153,6 +153,7 @@ export default function ChatPanel({
   const [slidesDraft, setSlidesDraft] = useState<SlideDraft | null>(null);
   const [slidesDraftMessageId, setSlidesDraftMessageId] = useState<string | null>(null);
   const [slidesZoom, setSlidesZoom] = useState<number | null>(null);
+  const previewRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [publishingSlides, setPublishingSlides] = useState(false);
   const [slidesPreview, setSlidesPreview] = useState<
     { url: string; title: string; slideCount: number; updated: boolean; thumbnails: string[] } | null
@@ -333,6 +334,30 @@ export default function ChatPanel({
    */
   const applyDraftEdit = useCallback(async (next: SlideDraft) => {
     setSlidesDraft(next);
+
+    // Re-derive the drawing from the spec. The local patch updates words
+    // instantly, which keeps typing responsive, but it cannot know that a bar's
+    // LENGTH is its value or that a marker's position is its date — editing a
+    // number changed the label and left the bar the old size. Debounced so a
+    // burst of keystrokes costs one call.
+    if (previewRefreshRef.current) clearTimeout(previewRefreshRef.current);
+    previewRefreshRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/slides/preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ slides: next.slides }),
+        });
+        if (!res.ok) return;
+        const { preview } = await res.json();
+        // Only if the user has not moved on to a different draft in the
+        // meantime, or a stale response would overwrite newer edits.
+        setSlidesDraft((cur) => (cur && cur.slides === next.slides ? { ...cur, preview } : cur));
+      } catch {
+        /* the optimistic patch stands; words are right even if a bar is not */
+      }
+    }, 350);
+
     if (!slidesDraftMessageId) return;
     try {
       const res = await fetch("/api/slides/draft", {
