@@ -1216,9 +1216,9 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             properties: {
               layout: {
                 type: "string",
-                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "closing"],
+                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "cards", "closing"],
                 description:
-                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
+                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. cards = two to six repeated blocks across the slide — pillars, product types, numbered steps, a portfolio of formats. Reach for it whenever a slide would otherwise be a list of things that are the same KIND of thing; supply `cards`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
               },
               title: { type: "string", description: "Slide heading." },
               subtitle: {
@@ -1231,7 +1231,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
               },
               body: {
                 type: "string",
-                description: "Main text. Put each bullet on its own line; a single line stays as a paragraph.",
+                description: "Main text. Put each bullet on its own line; a single line stays as a paragraph. Markdown links work here and in card bodies and captions — [the Holcim case study](https://…) — and are the ONLY way to make a portfolio or examples slide usable, so include them whenever you are pointing at real work.",
               },
               bodyRight: { type: "string", description: "Right-hand column text. two-column layout only." },
               image: {
@@ -1252,6 +1252,24 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                     query: { type: "string", description: "What this thumbnail should show." },
                     url: { type: "string", description: "An exact image URL." },
                     caption: { type: "string", description: "Short label under the thumbnail." },
+                  },
+                },
+              },
+              cards: {
+                type: "array",
+                description:
+                  "Two to six repeated blocks for the cards layout. Every part is optional, and which parts you give decides how it looks: markers alone read as numbered steps, thumbnails read as a product grid, a marker plus body reads as labelled pillars. Ignored by other layouts.",
+                items: {
+                  type: "object",
+                  properties: {
+                    marker: { type: "string", description: "A short label or a number — 'STRATEGY', '01'. Drawn as a brand-blue chip. Keep it to one or two words." },
+                    title: { type: "string", description: "The card's heading." },
+                    body: { type: "string", description: "A sentence or two. Keep cards balanced — wildly uneven bodies read as a mistake." },
+                    image: {
+                      type: "object",
+                      description: "A thumbnail at the top of the card, cropped square.",
+                      properties: { query: { type: "string" }, url: { type: "string" } },
+                    },
                   },
                 },
               },

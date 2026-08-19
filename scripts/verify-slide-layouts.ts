@@ -70,6 +70,15 @@ const DECK: SlideInput[] = [
       { name: "Articles", points: [{ label: "Holcim", value: 38 }, { label: "Siemens", value: 22 }] },
       { name: "Video", points: [{ label: "Holcim", value: 26 }, { label: "Siemens", value: 18 }] },
       { name: "Infographics", points: [{ label: "Holcim", value: 19 }, { label: "Siemens", value: 11 }] } ] } },
+  { layout: "cards", eyebrow: "What we do", title: LONG, cards: [
+      { marker: "STRATEGY", title: "Audience first", body: "Insight, competitive analysis and data shape the plan." },
+      { marker: "STORYTELLING", title: "Made by editors", body: "A repeatable editorial process built to journalistic standards." },
+      { marker: "AI VISIBILITY", title: "Measured", body: "How every major model describes you today, and how to improve it." } ] },
+  { layout: "cards", title: "Numbered steps, with pictures", cards: [
+      { marker: "01", title: "Setup", body: "A body with a [link](https://example.com/a) in it.", resolvedImage: { url: "p.jpg" } },
+      { marker: "02", title: "Questionnaire", body: "Short.", resolvedImage: { url: "p.jpg" } },
+      { marker: "03", title: "Briefing", body: "Short.", resolvedImage: { url: "p.jpg" } },
+      { marker: "04", title: "Calibration", body: "Short.", resolvedImage: { url: "p.jpg" } } ] },
   { layout: "closing", title: "Thank You", subtitle: "www.thecontentengine.com", resolvedImage: PHOTO_DARK },
 ];
 

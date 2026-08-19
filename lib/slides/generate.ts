@@ -16,7 +16,7 @@
 
 import {
   COLOR, GRID, CANVAS, TYPE, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
-  SERIES_LIGHT, SERIES_DARK, LAYOUT_STYLE, LOGO_PLACEMENT,
+  SERIES_LIGHT, SERIES_DARK, CARDS, LAYOUT_STYLE, LOGO_PLACEMENT,
   rgb, logoUrl, type SlideLayout, type TypeStyle,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
@@ -68,6 +68,16 @@ export interface SlideInput {
   /** Thumbnails for the image-grid layout. */
   images?: { url?: string; query?: string; caption?: string }[];
   resolvedImages?: { url: string; caption?: string }[];
+  /** Repeated blocks. Every part is optional: a marker alone gives numbered
+   *  items, a thumbnail gives a product grid, neither gives labelled columns. */
+  cards?: {
+    /** "01", or a short label like "STRATEGY". Drawn as a brand chip. */
+    marker?: string;
+    title?: string;
+    body?: string;
+    image?: { url?: string; query?: string };
+    resolvedImage?: { url: string };
+  }[];
   /** Big numbers for the stat layout — three at most, or none of them lands. */
   stats?: { value: string; label: string; detail?: string }[];
   /** Data for bar-chart and line-chart. */
@@ -143,6 +153,33 @@ interface BoxOptions {
 /** A positioned text box: create, fill, style. Returns [] for empty text so a
  *  missing optional field doesn't produce an empty box (or an insertText error,
  *  which is what an empty string actually causes). */
+/** Markdown links in a plain string: `[label](https://…)`.
+ *
+ *  A syntax rather than a structured field because body copy is one string that
+ *  the model already writes markdown into everywhere else in this product, and
+ *  because links belong to phrases inside a sentence — a parallel array of
+ *  urls could not say WHICH words are the link.
+ *
+ *  Returns the text with the markup removed, plus where each link now falls.
+ *  Offsets are computed against the stripped string because that is what
+ *  Slides will hold. */
+function extractLinks(raw: string): { text: string; links: { start: number; end: number; url: string }[] } {
+  const links: { start: number; end: number; url: string }[] = [];
+  let text = "";
+  let rest = raw;
+  const re = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/;
+  for (let guard = 0; guard < 200; guard++) {
+    const m = re.exec(rest);
+    if (!m) break;
+    text += rest.slice(0, m.index);
+    const start = text.length;
+    text += m[1];
+    links.push({ start, end: text.length, url: m[2] });
+    rest = rest.slice(m.index + m[0].length);
+  }
+  return { text: text + rest, links };
+}
+
 function textBox(
   objectId: string,
   pageObjectId: string,
@@ -151,7 +188,9 @@ function textBox(
   box: { x: number; y: number; width: number; height: number },
   options: BoxOptions = {}
 ): Req[] {
-  const content = (text ?? "").trim();
+  const source = (text ?? "").trim();
+  if (!source) return [];
+  const { text: content, links } = extractLinks(source);
   if (!content) return [];
   const rendered = style.caps ? content.toUpperCase() : content;
 
@@ -182,6 +221,26 @@ function textBox(
       },
     },
   ];
+
+  // Links LAST, and carrying the brand colour with them. Setting a link makes
+  // Slides apply its theme hyperlink colour and an underline, so a link applied
+  // after the run style silently repaints that phrase blue — every linked
+  // portfolio caption would stop looking like the deck around it.
+  for (const [li, link] of links.map((l, i) => [i, l] as const)) {
+    requests.push({
+      updateTextStyle: {
+        objectId,
+        textRange: { type: "FIXED_RANGE", startIndex: link.start, endIndex: link.end },
+        style: {
+          link: { url: link.url },
+          foregroundColor: { opaqueColor: { rgbColor: rgb(style.color) } },
+          underline: true,
+        },
+        fields: "link,foregroundColor,underline",
+      },
+    });
+    void li;
+  }
 
   if (options.vCenter) {
     requests.push({
@@ -796,6 +855,116 @@ function stackedBarRequests(
   return out;
 }
 
+/** Card geometry, computed in ONE place — the thumbnail's box decides the crop
+ *  at resolution time and the placement at draw time.
+ *
+ *  The thumbnail is a fraction of the card's HEIGHT rather than a square of its
+ *  width. Square-by-width overflowed: with four cards the picture ate so much
+ *  of the card that the body was pushed out of the bottom of its own panel. */
+export function cardGeometry(count: number) {
+  const cols = Math.max(1, Math.min(6, count));
+  const cellW = (GRID.contentWidth - CARDS.gap * (cols - 1)) / cols;
+  const innerW = cellW - CARDS.padding * 2;
+  const thumbH = CARDS.height * 0.42;
+  // Bound how wide a thumbnail may get relative to its height, and centre it
+  // when the card is wider than that. Spanning the full card put a 3.4:1 strip
+  // on a two-card slide — the same swing that made the image grid pick bad
+  // crops before its arrangement was chosen by cell shape.
+  const thumbW = Math.min(innerW, thumbH * 2.2);
+  return { cols, cellW, innerW, thumbW, thumbH, aspect: thumbW / thumbH };
+}
+
+/** Repeated blocks across the band.
+ *
+ *  Deliberately ONE function rather than the three layouts the source deck
+ *  appears to use. Its slide 4 is a label chip over body text with no card
+ *  behind it, its slide 6 is a white card holding a thumbnail and a caption,
+ *  and its slide 12 is a number beside a description. Those are not three
+ *  arrangements — they are the same arrangement with different parts present,
+ *  and building them separately would have produced three sets of geometry to
+ *  keep in step.
+ *
+ *  The card panel is only drawn when there is something to hold: a thumbnail,
+ *  or a body long enough to read as a block. A chip and a heading floating on
+ *  the slide ground is what their pillars slide does, and boxing it would make
+ *  it look heavier than they draw it.
+ */
+function cardsRequests(
+  page: string, id: (s: string) => string,
+  cards: NonNullable<SlideInput["cards"]>
+): Req[] {
+  const shown = cards.slice(0, 6);
+  if (!shown.length) return [];
+  const { cellW, thumbW, thumbH } = cardGeometry(shown.length);
+  // A panel only where there is a picture to hold. Boxing a chip and two lines
+  // of text produced a card that was four-fifths empty — their own pillars
+  // slide sets that type straight on the slide ground, and it reads lighter.
+  const panelled = shown.some((c) => c.resolvedImage?.url);
+
+  const out: Req[] = [];
+  shown.forEach((card, i) => {
+    const x = GRID.margin + i * (cellW + CARDS.gap);
+    let y = CARDS.y;
+
+    if (panelled) {
+      out.push(...filledShape(id(`cp${i}`), page, "RECTANGLE", COLOR.white, {
+        x, y, width: cellW, height: CARDS.height,
+      }));
+    }
+    const innerX = panelled ? x + CARDS.padding : x;
+    const innerW = panelled ? cellW - CARDS.padding * 2 : cellW;
+    if (panelled) y += CARDS.padding;
+
+    if (card.resolvedImage?.url) {
+      out.push({
+        createImage: {
+          objectId: id(`ci${i}`),
+          url: card.resolvedImage.url,
+          elementProperties: {
+            pageObjectId: page,
+            size: { width: pt(thumbW), height: pt(thumbH) },
+            transform: {
+              scaleX: 1, scaleY: 1,
+              translateX: innerX + (innerW - thumbW) / 2, translateY: y, unit: "PT",
+            },
+          },
+        },
+      });
+      y += thumbH + CARDS.titleGap;
+    }
+
+    if (card.marker) {
+      // A chip, not plain text: the marker is a wayfinding device and reads as
+      // one only when it carries its own ground.
+      const chipW = Math.min(innerW, Math.max(28, card.marker.length * 6.2 + 14));
+      out.push(
+        ...filledShape(id(`cm${i}`), page, "RECTANGLE", COLOR.blue, {
+          x: innerX, y, width: chipW, height: CARDS.markerHeight,
+        }),
+        ...textBox(id(`cmt${i}`), page, card.marker, TYPE.cardMarker, {
+          x: innerX + 5, y: y + 4, width: chipW - 8, height: CARDS.markerHeight,
+        }),
+      );
+      y += CARDS.markerHeight + CARDS.titleGap;
+    }
+
+    if (card.title) {
+      out.push(...textBox(id(`ct${i}`), page, card.title, TYPE.cardTitle, {
+        x: innerX, y, width: innerW, height: 0.42 * 72,
+      }));
+      y += 0.42 * 72;
+    }
+
+    if (card.body) {
+      const remaining = CARDS.y + CARDS.height - y - (panelled ? CARDS.padding : 0);
+      out.push(...textBox(id(`cb${i}`), page, card.body, TYPE.cardBody, {
+        x: innerX, y, width: innerW, height: Math.max(20, remaining),
+      }));
+    }
+  });
+  return out;
+}
+
 /** One slide → its full request list. Exported so the layout geometry can be
  *  exercised without a Google round-trip; nothing else should call it. */
 export function buildSlideRequests(slide: SlideInput, index: number, run = "r0"): Req[] {
@@ -890,6 +1059,17 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: 20,
       }),
       ...timelineRequests(page, id, slide.milestones || []),
+    );
+  } else if (layout === "cards") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+      }),
+      ...cardsRequests(page, id, slide.cards || []),
     );
   } else if (layout === "stat" || layout === "bar-chart" || layout === "stacked-bar") {
     requests.push(
@@ -1155,6 +1335,14 @@ export async function resolveDeckImages(
           gradient: !split,
         });
         if (r) slide.resolvedImage = { url: r.url, scrim: r.scrim, credit: r.credit, logo: r.logo };
+      }
+      if (slide.cards?.length) {
+        const cardAspect = cardGeometry(slide.cards.length).aspect;
+        await Promise.all(slide.cards.map(async (card) => {
+          if (!card.image || card.resolvedImage) return;
+          const r = await resolveImage(card.image, generate, { aspect: cardAspect, gradient: false });
+          if (r) card.resolvedImage = { url: r.url };
+        }));
       }
       if (slide.images?.length && !slide.resolvedImages) {
         const cellAspect = gridGeometry(

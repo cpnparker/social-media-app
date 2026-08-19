@@ -157,6 +157,9 @@ export const TYPE: Record<string, TypeStyle> = {
   chartValue:    { font: "Roboto", size: 9, bold: true, color: COLOR.navy },
   chartAxis:     { font: "Roboto", size: 7, weight: 300, color: COLOR.ink },
   chartSeries:   { font: "Roboto", size: 8, bold: true, color: COLOR.navy },
+  cardMarker:    { font: "Roboto", size: 9, bold: true, color: COLOR.white, caps: true },
+  cardTitle:     { font: "Playfair Display", size: 13, color: COLOR.navy },
+  cardBody:      { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
 };
 
 /* ─────────────── Logo ─────────────── */
@@ -213,10 +216,11 @@ export type SlideLayout =
   | "stat"
   | "bar-chart"
   | "stacked-bar"
+  | "cards"
   | "closing";
 
 export const LAYOUTS: SlideLayout[] = [
-  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "closing",
+  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "cards", "closing",
 ];
 
 /** Horizontal timeline: an axis rule with evenly spaced milestone markers.
@@ -296,6 +300,26 @@ export const IMAGE = {
   gridCaptionHeight: 0.22 * IN,
 } as const;
 
+/** Repeated blocks across the content band — the deck's most-used device.
+ *
+ *  One geometry serves what looked like three layouts, because their parts are
+ *  optional rather than different: slide 4 is a label chip over body text with
+ *  no card behind it, slide 6 is a white card holding a thumbnail and a
+ *  caption, slide 12 is a number beside a short description. A card is a
+ *  marker, a heading, a body and maybe a picture; which of those are present
+ *  decides what it looks like. */
+export const CARDS = {
+  y: 1.95 * IN,
+  height: 2.9 * IN,
+  gap: 0.22 * IN,
+  padding: 0.18 * IN,
+  /** The chip carrying a label or an 01/02/03 marker. */
+  markerHeight: 0.26 * IN,
+  /** Thumbnail sits at the top of a card, square, full card width. */
+  thumbRatio: 1,
+  titleGap: 0.1 * IN,
+} as const;
+
 /** Series colours for charts, VALIDATED rather than chosen.
  *
  *  The brand accents fail as a categorical chart palette and are not used here:
@@ -358,5 +382,6 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   stat:          { background: COLOR.navy,     logo: "white", logoPlacement: "content", onDark: true },
   "bar-chart":   { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "stacked-bar": { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  cards:         { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   closing:      { background: null,           logo: "white", logoPlacement: "closing", onDark: true },
 };
