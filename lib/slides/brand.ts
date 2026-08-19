@@ -212,10 +212,11 @@ export type SlideLayout =
   | "feature"
   | "stat"
   | "bar-chart"
+  | "stacked-bar"
   | "closing";
 
 export const LAYOUTS: SlideLayout[] = [
-  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "closing",
+  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "closing",
 ];
 
 /** Horizontal timeline: an axis rule with evenly spaced milestone markers.
@@ -356,5 +357,6 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   feature:       { background: null,           logo: "white", logoPlacement: "content", onDark: true },
   stat:          { background: COLOR.navy,     logo: "white", logoPlacement: "content", onDark: true },
   "bar-chart":   { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  "stacked-bar": { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   closing:      { background: null,           logo: "white", logoPlacement: "closing", onDark: true },
 };

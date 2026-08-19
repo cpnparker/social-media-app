@@ -714,6 +714,84 @@ function barChartRequests(
   return out;
 }
 
+/** One stacked bar per category — composition, not ranking.
+ *
+ *  A single row per category rather than a grid of them, because the question
+ *  a stacked bar answers is "what is this made of", and stacking is the only
+ *  encoding that shows the parts and the whole at once.
+ *
+ *  A 2pt gap is left between segments. Without it adjacent fills of similar
+ *  lightness merge into one shape and the boundary the chart exists to show
+ *  disappears — the surface showing through IS the separator. */
+function stackedBarRequests(
+  page: string, id: (s: string) => string,
+  chart: NonNullable<SlideInput["chart"]>, onDark: boolean
+): Req[] {
+  const series = (chart.series || []).filter((s) => s.points?.length).slice(0, 5);
+  if (!series.length) return [];
+  const palette = onDark ? SERIES_DARK : SERIES_LIGHT;
+
+  // Categories come from the FIRST series; a later one missing a category
+  // simply contributes nothing to that bar rather than shifting the others.
+  const categories = series[0].points.map((p) => p.label);
+  const totals = categories.map((c) =>
+    series.reduce((sum, s) => sum + (s.points.find((p) => p.label === c)?.value ?? 0), 0)
+  );
+  const max = Math.max(...totals) || 1;
+
+  const plotX = GRID.margin + CHART.labelGutter;
+  const plotW = GRID.contentWidth - CHART.labelGutter - 52;
+  const rowH = CHART.barHeight + CHART.barGap;
+  const plotTop = GRID.bodyY + Math.max(0, (GRID.bandHeight - (categories.length * rowH + 40)) / 2);
+  const GAP = 2;
+
+  const out: Req[] = [];
+  categories.forEach((cat, ci) => {
+    const y = plotTop + ci * rowH;
+    let x = plotX;
+    out.push(...textBox(id(`kl${ci}`), page, cat, TYPE.chartCategory, {
+      x: GRID.margin, y: y + 5, width: CHART.labelGutter - 10, height: CHART.barHeight,
+    }));
+    series.forEach((s, si) => {
+      const v = s.points.find((p) => p.label === cat)?.value ?? 0;
+      if (v <= 0) return;
+      const w = (v / max) * plotW;
+      out.push(...filledShape(id(`kb${ci}_${si}`), page, "RECTANGLE", palette[si % palette.length], {
+        x, y, width: Math.max(1, w - GAP), height: CHART.barHeight,
+      }));
+      x += w;
+    });
+    out.push(...textBox(id(`kt${ci}`), page, formatValue(totals[ci]), TYPE.chartValue, {
+      x: x + CHART.valueGap, y: y + 5, width: 60, height: CHART.barHeight,
+    }));
+  });
+
+  // A legend is required here and cannot be replaced by direct labels: a
+  // segment is often too narrow to hold its own name.
+  let lx = plotX;
+  const legendY = plotTop + categories.length * rowH + 6;
+  series.forEach((s, si) => {
+    // The label's box and the advance to the next entry are the SAME width.
+    // Giving every label a fixed 110pt box while advancing by its text width
+    // overlapped each legend entry with the one after it.
+    const labelW = Math.min(110, Math.max(28, s.name.length * 4.6 + 6));
+    out.push(
+      ...filledShape(id(`kk${si}`), page, "RECTANGLE", palette[si % palette.length], {
+        x: lx, y: legendY + 4, width: 9, height: 9,
+      }),
+      ...textBox(id(`kn${si}`), page, s.name, TYPE.chartAxis, {
+        x: lx + 13, y: legendY, width: labelW, height: 16,
+      }),
+    );
+    lx += 13 + labelW + 12;
+  });
+
+  out.push(...textBox(id("ksrc"), page, chart.source, TYPE.chartAxis, {
+    x: GRID.margin, y: legendY + 20, width: GRID.contentWidth, height: 16,
+  }));
+  return out;
+}
+
 /** One slide → its full request list. Exported so the layout geometry can be
  *  exercised without a Google round-trip; nothing else should call it. */
 export function buildSlideRequests(slide: SlideInput, index: number, run = "r0"): Req[] {
@@ -809,7 +887,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       }),
       ...timelineRequests(page, id, slide.milestones || []),
     );
-  } else if (layout === "stat" || layout === "bar-chart") {
+  } else if (layout === "stat" || layout === "bar-chart" || layout === "stacked-bar") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
         x: GRID.margin, y: GRID.eyebrowY,
@@ -820,7 +898,11 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       }),
     );
     if (layout === "stat") requests.push(...statRequests(page, id, slide.stats || []));
-    else if (slide.chart) requests.push(...barChartRequests(page, id, slide.chart, onDark));
+    else if (slide.chart) {
+      requests.push(...(layout === "stacked-bar"
+        ? stackedBarRequests(page, id, slide.chart, onDark)
+        : barChartRequests(page, id, slide.chart, onDark)));
+    }
   } else if (layout === "timeline-parallel") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
