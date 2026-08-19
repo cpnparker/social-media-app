@@ -5,7 +5,7 @@ import { fetchBlobContent } from "./blob-utils";
 import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
-import { generateSlides, updateSlides } from "@/lib/slides/generate";
+import { generateSlides, updateSlides, resolveDeckImages } from "@/lib/slides/generate";
 import { toPreviewModel } from "@/lib/slides/preview-model";
 import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
 import { isReconnectable } from "@/lib/slides/reauth";
@@ -1215,9 +1215,9 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             properties: {
               layout: {
                 type: "string",
-                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "closing"],
+                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "closing"],
                 description:
-                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
+                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
               },
               title: { type: "string", description: "Slide heading." },
               subtitle: {
@@ -1233,6 +1233,27 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                 description: "Main text. Put each bullet on its own line; a single line stays as a paragraph.",
               },
               bodyRight: { type: "string", description: "Right-hand column text. two-column layout only." },
+              image: {
+                type: "object",
+                description:
+                  "A photograph for this slide. REQUIRED for image-split and feature, and strongly encouraged on cover, section and closing, which are photo-led and fall back to a plain colour without one. Give `query` and one is found or generated; give `url` only for a specific known image.",
+                properties: {
+                  query: { type: "string", description: "What the picture should be OF — 'wind turbines at dusk', 'modern office atrium'. Prefer places, textures, architecture and abstracts over people: stock photography carries no model releases, so a recognisable face in a client deck can read as endorsement." },
+                  url: { type: "string", description: "An exact image URL to use instead of searching." },
+                },
+              },
+              images: {
+                type: "array",
+                description: "Thumbnails for the image-grid layout, up to twelve. Ignored by other layouts.",
+                items: {
+                  type: "object",
+                  properties: {
+                    query: { type: "string", description: "What this thumbnail should show." },
+                    url: { type: "string", description: "An exact image URL." },
+                    caption: { type: "string", description: "Short label under the thumbnail." },
+                  },
+                },
+              },
               tracks: {
                 type: "array",
                 description:
@@ -3658,18 +3679,29 @@ async function buildOrUpdateSlides(
   userEmail: string,
   presentationId?: string
 ): Promise<Awaited<ReturnType<typeof generateSlides>> & { fellBack?: boolean }> {
+  // Photographs the deck cannot find are generated with the same pipeline the
+  // chat uses. Passed in rather than imported by lib/slides, which would close
+  // an import cycle back through this file.
+  const imageGen = (prompt: string) => generateImage(prompt, "1792x1024", "openai");
+
   if (presentationId) {
-    const updated = await updateSlides(presentationId, title, slides, userEmail);
+    const updated = await updateSlides(presentationId, title, slides, userEmail, imageGen);
     if (updated.ok || !updated.notFound) return updated;
     console.warn(`[Slides] ${presentationId} not updatable — creating a new deck`);
-    const created = await generateSlides(title, slides, userEmail);
+    const created = await generateSlides(title, slides, userEmail, imageGen);
     return { ...created, fellBack: true };
   }
-  return generateSlides(title, slides, userEmail);
+  return generateSlides(title, slides, userEmail, imageGen);
 }
 
-/** A deck the user can look at and argue with before it exists as a file. */
-function buildSlidesDraft(title: string, slides: any[]) {
+/** A deck the user can look at and argue with before it exists as a file.
+ *
+ *  Images resolve here as well as at build time — same call, same result — so
+ *  the preview shows the actual photograph rather than an empty frame. It is
+ *  the slowest part of a draft, and worth it: a preview that omits the pictures
+ *  cannot be judged on the thing that makes a deck visual. */
+async function buildSlidesDraft(title: string, slides: any[]) {
+  await resolveDeckImages(slides, (prompt: string) => generateImage(prompt, "1792x1024", "openai"));
   return {
     title,
     slides,
@@ -6794,8 +6826,13 @@ async function streamAnthropic(
     // Design mode also gets image gen (force-enable even if toggle is off) + video + artlist.
     if (!config.imageGeneration) tools.push(IMAGE_GEN_TOOL);
     tools.push(VIDEO_GEN_TOOL);
-    tools.push(ARTLIST_SEARCH_TOOL);
-    tools.push(ARTLIST_LICENSE_TOOL);
+    // Only offer stock footage when there is a key to fetch it with. Registered
+    // unconditionally, these invite the model to promise a search that always
+    // throws "ARTLIST_API_KEY is not set" — a capability that does not exist.
+    if (process.env.ARTLIST_API_KEY?.trim()) {
+      tools.push(ARTLIST_SEARCH_TOOL);
+      tools.push(ARTLIST_LICENSE_TOOL);
+    }
     // Studio mode shot CRUD — only when the conversation is anchored to a session
     if (config.designSessionId) {
       tools.push(DESIGN_CREATE_SHOT_TOOL);
@@ -7453,7 +7490,7 @@ async function streamAnthropic(
           // Draft is the default. A file appears only when a person asked for
           // one, which is what keeps a user's Drive free of half-agreed decks.
           if (!tool.input.publish && !tool.input.presentationId) {
-            const draft = buildSlidesDraft(deckTitle, deckSlides);
+            const draft = await buildSlidesDraft(deckTitle, deckSlides);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
@@ -8661,7 +8698,7 @@ async function streamXAIChatCompletions(
           // Draft is the default. A file appears only when a person asked for
           // one, which is what keeps a user's Drive free of half-agreed decks.
           if (!input.publish && !input.presentationId) {
-            const draft = buildSlidesDraft(deckTitle, deckSlides);
+            const draft = await buildSlidesDraft(deckTitle, deckSlides);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
@@ -9611,7 +9648,7 @@ async function streamGemini(
           // Draft is the default. A file appears only when a person asked for
           // one, which is what keeps a user's Drive free of half-agreed decks.
           if (!input.publish && !input.presentationId) {
-            const draft = buildSlidesDraft(deckTitle, deckSlides);
+            const draft = await buildSlidesDraft(deckTitle, deckSlides);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
@@ -10451,7 +10488,7 @@ async function streamOpenAI(
           // Draft is the default. A file appears only when a person asked for
           // one, which is what keeps a user's Drive free of half-agreed decks.
           if (!input.publish && !input.presentationId) {
-            const draft = buildSlidesDraft(deckTitle, deckSlides);
+            const draft = await buildSlidesDraft(deckTitle, deckSlides);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)

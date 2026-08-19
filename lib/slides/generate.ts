@@ -15,11 +15,12 @@
  */
 
 import {
-  COLOR, GRID, CANVAS, TYPE, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, LAYOUT_STYLE, LOGO_PLACEMENT,
+  COLOR, GRID, CANVAS, TYPE, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, LAYOUT_STYLE, LOGO_PLACEMENT,
   rgb, logoUrl, type SlideLayout, type TypeStyle,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
 import { captureThumbnails } from "@/lib/slides/preview";
+import { resolveImage, type ImageGenerator } from "@/lib/slides/images";
 
 const SLIDES_API = "https://slides.googleapis.com/v1/presentations";
 const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
@@ -58,6 +59,14 @@ export interface SlideInput {
   bodyRight?: string;
   milestones?: Milestone[];
   tracks?: Track[];
+  /** What this slide should be a picture OF, or an exact image to use. Resolved
+   *  before the deck is built, so the preview shows the real photograph. */
+  image?: { url?: string; query?: string };
+  /** Filled in by resolution — not supplied by the model. */
+  resolvedImage?: { url: string; scrim: number; credit?: string };
+  /** Thumbnails for the image-grid layout. */
+  images?: { url?: string; query?: string; caption?: string }[];
+  resolvedImages?: { url: string; caption?: string }[];
   /** ISO date for the "today" rule. Defaults to the real today; drawn only if
    *  it falls inside the plotted range. */
   today?: string;
@@ -482,6 +491,96 @@ function parallelTimelineRequests(
   return requests;
 }
 
+/** Up to twelve thumbnails on one row-and-column grid, sized so the set always
+ *  fills the band rather than leaving a ragged last row. */
+function gridRequests(
+  page: string, id: (s: string) => string,
+  images: { url: string; caption?: string }[]
+): Req[] {
+  if (!images.length) return [];
+  const shown = images.slice(0, 12);
+  const cols = shown.length <= 3 ? shown.length : shown.length <= 8 ? 4 : 4;
+  const rows = Math.ceil(shown.length / cols);
+  const cellW = (GRID.contentWidth - IMAGE.gridGap * (cols - 1)) / cols;
+  const captioned = shown.some((i) => i.caption);
+  const cellH = (IMAGE.gridHeight - IMAGE.gridGap * (rows - 1)) / rows
+    - (captioned ? IMAGE.gridCaptionHeight : 0);
+
+  const out: Req[] = [];
+  shown.forEach((img, i) => {
+    const c = i % cols, r = Math.floor(i / cols);
+    const x = GRID.margin + c * (cellW + IMAGE.gridGap);
+    const y = IMAGE.gridY + r * (cellH + IMAGE.gridGap + (captioned ? IMAGE.gridCaptionHeight : 0));
+    out.push({
+      createImage: {
+        objectId: id(`g${i}`),
+        url: img.url,
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(cellW), height: pt(cellH) },
+          transform: { scaleX: 1, scaleY: 1, translateX: x, translateY: y, unit: "PT" },
+        },
+      },
+    });
+    out.push(...textBox(id(`gc${i}`), page, img.caption, TYPE.gridCaption, {
+      x, y: y + cellH + 2, width: cellW, height: IMAGE.gridCaptionHeight,
+    }));
+  });
+  return out;
+}
+
+/** A full-bleed photograph with its scrim, drawn before anything else so text
+ *  and the logo sit on top. Returns [] when no image resolved, which is what
+ *  makes every photo layout degrade to its solid brand background. */
+function backdropRequests(
+  page: string, id: (s: string) => string, slide: SlideInput
+): Req[] {
+  const img = slide.resolvedImage;
+  if (!img) return [];
+  return [
+    {
+      createImage: {
+        objectId: id("bg"),
+        url: img.url,
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(CANVAS.width), height: pt(CANVAS.height) },
+          transform: { scaleX: 1, scaleY: 1, translateX: 0, translateY: 0, unit: "PT" },
+        },
+      },
+    },
+    // The scrim is not decoration: it is what keeps white text at 4.5:1 over a
+    // photograph nobody vetted. Its opacity was measured from the image itself.
+    {
+      createShape: {
+        objectId: id("scrim"),
+        shapeType: "RECTANGLE",
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(CANVAS.width), height: pt(CANVAS.height) },
+          transform: { scaleX: 1, scaleY: 1, translateX: 0, translateY: 0, unit: "PT" },
+        },
+      },
+    },
+    {
+      updateShapeProperties: {
+        objectId: id("scrim"),
+        shapeProperties: {
+          shapeBackgroundFill: {
+            solidFill: { color: { rgbColor: rgb(COLOR.navy) }, alpha: img.scrim },
+          },
+          outline: { propertyState: "NOT_RENDERED" },
+        },
+        fields: "shapeBackgroundFill.solidFill,outline.propertyState",
+      },
+    },
+    ...textBox(id("credit"), page, img.credit, TYPE.credit, {
+      x: GRID.margin, y: IMAGE.creditY,
+      width: GRID.contentWidth, height: IMAGE.creditHeight,
+    }, { align: "END" }),
+  ];
+}
+
 /** One slide → its full request list. Exported so the layout geometry can be
  *  exercised without a Google round-trip; nothing else should call it. */
 export function buildSlideRequests(slide: SlideInput, index: number, run = "r0"): Req[] {
@@ -515,6 +614,11 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       },
     },
   ];
+
+  // Photograph first, so every text box lands on top of it.
+  if (style.background === null || layout === "feature") {
+    requests.push(...backdropRequests(page, id, slide));
+  }
 
   const onDark = style.onDark;
   const bodyStyle = onDark ? TYPE.bodyDark : TYPE.body;
@@ -585,6 +689,63 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         x: GRID.margin, y: GRID.bodyY - 8, width: GRID.contentWidth, height: 24,
       }),
       ...parallelTimelineRequests(page, id, slide.tracks || [], slide.today),
+    );
+  } else if (layout === "feature") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, TYPE.eyebrowDark, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, TYPE.featureTitle, {
+        x: GRID.margin, y: IMAGE.overlayTitleY,
+        width: GRID.contentWidth * 0.72, height: IMAGE.overlayTitleHeight,
+      }),
+      ...textBox(id("body"), page, slide.body, TYPE.featureBody, {
+        x: GRID.margin, y: IMAGE.overlayBodyY,
+        width: GRID.contentWidth * 0.72, height: IMAGE.overlayBodyHeight,
+      }),
+    );
+  } else if (layout === "image-split") {
+    // Image bleeds off the left edge; text takes the right half. Bleeding
+    // rather than insetting is what makes it read as editorial instead of as a
+    // picture pasted into a document.
+    if (slide.resolvedImage) {
+      requests.push({
+        createImage: {
+          objectId: id("half"),
+          url: slide.resolvedImage.url,
+          elementProperties: {
+            pageObjectId: page,
+            size: { width: pt(IMAGE.splitWidth), height: pt(CANVAS.height) },
+            transform: { scaleX: 1, scaleY: 1, translateX: 0, translateY: 0, unit: "PT" },
+          },
+        },
+      });
+    }
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: IMAGE.splitTextX, y: GRID.eyebrowY,
+        width: IMAGE.splitTextWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: IMAGE.splitTextX, y: GRID.titleY,
+        width: IMAGE.splitTextWidth, height: GRID.titleHeight,
+      }),
+      ...textBox(id("body"), page, slide.body, bodyStyle, {
+        x: IMAGE.splitTextX, y: GRID.bodyY,
+        width: IMAGE.splitTextWidth, height: GRID.bodyHeight,
+      }, { bullets: true }),
+    );
+  } else if (layout === "image-grid") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+      }),
+      ...gridRequests(page, id, slide.resolvedImages || []),
     );
   } else if (layout === "two-column") {
     requests.push(
@@ -677,6 +838,42 @@ async function googleFetch(url: string, token: string, init: RequestInit = {}) {
   return { ok: res.ok, status: res.status, json };
 }
 
+/**
+ * Turn every slide's image BRIEF into an actual picture, before anything is
+ * drawn or previewed.
+ *
+ * Resolution happens once, up front, for a reason: the preview and the built
+ * deck must show the same photograph. Resolving lazily at draw time would give
+ * a draft one Unsplash hit and the published deck another, and the preview
+ * would stop predicting the deck — which is the one thing it has to do.
+ *
+ * Slides resolve concurrently, and a slide whose image cannot be found simply
+ * keeps its solid brand background rather than failing the deck.
+ */
+export async function resolveDeckImages(
+  slides: SlideInput[],
+  generate?: ImageGenerator
+): Promise<void> {
+  await Promise.all(
+    slides.map(async (slide) => {
+      if (slide.image && !slide.resolvedImage) {
+        const r = await resolveImage(slide.image, generate);
+        if (r) slide.resolvedImage = { url: r.url, scrim: r.scrim, credit: r.credit };
+      }
+      if (slide.images?.length && !slide.resolvedImages) {
+        const out = await Promise.all(
+          slide.images.slice(0, 12).map(async (spec) => {
+            const r = await resolveImage(spec, generate);
+            return r ? { url: r.url, caption: spec.caption } : null;
+          })
+        );
+        const kept = out.filter(Boolean) as { url: string; caption?: string }[];
+        if (kept.length) slide.resolvedImages = kept;
+      }
+    })
+  );
+}
+
 /** Short unique prefix for one generation run. Base36 of the clock plus a few
  *  random characters: unique enough within a single presentation, and short
  *  enough to leave room under the 50-character objectId limit. */
@@ -697,7 +894,8 @@ export async function updateSlides(
   presentationId: string,
   title: string,
   slides: SlideInput[],
-  userEmail: string
+  userEmail: string,
+  generateImageFn?: ImageGenerator
 ): Promise<SlidesResult> {
   const auth = await getUserGoogleToken(userEmail);
   if (!auth.ok || !auth.accessToken) {
@@ -719,6 +917,8 @@ export async function updateSlides(
     };
   }
   const oldIds: string[] = (existing.json?.slides || []).map((s: any) => s.objectId);
+
+  await resolveDeckImages(slides, generateImageFn);
 
   const run = runId();
   const requests: Req[] = slides.flatMap((slide, i) => buildSlideRequests(slide, i, run));
@@ -758,7 +958,8 @@ export async function updateSlides(
 export async function generateSlides(
   title: string,
   slides: SlideInput[],
-  userEmail: string
+  userEmail: string,
+  generateImageFn?: ImageGenerator
 ): Promise<SlidesResult> {
   if (!userEmail) return { ok: false, error: "No signed-in user to create the deck for." };
   if (!slides?.length) return { ok: false, error: "No slides to build." };
@@ -787,6 +988,8 @@ export async function generateSlides(
 
   const presentationId: string = created.json.presentationId;
   const defaultSlideId: string | undefined = created.json.slides?.[0]?.objectId;
+
+  await resolveDeckImages(slides, generateImageFn);
 
   const run = runId();
   const requests: Req[] = slides.flatMap((slide, i) => buildSlideRequests(slide, i, run));

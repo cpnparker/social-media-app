@@ -136,6 +136,10 @@ export const TYPE: Record<string, TypeStyle> = {
   phaseInBar:    { font: "Roboto", size: 8, color: COLOR.white },
   axisTick:      { font: "Roboto", size: 7, weight: 300, color: COLOR.ink },
   todayLabel:    { font: "Roboto", size: 7, bold: true, color: COLOR.coral, caps: true },
+  featureTitle:  { font: "Playfair Display", size: 26, color: COLOR.white },
+  featureBody:   { font: "Roboto", size: 11, color: COLOR.greyLight },
+  gridCaption:   { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
+  credit:        { font: "Roboto", size: 6, weight: 300, color: COLOR.greyLight },
 };
 
 /* ─────────────── Logo ─────────────── */
@@ -186,10 +190,13 @@ export type SlideLayout =
   | "dark-index"
   | "timeline"
   | "timeline-parallel"
+  | "image-split"
+  | "image-grid"
+  | "feature"
   | "closing";
 
 export const LAYOUTS: SlideLayout[] = [
-  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "closing",
+  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "closing",
 ];
 
 /** Horizontal timeline: an axis rule with evenly spaced milestone markers.
@@ -242,6 +249,30 @@ export const TIMELINE_PARALLEL = {
   rangePad: 0.04,
 } as const;
 
+/** Photography layouts.
+ *
+ *  Measured from the source deck: eleven of its eighteen slides are over 30%
+ *  image and four are essentially all image. These are the shapes that produce
+ *  that, rather than a text slide with a picture added to it. */
+export const IMAGE = {
+  /** Half-and-half, the split the deck uses most. */
+  splitWidth: 4.72 * IN,
+  splitTextX: 5.28 * IN,
+  splitTextWidth: 4.38 * IN,
+  /** Text on a photo starts below the logo band and ends above the credit. */
+  overlayTitleY: 3.05 * IN,
+  overlayTitleHeight: 1.25 * IN,
+  overlayBodyY: 4.35 * IN,
+  overlayBodyHeight: 0.55 * IN,
+  creditY: 5.3 * IN,
+  creditHeight: 0.18 * IN,
+  /** Grid of examples — the format galleries. */
+  gridY: 1.85 * IN,
+  gridHeight: 3.2 * IN,
+  gridGap: 0.12 * IN,
+  gridCaptionHeight: 0.22 * IN,
+} as const;
+
 /** One colour per track. White text sits on every one of these at full
  *  contrast, which is why the lighter brand accents are not in the list. */
 export const TRACK_COLORS = [COLOR.blue, COLOR.navy, COLOR.forest, COLOR.coral] as const;
@@ -263,5 +294,9 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   "dark-index": { background: COLOR.navy,     logo: "white", logoPlacement: "content", onDark: true },
   timeline:     { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "timeline-parallel": { background: COLOR.offWhite, logo: "navy", logoPlacement: "content", onDark: false },
+  "image-split": { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  "image-grid":  { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  // Full-bleed photograph with a scrim — text is always light on it.
+  feature:       { background: null,           logo: "white", logoPlacement: "content", onDark: true },
   closing:      { background: null,           logo: "white", logoPlacement: "closing", onDark: true },
 };
