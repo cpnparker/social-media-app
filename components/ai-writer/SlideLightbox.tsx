@@ -64,7 +64,7 @@ export default function SlideLightbox({
       aria-modal="true"
       aria-label={`${noun} ${index + 1} of ${count}`}
       onClick={onClose}
-      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center p-4 sm:p-8"
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center p-4 sm:p-8 overflow-y-auto"
     >
       <div className="flex items-center justify-between w-full max-w-[1100px] mb-3">
         <span className="text-xs text-white/70 tabular-nums">

@@ -177,24 +177,36 @@ export default function SlideDraftPreview({
   onEdit?: (next: SlideDraft) => void;
 }) {
   const count = draft.preview.slides.length;
+  // One overlay, three modes. Editing used to open a form BELOW the grid, which
+  // in a twenty-slide deck put the controls a screen away from the slide they
+  // changed — and at thumbnail size you cannot see what you are editing. Both
+  // actions now open the slide full size and put the controls under it.
   const [zoom, setZoom] = useState<number | null>(null);
-  const [commentOn, setCommentOn] = useState<number | null>(null);
-  const [editOn, setEditOn] = useState<number | null>(null);
+  const [mode, setMode] = useState<"view" | "edit" | "comment">("view");
+  const open = (i: number, m: "view" | "edit" | "comment") => { setZoom(i); setMode(m); };
   const slideTitle = (i: number) => (draft.slides?.[i] as any)?.title as string | undefined;
   const submitComment = (i: number) => (text: string) => {
     onSlideComment?.(i, text);
-    // Both surfaces close: the request is now in the conversation, and the
-    // preview it refers to is about to be replaced.
-    setCommentOn(null);
+    // Closes: the request is now in the conversation, and the preview it refers
+    // to is about to be replaced.
     setZoom(null);
+    setMode("view");
   };
   // Bounded so a slide stays whole on screen: the point of a full view is
   // reading it without scrolling to find the rest of it. Measured only once a
   // slide has been clicked, which cannot happen during server rendering.
+  // The footer grows when it holds a form, so the slide has to give way — a
+  // full-size slide plus an edit panel does not fit a laptop viewport, and the
+  // half that would scroll off is the controls.
+  // Never let the footer claim more than 45% of a short window, or the slide
+  // collapses to its floor and the thing being edited becomes unreadable — the
+  // opposite of why editing moved into the overlay.
+  const wanted = mode === "edit" ? 400 : mode === "comment" ? 260 : 180;
+  const footerReserve = zoom === null ? wanted : Math.min(wanted, window.innerHeight * 0.45);
   const zoomWidth = zoom === null ? 0 : Math.min(
     1100,
     window.innerWidth - 140,
-    (window.innerHeight - 180) * (BASE_W / BASE_H)
+    Math.max(360, (window.innerHeight - footerReserve) * (BASE_W / BASE_H))
   );
   return (
     <div className="flex-1 min-w-0 rounded-lg border bg-muted/30 px-3 py-3">
@@ -214,62 +226,69 @@ export default function SlideDraftPreview({
 
       <div className="flex flex-wrap gap-2">
         {draft.preview.slides.map((s, i) => (
-          <SlideThumb key={i} slide={s} index={i} onClick={() => setZoom(i)}
-                      onComment={onSlideComment ? () => { setEditOn(null); setCommentOn(i); } : undefined}
-                      onEdit={onEdit ? () => { setCommentOn(null); setEditOn(i); } : undefined} />
+          <SlideThumb key={i} slide={s} index={i} onClick={() => open(i, "view")}
+                      onComment={onSlideComment ? () => open(i, "comment") : undefined}
+                      onEdit={onEdit ? () => open(i, "edit") : undefined} />
         ))}
       </div>
 
-      {editOn !== null && onEdit && (
-        <div className="mt-2.5">
-          <SlideEditPanel
-            draft={draft}
-            index={editOn}
-            onText={(field, value) => onEdit(setSlideText(draft, editOn, field, value))}
-            onImage={async (query) => {
-              const res = await fetch("/api/slides/image", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ query, gradient: needsGradient(draft, editOn) }),
-              });
-              const j = await res.json();
-              if (!res.ok) { toast.error(j.error || "Couldn't change the image."); return; }
-              onEdit(setSlideImage(draft, editOn, j.url, query, j.credit));
-            }}
-            onMove={(delta) => {
-              onEdit(moveSlide(draft, editOn, delta));
-              setEditOn(Math.min(Math.max(0, editOn + delta), draft.slides.length - 1));
-            }}
-            onDelete={() => { onEdit(deleteSlide(draft, editOn)); setEditOn(null); }}
-            onClose={() => setEditOn(null)}
-          />
-        </div>
-      )}
-
-      {commentOn !== null && (
-        <div className="mt-2.5">
-          <SlideCommentBox
-            slideNumber={commentOn + 1}
-            slideTitle={slideTitle(commentOn)}
-            onSubmit={submitComment(commentOn)}
-            onCancel={() => setCommentOn(null)}
-          />
-        </div>
-      )}
-
       {zoom !== null && (
         <SlideLightbox
-          index={zoom} count={count} onClose={() => setZoom(null)} onIndex={setZoom}
-          footer={onSlideComment ? (
-            <SlideCommentBox
-              key={zoom}
-              slideNumber={zoom + 1}
-              slideTitle={slideTitle(zoom)}
-              onSubmit={submitComment(zoom)}
-              onCancel={() => setZoom(null)}
-              dark
-            />
-          ) : undefined}
+          index={zoom} count={count} onClose={() => setZoom(null)} onIndex={(i) => { setZoom(i); setMode("view"); }}
+          footer={
+            mode === "edit" && onEdit ? (
+              <SlideEditPanel
+                key={`e${zoom}`}
+                draft={draft}
+                index={zoom}
+                dark
+                onText={(field, value) => onEdit(setSlideText(draft, zoom, field, value))}
+                onImage={async (query) => {
+                  const res = await fetch("/api/slides/image", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ query, gradient: needsGradient(draft, zoom) }),
+                  });
+                  const j = await res.json();
+                  if (!res.ok) { toast.error(j.error || "Couldn't change the image."); return; }
+                  onEdit(setSlideImage(draft, zoom, j.url, query, j.credit));
+                }}
+                onMove={(delta) => {
+                  onEdit(moveSlide(draft, zoom, delta));
+                  setZoom(Math.min(Math.max(0, zoom + delta), draft.slides.length - 1));
+                }}
+                onDelete={() => {
+                  onEdit(deleteSlide(draft, zoom));
+                  setZoom(null); setMode("view");
+                }}
+                onClose={() => setMode("view")}
+              />
+            ) : mode === "comment" && onSlideComment ? (
+              <SlideCommentBox
+                key={`c${zoom}`}
+                slideNumber={zoom + 1}
+                slideTitle={slideTitle(zoom)}
+                onSubmit={submitComment(zoom)}
+                onCancel={() => setMode("view")}
+                dark
+              />
+            ) : (
+              // Viewing: offer the two ways to change this slide rather than
+              // making the user close the overlay and find the right thumbnail.
+              <div className="flex items-center justify-center gap-2">
+                {onEdit && (
+                  <Button size="sm" variant="secondary" onClick={() => setMode("edit")}>
+                    Edit this slide
+                  </Button>
+                )}
+                {onSlideComment && (
+                  <Button size="sm" variant="secondary" onClick={() => setMode("comment")}>
+                    Ask for a change
+                  </Button>
+                )}
+              </div>
+            )
+          }
         >
           <SlideThumb slide={draft.preview.slides[zoom]} index={zoom} width={zoomWidth} />
         </SlideLightbox>
