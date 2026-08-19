@@ -13,8 +13,10 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 
 export default function SlideCommentBox({
-  slideNumber, slideTitle, onSubmit, onCancel, dark, noun = "Slide", placeholder,
+  slideNumber, slideTitle, onSubmit, onCancel, dark, noun = "Slide", placeholder, onSwitchToEdit,
 }: {
+  /** Hand back to direct editing without closing the overlay. */
+  onSwitchToEdit?: () => void;
   slideNumber: number;
   slideTitle?: string;
   noun?: string;
@@ -58,12 +60,20 @@ export default function SlideCommentBox({
           dark ? "bg-black/30 border-white/15 text-white placeholder:text-white/40" : "bg-background"
         }`}
       />
-      <div className="flex items-center justify-end gap-2 mt-2">
+      <div className="flex items-center justify-between gap-2 mt-2">
+        {onSwitchToEdit ? (
+          <Button size="sm" variant="ghost" onClick={onSwitchToEdit}
+                  className={dark ? "text-white/70 hover:text-white hover:bg-white/10" : ""}>
+            Edit it myself instead
+          </Button>
+        ) : <span />}
+        <div className="flex items-center gap-2">
         <Button size="sm" variant="ghost" onClick={onCancel}
                 className={dark ? "text-white/70 hover:text-white hover:bg-white/10" : ""}>
           Cancel
         </Button>
         <Button size="sm" onClick={send} disabled={!text.trim()}>Send change</Button>
+        </div>
       </div>
     </div>
   );

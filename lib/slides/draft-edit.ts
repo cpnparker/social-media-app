@@ -19,7 +19,7 @@
 
 import type { SlideDraft } from "@/components/ai-writer/SlideDraftPreview";
 
-type Field = "title" | "subtitle" | "body" | "eyebrow" | "bodyRight";
+export type SpecPath = (string | number)[];
 
 /** Structural clone, so React sees new objects and re-renders. */
 function clone(draft: SlideDraft): SlideDraft {
@@ -33,21 +33,49 @@ function clone(draft: SlideDraft): SlideDraft {
   };
 }
 
+function samePath(a?: SpecPath, b?: SpecPath): boolean {
+  return !!a && !!b && a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/** Write a value into a nested spec, creating nothing that is not already
+ *  there — a path only ever comes from an element the layout actually drew. */
+function writePath(spec: any, path: SpecPath, value: any): void {
+  let node = spec;
+  for (const key of path.slice(0, -1)) {
+    if (node == null) return;
+    node = node[key];
+  }
+  if (node != null) node[path[path.length - 1]] = value;
+}
+
 /** Write new text into both the spec and the rendered preview.
  *
  *  Both, deliberately: the spec is what gets published, the preview is what the
  *  user is looking at, and letting them drift is how a preview stops predicting
- *  the deck. */
+ *  the deck.
+ *
+ *  Addressed by path, so this reaches a bar's label or a stat's caption and not
+ *  just the handful of top-level strings. */
 export function setSlideText(
-  draft: SlideDraft, slideIndex: number, field: Field, value: string
+  draft: SlideDraft, slideIndex: number, path: SpecPath, value: string
 ): SlideDraft {
   const next = clone(draft);
   const spec = next.slides[slideIndex] as any;
   if (!spec) return draft;
-  spec[field] = value;
+
+  // A field the layout renders as a number is stored as one; typing letters
+  // into it must not silently turn the data into a string.
+  const current = path.reduce((o: any, k) => (o == null ? o : o[k]), spec);
+  if (typeof current === "number") {
+    const parsed = Number(value.replace(/[, ]/g, ""));
+    if (!Number.isFinite(parsed)) return draft;
+    writePath(spec, path, parsed);
+  } else {
+    writePath(spec, path, value);
+  }
 
   for (const el of next.preview.slides[slideIndex]?.elements ?? []) {
-    if (el.kind === "text" && el.field === field) {
+    if (el.kind === "text" && samePath(el.path, path)) {
       el.text = el.caps ? value.toUpperCase() : value;
     }
   }
@@ -95,18 +123,56 @@ export function moveSlide(draft: SlideDraft, from: number, delta: number): Slide
   return next;
 }
 
-/** Which fields a slide actually shows, so the editor only offers real ones. */
-export function editableFields(draft: SlideDraft, slideIndex: number): { field: Field; label: string; value: string }[] {
-  const labels: Record<Field, string> = {
-    eyebrow: "Eyebrow", title: "Title", subtitle: "Subtitle", body: "Body", bodyRight: "Right column",
-  };
+const LABELS: Record<string, string> = {
+  eyebrow: "Eyebrow", title: "Title", subtitle: "Subtitle",
+  body: "Body", bodyRight: "Right column",
+  value: "Value", label: "Label", detail: "Detail", name: "Name",
+  source: "Source", caption: "Caption", date: "Date",
+};
+
+/** A readable name for a path: "Stat 2 · Value", "Bar 3 · Label". */
+function describe(path: SpecPath): string {
+  const leaf = LABELS[String(path[path.length - 1])] ?? String(path[path.length - 1]);
+  const group = path[0];
+  // The LAST number in the path is the item's index. The first is the series
+  // index on a chart path, which labelled every bar "Bar 1".
+  const index = [...path].reverse().find((p) => typeof p === "number");
+  if (path.length === 1) return leaf;
+  const groupName =
+    group === "stats" ? "Stat" :
+    group === "milestones" ? "Milestone" :
+    group === "tracks" ? (path.includes("phases") ? "Phase" : "Track") :
+    group === "images" ? "Image" :
+    group === "chart" ? (path.includes("points") ? "Bar" : "Chart") : String(group);
+  return index === undefined ? `${groupName} · ${leaf}` : `${groupName} ${Number(index) + 1} · ${leaf}`;
+}
+
+/** EVERY piece of text the slide actually renders, in the order it is drawn.
+ *
+ *  Derived from the preview rather than from the layout, so a field only
+ *  appears when it is genuinely on the slide — and every field that IS on the
+ *  slide appears, including the words inside a chart or a timeline. */
+export function editableFields(
+  draft: SlideDraft, slideIndex: number
+): { path: SpecPath; label: string; value: string; multiline: boolean }[] {
   const spec = draft.slides[slideIndex] as any;
-  const present = new Set(
-    (draft.preview.slides[slideIndex]?.elements ?? [])
-      .filter((e) => e.kind === "text" && e.field)
-      .map((e) => e.field as Field)
-  );
-  return (Object.keys(labels) as Field[])
-    .filter((f) => present.has(f))
-    .map((f) => ({ field: f, label: labels[f], value: String(spec?.[f] ?? "") }));
+  const seen = new Set<string>();
+  const out: { path: SpecPath; label: string; value: string; multiline: boolean }[] = [];
+
+  for (const el of draft.preview.slides[slideIndex]?.elements ?? []) {
+    if (el.kind !== "text" || !el.path) continue;
+    const key = el.path.join(".");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const value = el.path.reduce((o: any, k) => (o == null ? o : o[k]), spec);
+    if (value === undefined || value === null) continue;
+    const leaf = String(el.path[el.path.length - 1]);
+    out.push({
+      path: el.path,
+      label: describe(el.path),
+      value: String(value),
+      multiline: leaf === "body" || leaf === "bodyRight" || leaf === "detail",
+    });
+  }
+  return out;
 }

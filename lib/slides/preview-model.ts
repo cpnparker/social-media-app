@@ -33,30 +33,65 @@ export interface PreviewElement {
   opacity?: number;
   /** Slides rounds ROUND_RECTANGLE far more than a 4px radius suggests. */
   rounded?: boolean;
-  /** Which field of the slide SPEC this text came from, when it maps to one.
-   *  This is what lets the preview be edited directly: geometry is fixed, so
-   *  changing the words changes nothing else, and no server round-trip is
-   *  needed to re-lay-out a slide whose boxes have not moved. */
-  field?: "title" | "subtitle" | "body" | "eyebrow" | "bodyRight";
+  /** Where in the slide SPEC this text came from, as a path — ["title"], or
+   *  ["stats", 0, "value"], or ["chart","series",0,"points",2,"label"].
+   *
+   *  A path rather than a field name because most text on a rich slide lives
+   *  in nested arrays: a bar's label, a milestone's date, a stat's caption. A
+   *  flat field name could only ever address the handful of top-level strings,
+   *  which left the text people most want to fix — the words inside a chart —
+   *  editable only by asking the model to rebuild the slide. */
+  path?: (string | number)[];
   /** The style upper-cases this text for display; the spec keeps the original. */
   caps?: boolean;
   /** Text is centred vertically inside its box. */
   vCenter?: boolean;
 }
 
-/** Object ids are `<run>_s<index>_<suffix>`; the suffix names the box. */
-const FIELD_BY_SUFFIX: Record<string, PreviewElement["field"]> = {
-  title: "title",
-  sub: "subtitle",
-  body: "body",
-  eyebrow: "eyebrow",
-  left: "body",
-  right: "bodyRight",
+/** Object ids are `<run>_s<index>_<suffix>`, and the suffix says which box it
+ *  is. Turning that back into a spec path is what makes every word on a slide
+ *  editable rather than just the top-level ones. */
+const FLAT: Record<string, (string | number)[]> = {
+  title: ["title"],
+  sub: ["subtitle"],
+  body: ["body"],
+  eyebrow: ["eyebrow"],
+  left: ["body"],
+  right: ["bodyRight"],
+  csrc: ["chart", "source"],
+  lsrc: ["chart", "source"],
 };
 
-function fieldOf(objectId: string): PreviewElement["field"] | undefined {
-  const suffix = objectId.split("_").pop() || "";
-  return FIELD_BY_SUFFIX[suffix];
+/** Indexed boxes: prefix → how to address the thing it renders. */
+const INDEXED: [RegExp, (i: number) => (string | number)[]][] = [
+  [/^sv(\d+)$/, (i) => ["stats", i, "value"]],
+  [/^sl(\d+)$/, (i) => ["stats", i, "label"]],
+  [/^sd(\d+)$/, (i) => ["stats", i, "detail"]],
+  [/^bl(\d+)$/, (i) => ["chart", "series", 0, "points", i, "label"]],
+  [/^bv(\d+)$/, (i) => ["chart", "series", 0, "points", i, "value"]],
+  [/^d(\d+)$/,  (i) => ["milestones", i, "date"]],
+  [/^t(\d+)$/,  (i) => ["milestones", i, "title"]],
+  [/^x(\d+)$/,  (i) => ["milestones", i, "detail"]],
+  [/^gc(\d+)$/, (i) => ["images", i, "caption"]],
+  [/^tn(\d+)$/, (i) => ["tracks", i, "name"]],
+];
+
+function pathOf(objectId: string): (string | number)[] | undefined {
+  const suffix = objectId.split("_").slice(2).join("_") || objectId.split("_").pop() || "";
+  if (FLAT[suffix]) return FLAT[suffix];
+  for (const [re, build] of INDEXED) {
+    const m = re.exec(suffix);
+    if (m) return build(Number(m[1]));
+  }
+  // Two-index boxes: a phase label inside a track.
+  const phase = /^pl(\d+)_(\d+)$/.exec(suffix);
+  if (phase) return ["tracks", Number(phase[1]), "phases", Number(phase[2]), "label"];
+  return undefined;
+}
+
+/** Read a value out of a spec by path. */
+export function readPath(spec: any, path: (string | number)[]): any {
+  return path.reduce((o, k) => (o == null ? o : o[k]), spec);
 }
 
 export interface PreviewSlide {
@@ -134,8 +169,8 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
         if (el) {
           el.kind = "text";
           el.text = body.text;
-          const field = fieldOf(body.objectId);
-          if (field) el.field = field;
+          const path = pathOf(body.objectId);
+          if (path) el.path = path;
         }
       } else if (kind === "updateTextStyle") {
         const el = byId.get(body.objectId);
@@ -158,8 +193,8 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
     // already upper-case and is not a caps style; guessing from the glyphs
     // writes an edit back shouting.
     for (const el of current.elements) {
-      if (el.kind !== "text" || !el.field || !el.text) continue;
-      const source = (slide as any)[el.field];
+      if (el.kind !== "text" || !el.path || !el.text) continue;
+      const source = readPath(slide as any, el.path);
       if (typeof source === "string" && source !== el.text && source.toUpperCase() === el.text) {
         el.caps = true;
       }

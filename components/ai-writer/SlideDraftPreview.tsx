@@ -242,7 +242,7 @@ export default function SlideDraftPreview({
                 draft={draft}
                 index={zoom}
                 dark
-                onText={(field, value) => onEdit(setSlideText(draft, zoom, field, value))}
+                onText={(path, value) => onEdit(setSlideText(draft, zoom, path, value))}
                 onImage={async (query) => {
                   const res = await fetch("/api/slides/image", {
                     method: "POST",
@@ -262,6 +262,7 @@ export default function SlideDraftPreview({
                   setZoom(null); setMode("view");
                 }}
                 onClose={() => setMode("view")}
+                onSwitchToComment={onSlideComment ? () => setMode("comment") : undefined}
               />
             ) : mode === "comment" && onSlideComment ? (
               <SlideCommentBox
@@ -270,6 +271,7 @@ export default function SlideDraftPreview({
                 slideTitle={slideTitle(zoom)}
                 onSubmit={submitComment(zoom)}
                 onCancel={() => setMode("view")}
+                onSwitchToEdit={onEdit ? () => setMode("edit") : undefined}
                 dark
               />
             ) : (

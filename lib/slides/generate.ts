@@ -669,7 +669,14 @@ function barChartRequests(
   const series = chart.series?.[0];
   if (!series?.points?.length) return [];
   const palette = onDark ? SERIES_DARK : SERIES_LIGHT;
-  const points = [...series.points].sort((a, b) => b.value - a.value).slice(0, 8);
+  // Carry each point's ORIGINAL index through the sort. The object id has to
+  // name the point in the spec, not its rank on the slide — otherwise editing
+  // "Bar 1" edits whichever row happened to be first in the input, and any deck
+  // whose data was not already sorted gets the wrong bar changed.
+  const points = series.points
+    .map((p, orig) => ({ ...p, orig }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8);
   const max = Math.max(...points.map((p) => Math.abs(p.value))) || 1;
 
   const plotX = GRID.margin + CHART.labelGutter;
@@ -683,13 +690,13 @@ function barChartRequests(
     const y = plotTop + i * rowH;
     const w = Math.max(2, (Math.abs(p.value) / max) * plotW);
     out.push(
-      ...textBox(id(`bl${i}`), page, p.label, TYPE.chartCategory, {
+      ...textBox(id(`bl${p.orig}`), page, p.label, TYPE.chartCategory, {
         x: GRID.margin, y: y + 5, width: CHART.labelGutter - 10, height: CHART.barHeight,
       }),
-      ...filledShape(id(`bb${i}`), page, "RECTANGLE", palette[0], {
+      ...filledShape(id(`bb${p.orig}`), page, "RECTANGLE", palette[0], {
         x: plotX, y, width: w, height: CHART.barHeight,
       }),
-      ...textBox(id(`bv${i}`), page, formatValue(p.value), TYPE.chartValue, {
+      ...textBox(id(`bv${p.orig}`), page, formatValue(p.value), TYPE.chartValue, {
         x: plotX + w + CHART.valueGap, y: y + 5, width: 60, height: CHART.barHeight,
       }),
     );

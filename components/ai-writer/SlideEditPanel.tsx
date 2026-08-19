@@ -17,11 +17,13 @@ import type { SlideDraft } from "./SlideDraftPreview";
 import { editableFields } from "@/lib/slides/draft-edit";
 
 export default function SlideEditPanel({
-  draft, index, onText, onImage, onMove, onDelete, onClose, dark,
+  draft, index, onText, onImage, onMove, onDelete, onClose, onSwitchToComment, dark,
 }: {
   draft: SlideDraft;
   index: number;
-  onText: (field: any, value: string) => void;
+  onText: (path: any, value: string) => void;
+  /** Hand over to the model without closing the overlay first. */
+  onSwitchToComment?: () => void;
   onImage: (query: string) => Promise<void>;
   onMove: (delta: number) => void;
   onDelete: () => void;
@@ -66,19 +68,22 @@ export default function SlideEditPanel({
         </div>
       </div>
 
-      <div className="space-y-2.5">
-        {fields.map(({ field, label: name, value }) => (
-          <div key={field}>
+      <div className="space-y-2.5 max-h-[38vh] overflow-y-auto pr-1">
+        {fields.map(({ path, label: name, value, multiline }) => (
+          <div key={path.join(".")}>
             <label className={`block text-[11px] mb-1 ${label}`}>{name}</label>
             <textarea
               value={value}
-              rows={field === "body" || field === "bodyRight" ? 3 : 1}
-              onChange={(e) => onText(field, e.target.value)}
+              rows={multiline ? 3 : 1}
+              onChange={(e) => onText(path, e.target.value)}
               className={input}
-              placeholder={field === "body" ? "One bullet per line" : ""}
+              placeholder={multiline ? "One bullet per line" : ""}
             />
           </div>
         ))}
+        {fields.length === 0 && (
+          <p className={`text-xs ${label}`}>This slide has no editable text.</p>
+        )}
 
         <div>
           <label className={`block text-[11px] mb-1 ${label}`}>
@@ -99,7 +104,13 @@ export default function SlideEditPanel({
         </div>
       </div>
 
-      <div className="flex justify-end mt-3">
+      <div className="flex items-center justify-between mt-3">
+        {onSwitchToComment ? (
+          <Button size="sm" variant="ghost" onClick={onSwitchToComment}
+                  className={dark ? "text-white/70 hover:text-white hover:bg-white/10" : ""}>
+            Ask for a change instead
+          </Button>
+        ) : <span />}
         <Button size="sm" variant="ghost" onClick={onClose}
                 className={dark ? "text-white/70 hover:text-white hover:bg-white/10" : ""}>
           Done
