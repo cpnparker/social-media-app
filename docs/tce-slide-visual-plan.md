@@ -146,16 +146,42 @@ fallback must be reported, not silent.
 
 ## 6. Decisions needed
 
-1. **Where do photographs come from?** Three options, and it decides Phase 1's shape:
-   - *Generate* via the existing gpt-image-1 path — always on-brief, no licensing
-     question, costs a few seconds per slide, and can look synthetic.
-   - *Artlist* — already integrated (`lib/integrations/artlist.ts`), licensed, real
-     photography, needs a search-and-pick step.
-   - *A curated TCE library in Blob* — fastest and most on-brand, needs someone to
-     curate it once.
-   My recommendation: curated library first, generation as the fallback when
-   nothing matches. Artlist is the best long-term answer but adds a picking step
-   to a flow whose whole appeal is that it is one message.
+1. **Where photographs come from — SETTLED 2026-08-18: stock + generation.**
+
+   Artlist is out, for three reasons rather than one. It is not subscribed —
+   `ARTLIST_API_KEY` is set neither locally nor in Vercel production. The wrapper
+   says of itself that it is a v1 stub whose endpoints are guessed and awaiting
+   real docs, and those guesses are unverified: `api.artlist.io` answers 401 to
+   every path including invented ones, so the gateway proves nothing about
+   whether `/v1/footage/search` exists. And it targets Artgrid **footage** —
+   video, where slides need stills.
+
+   *Live bug found while checking:* `search_artlist` and `license_artlist_asset`
+   are registered unconditionally in Design mode (`providers.ts:6797`) with no
+   key check, so the model can offer footage search that always throws
+   "ARTLIST_API_KEY environment variable is not set". Gate both on the key.
+
+   The three layers to build instead, in the order they should be tried:
+
+   | Layer | Source | Why |
+   |---|---|---|
+   | 1. Owned | Curated TCE library in Blob | Zero licensing risk, best brand fit, instant |
+   | 2. Stock | **Unsplash API** | Free for commercial use, no attribution required, real documented API |
+   | 3. Generated | Existing gpt-image-1 path | Concepts and brand-tinted abstracts where no photograph fits |
+
+   Unsplash gives 50 requests/hour in demo and roughly 1,000–5,000/hour once a
+   production app is approved (a few days). Its terms require hotlinking images
+   and firing download events rather than rehosting, which cuts against our Blob
+   habit and needs handling deliberately. Pexels is the fallback if approval
+   drags — 200/hour and 20,000/month with no formal review, at the cost of a
+   smaller and less consistent library.
+
+   **The licensing risk is not the fee, it is releases.** Unsplash and Pexels
+   images carry no model or property releases, so a recognisable face in a
+   Siemens deck can read as endorsement. Rule for the stock layer: prefer
+   environmental, architectural, abstract and texture imagery; avoid recognisable
+   people and third-party logos in client-facing decks, and prefer the owned
+   library or generation whenever a person is needed.
 2. **Client-brand decks?** `ai_client_context.visual_identity` already models
    per-client palettes. Every palette would need re-validating — the brand's own
    accents failed, and a client's will too.
