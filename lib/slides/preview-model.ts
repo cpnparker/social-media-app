@@ -29,6 +29,10 @@ export interface PreviewElement {
   align?: "start" | "center" | "end";
   bullets?: boolean;
   src?: string;
+  /** 0–1. Carries the scrim's transparency; absent means fully opaque. */
+  opacity?: number;
+  /** Slides rounds ROUND_RECTANGLE far more than a 4px radius suggests. */
+  rounded?: boolean;
 }
 
 export interface PreviewSlide {
@@ -69,6 +73,7 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
       } else if (kind === "createShape") {
         const el: PreviewElement = {
           kind: body.shapeType === "ELLIPSE" ? "ellipse" : "rect",
+          rounded: body.shapeType === "ROUND_RECTANGLE",
           x: body.elementProperties.transform.translateX,
           y: body.elementProperties.transform.translateY,
           w: body.elementProperties.size.width.magnitude,
@@ -91,8 +96,14 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
         current.elements.push(el);
       } else if (kind === "updateShapeProperties") {
         const el = byId.get(body.objectId);
-        const fill = body.shapeProperties?.shapeBackgroundFill?.solidFill?.color?.rgbColor;
+        const solid = body.shapeProperties?.shapeBackgroundFill?.solidFill;
+        const fill = solid?.color?.rgbColor;
         if (el && fill) el.fill = hex(fill);
+        // ALPHA MATTERS. Dropping it renders the scrim — a full-canvas navy
+        // rectangle at partial opacity — as solid navy, which hides the
+        // photograph underneath completely. The deck was right and the preview
+        // was not, which is the one failure a preview cannot have.
+        if (el && typeof solid?.alpha === "number") el.opacity = solid.alpha;
       } else if (kind === "insertText") {
         const el = byId.get(body.objectId);
         if (el) { el.kind = "text"; el.text = body.text; }

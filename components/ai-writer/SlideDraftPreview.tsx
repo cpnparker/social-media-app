@@ -34,6 +34,8 @@ export interface PreviewElement {
   align?: "start" | "center" | "end";
   bullets?: boolean;
   src?: string;
+  opacity?: number;
+  rounded?: boolean;
 }
 
 export interface PreviewSlide {
@@ -98,7 +100,8 @@ function SlideThumb({
               <div key={i} style={{
                 ...base,
                 background: el.fill || "transparent",
-                borderRadius: el.kind === "ellipse" ? "50%" : 4,
+                opacity: el.opacity ?? 1,
+                borderRadius: el.kind === "ellipse" ? "50%" : el.rounded ? 8 : 2,
               }} />
             );
           }
