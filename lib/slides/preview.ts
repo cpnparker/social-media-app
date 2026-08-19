@@ -12,6 +12,7 @@
  */
 
 import { put } from "@vercel/blob";
+import { signedMediaUrl } from "@/lib/media/signed";
 
 const SLIDES_API = "https://slides.googleapis.com/v1/presentations";
 
@@ -50,12 +51,15 @@ export async function captureThumbnails(
           const img = await fetch(contentUrl, { signal: AbortSignal.timeout(15_000) });
           if (!img.ok) return null;
 
+          // Private, like every other blob: the store rejects public access
+          // outright. A signed URL then makes it renderable in a chat the user
+          // may reopen weeks later, and in a shared conversation.
           const blob = await put(
             `slides/${presentationId}/${Date.now()}-${i}.png`,
             Buffer.from(await img.arrayBuffer()),
-            { access: "public", contentType: "image/png", addRandomSuffix: true }
+            { access: "private", contentType: "image/png", addRandomSuffix: true }
           );
-          return blob.url;
+          return signedMediaUrl(blob.pathname);
         } catch {
           return null;
         }

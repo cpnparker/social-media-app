@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
 import { generateSlides, updateSlides, resolveDeckImages } from "@/lib/slides/generate";
 import { toPreviewModel } from "@/lib/slides/preview-model";
+import { signedMediaUrl } from "@/lib/media/signed";
 import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
 import { isReconnectable } from "@/lib/slides/reauth";
 
@@ -3131,8 +3132,8 @@ export async function generateImage(
    *  photo to stylise). Forces the gpt-image-1 EDIT path regardless of
    *  provider — grok-imagine has no image-input mode. */
   referenceImageUrls?: string[],
-  /** "public" stores the image at an unauthenticated Blob URL and returns that
-   *  absolute URL instead of the auth-proxied path.
+  /** "public" returns an absolute, signed URL that needs no session, instead of
+   *  the auth-proxied path.
    *
    *  Needed because Google fetches Slides images from ITS OWN servers, with no
    *  session and no idea what a relative path means — so a deck can only ever
@@ -3328,8 +3329,10 @@ export async function generateImage(
   const filename = `generated/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
   let blob;
   try {
+    // Always private: the Blob store is configured private-access, and asking
+    // for public is rejected outright rather than downgraded.
     blob = await put(filename, imageBuffer, {
-      access: visibility === "public" ? "public" : "private",
+      access: "private",
       contentType: "image/png",
       addRandomSuffix: true,
     });
@@ -3338,9 +3341,10 @@ export async function generateImage(
     throw err;
   }
 
-  // Public: hand back the absolute Blob URL, which anyone — Google included —
-  // can fetch. Private: serve through the auth proxy for access control.
-  if (visibility === "public") return blob.url;
+  // "public" means reachable WITHOUT a session, which a private store cannot do
+  // with its own URLs — so it gets a signed capability URL instead. Private
+  // keeps the session-gated proxy.
+  if (visibility === "public") return signedMediaUrl(blob.pathname);
   return `/api/media/file?path=${encodeURIComponent(blob.pathname)}`;
 }
 
