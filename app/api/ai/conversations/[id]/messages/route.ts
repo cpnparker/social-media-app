@@ -71,24 +71,34 @@ async function extractDocumentText(att: Attachment): Promise<string | undefined>
       const pdfParseModule = await import("pdf-parse");
       const pdfParse = pdfParseModule.default ?? pdfParseModule;
       const data = await pdfParse(buffer);
-      return data.text;
+      // A deck exported with its slides as images parses FINE and yields
+      // nothing — no error, just an empty string. Returning it as though it
+      // were content is how a 1.3MB presentation became invisible: the caller
+      // saw a successful extraction, the builders saw nothing worth sending,
+      // and the model was told neither. Whitespace counts as nothing too.
+      const text = (data.text || "").trim();
+      if (!text) {
+        console.warn(`[Messages] PDF ${att.name} parsed but contains no extractable text (likely image-only)`);
+        return undefined;
+      }
+      return text;
     }
 
     if (att.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
       const mammoth = await import("mammoth");
       const result = await mammoth.extractRawText({ buffer });
-      return result.value;
+      return (result.value || "").trim() || undefined;
     }
 
     const isPptx =
       att.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
       att.name.toLowerCase().endsWith(".pptx");
     if (isPptx) {
-      return await extractPptxText(buffer);
+      return ((await extractPptxText(buffer)) || "").trim() || undefined;
     }
 
     if (att.type.startsWith("text/")) {
-      return buffer.toString("utf-8");
+      return buffer.toString("utf-8").trim() || undefined;
     }
 
     return undefined;
@@ -1232,9 +1242,18 @@ export async function POST(
       // sent, but it also skipped genuine verbatim repeats, which is what made
       // saying the same thing twice route BETTER than rephrasing it. The
       // router's own refinement test handles the rest.
-      model = routeModel(userContent || "", priorUser);
+      // Anything that is not an image is a document the model has to READ, and
+      // only the Claude chain can take one natively. Computed from the
+      // attachments on THIS message, not the conversation, so an old PDF does
+      // not pin every later turn to one model.
+      const hasDocumentAttachment = (enrichedAttachments || userAttachments || []).some(
+        (a: any) => a?.type && !String(a.type).startsWith("image/")
+      );
+      model = routeModel(userContent || "", priorUser, { hasDocumentAttachment });
       wasAutoRouted = true;
-      console.log(`[Messages] Auto-routed → ${model}`);
+      console.log(
+        `[Messages] Auto-routed → ${model}${hasDocumentAttachment ? " (document attached)" : ""}`
+      );
     }
 
     // Route query to determine search mode and data source hints

@@ -887,6 +887,33 @@ function splitSystemMessages(messages: AIMessage[]) {
   return { systemMessages, conversationMessages };
 }
 
+/**
+ * What the model is told when an attachment could not be included.
+ *
+ * WHY THIS MUST EXIST. A 1.3MB PDF was uploaded, text extraction returned
+ * nothing, the turn was on a chain with no native PDF support, and the builder
+ * simply skipped the block. The model therefore received the sentence "can you
+ * look over this presentation thoroughly" with no presentation attached — and,
+ * having no way to know a file had ever been sent, explained that the PDF was
+ * not in the shared Drive and asked for it to be shared with a service account.
+ *
+ * That is the failure this codebase keeps re-learning: a partial input handed
+ * over as if it were complete, where only the answer reveals the gap. A dropped
+ * attachment must be LOUD. The model can then say the true thing — that the
+ * file arrived and could not be read — instead of inventing a reason it is
+ * missing.
+ */
+function unreadableAttachmentNote(att: AIAttachment, reason: string): string {
+  return [
+    `[ATTACHMENT NOT READABLE: "${att.name}" (${att.type || "unknown type"})]`,
+    `The user DID attach this file to this message. ${reason}`,
+    `Tell them plainly that you could not read it and why. Do NOT say it was not provided,`,
+    `do NOT say it is missing or not shared with you, and do NOT ask them to share it`,
+    `somewhere else or paste its contents unless there is no other option. If you can still`,
+    `partly answer from the filename and their message, say what you are basing that on.`,
+  ].join(" ");
+}
+
 /** Build Anthropic content blocks from a message with optional attachments.
  *  Images and PDFs are fetched server-side and sent as base64 so
  *  Anthropic doesn't need to access our auth-gated proxy. */
@@ -937,12 +964,21 @@ async function buildAnthropicContent(
         } as any);
       } catch (err) {
         console.error(`[Anthropic] Failed to fetch PDF ${att.name}:`, err);
+        blocks.push({
+          type: "text",
+          text: unreadableAttachmentNote(att, "The file could not be downloaded from storage."),
+        });
       }
     } else if (att.extractedText) {
       // Other docs: include extracted text
       blocks.push({
         type: "text",
         text: `[Document: ${att.name}]\n${att.extractedText}`,
+      });
+    } else {
+      blocks.push({
+        type: "text",
+        text: unreadableAttachmentNote(att, "No text could be extracted from it, and this file type cannot be read directly."),
       });
     }
   }
@@ -992,6 +1028,13 @@ async function buildOpenAIContent(
         type: "text",
         text: `[Document: ${att.name}]\n${att.extractedText}`,
       });
+    } else {
+      // No native document support on this chain, and nothing extracted. Say so
+      // rather than dropping the file — see unreadableAttachmentNote.
+      parts.push({
+        type: "text",
+        text: unreadableAttachmentNote(att, "It could not be converted to text, and this model cannot open the file itself."),
+      });
     }
   }
 
@@ -1040,6 +1083,8 @@ async function buildXAIContent(
       }
     } else if (att.extractedText) {
       docTexts.push(`[Document: ${att.name}]\n${att.extractedText}`);
+    } else {
+      docTexts.push(unreadableAttachmentNote(att, "It could not be converted to text, and this model cannot open the file itself."));
     }
   }
 

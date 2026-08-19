@@ -161,8 +161,22 @@ const REFINEMENT_MAX_CHARS = 260;
  */
 export function routeModel(
   userMessage: string,
-  priorUserMessages?: string[]
+  priorUserMessages?: string[],
+  opts?: { hasDocumentAttachment?: boolean }
 ): typeof FAST_MODEL | typeof REASONING_MODEL | typeof GROUNDED_MODEL {
+  // A DOCUMENT OVERRIDES THE TEXT. Routing used to read the message only, and
+  // attachments were invisible to it — so "can you look over this presentation
+  // thoroughly" scored as a short, easy request and went to the fast model,
+  // which cannot read a PDF at all. The deck was dropped, nothing said so, and
+  // the reply explained that the file was not in the shared Drive.
+  //
+  // GROUNDED_MODEL is Claude, the only chain here that takes a PDF natively as
+  // a document block. Extraction usually gets there first, but when it returns
+  // nothing — a scanned or image-only deck, an encrypted file, a parser that
+  // gave up — Claude can still read the actual pages. Routing on the text and
+  // hoping the extractor succeeded is what made the failure silent.
+  if (opts?.hasDocumentAttachment) return GROUNDED_MODEL;
+
   const own = routeOwn(userMessage);
   if (own !== FAST_MODEL || !priorUserMessages?.length) return own;
   if (!isRefinement(userMessage)) return own;
