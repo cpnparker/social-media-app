@@ -165,6 +165,14 @@ export async function resolveImage(
         `${query}. Editorial photography for a corporate presentation slide. ` +
         `Wide composition with calm, uncluttered space for text. No words, letters or logos in the image.`
       );
+      // A relative path here means the generator handed back an auth-proxied
+      // URL. Google fetches slide images from its own servers with no session,
+      // so that image can never appear — better to show the brand background
+      // and say why than to build a deck with an invisible picture in it.
+      if (url && !/^https?:\/\//i.test(url)) {
+        console.warn(`[SlideImages] generator returned a non-absolute URL (${url.slice(0, 48)}) — unusable in a deck`);
+        return null;
+      }
       if (url) {
         console.log(`[SlideImages] "${query}" → generated (no owned or stock match)`);
         return { url, source: "generated", scrim: await scrimFor(url) };

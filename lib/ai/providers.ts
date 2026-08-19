@@ -3130,7 +3130,16 @@ export async function generateImage(
   /** Image-to-image: user-attached reference images (logo to incorporate,
    *  photo to stylise). Forces the gpt-image-1 EDIT path regardless of
    *  provider — grok-imagine has no image-input mode. */
-  referenceImageUrls?: string[]
+  referenceImageUrls?: string[],
+  /** "public" stores the image at an unauthenticated Blob URL and returns that
+   *  absolute URL instead of the auth-proxied path.
+   *
+   *  Needed because Google fetches Slides images from ITS OWN servers, with no
+   *  session and no idea what a relative path means — so a deck can only ever
+   *  show a publicly reachable image. Chat keeps the private default; this is
+   *  opt-in, and only for pictures that are about to be put in a deck the user
+   *  intends to share anyway. */
+  visibility: "private" | "public" = "private"
 ): Promise<string> {
   // Apply client brand context when one is loaded (auto-on in Design mode).
   if (brand) {
@@ -3320,15 +3329,18 @@ export async function generateImage(
   let blob;
   try {
     blob = await put(filename, imageBuffer, {
-      access: "private",
+      access: visibility === "public" ? "public" : "private",
       contentType: "image/png",
+      addRandomSuffix: true,
     });
   } catch (err: any) {
     console.error("[Image Gen] Blob upload failed:", err?.message);
     throw err;
   }
 
-  // Serve through auth proxy for access control
+  // Public: hand back the absolute Blob URL, which anyone — Google included —
+  // can fetch. Private: serve through the auth proxy for access control.
+  if (visibility === "public") return blob.url;
   return `/api/media/file?path=${encodeURIComponent(blob.pathname)}`;
 }
 
@@ -3682,7 +3694,8 @@ async function buildOrUpdateSlides(
   // Photographs the deck cannot find are generated with the same pipeline the
   // chat uses. Passed in rather than imported by lib/slides, which would close
   // an import cycle back through this file.
-  const imageGen = (prompt: string) => generateImage(prompt, "1792x1024", "openai");
+  const imageGen = (prompt: string) =>
+    generateImage(prompt, "1792x1024", "openai", undefined, undefined, "public");
 
   if (presentationId) {
     const updated = await updateSlides(presentationId, title, slides, userEmail, imageGen);
@@ -3701,7 +3714,8 @@ async function buildOrUpdateSlides(
  *  the slowest part of a draft, and worth it: a preview that omits the pictures
  *  cannot be judged on the thing that makes a deck visual. */
 async function buildSlidesDraft(title: string, slides: any[]) {
-  await resolveDeckImages(slides, (prompt: string) => generateImage(prompt, "1792x1024", "openai"));
+  await resolveDeckImages(slides, (prompt: string) =>
+    generateImage(prompt, "1792x1024", "openai", undefined, undefined, "public"));
   return {
     title,
     slides,
