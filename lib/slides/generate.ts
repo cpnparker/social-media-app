@@ -16,7 +16,7 @@
 
 import {
   COLOR, GRID, CANVAS, TYPE, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
-  SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, LAYOUT_STYLE, LOGO_PLACEMENT,
+  SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, RULE, LAYOUT_STYLE, LOGO_PLACEMENT,
   rgb, logoUrl, textOn, type SlideLayout, type TypeStyle,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
@@ -81,6 +81,9 @@ export interface SlideInput {
   imagesDropped?: number;
   /** The layout name the model asked for, when it was not one we have. */
   layoutAsked?: string;
+  /** This slide is the tail of one the splitter cut in two. It takes the
+   *  picture from the slide it came from rather than asking for its own. */
+  continuation?: boolean;
   /** Thumbnails for the image-grid layout. */
   images?: { url?: string; query?: string; caption?: string }[];
   resolvedImages?: { url: string; caption?: string }[];
@@ -167,6 +170,10 @@ interface BoxOptions {
   align?: "START" | "CENTER" | "END";
   bullets?: boolean;
   lineSpacing?: number;
+  /** Points after each paragraph. Raised on a short list so four bullets use
+   *  the band they are given instead of pooling under the title with half the
+   *  slide empty beneath them. */
+  spaceBelow?: number;
   /** Centre the text vertically inside its box.
    *
    *  This is how a short slide stops leaving its bottom third empty without
@@ -249,7 +256,7 @@ function textBox(
         style: {
           alignment: options.align ?? "START",
           lineSpacing: (options.lineSpacing ?? 1.15) * 100,
-          spaceBelow: pt(6),
+          spaceBelow: pt(options.spaceBelow ?? 6),
         },
         fields: "alignment,lineSpacing,spaceBelow",
       },
@@ -336,7 +343,9 @@ function filledShape(
   pageObjectId: string,
   shapeType: "RECTANGLE" | "ROUND_RECTANGLE" | "ELLIPSE" | "RIGHT_ARROW",
   color: string,
-  box: { x: number; y: number; width: number; height: number }
+  box: { x: number; y: number; width: number; height: number },
+  /** 0–1. A hairline at full strength is a line; at a fifth it is structure. */
+  alpha?: number
 ): Req[] {
   return [
     {
@@ -354,10 +363,17 @@ function filledShape(
       updateShapeProperties: {
         objectId,
         shapeProperties: {
-          shapeBackgroundFill: { solidFill: { color: { rgbColor: rgb(color) } } },
+          shapeBackgroundFill: {
+            solidFill: {
+              color: { rgbColor: rgb(color) },
+              ...(typeof alpha === "number" ? { alpha } : {}),
+            },
+          },
           outline: { propertyState: "NOT_RENDERED" },
         },
-        fields: "shapeBackgroundFill.solidFill.color,outline.propertyState",
+        fields: typeof alpha === "number"
+          ? "shapeBackgroundFill.solidFill,outline.propertyState"
+          : "shapeBackgroundFill.solidFill.color,outline.propertyState",
       },
     },
   ];
@@ -1418,6 +1434,42 @@ export function deckWarnings(slides: SlideInput[]): string {
   return ` TELL THE USER, briefly and without apologising: ${notes.join("; ")}.`;
 }
 
+/** Where a prose slide's picture goes: down the right, bleeding to the right
+ *  and bottom edges.
+ *
+ *  A content slide with an `image.query` resolved a photograph, cropped it,
+ *  baked a gradient into it and uploaded it to Blob — and then drew nothing,
+ *  because only the full-bleed layouts call backdropRequests. The picture was
+ *  paid for and discarded, AND isVisualSlide counted the slide as visual on the
+ *  strength of it, so the audit reported a deck as illustrated when every slide
+ *  was text. */
+export function railBox(
+  slide: SlideInput
+): { url: string; x: number; y: number; width: number; height: number } | null {
+  const url = slide.resolvedImage?.url;
+  const layout = slide.layout;
+  if (!url || (layout !== "content" && layout !== "case-study")) return null;
+  const x = GRID.margin + GRID.proseNarrow + IMAGE.railGap;
+  return { url, x, y: GRID.bodyY, width: CANVAS.width - x, height: CANVAS.height - GRID.bodyY };
+}
+
+/** The rule under a title: a short accent segment, then a hairline. */
+function ruleRequests(
+  objectId: string, page: string, y: number, width: number, onDark: boolean
+): Req[] {
+  const accent = onDark ? COLOR.tealSoft : COLOR.blue;
+  const hair = onDark ? COLOR.greyLight : COLOR.navy;
+  return [
+    ...filledShape(`${objectId}a`, page, "RECTANGLE", accent, {
+      x: GRID.margin, y, width: RULE.accentWidth, height: RULE.thickness,
+    }),
+    ...filledShape(`${objectId}b`, page, "RECTANGLE", hair, {
+      x: GRID.margin + RULE.accentWidth, y: y + (RULE.thickness - RULE.hairlineThickness) / 2,
+      width: Math.max(0, width - RULE.accentWidth), height: RULE.hairlineThickness,
+    }, RULE.hairlineAlpha),
+  ];
+}
+
 /** Card geometry, computed in ONE place — the thumbnail's box decides the crop
  *  at resolution time and the placement at draw time.
  *
@@ -1756,7 +1808,13 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
   // The heading, fitted to the room it actually has. Every layout below draws
   // its title from THIS, not from the grid constants, so a long title can never
   // again be drawn through the body underneath it.
-  const titleWidth = layout === "image-split" ? IMAGE.splitTextWidth : GRID.contentWidth;
+  // Prose layouts set their title on the same measure as their body, so the
+  // two align and the heading is fitted to the width it will actually occupy.
+  const isProse = layout === "content" || layout === "case-study" || layout === "dark-index";
+  const proseColumn = isProse
+    ? (railBox(slide) ? GRID.proseNarrow : GRID.proseWidth)
+    : GRID.contentWidth;
+  const titleWidth = layout === "image-split" ? IMAGE.splitTextWidth : proseColumn;
   const heading = fitHeading(slide.title, onDark ? TYPE.slideTitleDark : TYPE.slideTitle, titleWidth, {
     bottom: GRID.bodyY - TITLE_GAP,
     minTop: GRID.eyebrowY + GRID.eyebrowHeight + 6,
@@ -1982,17 +2040,77 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
   } else {
     // content, case-study, dark-index all share the title + body skeleton;
     // the eyebrow is what makes a case study read as one.
+    //
+    // This is the slide most decks are mostly made of, and measured it carried
+    // 12.5% ink, no drawn object of any kind, 116 characters to a line, and the
+    // bottom 47% of the canvas empty. Four things change that, none of them a
+    // new layout: a measure, a rule, a middle step in the type scale, and the
+    // photograph the slide already asked for and used to throw away.
+    const rail = railBox(slide);
+    const proseWidth = proseColumn;
+
+    if (rail) {
+      requests.push({
+        createImage: {
+          objectId: id("rail"), url: rail.url,
+          elementProperties: {
+            pageObjectId: page,
+            size: { width: pt(rail.width), height: pt(rail.height) },
+            transform: { scaleX: 1, scaleY: 1, translateX: rail.x, translateY: rail.y, unit: "PT" },
+          },
+        },
+      });
+    }
+
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
         x: GRID.margin, y: GRID.eyebrowY,
         width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
       }),
       ...textBox(id("title"), page, slide.title, titleStyle, {
-        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+        x: GRID.margin, y: titleBox.y, width: proseWidth, height: titleBox.height,
       }),
+      ...ruleRequests(id("rule"), page, GRID.bodyY - RULE.gapAbove, proseWidth, onDark),
+    );
+
+    // The standfirst takes the room it needs and the bullets start under it.
+    let bodyTop = GRID.bodyY;
+    if (slide.subtitle?.trim()) {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standHeight = drawnTextHeight(
+        estimateLines(slide.subtitle, proseWidth, standStyle.size), standStyle.size
+      );
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: bodyTop, width: proseWidth, height: standHeight,
+      }));
+      bodyTop += standHeight + 10;
+    }
+
+    // Four bullets in a 241pt band left 47% of the canvas empty below them.
+    // The paragraphs are spread through the band instead — up to a limit, past
+    // which a list stops reading as a list and starts reading as loose lines.
+    const bodyHeight = Math.max(40, GRID.bodyY + GRID.bandHeight - bodyTop);
+    const paras = (slide.body || "").split("\n").map((l) => l.trim()).filter(Boolean);
+    let bodySpacing = 6;
+    if (paras.length > 1) {
+      let lines = 0;
+      for (const para of paras) lines += Math.max(1, estimateLines(para, proseWidth, bodyStyle.size, true));
+      const natural = drawnTextHeight(lines, bodyStyle.size, 6, paras.length);
+      const slack = bodyHeight - natural;
+      if (slack > 0) bodySpacing = Math.min(22, 6 + slack / (paras.length - 1));
+    }
+
+    requests.push(
       ...textBox(id("body"), page, slide.body, bodyStyle, {
-        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: GRID.bodyHeight,
-      }, { bullets: true }),
+        x: GRID.margin, y: bodyTop, width: proseWidth,
+        // Down to the foot of the band, not the old fixed height that stopped
+        // 39pt short of it and pooled every list under the title.
+        height: bodyHeight,
+      }, { bullets: true, spaceBelow: bodySpacing }),
+      ...(rail
+        ? creditRequests(id("credit"), page, slide.resolvedImage?.credit,
+            { x: GRID.margin, width: proseWidth }, onDark)
+        : []),
     );
   }
 
@@ -2200,11 +2318,17 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
         : `${slide.title || ""} (continued)`.trim(),
       body: rest().join("\n"),
       // The eyebrow and the speaker notes belong to the first half — an eyebrow
-      // repeated reads as a new section starting. The PICTURE stays: it is the
-      // layout, not the content, and dropping it left an image-split slide as a
-      // column of text beside half a slide of nothing. It is already resolved,
-      // so keeping it costs no second search.
-      image: undefined, eyebrow: undefined, notes: undefined,
+      // repeated reads as a new section starting. The picture is INHERITED
+      // instead of re-requested: dropping it left an image-split slide as a
+      // column of text beside half a slide of nothing, and keeping the query
+      // would buy a second, different photograph for the same point. See
+      // inheritContinuationImages, which runs after resolution — splitting
+      // happens BEFORE it, so there is nothing to copy yet at this moment.
+      // bodyRight goes with the eyebrow: the spread copies it, so a two-column
+      // slide whose LEFT column overflowed repeated its whole right column on
+      // the continuation.
+      image: undefined, eyebrow: undefined, notes: undefined, bodyRight: undefined,
+      continuation: true,
     },
   ];
 }
@@ -2264,6 +2388,25 @@ export function textBandsFor(slide: SlideInput, index: number): TextBand[] {
   return merged;
 }
 
+/** Give every continuation the picture of the slide it was cut from.
+ *
+ *  Run AFTER resolution, because splitting runs before it: at the moment the
+ *  slide is cut there is only an image QUERY, and nothing to copy. Keeping the
+ *  query on the tail instead would buy a second, different photograph for the
+ *  same point — and pay for it. This was shipped once as `resolvedImage` left
+ *  on the continuation, which did nothing at all: the field is empty when the
+ *  splitter runs, and the check that was supposed to prove otherwise used a
+ *  fixture with the picture already resolved.
+ */
+export function inheritContinuationImages(slides: SlideInput[]): void {
+  for (let i = 1; i < slides.length; i++) {
+    const slide = slides[i];
+    if (!slide.continuation || slide.resolvedImage) continue;
+    const parent = slides[i - 1];
+    if (parent.resolvedImage) slide.resolvedImage = parent.resolvedImage;
+  }
+}
+
 /** Reissue the capability URLs a persisted draft carries.
  *
  *  They last thirty days; the draft in the thread lasts for ever. A deck
@@ -2321,14 +2464,25 @@ export async function resolveDeckImages(
         // way the full-bleed cover used to, which is the bug this closes.
         // Gradient only where text sits on the picture.
         const split = slide.layout === "image-split";
+        // A prose slide's picture is a rail down the right, not a backdrop, so
+        // it is cropped to the rail's own shape. Baking it 16:9 and dropping it
+        // into a 239x272 box is the letterboxing every other path fixed.
+        const railShape = slide.layout === "content" || slide.layout === "case-study"
+          ? { width: CANVAS.width - (GRID.margin + GRID.proseNarrow + IMAGE.railGap),
+              height: CANVAS.height - GRID.bodyY }
+          : null;
         // Tell the baker where this layout's lockup will land, so it measures
         // the part of the picture the mark actually sits on.
         const style = LAYOUT_STYLE[layoutOf(slide.layout, slideIndex)];
         const place = LOGO_PLACEMENT[style.logoPlacement];
         const r = await resolveImage(slide.image, generate, {
-          aspect: split ? IMAGE.splitWidth / CANVAS.height : CANVAS.width / CANVAS.height,
-          gradient: !split,
-          textBands: split ? undefined : textBandsFor(slide, slideIndex),
+          aspect: railShape
+            ? railShape.width / railShape.height
+            : split ? IMAGE.splitWidth / CANVAS.height : CANVAS.width / CANVAS.height,
+          // No text sits on the rail or the split picture, so neither is
+          // darkened; a gradient there would dim a photograph for nothing.
+          gradient: !split && !railShape,
+          textBands: split || railShape ? undefined : textBandsFor(slide, slideIndex),
           logoRegion: {
             x: place.x / CANVAS.width, y: place.y / CANVAS.height,
             w: place.width / CANVAS.width, h: place.height / CANVAS.height,
@@ -2402,6 +2556,9 @@ export async function resolveDeckImages(
       }
     })
   );
+
+  // Tails of split slides take the picture of the slide they came from.
+  inheritContinuationImages(slides);
 }
 
 /** Short unique prefix for one generation run. Base36 of the clock plus a few

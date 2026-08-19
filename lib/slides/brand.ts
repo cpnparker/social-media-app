@@ -118,6 +118,13 @@ export const GRID = {
   closingSubtitleY: 3.2 * IN,
   closingSubtitleHeight: 0.4 * IN,
 
+  /** A MEASURE for prose. Body copy ran the full 671pt content width — 116
+   *  characters of 10pt Roboto on a line, where anything past about 75 stops
+   *  being comfortable to read and starts looking like a document. 540pt is
+   *  ~94, and 432 is ~75 for the case where a picture takes the rest. */
+  proseWidth: 7.5 * IN,       // 540
+  proseNarrow: 6.0 * IN,      // 432, when a rail image sits beside it
+
   /** Columns start below the title band (1.22 + 0.63 = 1.85in). The source
    *  layout's own 1.26in assumes a title higher up the page than ours. */
   columnWidth: 4.37 * IN,     // 314.64
@@ -125,6 +132,23 @@ export const GRID = {
   columnHeight: 2.81 * IN,
   columnLeftX: 0.34 * IN,
   columnRightX: 5.28 * IN,
+} as const;
+
+/** The rule under a title on a prose slide.
+ *
+ *  The measured problem it answers: a content slide carried 12.5% ink and NOT
+ *  ONE drawn object — no rule, no panel, no block of colour anywhere on the
+ *  canvas. The source deck used 278 rectangles across eighteen slides. A short
+ *  accent segment and a hairline is the cheapest honest structure: it says
+ *  where the title ends and the argument begins.
+ */
+export const RULE = {
+  accentWidth: 1.0 * IN,
+  thickness: 3,
+  hairlineThickness: 1,
+  hairlineAlpha: 0.22,
+  /** Above the body, below the fitted title block. */
+  gapAbove: 8,
 } as const;
 
 /* ─────────────── Type ─────────────── */
@@ -164,6 +188,11 @@ export const TYPE: Record<string, TypeStyle> = {
   body:          { font: "Roboto", size: 10, weight: 300, color: COLOR.navy },
   bodyDark:      { font: "Roboto", size: 10, color: COLOR.white },
   caption:       { font: "Roboto", size: 8, weight: 300, color: COLOR.ink },
+  /** The line under the title that says what the slide argues, before the
+   *  bullets say how. Two type sizes 2x apart is not a hierarchy — it is a
+   *  heading and a footnote. This is the middle step. */
+  standfirst:    { font: "Roboto", size: 13, weight: 300, color: COLOR.navy },
+  standfirstDark:{ font: "Roboto", size: 13, weight: 300, color: COLOR.greyLight },
   statistic:     { font: "Poppins", size: 30, color: COLOR.white },
   source:        { font: "Roboto", size: 7, color: COLOR.ink },
   milestoneDate: { font: "Roboto", size: 9, bold: true, color: COLOR.blue, caps: true },
@@ -341,6 +370,10 @@ export const TIMELINE_PARALLEL = {
  *  that, rather than a text slide with a picture added to it. */
 export const IMAGE = {
   /** Half-and-half, the split the deck uses most. */
+  /** The rail: a picture down the right of a prose slide, bleeding to the
+   *  right and bottom edges. Its own token because the crop is baked to this
+   *  box's aspect, and a letterboxed rail is worse than none. */
+  railGap: 24,
   splitWidth: 4.72 * IN,
   splitTextX: 5.28 * IN,
   splitTextWidth: 4.38 * IN,

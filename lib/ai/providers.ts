@@ -1271,7 +1271,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                 type: "string",
                 enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "cards", "quote", "process", "logo-wall", "closing"],
                 description:
-                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = standard title + body, the default. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. cards = two to six repeated blocks across the slide — pillars, product types, numbered steps, a portfolio of formats. Reach for it whenever a slide would otherwise be a list of things that are the same KIND of thing; supply `cards`. quote = a pull quote on navy with the speaker named beneath — use it for a client testimonial or an executive line, never for your own copy; supply `quote`. process = stages carried left to right by arrows, for a way of working; supply `stages`. logo-wall = client marks on a clean ground, the credibility slide; supply `logos`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter.",
+                  "cover = opening slide, big centred title over a dark ground. section = full-bleed blue divider between parts of the deck. content = title + body, the FALLBACK when nothing else fits — a bulleted slide is the flattest thing the deck can make, so reach for a layout above it first. Give it a `subtitle` (drawn as a standfirst) and an `image.query` (drawn as a rail down the right) and it stops looking like a document. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. cards = two to six repeated blocks across the slide — pillars, product types, numbered steps, a portfolio of formats. Reach for it whenever a slide would otherwise be a list of things that are the same KIND of thing; supply `cards`. quote = a pull quote on navy with the speaker named beneath — use it for a client testimonial or an executive line, never for your own copy; supply `quote`. process = stages carried left to right by arrows, for a way of working; supply `stages`. logo-wall = client marks on a clean ground, the credibility slide; supply `logos`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter — but defaulting through a whole deck produces exactly the flat deck this tool exists to avoid.",
               },
               title: { type: "string", description: "Slide heading." },
               subtitle: {
@@ -1491,7 +1491,7 @@ const WORD_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         },
         subtitle: {
           type: "string",
-          description: "Optional one-line subtitle or standfirst under the title.",
+          description: "A standfirst: the ONE sentence saying what this slide argues, drawn under the title in larger, lighter type before the bullets say how. Live on content, case-study, dark-index, cover, closing, section and the timelines. Give every prose slide one — a title with bullets and nothing in between has no middle step in its hierarchy and reads as a document.",
         },
         body: {
           type: "string",
@@ -3867,11 +3867,21 @@ async function buildOrUpdateSlides(
 function visualAudit(slides: any[]): string {
   const visual = slides.filter((s) => isVisualSlide(s)).length;
   const share = slides.length ? Math.round((visual / slides.length) * 100) : 0;
-  if (share >= 50) return `${visual} of ${slides.length} slides carry a picture, chart or timeline (${share}%).`;
+  // The threshold matches the benchmark it quotes. It used to pass at 50 while
+  // its own failure text said their real decks are past 60, so a deck between
+  // the two was reported with a neutral sentence and no push at all. And the
+  // wording now names the same set isVisualSlide actually counts — it said
+  // "a picture, chart or timeline", which left cards, stats, quotes, processes
+  // and logo walls sounding like they did not count, and pointed the model at
+  // photo chrome on the cover instead of at the body slides.
+  const carries = "a picture, chart, timeline, card grid, headline number, quote or logo wall";
+  if (share >= 60) return `${visual} of ${slides.length} slides carry ${carries} (${share}%).`;
   return (
-    `ONLY ${visual} of ${slides.length} slides carry a picture, chart or timeline (${share}%). ` +
-    `Their real decks are past 60%. Say so and offer specific fixes — name the slides whose ` +
-    `numbers should be a stat or a bar, and the ones that want a photograph.`
+    `ONLY ${visual} of ${slides.length} slides carry ${carries} (${share}%). ` +
+    `Their own decks run past 60%. Before you describe this deck, look at the ` +
+    `prose slides again: name the ones whose numbers should be a stat or a bar, ` +
+    `the sets of like things that should be cards, and the ones that want a ` +
+    `photograph — then say what you would change and offer to redraw it.`
   );
 }
 

@@ -12,7 +12,7 @@
  */
 import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
-  estimateLines, drawnTextHeight, type SlideInput,
+  estimateLines, drawnTextHeight, inheritContinuationImages, type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
@@ -414,15 +414,26 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   /* 12. What splitting a slide produces has to be a slide worth looking at. */
   const before12 = failures;
   console.log(`\n12. A continuation is a real slide, not a leftover`);
+  // In the REAL order: the model sends an image QUERY, the splitter runs, and
+  // resolution happens after. A fixture that pre-sets `resolvedImage` proves
+  // nothing — that is how a continuation shipped with no picture while this
+  // check was green.
   const spilled = splitOverflowingSlides([{
-    layout: "image-split", title: "A heading", resolvedImage: PHOTO_DARK,
+    layout: "image-split", title: "A heading", image: { query: "offshore wind at dusk" },
     body: Array.from({ length: 7 }, (_, i) => `Bullet ${i + 1}: ${"x".repeat(110)}`).join("\n"),
   }]);
   if (spilled.length < 2) fail("the fixture did not split; the check is measuring nothing");
+  if (spilled.some((s) => (s as any).resolvedImage)) {
+    fail("the fixture resolved an image before splitting — it is not testing the real order");
+  }
+  // Resolution is I/O, so stand in for it: only the first half carries a query.
+  spilled[0].resolvedImage = PHOTO_DARK;
+  inheritContinuationImages(spilled);
   for (let i = 1; i < spilled.length; i++) {
-    if (!(spilled[i] as any).resolvedImage) {
-      fail("a continuation of an image layout lost its picture — half the slide is then empty");
+    if (!spilled[i].resolvedImage) {
+      fail("a continuation of an image layout has no picture — half the slide is then empty");
     }
+    if (spilled[i].image) fail("a continuation kept its image query — it will buy a second photograph");
   }
   const share = spilled.map((s) => (s.body || "").split("\n").length);
   if (Math.min(...share) < Math.max(...share) / 3) {
@@ -434,7 +445,50 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   if (String(bulleted?.text).split("\n").some((l) => !l.trim())) {
     fail("a blank line between bullets is drawn as an empty bullet");
   }
+  const twoCol = splitOverflowingSlides([{
+    layout: "two-column", title: "T", bodyRight: "Right column",
+    body: Array.from({ length: 9 }, (_, i) => `Bullet ${i + 1}: ${"x".repeat(110)}`).join("\n"),
+  }]);
+  if (twoCol.length > 1 && twoCol.slice(1).some((s) => s.bodyRight)) {
+    fail("a two-column continuation repeated the whole right-hand column");
+  }
   if (failures === before12) pass("continuations keep their picture, carry their share, and skip blank bullets");
+
+  /* 13. The prose slide — the one most decks are mostly made of — is designed.
+   *
+   *  Measured, it carried 12.5% ink, not one drawn object, 116 characters to a
+   *  line and the bottom 47% of the canvas empty. These are the floors under
+   *  the fix, so nobody quietly returns it to a document. */
+  const before13 = failures;
+  console.log(`\n13. A prose slide is a designed object`);
+  const proseBody = "Interpretation of findings against your mission\nAn impact and effort matrix for every recommendation\nDeliverables: the full diagnostic report and a roadmap\nFee: CHF 12,500 ex. VAT";
+  const proseSlides: SlideInput[] = [
+    { layout: "content", title: "The plan to act on it", subtitle: "What happens after the diagnostic.", body: proseBody },
+    { layout: "content", title: "The plan to act on it", body: proseBody, resolvedImage: PHOTO_DARK },
+    { layout: "case-study", eyebrow: "CASE STUDY", title: "Holcim", body: proseBody },
+  ];
+  toPreviewModel(proseSlides).slides.forEach((page, i) => {
+    const name = `${proseSlides[i].layout}${proseSlides[i].resolvedImage ? " + rail" : ""}`;
+    const drawn = page.elements.filter((e) => e.kind === "rect" || e.kind === "ellipse");
+    if (!drawn.length) fail(`${name}: not one drawn element on the slide`);
+    const body = page.elements.find((e) => e.kind === "text" && e.bullets);
+    if (!body) { fail(`${name}: no body`); return; }
+    // A measure, not a document width: 116 characters to a line is why it read
+    // as a page rather than a slide.
+    const chars = Math.floor((body.w - 14.4 - 18) / ((body.size || 10) * 0.55));
+    if (chars > 100) fail(`${name}: body measure is ${chars} characters a line`);
+    if (body.y + body.h < CANVAS.height * 0.85) {
+      fail(`${name}: the body stops at ${Math.round(body.y + body.h)} of ${CANVAS.height} — the band foot is unused`);
+    }
+    if (proseSlides[i].resolvedImage) {
+      const pic = page.elements.find((e) => e.kind === "image" && !e.src?.includes("logo_engine"));
+      if (!pic) fail(`${name}: the picture it resolved is never drawn`);
+      else if (pic.x + pic.w < CANVAS.width - 1 || pic.y + pic.h < CANVAS.height - 1) {
+        fail(`${name}: the rail does not bleed to the edges`);
+      }
+    }
+  });
+  if (failures === before13) pass("a rule, a measure, the whole band, and the picture actually drawn");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);
