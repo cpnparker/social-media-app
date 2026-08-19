@@ -5,7 +5,7 @@ import { fetchBlobContent } from "./blob-utils";
 import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
-import { generateSlides, updateSlides, resolveDeckImages } from "@/lib/slides/generate";
+import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides } from "@/lib/slides/generate";
 import { toPreviewModel } from "@/lib/slides/preview-model";
 import { signedMediaUrl } from "@/lib/media/signed";
 import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
@@ -3759,7 +3759,10 @@ async function buildOrUpdateSlides(
  *  the preview shows the actual photograph rather than an empty frame. It is
  *  the slowest part of a draft, and worth it: a preview that omits the pictures
  *  cannot be judged on the thing that makes a deck visual. */
-async function buildSlidesDraft(title: string, slides: any[]) {
+async function buildSlidesDraft(title: string, rawSlides: any[]) {
+  // Split BEFORE anything else, so the preview shows the deck that will be
+  // built rather than one slide fewer.
+  const slides = splitOverflowingSlides(rawSlides);
   await resolveDeckImages(slides, (prompt: string) =>
     generateImage(prompt, "1792x1024", "openai", undefined, undefined, "public"));
   return {

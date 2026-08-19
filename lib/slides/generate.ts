@@ -979,6 +979,63 @@ async function googleFetch(url: string, token: string, init: RequestInit = {}) {
 }
 
 /**
+ * Split a slide whose body will not fit, rather than letting it overflow.
+ *
+ * Slides does not reflow or shrink text to fit a box — it draws it and lets it
+ * run past the edge, off the bottom of the slide. So an over-long body silently
+ * loses its last bullets, and nothing in the deck says so.
+ *
+ * Splitting rather than shrinking is deliberate: type size is part of the brand
+ * and a slide set two points smaller than its neighbours reads as a mistake,
+ * where a second slide reads as a deck. The continuation keeps the title with a
+ * marker so it is obviously the same thought, not a new one.
+ *
+ * Estimated, not measured — there is no text metric server-side. The estimate
+ * is deliberately generous: splitting a slide that would have fit is a smaller
+ * error than dropping the words that did not.
+ */
+export function splitOverflowingSlides(slides: SlideInput[]): SlideInput[] {
+  const CHARS_PER_LINE = 118;   // 671pt of Roboto Light at 10pt, with margin
+  const MAX_LINES = 11;         // 202pt of body box at ~11.5pt line height
+
+  const linesFor = (text: string) =>
+    text.split("\n").reduce((n, line) => n + Math.max(1, Math.ceil(line.length / CHARS_PER_LINE)), 0);
+
+  const out: SlideInput[] = [];
+  for (const slide of slides) {
+    const body = slide.body;
+    // Only prose layouts overflow this way; a chart's geometry is bounded.
+    const splittable = !slide.chart && !slide.stats && !slide.milestones && !slide.tracks;
+    if (!body || !splittable || linesFor(body) <= MAX_LINES) {
+      out.push(slide);
+      continue;
+    }
+
+    const lines = body.split("\n");
+    const first: string[] = [];
+    let used = 0;
+    while (lines.length && used + Math.max(1, Math.ceil(lines[0].length / CHARS_PER_LINE)) <= MAX_LINES) {
+      const line = lines.shift()!;
+      used += Math.max(1, Math.ceil(line.length / CHARS_PER_LINE));
+      first.push(line);
+    }
+    // A single bullet longer than a whole slide cannot be split by lines; let
+    // it through rather than emitting an empty slide and looping.
+    if (!first.length) { out.push(slide); continue; }
+
+    out.push({ ...slide, body: first.join("\n") });
+    out.push({
+      ...slide,
+      title: `${slide.title || ""} (continued)`.trim(),
+      body: lines.join("\n"),
+      // The picture, eyebrow and speaker notes belong to the first half only.
+      image: undefined, resolvedImage: undefined, eyebrow: undefined, notes: undefined,
+    });
+  }
+  return out;
+}
+
+/**
  * Turn every slide's image BRIEF into an actual picture, before anything is
  * drawn or previewed.
  *
@@ -1071,6 +1128,7 @@ export async function updateSlides(
   }
   const oldIds: string[] = (existing.json?.slides || []).map((s: any) => s.objectId);
 
+  slides = splitOverflowingSlides(slides);
   await resolveDeckImages(slides, generateImageFn);
 
   const run = runId();
@@ -1142,6 +1200,7 @@ export async function generateSlides(
   const presentationId: string = created.json.presentationId;
   const defaultSlideId: string | undefined = created.json.slides?.[0]?.objectId;
 
+  slides = splitOverflowingSlides(slides);
   await resolveDeckImages(slides, generateImageFn);
 
   const run = runId();
