@@ -249,7 +249,10 @@ export const TIMELINE = {
 export const TIMELINE_PARALLEL = {
   /** Left column holding the track names. */
   labelGutter: 1.28 * IN,
-  bandY: 2.15 * IN,
+  /** Below the standfirst, with room for the "Today" label above the band.
+   *  At 2.15in the band's label collided with both the title and the subtitle
+   *  boxes — invisible with a one-line title, a collision with two. */
+  bandY: 2.46 * IN,
   /** One sub-row: a bar plus the breathing room under it. Tracks grow downward
    *  as overlapping phases are packed onto extra rows. */
   rowHeight: 30,

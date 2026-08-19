@@ -26,6 +26,8 @@ export interface ResolvedImage {
   credit?: string;
   /** Fraction of navy to lay over the image so text on it stays legible. */
   scrim: number;
+  /** Which lockup reads against THIS picture's top-right corner. */
+  logo?: "white" | "navy";
 }
 
 export type ImageGenerator = (prompt: string) => Promise<string>;
@@ -166,7 +168,7 @@ export async function scrimFor(imageUrl: string): Promise<number> {
 async function bakeBackdrop(
   imageUrl: string,
   opts: { aspect: number; gradient: boolean }
-): Promise<{ url: string } | null> {
+): Promise<{ url: string; logo: "white" | "navy" } | null> {
   try {
     const res = await fetch(imageUrl, { signal: AbortSignal.timeout(15_000) });
     if (!res.ok) return null;
@@ -178,15 +180,18 @@ async function bakeBackdrop(
     // `cover` crops to fill rather than fitting inside — the whole point.
     let pipeline = sharp(input).resize(W, H, { fit: "cover", position: "attention" });
 
+    let logo: "white" | "navy" = "white";
     if (opts.gradient) {
       const peak = await gradientPeakFor(input, sharp);
+      const { stop: top, logo: variant } = await topTreatmentFor(input, sharp);
+      logo = variant;
       // A real linear gradient, rasterised once and composited. Transparent at
       // the top so the photograph keeps its colour where no text sits.
       const overlay = Buffer.from(
         `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
            <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
-             <stop offset="0%" stop-color="#023250" stop-opacity="0.10"/>
-             <stop offset="42%" stop-color="#023250" stop-opacity="0.16"/>
+             <stop offset="0%" stop-color="#023250" stop-opacity="${top.toFixed(2)}"/>
+             <stop offset="42%" stop-color="#023250" stop-opacity="${Math.max(0.14, top * 0.6).toFixed(2)}"/>
              <stop offset="72%" stop-color="#023250" stop-opacity="${(peak * 0.75).toFixed(2)}"/>
              <stop offset="100%" stop-color="#023250" stop-opacity="${peak.toFixed(2)}"/>
            </linearGradient></defs>
@@ -202,10 +207,56 @@ async function bakeBackdrop(
       contentType: "image/jpeg",
       addRandomSuffix: true,
     });
-    return { url: signedMediaUrl(blob.pathname) };
+    return { url: signedMediaUrl(blob.pathname), logo };
   } catch (err: any) {
     console.warn(`[SlideImages] backdrop bake failed: ${err?.message}`);
     return null;
+  }
+}
+
+/** What the head of the gradient should do, and which lockup to use with it.
+ *
+ *  Every full-bleed layout puts the lockup top-right, and the gradient is
+ *  bottom-weighted by design so the picture keeps its colour up there — which
+ *  is exactly where a bright sky leaves a white logo invisible. Measured on the
+ *  top-right corner it actually occupies, not the whole top, and held to 3:1:
+ *  a mark is a graphic, not body copy, and darkening the sky to text standards
+ *  would undo the reason the gradient is shaped this way.
+ */
+async function topTreatmentFor(
+  input: Buffer, sharp: any
+): Promise<{ stop: number; logo: "white" | "navy" }> {
+  const FLOOR = 0.1;
+  try {
+    const meta = await sharp(input).metadata();
+    const W = meta.width || 0, H = meta.height || 0;
+    if (!W || !H) return { stop: FLOOR, logo: "white" };
+    const { data, info } = await sharp(input)
+      .extract({
+        left: Math.floor(W * 0.6), top: 0,
+        width: Math.max(1, Math.floor(W * 0.4)), height: Math.max(1, Math.floor(H * 0.22)),
+      })
+      .resize(32, 16, { fit: "fill" })
+      .removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const lums: number[] = [];
+    for (let i = 0; i < info.width * info.height; i++) {
+      lums.push(luminance(data[i * 3], data[i * 3 + 1], data[i * 3 + 2]));
+    }
+    lums.sort((a, b) => a - b);
+    const bright = lums[Math.floor(lums.length * 0.85)] ?? 1;
+    const MAX_FOR_LOGO = 1.05 / 3 - 0.05; // a white mark wants 3:1
+
+    if (bright <= MAX_FOR_LOGO) return { stop: FLOOR, logo: "white" };
+
+    // The corner is bright. Darkening it to 3:1 measured 0.68 on a real sunset
+    // — which would flatten the sky the bottom-weighted gradient exists to
+    // preserve. The lockup has a navy variant, and navy on a pale sky reads at
+    // about 12:1, so switch the mark instead of ruining the picture. A light
+    // stop still goes on for cohesion.
+    const alpha = (bright - MAX_FOR_LOGO) / (bright - NAVY_L);
+    return { stop: Math.min(0.3, Math.max(FLOOR, Number(alpha.toFixed(2)))), logo: "navy" };
+  } catch {
+    return { stop: 0.22, logo: "white" };
   }
 }
 
@@ -255,7 +306,7 @@ export async function resolveImage(
     const baked = await bakeBackdrop(url, treatment);
     // Falling back to the raw image keeps a picture on the slide when baking
     // fails; it will letterbox, which is visibly wrong but better than blank.
-    return { url: baked?.url || url, source, credit, scrim: 0 };
+    return { url: baked?.url || url, source, credit, scrim: 0, logo: baked?.logo };
   };
 
   if (req.url) return finish(req.url, "supplied");

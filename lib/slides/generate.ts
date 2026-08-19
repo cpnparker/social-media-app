@@ -64,7 +64,7 @@ export interface SlideInput {
    *  before the deck is built, so the preview shows the real photograph. */
   image?: { url?: string; query?: string };
   /** Filled in by resolution — not supplied by the model. */
-  resolvedImage?: { url: string; scrim: number; credit?: string };
+  resolvedImage?: { url: string; scrim: number; credit?: string; logo?: "white" | "navy" };
   /** Thumbnails for the image-grid layout. */
   images?: { url?: string; query?: string; caption?: string }[];
   resolvedImages?: { url: string; caption?: string }[];
@@ -207,15 +207,20 @@ function textBox(
   return requests;
 }
 
-function logoRequests(objectId: string, pageObjectId: string, layout: SlideLayout): Req[] {
+function logoRequests(
+  objectId: string, pageObjectId: string, layout: SlideLayout, slide?: SlideInput
+): Req[] {
   const style = LAYOUT_STYLE[layout];
   if (!style.logo) return [];
   const place = LOGO_PLACEMENT[style.logoPlacement];
+  // On a photograph the picture decides, not the layout: a white lockup on a
+  // pale sky measured 1.23:1, which is invisible.
+  const variant = slide?.resolvedImage?.logo ?? style.logo;
   return [
     {
       createImage: {
         objectId,
-        url: logoUrl(style.logo),
+        url: logoUrl(variant),
         elementProperties: {
           pageObjectId,
           size: { width: pt(place.width), height: pt(place.height) },
@@ -800,7 +805,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
       }),
       ...textBox(id("sub"), page, slide.subtitle, bodyStyle, {
-        x: GRID.margin, y: GRID.bodyY - 8, width: GRID.contentWidth, height: 24,
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: 20,
       }),
       ...timelineRequests(page, id, slide.milestones || []),
     );
@@ -826,7 +831,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
       }),
       ...textBox(id("sub"), page, slide.subtitle, bodyStyle, {
-        x: GRID.margin, y: GRID.bodyY - 8, width: GRID.contentWidth, height: 24,
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: 20,
       }),
       ...parallelTimelineRequests(page, id, slide.tracks || [], slide.today),
     );
@@ -922,7 +927,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     );
   }
 
-  requests.push(...logoRequests(id("logo"), page, layout));
+  requests.push(...logoRequests(id("logo"), page, layout, slide));
   return requests;
 }
 
@@ -1063,7 +1068,7 @@ export async function resolveDeckImages(
           aspect: split ? IMAGE.splitWidth / CANVAS.height : CANVAS.width / CANVAS.height,
           gradient: !split,
         });
-        if (r) slide.resolvedImage = { url: r.url, scrim: r.scrim, credit: r.credit };
+        if (r) slide.resolvedImage = { url: r.url, scrim: r.scrim, credit: r.credit, logo: r.logo };
       }
       if (slide.images?.length && !slide.resolvedImages) {
         const cellAspect = gridGeometry(
