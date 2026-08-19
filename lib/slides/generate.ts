@@ -518,6 +518,37 @@ function parallelTimelineRequests(
   return requests;
 }
 
+/** Grid geometry, computed in ONE place.
+ *
+ *  Resolution has to know the cell's shape to crop an image to it, and drawing
+ *  has to know it to place the image — and a cell is 1.70 wide with four across
+ *  but nothing like that with two. Two copies of this arithmetic would drift,
+ *  and the symptom would be the letterboxing this exists to prevent. */
+export function gridGeometry(count: number, captioned: boolean) {
+  const shown = Math.min(count, 12);
+  // The band is a fixed 671x230pt, so the arrangement decides the cell shape
+  // and neither obvious rule gives a good one: filling a row makes four images
+  // 0.70 slivers, squaring off makes eight images 3.07 strips. Instead try
+  // every arrangement up to four across and keep the one whose cell is closest
+  // to a photographic 1.4 — measured in log space, so half and double are
+  // penalised equally.
+  const IDEAL = 1.4;
+  let cols = 1, best = Infinity;
+  for (let c = 1; c <= Math.min(4, shown); c++) {
+    const r = Math.ceil(shown / c);
+    const w = (GRID.contentWidth - IMAGE.gridGap * (c - 1)) / c;
+    const h = (IMAGE.gridHeight - IMAGE.gridGap * (r - 1)) / r - (captioned ? IMAGE.gridCaptionHeight : 0);
+    if (h <= 8) continue; // too many rows to show anything
+    const score = Math.abs(Math.log((w / h) / IDEAL));
+    if (score < best) { best = score; cols = c; }
+  }
+  const rows = Math.ceil(shown / cols);
+  const cellW = (GRID.contentWidth - IMAGE.gridGap * (cols - 1)) / cols;
+  const cellH = (IMAGE.gridHeight - IMAGE.gridGap * (rows - 1)) / rows
+    - (captioned ? IMAGE.gridCaptionHeight : 0);
+  return { cols, rows, cellW, cellH, aspect: cellW / Math.max(1, cellH) };
+}
+
 /** Up to twelve thumbnails on one row-and-column grid, sized so the set always
  *  fills the band rather than leaving a ragged last row. */
 function gridRequests(
@@ -526,12 +557,8 @@ function gridRequests(
 ): Req[] {
   if (!images.length) return [];
   const shown = images.slice(0, 12);
-  const cols = shown.length <= 3 ? shown.length : shown.length <= 8 ? 4 : 4;
-  const rows = Math.ceil(shown.length / cols);
-  const cellW = (GRID.contentWidth - IMAGE.gridGap * (cols - 1)) / cols;
   const captioned = shown.some((i) => i.caption);
-  const cellH = (IMAGE.gridHeight - IMAGE.gridGap * (rows - 1)) / rows
-    - (captioned ? IMAGE.gridCaptionHeight : 0);
+  const { cols, cellW, cellH } = gridGeometry(shown.length, captioned);
 
   const out: Req[] = [];
   shown.forEach((img, i) => {
@@ -963,13 +990,26 @@ export async function resolveDeckImages(
   await Promise.all(
     slides.map(async (slide) => {
       if (slide.image && !slide.resolvedImage) {
-        const r = await resolveImage(slide.image, generate);
+        // Crop to the SHAPE OF THE BOX the image will sit in. Baking everything
+        // to 16:9 and dropping it into a tall half-slide letterboxes exactly the
+        // way the full-bleed cover used to, which is the bug this closes.
+        // Gradient only where text sits on the picture.
+        const split = slide.layout === "image-split";
+        const r = await resolveImage(slide.image, generate, {
+          aspect: split ? IMAGE.splitWidth / CANVAS.height : CANVAS.width / CANVAS.height,
+          gradient: !split,
+        });
         if (r) slide.resolvedImage = { url: r.url, scrim: r.scrim, credit: r.credit };
       }
       if (slide.images?.length && !slide.resolvedImages) {
+        const cellAspect = gridGeometry(
+          slide.images.length, slide.images.some((i) => i.caption)
+        ).aspect;
         const out = await Promise.all(
           slide.images.slice(0, 12).map(async (spec) => {
-            const r = await resolveImage(spec, generate);
+            // Cropped to the CELL's own shape, from the same calculation the
+            // drawing uses. No text sits on a grid cell, so no gradient.
+            const r = await resolveImage(spec, generate, { aspect: cellAspect, gradient: false });
             return r ? { url: r.url, caption: spec.caption } : null;
           })
         );
