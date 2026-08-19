@@ -46,6 +46,12 @@ export interface PreviewElement {
   caps?: boolean;
   /** Text is centred vertically inside its box. */
   vCenter?: boolean;
+  /** Points of space after each paragraph, and the line-spacing percentage.
+   *  Both are set on every text box in the deck; dropping them made a body of
+   *  bullets render tighter here than it does in Slides, which is how a block
+   *  that overflows the slide can look like it fits. */
+  spaceBelow?: number;
+  lineSpacing?: number;
 }
 
 /** Object ids are `<run>_s<index>_<suffix>`, and the suffix says which box it
@@ -175,13 +181,35 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
       } else if (kind === "updateTextStyle") {
         const el = byId.get(body.objectId);
         if (!el) continue;
-        el.font = body.style?.weightedFontFamily?.fontFamily;
-        el.weight = body.style?.weightedFontFamily?.weight;
-        el.size = body.style?.fontSize?.magnitude;
-        el.color = hex(body.style?.foregroundColor?.opaqueColor?.rgbColor);
+        // A style request carries `fields` naming what it actually sets, and
+        // Slides changes nothing else. ASSIGNING UNCONDITIONALLY IGNORED THAT:
+        // the second request a linked box emits — link, colour and underline
+        // over one run of words — set font, weight and size to undefined for
+        // the whole box, so a Playfair 33pt title carrying a markdown link
+        // previewed as unstyled Roboto while the deck was perfectly correct.
+        //
+        // A run-scoped style (FIXED_RANGE) is skipped outright: the preview
+        // draws a box in one style, so a style covering three words of it
+        // cannot be represented and must not be allowed to redefine the box.
+        if (body.textRange?.type === "FIXED_RANGE") continue;
+        const st = body.style || {};
+        if (st.weightedFontFamily?.fontFamily) el.font = st.weightedFontFamily.fontFamily;
+        if (st.weightedFontFamily?.weight) el.weight = st.weightedFontFamily.weight;
+        if (typeof st.fontSize?.magnitude === "number") el.size = st.fontSize.magnitude;
+        if (st.foregroundColor?.opaqueColor?.rgbColor) {
+          el.color = hex(st.foregroundColor.opaqueColor.rgbColor);
+        }
       } else if (kind === "updateParagraphStyle") {
         const el = byId.get(body.objectId);
-        if (el) el.align = alignOf(body.style?.alignment);
+        if (!el) continue;
+        if (body.style?.alignment) el.align = alignOf(body.style.alignment);
+        // Paragraph spacing is part of how much room the text needs, so the
+        // preview has to honour it or a body that overflows in Slides looks
+        // comfortable here.
+        if (typeof body.style?.spaceBelow?.magnitude === "number") {
+          el.spaceBelow = body.style.spaceBelow.magnitude;
+        }
+        if (typeof body.style?.lineSpacing === "number") el.lineSpacing = body.style.lineSpacing;
       } else if (kind === "createParagraphBullets") {
         const el = byId.get(body.objectId);
         if (el) el.bullets = true;

@@ -62,7 +62,13 @@ export interface AIProviderConfig {
    *  assistant message. Without this the preview lives only in the browser that
    *  generated it: a reload loses it, and nobody the conversation is shared
    *  with ever sees the deck they are supposed to be reviewing. */
-  onSlidesDraft?: (draft: { title: string; slides: any[]; preview: any }) => void;
+  /** The deck this turn produced, stored against the assistant message.
+   *  `published` is set when a file was actually created, so reopening the
+   *  thread shows the deck rather than offering to build it again. */
+  onSlidesDraft?: (draft: {
+    title: string; slides: any[]; preview: any;
+    published?: { url?: string; presentationId?: string; slideCount?: number; thumbnails?: string[] };
+  }) => void;
   selectedClientId?: number;
   /** type_source string used for ai_usage logging + Control Centre lookups.
    *  Defaults to "enginegpt" (the user-facing chat). Set to a different
@@ -7138,8 +7144,13 @@ async function streamAnthropic(
       ...anthropicModelParams(apiModel, config),
       system: cacheableSystem(systemText),
       messages: anthropicMessages,
-      ...(tools.length > 0
-        ? { tools: cacheableTools(tools), ...(suppressTools ? { tool_choice: { type: "none" as const } } : {}) }
+      // roundTools, NOT tools. The narrowing above was computed and then thrown
+      // away — every tainted round still went to the API with the full set,
+      // including Anthropic's server-side web_search, which runs inside the API
+      // call where no executor guard of ours can reach it. The comment above
+      // this described an enforcement point that did not exist.
+      ...(roundTools.length > 0
+        ? { tools: cacheableTools(roundTools), ...(suppressTools ? { tool_choice: { type: "none" as const } } : {}) }
         : {}),
     });
 
@@ -7681,6 +7692,23 @@ async function streamAnthropic(
             );
 
             fullText += `\n\n\ud83d\udcca [${result.updated ? "Updated" : "Open"} ${result.title} in Google Slides](${result.url})\n\n`;
+
+            // Record the built deck on THIS message. Only the draft branch
+            // reported anything, so a deck the model published left the earlier
+            // message's draft still marked unpublished — and because the thread
+            // renders the last draft it finds, reopening it offered to create a
+            // deck that already existed.
+            config.onSlidesDraft?.({
+              title: result.title || deckTitle,
+              slides: deckSlides,
+              preview: null,
+              published: {
+                url: result.url,
+                presentationId: result.presentationId,
+                slideCount: result.slideCount,
+                thumbnails: result.thumbnails || [],
+              },
+            });
 
             toolResults.push({
               type: "tool_result",
@@ -8289,6 +8317,10 @@ async function streamAnthropic(
         fullText += "\n\n";
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
       }
+      const narrowed = config.sawUntrustedContent === true
+        ? tools.filter((t: any) => POST_TAINT_READ_TOOLS.has(t?.name))
+        : tools;
+      const finalTools = narrowed.length > 0 ? narrowed : tools;
       const finalStream = anthropic.messages.stream({
         model: apiModel,
         max_tokens: anthropicMaxTokens(apiModel, config.maxTokens),
@@ -8298,7 +8330,12 @@ async function streamAnthropic(
         // tools MUST be passed when the history contains tool_use/tool_result
         // blocks — the API 400s otherwise. tool_choice "none" is what actually
         // forces a text-only response.
-        ...(tools.length > 0 ? { tools: cacheableTools(tools), tool_choice: { type: "none" as const } } : {}),
+        //
+        // Narrowed on a tainted turn as well. Nothing can be called from here,
+        // so this is belt and braces; the braces are there because a list that
+        // is merely unreachable today is a list somebody trusts tomorrow. The
+        // fallback to the full set covers the API's refusal of an empty array.
+        ...(tools.length > 0 ? { tools: cacheableTools(finalTools), tool_choice: { type: "none" as const } } : {}),
       });
 
       for await (const event of withStallGuard(finalStream)) {
@@ -8887,6 +8924,23 @@ async function streamXAIChatCompletions(
             );
 
             fullText += `\n\n\ud83d\udcca [${result.updated ? "Updated" : "Open"} ${result.title} in Google Slides](${result.url})\n\n`;
+
+            // Record the built deck on THIS message. Only the draft branch
+            // reported anything, so a deck the model published left the earlier
+            // message's draft still marked unpublished — and because the thread
+            // renders the last draft it finds, reopening it offered to create a
+            // deck that already existed.
+            config.onSlidesDraft?.({
+              title: result.title || deckTitle,
+              slides: deckSlides,
+              preview: null,
+              published: {
+                url: result.url,
+                presentationId: result.presentationId,
+                slideCount: result.slideCount,
+                thumbnails: result.thumbnails || [],
+              },
+            });
 
             openaiMessages.push({
               role: "tool",
@@ -9838,6 +9892,23 @@ async function streamGemini(
 
             fullText += `\n\n\ud83d\udcca [${result.updated ? "Updated" : "Open"} ${result.title} in Google Slides](${result.url})\n\n`;
 
+            // Record the built deck on THIS message. Only the draft branch
+            // reported anything, so a deck the model published left the earlier
+            // message's draft still marked unpublished — and because the thread
+            // renders the last draft it finds, reopening it offered to create a
+            // deck that already existed.
+            config.onSlidesDraft?.({
+              title: result.title || deckTitle,
+              slides: deckSlides,
+              preview: null,
+              published: {
+                url: result.url,
+                presentationId: result.presentationId,
+                slideCount: result.slideCount,
+                thumbnails: result.thumbnails || [],
+              },
+            });
+
             geminiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
@@ -10677,6 +10748,23 @@ async function streamOpenAI(
             );
 
             fullText += `\n\n\ud83d\udcca [${result.updated ? "Updated" : "Open"} ${result.title} in Google Slides](${result.url})\n\n`;
+
+            // Record the built deck on THIS message. Only the draft branch
+            // reported anything, so a deck the model published left the earlier
+            // message's draft still marked unpublished — and because the thread
+            // renders the last draft it finds, reopening it offered to create a
+            // deck that already existed.
+            config.onSlidesDraft?.({
+              title: result.title || deckTitle,
+              slides: deckSlides,
+              preview: null,
+              published: {
+                url: result.url,
+                presentationId: result.presentationId,
+                slideCount: result.slideCount,
+                thumbnails: result.thumbnails || [],
+              },
+            });
 
             openaiMessages.push({
               role: "tool",

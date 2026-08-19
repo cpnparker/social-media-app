@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { draftWriteAccess } from "@/lib/slides/message-access";
 
 /**
  * PATCH /api/slides/draft — persist edits made directly in the preview.
@@ -30,13 +31,14 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "messageId and draft are required" }, { status: 400 });
   }
 
-  const { data: row } = await intelligenceDb
-    .from("ai_messages")
-    .select("slides_draft")
-    .eq("id_message", body.messageId)
-    .maybeSingle();
-  const existing = (row as any)?.slides_draft;
-  if (!existing) return NextResponse.json({ error: "No draft on that message" }, { status: 404 });
+  // Signed in is not the same as entitled to this message. See
+  // lib/slides/message-access.ts — the table is reached through the
+  // service-role client, so this check IS the access control.
+  const allowed = await draftWriteAccess(body.messageId, parseInt(session.user.id, 10));
+  if (!allowed.ok) {
+    return NextResponse.json({ error: allowed.error }, { status: allowed.status });
+  }
+  const existing = allowed.draft;
   if (existing.published?.url) {
     return NextResponse.json({ error: "That deck has already been created" }, { status: 409 });
   }

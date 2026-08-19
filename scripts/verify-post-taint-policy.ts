@@ -63,9 +63,25 @@ gates >= 5 ? pass(`${gates} gate sites reference POST_TAINT_READ_TOOLS`) : fail(
 blanket === 0 ? pass("no blanket block-everything guard remains") : fail(`${blanket} chain(s) still block every tool`);
 
 console.log(`\n5. The exfiltration path is closed by construction, not instruction`);
-/roundTools = allowPostTaintReads\s*\n\s*\? tools\.filter\(\(t: any\) => POST_TAINT_READ_TOOLS\.has\(t\?\.name\)\)/.test(src)
-  ? pass("tainted rounds send only the read tools, so server-side web_search is absent")
-  : fail("the Anthropic tool list is not narrowed — server-side web_search is still reachable");
+const narrows =
+  /roundTools = allowPostTaintReads\s*\n\s*\? tools\.filter\(\(t: any\) => POST_TAINT_READ_TOOLS\.has\(t\?\.name\)\)/.test(src);
+// AND that the narrowed list is the one that goes to the API. This check used
+// to stop at the line above, which asserted only that the filter had been
+// WRITTEN. It had — and its result was then dropped on the floor: the request
+// two lines below passed the unfiltered `tools`, so every tainted round went
+// out with the full set, server-side web_search included, while this script
+// reported the path closed. An enforcement point that nothing reads is a
+// comment, and a check that cannot tell the difference is worse than none.
+const sends = /tools: cacheableTools\(roundTools\)/.test(src)
+  && /tools: cacheableTools\(finalTools\)/.test(src);
+const stillSendsAll = /cacheableTools\(tools\)/.test(src);
+narrows && sends && !stillSendsAll
+  ? pass("the narrowed list is the one sent — server-side web_search is absent, not merely filtered")
+  : fail(
+      !narrows ? "the Anthropic tool list is not narrowed"
+      : !sends ? "roundTools is computed but never passed to the API — the narrowing is dead code"
+      : "a call still passes the unfiltered tool list"
+    );
 
 console.log(`\n6. The budget is bounded and counted per call`);
 const max = src.match(/const MAX_POST_TAINT_CALLS = (\d+)/)?.[1];

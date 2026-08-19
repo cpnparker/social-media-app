@@ -154,6 +154,7 @@ export default function ChatPanel({
   const [slidesDraftMessageId, setSlidesDraftMessageId] = useState<string | null>(null);
   const [slidesZoom, setSlidesZoom] = useState<number | null>(null);
   const previewRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const draftSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [publishingSlides, setPublishingSlides] = useState(false);
   const [slidesPreview, setSlidesPreview] = useState<
     { url: string; title: string; slideCount: number; updated: boolean; thumbnails: string[] } | null
@@ -359,21 +360,30 @@ export default function ChatPanel({
     }, 350);
 
     if (!slidesDraftMessageId) return;
-    try {
-      const res = await fetch("/api/slides/draft", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messageId: slidesDraftMessageId, draft: next }),
-      });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        // The edit stays on screen: it is valid, it just is not saved, and
-        // silently reverting what someone typed is worse than saying so.
-        toast.error(j.error || "Change applied but not saved — reloading will lose it.");
+    // Debounced, like the preview refresh above it. This fires from a
+    // textarea's onChange, so typing "Revenue" used to issue seven concurrent
+    // read-modify-writes of the whole draft with no version on any of them —
+    // whichever response the database served last won, which is not
+    // necessarily the last thing typed. One save per pause instead.
+    if (draftSaveRef.current) clearTimeout(draftSaveRef.current);
+    const messageId = slidesDraftMessageId;
+    draftSaveRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/slides/draft", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messageId, draft: next }),
+        });
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          // The edit stays on screen: it is valid, it just is not saved, and
+          // silently reverting what someone typed is worse than saying so.
+          toast.error(j.error || "Change applied but not saved — reloading will lose it.");
+        }
+      } catch {
+        toast.error("Change applied but not saved — reloading will lose it.");
       }
-    } catch {
-      toast.error("Change applied but not saved — reloading will lose it.");
-    }
+    }, 500);
   }, [slidesDraftMessageId]);
 
   /**

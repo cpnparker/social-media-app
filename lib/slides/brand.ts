@@ -166,6 +166,10 @@ export const TYPE: Record<string, TypeStyle> = {
   quoteRole:     { font: "Roboto", size: 9, weight: 300, color: COLOR.greyLight },
   stageName:     { font: "Roboto", size: 9, bold: true, color: COLOR.white, caps: true },
   stageCaption:  { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
+  /** A client's name, set when their mark is not available. Playfair rather
+   *  than a picture of a wordmark: it is plainly OUR typography naming them,
+   *  not a reproduction of a logo we do not have. */
+  logoWallName:  { font: "Playfair Display", size: 13, color: COLOR.navy },
 };
 
 /* ─────────────── Logo ─────────────── */

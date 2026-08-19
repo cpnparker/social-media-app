@@ -83,10 +83,14 @@ function SlideThumb({
           };
           if (el.kind === "image") {
             // eslint-disable-next-line @next/next/no-img-element
-            // cover, not contain: the backdrop is pre-cropped to the canvas, and
-            // contain would letterbox anything that is not — which is exactly the
-            // bars this fixed in the deck.
-            return <img key={i} src={el.src} alt="" style={{ ...base, objectFit: "cover" }} />;
+            // contain, because that is what SLIDES does — it scales an image to
+            // fit inside the box it is given and letterboxes the remainder.
+            // Photographs are pre-baked to their box's exact aspect, so contain
+            // and cover are identical for them; where they are NOT baked — a
+            // client logo on the logo wall, which must never be cropped — cover
+            // silently cut the mark in half here and showed it whole in the
+            // deck. The preview has to show the letterbox when there will be one.
+            return <img key={i} src={el.src} alt="" style={{ ...base, objectFit: "contain" }} />;
           }
           if (el.kind === "rect" || el.kind === "ellipse") {
             return (
@@ -99,6 +103,11 @@ function SlideThumb({
             );
           }
           const lines = (el.text || "").split("\n");
+          // Paragraph spacing and line spacing come from the request the deck
+          // will be built from, not from a number chosen here: a body set
+          // tighter in the preview than in Slides is a body that looks like it
+          // fits when it will overflow.
+          const gap = el.spaceBelow ?? 0;
           return (
             <div key={i} style={{
               ...base,
@@ -106,7 +115,7 @@ function SlideThumb({
               fontFamily: fontStack(el.font),
               fontSize: el.size,
               fontWeight: el.weight || 400,
-              lineHeight: 1.15,
+              lineHeight: (el.lineSpacing ?? 115) / 100,
               textAlign: el.align === "center" ? "center" : el.align === "end" ? "right" : "left",
               overflow: "hidden",
               whiteSpace: "pre-wrap",
@@ -117,8 +126,12 @@ function SlideThumb({
                 ? { display: "flex", flexDirection: "column" as const, justifyContent: "center" }
                 : {}),
             }}>
-              {el.bullets && lines.length > 1
-                ? lines.map((line, li) => <div key={li}>{`• ${line}`}</div>)
+              {lines.length > 1
+                ? lines.map((line, li) => (
+                    <div key={li} style={li < lines.length - 1 ? { marginBottom: gap } : undefined}>
+                      {el.bullets ? `• ${line}` : line}
+                    </div>
+                  ))
                 : el.text}
             </div>
           );

@@ -21,7 +21,7 @@ import {
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
 import { captureThumbnails } from "@/lib/slides/preview";
-import { resolveImage, type ImageGenerator } from "@/lib/slides/images";
+import { resolveImage, type ImageGenerator, type TextBand } from "@/lib/slides/images";
 import { resolveIcon } from "@/lib/slides/icons";
 
 const SLIDES_API = "https://slides.googleapis.com/v1/presentations";
@@ -66,6 +66,9 @@ export interface SlideInput {
   image?: { url?: string; query?: string };
   /** Filled in by resolution — not supplied by the model. */
   resolvedImage?: { url: string; scrim: number; credit?: string; logo?: "white" | "navy" };
+  /** Set when resolution ran and found nothing, so publishing does not quietly
+   *  search again and build a deck different from the one that was approved. */
+  imageUnavailable?: boolean;
   /** Thumbnails for the image-grid layout. */
   images?: { url?: string; query?: string; caption?: string }[];
   resolvedImages?: { url: string; caption?: string }[];
@@ -449,6 +452,9 @@ function parallelTimelineRequests(
     start: number; end: number | null; label: string; row: number;
     barX: number; barW: number; isPoint: boolean;
     inside: boolean; labelX: number; labelW: number; footprintEnd: number;
+    /** A label pushed to the LEFT of its bar reads from the bar outwards, so it
+     *  is set right-aligned against it. */
+    alignEnd: boolean;
   }
 
   const stamps: number[] = [];
@@ -497,23 +503,71 @@ function parallelTimelineRequests(
       const barW = isPoint ? P.pointSize : Math.max(P.minBarWidth, x(it.end!) - x(it.start));
       const natural = textWidth(it.label) + 10;
       const inside = !isPoint && barW >= natural + 4;
-      const labelX = barX + barW + 6;
-      const labelW = inside ? barW - 12 : Math.min(natural, 150);
-      const footprintEnd = inside ? barX + barW : labelX + labelW;
+      let labelX = barX + barW + 6;
+      let labelW = inside ? barW - 12 : Math.min(natural, 150);
+      let alignEnd = false;
+
+      // A late phase has no room to its right: its label was drawn from the bar
+      // outwards and ran off the canvas — 790pt on a 720pt slide, so the last
+      // milestone in a plan was the one nobody could read. Put it on the other
+      // side of the bar instead, and only clip it if there is no room there
+      // either.
+      if (!inside) {
+        const rightEdge = GRID.margin + GRID.contentWidth;
+        if (labelX + labelW > rightEdge) {
+          const roomLeft = barX - 6 - plotX;
+          if (roomLeft >= 40) {
+            labelW = Math.min(labelW, roomLeft);
+            labelX = barX - 6 - labelW;
+            alignEnd = true;
+          } else {
+            labelW = Math.max(24, rightEdge - labelX);
+          }
+        }
+      }
+      const footprintEnd = inside ? barX + barW : Math.max(barX + barW, labelX + labelW);
 
       let row = rowEnds.findIndex((end) => barX >= end);
       if (row === -1) { row = rowEnds.length; rowEnds.push(footprintEnd + 8); }
       else rowEnds[row] = footprintEnd + 8;
 
-      return { ...it, row, barX, barW, isPoint, inside, labelX, labelW, footprintEnd };
+      return { ...it, row, barX, barW, isPoint, inside, labelX, labelW, footprintEnd, alignEnd };
     });
     return { name: tr.name, items, rows: Math.max(1, rowEnds.length) };
   });
 
+  // NOTHING may grow past the bottom of the slide. Tracks were laid out at a
+  // fixed 30pt per row with no ceiling, so five tracks — or one track whose
+  // phases packed onto six rows — pushed the shared date axis, and every tick
+  // on it, clean off the canvas. The axis is the thing the layout exists for.
+  //
+  // Rows compress first, then the gap between tracks, and only then is a track
+  // dropped — and a dropped track is said out loud.
+  const MIN_TRACK_ROW = 18;
+  const MIN_TRACK_GAP = 10;
+  const tailHeight = P.axisGap + P.axisThickness + 5 + P.tickLabelHeight;
+  let shown = placedTracks;
+  let trackGap: number = P.trackGap;
+  let rowHeight: number = P.rowHeight;
+  let noteReserve = 0;
+  for (let guard = 0; guard < 24; guard += 1) {
+    const rows = shown.reduce((n, t) => n + t.rows, 0) || 1;
+    const budget =
+      CANVAS.height - GRID.margin - P.bandY - tailHeight - noteReserve - trackGap * (shown.length - 1);
+    rowHeight = Math.min(P.rowHeight, budget / rows);
+    if (rowHeight >= MIN_TRACK_ROW) break;
+    if (trackGap > MIN_TRACK_GAP) { trackGap = MIN_TRACK_GAP; continue; }
+    if (shown.length > 1) { shown = shown.slice(0, -1); noteReserve = 16; continue; }
+    break;
+  }
+  rowHeight = Math.max(MIN_TRACK_ROW, Math.floor(rowHeight * 10) / 10);
+  const barHeight = Math.max(12, rowHeight - (P.rowHeight - P.barHeight));
+  const droppedTracks = placedTracks.length - shown.length;
+
   let cursorY = P.bandY;
-  placedTracks.forEach((tr, ti) => {
+  shown.forEach((tr, ti) => {
     const color = TRACK_COLORS[ti % TRACK_COLORS.length];
-    const trackHeight = tr.rows * P.rowHeight;
+    const trackHeight = tr.rows * rowHeight;
 
     // A white band behind each track, with the slide's off-white showing
     // through the gap between. Without it, a track that packs onto three rows
@@ -537,7 +591,7 @@ function parallelTimelineRequests(
     );
 
     tr.items.forEach((it, pi) => {
-      const barY = cursorY + it.row * P.rowHeight;
+      const barY = cursorY + it.row * rowHeight;
 
       requests.push(
         ...filledShape(
@@ -545,9 +599,9 @@ function parallelTimelineRequests(
           it.isPoint ? "ELLIPSE" : "ROUND_RECTANGLE", color,
           {
             x: it.barX,
-            y: it.isPoint ? barY + P.barHeight / 2 - P.pointSize / 2 : barY,
+            y: it.isPoint ? barY + barHeight / 2 - P.pointSize / 2 : barY,
             width: it.barW,
-            height: it.isPoint ? P.pointSize : P.barHeight,
+            height: it.isPoint ? P.pointSize : barHeight,
           }
         ),
         ...textBox(
@@ -557,16 +611,17 @@ function parallelTimelineRequests(
             x: it.inside ? it.barX + 6 : it.labelX,
             y: barY + (it.inside ? 4 : 3),
             width: it.labelW,
-            height: P.barHeight,
-          }
+            height: barHeight,
+          },
+          it.alignEnd ? { align: "END" } : {}
         )
       );
     });
 
-    cursorY += trackHeight + P.trackGap;
+    cursorY += trackHeight + trackGap;
   });
 
-  const axisY = cursorY - P.trackGap + P.axisGap;
+  const axisY = cursorY - trackGap + P.axisGap;
   requests.push(
     ...filledShape(id("paxis"), page, "RECTANGLE", COLOR.periwinkle, {
       x: plotX, y: axisY, width: plotW, height: P.axisThickness,
@@ -579,6 +634,14 @@ function parallelTimelineRequests(
       }, { align: "CENTER" })
     );
   });
+
+  if (droppedTracks > 0) {
+    requests.push(...noteBox(
+      id("pdrop"), page,
+      `Showing ${shown.length} of ${placedTracks.length} tracks`,
+      axisY + 5 + P.tickLabelHeight
+    ));
+  }
 
   // "Today" rule last, so it sits above the bars.
   const now = new Date();
@@ -754,6 +817,63 @@ function statRequests(
   return out;
 }
 
+/** How many rows a chart may draw, and how tall each may be.
+ *
+ *  Nothing on a slide is allowed to grow past the canvas. The bar chart used to
+ *  cap at eight and place its source line wherever the eighth bar ended, which
+ *  was 8pt below the bottom edge; the stacked chart capped at nothing at all,
+ *  so a ten-category series ran two rows and an entire legend off the slide,
+ *  invisible in the deck AND in the preview, with nothing saying data was lost.
+ *
+ *  Rows are COMPRESSED to fit before any are dropped — losing a little bar
+ *  height costs nothing a reader would notice, and losing a category costs them
+ *  the data. Only when compression hits a floor is the set truncated, and the
+ *  slide then says so out loud. */
+const MAX_BARS = 8;
+/** Gap plus the source line under a plot. */
+const SOURCE_BLOCK = 24;
+/** The right-hand slot on the source line, held for the truncation note. */
+const NOTE_WIDTH = 168;
+const MIN_ROW_HEIGHT = 20;
+/** Legend row plus the source line under a stacked plot. */
+const STACK_TAIL = 42;
+
+function fitRows(
+  total: number, cap: number, baseBarH: number, baseGap: number, tailBlock: number
+): { count: number; rowH: number; barH: number } {
+  const room = CANVAS.height - GRID.margin - GRID.bodyY - tailBlock;
+  const baseRow = baseBarH + baseGap;
+  let count = Math.max(1, Math.min(total, cap));
+  let rowH = Math.min(baseRow, room / count);
+  while (rowH < MIN_ROW_HEIGHT && count > 1) {
+    count -= 1;
+    rowH = Math.min(baseRow, room / count);
+  }
+  rowH = Math.floor(rowH * 10) / 10;
+  const gap = Math.min(baseGap, Math.max(4, rowH * 0.3));
+  return { count, rowH, barH: Math.max(10, Math.round((rowH - gap) * 10) / 10) };
+}
+
+/** "Showing the top 8 of 12" — on the source line, right-aligned, in the slot
+ *  the source box gives up when there is something to say.
+ *
+ *  Its own box with no spec path, so it is never editable and never written
+ *  back into the source string. Silence here was the real defect: a deck that
+ *  quietly drops four categories reads as the whole picture. */
+function noteBox(objectId: string, page: string, text: string, y: number): Req[] {
+  if (!text) return [];
+  return textBox(objectId, page, text, TYPE.chartAxis, {
+    x: GRID.margin + GRID.contentWidth - NOTE_WIDTH, y, width: NOTE_WIDTH, height: 16,
+  }, { align: "END" });
+}
+
+function droppedNote(
+  objectId: string, page: string, dropped: number, total: number, y: number
+): Req[] {
+  if (dropped <= 0) return [];
+  return noteBox(objectId, page, `Showing the top ${total - dropped} of ${total}`, y);
+}
+
 /** Horizontal bars, sorted, with the value printed at the end of each.
  *
  *  Horizontal because category names are words, and words fit beside a bar but
@@ -771,39 +891,69 @@ function barChartRequests(
   // name the point in the spec, not its rank on the slide — otherwise editing
   // "Bar 1" edits whichever row happened to be first in the input, and any deck
   // whose data was not already sorted gets the wrong bar changed.
-  const points = series.points
+  const ranked = series.points
     .map((p, orig) => ({ ...p, orig }))
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 8);
-  const max = Math.max(...points.map((p) => Math.abs(p.value))) || 1;
+    .sort((a, b) => b.value - a.value);
+
+  // The source line is part of the block, so it has to be inside the budget.
+  // It was not: eight bars pushed it to y=397 on a 405pt canvas, where the
+  // attribution for the numbers simply did not exist in the built deck.
+  const fit = fitRows(ranked.length, MAX_BARS, CHART.barHeight, CHART.barGap, SOURCE_BLOCK);
+  const points = ranked.slice(0, fit.count);
+
+  // A zero BASELINE, not an absolute-value scale. Drawing |value| made a -100
+  // the longest bar on a slide whose whole message is the ranking — the reader
+  // saw the biggest bar against the worst number. With a baseline, a negative
+  // bar runs left from zero and reads as the loss it is.
+  const lo = Math.min(0, ...points.map((p) => p.value));
+  const hi = Math.max(0, ...points.map((p) => p.value));
+  const span = hi - lo || 1;
 
   const plotX = GRID.margin + CHART.labelGutter;
   const plotW = GRID.contentWidth - CHART.labelGutter - 52;
-  const rowH = CHART.barHeight + CHART.barGap;
+  const at = (v: number) => plotX + ((v - lo) / span) * plotW;
   const out: Req[] = [];
   // Same treatment as the stats: five bars centre in the band, eight fill it.
-  const plotTop = GRID.bodyY + Math.max(0, (GRID.bandHeight - (points.length * rowH + 24)) / 2);
+  const plotTop = GRID.bodyY +
+    Math.max(0, (GRID.bandHeight - (points.length * fit.rowH + SOURCE_BLOCK)) / 2);
 
   points.forEach((p, i) => {
-    const y = plotTop + i * rowH;
-    const w = Math.max(2, (Math.abs(p.value) / max) * plotW);
+    const y = plotTop + i * fit.rowH;
+    const x0 = at(Math.min(p.value, 0));
+    const w = Math.max(2, Math.abs(at(p.value) - at(0)));
     out.push(
       ...textBox(id(`bl${p.orig}`), page, p.label, TYPE.chartCategory, {
-        x: GRID.margin, y: y + 5, width: CHART.labelGutter - 10, height: CHART.barHeight,
+        x: GRID.margin, y: y + 4, width: CHART.labelGutter - 10, height: fit.barH,
       }),
       ...filledShape(id(`bb${p.orig}`), page, "RECTANGLE", palette[0], {
-        x: plotX, y, width: w, height: CHART.barHeight,
+        x: x0, y, width: w, height: fit.barH,
       }),
+      // The value goes just past the bar's right-hand end, for a negative bar
+      // as much as a positive one. Putting it at the far end of a negative bar
+      // would drive it into the category name in the left gutter, and the minus
+      // sign already says which way the bar runs.
       ...textBox(id(`bv${p.orig}`), page, formatValue(p.value), TYPE.chartValue, {
-        x: plotX + w + CHART.valueGap, y: y + 5, width: 60, height: CHART.barHeight,
+        x: x0 + w + CHART.valueGap, y: y + 4, width: 60, height: fit.barH,
       }),
     );
   });
 
+  // A zero rule, only when the data crosses it — otherwise the left edge of the
+  // plot IS zero and a line there is redundant ink.
+  if (lo < 0) {
+    out.push(...filledShape(id("bzero"), page, "RECTANGLE", onDark ? COLOR.periwinkle : COLOR.greyLight, {
+      x: at(0), y: plotTop - 4, width: CHART.axisThickness,
+      height: points.length * fit.rowH + 4,
+    }));
+  }
+
+  const srcY = plotTop + points.length * fit.rowH + 8;
+  const dropped = ranked.length - points.length;
   out.push(...textBox(id("csrc"), page, chart.source, TYPE.chartAxis, {
-    x: GRID.margin, y: plotTop + points.length * rowH + 8,
-    width: GRID.contentWidth, height: 16,
+    x: GRID.margin, y: srcY,
+    width: GRID.contentWidth - (dropped ? NOTE_WIDTH : 0), height: 16,
   }));
+  out.push(...droppedNote(id("cdrop"), page, dropped, ranked.length, srcY));
   return out;
 }
 
@@ -826,16 +976,33 @@ function stackedBarRequests(
 
   // Categories come from the FIRST series; a later one missing a category
   // simply contributes nothing to that bar rather than shifting the others.
-  const categories = series[0].points.map((p) => p.label);
-  const totals = categories.map((c) =>
-    series.reduce((sum, s) => sum + (s.points.find((p) => p.label === c)?.value ?? 0), 0)
-  );
+  const allCategories = series[0].points.map((p) => p.label);
+  // The legend and the source line sit under the plot, so both are inside the
+  // budget the rows have to fit. There was no budget at all before: ten
+  // categories put two rows and the whole legend off the bottom of the slide.
+  const fit = fitRows(allCategories.length, MAX_BARS, CHART.barHeight, CHART.barGap, STACK_TAIL);
+  const categories = allCategories.slice(0, fit.count);
+
+  // A stacked bar cannot draw a negative part — there is no direction for it to
+  // go — so negatives are excluded from the DRAWING and from the TOTAL alike.
+  // Counting them in the total while skipping them in the drawing was worse
+  // than either: the printed total contradicted the bar beside it, and because
+  // the scale came from those totals a single negative could push a bar clean
+  // off the right-hand edge of the slide.
+  let negatives = 0;
+  const partOf = (cat: string, s: (typeof series)[number]) => {
+    const v = s.points.find((p) => p.label === cat)?.value ?? 0;
+    if (v < 0) { negatives += 1; return 0; }
+    return v;
+  };
+  const totals = categories.map((c) => series.reduce((sum, s) => sum + partOf(c, s), 0));
   const max = Math.max(...totals) || 1;
 
   const plotX = GRID.margin + CHART.labelGutter;
   const plotW = GRID.contentWidth - CHART.labelGutter - 52;
-  const rowH = CHART.barHeight + CHART.barGap;
-  const plotTop = GRID.bodyY + Math.max(0, (GRID.bandHeight - (categories.length * rowH + 40)) / 2);
+  const rowH = fit.rowH;
+  const plotTop = GRID.bodyY +
+    Math.max(0, (GRID.bandHeight - (categories.length * rowH + STACK_TAIL)) / 2);
   const GAP = 2;
 
   const out: Req[] = [];
@@ -843,19 +1010,19 @@ function stackedBarRequests(
     const y = plotTop + ci * rowH;
     let x = plotX;
     out.push(...textBox(id(`kl${ci}`), page, cat, TYPE.chartCategory, {
-      x: GRID.margin, y: y + 5, width: CHART.labelGutter - 10, height: CHART.barHeight,
+      x: GRID.margin, y: y + 4, width: CHART.labelGutter - 10, height: fit.barH,
     }));
     series.forEach((s, si) => {
-      const v = s.points.find((p) => p.label === cat)?.value ?? 0;
+      const v = partOf(cat, s);
       if (v <= 0) return;
       const w = (v / max) * plotW;
       out.push(...filledShape(id(`kb${ci}_${si}`), page, "RECTANGLE", palette[si % palette.length], {
-        x, y, width: Math.max(1, w - GAP), height: CHART.barHeight,
+        x, y, width: Math.max(1, w - GAP), height: fit.barH,
       }));
       x += w;
     });
     out.push(...textBox(id(`kt${ci}`), page, formatValue(totals[ci]), TYPE.chartValue, {
-      x: x + CHART.valueGap, y: y + 5, width: 60, height: CHART.barHeight,
+      x: x + CHART.valueGap, y: y + 4, width: 60, height: fit.barH,
     }));
   });
 
@@ -879,9 +1046,15 @@ function stackedBarRequests(
     lx += 13 + labelW + 12;
   });
 
+  const srcY = legendY + 20;
+  const dropped = allCategories.length - categories.length;
+  const note = dropped > 0
+    ? `Showing the top ${categories.length} of ${allCategories.length}`
+    : negatives > 0 ? "Negative values not shown" : "";
   out.push(...textBox(id("ksrc"), page, chart.source, TYPE.chartAxis, {
-    x: GRID.margin, y: legendY + 20, width: GRID.contentWidth, height: 16,
+    x: GRID.margin, y: srcY, width: GRID.contentWidth - (note ? NOTE_WIDTH : 0), height: 16,
   }));
+  out.push(...noteBox(id("kdrop"), page, note, srcY));
   return out;
 }
 
@@ -1106,7 +1279,10 @@ function logoWallRequests(
   page: string, id: (s: string) => string,
   logos: NonNullable<SlideInput["logos"]>
 ): Req[] {
-  const shown = logos.filter((l) => l.resolvedUrl).slice(0, 12);
+  // A client whose mark could not be found is still a client: their name is
+  // set instead. Dropping the cell silently shortened the credibility slide,
+  // and filling it with a stock photograph would have been worse.
+  const shown = logos.filter((l) => l.resolvedUrl || l.name?.trim()).slice(0, 12);
   if (!shown.length) return [];
   const cols = Math.min(shown.length, shown.length <= 4 ? shown.length : shown.length <= 8 ? 4 : 6);
   const rows = Math.ceil(shown.length / cols);
@@ -1115,6 +1291,13 @@ function logoWallRequests(
 
   return shown.flatMap((logo, i) => {
     const c = i % cols, r = Math.floor(i / cols);
+    const x = GRID.margin + c * (cellW + LOGO_WALL.gap) + LOGO_WALL.inset;
+    const y = LOGO_WALL.y + r * (cellH + LOGO_WALL.gap) + LOGO_WALL.inset;
+    if (!logo.resolvedUrl) {
+      return textBox(id(`lw${i}`), page, logo.name, TYPE.logoWallName, {
+        x, y, width: cellW - LOGO_WALL.inset * 2, height: cellH - LOGO_WALL.inset * 2,
+      }, { align: "CENTER", vCenter: true });
+    }
     return [{
       createImage: {
         objectId: id(`lw${i}`), url: logo.resolvedUrl!,
@@ -1422,20 +1605,40 @@ async function applySpeakerNotes(
 
 /* ─────────────── Orchestration ─────────────── */
 
+/** Every Google call in this file, and it NEVER throws.
+ *
+ *  It used to. A 45s timeout or a dropped socket rejected instead of returning
+ *  {ok:false}, and each caller had been written on the assumption that a failure
+ *  arrives as a status code. So the batchUpdate timeout skipped the cleanup that
+ *  promises to leave nothing behind and orphaned a titled, empty presentation in
+ *  the user's Drive; and a timeout on the speaker notes — which run AFTER the
+ *  deck is finished and are best-effort by design — threw past the success
+ *  return and reported a complete, correct deck as a failure.
+ *
+ *  status 0 means the request never got an answer, which is a different thing
+ *  from a rejection and callers that can act on the difference do. */
 async function googleFetch(url: string, token: string, init: RequestInit = {}) {
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      ...(init.headers || {}),
-    },
-    // The chat lambda is 300s and the stall guard does not cover tool
-    // execution, so an unbounded fetch could burn the whole turn.
-    signal: AbortSignal.timeout(45_000),
-  });
-  const json = await res.json().catch(() => ({} as any));
-  return { ok: res.ok, status: res.status, json };
+  try {
+    const res = await fetch(url, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        ...(init.headers || {}),
+      },
+      // The chat lambda is 300s and the stall guard does not cover tool
+      // execution, so an unbounded fetch could burn the whole turn.
+      signal: AbortSignal.timeout(45_000),
+    });
+    const json = await res.json().catch(() => ({} as any));
+    return { ok: res.ok, status: res.status, json };
+  } catch (err: any) {
+    const message = err?.name === "TimeoutError" || err?.name === "AbortError"
+      ? "Google did not answer in time"
+      : err?.message || "Could not reach Google";
+    console.warn(`[Slides] ${init.method || "GET"} ${url.split("?")[0]} failed: ${message}`);
+    return { ok: false, status: 0, json: { error: { message } } as any };
+  }
 }
 
 /**
@@ -1507,13 +1710,54 @@ export function splitOverflowingSlides(slides: SlideInput[]): SlideInput[] {
  * Slides resolve concurrently, and a slide whose image cannot be found simply
  * keeps its solid brand background rather than failing the deck.
  */
+/** Where this layout will draw text on top of the photograph, as fractions of
+ *  the canvas — read from the layout ITSELF rather than listed by hand.
+ *
+ *  Listing them by hand is what went wrong: the gradient was built for a cover,
+ *  whose title sits across the foot, and every other full-bleed layout inherited
+ *  a shape that was never measured against where its own words land. A closing
+ *  slide writes across the middle and a feature slide starts at the very top,
+ *  and both were given a picture that is lightest exactly there.
+ *
+ *  Derived from the same request list the deck is built from, so a box that
+ *  moves takes its gradient with it. */
+export function textBandsFor(slide: SlideInput, index: number): TextBand[] {
+  const raw: TextBand[] = [];
+  for (const req of buildSlideRequests({ ...slide, resolvedImage: undefined }, index, "band")) {
+    const shape = (req as any).createShape;
+    if (!shape || shape.shapeType !== "TEXT_BOX") continue;
+    const y = shape.elementProperties.transform.translateY;
+    const h = shape.elementProperties.size.height.magnitude;
+    const top = Math.max(0, Math.min(1, y / CANVAS.height));
+    const bottom = Math.max(0, Math.min(1, (y + h) / CANVAS.height));
+    if (bottom > top) raw.push({ top, bottom });
+  }
+  // Merged, because eight overlapping boxes is eight measurements of nearly the
+  // same pixels.
+  raw.sort((a, b) => a.top - b.top);
+  const merged: TextBand[] = [];
+  for (const band of raw) {
+    const last = merged[merged.length - 1];
+    if (last && band.top <= last.bottom + 0.02) last.bottom = Math.max(last.bottom, band.bottom);
+    else merged.push({ ...band });
+  }
+  return merged;
+}
+
 export async function resolveDeckImages(
   slides: SlideInput[],
   generate?: ImageGenerator
 ): Promise<void> {
   await Promise.all(
-    slides.map(async (slide) => {
-      if (slide.image && !slide.resolvedImage) {
+    slides.map(async (slide, slideIndex) => {
+      // `imageUnavailable` means we already tried and could not find one. It
+      // is checked as well as `resolvedImage` because publishing re-runs this
+      // whole resolution: a slide that previewed as flat navy — because
+      // Unsplash 403'd on the demo tier, or the generator was rate-limited —
+      // could pick up a picture nobody had reviewed on the way into Drive, and
+      // the deck the user approved is not the deck they got. A retry is still
+      // available: changing the image in the preview resolves it explicitly.
+      if (slide.image && !slide.resolvedImage && !slide.imageUnavailable) {
         // Crop to the SHAPE OF THE BOX the image will sit in. Baking everything
         // to 16:9 and dropping it into a tall half-slide letterboxes exactly the
         // way the full-bleed cover used to, which is the bug this closes.
@@ -1526,12 +1770,14 @@ export async function resolveDeckImages(
         const r = await resolveImage(slide.image, generate, {
           aspect: split ? IMAGE.splitWidth / CANVAS.height : CANVAS.width / CANVAS.height,
           gradient: !split,
+          textBands: split ? undefined : textBandsFor(slide, slideIndex),
           logoRegion: {
             x: place.x / CANVAS.width, y: place.y / CANVAS.height,
             w: place.width / CANVAS.width, h: place.height / CANVAS.height,
           },
         });
         if (r) slide.resolvedImage = { url: r.url, scrim: r.scrim, credit: r.credit, logo: r.logo };
+        else slide.imageUnavailable = true;
       }
       if (slide.quote?.image && !slide.quote.resolvedImage) {
         const r = await resolveImage(slide.quote.image, generate, { aspect: 1, gradient: false });
@@ -1541,8 +1787,10 @@ export async function resolveDeckImages(
         await Promise.all(slide.logos.map(async (l) => {
           if (l.resolvedUrl) return;
           // contain, never cover: a cropped client mark is a misused trademark.
+          // trademark, so a mark that cannot be found stays missing rather than
+          // being filled in by stock photography or a generated picture.
           const r = await resolveImage({ url: l.url, query: l.query }, generate,
-            { aspect: 2, gradient: false, fit: "contain" });
+            { aspect: 2, gradient: false, fit: "contain", trademark: true });
           if (r) l.resolvedUrl = r.url;
         }));
       }
@@ -1710,6 +1958,31 @@ export async function generateSlides(
   if (!updated.ok) {
     const detail = updated.json?.error?.message || `HTTP ${updated.status}`;
     console.warn(`[Slides] batchUpdate failed: ${detail}`);
+
+    // A request that never got an answer is not the same as one that was
+    // refused. Google frequently finishes a batch we stopped waiting for, so
+    // ASK before destroying: deleting a deck that was in fact built correctly,
+    // and telling the user it failed, is the worse of the two mistakes.
+    if (updated.status === 0) {
+      const check = await googleFetch(
+        `${SLIDES_API}/${presentationId}?fields=${encodeURIComponent("slides(objectId)")}`,
+        token
+      );
+      const built: any[] = check.json?.slides || [];
+      if (check.ok && built.length >= slides.length) {
+        console.log(`[Slides] batch completed despite the timeout — ${built.length} slides present`);
+        await applySpeakerNotes(presentationId, slides, token);
+        return {
+          ok: true,
+          presentationId,
+          url: `https://docs.google.com/presentation/d/${presentationId}/edit`,
+          title,
+          slideCount: slides.length,
+          thumbnails: await captureThumbnails(presentationId, token),
+        };
+      }
+    }
+
     // Leave nothing behind. An empty "Untitled presentation" appearing in
     // someone's Drive after a failed request is worse than no file at all.
     const cleanup = await googleFetch(`${DRIVE_API}/${presentationId}?supportsAllDrives=true`, token, {

@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { generateSlides, updateSlides, type SlideInput } from "@/lib/slides/generate";
 import { isReconnectable } from "@/lib/slides/reauth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { draftWriteAccess } from "@/lib/slides/message-access";
 
 /**
  * POST /api/slides/publish — put a reviewed draft into the user's Drive.
@@ -21,7 +22,9 @@ export const maxDuration = 120;
 export async function POST(req: NextRequest) {
   const session = await auth();
   const email = session?.user?.email;
-  if (!email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!email || !session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   let body: { title?: string; slides?: SlideInput[]; presentationId?: string; messageId?: string };
   try {
@@ -36,10 +39,31 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "No slides to publish" }, { status: 400 });
   }
 
+  // Checked BEFORE anything is built. The deck is created with the caller's own
+  // Google token, so stamping the result onto a message they cannot write would
+  // plant a link to a file they own — and control the sharing of — in somebody
+  // else's thread, in place of the button that would have made that person's
+  // own copy.
+  let stored: any = null;
+  if (body.messageId) {
+    const allowed = await draftWriteAccess(body.messageId, parseInt(session.user.id, 10));
+    if (!allowed.ok) {
+      return NextResponse.json({ error: allowed.error }, { status: allowed.status });
+    }
+    stored = allowed.draft;
+  }
+
+  // If this draft has already been built once, edit THAT file. The client
+  // cannot tell us to: the case this covers is a response that never arrived —
+  // the deck was created, the browser saw a timeout, and the user pressed the
+  // button again. Trusting the client to send the id back means the one moment
+  // the id matters is the one moment nobody has it.
+  const existingId = body.presentationId || stored?.published?.presentationId;
+
   // Publishing the same draft twice should edit the deck it already made, not
   // leave a duplicate behind — the button is easy to press again.
-  const result = body.presentationId
-    ? await updateSlides(body.presentationId, title, slides, email)
+  const result = existingId
+    ? await updateSlides(existingId, title, slides, email)
     : await generateSlides(title, slides, email);
 
   if (!result.ok) {
@@ -58,14 +82,23 @@ export async function POST(req: NextRequest) {
   if (body.messageId) {
     const { data: row } = await intelligenceDb
       .from("ai_messages")
-      .select("slides_draft")
+      .select("document_message")
       .eq("id_message", body.messageId)
       .maybeSingle();
-    const draft = (row as any)?.slides_draft;
+    const draft = stored;
     if (draft) {
+      // The link goes into the MESSAGE as well as the draft, because the model
+      // is shown `document_message` next turn and nothing else. Publishing from
+      // the button left no trace in the conversation at all, so the next "add a
+      // pricing slide" was answered by a model that had never heard of this
+      // deck — it built a second one, which is precisely the duplicate the
+      // whole presentationId round-trip exists to prevent.
+      const marker = `\n\n\ud83d\udcca [Open ${result.title} in Google Slides](${result.url})\n\n`;
+      const prose = (row as any).document_message || "";
       const { error } = await intelligenceDb
         .from("ai_messages")
         .update({
+          document_message: prose.includes(result.url!) ? prose : prose + marker,
           slides_draft: {
             ...draft,
             published: {
