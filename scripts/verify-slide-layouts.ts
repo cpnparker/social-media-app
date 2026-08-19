@@ -12,7 +12,7 @@
  */
 import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
-  type SlideInput,
+  estimateLines, drawnTextHeight, type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
@@ -327,15 +327,18 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   /* 9. The splitter measures the box the layout actually draws into. */
   const before9 = failures;
   console.log(`\n9. A body is split against its OWN box, not the widest one`);
+  // Five bullets fit the full-width body box and do NOT fit the half-width one.
+  // A splitter measuring both against 671pt leaves the second overflowing.
+  const five = Array.from({ length: 5 }, (_, i) => `Bullet ${i + 1}: ${"x".repeat(110)}`).join("\n");
+  const wide = splitOverflowingSlides([{ layout: "content", title: "T", body: five }]);
+  const narrow = splitOverflowingSlides([{ layout: "image-split", title: "T", body: five }]);
+  if (wide.length !== 1) fail(`the full-width layout split a body that fits it (${wide.length} slides)`);
+  if (narrow.length < 2) fail(`the half-width layout did not split a body too tall for its box`);
   const eleven = Array.from({ length: 11 }, (_, i) => `Bullet ${i + 1}: ${"x".repeat(110)}`).join("\n");
-  const wide = splitOverflowingSlides([{ layout: "content", title: "T", body: eleven }]);
-  const narrow = splitOverflowingSlides([{ layout: "image-split", title: "T", body: eleven }]);
-  if (narrow.length <= wide.length) {
-    fail(`a half-width layout split into ${narrow.length} where the full-width one split into ${wide.length}`);
-  }
   const short = splitOverflowingSlides([{ layout: "content", title: "T", body: "One\nTwo\nThree" }]);
   if (short.length !== 1) fail("a three-bullet slide was split");
-  if (splitOverflowingSlides(narrow).length !== narrow.length) fail("splitting is not a fixpoint");
+  const long = splitOverflowingSlides([{ layout: "image-split", title: "T", body: eleven }]);
+  if (splitOverflowingSlides(long).length !== long.length) fail("splitting is not a fixpoint");
   if (failures === before9) pass("half-width layouts split sooner, short slides not at all, and it settles");
 
   /* 10. Every layout that shows something is counted as visual. */
@@ -355,6 +358,83 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     fail("a prose slide is counted as visual");
   }
   if (failures === before10) pass("cards, logo walls, processes, quotes and stats all count");
+
+  /* 11. Text that outgrows its box must not land on other text.
+   *
+   *  Check 2 compares BOXES and passed happily while a three-line title was
+   *  drawn through the first two lines of its own body — the boxes did not
+   *  overlap, the ink did. Slides never shrinks or clips: it draws the text and
+   *  lets it run. So the thing to assert is not that every box holds its text
+   *  (plenty of boxes are deliberately tight around display type, with empty
+   *  space beneath) but that where text DOES run over, it runs into nothing. */
+  const before11 = failures;
+  console.log(`\n11. Text that overflows its box lands on nothing`);
+  const LONG_TITLE = "AI platforms aren't a new channel. They're a new layer above every channel you already have";
+  const INK: SlideInput[] = ALL.concat([
+    { layout: "content", title: LONG_TITLE, body: "One\nTwo\nThree" },
+    { layout: "image-split", title: LONG_TITLE, body: "One\nTwo\nThree", resolvedImage: PHOTO_DARK },
+    { layout: "two-column", title: LONG_TITLE, body: "Left", bodyRight: "Right" },
+    { layout: "case-study", eyebrow: "CASE STUDY", title: LONG_TITLE, body: "One\nTwo" },
+    { layout: "dark-index", title: LONG_TITLE, body: "One\nTwo" },
+    { layout: "bar-chart", title: LONG_TITLE, chart: { source: "Source: x", series: [{ name: "S", points: [{ label: "A", value: 1 }] }] } },
+    { layout: "stat", title: LONG_TITLE, stats: [{ value: "64 GW", label: "Capacity", detail: "A detail line." }] },
+    { layout: "cover", title: LONG_TITLE, subtitle: "A kicker", resolvedImage: PHOTO_DARK },
+    { layout: "feature", title: LONG_TITLE, body: "A line under it", resolvedImage: PHOTO_DARK },
+    { layout: "closing", title: LONG_TITLE, subtitle: "www.thecontentengine.com", resolvedImage: PHOTO_DARK },
+  ]);
+  const inkOf = (el: { text?: string; w: number; size?: number; bullets?: boolean }) => {
+    const paras = String(el.text || "").split("\n");
+    let lines = 0;
+    for (const para of paras) lines += Math.max(1, estimateLines(para, el.w, el.size || 10, el.bullets));
+    // One inset (the top), and the real line box rather than the splitter's
+    // deliberately generous one — this is measuring collision, not deciding it.
+    return 3.6 + lines * (el.size || 10) * 1.38 + Math.max(0, paras.length - 1) * (el.bullets ? 6 : 0);
+  };
+  toPreviewModel(INK).slides.forEach((page, i) => {
+    const texts = page.elements.filter((e) => e.kind === "text" && e.text);
+    for (const el of texts) {
+      // A single glyph is an ornament — the quote mark — and its line box is
+      // mostly the space a descender would use. Measuring it as ink says it
+      // collides with everything under it, which it visibly does not.
+      if (String(el.text).trim().length <= 1) continue;
+      const bottom = el.y + inkOf(el);
+      if (bottom <= el.y + el.h + 1) continue;    // stays inside its own box
+      for (const other of texts) {
+        if (other === el) continue;
+        const sideBySide = el.x + el.w <= other.x + 1 || other.x + other.w <= el.x + 1;
+        if (sideBySide || other.y < el.y + el.h) continue;   // beside it, or above it
+        if (bottom > other.y + 1) {
+          fail(`${INK[i].layout}: "${String(el.text).slice(0, 24)}…" overruns its box onto "${String(other.text).slice(0, 20)}…"`);
+        }
+      }
+    }
+  });
+  if (failures === before11) pass(`no text on ${INK.length} slides is drawn over other text`);
+
+  /* 12. What splitting a slide produces has to be a slide worth looking at. */
+  const before12 = failures;
+  console.log(`\n12. A continuation is a real slide, not a leftover`);
+  const spilled = splitOverflowingSlides([{
+    layout: "image-split", title: "A heading", resolvedImage: PHOTO_DARK,
+    body: Array.from({ length: 7 }, (_, i) => `Bullet ${i + 1}: ${"x".repeat(110)}`).join("\n"),
+  }]);
+  if (spilled.length < 2) fail("the fixture did not split; the check is measuring nothing");
+  for (let i = 1; i < spilled.length; i++) {
+    if (!(spilled[i] as any).resolvedImage) {
+      fail("a continuation of an image layout lost its picture — half the slide is then empty");
+    }
+  }
+  const share = spilled.map((s) => (s.body || "").split("\n").length);
+  if (Math.min(...share) < Math.max(...share) / 3) {
+    fail(`the split is lopsided (${share.join(" / ")} bullets) — the last slide is a fragment`);
+  }
+  // And an empty line between bullets must not become an empty bullet.
+  const gappy = toPreviewModel([{ layout: "content", title: "T", body: "One\n\nTwo\n\nThree" }]);
+  const bulleted = gappy.slides[0].elements.find((e) => e.kind === "text" && e.bullets);
+  if (String(bulleted?.text).split("\n").some((l) => !l.trim())) {
+    fail("a blank line between bullets is drawn as an empty bullet");
+  }
+  if (failures === before12) pass("continuations keep their picture, carry their share, and skip blank bullets");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);

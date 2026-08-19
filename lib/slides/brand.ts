@@ -451,7 +451,9 @@ export const CHART = {
   valueGap: 8,
   /** Big numbers, up to three across. */
   statY: 1.9 * IN,
-  statValueHeight: 0.95 * IN,
+  /** A 54pt figure has a ~75pt line box, so 0.95in put its descender space on
+   *  top of the label beneath it. */
+  statValueHeight: 1.12 * IN,
   statLabelHeight: 0.3 * IN,
   statDetailHeight: 0.7 * IN,
   statGap: 0.3 * IN,

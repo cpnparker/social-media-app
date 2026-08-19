@@ -219,7 +219,14 @@ function textBox(
   if (!source) return [];
   const { text: content, links } = extractLinks(source);
   if (!content) return [];
-  const rendered = style.caps ? content.toUpperCase() : content;
+  // A blank line between bullets is how people type a list, and Slides turns
+  // every paragraph into a bullet — including the empty ones, which drew a disc
+  // with nothing after it. The 6pt paragraph spacing is what separates them.
+  const collapsed = options.bullets
+    ? content.split("\n").map((l) => l.trim()).filter(Boolean).join("\n")
+    : content;
+  if (!collapsed) return [];
+  const rendered = style.caps ? collapsed.toUpperCase() : collapsed;
 
   const requests: Req[] = [
     {
@@ -933,6 +940,43 @@ function statRequests(
   return out;
 }
 
+/** Fit a heading into the room above the body, growing UPWARD and shrinking
+ *  only when it must.
+ *
+ *  The title box was a fixed 45pt and the body began the instant it ended — no
+ *  gap at all — and Slides does not shrink text to fit a box: it draws it and
+ *  lets it run. So a three-line title was drawn straight through the first two
+ *  lines of its own body, on a slide that looked fine in code and was
+ *  unreadable in Drive. Nothing caught it, because the BOXES did not overlap;
+ *  the ink did.
+ *
+ *  Upward, because the space between the eyebrow and the title is dead — 48pt
+ *  of it — while everything below the title is spoken for by charts, plots and
+ *  columns that are positioned from the grid. Growing up costs nothing and
+ *  needs no layout to change. The font only shrinks when even that is not
+ *  enough, and never below a size a room can read.
+ */
+const TITLE_GAP = 12;
+const TITLE_MIN_SIZE = 14;
+
+export function fitHeading(
+  text: string | undefined,
+  style: TypeStyle,
+  width: number,
+  opts: { bottom: number; minTop: number; minHeight: number; minSize?: number }
+): { style: TypeStyle; y: number; height: number } {
+  const floor = opts.minSize ?? TITLE_MIN_SIZE;
+  const room = Math.max(opts.minHeight, opts.bottom - opts.minTop);
+  let size = style.size;
+  let need = drawnTextHeight(Math.max(1, estimateLines(text, width, size)), size);
+  while (need > room && size > floor) {
+    size -= 1;
+    need = drawnTextHeight(Math.max(1, estimateLines(text, width, size)), size);
+  }
+  const height = Math.min(Math.max(need, opts.minHeight), room);
+  return { style: size === style.size ? style : { ...style, size }, y: opts.bottom - height, height };
+}
+
 /** The layout to draw, from whatever the model actually said.
  *
  *  `LAYOUT_STYLE[slide.layout]` was read straight from the tool argument, so a
@@ -981,10 +1025,16 @@ export function estimateLines(
   return lines;
 }
 
-/** Where the last line's ink lands, measured from the top of the box. */
-export function drawnTextHeight(lines: number, size: number, spaceBelow = 0): number {
+/** Where the last line's ink lands, measured from the top of the box.
+ *
+ *  `paragraphs` is separate from `lines` because Slides' 6pt spaceBelow falls
+ *  between PARAGRAPHS, not between wrapped lines — counting it per line
+ *  over-estimated a wrapping body by a third and split slides that fitted. */
+export function drawnTextHeight(
+  lines: number, size: number, spaceBelow = 0, paragraphs = 1
+): number {
   if (lines <= 0) return 0;
-  return TEXT_INSET_Y + lines * size * LINE_LEAD + Math.max(0, lines - 1) * spaceBelow;
+  return TEXT_INSET_Y + lines * size * LINE_LEAD + Math.max(0, paragraphs - 1) * spaceBelow;
 }
 
 /** How many rows a chart may draw, and how tall each may be.
@@ -1274,7 +1324,12 @@ function stackedBarRequests(
     // The label's box and the advance to the next entry are the SAME width.
     // Giving every label a fixed 110pt box while advancing by its text width
     // overlapped each legend entry with the one after it.
-    const labelW = Math.min(110, Math.max(28, s.name.length * 4.6 + 6));
+    // Sized with the text-box insets included. Without them a nine-character
+    // series name wrapped to two lines inside a box one line tall, and the
+    // second line landed on the source attribution underneath.
+    const labelW = Math.min(
+      132, Math.max(34, Math.ceil(s.name.length * TYPE.chartAxis.size * 0.55) + TEXT_INSET_X)
+    );
     if (lx + 13 + labelW > legendRight && lx > GRID.margin && legendRow < LEGEND_ROWS - 1) {
       legendRow += 1;
       lx = GRID.margin;
@@ -1460,7 +1515,12 @@ function cardsRequests(
     if (card.marker) {
       // A chip, not plain text: the marker is a wayfinding device and reads as
       // one only when it carries its own ground.
-      const chipW = Math.min(innerW, Math.max(28, card.marker.length * 6.2 + 14));
+      // + the 14.4pt Slides insets, which the old formula did not allow for, so
+      // "01" in a 26pt chip wrapped onto a second line and ran into the heading.
+      const chipW = Math.min(
+        innerW,
+        Math.max(34, Math.ceil(card.marker.length * TYPE.cardMarker.size * 0.6) + TEXT_INSET_X + 10)
+      );
       out.push(
         ...filledShape(id(`cm${i}`), page, "RECTANGLE", COLOR.blue, {
           x: innerX, y, width: chipW, height: CARDS.markerHeight,
@@ -1691,14 +1751,33 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
 
   const onDark = style.onDark;
   const bodyStyle = onDark ? TYPE.bodyDark : TYPE.body;
-  const titleStyle = onDark ? TYPE.slideTitleDark : TYPE.slideTitle;
   const eyebrowStyle = onDark ? TYPE.eyebrowDark : TYPE.eyebrow;
 
+  // The heading, fitted to the room it actually has. Every layout below draws
+  // its title from THIS, not from the grid constants, so a long title can never
+  // again be drawn through the body underneath it.
+  const titleWidth = layout === "image-split" ? IMAGE.splitTextWidth : GRID.contentWidth;
+  const heading = fitHeading(slide.title, onDark ? TYPE.slideTitleDark : TYPE.slideTitle, titleWidth, {
+    bottom: GRID.bodyY - TITLE_GAP,
+    minTop: GRID.eyebrowY + GRID.eyebrowHeight + 6,
+    minHeight: GRID.titleHeight,
+  });
+  const titleStyle = heading.style;
+  const titleBox = { y: heading.y, height: heading.height };
+
   if (layout === "cover") {
+    // Bottom-anchored, like the shared heading: the kicker sits under it and a
+    // three-line title used to be drawn straight over it.
+    const cover = fitHeading(slide.title, TYPE.coverTitle, GRID.coverTitleWidth, {
+      bottom: GRID.coverKickerY - 10,
+      minTop: CANVAS.height * 0.3,
+      minHeight: GRID.coverTitleHeight,
+      minSize: 20,
+    });
     requests.push(
-      ...textBox(id("title"), page, slide.title, TYPE.coverTitle, {
-        x: GRID.coverTitleX, y: GRID.coverTitleY,
-        width: GRID.coverTitleWidth, height: GRID.coverTitleHeight,
+      ...textBox(id("title"), page, slide.title, cover.style, {
+        x: GRID.coverTitleX, y: cover.y,
+        width: GRID.coverTitleWidth, height: cover.height,
       }),
       ...textBox(id("sub"), page, slide.subtitle, TYPE.coverKicker, {
         x: GRID.coverKickerX, y: GRID.coverKickerY,
@@ -1706,10 +1785,16 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       }),
     );
   } else if (layout === "closing") {
+    const closing = fitHeading(slide.title, TYPE.coverTitle, GRID.contentWidth, {
+      bottom: GRID.closingSubtitleY - 10,
+      minTop: GRID.eyebrowY + GRID.eyebrowHeight + 6,
+      minHeight: GRID.closingTitleHeight,
+      minSize: 20,
+    });
     requests.push(
-      ...textBox(id("title"), page, slide.title, TYPE.coverTitle, {
-        x: GRID.margin, y: GRID.closingTitleY,
-        width: GRID.contentWidth, height: GRID.closingTitleHeight,
+      ...textBox(id("title"), page, slide.title, closing.style, {
+        x: GRID.margin, y: closing.y,
+        width: GRID.contentWidth, height: closing.height,
       }, { align: "CENTER" }),
       ...textBox(id("sub"), page, slide.subtitle, TYPE.coverKicker, {
         x: GRID.margin, y: GRID.closingSubtitleY,
@@ -1738,7 +1823,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
       }),
       ...textBox(id("title"), page, slide.title, titleStyle, {
-        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
       }),
       ...textBox(id("sub"), page, slide.subtitle, bodyStyle, {
         x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: 20,
@@ -1760,7 +1845,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
       }),
       ...textBox(id("title"), page, slide.title, titleStyle, {
-        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
       }),
       ...(layout === "process"
         ? processRequests(page, id, slide.stages || [])
@@ -1773,7 +1858,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
       }),
       ...textBox(id("title"), page, slide.title, titleStyle, {
-        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
       }),
       ...cardsRequests(page, id, slide.cards || []),
     );
@@ -1784,7 +1869,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
       }),
       ...textBox(id("title"), page, slide.title, titleStyle, {
-        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
       }),
     );
     if (layout === "stat") requests.push(...statRequests(page, id, slide.stats || []));
@@ -1800,7 +1885,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
       }),
       ...textBox(id("title"), page, slide.title, titleStyle, {
-        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
       }),
       ...textBox(id("sub"), page, slide.subtitle, bodyStyle, {
         x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: 20,
@@ -1808,14 +1893,20 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       ...parallelTimelineRequests(page, id, slide.tracks || [], slide.today),
     );
   } else if (layout === "feature") {
+    const feature = fitHeading(slide.title, TYPE.featureTitle, GRID.contentWidth * 0.72, {
+      bottom: IMAGE.overlayBodyY - 10,
+      minTop: CANVAS.height * 0.28,
+      minHeight: IMAGE.overlayTitleHeight,
+      minSize: 18,
+    });
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, TYPE.eyebrowDark, {
         x: GRID.margin, y: GRID.eyebrowY,
         width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
       }),
-      ...textBox(id("title"), page, slide.title, TYPE.featureTitle, {
-        x: GRID.margin, y: IMAGE.overlayTitleY,
-        width: GRID.contentWidth * 0.72, height: IMAGE.overlayTitleHeight,
+      ...textBox(id("title"), page, slide.title, feature.style, {
+        x: GRID.margin, y: feature.y,
+        width: GRID.contentWidth * 0.72, height: feature.height,
       }),
       ...textBox(id("body"), page, slide.body, TYPE.featureBody, {
         x: GRID.margin, y: IMAGE.overlayBodyY,
@@ -1845,8 +1936,8 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         width: IMAGE.splitTextWidth, height: GRID.eyebrowHeight,
       }),
       ...textBox(id("title"), page, slide.title, titleStyle, {
-        x: IMAGE.splitTextX, y: GRID.titleY,
-        width: IMAGE.splitTextWidth, height: GRID.titleHeight,
+        x: IMAGE.splitTextX, y: titleBox.y,
+        width: IMAGE.splitTextWidth, height: titleBox.height,
       }),
       ...textBox(id("body"), page, slide.body, bodyStyle, {
         x: IMAGE.splitTextX, y: GRID.bodyY,
@@ -1866,7 +1957,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
       }),
       ...textBox(id("title"), page, slide.title, titleStyle, {
-        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
       }),
       ...gridRequests(page, id, slide.resolvedImages || []),
     );
@@ -1877,7 +1968,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
       }),
       ...textBox(id("title"), page, slide.title, titleStyle, {
-        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
       }),
       ...textBox(id("left"), page, slide.body, bodyStyle, {
         x: GRID.columnLeftX, y: GRID.columnY,
@@ -1897,7 +1988,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
       }),
       ...textBox(id("title"), page, slide.title, titleStyle, {
-        x: GRID.margin, y: GRID.titleY, width: GRID.contentWidth, height: GRID.titleHeight,
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
       }),
       ...textBox(id("body"), page, slide.body, bodyStyle, {
         x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: GRID.bodyHeight,
@@ -2059,7 +2150,7 @@ function blockHeight(
   for (let i = 0; i < paras.length; i++) {
     lines += Math.max(1, estimateLines(paras[i], box.width, box.size, box.bullets));
   }
-  return drawnTextHeight(lines, box.size, SPACE_BELOW) - drawnTextHeight(0, box.size);
+  return drawnTextHeight(lines, box.size, SPACE_BELOW, paras.length);
 }
 
 const SPACE_BELOW = 6;
@@ -2078,19 +2169,27 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
   const paras = body.split("\n");
   if (blockHeight(paras, box) <= box.height) return [slide];
 
-  const first: string[] = [];
+  let take = 0;
   for (let i = 0; i < paras.length; i++) {
-    const next = first.concat(paras[i]);
-    if (first.length && blockHeight(next, box) > box.height) break;
-    first.push(paras[i]);
+    if (take && blockHeight(paras.slice(0, i + 1), box) > box.height) break;
+    take = i + 1;
   }
-  const rest = paras.slice(first.length);
   // A single paragraph taller than the whole box cannot be split by lines; let
   // it through rather than emitting an empty slide and looping.
-  if (!first.length || !rest.length) return [slide];
+  if (!take || take >= paras.length) return [slide];
+
+  // BALANCE. Filling the first slide to the brim and leaving one bullet on the
+  // second is how a deck ends up with a slide carrying a title and the words
+  // "Fee: CHF 6,000". If the remainder would be nearly empty, split down the
+  // middle instead — as long as the first half still fits.
+  const rest = () => paras.slice(take);
+  if (blockHeight(rest(), box) < box.height * 0.4 && take > 1) {
+    const middle = Math.ceil(paras.length / 2);
+    if (middle < take && blockHeight(paras.slice(0, middle), box) <= box.height) take = middle;
+  }
 
   return [
-    { ...slide, body: first.join("\n") },
+    { ...slide, body: paras.slice(0, take).join("\n") },
     {
       ...slide,
       // "(continued)" once, however many times a body has to be split — a
@@ -2099,9 +2198,13 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
       title: /\(continued\)\s*$/.test(slide.title || "")
         ? slide.title
         : `${slide.title || ""} (continued)`.trim(),
-      body: rest.join("\n"),
-      // The picture, eyebrow and speaker notes belong to the first half only.
-      image: undefined, resolvedImage: undefined, eyebrow: undefined, notes: undefined,
+      body: rest().join("\n"),
+      // The eyebrow and the speaker notes belong to the first half — an eyebrow
+      // repeated reads as a new section starting. The PICTURE stays: it is the
+      // layout, not the content, and dropping it left an image-split slide as a
+      // column of text beside half a slide of nothing. It is already resolved,
+      // so keeping it costs no second search.
+      image: undefined, eyebrow: undefined, notes: undefined,
     },
   ];
 }
