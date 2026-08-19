@@ -78,38 +78,63 @@ const NAVY_L = luminance(0x02, 0x32, 0x50);
 /** White text needs 4.5:1, which caps the composited background's luminance. */
 const MAX_BACKGROUND_L = 1.05 / 4.5 - 0.05;
 
+/** The band of the canvas a layout actually puts text in, as fractions of the
+ *  image. Measuring the whole picture is what produced a 0.84 scrim from one
+ *  sunset: the brightest pixel was the sun, and no text goes near it. */
+export const TEXT_REGION = { top: 0.34, bottom: 1.0 } as const;
+
 /**
  * How much navy to lay over this image so white text clears 4.5:1.
  *
- * Measured rather than assumed: a fixed scrim either murders a dark photograph
- * or leaves white text unreadable on a bright one, and which of those you get
- * is pure luck. Falls back to a value known to be safe if the image cannot be
- * read — never to "no scrim", because that is the failure that ships.
+ * Two things keep this from drowning the photograph, which is what the first
+ * version did:
+ *
+ *   - Only the BAND WHERE TEXT SITS is measured. A blown-out sky above the
+ *     title has no bearing on whether the title is readable.
+ *   - The 85th percentile drives it, not the maximum. A single specular
+ *     highlight — sun on water, a window — is not what the eye reads a word
+ *     against, and letting one pixel set the opacity darkens everything.
+ *
+ * Capped at 0.62. Past that the image stops being visible at all, and a slide
+ * whose photograph cannot be seen is not a photo slide however legible its
+ * text; if a picture genuinely needs more, the honest answer is a different
+ * picture.
  */
 export async function scrimFor(imageUrl: string): Promise<number> {
-  const SAFE_DEFAULT = 0.55;
+  const SAFE_DEFAULT = 0.5;
+  const MAX_SCRIM = 0.62;
   try {
     const res = await fetch(imageUrl, { signal: AbortSignal.timeout(12_000) });
     if (!res.ok) return SAFE_DEFAULT;
     const sharp = (await import("sharp")).default;
-    const { data, info } = await sharp(Buffer.from(await res.arrayBuffer()))
-      .resize(32, 18, { fit: "fill" })
+    const buf = Buffer.from(await res.arrayBuffer());
+
+    const meta = await sharp(buf).metadata();
+    const H = meta.height || 0;
+    const top = Math.floor(H * TEXT_REGION.top);
+    const height = Math.max(1, Math.floor(H * (TEXT_REGION.bottom - TEXT_REGION.top)));
+
+    let pipeline = sharp(buf);
+    if (H > 0 && height < H) {
+      pipeline = pipeline.extract({ left: 0, top, width: meta.width || 1, height });
+    }
+    const { data, info } = await pipeline
+      .resize(48, 27, { fit: "fill" })
       .removeAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
 
-    // The brightest region drives the scrim, not the average: text sitting over
-    // one blown-out patch of sky is unreadable however dark the rest is.
-    let brightest = 0;
-    const px = info.width * info.height;
-    for (let i = 0; i < px; i++) {
-      const l = luminance(data[i * 3], data[i * 3 + 1], data[i * 3 + 2]);
-      if (l > brightest) brightest = l;
+    const lums: number[] = [];
+    for (let i = 0; i < info.width * info.height; i++) {
+      lums.push(luminance(data[i * 3], data[i * 3 + 1], data[i * 3 + 2]));
     }
-    if (brightest <= MAX_BACKGROUND_L) return 0.25; // already dark; a little for consistency
+    lums.sort((a, b) => a - b);
+    const bright = lums[Math.floor(lums.length * 0.85)] ?? lums[lums.length - 1];
 
-    const alpha = (brightest - MAX_BACKGROUND_L) / (brightest - NAVY_L);
-    return Math.min(0.85, Math.max(0.25, Number(alpha.toFixed(2))));
+    if (bright <= MAX_BACKGROUND_L) return 0.25; // already dark; a little for consistency
+
+    const alpha = (bright - MAX_BACKGROUND_L) / (bright - NAVY_L);
+    return Math.min(MAX_SCRIM, Math.max(0.25, Number(alpha.toFixed(2))));
   } catch (err: any) {
     console.warn(`[SlideImages] could not measure ${imageUrl.slice(0, 60)}: ${err?.message}`);
     return SAFE_DEFAULT;
