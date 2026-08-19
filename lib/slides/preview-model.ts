@@ -33,6 +33,9 @@ export interface PreviewElement {
   opacity?: number;
   /** Slides rounds ROUND_RECTANGLE far more than a 4px radius suggests. */
   rounded?: boolean;
+  /** An arrow drawn as a shape, not a rectangle — the process layout's
+   *  connectors read as blocks in a preview that ignores this. */
+  arrow?: boolean;
   /** Where in the slide SPEC this text came from, as a path — ["title"], or
    *  ["stats", 0, "value"], or ["chart","series",0,"points",2,"label"].
    *
@@ -139,6 +142,7 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
         const el: PreviewElement = {
           kind: body.shapeType === "ELLIPSE" ? "ellipse" : "rect",
           rounded: body.shapeType === "ROUND_RECTANGLE",
+          arrow: body.shapeType === "RIGHT_ARROW",
           x: body.elementProperties.transform.translateX,
           y: body.elementProperties.transform.translateY,
           w: body.elementProperties.size.width.magnitude,

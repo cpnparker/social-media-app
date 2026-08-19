@@ -85,13 +85,17 @@ export function setSlideText(
 /** Point one slide at a different picture. The URL is already resolved and
  *  baked by /api/slides/image, so this is the same patch as text. */
 export function setSlideImage(
-  draft: SlideDraft, slideIndex: number, url: string, query?: string, credit?: string
+  draft: SlideDraft, slideIndex: number, url: string, query?: string, credit?: string,
+  logo?: "white" | "navy"
 ): SlideDraft {
   const next = clone(draft);
   const spec = next.slides[slideIndex] as any;
   if (!spec) return draft;
   spec.image = { query: query ?? spec.image?.query };
-  spec.resolvedImage = { url, scrim: 0, credit };
+  // `logo` is the variant the bake measured for THIS picture. Without it the
+  // slide keeps the last image's answer, so swapping a dark photograph for a
+  // bright one leaves a white lockup on a white sky.
+  spec.resolvedImage = { url, scrim: 0, credit, logo: logo ?? spec.resolvedImage?.logo };
 
   const elements = next.preview.slides[slideIndex]?.elements ?? [];
   // The backdrop is the full-canvas image; the logo is the other one, and must

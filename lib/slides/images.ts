@@ -16,6 +16,7 @@
  */
 
 import { list, put } from "@vercel/blob";
+import { safeFetchBuffer } from "@/lib/net/safe-fetch";
 import { signedMediaUrl } from "@/lib/media/signed";
 import { searchStockPhoto, trackStockUse } from "@/lib/integrations/unsplash";
 import { COLOR } from "@/lib/slides/brand";
@@ -107,10 +108,12 @@ export async function scrimFor(imageUrl: string): Promise<number> {
   const SAFE_DEFAULT = 0.5;
   const MAX_SCRIM = 0.62;
   try {
-    const res = await fetch(imageUrl, { signal: AbortSignal.timeout(12_000) });
-    if (!res.ok) return SAFE_DEFAULT;
+    // Guarded: this URL can come straight from the tool call, and an
+    // unguarded server-side fetch of a caller's URL reaches whatever our
+    // network can reach. See lib/net/safe-fetch.ts.
+    const buf = await safeFetchBuffer(imageUrl, 12_000);
+    if (!buf) return SAFE_DEFAULT;
     const sharp = (await import("sharp")).default;
-    const buf = Buffer.from(await res.arrayBuffer());
 
     const meta = await sharp(buf).metadata();
     const H = meta.height || 0;
@@ -213,10 +216,9 @@ async function bakeBackdrop(
   }
 ): Promise<{ url: string; logo: "white" | "navy" } | null> {
   try {
-    const res = await fetch(imageUrl, { signal: AbortSignal.timeout(15_000) });
-    if (!res.ok) return null;
+    const input = await safeFetchBuffer(imageUrl, 15_000);
+    if (!input) return null;
     const sharp = (await import("sharp")).default;
-    const input = Buffer.from(await res.arrayBuffer());
 
     const W = 1600;
     const H = Math.round(W / opts.aspect);

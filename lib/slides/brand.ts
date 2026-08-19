@@ -29,6 +29,9 @@ export const COLOR = {
   periwinkle: "8488FD",
   lime: "C0FF7E",        // the standout callout colour on blue
   coral: "FF6255",
+  /** Coral dark enough to carry small text and thin rules. The brand coral is
+   *  2.8:1 on off-white, which is below the threshold for both. */
+  coralDeep: "C63528",
   forest: "114535",
   greyLight: "EBEBEB",   // light surface; body text ON blue/navy
   ink: "272727",
@@ -37,6 +40,24 @@ export const COLOR = {
 } as const;
 
 export type BrandColor = keyof typeof COLOR;
+
+/** Relative luminance per WCAG, from a brand hex. */
+function luminanceOf(hex: string): number {
+  const h = hex.replace("#", "");
+  const f = (c: number) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+  const v = [0, 2, 4].map((i) => f(parseInt(h.substr(i, 2), 16) / 255));
+  return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+}
+
+/** White or navy, whichever actually reads on this ground.
+ *
+ *  Assuming white was wrong on exactly one of the track colours, and the
+ *  assumption was written down as a comment claiming the opposite. */
+export function textOn(background: string): string {
+  const bg = luminanceOf(background);
+  const contrast = (a: number, b: number) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+  return contrast(1, bg) >= contrast(luminanceOf(COLOR.navy), bg) ? COLOR.white : COLOR.navy;
+}
 
 /** Slides API wants rgbColor floats, not hex. */
 export function rgb(hex: string): { red: number; green: number; blue: number } {
@@ -145,7 +166,7 @@ export const TYPE: Record<string, TypeStyle> = {
   phaseLabel:    { font: "Roboto", size: 8, bold: true, color: COLOR.navy },
   phaseInBar:    { font: "Roboto", size: 8, color: COLOR.white },
   axisTick:      { font: "Roboto", size: 7, weight: 300, color: COLOR.ink },
-  todayLabel:    { font: "Roboto", size: 7, bold: true, color: COLOR.coral, caps: true },
+  todayLabel:    { font: "Roboto", size: 7, bold: true, color: COLOR.coralDeep, caps: true },
   featureTitle:  { font: "Playfair Display", size: 26, color: COLOR.white },
   featureBody:   { font: "Roboto", size: 11, color: COLOR.greyLight },
   gridCaption:   { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
@@ -412,8 +433,11 @@ export const CHART = {
   statGap: 0.3 * IN,
 } as const;
 
-/** One colour per track. White text sits on every one of these at full
- *  contrast, which is why the lighter brand accents are not in the list. */
+/** One colour per track.
+ *
+ *  White does NOT sit on all of them: it is 2.95:1 on the coral, which this
+ *  file used to claim was full contrast. The label colour is chosen per track
+ *  by measurement now — see textOn() — rather than assumed. */
 export const TRACK_COLORS = [COLOR.blue, COLOR.navy, COLOR.forest, COLOR.coral] as const;
 
 /** Background and logo treatment per archetype. `background: null` means the

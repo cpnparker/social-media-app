@@ -9,6 +9,9 @@ import { auth } from "@/lib/auth";
 // Route segment config
 export const maxDuration = 60;
 
+/** Namespaces only the server writes to, with its own token. */
+const RESERVED_PREFIXES = ["slides/"];
+
 const ALLOWED_TYPES = [
   "image/jpeg",
   "image/png",
@@ -57,6 +60,17 @@ export async function POST(req: NextRequest) {
           const session = await auth();
           if (!session?.user?.id) {
             throw new Error("Unauthorized");
+          }
+          // The requested pathname was taken on trust, which let any signed-in
+          // user write into a namespace the server treats as its own. The one
+          // that matters is `slides/library/` — the owned-image library the
+          // deck builder searches FIRST and prefers over stock, matched on the
+          // filename. Anything planted there with the right name is chosen for
+          // that query in somebody else's client deck. Callers here send a bare
+          // file name, so reserving the server's own prefixes costs nothing.
+          const clean = pathname.replace(/^\/+/, "");
+          if (RESERVED_PREFIXES.some((p) => clean.toLowerCase().startsWith(p)) || clean.includes("..")) {
+            throw new Error("That upload path is reserved");
           }
           return {
             allowedContentTypes: ALLOWED_TYPES,

@@ -17,7 +17,7 @@
 import {
   COLOR, GRID, CANVAS, TYPE, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
   SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, LAYOUT_STYLE, LOGO_PLACEMENT,
-  rgb, logoUrl, type SlideLayout, type TypeStyle,
+  rgb, logoUrl, textOn, type SlideLayout, type TypeStyle,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
 import { captureThumbnails } from "@/lib/slides/preview";
@@ -606,7 +606,10 @@ function parallelTimelineRequests(
         ),
         ...textBox(
           id(`pl${ti}_${pi}`), page, it.label,
-          it.inside ? TYPE.phaseInBar : TYPE.phaseLabel,
+          // Inside the bar the label sits on the TRACK's colour, so the colour
+          // is measured against it. White was hard-coded and is 2.95:1 on the
+          // coral track.
+          it.inside ? { ...TYPE.phaseInBar, color: textOn(color) } : TYPE.phaseLabel,
           {
             x: it.inside ? it.barX + 6 : it.labelX,
             y: barY + (it.inside ? 4 : 3),
@@ -650,7 +653,7 @@ function parallelTimelineRequests(
   if (today > min && today < max) {
     const tx = x(today);
     requests.push(
-      ...filledShape(id("today"), page, "RECTANGLE", COLOR.coral, {
+      ...filledShape(id("today"), page, "RECTANGLE", COLOR.coralDeep, {
         x: tx, y: P.bandY - 8, width: 1.4, height: axisY - P.bandY + 8,
       }),
       ...textBox(id("todaylbl"), page, "Today", TYPE.todayLabel, {
@@ -835,8 +838,13 @@ const SOURCE_BLOCK = 24;
 /** The right-hand slot on the source line, held for the truncation note. */
 const NOTE_WIDTH = 168;
 const MIN_ROW_HEIGHT = 20;
-/** Legend row plus the source line under a stacked plot. */
-const STACK_TAIL = 42;
+/** Legend row plus the source line under a stacked plot. A second legend row is
+ *  reserved unconditionally: whether the names wrap is not known until they are
+ *  laid out, and a budget that assumes they will not is how the legend left the
+ *  slide in the first place. */
+const LEGEND_ROWS = 2;
+const LEGEND_ROW_HEIGHT = 16;
+const STACK_TAIL = 42 + LEGEND_ROW_HEIGHT;
 
 function fitRows(
   total: number, cap: number, baseBarH: number, baseGap: number, tailBlock: number
@@ -1028,23 +1036,36 @@ function stackedBarRequests(
 
   // A legend is required here and cannot be replaced by direct labels: a
   // segment is often too narrow to hold its own name.
-  let lx = plotX;
-  const legendY = plotTop + categories.length * rowH + 6;
+  //
+  // It WRAPS. Five series with ordinary names — "Sponsored articles",
+  // "Infographics and charts" — ran the last entries off the right-hand edge of
+  // the slide, because the row only ever advanced and never asked whether the
+  // next entry still fit.
+  const legendRight = GRID.margin + GRID.contentWidth;
+  const legendTop = plotTop + categories.length * rowH + 6;
+  let lx = GRID.margin;
+  let legendRow = 0;
   series.forEach((s, si) => {
     // The label's box and the advance to the next entry are the SAME width.
     // Giving every label a fixed 110pt box while advancing by its text width
     // overlapped each legend entry with the one after it.
     const labelW = Math.min(110, Math.max(28, s.name.length * 4.6 + 6));
+    if (lx + 13 + labelW > legendRight && lx > GRID.margin && legendRow < LEGEND_ROWS - 1) {
+      legendRow += 1;
+      lx = GRID.margin;
+    }
+    const ly = legendTop + legendRow * LEGEND_ROW_HEIGHT;
     out.push(
       ...filledShape(id(`kk${si}`), page, "RECTANGLE", palette[si % palette.length], {
-        x: lx, y: legendY + 4, width: 9, height: 9,
+        x: lx, y: ly + 4, width: 9, height: 9,
       }),
       ...textBox(id(`kn${si}`), page, s.name, TYPE.chartAxis, {
-        x: lx + 13, y: legendY, width: labelW, height: 16,
+        x: lx + 13, y: ly, width: Math.min(labelW, Math.max(28, legendRight - lx - 13)), height: 16,
       }),
     );
     lx += 13 + labelW + 12;
   });
+  const legendY = legendTop + legendRow * LEGEND_ROW_HEIGHT;
 
   const srcY = legendY + 20;
   const dropped = allCategories.length - categories.length;
@@ -1193,13 +1214,31 @@ function cardsRequests(
 function quoteRequests(
   page: string, id: (s: string) => string, q: NonNullable<SlideInput["quote"]>
 ): Req[] {
+  // A quote is set to FIT rather than split or overflow.
+  //
+  // Splitting is wrong here — half a testimonial on each of two slides is not
+  // two slides — and overflowing runs the last line straight through the
+  // speaker's name, which is the one thing on the slide that has to stay
+  // legible. So the type comes down instead, and only as far as it must: a
+  // 180-character quote is untouched at 22pt.
+  const textWidth = q.resolvedImage ? QUOTE.textWidth - 2.1 * 72 : QUOTE.textWidth;
+  const CHAR_RATIO = 0.5;   // Playfair's average glyph, as a fraction of its size
+  const LINE = 1.15;
+  let quoteSize = TYPE.quoteText.size;
+  while (quoteSize > 13) {
+    const perLine = Math.max(12, Math.floor(textWidth / (quoteSize * CHAR_RATIO)));
+    const lines = Math.ceil((q.text?.length || 0) / perLine);
+    if (lines * quoteSize * LINE <= QUOTE.textHeight) break;
+    quoteSize -= 1;
+  }
+
   const out: Req[] = [
     ...textBox(id("qm"), page, "“", TYPE.quoteMark, {
       x: QUOTE.markX, y: QUOTE.markY, width: QUOTE.markWidth, height: QUOTE.markHeight,
     }),
-    ...textBox(id("qt"), page, q.text, TYPE.quoteText, {
+    ...textBox(id("qt"), page, q.text, { ...TYPE.quoteText, size: quoteSize }, {
       x: QUOTE.textX, y: QUOTE.textY,
-      width: q.resolvedImage ? QUOTE.textWidth - 2.1 * 72 : QUOTE.textWidth,
+      width: textWidth,
       height: QUOTE.textHeight,
     }),
     ...textBox(id("qn"), page, q.name, TYPE.quoteName, {

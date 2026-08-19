@@ -40,5 +40,11 @@ export async function POST(req: NextRequest) {
       { status: 502 }
     );
   }
-  return NextResponse.json({ url: resolved.url, source: resolved.source, credit: resolved.credit });
+  // `logo` travels with the picture. The bake measures the new photograph and
+  // decides whether the lockup should be white or navy on it; dropping that on
+  // the way back left the slide carrying the PREVIOUS image's decision, which
+  // is how swapping in a bright sky puts a white mark on it.
+  return NextResponse.json({
+    url: resolved.url, source: resolved.source, credit: resolved.credit, logo: resolved.logo,
+  });
 }

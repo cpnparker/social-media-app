@@ -98,7 +98,13 @@ function SlideThumb({
                 ...base,
                 background: el.fill || "transparent",
                 opacity: el.opacity ?? 1,
-                borderRadius: el.kind === "ellipse" ? "50%" : el.rounded ? 8 : 2,
+                borderRadius: el.kind === "ellipse" ? "50%" : el.arrow ? 0 : el.rounded ? 8 : 2,
+                // Slides draws a RIGHT_ARROW as an arrow; a preview that draws
+                // a rectangle turns the process layout's direction — the whole
+                // reason that layout exists — into a row of blocks.
+                ...(el.arrow
+                  ? { clipPath: "polygon(0% 30%, 60% 30%, 60% 0%, 100% 50%, 60% 100%, 60% 70%, 0% 70%)" }
+                  : {}),
               }} />
             );
           }
@@ -111,6 +117,13 @@ function SlideThumb({
           return (
             <div key={i} style={{
               ...base,
+              // Slides insets text inside its box — 0.1in left and right, 0.05in
+              // top and bottom — and does not expose the setting through the
+              // API, so every box has them. Drawing text flush gave the preview
+              // 14pt of width per box that the deck does not have, which is
+              // enough for a title to wrap here and not there.
+              paddingLeft: 7.2, paddingRight: 7.2, paddingTop: 3.6, paddingBottom: 3.6,
+              boxSizing: "border-box" as const,
               color: el.color,
               fontFamily: fontStack(el.font),
               fontSize: el.size,
@@ -194,7 +207,13 @@ export default function SlideDraftPreview({
   // in a twenty-slide deck put the controls a screen away from the slide they
   // changed — and at thumbnail size you cannot see what you are editing. Both
   // actions now open the slide full size and put the controls under it.
-  const [zoom, setZoom] = useState<number | null>(null);
+  const [rawZoom, setRawZoom] = useState<number | null>(null);
+  // Clamped against the CURRENT deck. A new draft arriving while slide 9 of 12
+  // was open — the model answering a comment with a shorter deck — left the
+  // index pointing past the end, and every read of preview.slides[zoom] below
+  // is unguarded, so the whole chat unmounted with a type error.
+  const zoom = rawZoom === null ? null : rawZoom < count ? rawZoom : count > 0 ? count - 1 : null;
+  const setZoom = setRawZoom;
   const [mode, setMode] = useState<"view" | "edit" | "comment">("view");
   const open = (i: number, m: "view" | "edit" | "comment") => { setZoom(i); setMode(m); };
   const slideTitle = (i: number) => (draft.slides?.[i] as any)?.title as string | undefined;
@@ -264,7 +283,7 @@ export default function SlideDraftPreview({
                   });
                   const j = await res.json();
                   if (!res.ok) { toast.error(j.error || "Couldn't change the image."); return; }
-                  onEdit(setSlideImage(draft, zoom, j.url, query, j.credit));
+                  onEdit(setSlideImage(draft, zoom, j.url, query, j.credit, j.logo));
                 }}
                 onMove={(delta) => {
                   onEdit(moveSlide(draft, zoom, delta));

@@ -48,9 +48,13 @@ export function signedMediaUrl(blobPath: string, origin?: string): string {
 export function verifyMediaSignature(blobPath: string, exp: string, sig: string): boolean {
   const expiry = Number(exp);
   if (!Number.isFinite(expiry) || expiry * 1000 < Date.now()) return false;
-  const expected = sign(blobPath, expiry);
-  // Length check first: timingSafeEqual throws on a length mismatch rather
-  // than returning false, which would turn a malformed signature into a 500.
-  if (expected.length !== sig.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig));
+  const expected = Buffer.from(sign(blobPath, expiry));
+  const given = Buffer.from(sig);
+  // Compared as BYTES. timingSafeEqual throws on a length mismatch rather than
+  // returning false, and the guard used to compare string lengths — so a
+  // signature of the right character count but containing a multibyte
+  // character passed the guard and threw inside the comparison, turning a
+  // malformed signature into a 500 instead of a 404.
+  if (expected.length !== given.length) return false;
+  return crypto.timingSafeEqual(expected, given);
 }
