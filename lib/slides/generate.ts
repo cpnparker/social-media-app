@@ -22,6 +22,7 @@ import {
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
 import { captureThumbnails } from "@/lib/slides/preview";
 import { resolveImage, type ImageGenerator } from "@/lib/slides/images";
+import { resolveIcon } from "@/lib/slides/icons";
 
 const SLIDES_API = "https://slides.googleapis.com/v1/presentations";
 const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
@@ -75,8 +76,13 @@ export interface SlideInput {
     marker?: string;
     title?: string;
     body?: string;
+    /** A Lucide icon name — "target", "line-chart", "users". Drawn small above
+     *  the heading, in brand navy. Cheaper and far more consistent than a
+     *  photograph when the card is about an idea rather than a thing. */
+    icon?: string;
     image?: { url?: string; query?: string };
     resolvedImage?: { url: string };
+    resolvedIcon?: string;
   }[];
   /** Big numbers for the stat layout — three at most, or none of them lands. */
   stats?: { value: string; label: string; detail?: string }[];
@@ -706,10 +712,20 @@ function statRequests(
   const groupH = CHART.statValueHeight + CHART.statLabelHeight + CHART.statDetailHeight + 4;
   const top = GRID.bodyY + Math.max(0, (GRID.bandHeight - groupH) / 2);
 
+  // Size the number to its column instead of trusting one fixed size.
+  //
+  // "92.5 GW" at 54pt is wider than a third of the slide, so it wrapped, and a
+  // two-line value in a one-line box overflowed downward straight through its
+  // own label and detail. Poppins runs about 0.58 of the point size per
+  // character, so the size that fits is solvable rather than guessable.
+  const longest = Math.max(...shown.map((s) => s.value.length), 1);
+  const fitted = Math.min(TYPE.statValue.size, Math.floor((cell - 6) / (longest * 0.58)));
+  const valueStyle = { ...TYPE.statValue, size: Math.max(22, fitted) };
+
   shown.forEach((s, i) => {
     const x = GRID.margin + i * (cell + CHART.statGap);
     out.push(
-      ...textBox(id(`sv${i}`), page, s.value, TYPE.statValue, {
+      ...textBox(id(`sv${i}`), page, s.value, valueStyle, {
         x, y: top, width: cell, height: CHART.statValueHeight,
       }),
       ...textBox(id(`sl${i}`), page, s.label, TYPE.statLabel, {
@@ -931,6 +947,22 @@ function cardsRequests(
         },
       });
       y += thumbH + CARDS.titleGap;
+    }
+
+    if (card.resolvedIcon && !card.resolvedImage) {
+      const size = CARDS.iconSize;
+      out.push({
+        createImage: {
+          objectId: id(`cn${i}`),
+          url: card.resolvedIcon,
+          elementProperties: {
+            pageObjectId: page,
+            size: { width: pt(size), height: pt(size) },
+            transform: { scaleX: 1, scaleY: 1, translateX: innerX, translateY: y, unit: "PT" },
+          },
+        },
+      });
+      y += size + CARDS.titleGap;
     }
 
     if (card.marker) {
@@ -1330,15 +1362,27 @@ export async function resolveDeckImages(
         // way the full-bleed cover used to, which is the bug this closes.
         // Gradient only where text sits on the picture.
         const split = slide.layout === "image-split";
+        // Tell the baker where this layout's lockup will land, so it measures
+        // the part of the picture the mark actually sits on.
+        const style = LAYOUT_STYLE[slide.layout || "content"];
+        const place = LOGO_PLACEMENT[style.logoPlacement];
         const r = await resolveImage(slide.image, generate, {
           aspect: split ? IMAGE.splitWidth / CANVAS.height : CANVAS.width / CANVAS.height,
           gradient: !split,
+          logoRegion: {
+            x: place.x / CANVAS.width, y: place.y / CANVAS.height,
+            w: place.width / CANVAS.width, h: place.height / CANVAS.height,
+          },
         });
         if (r) slide.resolvedImage = { url: r.url, scrim: r.scrim, credit: r.credit, logo: r.logo };
       }
       if (slide.cards?.length) {
         const cardAspect = cardGeometry(slide.cards.length).aspect;
         await Promise.all(slide.cards.map(async (card) => {
+          if (card.icon && !card.resolvedIcon) {
+            const icon = await resolveIcon(card.icon);
+            if (icon) card.resolvedIcon = icon;
+          }
           if (!card.image || card.resolvedImage) return;
           const r = await resolveImage(card.image, generate, { aspect: cardAspect, gradient: false });
           if (r) card.resolvedImage = { url: r.url };

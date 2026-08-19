@@ -1263,6 +1263,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                   type: "object",
                   properties: {
                     marker: { type: "string", description: "A short label or a number — 'STRATEGY', '01'. Drawn as a brand-blue chip. Keep it to one or two words." },
+                    icon: { type: "string", description: "A Lucide icon name in kebab-case — 'target', 'line-chart', 'users', 'file-text', 'megaphone', 'search'. Drawn small above the heading in brand navy. Prefer an icon over a photograph when the card is about an IDEA rather than a thing; use the same kind of icon across all cards on a slide, and pick names you are confident exist rather than inventing one." },
                     title: { type: "string", description: "The card's heading." },
                     body: { type: "string", description: "A sentence or two. Keep cards balanced — wildly uneven bodies read as a mistake." },
                     image: {

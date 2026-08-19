@@ -318,6 +318,8 @@ export const CARDS = {
   /** Thumbnail sits at the top of a card, square, full card width. */
   thumbRatio: 1,
   titleGap: 0.1 * IN,
+  /** Small enough to sit above a heading rather than compete with it. */
+  iconSize: 0.4 * IN,
 } as const;
 
 /** Series colours for charts, VALIDATED rather than chosen.

@@ -165,9 +165,12 @@ export async function scrimFor(imageUrl: string): Promise<number> {
  * the photographer nothing here. What does matter to them we still do: the
  * download endpoint is pinged and the credit is printed on the slide.
  */
+/** Where the lockup will sit, as fractions of the image. */
+export interface LogoRegion { x: number; y: number; w: number; h: number }
+
 async function bakeBackdrop(
   imageUrl: string,
-  opts: { aspect: number; gradient: boolean }
+  opts: { aspect: number; gradient: boolean; logoRegion?: LogoRegion }
 ): Promise<{ url: string; logo: "white" | "navy" } | null> {
   try {
     const res = await fetch(imageUrl, { signal: AbortSignal.timeout(15_000) });
@@ -183,7 +186,7 @@ async function bakeBackdrop(
     let logo: "white" | "navy" = "white";
     if (opts.gradient) {
       const peak = await gradientPeakFor(input, sharp);
-      const { stop: top, logo: variant } = await topTreatmentFor(input, sharp);
+      const { stop: top, logo: variant } = await logoTreatmentFor(input, sharp, peak, opts.logoRegion);
       logo = variant;
       // A real linear gradient, rasterised once and composited. Transparent at
       // the top so the photograph keeps its colour where no text sits.
@@ -223,18 +226,42 @@ async function bakeBackdrop(
  *  a mark is a graphic, not body copy, and darkening the sky to text standards
  *  would undo the reason the gradient is shaped this way.
  */
-async function topTreatmentFor(
-  input: Buffer, sharp: any
+/** Default region: the top-right corner, where most layouts put the lockup. */
+const DEFAULT_LOGO_REGION: LogoRegion = { x: 0.6, y: 0, w: 0.4, h: 0.22 };
+
+/** The gradient's opacity at a given depth, from the stops bakeBackdrop uses.
+ *
+ *  Needed because the logo is judged against the FINISHED picture, not the
+ *  source. A closing slide's mark sits in the gradient's dark foot: reading the
+ *  raw pixels there says "bright sea, use navy", and navy on that foot is
+ *  invisible. The gradient has to be accounted for before the choice is made. */
+function gradientAlphaAt(depth: number, top: number, peak: number): number {
+  const stops: [number, number][] = [[0, top], [0.42, Math.max(0.14, top * 0.6)], [0.72, peak * 0.75], [1, peak]];
+  for (let i = 1; i < stops.length; i++) {
+    const [d0, a0] = stops[i - 1], [d1, a1] = stops[i];
+    if (depth <= d1) return a0 + ((depth - d0) / (d1 - d0)) * (a1 - a0);
+  }
+  return peak;
+}
+
+async function logoTreatmentFor(
+  input: Buffer, sharp: any, peak: number, region: LogoRegion = DEFAULT_LOGO_REGION
 ): Promise<{ stop: number; logo: "white" | "navy" }> {
   const FLOOR = 0.1;
   try {
     const meta = await sharp(input).metadata();
     const W = meta.width || 0, H = meta.height || 0;
     if (!W || !H) return { stop: FLOOR, logo: "white" };
+    // Measure WHERE THE LOGO GOES. Hard-coding the top-right measured the wrong
+    // corner on the two layouts that move it: a cover centres it near the top,
+    // a closing slide puts it low and centred. Both came back reading a part of
+    // the sky the mark never touches.
     const { data, info } = await sharp(input)
       .extract({
-        left: Math.floor(W * 0.6), top: 0,
-        width: Math.max(1, Math.floor(W * 0.4)), height: Math.max(1, Math.floor(H * 0.22)),
+        left: Math.min(W - 1, Math.max(0, Math.floor(W * region.x))),
+        top: Math.min(H - 1, Math.max(0, Math.floor(H * region.y))),
+        width: Math.max(1, Math.min(W - Math.floor(W * region.x), Math.floor(W * region.w))),
+        height: Math.max(1, Math.min(H - Math.floor(H * region.y), Math.floor(H * region.h))),
       })
       .resize(32, 16, { fit: "fill" })
       .removeAlpha().raw().toBuffer({ resolveWithObject: true });
@@ -243,18 +270,22 @@ async function topTreatmentFor(
       lums.push(luminance(data[i * 3], data[i * 3 + 1], data[i * 3 + 2]));
     }
     lums.sort((a, b) => a - b);
-    const bright = lums[Math.floor(lums.length * 0.85)] ?? 1;
-    const MAX_FOR_LOGO = 1.05 / 3 - 0.05; // a white mark wants 3:1
+    const raw = lums[Math.floor(lums.length * 0.85)] ?? 1;
 
-    if (bright <= MAX_FOR_LOGO) return { stop: FLOOR, logo: "white" };
+    // What the mark will actually sit on, once the gradient is burnt in.
+    const depth = region.y + region.h / 2;
+    const alpha = gradientAlphaAt(depth, FLOOR, peak);
+    const seen = alpha * NAVY_L + (1 - alpha) * raw;
 
-    // The corner is bright. Darkening it to 3:1 measured 0.68 on a real sunset
-    // — which would flatten the sky the bottom-weighted gradient exists to
-    // preserve. The lockup has a navy variant, and navy on a pale sky reads at
-    // about 12:1, so switch the mark instead of ruining the picture. A light
-    // stop still goes on for cohesion.
-    const alpha = (bright - MAX_FOR_LOGO) / (bright - NAVY_L);
-    return { stop: Math.min(0.3, Math.max(FLOOR, Number(alpha.toFixed(2)))), logo: "navy" };
+    const contrast = (a: number, b: number) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+    if (contrast(1, seen) >= 3) return { stop: FLOOR, logo: "white" };
+    if (contrast(NAVY_L, seen) >= 3) return { stop: FLOOR, logo: "navy" };
+
+    // Neither mark reads — a mid-tone. Darken a little and take whichever is
+    // better, rather than flattening the picture to force a rule to pass.
+    const stop = Math.min(0.3, Math.max(FLOOR, alpha + 0.15));
+    const darker = stop * NAVY_L + (1 - stop) * raw;
+    return { stop, logo: contrast(1, darker) >= contrast(NAVY_L, darker) ? "white" : "navy" };
   } catch {
     return { stop: 0.22, logo: "white" };
   }
@@ -298,7 +329,8 @@ export interface ImageRequest {
 export async function resolveImage(
   req: ImageRequest,
   generate?: ImageGenerator,
-  treatment: { aspect: number; gradient: boolean } = { aspect: 16 / 9, gradient: true }
+  treatment: { aspect: number; gradient: boolean; logoRegion?: LogoRegion } =
+    { aspect: 16 / 9, gradient: true }
 ): Promise<ResolvedImage | null> {
   const finish = async (
     url: string, source: ResolvedImage["source"], credit?: string
