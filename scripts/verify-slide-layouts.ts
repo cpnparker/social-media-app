@@ -75,7 +75,10 @@ const DECK: SlideInput[] = [
 
 /* 1. Nothing may fall off the canvas. */
 console.log(`\n1. Every element stays on the 720x405 canvas`);
-for (const [i, slide] of DECK.entries()) {
+// Indexed loop, not .entries(): tsconfig sets no target, so iterating an
+// iterator needs downlevelIteration and fails the production build.
+for (let i = 0; i < DECK.length; i++) {
+  const slide = DECK[i];
   for (const req of buildSlideRequests(slide, i, "v")) {
     const body: any = Object.values(req)[0];
     const ep = body?.elementProperties;
