@@ -33,6 +33,28 @@ export interface PreviewElement {
   opacity?: number;
   /** Slides rounds ROUND_RECTANGLE far more than a 4px radius suggests. */
   rounded?: boolean;
+  /** Which field of the slide SPEC this text came from, when it maps to one.
+   *  This is what lets the preview be edited directly: geometry is fixed, so
+   *  changing the words changes nothing else, and no server round-trip is
+   *  needed to re-lay-out a slide whose boxes have not moved. */
+  field?: "title" | "subtitle" | "body" | "eyebrow" | "bodyRight";
+  /** The style upper-cases this text for display; the spec keeps the original. */
+  caps?: boolean;
+}
+
+/** Object ids are `<run>_s<index>_<suffix>`; the suffix names the box. */
+const FIELD_BY_SUFFIX: Record<string, PreviewElement["field"]> = {
+  title: "title",
+  sub: "subtitle",
+  body: "body",
+  eyebrow: "eyebrow",
+  left: "body",
+  right: "bodyRight",
+};
+
+function fieldOf(objectId: string): PreviewElement["field"] | undefined {
+  const suffix = objectId.split("_").pop() || "";
+  return FIELD_BY_SUFFIX[suffix];
 }
 
 export interface PreviewSlide {
@@ -106,7 +128,12 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
         if (el && typeof solid?.alpha === "number") el.opacity = solid.alpha;
       } else if (kind === "insertText") {
         const el = byId.get(body.objectId);
-        if (el) { el.kind = "text"; el.text = body.text; }
+        if (el) {
+          el.kind = "text";
+          el.text = body.text;
+          const field = fieldOf(body.objectId);
+          if (field) el.field = field;
+        }
       } else if (kind === "updateTextStyle") {
         const el = byId.get(body.objectId);
         if (!el) continue;
@@ -120,6 +147,18 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
       } else if (kind === "createParagraphBullets") {
         const el = byId.get(body.objectId);
         if (el) el.bullets = true;
+      }
+    }
+
+    // Whether a box is upper-cased is decided by COMPARING the rendered text to
+    // the spec value it came from, not by inspecting the letters. "L" is
+    // already upper-case and is not a caps style; guessing from the glyphs
+    // writes an edit back shouting.
+    for (const el of current.elements) {
+      if (el.kind !== "text" || !el.field || !el.text) continue;
+      const source = (slide as any)[el.field];
+      if (typeof source === "string" && source !== el.text && source.toUpperCase() === el.text) {
+        el.caps = true;
       }
     }
 

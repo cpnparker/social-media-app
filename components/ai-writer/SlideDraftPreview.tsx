@@ -11,37 +11,27 @@
  */
 
 import { useState } from "react";
+import { toast } from "sonner";
+import { setSlideText, setSlideImage, moveSlide, deleteSlide } from "@/lib/slides/draft-edit";
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import SlideLightbox from "./SlideLightbox";
 import SlideCommentBox from "./SlideCommentBox";
-import { MessageSquarePlus } from "lucide-react";
+import SlideEditPanel from "./SlideEditPanel";
+import { MessageSquarePlus, Pencil } from "lucide-react";
 
 const BASE_W = 720;
 const BASE_H = 405;
 /** Rendered width of one thumbnail. Two fit side by side in the chat column. */
 const THUMB_W = 330;
 
-export interface PreviewElement {
-  kind: "rect" | "ellipse" | "text" | "image";
-  x: number; y: number; w: number; h: number;
-  fill?: string;
-  text?: string;
-  font?: string;
-  size?: number;
-  weight?: number;
-  color?: string;
-  align?: "start" | "center" | "end";
-  bullets?: boolean;
-  src?: string;
-  opacity?: number;
-  rounded?: boolean;
-}
-
-export interface PreviewSlide {
-  background: string;
-  elements: PreviewElement[];
-}
+// Types come from the server module that BUILDS the model rather than being
+// restated here. A second copy is how the scrim's alpha went missing: the
+// server started carrying a property the client's own interface did not know
+// about, and nothing complained. `import type` is erased at compile time, so
+// no server code is pulled into the bundle.
+export type { PreviewElement, PreviewSlide } from "@/lib/slides/preview-model";
+import type { PreviewSlide } from "@/lib/slides/preview-model";
 
 export interface SlideDraft {
   title: string;
@@ -59,10 +49,10 @@ function fontStack(font?: string): string {
 }
 
 function SlideThumb({
-  slide, index, width = THUMB_W, onClick, onComment,
+  slide, index, width = THUMB_W, onClick, onComment, onEdit,
 }: {
   slide: PreviewSlide; index: number; width?: number;
-  onClick?: () => void; onComment?: () => void;
+  onClick?: () => void; onComment?: () => void; onEdit?: () => void;
 }) {
   const scale = width / BASE_W;
   return (
@@ -129,26 +119,47 @@ function SlideThumb({
         })}
       </div>
     </div>
-      {onComment && (
-        // Always in the DOM rather than mounted on hover, so it is reachable by
-        // keyboard and does not vanish from under a moving cursor.
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onComment(); }}
-          aria-label={`Comment on slide ${index + 1}`}
-          title="Ask for a change to this slide"
-          className="absolute top-1.5 right-1.5 h-7 w-7 rounded-md bg-background/90 border shadow-sm flex items-center justify-center
-                     opacity-0 group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-primary/40 transition-opacity"
-        >
-          <MessageSquarePlus className="h-3.5 w-3.5" />
-        </button>
+      {(onEdit || onComment) && (
+        // Always in the DOM rather than mounted on hover, so they are reachable
+        // by keyboard and do not vanish from under a moving cursor.
+        <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          {onEdit && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onEdit(); }}
+              aria-label={`Edit slide ${index + 1}`}
+              title="Edit this slide directly"
+              className="h-7 w-7 rounded-md bg-background/90 border shadow-sm flex items-center justify-center focus:opacity-100 focus-visible:ring-2 focus-visible:ring-primary/40"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {onComment && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onComment(); }}
+              aria-label={`Comment on slide ${index + 1}`}
+              title="Ask the model for a change to this slide"
+              className="h-7 w-7 rounded-md bg-background/90 border shadow-sm flex items-center justify-center focus:opacity-100 focus-visible:ring-2 focus-visible:ring-primary/40"
+            >
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
+/** Full-bleed layouts carry text over the picture and need the gradient; an
+ *  image beside text does not, and darkening it would be wrong. */
+function needsGradient(draft: SlideDraft, index: number): boolean {
+  const layout = (draft.slides[index] as any)?.layout;
+  return layout !== "image-split" && layout !== "image-grid";
+}
+
 export default function SlideDraftPreview({
-  draft, onPublish, publishing, disabled, onSlideComment,
+  draft, onPublish, publishing, disabled, onSlideComment, onEdit,
 }: {
   draft: SlideDraft;
   onPublish: () => void;
@@ -156,10 +167,13 @@ export default function SlideDraftPreview({
   disabled?: boolean;
   /** Sends a change request scoped to one slide. */
   onSlideComment?: (index: number, text: string) => void;
+  /** Direct edits, applied locally without involving the model. */
+  onEdit?: (next: SlideDraft) => void;
 }) {
   const count = draft.preview.slides.length;
   const [zoom, setZoom] = useState<number | null>(null);
   const [commentOn, setCommentOn] = useState<number | null>(null);
+  const [editOn, setEditOn] = useState<number | null>(null);
   const slideTitle = (i: number) => (draft.slides?.[i] as any)?.title as string | undefined;
   const submitComment = (i: number) => (text: string) => {
     onSlideComment?.(i, text);
@@ -195,9 +209,36 @@ export default function SlideDraftPreview({
       <div className="flex flex-wrap gap-2">
         {draft.preview.slides.map((s, i) => (
           <SlideThumb key={i} slide={s} index={i} onClick={() => setZoom(i)}
-                      onComment={onSlideComment ? () => setCommentOn(i) : undefined} />
+                      onComment={onSlideComment ? () => { setEditOn(null); setCommentOn(i); } : undefined}
+                      onEdit={onEdit ? () => { setCommentOn(null); setEditOn(i); } : undefined} />
         ))}
       </div>
+
+      {editOn !== null && onEdit && (
+        <div className="mt-2.5">
+          <SlideEditPanel
+            draft={draft}
+            index={editOn}
+            onText={(field, value) => onEdit(setSlideText(draft, editOn, field, value))}
+            onImage={async (query) => {
+              const res = await fetch("/api/slides/image", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ query, gradient: needsGradient(draft, editOn) }),
+              });
+              const j = await res.json();
+              if (!res.ok) { toast.error(j.error || "Couldn't change the image."); return; }
+              onEdit(setSlideImage(draft, editOn, j.url, query, j.credit));
+            }}
+            onMove={(delta) => {
+              onEdit(moveSlide(draft, editOn, delta));
+              setEditOn(Math.min(Math.max(0, editOn + delta), draft.slides.length - 1));
+            }}
+            onDelete={() => { onEdit(deleteSlide(draft, editOn)); setEditOn(null); }}
+            onClose={() => setEditOn(null)}
+          />
+        </div>
+      )}
 
       {commentOn !== null && (
         <div className="mt-2.5">

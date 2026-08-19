@@ -325,6 +325,33 @@ export default function ChatPanel({
   };
 
   /**
+   * Apply a direct edit to the draft, and persist it.
+   *
+   * Local first so the change is instant — the geometry is fixed, so new text
+   * needs no re-layout — then saved, because a draft that loses its edits on
+   * reload is the same fault that moving drafts onto the message fixed.
+   */
+  const applyDraftEdit = useCallback(async (next: SlideDraft) => {
+    setSlidesDraft(next);
+    if (!slidesDraftMessageId) return;
+    try {
+      const res = await fetch("/api/slides/draft", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messageId: slidesDraftMessageId, draft: next }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        // The edit stays on screen: it is valid, it just is not saved, and
+        // silently reverting what someone typed is worse than saying so.
+        toast.error(j.error || "Change applied but not saved — reloading will lose it.");
+      }
+    } catch {
+      toast.error("Change applied but not saved — reloading will lose it.");
+    }
+  }, [slidesDraftMessageId]);
+
+  /**
    * Turn a comment on one slide into a properly scoped instruction.
    *
    * The user should only have to write the change, not locate it. The slide
@@ -1775,6 +1802,7 @@ export default function ChatPanel({
                   onSlideComment={(i, text) =>
                     sendSlideComment(slidesDraft.title, i, (slidesDraft.slides?.[i] as any)?.title, text)
                   }
+                  onEdit={applyDraftEdit}
                 />
               </div>
             )}
