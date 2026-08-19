@@ -148,6 +148,31 @@ export async function GET(
       createdByName: m.user_created ? messageNameMap.get(m.user_created) || null : null,
     }));
 
+    // Rebuild any unpublished slide preview from its spec.
+    //
+    // The stored preview is a SNAPSHOT of a model that keeps changing — new
+    // layouts, new properties, a different cover composition. Trusting it means
+    // a draft made last week renders with last week's layout while publishing
+    // this week's, which breaks the one promise the preview makes. It also
+    // silently withheld new capabilities: a deck drafted before text boxes
+    // carried spec paths reported "this slide has no editable text", because
+    // its elements predated the idea.
+    //
+    // The spec is the durable half and the preview is derived from it, so it is
+    // regenerated on read. Pure function, no I/O. A PUBLISHED draft is left
+    // exactly as stored: it describes a file that exists, and re-deriving it
+    // could disagree with what is actually in Drive.
+    for (const message of messages as any[]) {
+      const draft = message.slidesDraft;
+      if (!draft?.slides?.length || draft.published?.url) continue;
+      try {
+        const { toPreviewModel } = await import("@/lib/slides/preview-model");
+        draft.preview = toPreviewModel(draft.slides);
+      } catch (err: any) {
+        console.warn(`[Slides] could not rebuild preview for ${message.id}: ${err?.message}`);
+      }
+    }
+
     // Resolve customer name if conversation has an id_client
     let customerName: string | null = null;
     if (conversation.id_client) {
