@@ -61,6 +61,12 @@ export const GRID = {
   titleHeight: 0.63 * IN,     // 45.36
   bodyY: 1.85 * IN,           // 133.2
   bodyHeight: 2.81 * IN,      // 202.32
+  /** Foot of the title to the bottom margin. Self-contained blocks — stats, a
+   *  bar plot — are centred in this, so five bars sit balanced and eight fill
+   *  it. Prose is NOT: bullets centred in the band float away from the title
+   *  they belong to, which rendering made obvious and reasoning had not. A
+   *  three-bullet slide with dead space wants a picture, not a lower margin. */
+  bandHeight: 3.35 * IN,
 
   /** Stops short of the top-right logo (which starts at 8.69in) so a long
    *  eyebrow cannot run underneath it. */

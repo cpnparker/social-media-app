@@ -40,6 +40,8 @@ export interface PreviewElement {
   field?: "title" | "subtitle" | "body" | "eyebrow" | "bodyRight";
   /** The style upper-cases this text for display; the spec keeps the original. */
   caps?: boolean;
+  /** Text is centred vertically inside its box. */
+  vCenter?: boolean;
 }
 
 /** Object ids are `<run>_s<index>_<suffix>`; the suffix names the box. */
@@ -118,6 +120,7 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
         current.elements.push(el);
       } else if (kind === "updateShapeProperties") {
         const el = byId.get(body.objectId);
+        if (el && body.shapeProperties?.contentAlignment === "MIDDLE") el.vCenter = true;
         const solid = body.shapeProperties?.shapeBackgroundFill?.solidFill;
         const fill = solid?.color?.rgbColor;
         if (el && fill) el.fill = hex(fill);

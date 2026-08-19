@@ -130,6 +130,14 @@ interface BoxOptions {
   align?: "START" | "CENTER" | "END";
   bullets?: boolean;
   lineSpacing?: number;
+  /** Centre the text vertically inside its box.
+   *
+   *  This is how a short slide stops leaving its bottom third empty without
+   *  anyone having to measure text. The box is given the whole band it may
+   *  occupy and Slides centres whatever lands in it, so three bullets sit in
+   *  the middle of the space and eight fill it — no estimating line heights,
+   *  and no drift between what we predicted and what Google laid out. */
+  vCenter?: boolean;
 }
 
 /** A positioned text box: create, fill, style. Returns [] for empty text so a
@@ -174,6 +182,16 @@ function textBox(
       },
     },
   ];
+
+  if (options.vCenter) {
+    requests.push({
+      updateShapeProperties: {
+        objectId,
+        shapeProperties: { contentAlignment: "MIDDLE" },
+        fields: "contentAlignment",
+      },
+    });
+  }
 
   // Bullets only when there is genuinely a list. A single paragraph rendered
   // with a disc reads as a stray bullet rather than a list of one.
@@ -589,17 +607,21 @@ function statRequests(
   const out: Req[] = [];
   const cell = (GRID.contentWidth - CHART.statGap * (shown.length - 1)) / shown.length;
 
+  // Centre the block of figures in the band rather than pinning it to the top.
+  const groupH = CHART.statValueHeight + CHART.statLabelHeight + CHART.statDetailHeight + 4;
+  const top = GRID.bodyY + Math.max(0, (GRID.bandHeight - groupH) / 2);
+
   shown.forEach((s, i) => {
     const x = GRID.margin + i * (cell + CHART.statGap);
     out.push(
       ...textBox(id(`sv${i}`), page, s.value, TYPE.statValue, {
-        x, y: CHART.statY, width: cell, height: CHART.statValueHeight,
+        x, y: top, width: cell, height: CHART.statValueHeight,
       }),
       ...textBox(id(`sl${i}`), page, s.label, TYPE.statLabel, {
-        x, y: CHART.statY + CHART.statValueHeight, width: cell, height: CHART.statLabelHeight,
+        x, y: top + CHART.statValueHeight, width: cell, height: CHART.statLabelHeight,
       }),
       ...textBox(id(`sd${i}`), page, s.detail, TYPE.statDetail, {
-        x, y: CHART.statY + CHART.statValueHeight + CHART.statLabelHeight + 4,
+        x, y: top + CHART.statValueHeight + CHART.statLabelHeight + 4,
         width: cell, height: CHART.statDetailHeight,
       }),
     );
@@ -627,9 +649,11 @@ function barChartRequests(
   const plotW = GRID.contentWidth - CHART.labelGutter - 52;
   const rowH = CHART.barHeight + CHART.barGap;
   const out: Req[] = [];
+  // Same treatment as the stats: five bars centre in the band, eight fill it.
+  const plotTop = GRID.bodyY + Math.max(0, (GRID.bandHeight - (points.length * rowH + 24)) / 2);
 
   points.forEach((p, i) => {
-    const y = CHART.plotY + i * rowH;
+    const y = plotTop + i * rowH;
     const w = Math.max(2, (Math.abs(p.value) / max) * plotW);
     out.push(
       ...textBox(id(`bl${i}`), page, p.label, TYPE.chartCategory, {
@@ -645,7 +669,7 @@ function barChartRequests(
   });
 
   out.push(...textBox(id("csrc"), page, chart.source, TYPE.chartAxis, {
-    x: GRID.margin, y: CHART.plotY + points.length * rowH + 8,
+    x: GRID.margin, y: plotTop + points.length * rowH + 8,
     width: GRID.contentWidth, height: 16,
   }));
   return out;

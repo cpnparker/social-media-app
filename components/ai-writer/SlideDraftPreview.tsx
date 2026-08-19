@@ -110,6 +110,12 @@ function SlideThumb({
               textAlign: el.align === "center" ? "center" : el.align === "end" ? "right" : "left",
               overflow: "hidden",
               whiteSpace: "pre-wrap",
+              // Mirrors Slides' contentAlignment: MIDDLE. Without it a centred
+              // body renders top-aligned here and the preview stops predicting
+              // the deck — the exact divergence the scrim alpha caused.
+              ...(el.vCenter
+                ? { display: "flex", flexDirection: "column" as const, justifyContent: "center" }
+                : {}),
             }}>
               {el.bullets && lines.length > 1
                 ? lines.map((line, li) => <div key={li}>{`• ${line}`}</div>)
