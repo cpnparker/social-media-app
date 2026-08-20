@@ -1964,24 +1964,47 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
   const titleBox = { y: heading.y, height: heading.height };
 
   if (layout === "cover") {
-    // Bottom-anchored, like the shared heading: the kicker sits under it and a
-    // three-line title used to be drawn straight over it.
-    const cover = fitHeading(slide.title, TYPE.coverTitle, GRID.coverTitleWidth, {
-      bottom: GRID.coverKickerY - 10,
-      minTop: CANVAS.height * 0.3,
-      minHeight: GRID.coverTitleHeight,
-      minSize: 20,
-    });
-    requests.push(
-      ...textBox(id("title"), page, slide.title, cover.style, {
-        x: GRID.coverTitleX, y: cover.y,
-        width: GRID.coverTitleWidth, height: cover.height,
-      }),
-      ...textBox(id("sub"), page, slide.subtitle, TYPE.coverKicker, {
-        x: GRID.coverKickerX, y: GRID.coverKickerY,
-        width: GRID.coverKickerWidth, height: GRID.coverKickerHeight,
-      }),
-    );
+    if (!slide.resolvedImage) {
+      // A COVER WITH NO PHOTOGRAPH used to be a plain navy slide with a title in
+      // the corner — the dullest possible opening. Designed instead: an accent
+      // rule, a centred title, the kicker beneath, on navy. The photo cover is
+      // still the default (the prompt asks for an image.query), but the deck no
+      // longer opens on nothing when there is not one.
+      const np = fitHeading(slide.title, TYPE.coverTitle, GRID.contentWidth, {
+        bottom: CANVAS.height / 2 + 20, minTop: CANVAS.height * 0.24,
+        minHeight: GRID.coverTitleHeight, minSize: 22,
+      });
+      requests.push(
+        ...filledShape(id("crule"), page, "RECTANGLE", COLOR.lime, {
+          x: (CANVAS.width - RULE.accentWidth) / 2, y: np.y - 22, width: RULE.accentWidth, height: RULE.thickness,
+        }),
+        ...textBox(id("title"), page, slide.title, np.style, {
+          x: GRID.margin, y: np.y, width: GRID.contentWidth, height: np.height,
+        }, { align: "CENTER" }),
+        ...textBox(id("sub"), page, slide.subtitle, TYPE.closingKicker, {
+          x: GRID.margin, y: np.y + np.height + 12, width: GRID.contentWidth, height: 28,
+        }, { align: "CENTER" }),
+      );
+    } else {
+      // Bottom-anchored over the photo: the kicker sits under it and a three-line
+      // title used to be drawn straight over it.
+      const cover = fitHeading(slide.title, TYPE.coverTitle, GRID.coverTitleWidth, {
+        bottom: GRID.coverKickerY - 10,
+        minTop: CANVAS.height * 0.3,
+        minHeight: GRID.coverTitleHeight,
+        minSize: 20,
+      });
+      requests.push(
+        ...textBox(id("title"), page, slide.title, cover.style, {
+          x: GRID.coverTitleX, y: cover.y,
+          width: GRID.coverTitleWidth, height: cover.height,
+        }),
+        ...textBox(id("sub"), page, slide.subtitle, TYPE.coverKicker, {
+          x: GRID.coverKickerX, y: GRID.coverKickerY,
+          width: GRID.coverKickerWidth, height: GRID.coverKickerHeight,
+        }),
+      );
+    }
   } else if (layout === "closing") {
     const closing = fitHeading(slide.title, TYPE.coverTitle, GRID.contentWidth, {
       bottom: GRID.closingSubtitleY - 10,

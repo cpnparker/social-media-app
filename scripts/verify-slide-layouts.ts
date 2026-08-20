@@ -647,6 +647,23 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   }
   if (failures === before18) pass("comparison has headers, a divider and a rule; the close carries its actions");
 
+  /* 19. A cover without a photo is designed, not a plain navy slide. */
+  const before19 = failures;
+  console.log(`\n19. The no-photo cover has a composition of its own`);
+  const npCover = buildSlideRequests({ layout: "cover", title: "AI Visibility for Rigiwald", subtitle: "A diagnostic" }, 0, "n");
+  if (!npCover.some((r: any) => (r.createShape?.objectId || "").endsWith("_crule"))) {
+    fail("a cover with no photo drew no accent rule — it is the plain navy slide again");
+  }
+  const npCentred = toPreviewModel([{ layout: "cover", title: "AI Visibility", subtitle: "x" }]).slides[0]
+    .elements.some((e) => e.kind === "text" && e.align === "center");
+  if (!npCentred) fail("the no-photo cover title is not centred");
+  // the photo cover keeps its bottom-left composition (no accent rule, not centred)
+  const phCover = buildSlideRequests({ layout: "cover", title: "T", subtitle: "x", resolvedImage: PHOTO_DARK }, 0, "n");
+  if (phCover.some((r: any) => (r.createShape?.objectId || "").endsWith("_crule"))) {
+    fail("the photo cover drew the no-photo composition");
+  }
+  if (failures === before19) pass("no-photo cover is centred with an accent rule; the photo cover is unchanged");
+
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);
 })();
