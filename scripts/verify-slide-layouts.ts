@@ -157,10 +157,12 @@ for (let i = 0; i < ALL.length; i++) {
     const body: any = Object.values(req)[0];
     const ep = body?.elementProperties;
     if (!ep) continue;
-    const { translateX: x, translateY: y } = ep.transform;
-    const w = ep.size.width.magnitude, h = ep.size.height.magnitude;
+    const { translateX: x, translateY: y, scaleX = 1, scaleY = 1 } = ep.transform;
+    // Slides renders at size x scale. The check read size alone, so an element
+    // scaled past the edge (scaleX:2 on a full-bleed image) reported as fitting.
+    const w = ep.size.width.magnitude * scaleX, h = ep.size.height.magnitude * scaleY;
     if (x < -0.5 || y < -0.5 || x + w > CANVAS.width + 0.5 || y + h > CANVAS.height + 0.5) {
-      fail(`${slide.layout}: element at ${Math.round(x)},${Math.round(y)} (${Math.round(w)}x${Math.round(h)}) leaves the canvas`);
+      fail(`${slide.layout}: element at ${Math.round(x)},${Math.round(y)} (${Math.round(w)}x${Math.round(h)}, scale ${scaleX}x${scaleY}) leaves the canvas`);
     }
   }
 }
@@ -247,12 +249,23 @@ deck.slides.forEach((page, i) => {
   if (!logo) return;
   const white = logo.src!.includes("white");
   const style = LAYOUT_STYLE[slide.layout!];
-  if (style.background === null) return; // over a photograph, measured at bake time
+  if (style.background === null) {
+    // Over a photograph the CONTRAST is measured at bake time and delivered as
+    // resolvedImage.logo. The check used to stop here, so nothing asserted the
+    // builder actually APPLIES that choice — inverting it (a white mark on a
+    // pale sky, the historical bug) left every check green. Assert the drawn
+    // lockup matches the variant the picture carries.
+    const want = (slide as any).resolvedImage?.logo;
+    if (want && ((want === "white") !== white)) {
+      fail(`${slide.layout}: picture asked for the ${want} lockup, ${white ? "white" : "navy"} was drawn`);
+    }
+    return;
+  }
   const darkGround = style.background === COLOR.navy || style.background === COLOR.blue;
   if (white && !darkGround) fail(`${slide.layout}: white lockup on ${style.background}`);
   if (!white && darkGround) fail(`${slide.layout}: navy lockup on ${style.background}`);
 });
-if (failures === before4) pass("no lockup is drawn on a ground it cannot be seen against");
+if (failures === before4) pass("no lockup is drawn on a ground it cannot be seen against, photo or flat");
 
 /* 5. A link must not cost a box its typography in the preview. */
 const before5 = failures;
@@ -532,7 +545,16 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       }
     }
   });
-  if (failures === before13) pass("a rule, a measure, the whole band, and the picture actually drawn");
+  // A rail narrows the body to 432pt. A body that overflows THAT column must
+  // split, at draft time (image is a query, not yet resolved) as at publish.
+  // The original check used four short bullets — the "invisible with short
+  // labels" pattern — and missed the rail measuring against the wide column.
+  const railBody = Array.from({ length: 11 }, (_, i) => `Bullet ${i + 1}: ${"x".repeat(85)}`).join("\n");
+  const railDraft = splitOverflowingSlides([{ layout: "content", title: "T", image: { query: "wind" }, body: railBody }]);
+  if (railDraft.length < 2) fail("a rail slide's overflowing body was not split (measured against the wide column?)");
+  const railPub = splitOverflowingSlides([{ layout: "case-study", title: "T", resolvedImage: PHOTO_DARK, body: railBody }]);
+  if (railPub.length < 2) fail("a resolved rail slide's overflowing body was not split");
+  if (failures === before13) pass("a rule, a measure, the whole band, the picture drawn, and the rail body split against its own column");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);

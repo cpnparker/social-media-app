@@ -178,6 +178,11 @@ export const TYPE: Record<string, TypeStyle> = {
    *  under the 4.5:1 the layout check asserts. */
   coverTitle:    { font: "Playfair Display", size: 30, color: COLOR.white },
   coverKicker:   { font: "Roboto", size: 12, color: COLOR.white, caps: true },
+  /** The closing sign-off line. White, not the source deck's lime: the closing
+   *  ground is a photograph whose baked gradient is solved for WHITE, and lime
+   *  (#C0FF7E) is only contrast-guaranteed on solid navy/blue, not on the pale
+   *  foot of a gradient. Its own token so this is a decision, not inheritance. */
+  closingKicker: { font: "Roboto", size: 12, color: COLOR.white, caps: true },
   sectionTitle:  { font: "Playfair Display", size: 26, color: COLOR.white },
   slideTitle:    { font: "Playfair Display", size: 20, color: COLOR.navy },
   slideTitleDark:{ font: "Playfair Display", size: 20, color: COLOR.white },

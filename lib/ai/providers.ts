@@ -6,7 +6,7 @@ import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
 import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings } from "@/lib/slides/generate";
-import { createToolLoopGuard } from "@/lib/ai/tool-loop-guard";
+import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice } from "@/lib/ai/tool-loop-guard";
 import { toPreviewModel } from "@/lib/slides/preview-model";
 import { signedMediaUrl } from "@/lib/media/signed";
 import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
@@ -1315,7 +1315,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                   text: { type: "string", description: "The quote itself, without surrounding quotation marks — the layout draws those." },
                   name: { type: "string", description: "Who said it." },
                   role: { type: "string", description: "Their job title and company." },
-                  image: { type: "object", description: "An optional portrait.", properties: { query: { type: "string" }, url: { type: "string" } } },
+                  image: { type: "object", description: "An optional portrait of the speaker — a `url` to an ACTUAL photograph of the named person only. A `query` will NOT be searched or generated: standing a stranger's stock face under a real person's name is a misattribution, so a portrait with no real url is simply omitted.", properties: { query: { type: "string" }, url: { type: "string" } } },
                 },
                 required: ["text"],
               },
@@ -7401,8 +7401,8 @@ async function streamAnthropic(
           type: "tool_result",
           tool_use_id: tool.id,
           content: executedToolSigs.has(toolSig)
-            ? `You already called ${tool.name} with these exact arguments this turn — the result is above. Do NOT call it again. Answer the user now with what you have; if the data isn't available, say so plainly. Never promise to run a search or tool you cannot actually run.`
-            : `You have called ${tool.name} too many times this turn. Stop calling it and answer now. IMPORTANT: report only what you actually retrieved — do NOT fill missing rows or columns with placeholders — no "[not retrieved]", "Not retrieved", "N/A", "TBC" or dashes standing in for figures you never fetched. If a whole column would be placeholders, drop that column and say why underneath the table instead of shipping a column of nothing. Say plainly which parts you could not fetch and why, and mention that many of these tools accept a comma-separated list (or "all") so the rest can be fetched in ONE call next time.`,
+            ? repeatedCallNotice(tool.name)
+            : overBudgetNotice(tool.name),
         });
         continue;
       }
@@ -8822,8 +8822,8 @@ async function streamXAIChatCompletions(
           role: "tool",
           tool_call_id: tc.id,
           content: executedToolSigs.has(toolSig)
-            ? `You already called ${tc.function.name} with these exact arguments this turn — the result is above. Do NOT call it again. Answer the user now with what you have; if the data isn't available, say so plainly. Never promise to run a search or tool you cannot actually run.`
-            : `You have called ${tc.function.name} too many times this turn. Stop calling it and answer now. IMPORTANT: report only what you actually retrieved — do NOT fill missing rows or columns with placeholders as if they were results. Say plainly what you could not fetch, and note that many of these tools accept a comma-separated list (or "all") to fetch the rest in ONE call.`,
+            ? repeatedCallNotice(tc.function.name)
+            : overBudgetNotice(tc.function.name),
         } as any);
         continue;
       }

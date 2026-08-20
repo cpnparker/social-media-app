@@ -40,14 +40,69 @@ function isPrivateV4(ip: string): boolean {
   );
 }
 
+/** Expand any IPv6 literal to its eight 16-bit groups, or null if it will not
+ *  parse. net.isIP has already vouched that the string is a valid v6, so this
+ *  only has to handle the `::` run and an optional embedded dotted IPv4 tail. */
+function v6Groups(addr: string): number[] | null {
+  let a = addr;
+  // A trailing dotted-quad (::ffff:127.0.0.1) becomes two hex groups first.
+  const dotted = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(a);
+  if (dotted) {
+    const b = dotted.slice(1).map(Number);
+    if (b.some((n) => n > 255)) return null;
+    a = a.slice(0, dotted.index) +
+      ((b[0] << 8) | b[1]).toString(16) + ":" + ((b[2] << 8) | b[3]).toString(16);
+  }
+  const halves = a.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 ? (halves[1] ? halves[1].split(":") : []) : null;
+  let groups: string[];
+  if (tail === null) {
+    groups = head;
+  } else {
+    const fill = 8 - head.length - tail.length;
+    if (fill < 0) return null;
+    groups = head.concat(Array(fill).fill("0"), tail);
+  }
+  if (groups.length !== 8) return null;
+  const out = groups.map((g) => parseInt(g || "0", 16));
+  return out.some((n) => Number.isNaN(n) || n < 0 || n > 0xffff) ? null : out;
+}
+
 function isPrivateV6(ip: string): boolean {
   const a = ip.toLowerCase().replace(/^\[|\]$/g, "");
-  if (a === "::" || a === "::1") return true;
-  if (/^fe[89ab]/.test(a)) return true;                                   // link-local
-  if (a.startsWith("fc") || a.startsWith("fd")) return true;              // unique local
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(a);
-  if (mapped) return isPrivateV4(mapped[1]);
+  const g = v6Groups(a);
+  // Cannot classify it → treat as private. A guard that fails open is not a
+  // guard: an address this cannot parse is exactly where an attacker aims.
+  if (!g) return true;
+
+  // Loopback ::1 and the unspecified ::
+  if (g.every((n, i) => (i < 7 ? n === 0 : true)) && (g[7] === 0 || g[7] === 1)) return true;
+  // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d) carry a v4
+  // address in the low 32 bits — the bypass this file shipped with: the dotted
+  // form was handled but ::ffff:7f00:1 and ::ffff:a9fe:a9fe (127.0.0.1 and the
+  // 169.254 metadata endpoint in hex) sailed through as "public".
+  const firstFive = g[0] | g[1] | g[2] | g[3] | g[4];
+  if (firstFive === 0 && (g[5] === 0xffff || g[5] === 0)) {
+    const v4 = `${g[6] >> 8}.${g[6] & 0xff}.${g[7] >> 8}.${g[7] & 0xff}`;
+    return isPrivateV4(v4);
+  }
+  const h = g[0];
+  if (h >= 0xfe80 && h <= 0xfebf) return true;   // link-local fe80::/10
+  if (h >= 0xfc00 && h <= 0xfdff) return true;   // unique local fc00::/7
+  if ((h & 0xff00) === 0xff00) return true;       // multicast ff00::/8
+  if (h === 0x0064 && g[1] === 0xff9b) {          // NAT64 64:ff9b::/96 — carries a v4
+    const v4 = `${g[6] >> 8}.${g[6] & 0xff}.${g[7] >> 8}.${g[7] & 0xff}`;
+    return isPrivateV4(v4);
+  }
   return false;
+}
+
+/** The address classifier, exported for scripts/verify-safe-fetch.ts. A literal
+ *  IP is judged synchronously here; a hostname is resolved. */
+export async function destinationIsPublicForTest(hostname: string): Promise<boolean> {
+  return destinationIsPublic(hostname);
 }
 
 async function destinationIsPublic(hostname: string): Promise<boolean> {

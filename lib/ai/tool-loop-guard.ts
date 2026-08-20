@@ -1,12 +1,15 @@
 /**
  * The no-progress guard: stop a model calling the same tool over and over.
  *
- * One implementation, because there were two — pasted into the Anthropic and
- * xAI chains and simply absent from the Gemini and OpenAI ones, where a model
- * could call the same tool with the same arguments until the round cap ran out
- * and then answer from a wall of identical results. A guard that exists in half
- * the chains is a guard nobody can reason about, and a third copy of the budget
- * table would have made that worse.
+ * The Gemini and OpenAI chains use createToolLoopGuard() below. The Anthropic
+ * and xAI chains keep their own inline copies of the same budget table — they
+ * additionally roll a signature back on a RETRYABLE failure (executedToolSigs
+ * .delete), which the factory does not model — but every chain now draws its
+ * refusal text from repeatedCallNotice / overBudgetNotice here, so the four
+ * cannot drift on wording again. Folding the two inline copies onto the factory
+ * (by giving it a release() for the retry rollback) is the remaining cleanup;
+ * until then this file is the single source for the budgets and the messages,
+ * not yet for the loop itself.
  *
  * Two rules, and they do different jobs:
  *   - The same tool with the SAME ARGUMENTS is refused outright. There is no

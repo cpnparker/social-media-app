@@ -393,7 +393,7 @@ function timelineRequests(
   // nothing else gives. At eight the column is 84pt — about nine characters of
   // 12pt Playfair — so "Questionnaire" wraps to three lines and runs straight
   // through the detail beneath it, on every one of the eight.
-  const shown = milestones.slice(0, TIMELINE.maxMilestones);
+  const shown = milestones.filter(Boolean).slice(0, TIMELINE.maxMilestones);
   const droppedMilestones = milestones.length - shown.length;
   const n = shown.length;
   if (!n) return requests;
@@ -911,7 +911,7 @@ function statRequests(
   page: string, id: (s: string) => string,
   stats: { value: string; label: string; detail?: string }[]
 ): Req[] {
-  const shown = stats.slice(0, 3);
+  const shown = stats.filter(Boolean).slice(0, 3);
   if (!shown.length) return [];
   const out: Req[] = [];
   const cell = (GRID.contentWidth - CHART.statGap * (shown.length - 1)) / shown.length;
@@ -1508,7 +1508,7 @@ function cardsRequests(
   page: string, id: (s: string) => string,
   cards: NonNullable<SlideInput["cards"]>
 ): Req[] {
-  const shown = cards.slice(0, 6);
+  const shown = cards.filter(Boolean).slice(0, 6);
   if (!shown.length) return [];
   const { cellW, thumbW, thumbH } = cardGeometry(shown.length);
   // A panel only where there is a picture to hold. Boxing a chip and two lines
@@ -1671,7 +1671,7 @@ const MAX_STAGES = 5;
 function processRequests(
   page: string, id: (s: string) => string, stages: NonNullable<SlideInput["stages"]>
 ): Req[] {
-  const shown = stages.slice(0, MAX_STAGES);
+  const shown = stages.filter(Boolean).slice(0, MAX_STAGES);
   if (!shown.length) return [];
   const gaps = shown.length - 1;
   const boxW = (GRID.contentWidth - gaps * PROCESS.connectorWidth) / shown.length;
@@ -1728,7 +1728,7 @@ function logoWallRequests(
   // A client whose mark could not be found is still a client: their name is
   // set instead. Dropping the cell silently shortened the credibility slide,
   // and filling it with a stock photograph would have been worse.
-  const shown = logos.filter((l) => l.resolvedUrl || l.name?.trim()).slice(0, 12);
+  const shown = logos.filter((l) => l && (l.resolvedUrl || l.name?.trim())).slice(0, 12);
   if (!shown.length) return [];
   const cols = Math.min(shown.length, shown.length <= 4 ? shown.length : shown.length <= 8 ? 4 : 6);
   const rows = Math.ceil(shown.length / cols);
@@ -1854,7 +1854,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         x: GRID.margin, y: closing.y,
         width: GRID.contentWidth, height: closing.height,
       }, { align: "CENTER" }),
-      ...textBox(id("sub"), page, slide.subtitle, TYPE.coverKicker, {
+      ...textBox(id("sub"), page, slide.subtitle, TYPE.closingKicker, {
         x: GRID.margin, y: GRID.closingSubtitleY,
         width: GRID.contentWidth, height: GRID.closingSubtitleHeight,
       }, { align: "CENTER" }),
@@ -2238,7 +2238,20 @@ const PROBE = "\u241E";
 function bodyBox(
   slide: SlideInput, index: number, field: "body" | "bodyRight"
 ): { width: number; height: number; size: number; bullets: boolean } | undefined {
-  const probe: any = { ...slide, resolvedImage: undefined };
+  // The probe must measure the box this slide will END UP with, not the box it
+  // has right now. On content/case-study a picture becomes a RIGHT-HAND RAIL
+  // that narrows the body from 540pt to 432pt — but splitting runs BEFORE image
+  // resolution, so the slide carries only `image: {query}` and railBox, which
+  // keys on resolvedImage, would report no rail and measure the wide column. A
+  // body that overflows the narrow column then never splits and runs off the
+  // slide. So: if the slide WILL carry a rail (it has an image intent, resolved
+  // or not), the probe gets a stub resolvedImage to force the narrow measure.
+  const willRail = (slide.resolvedImage?.url || slide.image?.query || slide.image?.url) &&
+    (slide.layout === "content" || slide.layout === "case-study");
+  const probe: any = {
+    ...slide,
+    resolvedImage: willRail ? { url: "probe", scrim: 0 } : undefined,
+  };
   probe[field] = `${PROBE}\n${PROBE}`;
   const reqs = buildSlideRequests(probe, index, "m") as any[];
   let id: string | undefined;
@@ -2501,12 +2514,20 @@ export async function resolveDeckImages(
         }
       }
       if (slide.quote?.image && !slide.quote.resolvedImage) {
-        const r = await resolveImage(slide.quote.image, generate, { aspect: 1, gradient: false });
+        // trademark:true — the same guard the logos use, for the same reason.
+        // A quote is attributed to a real named person, and the owned→stock→
+        // generated chain would answer a "portrait of a CSO" query with a stock
+        // photograph of a stranger, printed under that person's name. A missing
+        // portrait must stay missing. A supplied `url` (an actual photo of the
+        // person) still resolves — trademark only blocks the search/generate.
+        const r = await resolveImage(slide.quote.image, generate, {
+          aspect: 1, gradient: false, trademark: true,
+        });
         if (r) slide.quote.resolvedImage = { url: r.url };
       }
       if (slide.logos?.length) {
         await Promise.all(slide.logos.map(async (l) => {
-          if (l.resolvedUrl) return;
+          if (!l || l.resolvedUrl) return;
           // contain, never cover: a cropped client mark is a misused trademark.
           // trademark, so a mark that cannot be found stays missing rather than
           // being filled in by stock photography or a generated picture.
@@ -2518,6 +2539,7 @@ export async function resolveDeckImages(
       if (slide.cards?.length) {
         const cardAspect = cardGeometry(slide.cards.length).aspect;
         await Promise.all(slide.cards.map(async (card) => {
+          if (!card) return;
           if (card.icon && !card.resolvedIcon) {
             const icon = await resolveIcon(card.icon);
             if (icon) card.resolvedIcon = icon;
@@ -2537,6 +2559,7 @@ export async function resolveDeckImages(
         // whether ANY image carries a caption changes the cell height, and it
         // was read over the requested set too.
         const found = (await Promise.all(specs.map(async (spec) => {
+          if (!spec) return null;
           const src = await selectImageSource(spec, generate);
           return src ? { src, caption: spec.caption } : null;
         }))).filter(Boolean) as { src: ImageSource; caption?: string }[];

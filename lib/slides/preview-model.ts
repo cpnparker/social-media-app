@@ -270,8 +270,10 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
  *  arrive in Drive with a slide the preview never showed. The caller gets back
  *  the spec that was drawn, so what publishes is what was shown.
  *
- *  Still pure and still no I/O — a continuation drops its picture, so nothing
- *  needs resolving. */
+ *  Still pure and still no I/O. A continuation now INHERITS its parent's
+ *  picture (inheritContinuationImages, after resolution) rather than dropping
+ *  it, but that runs later in the pipeline; splitting here still resolves
+ *  nothing. */
 export function draftPreview(slides: SlideInput[]): { slides: SlideInput[]; preview: PreviewDeck } {
   const split = splitOverflowingSlides(slides);
   return { slides: split, preview: toPreviewModel(split) };

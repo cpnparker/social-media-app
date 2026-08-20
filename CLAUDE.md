@@ -16,6 +16,7 @@ a layout, the preview model, or the tool wiring:
 ```
 npx tsx scripts/verify-slide-layouts.ts      # geometry, collisions, logo contrast, preview parity
 npx tsx scripts/verify-post-taint-policy.ts  # every registered tool is classified
+npx tsx scripts/verify-safe-fetch.ts         # the SSRF guard blocks internal hosts in every notation
 ```
 
 The layout check builds every layout twice: once with two-line titles and long
