@@ -91,6 +91,14 @@ const DECK: SlideInput[] = [
       { label: "Weekly visibility readouts", cells: ["yes", "yes", "no"] },
       { label: "Fixed, published fee", cells: ["CHF 12,500", "CHF 20k+", "Retainer"] },
       { label: "Wikidata & entity work", cells: ["yes", "no", "no"] } ] } },
+  { layout: "scatter", eyebrow: "The pattern", title: LONG, subtitle: "Hours invested against AI citations earned, per piece.",
+    scatter: { xAxis: "Hours invested", yAxis: "AI citations", points: [
+      { x: 2, y: 40, label: "Explainer", group: "Owned" }, { x: 8, y: 12, group: "Owned" }, { x: 3, y: 55, label: "Data study", group: "Owned" },
+      { x: 12, y: 9, group: "Earned" }, { x: 9, y: 60, label: "Wikipedia", group: "Earned" }, { x: 7, y: 30, group: "Earned" } ] } },
+  { layout: "venn", eyebrow: "The opportunity", title: LONG, subtitle: "The sweet spot is small and yours.",
+    venn: { sets: [{ label: "What buyers ask AI" }, { label: "What you can credibly say" }], overlap: "Your content plan" } },
+  { layout: "venn", eyebrow: "The model", title: "Three forces move AI visibility",
+    venn: { sets: [{ label: "Authority" }, { label: "Consistency" }, { label: "Freshness" }] } },
   { layout: "stacked-bar", eyebrow: "Mix", title: LONG,
     chart: { source: "Source: delivery data", series: [
       { name: "Articles", points: [{ label: "Holcim", value: 38 }, { label: "Siemens", value: 22 }] },
@@ -748,6 +756,26 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   if (ticks !== 2) fail(`comparison drew ${ticks} tick/cross glyphs, expected 2 (one yes, one no)`);
   if (cm.filter((r: any) => (r.insertText?.objectId || "").match(/_ch\d/)).length !== 2) fail("comparison header columns not drawn");
   if (failures === before21) pass("SWOT has four panels and headers, matrix plots its items on axes, comparison draws ticks and headers");
+
+  /* 22. Scatter plots its points on two axes; a Venn draws its overlapping sets. */
+  const before22 = failures;
+  console.log(`\n22. Scatter and Venn draw their marks`);
+  const scReqs = buildSlideRequests({ layout: "scatter", title: "T", scatter: { xAxis: "H", yAxis: "C", points: [
+    { x: 1, y: 8, group: "A" }, { x: 9, y: 60, group: "B" }, { x: 5, y: 30, group: "A" } ] } }, 0, "n");
+  const sdots = scReqs.filter((r: any) => (r.createShape?.objectId || "").match(/_sd\d/));
+  if (sdots.length !== 3) fail(`scatter plotted ${sdots.length} points, expected 3`);
+  if (!scReqs.some((r: any) => (r.createShape?.objectId || "").endsWith("_sxa")) || !scReqs.some((r: any) => (r.createShape?.objectId || "").endsWith("_sya"))) fail("scatter is missing an axis");
+  // two groups → two legend swatches
+  if (scReqs.filter((r: any) => (r.createShape?.objectId || "").match(/_sk\d/)).length !== 2) fail("scatter legend missing for two groups");
+  // points must spread: the two extreme values land far apart vertically
+  const sy = sdots.map((r: any) => r.createShape.elementProperties.transform.translateY);
+  if (Math.max(...sy) - Math.min(...sy) < 80) fail("scatter points do not spread on the y-axis");
+  const v2 = buildSlideRequests({ layout: "venn", title: "T", venn: { sets: [{ label: "A" }, { label: "B" }], overlap: "both" } }, 0, "n");
+  if (v2.filter((r: any) => (r.createShape?.objectId || "").match(/_vc\d/)).length !== 2) fail("2-set Venn did not draw two circles");
+  if (!v2.some((r: any) => r.insertText && r.insertText.text === "both")) fail("2-set Venn overlap label not drawn");
+  const v3 = buildSlideRequests({ layout: "venn", title: "T", venn: { sets: [{ label: "A" }, { label: "B" }, { label: "C" }] } }, 0, "n");
+  if (v3.filter((r: any) => (r.createShape?.objectId || "").match(/_vc\d/)).length !== 3) fail("3-set Venn did not draw three circles");
+  if (failures === before22) pass("scatter plots and spreads its points on axes with a legend; Venn draws two or three overlapping sets");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);

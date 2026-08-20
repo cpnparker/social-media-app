@@ -330,6 +330,8 @@ export type SlideLayout =
   | "swot"
   | "matrix"
   | "comparison"
+  | "scatter"
+  | "venn"
   | "cards"
   | "quote"
   | "process"
@@ -337,7 +339,7 @@ export type SlideLayout =
   | "closing";
 
 export const LAYOUTS: SlideLayout[] = [
-  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "cards", "quote", "process", "logo-wall", "closing",
+  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "scatter", "venn", "cards", "quote", "process", "logo-wall", "closing",
 ];
 
 /** Horizontal timeline: an axis rule with evenly spaced milestone markers.
@@ -565,6 +567,8 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   "swot":        { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "matrix":      { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "comparison":  { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  "scatter":     { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  "venn":        { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   cards:         { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   // A quote sits on navy: it is a moment of emphasis, and the change of ground
   // is what makes it land as one rather than as another content slide.

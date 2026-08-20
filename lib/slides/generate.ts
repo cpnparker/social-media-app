@@ -78,6 +78,14 @@ export interface SlideInput {
   /** A comparison table: a header row of options, then criterion rows. A cell
    *  of "yes"/"no" draws a tick or cross; anything else prints as text. */
   comparison?: { columns?: string[]; rows?: { label: string; cells: string[]; highlight?: boolean }[] };
+  /** A scatter plot — two continuous axes, points optionally grouped by a
+   *  named series (each series its own colour). */
+  scatter?: {
+    xAxis?: string; yAxis?: string;
+    points?: { x: number; y: number; label?: string; group?: string }[];
+  };
+  /** A Venn diagram — two or three overlapping sets. */
+  venn?: { sets?: { label: string }[]; overlap?: string };
   milestones?: Milestone[];
   tracks?: Track[];
   /** What this slide should be a picture OF, or an exact image to use. Resolved
@@ -2095,6 +2103,132 @@ function logoWallRequests(
   });
 }
 
+/** A scatter plot: two continuous axes, points placed by value and coloured by
+ *  an optional named group. The correlation device — a shape a bar chart cannot
+ *  show. Axes are scaled from the data (padded); labels are drawn only when the
+ *  cloud is sparse enough not to become a thicket. */
+function scatterRequests(
+  page: string, id: (s: string) => string,
+  sc: NonNullable<SlideInput["scatter"]>, onDark: boolean, bandTop: number
+): Req[] {
+  const points = (sc.points || []).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+  if (points.length < 2) return [];
+  const palette = onDark ? SERIES_DARK : SERIES_LIGHT;
+  const groups = Array.from(new Set(points.map((p) => p.group).filter(Boolean))) as string[];
+  const colourOf = (g?: string) => (g && groups.length ? palette[groups.indexOf(g) % palette.length] : palette[0]);
+
+  const left = GRID.margin + 40;
+  const right = GRID.margin + GRID.contentWidth - 8;
+  const legendH = groups.length > 1 ? 20 : 0;
+  const top = bandTop + 8;
+  const bottom = CANVAS.height - GRID.margin - 18 - legendH;
+  const w = right - left, h = bottom - top;
+
+  const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
+  const pad = (a: number[], lo: number, hi: number) => { const s = (hi - lo) * 0.08 || 1; return [lo - s, hi + s]; };
+  const [xlo, xhi] = pad(xs, Math.min(...xs), Math.max(...xs));
+  const [ylo, yhi] = pad(ys, Math.min(...ys), Math.max(...ys));
+  const xAt = (v: number) => left + ((v - xlo) / (xhi - xlo || 1)) * w;
+  const yAt = (v: number) => bottom - ((v - ylo) / (yhi - ylo || 1)) * h;
+
+  const axisColor = onDark ? COLOR.periwinkle : COLOR.greyLight;
+  const out: Req[] = [
+    ...filledShape(id("sxa"), page, "RECTANGLE", axisColor, { x: left, y: bottom, width: w, height: CHART.axisThickness }),
+    ...filledShape(id("sya"), page, "RECTANGLE", axisColor, { x: left, y: top, width: CHART.axisThickness, height: h }),
+  ];
+  // Axis labels.
+  if (sc.xAxis) out.push(...textBox(id("sxl"), page, sc.xAxis, TYPE.axisEnd, { x: left, y: bottom + 3, width: w, height: 12 }, { align: "CENTER" }));
+  if (sc.yAxis) out.push(...textBox(id("syl"), page, sc.yAxis, TYPE.axisEnd, { x: GRID.margin - 4, y: top - 16, width: 160, height: 12 }));
+
+  // Points. Labels only when there are few, so the plot does not become a
+  // thicket of overlapping text.
+  const label = points.length <= 8;
+  points.slice(0, 40).forEach((p, i) => {
+    const cx = xAt(p.x), cy = yAt(p.y);
+    const r = 4;
+    out.push(...filledShape(id(`sd${i}`), page, "ELLIPSE", colourOf(p.group), { x: cx - r, y: cy - r, width: r * 2, height: r * 2 }));
+    if (label && p.label) {
+      const lw = Math.min(120, Math.max(30, p.label.length * 4.4 + 6));
+      const lx = cx + r + 3 + lw > right ? cx - r - 3 - lw : cx + r + 3;
+      out.push(...textBox(id(`sl${i}`), page, p.label, TYPE.dotLabel, { x: Math.max(left, lx), y: cy - 7, width: lw, height: 14 }, lx < cx ? { align: "END" } : {}));
+    }
+  });
+
+  if (groups.length > 1) {
+    let lx = left;
+    const ly = bottom + 20;
+    groups.forEach((g, si) => {
+      const lw = Math.min(120, Math.max(34, g.length * 4.6 + 16));
+      out.push(
+        ...filledShape(id(`sk${si}`), page, "ELLIPSE", palette[si % palette.length], { x: lx, y: ly + 2, width: 8, height: 8 }),
+        ...textBox(id(`sn${si}`), page, g, TYPE.chartAxis, { x: lx + 12, y: ly, width: lw, height: 14 }),
+      );
+      lx += 12 + lw + 10;
+    });
+  }
+  return out;
+}
+
+/** A Venn diagram: two or three overlapping sets, drawn as translucent circles
+ *  so the overlaps blend. Slides cannot blend fills, but partial opacity over a
+ *  light ground reads as the classic diagram well enough. */
+function vennRequests(
+  page: string, id: (s: string) => string,
+  venn: NonNullable<SlideInput["venn"]>, onDark: boolean, bandTop: number
+): Req[] {
+  const sets = (venn.sets || []).filter((sx) => sx?.label?.trim()).slice(0, 3);
+  if (sets.length < 2) return [];
+  const palette = onDark ? SERIES_DARK : [COLOR.blue, COLOR.teal, COLOR.coral];
+  const top = bandTop + 4;
+  const bottom = CANVAS.height - GRID.margin;
+  const cxMid = GRID.margin + GRID.contentWidth / 2;
+  const cyMid = (top + bottom) / 2;
+  const out: Req[] = [];
+
+  const bandH = bottom - top;
+  if (sets.length === 2) {
+    // Leave room ABOVE the circles for the two labels, so they never reach the
+    // title or standfirst band.
+    const labelRoom = 22;
+    const R = Math.min((bandH - labelRoom) / 2, GRID.contentWidth / 4.4);
+    const cy = top + labelRoom + R;
+    const off = R * 0.62;
+    const centres = [[cxMid - off, cy], [cxMid + off, cy]];
+    centres.forEach(([cx, cyy], i) => {
+      out.push(...filledShape(id(`vc${i}`), page, "ELLIPSE", palette[i], { x: cx - R, y: cyy - R, width: R * 2, height: R * 2 }, 0.42));
+    });
+    out.push(
+      ...textBox(id("vl0"), page, sets[0].label, TYPE.quadHeader, { x: centres[0][0] - R, y: cy - R - 18, width: R, height: 16 }, { align: "CENTER" }),
+      ...textBox(id("vl1"), page, sets[1].label, TYPE.quadHeader, { x: centres[1][0], y: cy - R - 18, width: R, height: 16 }, { align: "CENTER" }),
+    );
+    if (venn.overlap?.trim()) {
+      out.push(...textBox(id("vo"), page, venn.overlap, { ...TYPE.quadItem, bold: true, color: COLOR.white }, {
+        x: cxMid - 50, y: cy - 8, width: 100, height: 30,
+      }, { align: "CENTER", vCenter: true }));
+    }
+  } else {
+    const R = Math.min((bandH - 12) / 2.9, GRID.contentWidth / 5);
+    const off = R * 0.62;
+    const cy0 = top + R + 4;                       // top circle sits inside the band
+    const centres = [[cxMid, cy0], [cxMid - off, cy0 + off * 1.1], [cxMid + off, cy0 + off * 1.1]];
+    centres.forEach(([cx, cy], i) => {
+      out.push(...filledShape(id(`vc${i}`), page, "ELLIPSE", palette[i], { x: cx - R, y: cy - R, width: R * 2, height: R * 2 }, 0.38));
+    });
+    // Labels at each circle's OUTER edge, all within the band: the top circle's
+    // just inside its top (never above, which would hit the title), the lower
+    // two outside their lower flanks.
+    const lpos: [number, number, "START" | "CENTER" | "END"][] = [
+      [centres[0][0] - R, centres[0][1] - R + 3, "CENTER"],
+      [centres[1][0] - R, centres[1][1] + R - 12, "START"],
+      [centres[2][0], centres[2][1] + R - 12, "END"],
+    ];
+    sets.forEach((sx, i) => {
+      out.push(...textBox(id(`vl${i}`), page, sx.label, TYPE.quadHeader, { x: lpos[i][0], y: lpos[i][1], width: R * 2, height: 16 }, { align: lpos[i][2] }));
+    });
+  }
+  return out;
+}
+
 /** SWOT: four labelled quadrants of bullets on pale tints. A staple of the
  *  strategy deck, and the model had no way to draw one — it fell to bullets. */
 function swotRequests(
@@ -2503,7 +2637,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         : layout === "line-chart" ? lineChartRequests(page, id, slide.chart, onDark, chartBandTop)
         : barChartRequests(page, id, slide.chart, onDark, chartBandTop)));
     }
-  } else if (layout === "swot" || layout === "matrix" || layout === "comparison") {
+  } else if (layout === "swot" || layout === "matrix" || layout === "comparison" || layout === "scatter" || layout === "venn") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
         x: GRID.margin, y: GRID.eyebrowY, width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
@@ -2524,6 +2658,8 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     if (layout === "swot" && slide.swot) requests.push(...swotRequests(page, id, slide.swot, aTop));
     else if (layout === "matrix" && slide.matrix) requests.push(...matrixRequests(page, id, slide.matrix, aTop));
     else if (layout === "comparison" && slide.comparison) requests.push(...comparisonRequests(page, id, slide.comparison, aTop));
+    else if (layout === "scatter" && slide.scatter) requests.push(...scatterRequests(page, id, slide.scatter, onDark, aTop));
+    else if (layout === "venn" && slide.venn) requests.push(...vennRequests(page, id, slide.venn, onDark, aTop));
   } else if (layout === "timeline-parallel") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
