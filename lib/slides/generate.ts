@@ -23,7 +23,7 @@ import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "
 import { captureThumbnails } from "@/lib/slides/preview";
 import {
   resolveImage, selectImageSource, bakeImageSource,
-  type ImageGenerator, type ImageSource, type TextBand,
+  type ImageGenerator, type ImageSource, type ImageRequest, type TextBand,
 } from "@/lib/slides/images";
 import { resolveIcon } from "@/lib/slides/icons";
 import { SLIDES_TEXT_INSET, BULLET_INDENT } from "@/lib/slides/preview-style";
@@ -109,13 +109,23 @@ export interface SlideInput {
   /** Client marks for logo-wall. Fitted whole, never cropped. */
   logos?: { url?: string; query?: string; name?: string; resolvedUrl?: string }[];
   /** Big numbers for the stat layout — three at most, or none of them lands. */
-  stats?: { value: string; label: string; detail?: string }[];
+  stats?: { value: string; label: string; detail?: string; primary?: boolean }[];
   /** Data for bar-chart and line-chart. */
   chart?: {
     series: { name: string; points: { label: string; value: number }[] }[];
     /** Printed under the plot. A chart without one invites the question. */
     source?: string;
+    /** The points are a TIME SERIES — draw them in the given order, do not sort
+     *  by value. A monthly trend sorted by value is a scrambled line. */
+    sequence?: boolean;
+    /** Index of the one bar that IS the point — drawn in the accent, the rest
+     *  muted, so the chart argues instead of merely presenting. */
+    highlight?: number;
   };
+  /** A deck-wide art-direction note threaded into every PHOTOGRAPH query, so a
+   *  deck's images read as one commission rather than a stock grab-bag. Never
+   *  applied to logos, icons or a named person's portrait. */
+  imageStyle?: string;
   /** ISO date for the "today" rule. Defaults to the real today; drawn only if
    *  it falls inside the plotted range. */
   today?: string;
@@ -907,12 +917,60 @@ function formatValue(v: number): string {
  *
  *  Often the honest answer when a deck reaches for a chart: a single figure
  *  with a caption carries a point that a plot of one bar only decorates. */
+/** One number, as big as it can be drawn, centred on the ground. The crescendo
+ *  slide is allowed to shout when it carries a single thing. */
+function heroStat(
+  page: string, id: (s: string) => string,
+  stat: { value: string; label: string; detail?: string }
+): Req[] {
+  // Poppins runs ~0.62 of the point size per character; solve the size that
+  // fills the content width, floored so a short value does not become absurd
+  // and capped so a long one still fits with the box insets.
+  const INSET = 20;
+  const labelH = 26;
+  const detailH = stat.detail ? 40 : 0;
+  const LEAD = 1.5;   // one Poppins line's drawn height as a fraction of the size
+  // Bounded by BOTH the content width AND the vertical band — a short value
+  // ("0", "64 GW") would otherwise scale so large it ran off the bottom.
+  const byWidth = (GRID.contentWidth - INSET) / (Math.max(stat.value.length, 1) * 0.62);
+  const byHeight = (GRID.bandHeight - labelH - (detailH ? detailH + 8 : 0)) / LEAD;
+  const size = Math.max(54, Math.min(150, Math.floor(Math.min(byWidth, byHeight))));
+  const valueH = size * LEAD;
+  const groupH = valueH + labelH + (detailH ? detailH + 8 : 0);
+  const top = GRID.bodyY + Math.max(0, (GRID.bandHeight - groupH) / 2);
+  const out: Req[] = [
+    ...textBox(id("sv0"), page, stat.value, { ...TYPE.statValue, size }, {
+      x: GRID.margin, y: top, width: GRID.contentWidth, height: valueH,
+    }, { align: "CENTER" }),
+    ...textBox(id("sl0"), page, stat.label, TYPE.statLabel, {
+      x: GRID.margin, y: top + valueH, width: GRID.contentWidth, height: labelH,
+    }, { align: "CENTER" }),
+  ];
+  if (stat.detail) {
+    out.push(...textBox(id("sd0"), page, stat.detail, TYPE.statDetail, {
+      x: GRID.margin, y: top + valueH + labelH + 8, width: GRID.contentWidth, height: detailH,
+    }, { align: "CENTER" }));
+  }
+  return out;
+}
+
 function statRequests(
   page: string, id: (s: string) => string,
-  stats: { value: string; label: string; detail?: string }[]
+  stats: { value: string; label: string; detail?: string; primary?: boolean }[]
 ): Req[] {
   const shown = stats.filter(Boolean).slice(0, 3);
   if (!shown.length) return [];
+
+  // A SINGLE stat is the moment the slide exists for — the fee, the headline
+  // number — and it earns the whole canvas. statRequests used to size every
+  // value to the longest string and cap at 54pt, so a lone "CHF 12,500" sat
+  // small in a sea of navy. One stat is drawn big and centred.
+  //
+  // `primary` among several does NOT drop the others (that would lose data);
+  // it tints that column so the eye lands on it. The single-stat hero is the
+  // real fix for the ask slide the audit flagged.
+  if (shown.length === 1) return heroStat(page, id, shown[0]);
+
   const out: Req[] = [];
   const cell = (GRID.contentWidth - CHART.statGap * (shown.length - 1)) / shown.length;
 
@@ -940,8 +998,11 @@ function statRequests(
 
   shown.forEach((s, i) => {
     const x = GRID.margin + i * (cell + CHART.statGap);
+    // The primary column keeps the others' size but takes the lime accent, so
+    // one of three numbers reads as THE number without shrinking the rest.
+    const thisValue = s.primary ? { ...valueStyle, color: COLOR.lime } : valueStyle;
     out.push(
-      ...textBox(id(`sv${i}`), page, s.value, valueStyle, {
+      ...textBox(id(`sv${i}`), page, s.value, thisValue, {
         x, y: top, width: cell, height: CHART.statValueHeight,
       }),
       ...textBox(id(`sl${i}`), page, s.label, TYPE.statLabel, {
@@ -1157,15 +1218,21 @@ function barChartRequests(
   // name the point in the spec, not its rank on the slide — otherwise editing
   // "Bar 1" edits whichever row happened to be first in the input, and any deck
   // whose data was not already sorted gets the wrong bar changed.
-  const ranked = series.points
-    .map((p, orig) => ({ ...p, orig }))
-    .sort((a, b) => b.value - a.value);
+  // A TIME SERIES keeps its order — sorting a monthly trend by value scrambles
+  // the line the chart exists to show. A ranking sorts, and carries each
+  // point's ORIGINAL index through the sort so the object id names the point in
+  // the spec, not its rank on the slide (editing "Bar 1" must not move a row).
+  const indexed = series.points.map((p, orig) => ({ ...p, orig }));
+  const ranked = chart.sequence ? indexed : indexed.slice().sort((a, b) => b.value - a.value);
 
   // The source line is part of the block, so it has to be inside the budget.
   // It was not: eight bars pushed it to y=397 on a 405pt canvas, where the
   // attribution for the numbers simply did not exist in the built deck.
   const fit = fitRows(ranked.length, MAX_BARS, CHART.barHeight, CHART.barGap, SOURCE_BLOCK);
-  const points = ranked.slice(0, fit.count);
+  // A ranking truncated to the top N drops the SMALLEST; a sequence truncated
+  // from the front would drop the earliest months and lie about where the line
+  // starts, so a sequence keeps its most recent points instead.
+  const points = chart.sequence ? ranked.slice(-fit.count) : ranked.slice(0, fit.count);
 
   // A zero BASELINE, not an absolute-value scale. Drawing |value| made a -100
   // the longest bar on a slide whose whole message is the ranking — the reader
@@ -1183,22 +1250,34 @@ function barChartRequests(
   const plotTop = GRID.bodyY +
     Math.max(0, (GRID.bandHeight - (points.length * fit.rowH + SOURCE_BLOCK)) / 2);
 
+  // A highlighted bar is the whole point of the slide: it is drawn in the
+  // accent and every other bar is muted to a neutral, so the eye lands on the
+  // one that carries the argument instead of reading six equal blues. With no
+  // highlight the chart is uniform, as before.
+  const hasFocus = typeof chart.highlight === "number" &&
+    chart.highlight >= 0 && chart.highlight < series.points.length;
+  const muted = onDark ? COLOR.periwinkle : COLOR.greyLight;
+  const focusFill = onDark ? COLOR.tealSoft : COLOR.blue;
+
   points.forEach((p, i) => {
     const y = plotTop + i * fit.rowH;
     const x0 = at(Math.min(p.value, 0));
     const w = Math.max(2, Math.abs(at(p.value) - at(0)));
+    const isFocus = hasFocus && p.orig === chart.highlight;
+    const barFill = hasFocus ? (isFocus ? focusFill : muted) : palette[0];
+    const labelStyle = isFocus ? { ...TYPE.chartValue, color: onDark ? COLOR.tealSoft : COLOR.blue } : TYPE.chartValue;
     out.push(
       ...textBox(id(`bl${p.orig}`), page, p.label, TYPE.chartCategory, {
         x: GRID.margin, y: y + 4, width: CHART.labelGutter - 10, height: fit.barH,
       }),
-      ...filledShape(id(`bb${p.orig}`), page, "RECTANGLE", palette[0], {
+      ...filledShape(id(`bb${p.orig}`), page, "RECTANGLE", barFill, {
         x: x0, y, width: w, height: fit.barH,
       }),
       // The value goes just past the bar's right-hand end, for a negative bar
       // as much as a positive one. Putting it at the far end of a negative bar
       // would drive it into the category name in the left gutter, and the minus
       // sign already says which way the bar runs.
-      ...textBox(id(`bv${p.orig}`), page, formatValue(p.value), TYPE.chartValue, {
+      ...textBox(id(`bv${p.orig}`), page, formatValue(p.value), labelStyle, {
         x: x0 + w + CHART.valueGap, y: y + 4, width: 60, height: fit.barH,
       }),
     );
@@ -1796,8 +1875,12 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     },
   ];
 
-  // Photograph first, so every text box lands on top of it.
-  if (style.background === null || layout === "feature") {
+  // Photograph first, so every text box lands on top of it. A section divider
+  // is photo-led when it has a picture (the prompt asks for one) and falls back
+  // to the flat blue ground when it does not — the image used to be resolved,
+  // and paid for, then never drawn.
+  const sectionPhoto = layout === "section" && !!slide.resolvedImage;
+  if (style.background === null || layout === "feature" || sectionPhoto) {
     requests.push(...backdropRequests(page, id, slide));
   }
 
@@ -1860,11 +1943,23 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       }, { align: "CENTER" }),
     );
   } else if (layout === "section") {
-    requests.push(
-      ...textBox(id("eyebrow"), page, slide.eyebrow, TYPE.eyebrowDark, {
+    // A NUMERIC eyebrow ("01", "3") is the divider's index — drawn large in the
+    // brand lime, the source deck's signature divider device. A worded eyebrow
+    // ("PART ONE") stays a normal eyebrow. This is not the killed "parse Part N"
+    // regex; it only treats a bare number as a numeral, so it cannot misfire on
+    // "Teil 02" or any localised label.
+    const numeral = slide.eyebrow?.trim().match(/^\d{1,2}$/)?.[0];
+    if (numeral) {
+      requests.push(...textBox(id("num"), page, numeral, TYPE.sectionNumeral, {
+        x: GRID.margin, y: GRID.eyebrowY, width: 252, height: 100,
+      }));
+    } else {
+      requests.push(...textBox(id("eyebrow"), page, slide.eyebrow, TYPE.eyebrowDark, {
         x: GRID.margin, y: GRID.eyebrowY,
         width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
-      }),
+      }));
+    }
+    requests.push(
       ...textBox(id("title"), page, slide.title, TYPE.sectionTitle, {
         x: GRID.margin, y: CANVAS.height / 2 - 50,
         width: GRID.contentWidth, height: 100,
@@ -2462,6 +2557,17 @@ export async function resolveDeckImages(
     slide.layout = used;
   });
 
+  // A deck-wide art-direction note, set once by the model, threaded into every
+  // PHOTOGRAPH query so a deck's images read as one commission — a beach cover
+  // and a factory feature can share "muted, cinematic, cool light" instead of
+  // being two unrelated stock grabs. Never applied to a `url` (an exact image),
+  // and never to logos, icons or a named person's portrait.
+  const deckStyle = slides.find((sx) => sx.imageStyle?.trim())?.imageStyle?.trim();
+  const styled = (req: ImageRequest): ImageRequest => {
+    if (req.url || !req.query || !deckStyle) return req;
+    return { ...req, query: `${req.query}. ${deckStyle}` };
+  };
+
   await Promise.all(
     slides.map(async (slide, slideIndex) => {
       // `imageUnavailable` means we already tried and could not find one. It
@@ -2488,7 +2594,7 @@ export async function resolveDeckImages(
         // the part of the picture the mark actually sits on.
         const style = LAYOUT_STYLE[layoutOf(slide.layout, slideIndex)];
         const place = LOGO_PLACEMENT[style.logoPlacement];
-        const r = await resolveImage(slide.image, generate, {
+        const r = await resolveImage(styled(slide.image), generate, {
           aspect: railShape
             ? railShape.width / railShape.height
             : split ? IMAGE.splitWidth / CANVAS.height : CANVAS.width / CANVAS.height,
@@ -2545,7 +2651,7 @@ export async function resolveDeckImages(
             if (icon) card.resolvedIcon = icon;
           }
           if (!card.image || card.resolvedImage) return;
-          const r = await resolveImage(card.image, generate, { aspect: cardAspect, gradient: false });
+          const r = await resolveImage(styled(card.image), generate, { aspect: cardAspect, gradient: false });
           if (r) card.resolvedImage = { url: r.url };
         }));
       }
@@ -2560,7 +2666,7 @@ export async function resolveDeckImages(
         // was read over the requested set too.
         const found = (await Promise.all(specs.map(async (spec) => {
           if (!spec) return null;
-          const src = await selectImageSource(spec, generate);
+          const src = await selectImageSource(styled(spec), generate);
           return src ? { src, caption: spec.caption } : null;
         }))).filter(Boolean) as { src: ImageSource; caption?: string }[];
 

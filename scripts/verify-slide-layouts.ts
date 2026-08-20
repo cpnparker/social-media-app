@@ -18,6 +18,7 @@ import { toPreviewModel } from "../lib/slides/preview-model";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
 import { CANVAS, LAYOUT_STYLE, COLOR } from "../lib/slides/brand";
 
+const TYPE_STAT_CAP = 54;   // the multi-stat value cap; a hero must exceed it
 let failures = 0;
 const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
 const pass = (m: string) => console.log(`  ok    ${m}`);
@@ -555,6 +556,54 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   const railPub = splitOverflowingSlides([{ layout: "case-study", title: "T", resolvedImage: PHOTO_DARK, body: railBody }]);
   if (railPub.length < 2) fail("a resolved rail slide's overflowing body was not split");
   if (failures === before13) pass("a rule, a measure, the whole band, the picture drawn, and the rail body split against its own column");
+
+  /* 14. Charts can argue: a sequence keeps its order, a highlight lands accent. */
+  const before14 = failures;
+  console.log(`\n14. A chart can be a time series and can point at one bar`);
+  const months = ["Jan","Feb","Mar","Apr","May","Jun"].map((m, i) => ({ label: m, value: 6 + i * 6 }));
+  const seqLabels = buildSlideRequests({ layout: "bar-chart", title: "T", chart: { sequence: true, series: [{ name: "%", points: months }] } }, 0, "n")
+    .filter((r: any) => r.insertText && /_bl\d/.test(r.insertText.objectId || "")).map((r: any) => r.insertText.text);
+  if (seqLabels.join(",") !== "Jan,Feb,Mar,Apr,May,Jun") fail(`a sequence chart was re-ordered: ${seqLabels.join(",")}`);
+  const rankLabels = buildSlideRequests({ layout: "bar-chart", title: "T", chart: { series: [{ name: "%", points: months }] } }, 0, "n")
+    .filter((r: any) => r.insertText && /_bl\d/.test(r.insertText.objectId || "")).map((r: any) => r.insertText.text);
+  if (rankLabels[0] !== "Jun") fail(`a ranking chart did not sort biggest-first: ${rankLabels.join(",")}`);
+  const fillsOf = (slide: SlideInput) => buildSlideRequests(slide, 0, "n")
+    .filter((r: any) => r.updateShapeProperties && /_bb\d/.test(r.updateShapeProperties.objectId || ""))
+    .map((r: any) => JSON.stringify(r.updateShapeProperties.shapeProperties.shapeBackgroundFill.solidFill.color.rgbColor));
+  const hi = fillsOf({ layout: "bar-chart", title: "T", chart: { highlight: 1, series: [{ name: "x", points: [{ label: "A", value: 4 }, { label: "B", value: 4 }, { label: "C", value: 9 }] }] } });
+  if (new Set(hi).size < 2) fail("a highlighted chart drew every bar the same colour");
+  const plain = fillsOf({ layout: "bar-chart", title: "T", chart: { series: [{ label: "A", value: 4 }, { label: "B", value: 9 }].length ? [{ name: "x", points: [{ label: "A", value: 4 }, { label: "B", value: 9 }] }] : [] } });
+  if (new Set(plain).size !== 1) fail("an un-highlighted chart drew bars in different colours");
+  if (failures === before14) pass("sequence keeps order, ranking sorts, highlight isolates one bar");
+
+  /* 15. A single stat is a hero, and no stat is ever dropped. */
+  const before15 = failures;
+  console.log(`\n15. One number earns the whole slide; several keep all of them`);
+  const heroSize = (slide: SlideInput) => {
+    const st = buildSlideRequests(slide, 0, "n").find((r: any) => r.updateTextStyle && /_sv0$/.test(r.updateTextStyle.objectId || "")) as any;
+    return st?.updateTextStyle.style.fontSize.magnitude ?? 0;
+  };
+  const solo = heroSize({ layout: "stat", title: "Fee", stats: [{ value: "CHF 12,500", label: "Fixed fee", detail: "Delivered in six weeks." }] });
+  if (solo <= TYPE_STAT_CAP) fail(`a lone stat was not enlarged (${solo}pt)`);
+  const svCount = (slide: SlideInput) => buildSlideRequests(slide, 0, "n").filter((r: any) => r.insertText && /_sv\d/.test(r.insertText.objectId || "")).length;
+  if (svCount({ layout: "stat", title: "T", stats: [{ value: "a", label: "1" }, { value: "b", label: "2", primary: true }, { value: "c", label: "3" }] }) !== 3) {
+    fail("a primary flag among three stats dropped the others");
+  }
+  if (failures === before15) pass("a single stat scales up; primary among several drops nothing");
+
+  /* 16. A section with a photo draws it; a numeric eyebrow becomes a numeral. */
+  const before16 = failures;
+  console.log(`\n16. A section divider draws its photograph and its numeral`);
+  const secPhoto = buildSlideRequests({ layout: "section", eyebrow: "02", title: "The plan", subtitle: "x", resolvedImage: PHOTO_DARK }, 0, "n");
+  if (!secPhoto.some((r: any) => r.createImage && /_bg$/.test(r.createImage.objectId || ""))) {
+    fail("a section with a resolved image never drew the backdrop (paid and dropped)");
+  }
+  if (!secPhoto.some((r: any) => r.insertText && r.insertText.text === "02" && /_num$/.test(r.insertText.objectId || ""))) {
+    fail("a numeric section eyebrow did not become a numeral");
+  }
+  const secWord = buildSlideRequests({ layout: "section", eyebrow: "PART ONE", title: "T" }, 0, "n");
+  if (secWord.some((r: any) => /_num$/.test((r.insertText?.objectId) || ""))) fail("a worded eyebrow was mis-drawn as a numeral");
+  if (failures === before16) pass("photo drawn, numeric eyebrow becomes a numeral, worded eyebrow stays an eyebrow");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);

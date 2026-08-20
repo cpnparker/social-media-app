@@ -184,6 +184,11 @@ export const TYPE: Record<string, TypeStyle> = {
    *  foot of a gradient. Its own token so this is a decision, not inheritance. */
   closingKicker: { font: "Roboto", size: 12, color: COLOR.white, caps: true },
   sectionTitle:  { font: "Playfair Display", size: 26, color: COLOR.white },
+  /** The big index numeral on a section divider — the source deck's signature
+   *  device. Lime on blue clears contrast (11.3:1); on a photo it sits on the
+   *  baked gradient's foot, so it is only drawn from a numeric eyebrow where the
+   *  divider is the deck's own structural marker. */
+  sectionNumeral:{ font: "Playfair Display", size: 64, color: COLOR.lime },
   slideTitle:    { font: "Playfair Display", size: 20, color: COLOR.navy },
   slideTitleDark:{ font: "Playfair Display", size: 20, color: COLOR.white },
   cardHeading:   { font: "Playfair Display", size: 11, color: COLOR.blue },
