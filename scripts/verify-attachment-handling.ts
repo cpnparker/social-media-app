@@ -63,5 +63,30 @@ console.log("\n5. An empty extraction is not passed off as content");
   ? pass("whitespace-only extractions collapse to undefined")
   : fail("a whitespace-only extraction would still read as truthy");
 
+console.log("\n6. Every composer uses ONE upload implementation");
+// The miss this guards: the upload UI was improved in ChatInput.tsx while
+// app/engineai/page.tsx carried a byte-identical copy. The home screen is where
+// a new chat with an attachment begins, so to the user the change did nothing.
+const SURFACES = ["components/ai-writer/ChatInput.tsx", "app/engineai/page.tsx"];
+for (const f of SURFACES) {
+  const t = readFileSync(f, "utf8");
+  t.includes("useFileUploads")
+    ? pass(`${f} uses the shared hook`)
+    : fail(`${f} does not use useFileUploads`);
+  t.includes("<UploadChips")
+    ? pass(`${f} renders progress chips`)
+    : fail(`${f} renders no upload progress`);
+  /blobUpload\s*\(/.test(t)
+    ? fail(`${f} still calls blobUpload directly — a second implementation`)
+    : pass(`${f} has no private upload path`);
+}
+const shared = readFileSync("components/ai-writer/use-file-uploads.tsx", "utf8");
+/onUploadProgress/.test(shared)
+  ? pass("progress comes from real byte callbacks, not a timer")
+  : fail("no onUploadProgress — any bar would be fabricated");
+/setInterval|setTimeout/.test(shared)
+  ? fail("a timer in the upload hook suggests simulated progress")
+  : pass("no timers: nothing fakes movement");
+
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
 process.exit(failures ? 1 : 0);

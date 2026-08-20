@@ -96,10 +96,9 @@ import { useInstallPrompt } from "@/lib/use-install-prompt";
 import NotebookPanel from "@/components/notebook/NotebookPanel";
 import { signOut } from "next-auth/react";
 import { SectionRailDesktop, SectionRailMobile, useRailItems } from "@/components/layout/SectionRail";
-import { upload as blobUpload } from "@vercel/blob/client";
 import type { AIConversation, Attachment } from "@/lib/types/ai";
+import { useFileUploads, UploadChips, MAX_FILE_SIZE } from "@/components/ai-writer/use-file-uploads";
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
 export default function EngineAIPage() {
   return (
@@ -153,7 +152,6 @@ function EngineAIContent() {
   const [seedText, setSeedText] = useState<{ text: string; nonce: number } | null>(null);
   const { canInstall, promptInstall } = useInstallPrompt();
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
-  const [uploading, setUploading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userName, setUserName] = useState("");
   const [userEmail, setUserEmail] = useState("");
@@ -488,43 +486,13 @@ function EngineAIContent() {
     }
   }, [homeInput]);
 
-  // Shared file upload logic — uses client-side Vercel Blob upload
-  // to bypass serverless function body size limits (4.5MB).
-  // Files stream directly to blob storage; the server just issues a token.
-  const uploadFiles = useCallback(async (files: File[]) => {
-    if (!files.length) return;
-    setUploading(true);
-
-    for (const file of files) {
-      if (file.size > MAX_FILE_SIZE) {
-        toast.error(`${file.name} is too large. Maximum size is 50MB.`);
-        continue;
-      }
-      try {
-        const blob = await blobUpload(file.name, file, {
-          access: "private",
-          handleUploadUrl: "/api/media/upload",
-        });
-
-        // Private blobs: use auth-gated proxy URL
-        const url = `/api/media/file?path=${encodeURIComponent(blob.pathname)}`;
-
-        setPendingAttachments((prev) => [
-          ...prev,
-          {
-            url,
-            name: file.name,
-            type: file.type,
-            size: file.size,
-          },
-        ]);
-      } catch (err: any) {
-        toast.error(err?.message || `Failed to upload ${file.name}`);
-      }
-    }
-
-    setUploading(false);
-  }, []);
+  // Upload state and logic live in one place — see use-file-uploads.tsx. This
+  // page previously carried its own byte-for-byte copy, so an improvement made
+  // to the other composer never reached the screen where a new chat with an
+  // attachment actually starts.
+  const { uploads, uploading, uploadFiles, dismiss: dismissUpload } = useFileUploads(
+    useCallback((att: Attachment) => setPendingAttachments((prev) => [...prev, att]), [])
+  );
 
   // File input handler
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1898,6 +1866,10 @@ function EngineAIContent() {
                 onDragOver={handleHomeDragOver}
                 onDrop={handleHomeDrop}
               >
+                {/* In-flight uploads — shown from the moment the file is
+                    chosen, so the wait says which file, how big, and how far. */}
+                <UploadChips jobs={uploads} onDismiss={dismissUpload} />
+
                 {/* Attachment preview strip */}
                 {pendingAttachments.length > 0 && (
                   <div className="flex items-center gap-2 flex-wrap mb-2 px-1">
