@@ -2170,8 +2170,8 @@ function scatterRequests(
 }
 
 /** A Venn diagram: two or three overlapping sets, drawn as translucent circles
- *  so the overlaps blend. Slides cannot blend fills, but partial opacity over a
- *  light ground reads as the classic diagram well enough. */
+ *  so the overlaps blend. Confirmed on a real Drive render: Slides DOES blend
+ *  translucent fills, so the intersections read as the classic diagram. */
 function vennRequests(
   page: string, id: (s: string) => string,
   venn: NonNullable<SlideInput["venn"]>, onDark: boolean, bandTop: number
@@ -2182,49 +2182,60 @@ function vennRequests(
   const top = bandTop + 4;
   const bottom = CANVAS.height - GRID.margin;
   const cxMid = GRID.margin + GRID.contentWidth / 2;
-  const cyMid = (top + bottom) / 2;
   const out: Req[] = [];
 
+  // A set label: the name in Playfair over an optional descriptor in lighter
+  // type, so "Team Knowledge (Digital Authority Briefing)" reads as a name and
+  // a gloss, not one heavy block of caps.
+  const label = (key: string, text: string, x: number, y: number, w: number, align: "START" | "CENTER" | "END") => {
+    const m = /^(.*?)\s*\((.*)\)\s*$/.exec(text.trim());
+    const name = m ? m[1].trim() : text.trim();
+    const desc = m ? m[2].trim() : "";
+    out.push(...textBox(id(`vn${key}`), page, name, TYPE.vennName, { x, y, width: w, height: 18 }, { align }));
+    if (desc) out.push(...textBox(id(`vd${key}`), page, desc, TYPE.vennDesc, { x, y: y + 18, width: w, height: 26 }, { align }));
+  };
   const bandH = bottom - top;
+
   if (sets.length === 2) {
-    // Leave room ABOVE the circles for the two labels, so they never reach the
-    // title or standfirst band.
-    const labelRoom = 22;
-    const R = Math.min((bandH - labelRoom) / 2, GRID.contentWidth / 4.4);
+    const labelRoom = 46;   // two-line labels above the circles
+    const R = Math.min((bandH - labelRoom) / 2, GRID.contentWidth / 4.2);
     const cy = top + labelRoom + R;
-    const off = R * 0.62;
+    const off = R * 0.6;
     const centres = [[cxMid - off, cy], [cxMid + off, cy]];
     centres.forEach(([cx, cyy], i) => {
       out.push(...filledShape(id(`vc${i}`), page, "ELLIPSE", palette[i], { x: cx - R, y: cyy - R, width: R * 2, height: R * 2 }, 0.42));
     });
-    out.push(
-      ...textBox(id("vl0"), page, sets[0].label, TYPE.quadHeader, { x: centres[0][0] - R, y: cy - R - 18, width: R, height: 16 }, { align: "CENTER" }),
-      ...textBox(id("vl1"), page, sets[1].label, TYPE.quadHeader, { x: centres[1][0], y: cy - R - 18, width: R, height: 16 }, { align: "CENTER" }),
-    );
+    label("0", sets[0].label, centres[0][0] - R, cy - R - labelRoom, R + off, "CENTER");
+    label("1", sets[1].label, centres[1][0] - off, cy - R - labelRoom, R + off, "CENTER");
     if (venn.overlap?.trim()) {
-      out.push(...textBox(id("vo"), page, venn.overlap, { ...TYPE.quadItem, bold: true, color: COLOR.white }, {
-        x: cxMid - 50, y: cy - 8, width: 100, height: 30,
-      }, { align: "CENTER", vCenter: true }));
+      out.push(...textBox(id("vo"), page, venn.overlap, { font: "Roboto", size: 10, bold: true, color: COLOR.navy }, {
+        x: cxMid - 60, y: cy - 9, width: 120, height: 18,
+      }, { align: "CENTER" }));
     }
   } else {
-    const R = Math.min((bandH - 12) / 2.9, GRID.contentWidth / 5);
-    const off = R * 0.62;
-    const cy0 = top + R + 4;                       // top circle sits inside the band
-    const centres = [[cxMid, cy0], [cxMid - off, cy0 + off * 1.1], [cxMid + off, cy0 + off * 1.1]];
+    // Three circles, labels RADIATING outward — top above, and the lower two to
+    // the sides in the horizontal space the diagram otherwise wastes. That frees
+    // the vertical room to make the circles bigger and keeps every label off the
+    // circles and clear of the title.
+    const topRoom = 46;
+    const clusterH = 2.68;   // top edge to bottom edge, in units of R
+    const R = Math.min(
+      (bandH - topRoom) / clusterH,
+      (GRID.contentWidth / 2 - 150) / 1.6,
+    );
+    const off = R * 0.6;
+    const clusterTop = top + topRoom + (bandH - topRoom - clusterH * R) / 2;
+    const cy0 = clusterTop + R;
+    const centres = [[cxMid, cy0], [cxMid - off, cy0 + off * 1.15], [cxMid + off, cy0 + off * 1.15]];
     centres.forEach(([cx, cy], i) => {
-      out.push(...filledShape(id(`vc${i}`), page, "ELLIPSE", palette[i], { x: cx - R, y: cy - R, width: R * 2, height: R * 2 }, 0.38));
+      out.push(...filledShape(id(`vc${i}`), page, "ELLIPSE", palette[i], { x: cx - R, y: cy - R, width: R * 2, height: R * 2 }, 0.4));
     });
-    // Labels at each circle's OUTER edge, all within the band: the top circle's
-    // just inside its top (never above, which would hit the title), the lower
-    // two outside their lower flanks.
-    const lpos: [number, number, "START" | "CENTER" | "END"][] = [
-      [centres[0][0] - R, centres[0][1] - R + 3, "CENTER"],
-      [centres[1][0] - R, centres[1][1] + R - 12, "START"],
-      [centres[2][0], centres[2][1] + R - 12, "END"],
-    ];
-    sets.forEach((sx, i) => {
-      out.push(...textBox(id(`vl${i}`), page, sx.label, TYPE.quadHeader, { x: lpos[i][0], y: lpos[i][1], width: R * 2, height: 16 }, { align: lpos[i][2] }));
-    });
+    // Top: centred above its circle. Left: to the left of the left circle,
+    // right-aligned. Right: to the right of the right circle, left-aligned.
+    label("0", sets[0].label, cxMid - R, centres[0][1] - R - topRoom, R * 2, "CENTER");
+    const leftEdge = centres[1][0] - R, rightEdge = centres[2][0] + R;
+    label("1", sets[1].label, GRID.margin, centres[1][1] - 14, leftEdge - GRID.margin - 8, "END");
+    label("2", sets[2].label, rightEdge + 8, centres[2][1] - 14, GRID.margin + GRID.contentWidth - rightEdge - 8, "START");
   }
   return out;
 }

@@ -215,6 +215,8 @@ export const TYPE: Record<string, TypeStyle> = {
   /** A two-column comparison header — "Before"/"After", over an accent rule. */
   columnHeader:  { font: "Playfair Display", size: 14, color: COLOR.navy },
   quadHeader:    { font: "Roboto", size: 11, bold: true, color: COLOR.navy, caps: true },
+  vennName:      { font: "Playfair Display", size: 14, color: COLOR.navy },
+  vennDesc:      { font: "Roboto", size: 9, weight: 300, color: COLOR.ink },
   quadItem:      { font: "Roboto", size: 9, weight: 300, color: COLOR.navy },
   axisEnd:       { font: "Roboto", size: 8, bold: true, color: COLOR.ink, caps: true },
   quadLabel:     { font: "Roboto", size: 8, weight: 300, color: COLOR.ink },

@@ -775,7 +775,12 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   if (!v2.some((r: any) => r.insertText && r.insertText.text === "both")) fail("2-set Venn overlap label not drawn");
   const v3 = buildSlideRequests({ layout: "venn", title: "T", venn: { sets: [{ label: "A" }, { label: "B" }, { label: "C" }] } }, 0, "n");
   if (v3.filter((r: any) => (r.createShape?.objectId || "").match(/_vc\d/)).length !== 3) fail("3-set Venn did not draw three circles");
-  if (failures === before22) pass("scatter plots and spreads its points on axes with a legend; Venn draws two or three overlapping sets");
+  // A "Name (Descriptor)" set label splits into a name and a lighter gloss.
+  const v3d = buildSlideRequests({ layout: "venn", title: "T", venn: { sets: [{ label: "Team knowledge (Digital Authority Briefing)" }, { label: "B" }, { label: "C" }] } }, 0, "n");
+  if (!v3d.some((r: any) => r.insertText && r.insertText.text === "Team knowledge") || !v3d.some((r: any) => r.insertText && r.insertText.text === "Digital Authority Briefing")) {
+    fail("a Venn set label with a parenthetical was not split into name + descriptor");
+  }
+  if (failures === before22) pass("scatter plots and spreads its points; Venn draws its sets with name-over-descriptor labels");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);
