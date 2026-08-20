@@ -661,6 +661,56 @@ export async function POST(
     const history = historyRes.data || [];
     const wsSettings = settingsRes.data;
 
+    // The current deck, so the model can EDIT one it made.
+    //
+    // The slide spec lives in ai_messages.slides_draft and was never replayed —
+    // history is built from document_message alone — so on any later turn the
+    // model could see its own prose ("I've built a 17-slide deck…") but not the
+    // slides themselves. Asked to "change slide 2 and resend the whole deck", it
+    // had nothing to resend: it either reconstructed from memory and drifted, or
+    // gave up and asked the user to paste the deck back. Same failure the
+    // pasted-document re-injection below fixes, for the same reason. The LATEST
+    // draft is the live one (local edits write here too), so this is also more
+    // current than the model's original tool call.
+    let deckContext: string | null = null;
+    try {
+      const { data: deckRows } = await intelligenceDb
+        .from("ai_messages")
+        .select("slides_draft")
+        .eq("id_conversation", conversationId)
+        .not("slides_draft", "is", null)
+        .order("date_created", { ascending: false })
+        .limit(1);
+      const draft: any = deckRows?.[0]?.slides_draft;
+      if (draft?.slides?.length) {
+        // The spec only — not the rendered preview, which the model does not
+        // need and which is large. resolvedImage URLs are KEPT so that a slide
+        // the model is not changing resends with its exact picture intact.
+        const spec = draft.slides.map((sl: any) => {
+          const { preview, ...rest } = sl || {};
+          return rest;
+        });
+        const presentationId = draft.published?.presentationId;
+        deckContext =
+          `[THE DECK CURRENTLY IN THIS CONVERSATION — "${draft.title || "Presentation"}", ${spec.length} slides. ` +
+          `This is the live slide spec. When the user asks to change a slide, call generate_slides with the ` +
+          `COMPLETE slides array below, changed ONLY where they asked and every other slide byte-for-byte as ` +
+          `it is here — including its resolvedImage, so unchanged pictures are kept. To change a slide's ` +
+          `PICTURE, set that slide's image.query to the new subject and REMOVE its resolvedImage so a fresh ` +
+          `one is fetched; leave the others' resolvedImage untouched. ` +
+          (presentationId
+            ? `This deck is already in Drive — pass presentationId "${presentationId}" so the edit updates that file in place. `
+            : `This deck is still a preview (not yet in Drive) — omit presentationId. `) +
+          `Do not ask the user to paste the deck back; it is right here. Do not refuse an ordinary picture ` +
+          `request — depicting a public place, building or landmark is fine.]
+
+` +
+          "```json\n" + JSON.stringify({ title: draft.title, slides: spec }, null, 1) + "\n```";
+      }
+    } catch (e: any) {
+      console.warn("[Messages] could not load deck spec for editing context:", e?.message);
+    }
+
     // Allow per-request context config override from the client (normalize to detail levels)
     const contextConfig = normalizeContextConfig(body.contextConfig ?? wsSettings?.config_context ?? undefined);
     const cuDescription = wsSettings?.information_cu_description ?? undefined;
@@ -835,6 +885,11 @@ export async function POST(
         role: "system" as const,
         content: `[Earlier conversation context]\n${conversation.document_summary}`,
       });
+    }
+
+    // The current deck spec, so an edit request has something to edit.
+    if (deckContext) {
+      messages.push({ role: "system" as const, content: deckContext });
     }
 
     // Detect if the user's latest message references a previous image/output
