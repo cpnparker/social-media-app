@@ -185,6 +185,14 @@ if (failures === before2) pass("no collisions, including with two-line titles");
 /* 3. The preview must consume everything the builder emits. */
 const before3 = failures;
 console.log(`\n3. The preview drops nothing the deck is told`);
+// Two halves, because each catches what the other cannot.
+//
+// The LIST half catches a NEW kind the builder starts emitting that nobody
+// taught the preview. The ROUND-TRIP half catches the preview silently
+// DROPPING a kind it claims to handle — which the list alone cannot see: this
+// check stayed green while preview-model's createParagraphBullets branch was
+// renamed to nonsense and every bulleted body previewed as plain paragraphs.
+// A hardcoded list asserts the kind was WRITTEN DOWN, not that it is used.
 const HANDLED = new Set(["createSlide", "updatePageProperties", "createShape", "createImage",
   "updateShapeProperties", "insertText", "updateTextStyle", "updateParagraphStyle", "createParagraphBullets"]);
 const emitted = new Set<string>();
@@ -192,7 +200,43 @@ ALL.forEach((s, i) => buildSlideRequests(s, i, "v").forEach((r) => emitted.add(O
 for (const kind of Array.from(emitted)) {
   if (!HANDLED.has(kind)) fail(`${kind} is drawn in the deck but never read into the preview`);
 }
-if (failures === before3) pass(`all ${emitted.size} request kinds are consumed`);
+
+// Round-trip: one fixture per kind, asserting the semantic EFFECT each kind
+// exists to carry actually lands on the preview element.
+const rt = toPreviewModel([
+  { layout: "content", title: "Round trip", subtitle: "A standfirst.", body: "One\nTwo" },
+  { layout: "cover", title: "Cover", subtitle: "Kicker", resolvedImage: PHOTO_DARK },
+  { layout: "stat", title: "Numbers", stats: [{ value: "64 GW", label: "Capacity", detail: "Detail." }] },
+]);
+const rtFail = (kind: string, what: string) => fail(`${kind} is emitted but its effect never reaches the preview: ${what}`);
+{
+  if (rt.slides.length !== 3) rtFail("createSlide", `expected 3 slides, got ${rt.slides.length}`);
+  const [content, cover, stat] = rt.slides;
+  if (content.background.toLowerCase() !== "#f8f8f8") rtFail("updatePageProperties", `content background is ${content.background}, not the off-white ground`);
+  const body = content.elements.find((e) => e.kind === "text" && /One/.test(String(e.text)));
+  if (!body) rtFail("insertText", "the body text is missing entirely");
+  else {
+    if (!body.bullets) rtFail("createParagraphBullets", "a two-line body is not marked as bullets");
+    if (!body.font || !body.size || !body.color) rtFail("updateTextStyle", "the body has no font, size or colour");
+    if (typeof body.spaceBelow !== "number") rtFail("updateParagraphStyle", "paragraph spacing was dropped");
+    if (body.w <= 0 || body.h <= 0) rtFail("createShape", "the body box has no geometry");
+  }
+  void stat;
+  const photo = cover.elements.find((e) => e.kind === "image" && !e.src?.includes("logo_engine"));
+  if (!photo?.src) rtFail("createImage", "the cover photograph never reaches the preview");
+  // CENTER alignment: the timeline's milestone labels are set centred.
+  const centred = toPreviewModel([{ layout: "timeline", title: "T", milestones: [
+    { date: "3 July", title: "Setup", detail: "Baseline." },
+    { date: "18 July", title: "Run", detail: "Fieldwork." } ] }])
+    .slides[0].elements.some((e) => e.kind === "text" && e.align === "center");
+  if (!centred) rtFail("updateParagraphStyle", "CENTER alignment on timeline labels never reaches the preview");
+  // contentAlignment MIDDLE: a logo-wall cell holding a client NAME is
+  // vertically centred in its cell.
+  const vcentred = toPreviewModel([{ layout: "logo-wall", title: "T", logos: [{ name: "Holcim" }] }])
+    .slides[0].elements.some((e) => e.kind === "text" && e.vCenter);
+  if (!vcentred) rtFail("updateShapeProperties", "contentAlignment MIDDLE never sets vCenter");
+}
+if (failures === before3) pass(`all ${emitted.size} request kinds are consumed, and each one's effect round-trips`);
 
 /* 4. The logo has to be visible against whatever is behind it. */
 const before4 = failures;
