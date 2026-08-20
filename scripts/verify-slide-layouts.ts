@@ -85,9 +85,10 @@ const DECK: SlideInput[] = [
       { name: "Video", points: [{ label: "Holcim", value: 26 }, { label: "Siemens", value: 18 }] },
       { name: "Infographics", points: [{ label: "Holcim", value: 19 }, { label: "Siemens", value: 11 }] } ] } },
   { layout: "cards", eyebrow: "What we do", title: LONG, cards: [
-      { marker: "STRATEGY", title: "Audience first", body: "Insight, competitive analysis and data shape the plan." },
-      { marker: "STORYTELLING", title: "Made by editors", body: "A repeatable editorial process built to journalistic standards." },
-      { marker: "AI VISIBILITY", title: "Measured", body: "How every major model describes you today, and how to improve it." } ] },
+      { marker: "01", title: "Competitive share of voice", body: "Benchmarked against 4-6 peer institutions across every prompt category." },
+      { marker: "02", title: "Source citation analysis", body: "Which domains, publications and pages drive AI responses in your sector." },
+      { marker: "03", title: "Technical GEO foundations", body: "Full audit of the infrastructure AI crawlers rely on: schema, llms.txt, Wikidata." },
+      { marker: "04", title: "Accuracy & hallucination report", body: "Every factual error or fabricated detail AI is producing about you, with a fix." } ] },
   { layout: "cards", title: "Numbered steps, with pictures", cards: [
       { marker: "01", title: "Setup", body: "A body with a [link](https://example.com/a) in it.", resolvedImage: { url: "p.jpg" } },
       { marker: "02", title: "Questionnaire", body: "Short.", resolvedImage: { url: "p.jpg" } },

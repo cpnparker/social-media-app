@@ -1899,10 +1899,17 @@ function cardsRequests(
     }
 
     if (card.title) {
+      // Measure the title, do not assume a line and a half. A two- or three-line
+      // heading ("Competitive share of voice", "Accuracy & hallucination report")
+      // used to be given a fixed 30pt box and the body started right under it —
+      // so the title's third line ran straight through the body. The body now
+      // starts below the title's actual drawn height.
+      const titleLines = estimateLines(card.title, innerW, TYPE.cardTitle.size);
+      const titleH = Math.max(0.42 * 72, drawnTextHeight(titleLines, TYPE.cardTitle.size));
       out.push(...textBox(id(`ct${i}`), page, card.title, TYPE.cardTitle, {
-        x: innerX, y, width: innerW, height: 0.42 * 72,
+        x: innerX, y, width: innerW, height: titleH,
       }));
-      y += 0.42 * 72;
+      y += titleH + 4;
     }
 
     if (card.body) {
