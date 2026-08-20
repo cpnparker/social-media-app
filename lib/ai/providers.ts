@@ -1201,6 +1201,38 @@ const DOCUMENT_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                 description: "Headers for a two-column comparison — 'Before'/'After', 'Us'/'Them', 'Today'/'With us'. Each sits over an accent rule above its column. Use them whenever the two columns are being weighed against each other.",
                 properties: { left: { type: "string" }, right: { type: "string" } },
               },
+              swot: {
+                type: "object",
+                description: "A SWOT analysis (swot layout): four arrays of short bullet lines, drawn as colour-coded quadrants. 2-4 items each reads best.",
+                properties: {
+                  strengths: { type: "array", items: { type: "string" } },
+                  weaknesses: { type: "array", items: { type: "string" } },
+                  opportunities: { type: "array", items: { type: "string" } },
+                  threats: { type: "array", items: { type: "string" } },
+                },
+              },
+              matrix: {
+                type: "object",
+                description: "A 2x2 priority matrix (matrix layout) — impact/effort, risk/reward. Place each item by `x` and `y` from 0 to 1 (x: 0 left to 1 right; y: 0 bottom to 1 top). Give axis end-labels and optional quadrant names.",
+                properties: {
+                  xAxis: { type: "array", items: { type: "string" }, description: "[low, high] labels for the horizontal axis." },
+                  yAxis: { type: "array", items: { type: "string" }, description: "[low, high] labels for the vertical axis." },
+                  quadrants: { type: "array", items: { type: "string" }, description: "Four corner labels: top-left, top-right, bottom-left, bottom-right." },
+                  items: { type: "array", items: { type: "object", properties: {
+                    label: { type: "string" }, x: { type: "number" }, y: { type: "number" }, highlight: { type: "boolean" },
+                  }, required: ["label", "x", "y"] } },
+                },
+              },
+              comparison: {
+                type: "object",
+                description: "A comparison table (comparison layout): `columns` are the options across the top (2-4), `rows` are the criteria. A cell of 'yes'/'no' draws a green tick or coral cross; any other text prints as-is. Highlight the row that makes your case.",
+                properties: {
+                  columns: { type: "array", items: { type: "string" } },
+                  rows: { type: "array", items: { type: "object", properties: {
+                    label: { type: "string" }, cells: { type: "array", items: { type: "string" } }, highlight: { type: "boolean" },
+                  }, required: ["label", "cells"] } },
+                },
+              },
               notes: {
                 type: "string",
                 description: "Speaker notes for this slide",
@@ -1284,9 +1316,9 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             properties: {
               layout: {
                 type: "string",
-                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "cards", "quote", "process", "logo-wall", "closing"],
+                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "cards", "quote", "process", "logo-wall", "closing"],
                 description:
-                  "cover = opening slide, big centred title over a dark ground. section = a divider between parts of the deck — give it an `image.query` for a full-bleed photograph and a numeric `eyebrow` ('01', '02') for a big index numeral; without a photo it falls back to a flat blue field. content = title + body, the FALLBACK when nothing else fits — a bulleted slide is the flattest thing the deck can make, so reach for a layout above it first. Give it a `subtitle` (drawn as a standfirst) and an `image.query` (drawn as a rail down the right) and it stops looking like a document. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. line-chart = a trend over time — months, quarters, years — as a connected line; supply `chart` with each series' points IN TIME ORDER (they are plotted in the order given, evenly spaced). Reach for it whenever the point is that something CHANGED, where a bar chart would only show the endpoints. cards = two to six repeated blocks across the slide — pillars, product types, numbered steps, a portfolio of formats. Reach for it whenever a slide would otherwise be a list of things that are the same KIND of thing; supply `cards`. quote = a pull quote on navy with the speaker named beneath — use it for a client testimonial or an executive line, never for your own copy; supply `quote`. process = stages carried left to right by arrows, for a way of working; supply `stages`. logo-wall = client marks on a clean ground, the credibility slide; supply `logos`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter — but defaulting through a whole deck produces exactly the flat deck this tool exists to avoid.",
+                  "cover = opening slide, big centred title over a dark ground. section = a divider between parts of the deck — give it an `image.query` for a full-bleed photograph and a numeric `eyebrow` ('01', '02') for a big index numeral; without a photo it falls back to a flat blue field. content = title + body, the FALLBACK when nothing else fits — a bulleted slide is the flattest thing the deck can make, so reach for a layout above it first. Give it a `subtitle` (drawn as a standfirst) and an `image.query` (drawn as a rail down the right) and it stops looking like a document. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. line-chart = a trend over time — months, quarters, years — as a connected line; supply `chart` with each series' points IN TIME ORDER (they are plotted in the order given, evenly spaced). Reach for it whenever the point is that something CHANGED, where a bar chart would only show the endpoints. swot = a four-quadrant SWOT on colour-coded panels; supply `swot` with strengths/weaknesses/opportunities/threats. matrix = a 2x2 priority grid (impact/effort, risk/reward) with items plotted by position; supply `matrix`. comparison = a table weighing options against criteria, with ticks and crosses; supply `comparison`. cards = two to six repeated blocks across the slide — pillars, product types, numbered steps, a portfolio of formats. Reach for it whenever a slide would otherwise be a list of things that are the same KIND of thing; supply `cards`. quote = a pull quote on navy with the speaker named beneath — use it for a client testimonial or an executive line, never for your own copy; supply `quote`. process = stages carried left to right by arrows, for a way of working; supply `stages`. logo-wall = client marks on a clean ground, the credibility slide; supply `logos`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter — but defaulting through a whole deck produces exactly the flat deck this tool exists to avoid.",
               },
               title: { type: "string", description: "Slide heading." },
               subtitle: {

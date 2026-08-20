@@ -79,6 +79,18 @@ const DECK: SlideInput[] = [
       series: [
         { name: "Rigiwald", points: [{ label: "Jan", value: 6 }, { label: "Feb", value: 11 }, { label: "Mar", value: 19 }, { label: "Apr", value: 28 }, { label: "May", value: 34 }, { label: "Jun", value: 38 }] },
         { name: "Sector average", points: [{ label: "Jan", value: 20 }, { label: "Feb", value: 21 }, { label: "Mar", value: 22 }, { label: "Apr", value: 22 }, { label: "May", value: 23 }, { label: "Jun", value: 24 }] } ] } },
+  { layout: "swot", eyebrow: "Diagnostic", title: LONG, subtitle: "A standfirst that runs long enough to wrap here.",
+    swot: { strengths: ["Strong brand recall in-market", "A consistent editorial voice"], weaknesses: ["Thin Wikipedia footprint", "No schema markup on key pages"],
+      opportunities: ["First mover on AI visibility", "Owned data nobody else has"], threats: ["Two rivals investing fast", "Hallucinated facts spreading"] } },
+  { layout: "matrix", eyebrow: "Priorities", title: LONG, subtitle: "Impact against effort, every recommendation.",
+    matrix: { xAxis: ["Low effort", "High effort"], yAxis: ["Low impact", "High impact"], quadrants: ["Quick wins", "Big bets", "Fill-ins", "Time sinks"],
+      items: [{ label: "Schema markup", x: 0.18, y: 0.85, highlight: true }, { label: "Wikipedia entry", x: 0.75, y: 0.9 }, { label: "Rewrite exec bios", x: 0.4, y: 0.45 }, { label: "Full site rebuild", x: 0.9, y: 0.28 }] } },
+  { layout: "comparison", eyebrow: "The choice", title: LONG, subtitle: "Against the two agencies you shortlisted.",
+    comparison: { columns: ["Us", "Agency A", "Agency B"], rows: [
+      { label: "AI-answer testing across models", cells: ["yes", "no", "no"], highlight: true },
+      { label: "Weekly visibility readouts", cells: ["yes", "yes", "no"] },
+      { label: "Fixed, published fee", cells: ["CHF 12,500", "CHF 20k+", "Retainer"] },
+      { label: "Wikidata & entity work", cells: ["yes", "no", "no"] } ] } },
   { layout: "stacked-bar", eyebrow: "Mix", title: LONG,
     chart: { source: "Source: delivery data", series: [
       { name: "Articles", points: [{ label: "Holcim", value: 38 }, { label: "Siemens", value: 22 }] },
@@ -720,6 +732,22 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   }
   if (disconnected > 0) fail(`${disconnected} line segment(s) do not land on their data points`);
   if (failures === before20) pass("segments connect consecutive points, benchmark and legend drawn, nothing off-canvas");
+
+  /* 21. The analysis formats draw their structure. */
+  const before21 = failures;
+  console.log(`\n21. SWOT, matrix and comparison draw their parts`);
+  const sw = buildSlideRequests({ layout: "swot", title: "T", swot: { strengths: ["a"], weaknesses: ["b"], opportunities: ["c"], threats: ["d"] } }, 0, "n");
+  const swPanels = sw.filter((r: any) => (r.createShape?.objectId || "").match(/_q[swot]$/)).length;
+  if (swPanels !== 4) fail(`SWOT drew ${swPanels} quadrant panels, expected 4`);
+  if (sw.filter((r: any) => (r.insertText?.objectId || "").match(/_qh/)).length !== 4) fail("SWOT is missing quadrant headers");
+  const mx = buildSlideRequests({ layout: "matrix", title: "T", matrix: { xAxis: ["l", "h"], yAxis: ["l", "h"], items: [{ label: "A", x: 0.2, y: 0.8, highlight: true }, { label: "B", x: 0.7, y: 0.3 }] } }, 0, "n");
+  if (mx.filter((r: any) => (r.createShape?.objectId || "").match(/_md\d/)).length !== 2) fail("matrix did not plot both items");
+  if (!mx.some((r: any) => (r.createShape?.objectId || "").endsWith("_mvx"))) fail("matrix vertical axis not drawn");
+  const cm = buildSlideRequests({ layout: "comparison", title: "T", comparison: { columns: ["Us", "Them"], rows: [{ label: "Testing", cells: ["yes", "no"] }, { label: "Fee", cells: ["CHF 1", "CHF 2"] }] } }, 0, "n");
+  const ticks = cm.filter((r: any) => r.insertText && (r.insertText.text === "\u2713" || r.insertText.text === "\u2717")).length;
+  if (ticks !== 2) fail(`comparison drew ${ticks} tick/cross glyphs, expected 2 (one yes, one no)`);
+  if (cm.filter((r: any) => (r.insertText?.objectId || "").match(/_ch\d/)).length !== 2) fail("comparison header columns not drawn");
+  if (failures === before21) pass("SWOT has four panels and headers, matrix plots its items on axes, comparison draws ticks and headers");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);

@@ -37,6 +37,14 @@ export const COLOR = {
   ink: "272727",
   white: "FFFFFF",
   offWhite: "F8F8F8",    // the actual background of most content slides
+  // Pale tints for panelled analysis formats (SWOT quadrants, table rows).
+  // Readable with a dark header of the same family — from the validated
+  // categorical ramps, not the brand accents, which fail as fills.
+  tintTeal:  "E1F5EE", inkTeal:  "0F6E56",
+  tintCoral: "FAECE7", inkCoral: "993C1D",
+  tintBlue:  "E6F1FB", inkBlue:  "185FA5",
+  tintAmber: "FAEEDA", inkAmber: "854F0B",
+  tintGrey:  "F1EFE8",
 } as const;
 
 export type BrandColor = keyof typeof COLOR;
@@ -206,6 +214,13 @@ export const TYPE: Record<string, TypeStyle> = {
   standfirst:    { font: "Roboto", size: 13, weight: 300, color: COLOR.navy },
   /** A two-column comparison header — "Before"/"After", over an accent rule. */
   columnHeader:  { font: "Playfair Display", size: 14, color: COLOR.navy },
+  quadHeader:    { font: "Roboto", size: 11, bold: true, color: COLOR.navy, caps: true },
+  quadItem:      { font: "Roboto", size: 9, weight: 300, color: COLOR.navy },
+  axisEnd:       { font: "Roboto", size: 8, bold: true, color: COLOR.ink, caps: true },
+  quadLabel:     { font: "Roboto", size: 8, weight: 300, color: COLOR.ink },
+  dotLabel:      { font: "Roboto", size: 8, weight: 400, color: COLOR.navy },
+  cellText:      { font: "Roboto", size: 9, weight: 300, color: COLOR.navy },
+  cellHead:      { font: "Playfair Display", size: 12, color: COLOR.navy },
   standfirstDark:{ font: "Roboto", size: 13, weight: 300, color: COLOR.greyLight },
   statistic:     { font: "Poppins", size: 30, color: COLOR.white },
   source:        { font: "Roboto", size: 7, color: COLOR.ink },
@@ -312,6 +327,9 @@ export type SlideLayout =
   | "bar-chart"
   | "stacked-bar"
   | "line-chart"
+  | "swot"
+  | "matrix"
+  | "comparison"
   | "cards"
   | "quote"
   | "process"
@@ -319,7 +337,7 @@ export type SlideLayout =
   | "closing";
 
 export const LAYOUTS: SlideLayout[] = [
-  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "cards", "quote", "process", "logo-wall", "closing",
+  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "cards", "quote", "process", "logo-wall", "closing",
 ];
 
 /** Horizontal timeline: an axis rule with evenly spaced milestone markers.
@@ -544,6 +562,9 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   "bar-chart":   { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "stacked-bar": { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "line-chart":  { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  "swot":        { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  "matrix":      { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  "comparison":  { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   cards:         { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   // A quote sits on navy: it is a moment of emphasis, and the change of ground
   // is what makes it land as one rather than as another content slide.

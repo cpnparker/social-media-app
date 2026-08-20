@@ -66,6 +66,18 @@ export interface SlideInput {
   bodyRight?: string;
   /** Headers for the two-column comparison — "Before"/"After", "Us"/"Them". */
   columns?: { left?: string; right?: string };
+  /** SWOT: four quadrants of bullet lines. */
+  swot?: { strengths?: string[]; weaknesses?: string[]; opportunities?: string[]; threats?: string[] };
+  /** A 2x2 quadrant matrix — impact/effort, risk/reward. Items are placed by
+   *  x and y in 0..1 (0 = left/bottom, 1 = right/top). */
+  matrix?: {
+    xAxis?: [string, string]; yAxis?: [string, string];
+    quadrants?: [string, string, string, string];   // TL, TR, BL, BR
+    items?: { label: string; x: number; y: number; highlight?: boolean }[];
+  };
+  /** A comparison table: a header row of options, then criterion rows. A cell
+   *  of "yes"/"no" draws a tick or cross; anything else prints as text. */
+  comparison?: { columns?: string[]; rows?: { label: string; cells: string[]; highlight?: boolean }[] };
   milestones?: Milestone[];
   tracks?: Track[];
   /** What this slide should be a picture OF, or an exact image to use. Resolved
@@ -2083,6 +2095,170 @@ function logoWallRequests(
   });
 }
 
+/** SWOT: four labelled quadrants of bullets on pale tints. A staple of the
+ *  strategy deck, and the model had no way to draw one — it fell to bullets. */
+function swotRequests(
+  page: string, id: (s: string) => string,
+  swot: NonNullable<SlideInput["swot"]>, bandTop: number
+): Req[] {
+  const cells: { key: string; head: string; items: string[]; tint: string; ink: string }[] = [
+    { key: "s", head: "Strengths", items: swot.strengths || [], tint: COLOR.tintTeal, ink: COLOR.inkTeal },
+    { key: "w", head: "Weaknesses", items: swot.weaknesses || [], tint: COLOR.tintCoral, ink: COLOR.inkCoral },
+    { key: "o", head: "Opportunities", items: swot.opportunities || [], tint: COLOR.tintBlue, ink: COLOR.inkBlue },
+    { key: "t", head: "Threats", items: swot.threats || [], tint: COLOR.tintAmber, ink: COLOR.inkAmber },
+  ];
+  const gap = 10;
+  const top = bandTop;
+  const bottom = CANVAS.height - GRID.margin;
+  const cw = (GRID.contentWidth - gap) / 2;
+  const ch = (bottom - top - gap) / 2;
+  const out: Req[] = [];
+  cells.forEach((c, i) => {
+    const cx = GRID.margin + (i % 2) * (cw + gap);
+    const cy = top + Math.floor(i / 2) * (ch + gap);
+    out.push(...filledShape(id(`q${c.key}`), page, "RECTANGLE", c.tint, { x: cx, y: cy, width: cw, height: ch }));
+    out.push(...textBox(id(`qh${c.key}`), page, c.head, { ...TYPE.quadHeader, color: c.ink }, {
+      x: cx + 12, y: cy + 10, width: cw - 24, height: 18,
+    }));
+    out.push(...textBox(id(`qi${c.key}`), page, c.items.join("\n"), TYPE.quadItem, {
+      x: cx + 12, y: cy + 32, width: cw - 24, height: ch - 42,
+    }, { bullets: true, spaceBelow: 4 }));
+  });
+  return out;
+}
+
+/** A 2x2 quadrant matrix — impact/effort, risk/reward. Two axes crossing at the
+ *  centre, quadrant labels in the corners, items plotted by x and y in 0..1. */
+function matrixRequests(
+  page: string, id: (s: string) => string,
+  m: NonNullable<SlideInput["matrix"]>, bandTop: number
+): Req[] {
+  const top = bandTop + 6;
+  const bottom = CANVAS.height - GRID.margin - 16;
+  const left = GRID.margin + 46;
+  const right = GRID.margin + GRID.contentWidth - 12;
+  const w = right - left, h = bottom - top;
+  const midX = left + w / 2, midY = top + h / 2;
+  const out: Req[] = [];
+
+  // Quadrant tints (faint), then the crossing axes on top.
+  const tints = [COLOR.tintBlue, COLOR.tintTeal, COLOR.tintGrey, COLOR.tintAmber];
+  const quadBoxes = [[left, top], [midX, top], [left, midY], [midX, midY]];
+  quadBoxes.forEach(([qx, qy], i) => {
+    out.push(...filledShape(id(`mq${i}`), page, "RECTANGLE", tints[i], { x: qx, y: qy, width: w / 2, height: h / 2 }, 0.5));
+  });
+  out.push(
+    ...filledShape(id("mvx"), page, "RECTANGLE", COLOR.navy, { x: midX, y: top, width: 1, height: h }, 0.35),
+    ...filledShape(id("mhz"), page, "RECTANGLE", COLOR.navy, { x: left, y: midY, width: w, height: 1 }, 0.35),
+  );
+
+  // Axis end labels.
+  if (m.xAxis) {
+    out.push(
+      ...textBox(id("mxl"), page, m.xAxis[0], TYPE.axisEnd, { x: left, y: bottom + 2, width: w / 2, height: 12 }),
+      ...textBox(id("mxr"), page, m.xAxis[1], TYPE.axisEnd, { x: midX, y: bottom + 2, width: w / 2, height: 12 }, { align: "END" }),
+    );
+  }
+  if (m.yAxis) {
+    out.push(
+      ...textBox(id("myb"), page, m.yAxis[0], TYPE.axisEnd, { x: GRID.margin, y: bottom - 12, width: 44, height: 12 }),
+      ...textBox(id("myt"), page, m.yAxis[1], TYPE.axisEnd, { x: GRID.margin, y: top, width: 44, height: 12 }),
+    );
+  }
+  // Quadrant names are drawn as faint captions in the TOP-OUTER corners only
+  // — top-left flush left, top-right flush right — where a plotted item is least
+  // likely to sit, and never in the bottom corners, which collide with the axis
+  // labels and the densest cluster of items. The axes carry the rest.
+  if (m.quadrants) {
+    if (m.quadrants[0]) out.push(...textBox(id("mql0"), page, m.quadrants[0], TYPE.quadLabel, { x: left + 6, y: top + 4, width: w / 2 - 12, height: 12 }));
+    if (m.quadrants[1]) out.push(...textBox(id("mql1"), page, m.quadrants[1], TYPE.quadLabel, { x: midX + 6, y: top + 4, width: w / 2 - 12, height: 12 }, { align: "END" }));
+  }
+
+  // Items: a dot at (x,y), label beside it. y is inverted (1 = top). A label
+  // that would land in the top strip where a quadrant caption sits is pushed
+  // BELOW its dot instead.
+  (m.items || []).slice(0, 12).forEach((it, i) => {
+    const px = left + Math.max(0, Math.min(1, it.x)) * w;
+    const py = bottom - Math.max(0, Math.min(1, it.y)) * h;
+    const r = it.highlight ? 6 : 4.5;
+    const fill = it.highlight ? COLOR.blue : COLOR.navy;
+    out.push(...filledShape(id(`md${i}`), page, "ELLIPSE", fill, { x: px - r, y: py - r, width: r * 2, height: r * 2 }));
+    // Label beside the dot, clamped inside the plot. Placed below the dot when
+    // the dot sits high (near a quadrant caption) and above when it sits low.
+    const lw = Math.min(140, Math.max(40, it.label.length * 4.6 + 8));
+    const lx = px + r + 4 + lw > right ? px - r - 4 - lw : px + r + 4;
+    const ly = py < top + 22 ? py + r + 3 : py - 7;
+    out.push(...textBox(id(`ml${i}`), page, it.label, it.highlight ? { ...TYPE.dotLabel, bold: true } : TYPE.dotLabel, {
+      x: Math.max(left, lx), y: ly, width: lw, height: 14,
+    }, lx < px ? { align: "END" } : {}));
+  });
+  return out;
+}
+
+/** A comparison table: a header row of options, then criterion rows. A cell of
+ *  "yes"/"no" draws a tick or cross; anything else prints as text. */
+function comparisonRequests(
+  page: string, id: (s: string) => string,
+  cmp: NonNullable<SlideInput["comparison"]>, bandTop: number
+): Req[] {
+  const cols = (cmp.columns || []).slice(0, 4);
+  const rows = (cmp.rows || []).slice(0, 8);
+  if (!cols.length || !rows.length) return [];
+  const out: Req[] = [];
+  const top = bandTop;
+  const labelW = GRID.contentWidth * 0.34;
+  const colW = (GRID.contentWidth - labelW) / cols.length;
+  const headH = 28;
+  const bottom = CANVAS.height - GRID.margin;
+  const rowH = Math.min(40, (bottom - top - headH) / rows.length);
+
+  // Header: option names across the top, over a rule.
+  cols.forEach((c, j) => {
+    out.push(...textBox(id(`ch${j}`), page, c, TYPE.cellHead, {
+      x: GRID.margin + labelW + j * colW, y: top, width: colW, height: headH,
+    }, { align: "CENTER" }));
+  });
+  out.push(...filledShape(id("crh"), page, "RECTANGLE", COLOR.navy, {
+    x: GRID.margin, y: top + headH, width: GRID.contentWidth, height: RULE.hairlineThickness,
+  }, 0.4));
+
+  rows.forEach((r, i) => {
+    const ry = top + headH + 4 + i * rowH;
+    if (r.highlight) {
+      out.push(...filledShape(id(`crb${i}`), page, "RECTANGLE", COLOR.tintBlue, {
+        x: GRID.margin, y: ry, width: GRID.contentWidth, height: rowH,
+      }, 0.6));
+    }
+    out.push(...textBox(id(`crl${i}`), page, r.label, { ...TYPE.cellText, bold: true }, {
+      x: GRID.margin + 6, y: ry + rowH / 2 - 8, width: labelW - 12, height: 16,
+    }));
+    (r.cells || []).slice(0, cols.length).forEach((cell, j) => {
+      const cx = GRID.margin + labelW + j * colW;
+      const v = cell.trim().toLowerCase();
+      if (v === "yes" || v === "y" || v === "true" || v === "✓") {
+        out.push(...textBox(id(`cc${i}_${j}`), page, "\u2713", { ...TYPE.cellText, size: 13, bold: true, color: COLOR.inkTeal }, {
+          x: cx, y: ry + rowH / 2 - 9, width: colW, height: 18,
+        }, { align: "CENTER" }));
+      } else if (v === "no" || v === "n" || v === "false" || v === "\u2717" || v === "x") {
+        out.push(...textBox(id(`cc${i}_${j}`), page, "\u2717", { ...TYPE.cellText, size: 13, bold: true, color: COLOR.inkCoral }, {
+          x: cx, y: ry + rowH / 2 - 9, width: colW, height: 18,
+        }, { align: "CENTER" }));
+      } else {
+        out.push(...textBox(id(`cc${i}_${j}`), page, cell, TYPE.cellText, {
+          x: cx, y: ry + rowH / 2 - 8, width: colW, height: 16,
+        }, { align: "CENTER" }));
+      }
+    });
+    // A hairline between rows.
+    if (i < rows.length - 1) {
+      out.push(...filledShape(id(`crr${i}`), page, "RECTANGLE", COLOR.navy, {
+        x: GRID.margin, y: ry + rowH, width: GRID.contentWidth, height: RULE.hairlineThickness,
+      }, 0.15));
+    }
+  });
+  return out;
+}
+
 /** One slide → its full request list. Exported so the layout geometry can be
  *  exercised without a Google round-trip; nothing else should call it. */
 export function buildSlideRequests(slide: SlideInput, index: number, run = "r0"): Req[] {
@@ -2327,6 +2503,27 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         : layout === "line-chart" ? lineChartRequests(page, id, slide.chart, onDark, chartBandTop)
         : barChartRequests(page, id, slide.chart, onDark, chartBandTop)));
     }
+  } else if (layout === "swot" || layout === "matrix" || layout === "comparison") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY, width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }),
+    );
+    let aTop = GRID.bodyY;
+    if (slide.subtitle?.trim()) {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size);
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: standH,
+      }));
+      aTop = GRID.bodyY + standH + 8;
+    }
+    if (layout === "swot" && slide.swot) requests.push(...swotRequests(page, id, slide.swot, aTop));
+    else if (layout === "matrix" && slide.matrix) requests.push(...matrixRequests(page, id, slide.matrix, aTop));
+    else if (layout === "comparison" && slide.comparison) requests.push(...comparisonRequests(page, id, slide.comparison, aTop));
   } else if (layout === "timeline-parallel") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
