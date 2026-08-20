@@ -1316,6 +1316,19 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           description:
             "The id of a deck ALREADY created in Drive in this conversation. Pass it so a further change edits that file in place, keeping the user's link, comments and history. Omit while the deck is still only a preview.",
         },
+        editSlide: {
+          type: "object",
+          description:
+            "Change ONE slide of the deck already in this conversation WITHOUT resending the others. Use this for 'change slide 3's picture', 'reword the title on slide 1', and the like — the server holds the current deck and patches only the slide you name, keeping every other slide (text, layout, images) exactly as it is. Pass `slideNumber` (1-based) and the change; do NOT also pass `slides` (send an empty array for it).",
+          properties: {
+            slideNumber: { type: "number", description: "Which slide to change, 1-based." },
+            imageQuery: { type: "string", description: "A new photograph for this slide, described — the old one is replaced." },
+            title: { type: "string", description: "New title text for this slide." },
+            subtitle: { type: "string", description: "New subtitle/standfirst for this slide." },
+            body: { type: "string", description: "New body text for this slide (newline per bullet)." },
+          },
+          required: ["slideNumber"],
+        },
         objective: {
           type: "string",
           description:
@@ -3971,6 +3984,87 @@ async function buildSlidesDraft(title: string, rawSlides: any[]) {
     title,
     slides,
     preview: toPreviewModel(slides),
+  };
+}
+
+/** The current deck in a conversation, loaded server-side for a single-slide
+ *  edit — so the model never has to resend 23 slides it may not even see. The
+ *  server has held the draft all along (ai_messages.slides_draft); a picture
+ *  change is a patch to it, not a full regeneration. */
+async function loadDeckForEdit(
+  conversationId: string
+): Promise<{ title: string; slides: any[]; presentationId?: string } | null> {
+  try {
+    const { intelligenceDb } = await import("@/lib/supabase-intelligence");
+    const { data } = await intelligenceDb
+      .from("ai_messages")
+      .select("slides_draft")
+      .eq("id_conversation", conversationId)
+      .not("slides_draft", "is", null)
+      .order("date_created", { ascending: false })
+      .limit(1);
+    const draft: any = data?.[0]?.slides_draft;
+    if (!draft?.slides?.length) return null;
+    return {
+      title: draft.title || "Presentation",
+      slides: draft.slides,
+      presentationId: draft.published?.presentationId,
+    };
+  } catch (e: any) {
+    console.warn("[Slides] loadDeckForEdit failed:", e?.message);
+    return null;
+  }
+}
+
+/** Apply a single-slide edit to the FULL deck, changing only the named slide
+ *  and leaving every other slide — text, layout, resolved image — untouched. */
+function applyEditSlide(
+  slides: any[],
+  edit: { slideNumber?: number; imageQuery?: string; title?: string; subtitle?: string; body?: string }
+): any[] {
+  const idx = (edit.slideNumber ?? 0) - 1;
+  if (idx < 0 || idx >= slides.length) return slides;
+  return slides.map((sl, i) => {
+    if (i !== idx) return sl;                       // every other slide byte-for-byte
+    const next: any = { ...sl };
+    if (edit.imageQuery?.trim()) {
+      // New picture: set the brief and drop the resolved image so a fresh one is
+      // fetched. imageUnavailable is cleared so resolution runs again.
+      next.image = { query: edit.imageQuery.trim() };
+      delete next.resolvedImage;
+      delete next.imageUnavailable;
+      delete next.imageError;
+    }
+    if (typeof edit.title === "string") next.title = edit.title;
+    if (typeof edit.subtitle === "string") next.subtitle = edit.subtitle;
+    if (typeof edit.body === "string") next.body = edit.body;
+    return next;
+  });
+}
+
+/** What to build from a generate_slides call: either the model's full slide
+ *  array, or — for a single-slide `editSlide` — the stored deck with that one
+ *  slide patched. The editSlide path is what makes "change slide 1's picture"
+ *  reliable: the model expresses the change, the server owns the deck. */
+async function prepareSlidesForBuild(
+  input: any, conversationId?: string | null
+): Promise<{ title: string; slides: any[]; presentationId?: string; edited: boolean }> {
+  if (input?.editSlide && conversationId) {
+    const deck = await loadDeckForEdit(conversationId);
+    if (deck?.slides?.length) {
+      return {
+        title: deck.title,
+        slides: applyEditSlide(deck.slides, input.editSlide),
+        presentationId: input.presentationId || deck.presentationId,
+        edited: true,
+      };
+    }
+  }
+  return {
+    title: input?.title || "Presentation",
+    slides: input?.slides || [],
+    presentationId: input?.presentationId,
+    edited: false,
   };
 }
 
@@ -7754,12 +7848,17 @@ async function streamAnthropic(
         }
       } else if (tool.name === "generate_slides") {
         try {
-          const deckTitle = tool.input.title || "Presentation";
-          const deckSlides = tool.input.slides || [];
+          // A single-slide edit (editSlide) is patched onto the stored deck
+          // server-side, so the model never resends every slide. Otherwise the
+          // model's full slides array is used, as before.
+          const prepared = await prepareSlidesForBuild(tool.input, config.conversationId);
+          const deckTitle = prepared.title;
+          const deckSlides = prepared.slides;
+          const deckPresId = prepared.presentationId;
 
           // Draft is the default. A file appears only when a person asked for
-          // one, which is what keeps a user's Drive free of half-agreed decks.
-          if (!tool.input.publish && !tool.input.presentationId) {
+          // one; an editSlide on a deck already in Drive updates it in place.
+          if (!tool.input.publish && !deckPresId) {
             const draft = await buildSlidesDraft(deckTitle, deckSlides);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
@@ -7777,7 +7876,7 @@ async function streamAnthropic(
             deckTitle,
             deckSlides,
             config.userEmail || "",
-            tool.input.presentationId
+            deckPresId
           );
 
           if (!result.ok) {
@@ -8988,12 +9087,16 @@ async function streamXAIChatCompletions(
       } else if (tc.function.name === "generate_slides") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const deckTitle = input.title || "Presentation";
-          const deckSlides = input.slides || [];
+          // A single-slide edit (editSlide) is patched onto the stored deck
+          // server-side, so the model never resends every slide.
+          const prepared = await prepareSlidesForBuild(input, config.conversationId);
+          const deckTitle = prepared.title;
+          const deckSlides = prepared.slides;
+          const deckPresId = prepared.presentationId;
 
-          // Draft is the default. A file appears only when a person asked for
-          // one, which is what keeps a user's Drive free of half-agreed decks.
-          if (!input.publish && !input.presentationId) {
+          // Draft is the default; an editSlide on a deck already in Drive
+          // updates it in place.
+          if (!input.publish && !deckPresId) {
             const draft = await buildSlidesDraft(deckTitle, deckSlides);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
@@ -9011,7 +9114,7 @@ async function streamXAIChatCompletions(
             deckTitle,
             deckSlides,
             config.userEmail || "",
-            input.presentationId
+            deckPresId
           );
 
           if (!result.ok) {
@@ -9966,12 +10069,16 @@ async function streamGemini(
       } else if (tc.function.name === "generate_slides") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const deckTitle = input.title || "Presentation";
-          const deckSlides = input.slides || [];
+          // A single-slide edit (editSlide) is patched onto the stored deck
+          // server-side, so the model never resends every slide.
+          const prepared = await prepareSlidesForBuild(input, config.conversationId);
+          const deckTitle = prepared.title;
+          const deckSlides = prepared.slides;
+          const deckPresId = prepared.presentationId;
 
-          // Draft is the default. A file appears only when a person asked for
-          // one, which is what keeps a user's Drive free of half-agreed decks.
-          if (!input.publish && !input.presentationId) {
+          // Draft is the default; an editSlide on a deck already in Drive
+          // updates it in place.
+          if (!input.publish && !deckPresId) {
             const draft = await buildSlidesDraft(deckTitle, deckSlides);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
@@ -9989,7 +10096,7 @@ async function streamGemini(
             deckTitle,
             deckSlides,
             config.userEmail || "",
-            input.presentationId
+            deckPresId
           );
 
           if (!result.ok) {
@@ -10832,12 +10939,16 @@ async function streamOpenAI(
       } else if (tc.function.name === "generate_slides") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const deckTitle = input.title || "Presentation";
-          const deckSlides = input.slides || [];
+          // A single-slide edit (editSlide) is patched onto the stored deck
+          // server-side, so the model never resends every slide.
+          const prepared = await prepareSlidesForBuild(input, config.conversationId);
+          const deckTitle = prepared.title;
+          const deckSlides = prepared.slides;
+          const deckPresId = prepared.presentationId;
 
-          // Draft is the default. A file appears only when a person asked for
-          // one, which is what keeps a user's Drive free of half-agreed decks.
-          if (!input.publish && !input.presentationId) {
+          // Draft is the default; an editSlide on a deck already in Drive
+          // updates it in place.
+          if (!input.publish && !deckPresId) {
             const draft = await buildSlidesDraft(deckTitle, deckSlides);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
@@ -10855,7 +10966,7 @@ async function streamOpenAI(
             deckTitle,
             deckSlides,
             config.userEmail || "",
-            input.presentationId
+            deckPresId
           );
 
           if (!result.ok) {
