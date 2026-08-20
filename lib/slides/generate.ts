@@ -396,6 +396,53 @@ function filledShape(
   ];
 }
 
+/** A straight line segment from (x1,y1) to (x2,y2), drawn as a thin rectangle
+ *  rotated by the affine transform.
+ *
+ *  Slides has no polyline, so a line chart is built from these. The transform
+ *  maps the rectangle's local mid-left onto the first point and mid-right onto
+ *  the second — verified exact for every direction. The preview reads the same
+ *  transform, so a sloped line looks identical in both.
+ */
+function segment(
+  objectId: string, page: string, color: string,
+  x1: number, y1: number, x2: number, y2: number, thickness: number, alpha?: number
+): Req[] {
+  const dx = x2 - x1, dy = y2 - y1;
+  const L = Math.hypot(dx, dy) || 1;
+  const c = dx / L, sn = dy / L;
+  const T = thickness;
+  return [
+    {
+      createShape: {
+        objectId, shapeType: "RECTANGLE",
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(L), height: pt(T) },
+          transform: {
+            scaleX: c, scaleY: c, shearX: -sn, shearY: sn,
+            translateX: x1 + sn * (T / 2), translateY: y1 - c * (T / 2), unit: "PT",
+          },
+        },
+      },
+    },
+    {
+      updateShapeProperties: {
+        objectId,
+        shapeProperties: {
+          shapeBackgroundFill: {
+            solidFill: { color: { rgbColor: rgb(color) }, ...(typeof alpha === "number" ? { alpha } : {}) },
+          },
+          outline: { propertyState: "NOT_RENDERED" },
+        },
+        fields: typeof alpha === "number"
+          ? "shapeBackgroundFill.solidFill,outline.propertyState"
+          : "shapeBackgroundFill.solidFill.color,outline.propertyState",
+      },
+    },
+  ];
+}
+
 /** A real horizontal timeline: one axis, evenly spaced markers, labels above
  *  and below. Milestones are spaced by slot rather than by date, because these
  *  decks show sequence and ownership, not duration — proportional spacing would
@@ -1207,6 +1254,137 @@ export function barChartNote(
   }
   if (total > drawn) parts.push(`${supplied > 1 ? "" : "the "}top ${drawn} of ${total}`);
   return parts.length ? `Showing ${parts.join(" · ")}` : "";
+}
+
+/** A line chart: change over time. The one device the bar layouts cannot give,
+ *  because a trend is a shape, not a set of lengths.
+ *
+ *  Points are spaced evenly by INDEX across the plot, not by date — the points
+ *  carry free-text x labels ("Jan", "Q1", "2024"), and spacing them by a parsed
+ *  date would break the moment a label is not a date. Y is scaled from the data
+ *  (padded, and including zero when the range is close to it, so a line does not
+ *  float in a misleading crop). Up to three series, each its own colour with a
+ *  legend; segments are rotated rectangles because Slides has no polyline.
+ */
+function lineChartRequests(
+  page: string, id: (s: string) => string,
+  chart: NonNullable<SlideInput["chart"]>, onDark: boolean, bandTop: number = GRID.bodyY
+): Req[] {
+  const series = (chart.series || []).filter((sx) => sx.points?.length).slice(0, 3);
+  if (!series.length) return [];
+  const palette = onDark ? SERIES_DARK : SERIES_LIGHT;
+  const axisColor = onDark ? COLOR.periwinkle : COLOR.greyLight;
+
+  // X labels come from the FIRST series; a shorter series simply stops early.
+  const labels = series[0].points.map((p) => p.label);
+  const n = labels.length;
+  if (n < 2) return [];   // a single point is not a line
+
+  const allValues = series.flatMap((sx) => sx.points.map((p) => p.value));
+  const bench = chart.benchmark && Number.isFinite(chart.benchmark.value) ? chart.benchmark : null;
+  if (bench) allValues.push(bench.value);
+  let lo = Math.min(...allValues);
+  let hi = Math.max(...allValues);
+  // Include zero when the data sits near it, so the line is not floated on a
+  // cropped axis that exaggerates the slope.
+  if (lo > 0 && lo < hi * 0.5) lo = 0;
+  if (hi < 0 && hi > lo * 0.5) hi = 0;
+  const pad = (hi - lo) * 0.08 || 1;
+  lo -= pad; hi += pad;
+  const span = hi - lo || 1;
+
+  const legendH = series.length > 1 ? 20 : 0;
+  const plotX = GRID.margin + 34;                       // room for y at the left
+  const plotW = GRID.contentWidth - 34;
+  const bandBottom = CANVAS.height - GRID.margin;
+  const plotTop = bandTop + 6;
+  const plotBottom = bandBottom - 18 - legendH;         // room for x labels + legend
+  const plotH = Math.max(40, plotBottom - plotTop);
+
+  const xAt = (i: number) => plotX + (n === 1 ? 0 : (i / (n - 1)) * plotW);
+  const yAt = (v: number) => plotBottom - ((v - lo) / span) * plotH;
+
+  const out: Req[] = [];
+
+  // A faint baseline/axis along the bottom.
+  out.push(...filledShape(id("laxis"), page, "RECTANGLE", axisColor, {
+    x: plotX, y: plotBottom, width: plotW, height: CHART.axisThickness,
+  }));
+
+  // The benchmark, if any — a reference rule across the plot.
+  if (bench) {
+    out.push(...filledShape(id("lbmk"), page, "RECTANGLE", COLOR.coralDeep, {
+      x: plotX, y: yAt(bench.value), width: plotW, height: 1.2,
+    }));
+    if (bench.label?.trim()) {
+      out.push(...textBox(id("lbml"), page, bench.label, TYPE.benchmarkLabel, {
+        x: plotX, y: yAt(bench.value) - 12, width: 150, height: 12,
+      }));
+    }
+  }
+
+  // X labels under the axis.
+  labels.forEach((lab, i) => {
+    out.push(...textBox(id(`lx${i}`), page, lab, TYPE.axisTick, {
+      x: xAt(i) - 24, y: plotBottom + 4, width: 48, height: 14,
+    }, { align: "CENTER" }));
+  });
+
+  // Each series: segments, then dots on top, then endpoint value labels.
+  series.forEach((sx, si) => {
+    const color = palette[si % palette.length];
+    const pts = sx.points.slice(0, n);
+    for (let i = 0; i < pts.length - 1; i++) {
+      out.push(...segment(id(`ls${si}_${i}`), page, color,
+        xAt(i), yAt(pts[i].value), xAt(i + 1), yAt(pts[i + 1].value), 2.4));
+    }
+    pts.forEach((p, i) => {
+      const focus = typeof chart.highlight === "number" && chart.highlight === i;
+      const r = focus ? 5 : 3.5;
+      out.push(...filledShape(id(`ld${si}_${i}`), page, "ELLIPSE", color, {
+        x: xAt(i) - r, y: yAt(p.value) - r, width: r * 2, height: r * 2,
+      }));
+    });
+    // Label the LAST point (and the highlighted one) — not every point, which
+    // would be a wall of numbers.
+    const lastI = pts.length - 1;
+    const labelAt = (i: number) => {
+      const p = pts[i];
+      const above = i === 0 || p.value >= pts[i - 1].value;
+      out.push(...textBox(id(`lv${si}_${i}`), page, formatValue(p.value),
+        { ...TYPE.chartValue, color: onDark ? COLOR.white : COLOR.navy }, {
+          x: Math.min(xAt(i) - 20, GRID.margin + GRID.contentWidth - 44),
+          y: above ? yAt(p.value) - 18 : yAt(p.value) + 6, width: 44, height: 14,
+        }, { align: i === lastI ? "END" : "CENTER" }));
+    };
+    labelAt(lastI);
+    if (typeof chart.highlight === "number" && chart.highlight !== lastI && chart.highlight < pts.length) {
+      labelAt(chart.highlight);
+    }
+  });
+
+  // Legend for multiple series.
+  if (series.length > 1) {
+    let lx = plotX;
+    const ly = plotBottom + 20;
+    series.forEach((sx, si) => {
+      const w = Math.min(120, Math.max(34, (sx.name || "").length * 4.6 + 16));
+      out.push(
+        ...filledShape(id(`lk${si}`), page, "RECTANGLE", palette[si % palette.length], {
+          x: lx, y: ly + 3, width: 10, height: 3,
+        }),
+        ...textBox(id(`ln${si}`), page, sx.name, TYPE.chartAxis, {
+          x: lx + 14, y: ly, width: w, height: 14,
+        }),
+      );
+      lx += 14 + w + 10;
+    });
+  }
+
+  out.push(...textBox(id("lsrc"), page, chart.source, TYPE.chartAxis, {
+    x: GRID.margin, y: CANVAS.height - GRID.margin - 2, width: GRID.contentWidth, height: 14,
+  }));
+  return out;
 }
 
 /** Horizontal bars, sorted, with the value printed at the end of each.
@@ -2107,7 +2285,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       }),
       ...cardsRequests(page, id, slide.cards || []),
     );
-  } else if (layout === "stat" || layout === "bar-chart" || layout === "stacked-bar") {
+  } else if (layout === "stat" || layout === "bar-chart" || layout === "stacked-bar" || layout === "line-chart") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
         x: GRID.margin, y: GRID.eyebrowY,
@@ -2137,8 +2315,9 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
 
     if (layout === "stat") requests.push(...statRequests(page, id, slide.stats || []));
     else if (slide.chart) {
-      requests.push(...(layout === "stacked-bar"
-        ? stackedBarRequests(page, id, slide.chart, onDark, chartBandTop)
+      requests.push(...(
+        layout === "stacked-bar" ? stackedBarRequests(page, id, slide.chart, onDark, chartBandTop)
+        : layout === "line-chart" ? lineChartRequests(page, id, slide.chart, onDark, chartBandTop)
         : barChartRequests(page, id, slide.chart, onDark, chartBandTop)));
     }
   } else if (layout === "timeline-parallel") {

@@ -311,6 +311,7 @@ export type SlideLayout =
   | "stat"
   | "bar-chart"
   | "stacked-bar"
+  | "line-chart"
   | "cards"
   | "quote"
   | "process"
@@ -318,7 +319,7 @@ export type SlideLayout =
   | "closing";
 
 export const LAYOUTS: SlideLayout[] = [
-  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "cards", "quote", "process", "logo-wall", "closing",
+  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "cards", "quote", "process", "logo-wall", "closing",
 ];
 
 /** Horizontal timeline: an axis rule with evenly spaced milestone markers.
@@ -542,6 +543,7 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   stat:          { background: COLOR.navy,     logo: "white", logoPlacement: "content", onDark: true },
   "bar-chart":   { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "stacked-bar": { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  "line-chart":  { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   cards:         { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   // A quote sits on navy: it is a moment of emphasis, and the change of ground
   // is what makes it land as one rather than as another content slide.

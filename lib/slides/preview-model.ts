@@ -49,6 +49,10 @@ export interface PreviewElement {
   caps?: boolean;
   /** Text is centred vertically inside its box. */
   vCenter?: boolean;
+  /** A non-identity affine (a rotated line-chart segment). When present the
+   *  preview positions the element by this matrix, not by x/y — a sloped line
+   *  drawn as an axis-aligned rectangle would be the preview lying again. */
+  transform?: { scaleX: number; scaleY: number; shearX: number; shearY: number; translateX: number; translateY: number };
   /** The runs inside this box that carry a link. Slides underlines exactly
    *  these words and nothing else, so they are recorded as ranges rather than
    *  as a flag on the box: underlining the whole box would be a different kind
@@ -153,6 +157,13 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
           w: body.elementProperties.size.width.magnitude,
           h: body.elementProperties.size.height.magnitude,
         };
+        const t = body.elementProperties.transform;
+        if (t.shearX || t.shearY || t.scaleX !== 1 || t.scaleY !== 1) {
+          el.transform = {
+            scaleX: t.scaleX, scaleY: t.scaleY, shearX: t.shearX ?? 0, shearY: t.shearY ?? 0,
+            translateX: t.translateX, translateY: t.translateY,
+          };
+        }
         // A TEXT_BOX has no fill of its own; only the drawn shapes do.
         if (body.shapeType === "TEXT_BOX") el.kind = "text";
         byId.set(body.objectId, el);

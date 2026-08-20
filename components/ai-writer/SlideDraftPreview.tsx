@@ -115,6 +115,24 @@ function SlideThumb({
             return <img key={i} src={el.src} alt="" style={{ ...base, objectFit: "contain" }} />;
           }
           if (el.kind === "rect" || el.kind === "ellipse") {
+            // A rotated segment (a line-chart line) carries a full affine. It is
+            // rendered as a rotated div positioned by its MIDPOINT in pt — not a
+            // CSS matrix(), whose translate is taken as px while everything else
+            // here is pt, which slid every line off its own data points.
+            if (el.transform) {
+              const t = el.transform;
+              const angle = (Math.atan2(t.shearY, t.scaleX) * 180) / Math.PI;
+              const cx = t.scaleX * (el.w / 2) + t.shearX * (el.h / 2) + t.translateX;
+              const cy = t.shearY * (el.w / 2) + t.scaleY * (el.h / 2) + t.translateY;
+              return (
+                <div key={i} style={{
+                  position: "absolute",
+                  left: cx - el.w / 2, top: cy - el.h / 2, width: el.w, height: el.h,
+                  background: el.fill || "transparent", opacity: el.opacity ?? 1,
+                  transform: `rotate(${angle}deg)`,
+                }} />
+              );
+            }
             return (
               <div key={i} style={{
                 ...base,

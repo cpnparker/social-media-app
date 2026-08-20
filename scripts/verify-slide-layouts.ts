@@ -73,6 +73,12 @@ const DECK: SlideInput[] = [
       series: [{ name: "GW", points: [
       { label: "United Kingdom", value: 14.7 }, { label: "China", value: 31.4 },
       { label: "Germany", value: 8.3 }, { label: "Denmark", value: 2.3 } ] }] } },
+  { layout: "line-chart", eyebrow: "Momentum", title: LONG,
+    subtitle: "A standfirst that also runs long enough to wrap onto a second line.",
+    chart: { source: "Programme readouts", highlight: 5, benchmark: { value: 20, label: "Where you started" },
+      series: [
+        { name: "Rigiwald", points: [{ label: "Jan", value: 6 }, { label: "Feb", value: 11 }, { label: "Mar", value: 19 }, { label: "Apr", value: 28 }, { label: "May", value: 34 }, { label: "Jun", value: 38 }] },
+        { name: "Sector average", points: [{ label: "Jan", value: 20 }, { label: "Feb", value: 21 }, { label: "Mar", value: 22 }, { label: "Apr", value: 22 }, { label: "May", value: 23 }, { label: "Jun", value: 24 }] } ] } },
   { layout: "stacked-bar", eyebrow: "Mix", title: LONG,
     chart: { source: "Source: delivery data", series: [
       { name: "Articles", points: [{ label: "Holcim", value: 38 }, { label: "Siemens", value: 22 }] },
@@ -164,12 +170,22 @@ for (let i = 0; i < ALL.length; i++) {
     const body: any = Object.values(req)[0];
     const ep = body?.elementProperties;
     if (!ep) continue;
-    const { translateX: x, translateY: y, scaleX = 1, scaleY = 1 } = ep.transform;
-    // Slides renders at size x scale. The check read size alone, so an element
-    // scaled past the edge (scaleX:2 on a full-bleed image) reported as fitting.
-    const w = ep.size.width.magnitude * scaleX, h = ep.size.height.magnitude * scaleY;
-    if (x < -0.5 || y < -0.5 || x + w > CANVAS.width + 0.5 || y + h > CANVAS.height + 0.5) {
-      fail(`${slide.layout}: element at ${Math.round(x)},${Math.round(y)} (${Math.round(w)}x${Math.round(h)}, scale ${scaleX}x${scaleY}) leaves the canvas`);
+    const t = ep.transform;
+    const { translateX: x, translateY: y, scaleX = 1, scaleY = 1, shearX = 0, shearY = 0 } = t;
+    const w = ep.size.width.magnitude, h = ep.size.height.magnitude;
+    // Sample the FOUR corners under the full affine — a line-chart segment is a
+    // sheared/rotated rectangle, so size×scale at the translate is not its
+    // bounding box. A check on size alone also missed scaleX:2 on a full-bleed
+    // image.
+    const corners: [number, number][] = [[0, 0], [w, 0], [0, h], [w, h]];
+    let off = false;
+    for (const [u, v] of corners) {
+      const px = scaleX * u + shearX * v + x;
+      const py = shearY * u + scaleY * v + y;
+      if (px < -0.6 || py < -0.6 || px > CANVAS.width + 0.6 || py > CANVAS.height + 0.6) off = true;
+    }
+    if (off) {
+      fail(`${slide.layout}: element ${body.objectId || ""} (${Math.round(w)}x${Math.round(h)}) leaves the canvas`);
     }
   }
 }
@@ -663,6 +679,46 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     fail("the photo cover drew the no-photo composition");
   }
   if (failures === before19) pass("no-photo cover is centred with an accent rule; the photo cover is unchanged");
+
+  /* 20. A line chart: segments connect the dots, in the preview as in the deck. */
+  const before20 = failures;
+  console.log(`\n20. A line chart connects its points, and the preview agrees`);
+  const lc: SlideInput = { layout: "line-chart", title: "Revenue compounded", subtitle: "Quarterly, CHF k.",
+    chart: { highlight: 3, benchmark: { value: 100, label: "Break-even" }, source: "Internal",
+      series: [
+        { name: "MRR", points: [{ label: "Q1", value: 120 }, { label: "Q2", value: 180 }, { label: "Q3", value: 210 }, { label: "Q4", value: 340 }] },
+        { name: "Cost", points: [{ label: "Q1", value: 90 }, { label: "Q2", value: 110 }, { label: "Q3", value: 120 }, { label: "Q4", value: 140 }] } ] } };
+  const lreqs = buildSlideRequests(lc, 0, "n");
+  const segCount = lreqs.filter((r: any) => (r.createShape?.objectId || "").match(/_ls\d/)).length;
+  const dotCount = lreqs.filter((r: any) => (r.createShape?.objectId || "").match(/_ld\d/)).length;
+  if (segCount !== 6) fail(`a two-series 4-point line drew ${segCount} segments, expected 6`);
+  if (dotCount !== 8) fail(`a two-series 4-point line drew ${dotCount} dots, expected 8`);
+  if (!lreqs.some((r: any) => (r.createShape?.objectId || "").endsWith("_lbmk"))) fail("line-chart benchmark not drawn");
+  if (!lreqs.some((r: any) => (r.insertText?.objectId || "").match(/_ln\d/))) fail("line-chart legend not drawn for two series");
+  // Each segment's endpoints must land on two consecutive dots — the deck and
+  // the preview both derive from these requests, so if they connect here they
+  // connect on screen. Recover endpoints from the affine and match to dots.
+  const dotCentres: [number, number][] = [];
+  for (const r of lreqs as any[]) {
+    const cs = r.createShape;
+    if (!cs || !/_ld\d/.test(cs.objectId)) continue;
+    const t = cs.transform || cs.elementProperties.transform;
+    const sz = cs.elementProperties.size;
+    dotCentres.push([t.translateX + sz.width.magnitude / 2, t.translateY + sz.height.magnitude / 2]);
+  }
+  const near = (a: [number, number], b: [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 1.5;
+  let disconnected = 0;
+  for (const r of lreqs as any[]) {
+    const cs = r.createShape;
+    if (!cs || !/_ls\d/.test(cs.objectId)) continue;
+    const t = cs.elementProperties.transform, sz = cs.elementProperties.size;
+    const L = sz.width.magnitude, T = sz.height.magnitude;
+    const start: [number, number] = [t.scaleX * 0 + t.shearX * (T / 2) + t.translateX, t.shearY * 0 + t.scaleY * (T / 2) + t.translateY];
+    const end: [number, number] = [t.scaleX * L + t.shearX * (T / 2) + t.translateX, t.shearY * L + t.scaleY * (T / 2) + t.translateY];
+    if (!dotCentres.some((d) => near(d, start)) || !dotCentres.some((d) => near(d, end))) disconnected++;
+  }
+  if (disconnected > 0) fail(`${disconnected} line segment(s) do not land on their data points`);
+  if (failures === before20) pass("segments connect consecutive points, benchmark and legend drawn, nothing off-canvas");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);
