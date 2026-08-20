@@ -33,7 +33,9 @@ const DECK: SlideInput[] = [
   { layout: "cover", title: LONG, subtitle: "Prepared for a client — August 2026", resolvedImage: PHOTO_DARK },
   { layout: "section", eyebrow: "01", title: LONG, subtitle: "A standfirst that also runs long enough to wrap." },
   { layout: "content", eyebrow: "Eyebrow", title: LONG, body: "One\nTwo\nThree" },
-  { layout: "two-column", title: LONG, body: "Left one\nLeft two", bodyRight: "Right one\nRight two" },
+  { layout: "two-column", title: LONG, subtitle: "A standfirst that also runs long enough to wrap onto a second line here.",
+    columns: { left: "Yesterday", right: "Today" },
+    body: "Ten blue links to choose from\nYou picked the source\nThe brand controlled its own page", bodyRight: "One synthesised answer\nThe model picks the sources\nYou influence the inputs, not the page" },
   { layout: "case-study", eyebrow: "case study", title: LONG, body: "A supporting paragraph of reasonable length." },
   { layout: "dark-index", title: LONG, body: "One\nTwo\nThree\nFour" },
   { layout: "timeline", eyebrow: "Programme", title: LONG, subtitle: "A standfirst that wraps onto two lines here too.",
@@ -65,7 +67,10 @@ const DECK: SlideInput[] = [
       { value: "70%", label: "Cost fall since 2010", detail: "Competitive with fossil." },
       { value: "380 GW", label: "IEA projection", detail: "Under current policies." } ] },
   { layout: "bar-chart", eyebrow: "Capacity", title: LONG,
-    chart: { source: "Source: a report with a long name, 2024", series: [{ name: "GW", points: [
+    subtitle: "A standfirst stating the finding the bars prove, long enough to wrap onto two lines.",
+    chart: { source: "Source: a report with a long name, 2024", highlight: 1,
+      benchmark: { value: 20, label: "Sector average" }, callout: { point: 1, text: "Fastest-growing market" },
+      series: [{ name: "GW", points: [
       { label: "United Kingdom", value: 14.7 }, { label: "China", value: 31.4 },
       { label: "Germany", value: 8.3 }, { label: "Denmark", value: 2.3 } ] }] } },
   { layout: "stacked-bar", eyebrow: "Mix", title: LONG,
@@ -93,7 +98,8 @@ const DECK: SlideInput[] = [
       { name: "Analytics", caption: "Insights fed back into the process." } ] },
   { layout: "logo-wall", eyebrow: "Clients", title: LONG,
     logos: Array.from({ length: 8 }, (_, i) => ({ name: `Client ${i + 1}`, resolvedUrl: "logo.png" })) },
-  { layout: "closing", title: "Thank You", subtitle: "www.thecontentengine.com", resolvedImage: PHOTO_DARK },
+  { layout: "closing", title: "Let's map your AI visibility", subtitle: "The next step",
+    body: "hello@thecontentengine.com\nBook a 30-minute call\nthecontentengine.com", resolvedImage: PHOTO_DARK },
 ];
 
 /** The same layouts fed the amounts of data a model will actually send.
@@ -604,6 +610,42 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   const secWord = buildSlideRequests({ layout: "section", eyebrow: "PART ONE", title: "T" }, 0, "n");
   if (secWord.some((r: any) => /_num$/.test((r.insertText?.objectId) || ""))) fail("a worded eyebrow was mis-drawn as a numeral");
   if (failures === before16) pass("photo drawn, numeric eyebrow becomes a numeral, worded eyebrow stays an eyebrow");
+
+  /* 17. The evidence slide argues: standfirst drawn, benchmark on scale, callout on canvas. */
+  const before17 = failures;
+  console.log(`\n17. A chart carries a finding, a benchmark and a callout`);
+  const ev: SlideInput = { layout: "bar-chart", title: "You are behind on the metric that compounds",
+    subtitle: "Sector visibility scores, and where you sit against the average.",
+    chart: { highlight: 1, benchmark: { value: 61, label: "Sector average" }, callout: { point: 1, text: "New CFO paused spend" },
+      source: "AI Visibility Index", series: [{ name: "Score", points: [
+        { label: "Best in sector", value: 74 }, { label: "You", value: 18 }, { label: "Rival", value: 52 } ] }] } };
+  const evReqs = buildSlideRequests(ev, 0, "n");
+  const drew = (suffix: string) => evReqs.some((r: any) => (r.insertText?.objectId || "").endsWith(suffix) || (r.createShape?.objectId || "").endsWith(suffix));
+  if (!drew("_sub")) fail("a chart standfirst was dropped (the discarded-subtitle defect)");
+  if (!drew("_bmk")) fail("a benchmark line was not drawn");
+  if (!drew("_cnote")) fail("a chart callout was not drawn");
+  // the standfirst pushes the plot down — the first bar must sit below it
+  const evPage = toPreviewModel([ev]).slides[0];
+  const evSub = evPage.elements.find((e) => e.kind === "text" && /Sector visibility/.test(String(e.text)));
+  const evBar = evPage.elements.find((e) => e.kind === "rect" && e.fill && e.y > (evSub ? evSub.y : 0) + 10);
+  if (!evSub || !evBar) fail("standfirst or plot missing on the evidence slide");
+  if (failures === before17) pass("standfirst drawn and the plot sits below it, benchmark and callout on canvas");
+
+  /* 18. The comparison slide is designed; the closing slide acts. */
+  const before18 = failures;
+  console.log(`\n18. Two-column is a comparison, closing is an action`);
+  const tc = buildSlideRequests({ layout: "two-column", title: "Search vs synthesis", subtitle: "How buyers find you changed.",
+    columns: { left: "Yesterday", right: "Today" }, body: "Ten links\nYou choose", bodyRight: "One answer\nThe model chooses" }, 0, "n");
+  const tcDrew = (sfx: string) => tc.some((r: any) => (r.insertText?.objectId || "").endsWith(sfx) || (r.createShape?.objectId || "").endsWith(sfx));
+  if (!tcDrew("_lh") || !tcDrew("_rh")) fail("two-column headers not drawn");
+  if (!tcDrew("_vrule")) fail("two-column divider not drawn");
+  if (!tcDrew("_rulea")) fail("two-column title rule not drawn");
+  const cl = buildSlideRequests({ layout: "closing", title: "Let's map it", subtitle: "Next step",
+    body: "hello@x.com\nBook a call", resolvedImage: PHOTO_DARK }, 0, "n");
+  if (!cl.some((r: any) => r.insertText && (r.insertText.objectId || "").endsWith("_body"))) {
+    fail("a closing slide with a body drew no action lines");
+  }
+  if (failures === before18) pass("comparison has headers, a divider and a rule; the close carries its actions");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);

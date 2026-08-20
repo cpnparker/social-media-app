@@ -183,6 +183,8 @@ export const TYPE: Record<string, TypeStyle> = {
    *  (#C0FF7E) is only contrast-guaranteed on solid navy/blue, not on the pale
    *  foot of a gradient. Its own token so this is a decision, not inheritance. */
   closingKicker: { font: "Roboto", size: 12, color: COLOR.white, caps: true },
+  /** The action lines on a closing slide — an email, a next step, a URL. */
+  closingAction: { font: "Roboto", size: 11, weight: 300, color: COLOR.greyLight },
   sectionTitle:  { font: "Playfair Display", size: 26, color: COLOR.white },
   /** The big index numeral on a section divider — the source deck's signature
    *  device. Lime on blue clears contrast (11.3:1); on a photo it sits on the
@@ -202,6 +204,8 @@ export const TYPE: Record<string, TypeStyle> = {
    *  bullets say how. Two type sizes 2x apart is not a hierarchy — it is a
    *  heading and a footnote. This is the middle step. */
   standfirst:    { font: "Roboto", size: 13, weight: 300, color: COLOR.navy },
+  /** A two-column comparison header — "Before"/"After", over an accent rule. */
+  columnHeader:  { font: "Playfair Display", size: 14, color: COLOR.navy },
   standfirstDark:{ font: "Roboto", size: 13, weight: 300, color: COLOR.greyLight },
   statistic:     { font: "Poppins", size: 30, color: COLOR.white },
   source:        { font: "Roboto", size: 7, color: COLOR.ink },
@@ -227,6 +231,11 @@ export const TYPE: Record<string, TypeStyle> = {
   chartCategory: { font: "Roboto", size: 9, weight: 300, color: COLOR.navy },
   chartValue:    { font: "Roboto", size: 9, bold: true, color: COLOR.navy },
   chartAxis:     { font: "Roboto", size: 7, weight: 300, color: COLOR.ink },
+  /** The caps label above a benchmark rule — deep coral, so it reads as the
+   *  reference line it marks, not as data. */
+  benchmarkLabel:{ font: "Roboto", size: 7, bold: true, color: COLOR.coralDeep, caps: true },
+  /** A one-line annotation beside a highlighted bar — the reason for it. */
+  calloutText:   { font: "Roboto", size: 8, weight: 300, color: COLOR.coralDeep },
   chartSeries:   { font: "Roboto", size: 8, bold: true, color: COLOR.navy },
   cardMarker:    { font: "Roboto", size: 9, bold: true, color: COLOR.white, caps: true },
   cardTitle:     { font: "Playfair Display", size: 13, color: COLOR.navy },

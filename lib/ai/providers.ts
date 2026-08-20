@@ -1190,11 +1190,16 @@ const DOCUMENT_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
               body: {
                 type: "string",
                 description:
-                  "Main text content. Use newlines for bullet points. Each line becomes a bullet.",
+                  "Main text content. Use newlines for bullet points. Each line becomes a bullet. On a `closing` slide it is drawn centred as ACTION lines — an email, a next step, a URL — so the deck ends on what to do, not a bare 'Thank You'.",
               },
               bodyRight: {
                 type: "string",
                 description: "Right column text (only for two-column layout). Each line becomes a bullet.",
+              },
+              columns: {
+                type: "object",
+                description: "Headers for a two-column comparison — 'Before'/'After', 'Us'/'Them', 'Today'/'With us'. Each sits over an accent rule above its column. Use them whenever the two columns are being weighed against each other.",
+                properties: { left: { type: "string" }, right: { type: "string" } },
               },
               notes: {
                 type: "string",
@@ -1414,6 +1419,8 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                   source: { type: "string", description: "Where the figures come from. Print one whenever you have it." },
                   sequence: { type: "boolean", description: "The points are a TIME SERIES (months, years, stages) — keep their order, do not sort by value. A growth line sorted by value is a scrambled line." },
                   highlight: { type: "number", description: "Zero-based index of the single bar that carries the argument — 'us, today'. Drawn in the accent, every other bar muted." },
+                  benchmark: { type: "object", description: "A target or reference line across the plot — an industry average, a goal — so every bar reads as above or below it. Give `value` and a short `label`.", properties: { value: { type: "number" }, label: { type: "string" } } },
+                  callout: { type: "object", description: "A short annotation on ONE bar — the reason behind its number, six words at most. Give the bar's `point` index and the `text`.", properties: { point: { type: "number" }, text: { type: "string" } } },
                 },
               },
               tracks: {
@@ -1504,7 +1511,7 @@ const WORD_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         },
         subtitle: {
           type: "string",
-          description: "A standfirst: the ONE sentence saying what this slide argues, drawn under the title in larger, lighter type before the bullets say how. Live on content, case-study, dark-index, cover, closing, section and the timelines. Give every prose slide one — a title with bullets and nothing in between has no middle step in its hierarchy and reads as a document.",
+          description: "A standfirst: the ONE sentence saying what this slide argues or what a chart PROVES, drawn under the title in larger, lighter type. Live on content, case-study, dark-index, cover, closing, section, the timelines AND the chart layouts (bar-chart, stacked-bar) — on a chart it is the finding the bars demonstrate, under an assertion title. Give every evidence slide one.",
         },
         body: {
           type: "string",

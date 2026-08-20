@@ -64,6 +64,8 @@ export interface SlideInput {
   eyebrow?: string;
   body?: string;
   bodyRight?: string;
+  /** Headers for the two-column comparison — "Before"/"After", "Us"/"Them". */
+  columns?: { left?: string; right?: string };
   milestones?: Milestone[];
   tracks?: Track[];
   /** What this slide should be a picture OF, or an exact image to use. Resolved
@@ -121,6 +123,11 @@ export interface SlideInput {
     /** Index of the one bar that IS the point — drawn in the accent, the rest
      *  muted, so the chart argues instead of merely presenting. */
     highlight?: number;
+    /** A target or reference line drawn across the plot — "industry average",
+     *  "our goal" — so a bar reads as above or below it, not just as a length. */
+    benchmark?: { value: number; label?: string };
+    /** A short annotation tied to one bar — the reason behind the number. */
+    callout?: { point: number; text: string };
   };
   /** A deck-wide art-direction note threaded into every PHOTOGRAPH query, so a
    *  deck's images read as one commission rather than a stock grab-bag. Never
@@ -1141,9 +1148,10 @@ const LEGEND_ROW_HEIGHT = 16;
 const STACK_TAIL = 42 + LEGEND_ROW_HEIGHT;
 
 function fitRows(
-  total: number, cap: number, baseBarH: number, baseGap: number, tailBlock: number
+  total: number, cap: number, baseBarH: number, baseGap: number, tailBlock: number,
+  bandTop: number = GRID.bodyY
 ): { count: number; rowH: number; barH: number } {
-  const room = CANVAS.height - GRID.margin - GRID.bodyY - tailBlock;
+  const room = CANVAS.height - GRID.margin - bandTop - tailBlock;
   const baseRow = baseBarH + baseGap;
   let count = Math.max(1, Math.min(total, cap));
   let rowH = Math.min(baseRow, room / count);
@@ -1209,7 +1217,7 @@ export function barChartNote(
  *  needed and the gridlines that would carry it can go — ink belongs to data. */
 function barChartRequests(
   page: string, id: (s: string) => string,
-  chart: NonNullable<SlideInput["chart"]>, onDark: boolean
+  chart: NonNullable<SlideInput["chart"]>, onDark: boolean, bandTop: number = GRID.bodyY
 ): Req[] {
   const series = chart.series?.[0];
   if (!series?.points?.length) return [];
@@ -1228,7 +1236,7 @@ function barChartRequests(
   // The source line is part of the block, so it has to be inside the budget.
   // It was not: eight bars pushed it to y=397 on a 405pt canvas, where the
   // attribution for the numbers simply did not exist in the built deck.
-  const fit = fitRows(ranked.length, MAX_BARS, CHART.barHeight, CHART.barGap, SOURCE_BLOCK);
+  const fit = fitRows(ranked.length, MAX_BARS, CHART.barHeight, CHART.barGap, SOURCE_BLOCK, bandTop);
   // A ranking truncated to the top N drops the SMALLEST; a sequence truncated
   // from the front would drop the earliest months and lie about where the line
   // starts, so a sequence keeps its most recent points instead.
@@ -1238,8 +1246,9 @@ function barChartRequests(
   // the longest bar on a slide whose whole message is the ranking — the reader
   // saw the biggest bar against the worst number. With a baseline, a negative
   // bar runs left from zero and reads as the loss it is.
-  const lo = Math.min(0, ...points.map((p) => p.value));
-  const hi = Math.max(0, ...points.map((p) => p.value));
+  const bench = chart.benchmark && Number.isFinite(chart.benchmark.value) ? chart.benchmark : null;
+  const lo = Math.min(0, ...points.map((p) => p.value), bench ? bench.value : 0);
+  const hi = Math.max(0, ...points.map((p) => p.value), bench ? bench.value : 0);
   const span = hi - lo || 1;
 
   const plotX = GRID.margin + CHART.labelGutter;
@@ -1247,8 +1256,9 @@ function barChartRequests(
   const at = (v: number) => plotX + ((v - lo) / span) * plotW;
   const out: Req[] = [];
   // Same treatment as the stats: five bars centre in the band, eight fill it.
-  const plotTop = GRID.bodyY +
-    Math.max(0, (GRID.bandHeight - (points.length * fit.rowH + SOURCE_BLOCK)) / 2);
+  const bandH = GRID.bodyY + GRID.bandHeight - bandTop;
+  const plotTop = bandTop +
+    Math.max(0, (bandH - (points.length * fit.rowH + SOURCE_BLOCK)) / 2);
 
   // A highlighted bar is the whole point of the slide: it is drawn in the
   // accent and every other bar is muted to a neutral, so the eye lands on the
@@ -1283,6 +1293,26 @@ function barChartRequests(
     );
   });
 
+  // A benchmark: a vertical rule across the whole plot at its value, with a
+  // small caps label above it, so every bar reads as above or below the target.
+  // Drawn in the deep coral so it is plainly a REFERENCE, not one of the bars.
+  if (bench) {
+    const bx = at(bench.value);
+    const plotBottom = plotTop + points.length * fit.rowH;
+    out.push(...filledShape(id("bmk"), page, "RECTANGLE", COLOR.coralDeep, {
+      x: bx, y: plotTop - 10, width: 1.4, height: plotBottom - plotTop + 10,
+    }));
+    if (bench.label?.trim()) {
+      // The label sits above the rule, clamped so it cannot leave the canvas on
+      // either side — the plot's right edge is where a naive placement overran.
+      const lw = Math.min(150, Math.max(40, bench.label.length * 4.4 + 10));
+      const lx = Math.min(GRID.margin + GRID.contentWidth - lw, Math.max(GRID.margin, bx - lw / 2));
+      out.push(...textBox(id("bml"), page, bench.label, TYPE.benchmarkLabel, {
+        x: lx, y: plotTop - 22, width: lw, height: 14,
+      }, { align: bx - lw / 2 < GRID.margin ? "START" : "CENTER" }));
+    }
+  }
+
   // A zero rule, only when the data crosses it — otherwise the left edge of the
   // plot IS zero and a line there is redundant ink.
   if (lo < 0) {
@@ -1299,6 +1329,32 @@ function barChartRequests(
     width: GRID.contentWidth - (note ? noteWidth(note) : 0), height: 16,
   }));
   out.push(...noteBox(id("cdrop"), page, note, srcY));
+
+  // A callout: one short line explaining a single bar, drawn to the RIGHT of
+  // that bar's value in the deep coral, clamped to the canvas. Only when the
+  // bar is actually on the slide (a callout on a truncated bar has nowhere to
+  // point). The audit's warning was that a naive placement after the longest
+  // value box ran off at 711pt; this clamps the width to the room that is left
+  // and skips the callout, with a note, when there is too little.
+  if (chart.callout && typeof chart.callout.point === "number" && chart.callout.text?.trim()) {
+    const idx = points.findIndex((p) => p.orig === chart.callout!.point);
+    if (idx >= 0) {
+      const p = points[idx];
+      const y = plotTop + idx * fit.rowH;
+      const valueEnd = at(p.value) + CHART.valueGap + 44;   // past the value box
+      const rightEdge = GRID.margin + GRID.contentWidth;
+      const room = rightEdge - valueEnd;
+      if (room >= 60) {
+        out.push(...textBox(id("cnote"), page, chart.callout.text, TYPE.calloutText, {
+          x: valueEnd, y: y + 3, width: room, height: fit.barH,
+        }));
+      } else {
+        // No room beside the bar — the finding still gets said, on the source
+        // line's own slot, rather than silently dropped.
+        out.push(...noteBox(id("cnote"), page, chart.callout.text, srcY + 18));
+      }
+    }
+  }
   return out;
 }
 
@@ -1313,7 +1369,7 @@ function barChartRequests(
  *  disappears — the surface showing through IS the separator. */
 function stackedBarRequests(
   page: string, id: (s: string) => string,
-  chart: NonNullable<SlideInput["chart"]>, onDark: boolean
+  chart: NonNullable<SlideInput["chart"]>, onDark: boolean, bandTop: number = GRID.bodyY
 ): Req[] {
   const supplied = (chart.series || []).filter((s) => s.points?.length);
   if (!supplied.length) return [];
@@ -1369,7 +1425,7 @@ function stackedBarRequests(
   // The legend and the source line sit under the plot, so both are inside the
   // budget the rows have to fit. There was no budget at all before: ten
   // categories put two rows and the whole legend off the bottom of the slide.
-  const fit = fitRows(allCategories.length, MAX_BARS, CHART.barHeight, CHART.barGap, STACK_TAIL);
+  const fit = fitRows(allCategories.length, MAX_BARS, CHART.barHeight, CHART.barGap, STACK_TAIL, bandTop);
   const categories = allCategories.slice(0, fit.count);
 
   const partOf = (cat: string, s: (typeof series)[number]) => s.values.get(cat) ?? 0;
@@ -1379,8 +1435,9 @@ function stackedBarRequests(
   const plotX = GRID.margin + CHART.labelGutter;
   const plotW = GRID.contentWidth - CHART.labelGutter - 52;
   const rowH = fit.rowH;
-  const plotTop = GRID.bodyY +
-    Math.max(0, (GRID.bandHeight - (categories.length * rowH + STACK_TAIL)) / 2);
+  const bandH = GRID.bodyY + GRID.bandHeight - bandTop;
+  const plotTop = bandTop +
+    Math.max(0, (bandH - (categories.length * rowH + STACK_TAIL)) / 2);
   const GAP = 2;
 
   const out: Req[] = [];
@@ -1942,6 +1999,18 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         width: GRID.contentWidth, height: GRID.closingSubtitleHeight,
       }, { align: "CENTER" }),
     );
+    // The close ACTS: a bare "Thank You" ends the deck on nothing, so a body —
+    // one action per line, an email, a next step, a URL — is drawn centred
+    // beneath the sign-off. The deck's last slide is the one that says what to
+    // do now.
+    if (slide.body?.trim()) {
+      const lines = slide.body.split("\n").map((l) => l.trim()).filter(Boolean);
+      const y = GRID.closingSubtitleY + GRID.closingSubtitleHeight + 14;
+      const h = Math.min(CANVAS.height - GRID.margin - y, lines.length * 22 + 8);
+      requests.push(...textBox(id("body"), page, lines.join("\n"), TYPE.closingAction, {
+        x: GRID.margin, y, width: GRID.contentWidth, height: Math.max(22, h),
+      }, { align: "CENTER", spaceBelow: 8 }));
+    }
   } else if (layout === "section") {
     // A NUMERIC eyebrow ("01", "3") is the divider's index — drawn large in the
     // brand lime, the source deck's signature divider device. A worded eyebrow
@@ -2025,11 +2094,29 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
       }),
     );
+
+    // The standfirst — the FINDING the chart proves, in a sentence, under an
+    // assertion title. On the chart layouts the subtitle used to be dropped
+    // entirely: the one slot for a takeaway line was discarded on exactly the
+    // slides that carry evidence. When present it takes the top of the band and
+    // the plot starts beneath it.
+    let chartBandTop = GRID.bodyY;
+    if (slide.subtitle?.trim() && layout !== "stat") {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(
+        estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size
+      );
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: standH,
+      }));
+      chartBandTop = GRID.bodyY + standH + 8;
+    }
+
     if (layout === "stat") requests.push(...statRequests(page, id, slide.stats || []));
     else if (slide.chart) {
       requests.push(...(layout === "stacked-bar"
-        ? stackedBarRequests(page, id, slide.chart, onDark)
-        : barChartRequests(page, id, slide.chart, onDark)));
+        ? stackedBarRequests(page, id, slide.chart, onDark, chartBandTop)
+        : barChartRequests(page, id, slide.chart, onDark, chartBandTop)));
     }
   } else if (layout === "timeline-parallel") {
     requests.push(
@@ -2115,6 +2202,12 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       ...gridRequests(page, id, slide.resolvedImages || []),
     );
   } else if (layout === "two-column") {
+    // The comparison slide, designed. It was two bare bullet piles — no rule,
+    // no headers, no divider, ~55% dead paper — and it catches exactly the
+    // before/after and pricing content that closes a deal. Now: a rule under
+    // the title, an optional standfirst, per-column headers over an accent
+    // underline, and a hairline down the middle so the two sides read as a
+    // comparison rather than two lists that happen to share a slide.
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
         x: GRID.margin, y: GRID.eyebrowY,
@@ -2123,13 +2216,54 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       ...textBox(id("title"), page, slide.title, titleStyle, {
         x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
       }),
+      ...ruleRequests(id("rule"), page, GRID.bodyY - RULE.gapAbove, GRID.contentWidth, onDark),
+    );
+
+    let colTop = GRID.columnY;
+    if (slide.subtitle?.trim()) {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(
+        estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size
+      );
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: standH,
+      }));
+      colTop = GRID.bodyY + standH + 12;
+    }
+
+    // A hairline between the columns.
+    const midX = (GRID.columnLeftX + GRID.columnWidth + GRID.columnRightX) / 2;
+    requests.push(...filledShape(id("vrule"), page, "RECTANGLE", onDark ? COLOR.greyLight : COLOR.navy, {
+      x: midX, y: colTop, width: RULE.hairlineThickness, height: CANVAS.height - GRID.margin - colTop,
+    }, RULE.hairlineAlpha));
+
+    let bodyTop = colTop;
+    const headStyle = onDark ? { ...TYPE.columnHeader, color: COLOR.white } : TYPE.columnHeader;
+    if (slide.columns?.left?.trim() || slide.columns?.right?.trim()) {
+      requests.push(
+        ...textBox(id("lh"), page, slide.columns?.left, headStyle, {
+          x: GRID.columnLeftX, y: colTop, width: GRID.columnWidth, height: 20,
+        }),
+        ...textBox(id("rh"), page, slide.columns?.right, headStyle, {
+          x: GRID.columnRightX, y: colTop, width: GRID.columnWidth, height: 20,
+        }),
+        ...filledShape(id("lhu"), page, "RECTANGLE", onDark ? COLOR.tealSoft : COLOR.blue, {
+          x: GRID.columnLeftX, y: colTop + 22, width: RULE.accentWidth, height: RULE.thickness,
+        }),
+        ...filledShape(id("rhu"), page, "RECTANGLE", onDark ? COLOR.tealSoft : COLOR.blue, {
+          x: GRID.columnRightX, y: colTop + 22, width: RULE.accentWidth, height: RULE.thickness,
+        }),
+      );
+      bodyTop = colTop + 34;
+    }
+
+    const colH = CANVAS.height - GRID.margin - bodyTop;
+    requests.push(
       ...textBox(id("left"), page, slide.body, bodyStyle, {
-        x: GRID.columnLeftX, y: GRID.columnY,
-        width: GRID.columnWidth, height: GRID.columnHeight,
+        x: GRID.columnLeftX, y: bodyTop, width: GRID.columnWidth, height: colH,
       }, { bullets: true }),
       ...textBox(id("right"), page, slide.bodyRight, bodyStyle, {
-        x: GRID.columnRightX, y: GRID.columnY,
-        width: GRID.columnWidth, height: GRID.columnHeight,
+        x: GRID.columnRightX, y: bodyTop, width: GRID.columnWidth, height: colH,
       }, { bullets: true }),
     );
   } else {
