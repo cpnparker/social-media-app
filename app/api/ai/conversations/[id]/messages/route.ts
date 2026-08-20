@@ -887,10 +887,12 @@ export async function POST(
       });
     }
 
-    // The current deck spec, so an edit request has something to edit.
-    if (deckContext) {
-      messages.push({ role: "system" as const, content: deckContext });
-    }
+    // The current deck spec is folded into the system prompt itself (below),
+    // not pushed as a mid-array system message — grok, the default model, did
+    // not reliably honour a system message that was not the leading one, so an
+    // edit request arrived with the deck "not present" and the model asked the
+    // user to paste it back. The leading system block is delivered by every
+    // chain.
 
     // Detect if the user's latest message references a previous image/output
     // (e.g., "make that red", "another version", "change the background", "try again")
@@ -1407,6 +1409,12 @@ export async function POST(
       studioMode: conversation.type_conversation_mode === "design" && !!designSessionId,
       conversationVisibility: isTeamThread ? "team" : "private",
     });
+
+    // The live deck spec, so an edit request has the deck to edit. In the
+    // leading system block for reliable delivery (see the note above).
+    if (deckContext) {
+      systemPrompt += `\n\n## The deck in this conversation\n${deckContext}`;
+    }
 
     // Append query router hints to system prompt as required tool calls
     if (queryRoute.hints.length > 0) {
