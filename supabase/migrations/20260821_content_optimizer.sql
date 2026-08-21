@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS intelligence.optimizer_sessions (
   CONSTRAINT optimizer_sessions_visibility_chk
     CHECK (type_visibility IN ('private', 'team')),
   CONSTRAINT optimizer_sessions_source_chk
-    CHECK (type_source IN ('generated', 'pasted', 'gdoc', 'gdoc-link', 'engine')),
+    CHECK (type_source IN ('generated', 'pasted', 'gdoc', 'gdoc-link', 'url', 'engine')),
   CONSTRAINT optimizer_sessions_status_chk
     CHECK (type_status IN ('brief', 'drafting', 'draft_ready', 'assessing', 'refining', 'finalised')),
   -- Set when a judge pass claims this session, cleared when it finishes. A
@@ -309,7 +309,7 @@ ALTER TABLE intelligence.optimizer_sessions
   ADD CONSTRAINT optimizer_sessions_visibility_chk
     CHECK (type_visibility IN ('private', 'team')),
   ADD CONSTRAINT optimizer_sessions_source_chk
-    CHECK (type_source IN ('generated', 'pasted', 'gdoc', 'gdoc-link', 'engine')),
+    CHECK (type_source IN ('generated', 'pasted', 'gdoc', 'gdoc-link', 'url', 'engine')),
   ADD CONSTRAINT optimizer_sessions_status_chk
     CHECK (type_status IN ('brief', 'drafting', 'draft_ready', 'assessing', 'refining', 'finalised')),
   ADD CONSTRAINT optimizer_sessions_platform_chk

@@ -23,9 +23,22 @@ import { toEditorHtml } from "@/lib/optimizer/import-html";
 
 export const maxDuration = 60;
 
-/** Paste is unbounded from the browser; the assess path caps at 40k and the
- *  scorer is calibrated for 800-2,500 words. Refuse early and say why. */
-const MAX_IMPORT_CHARS = 40000;
+/**
+ * The cap is measured in WORDS OF PROSE, after conversion — never in raw
+ * characters. The first version compared `content.length` before conversion,
+ * and a browser copy of a ~1,500-word published article carries the page's
+ * markup with it: a writer pasted an ordinary article and was told it was
+ * "87k characters — too long to score", which was true of the markup and
+ * false of her article. Characters measure the wrapper; words measure the
+ * thing being scored.
+ *
+ * 6,000 is deliberately far above the rubric's 800-2,500 calibration band:
+ * the band is guidance the score panel already gives, and refusing an import
+ * is a much blunter instrument than a note on the score.
+ */
+const MAX_IMPORT_WORDS = 6000;
+/** Transport bound for the Drive fetch — raw HTML, before conversion. */
+const MAX_IMPORT_CHARS = 500000;
 
 export async function GET(req: NextRequest) {
   const guard = await requireOptimizer(req.nextUrl.searchParams.get("workspaceId"));
@@ -111,7 +124,7 @@ export async function POST(req: NextRequest) {
   const { caller } = guard;
 
   const source: string = body.source;
-  if (["pasted", "gdoc", "gdoc-link", "engine"].indexOf(source) < 0) {
+  if (["pasted", "gdoc", "gdoc-link", "url", "engine"].indexOf(source) < 0) {
     return NextResponse.json({ error: "Unknown import source" }, { status: 400 });
   }
 
@@ -130,6 +143,15 @@ export async function POST(req: NextRequest) {
   if (source === "pasted") {
     content = typeof body.content === "string" ? body.content : "";
     if (!content.trim()) return NextResponse.json({ error: "Nothing to import" }, { status: 400 });
+  } else if (source === "url") {
+    // A published page. The most common content to optimise is content that is
+    // already live and should start earning AI citations.
+    const { importFromUrl } = await import("@/lib/optimizer/url-import");
+    const result = await importFromUrl(typeof body.ref === "string" ? body.ref : "");
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 });
+    content = result.html || "";
+    if (!title) title = (result.title || "Imported page").slice(0, 200);
+    sourceRef = (typeof body.ref === "string" ? body.ref : "").trim().slice(0, 500);
   } else if (source === "gdoc-link") {
     // A pasted link, which is the workflow that does NOT require the document
     // to have been shared with the service account first. Verified 2026-08-21
@@ -225,10 +247,11 @@ export async function POST(req: NextRequest) {
     content = toEditorHtml(content, source === "pasted" ? body.contentIsHtml === true : undefined);
   }
 
-  if (content.length > MAX_IMPORT_CHARS) {
+  const proseWords = (content.replace(/<[^>]+>/g, " ").match(/\S+/g) || []).length;
+  if (proseWords > MAX_IMPORT_WORDS) {
     return NextResponse.json(
       {
-        error: `That is ${Math.round(content.length / 1000)}k characters — too long to score in one piece. The rubric is calibrated for 800-2,500 words; bring it in a section at a time.`,
+        error: `That is ${Math.round(proseWords / 100) / 10}k words — too long to score in one piece. The rubric is calibrated for 800-2,500 words; bring it in a section at a time.`,
       },
       { status: 413 }
     );

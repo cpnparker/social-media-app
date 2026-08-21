@@ -16,7 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { ArrowRight, ClipboardPaste, FileText, Building2, Loader2, PenLine, Info } from "lucide-react";
+import { ArrowRight, ClipboardPaste, FileText, Building2, Globe, Loader2, PenLine, Info } from "lucide-react";
 
 export interface ImportSources {
   docs: { id: string; name: string; modified: string }[];
@@ -37,9 +37,9 @@ interface Props {
  *  differently ("paste" vs "pasted"), so the mapping is a total record keyed by
  *  Tab — adding a tab without a source is then a type error rather than a 400
  *  at the moment someone tries to import. */
-type Tab = "paste" | "gdoc" | "engine";
-type ImportSource = "pasted" | "gdoc" | "gdoc-link" | "engine";
-const SOURCE_FOR_TAB: { [k in Tab]: ImportSource } = { paste: "pasted", gdoc: "gdoc", engine: "engine" };
+type Tab = "paste" | "url" | "gdoc" | "engine";
+type ImportSource = "pasted" | "gdoc" | "gdoc-link" | "url" | "engine";
+const SOURCE_FOR_TAB: { [k in Tab]: ImportSource } = { paste: "pasted", url: "url", gdoc: "gdoc", engine: "engine" };
 
 export default function StartScreen({ workspaceId, clientId, clientName, onImported, onWriteNew }: Props) {
   const [tab, setTab] = useState<Tab>("paste");
@@ -77,6 +77,7 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
   }, [workspaceId, clientId]);
 
   const [docUrl, setDocUrl] = useState("");
+  const [pageUrl, setPageUrl] = useState("");
 
   const doImport = useCallback(
     async (
@@ -157,6 +158,7 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
 
           <div className="flex gap-1.5 mb-3">
             <SourceTab active={tab === "paste"} onClick={() => setTab("paste")} icon={<ClipboardPaste className="h-3.5 w-3.5" />} label="Paste it" />
+            <SourceTab active={tab === "url"} onClick={() => setTab("url")} icon={<Globe className="h-3.5 w-3.5" />} label="A published page" />
             <SourceTab active={tab === "gdoc"} onClick={() => setTab("gdoc")} icon={<FileText className="h-3.5 w-3.5" />} label="A Google Doc" />
             <SourceTab active={tab === "engine"} onClick={() => setTab("engine")} icon={<Building2 className="h-3.5 w-3.5" />} label="From the Engine" />
           </div>
@@ -210,6 +212,36 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             </div>
           )}
 
+          {tab === "url" && (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-2">
+                <Input
+                  value={pageUrl}
+                  onChange={(e) => setPageUrl(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && pageUrl.trim()) doImport("url", pageUrl.trim(), "");
+                  }}
+                  placeholder="https://…  — the article's address"
+                  className="h-9 flex-1"
+                />
+                <Button
+                  size="sm"
+                  className="h-9 shrink-0"
+                  disabled={busy || !pageUrl.trim()}
+                  onClick={() => doImport("url", pageUrl.trim(), "")}
+                >
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  Open
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+              </div>
+              <p className="text-[11.5px] text-muted-foreground leading-relaxed">
+                For content that is already live — it comes in as a copy, scored and ready to improve.
+                The published page is never touched.
+              </p>
+            </div>
+          )}
+
           {/* A pasted link, first, because it is the path that works without
               anyone having to share anything — a doc set to "anyone with the
               link" reads straight through — and because it brings in the WHOLE
@@ -249,7 +281,7 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             </div>
           )}
 
-          {tab !== "paste" && (
+          {tab !== "paste" && tab !== "url" && (
             <div className="rounded-xl border bg-card overflow-hidden">
               <div className="px-3 py-2 border-b">
                 <Input
