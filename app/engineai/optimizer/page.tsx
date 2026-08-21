@@ -14,7 +14,8 @@
  * every keystroke.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useWorkspace } from "@/lib/contexts/WorkspaceContext";
 import { useCustomer } from "@/lib/contexts/CustomerContext";
 import TiptapEditor from "@/components/content/TiptapEditor";
@@ -30,6 +31,7 @@ import type { Editor } from "@tiptap/react";
 import type { DraftInput } from "@/lib/optimizer/engine";
 import type { ClientCanon } from "@/lib/optimizer/client-canon";
 import IssueList from "@/components/optimizer/IssueList";
+import StartScreen from "@/components/optimizer/StartScreen";
 import {
   OptimizerHighlight, optimizerHighlightKey, applyFinding,
 } from "@/lib/optimizer/highlight-plugin";
@@ -50,12 +52,15 @@ const PLATFORMS: { id: string; label: string }[] = [
   { id: "perplexity", label: "Perplexity" },
 ];
 
-export default function OptimizerPage() {
+function OptimizerStudio() {
   const { selectedWorkspace } = useWorkspace();
   const { selectedCustomer } = useCustomer();
   const workspaceId = selectedWorkspace?.id || null;
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const urlSession = searchParams.get("session");
 
-  const [phase, setPhase] = useState<"brief" | "studio">("brief");
+  const [phase, setPhase] = useState<"start" | "brief" | "studio">("start");
   const [title, setTitle] = useState("");
   const [queries, setQueries] = useState<string[]>([]);
   const [queryDraft, setQueryDraft] = useState("");
@@ -111,6 +116,117 @@ export default function OptimizerPage() {
     return () => { cancelled = true; };
   }, [workspaceId, selectedCustomer?.id]);
 
+  /**
+   * The URL is the single source of truth for which piece is open.
+   * Everything that opens one goes through here, so a link to
+   * /engineai/optimizer?session=<id> behaves exactly like clicking the piece —
+   * which is what makes an article shareable and what lets the sidebar and the
+   * search results point at one.
+   */
+  const openSession = useCallback((id: string) => {
+    router.replace(`/engineai/optimizer?session=${encodeURIComponent(id)}`, { scroll: false });
+  }, [router]);
+
+  const closeSession = useCallback(() => {
+    router.replace("/engineai/optimizer", { scroll: false });
+    setSessionId(null);
+    setPhase("start");
+    setBody("");
+    setTitle("");
+    setQueries([]);
+    setIssues([]);
+    setDiagnostics(null);
+    setPanelTab("score");
+  }, [router]);
+
+  // Hydrate whatever the URL names. Runs on mount and on every change of the
+  // session parameter, so back/forward through the browser history works
+  // without a reload. `hydratedRef` stops the effect re-fetching the session it
+  // just loaded when unrelated state changes.
+  const hydratedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!urlSession) {
+      hydratedRef.current = null;
+      return;
+    }
+    if (!workspaceId) return;
+    if (hydratedRef.current === urlSession) return;
+    // Claim it BEFORE the await. Without this the effect can re-enter while the
+    // first fetch is in flight and hydrate the same session twice, the second
+    // response overwriting edits made against the first.
+    hydratedRef.current = urlSession;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/optimizer/sessions/${encodeURIComponent(urlSession)}/draft?workspaceId=${encodeURIComponent(workspaceId)}`
+        );
+        if (!res.ok) {
+          if (cancelled) return;
+          hydratedRef.current = null;
+          toast.error(res.status === 404 ? "That piece no longer exists" : "Could not open that piece");
+          router.replace("/engineai/optimizer", { scroll: false });
+          return;
+        }
+        const data = await res.json();
+        if (cancelled) return;
+        const sess = data.session || {};
+        setSessionId(sess.id || urlSession);
+        setTitle(sess.title || "");
+        setFormat(sess.format || "explainer");
+        setPlatform(sess.platform || "balanced");
+        if (sess.canon && sess.canon.clientName) setCanon(sess.canon);
+        const brief = sess.brief || {};
+        setQueries(Array.isArray(brief.targetQueries) ? brief.targetQueries : []);
+        setAudience(brief.audience || "");
+        setGoal(brief.goal || "");
+        // streamBufferRef feeds the live score while streaming; keep it in step
+        // with the body so a hydrated piece scores immediately rather than
+        // reading as empty until the first keystroke.
+        const html = (data.draft && data.draft.document_body) || "";
+        streamBufferRef.current = html;
+        setBody(html);
+        setIssues([]);
+        setDiagnostics(null);
+        setPhase("studio");
+      } catch {
+        if (cancelled) return;
+        hydratedRef.current = null;
+        toast.error("Could not open that piece");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [urlSession, workspaceId, router]);
+
+  /**
+   * Adds a target query to a piece that is already open, and PERSISTS it.
+   * The assess route reads the brief from the row, so a query kept only in
+   * React would move the live score and leave the judge scoring against
+   * nothing — two numbers disagreeing with no visible cause.
+   */
+  const addTargetQuery = useCallback(async (q: string) => {
+    const query = q.trim();
+    if (!query || queries.indexOf(query) >= 0) return;
+    // Computed from `queries` rather than inside a setState updater: reading the
+    // next value out of an updater's side effect works by accident, and breaks
+    // the moment React calls it twice.
+    const next = [...queries, query].slice(0, 5);
+    setQueries(next);
+    if (!sessionId || !workspaceId) return;
+    try {
+      const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, targetQueries: next }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      // Say so rather than leaving a query that scores here and nowhere else.
+      toast.error("Added here, but not saved — assessing may not see it");
+    }
+  }, [queries, sessionId, workspaceId]);
+
   const addQuery = () => {
     const q = queryDraft.trim();
     if (!q || queries.length >= 5) return;
@@ -138,6 +254,11 @@ export default function OptimizerPage() {
 
       setSessionId(created.sessionId);
       if (created.canon?.clientName) setCanon(created.canon);
+      // Mark it hydrated before the URL changes: the piece is already in state
+      // and the hydration effect would otherwise fetch it back mid-stream and
+      // overwrite the tokens as they arrive.
+      hydratedRef.current = created.sessionId;
+      openSession(created.sessionId);
       setPhase("studio");
       setBody("");
       streamBufferRef.current = "";
@@ -369,11 +490,30 @@ export default function OptimizerPage() {
     );
   }
 
+  // ── Start ──
+  if (phase === "start") {
+    return (
+      <StartScreen
+        workspaceId={workspaceId}
+        clientId={selectedCustomer ? Number(selectedCustomer.id) : null}
+        clientName={selectedCustomer ? selectedCustomer.name : null}
+        onImported={openSession}
+        onWriteNew={() => setPhase("brief")}
+      />
+    );
+  }
+
   // ── Brief ──
   if (phase === "brief") {
     return (
       <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="mx-auto w-full max-w-[46rem] px-6 py-10 flex flex-col gap-6">
+          <button
+            onClick={() => setPhase("start")}
+            className="self-start text-[13px] text-muted-foreground hover:text-foreground"
+          >
+            ← Back
+          </button>
           <div className="flex flex-col gap-1">
             <h1 className="text-2xl font-bold tracking-tight">New piece</h1>
             <p className="text-sm text-muted-foreground">
@@ -509,8 +649,8 @@ export default function OptimizerPage() {
     <>
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         <div className="shrink-0 h-12 border-b flex items-center gap-3 px-4">
-          <button onClick={() => setPhase("brief")} className="text-[13px] text-muted-foreground hover:text-foreground">
-            ← Brief
+          <button onClick={closeSession} className="text-[13px] text-muted-foreground hover:text-foreground">
+            ← All content
           </button>
           <span className="text-[13px] font-semibold truncate flex-1 min-w-0">{title}</span>
           {streaming && (
@@ -563,7 +703,11 @@ export default function OptimizerPage() {
         </div>
         <div className="flex-1 min-h-0">
           {panelTab === "score" ? (
-            <ScorePanel input={scoreInput} muted={streaming} />
+            <ScorePanel
+              input={scoreInput}
+              muted={streaming}
+              onAddQuery={addTargetQuery}
+            />
           ) : (
             <IssueList
               issues={issues}
@@ -579,5 +723,19 @@ export default function OptimizerPage() {
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * useSearchParams suspends, and Next refuses to build a page that reads it
+ * outside a Suspense boundary. The fallback is the studio's own chrome rather
+ * than a spinner: the boundary resolves in the same tick client-side, so a
+ * spinner would only ever flash.
+ */
+export default function OptimizerPage() {
+  return (
+    <Suspense fallback={<div className="flex-1 min-h-0" />}>
+      <OptimizerStudio />
+    </Suspense>
   );
 }

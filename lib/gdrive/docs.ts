@@ -17,6 +17,19 @@ const FORECAST_FILE_ID = process.env.FINANCE_FORECAST_FILE_ID || "1Skw6rHX5mtQMb
 const CACHE_MS = 10 * 60_000;
 const MAX_CHARS = 8000;
 
+/**
+ * The opening of the marker appended to a document that did not fit.
+ *
+ * Exported because callers have to be able to TELL. The chat tool wants the
+ * marker in the text (it is addressed to the model); the content optimiser must
+ * refuse the import outright, because scoring the first two thirds of an
+ * article produces a confident number for a piece nobody has read. Sharing the
+ * constant makes that a compile-time coupling — a hand-copied string here would
+ * go stale silently and truncated documents would start importing again with
+ * nothing going red.
+ */
+export const TRUNCATION_MARKER = "[⚠ TRUNCATED";
+
 const listCache: { at: number; files: DriveFile[] } = { at: 0, files: [] };
 const contentCache = new Map<string, { at: number; text: string }>();
 
@@ -115,7 +128,7 @@ async function readFileText(f: DriveFile): Promise<string> {
     const full = text.length;
     text =
       text.slice(0, MAX_CHARS) +
-      `\n\n[⚠ TRUNCATED — showing the first ${MAX_CHARS.toLocaleString()} of ${full.toLocaleString()} characters of this document. ` +
+      `\n\n${TRUNCATION_MARKER} — showing the first ${MAX_CHARS.toLocaleString()} of ${full.toLocaleString()} characters of this document. ` +
       `You have NOT seen the rest. Do not conclude the document omits something you did not read; ` +
       `say which part you saw and offer to look at a specific section.]`;
   }

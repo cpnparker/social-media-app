@@ -33,7 +33,16 @@
  *   2026-08-21  a criterion deleted from CRITERIA    →  diagnostic, exit 1  ✓
  *   2026-08-21  injected clock → new Date()          →  1 failure,  exit 1  ✓
  *   2026-08-21  word-boundary guard removed          →  2 failures, exit 1  ✓
+ *   2026-08-21  skip() marks criteria skipped:false  →  §6b red,   exit 1  ✓
+ *   2026-08-21  coverage counted per criterion       →  §6b red,   exit 1  ✓
  *   (baseline, unmutated: exit 0)
+ *
+ * One mutation on §6b was SURVIVED and is recorded because the survival is the
+ * finding: replacing `if (queries.length === 0)` in pillar1 with `if (false)`
+ * changed nothing, because the code below it skips again on "no usable terms in
+ * the target queries". The engine has two independent paths to the same skip,
+ * so that is redundancy rather than a hole — but it is exactly the shape of
+ * mutation that would otherwise be logged as proof and prove nothing.
  *
  * Two of those mutations were survived by an earlier version of this script and
  * the fixtures had to be fixed, not the engine: the boundary trap asserted on a
@@ -491,6 +500,55 @@ console.log(`\n6. Missing context is skipped, not punished`);
   undeclared.overall < declared.overall
     ? pass(`the same body costs points when NOT declared unattributed (${declared.overall} declared vs ${undeclared.overall} undeclared)`)
     : fail(`identical bodies scored ${declared.overall} / ${undeclared.overall} — skip is driven by absence, not declaration`);
+}
+
+// ── 6b. Pillar coverage is countable, and the count changes ──────────────
+//
+// ScorePanel prints "N of 6 pillars scored" over any draft where a pillar
+// dropped out, because the headline is a percentage of what COULD be scored
+// and a draft with no target query shows a healthy number computed without the
+// heaviest pillar in the rubric. Two ways that banner fails silently: it never
+// fires (the honesty guarantee is gone and nobody notices, because a missing
+// warning looks exactly like nothing being wrong), or it always fires (people
+// learn to ignore it and it stops being information). Assert both directions
+// against the same count the panel derives.
+
+console.log(`\n6b. Pillar coverage`);
+{
+  const countScored = (s: ReturnType<typeof computeDraftScores>) => {
+    let n = 0;
+    for (let i = 0; i < s.pillars.length; i++) {
+      let applicable = 0;
+      const cs = s.pillars[i].criteria;
+      for (let j = 0; j < cs.length; j++) if (!cs[j].skipped) applicable++;
+      if (applicable > 0) n++;
+    }
+    return n;
+  };
+
+  const total = cleanScores.pillars.length;
+  // The fixture must actually exercise the thing under test: a rubric of one
+  // pillar would pass both assertions below while proving nothing.
+  total >= 2
+    ? pass(`${total} pillars in the rubric`)
+    : fail(`only ${total} pillar(s) — this check cannot distinguish full from partial coverage`);
+
+  const cleanCovered = countScored(cleanScores);
+  cleanCovered === total
+    ? pass(`a fully-briefed draft scores all ${total} pillars — the banner stays silent`)
+    : fail(`a fully-briefed draft scored only ${cleanCovered} of ${total} pillars, so the coverage banner would fire on every well-formed piece and be ignored`);
+
+  const imported = computeDraftScores(withBody(CLEAN_BODY, { targetQueries: [] }));
+  const importedCovered = countScored(imported);
+  importedCovered === total - 1
+    ? pass(`imported content with no target query scores ${importedCovered} of ${total} — the banner fires and names the right number`)
+    : fail(`no target query scored ${importedCovered} of ${total} pillars, expected ${total - 1}: the panel would print a coverage figure that does not match the pillar list beneath it`);
+
+  // And the number it is printed OVER must genuinely be a partial view, not a
+  // whole one that happens to have a pillar missing from the list.
+  imported.overall !== cleanScores.overall
+    ? pass(`the headline moves when a pillar drops out (${cleanScores.overall} → ${imported.overall})`)
+    : fail(`overall is ${imported.overall} either way — a dropped pillar is not reaching the headline at all`);
 }
 
 // ── 7. Robustness ────────────────────────────────────────────────────────

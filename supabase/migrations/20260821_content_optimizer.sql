@@ -51,8 +51,21 @@ CREATE TABLE IF NOT EXISTS intelligence.optimizer_sessions (
   -- reproducible. See optimizer_client_canon below for the live copy.
   config_canon     jsonb NOT NULL DEFAULT '{}'::jsonb,
   name_rubric_version text NOT NULL DEFAULT '1.0.0',
+  -- Same vocabulary as ai_conversations and design_sessions, deliberately.
+  -- The sidebar's Private/Team tabs filter on STRICT EQUALITY, so a row with no
+  -- visibility value is invisible in both tabs — an article without this column
+  -- could never appear in the list at all.
+  type_visibility  text NOT NULL DEFAULT 'private',
+  -- Where the content came in from, so the studio can say so and the writer
+  -- knows whether edits here touch an original elsewhere (they never do).
+  type_source      text NOT NULL DEFAULT 'generated',
+  document_source_ref text,
   date_created     timestamptz NOT NULL DEFAULT now(),
   date_updated     timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT optimizer_sessions_visibility_chk
+    CHECK (type_visibility IN ('private', 'team')),
+  CONSTRAINT optimizer_sessions_source_chk
+    CHECK (type_source IN ('generated', 'pasted', 'gdoc', 'gdoc-link', 'engine')),
   CONSTRAINT optimizer_sessions_status_chk
     CHECK (type_status IN ('brief', 'drafting', 'draft_ready', 'assessing', 'refining', 'finalised')),
   -- Set when a judge pass claims this session, cleared when it finishes. A
@@ -72,6 +85,11 @@ CREATE INDEX IF NOT EXISTS idx_optimizer_sessions_owner
 CREATE INDEX IF NOT EXISTS idx_optimizer_sessions_client
   ON intelligence.optimizer_sessions(id_workspace, id_client)
   WHERE id_client IS NOT NULL;
+-- Team articles are visible to the whole workspace, so the sidebar reads them
+-- without the owner predicate.
+CREATE INDEX IF NOT EXISTS idx_optimizer_sessions_team
+  ON intelligence.optimizer_sessions(id_workspace, date_updated DESC)
+  WHERE type_visibility = 'team';
 
 -- ── 3. optimizer_drafts ────────────────────────────────────────────────────
 -- Every generation and every finalise snapshots a version. Cheap, and it is

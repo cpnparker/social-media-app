@@ -10,7 +10,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
-import { requireOptimizer, loadOwnedSession } from "../../../_lib/access";
+import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
 
 export const maxDuration = 30;
 
@@ -29,7 +29,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const guard = await requireOptimizer(req.nextUrl.searchParams.get("workspaceId"));
   if (!guard.ok) return guard.response;
 
-  const owned = await loadOwnedSession(id, guard.caller);
+  const owned = await loadSessionForCaller(id, guard.caller);
   if (!owned.ok) return NextResponse.json({ error: owned.error }, { status: owned.status });
 
   const draft = await latestDraft(id);
@@ -65,7 +65,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const guard = await requireOptimizer(body.workspaceId || null);
   if (!guard.ok) return guard.response;
 
-  const owned = await loadOwnedSession(id, guard.caller);
+  const owned = await loadSessionForCaller(id, guard.caller);
   if (!owned.ok) return NextResponse.json({ error: owned.error }, { status: owned.status });
 
   const words = (body.body.match(/\S+/g) || []).length;

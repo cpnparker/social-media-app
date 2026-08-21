@@ -23,7 +23,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { assertServiceAllowed } from "@/lib/admin/service-control";
 import { logAiUsage } from "@/lib/ai/usage-logger";
-import { requireOptimizer, loadOwnedSession } from "../../../_lib/access";
+import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
 import { parseDraft } from "@/lib/optimizer/parse";
 import { computeDraftScores } from "@/lib/optimizer/engine";
 import {
@@ -63,7 +63,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const guard = await requireOptimizer(body.workspaceId || req.nextUrl.searchParams.get("workspaceId"));
   if (!guard.ok) return guard.response;
 
-  const owned = await loadOwnedSession(id, guard.caller);
+  const owned = await loadSessionForCaller(id, guard.caller);
   if (!owned.ok) return NextResponse.json({ error: owned.error }, { status: owned.status });
   const session = owned.session;
 

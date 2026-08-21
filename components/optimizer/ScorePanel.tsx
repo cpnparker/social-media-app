@@ -22,7 +22,7 @@
  * escape that, which is why they are used throughout a dense panel like this.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { computeDraftScores } from "@/lib/optimizer/engine";
 import type { DraftInput } from "@/lib/optimizer/engine";
 import type { CriterionResult } from "@/lib/optimizer/types";
@@ -32,6 +32,11 @@ interface Props {
   input: DraftInput;
   /** Hidden while a generation is streaming — a score climbing token by token is noise, not feedback. */
   muted?: boolean;
+  /** Supplied by the studio so the panel can CLOSE the gap it reports rather
+   *  than only naming it. Imported content arrives with no target query, which
+   *  skips the heaviest pillar; sending the writer back to a brief form they
+   *  never filled in is not a fix they will make. */
+  onAddQuery?: (query: string) => void;
 }
 
 function gradeTone(score: number): string {
@@ -48,7 +53,7 @@ function barTone(score: number): string {
   return "bg-[hsl(var(--ai-negative))]";
 }
 
-export default function ScorePanel({ input, muted }: Props) {
+export default function ScorePanel({ input, muted, onAddQuery }: Props) {
   // Recomputed on every render of a changed body. The engine is pure and takes
   // ~1ms on a 2,500-word draft, so memoising on the body string is enough —
   // there is no need for a worker or a debounce inside the panel itself.
@@ -60,6 +65,8 @@ export default function ScorePanel({ input, muted }: Props) {
     }
   }, [input.body, input.title, input.targetQueries, input.format, input.brandName, input.unattributed]);
 
+  const [queryDraft, setQueryDraft] = useState("");
+
   if (!scores) {
     return (
       <div className="p-4 text-[13px] text-muted-foreground">
@@ -67,6 +74,17 @@ export default function ScorePanel({ input, muted }: Props) {
       </div>
     );
   }
+
+  // A pillar counts as scored when at least one criterion applied to it. This
+  // is the same test the pillar list below uses, deliberately — two different
+  // definitions of "scored" would let the headline and the list disagree.
+  let scoredPillars = 0;
+  for (const p of scores.pillars) {
+    let applicable = 0;
+    for (const c of p.criteria) if (!c.skipped) applicable++;
+    if (applicable > 0) scoredPillars++;
+  }
+  const needsQuery = !input.targetQueries || input.targetQueries.length === 0;
 
   const open: CriterionResult[] = [];
   for (const p of scores.pillars) {
@@ -103,6 +121,49 @@ export default function ScorePanel({ input, muted }: Props) {
           </div>
         </div>
       </div>
+
+      {/* Coverage.
+          The headline number is a percentage of what COULD be scored, so a
+          draft with no target query shows a healthy figure computed without the
+          heaviest pillar in the rubric. Printing that alone is the most
+          plausible way this panel could mislead someone: the score looks
+          finished. Say what it covers, and offer the fix here rather than
+          somewhere the writer would have to go looking for. */}
+      {scoredPillars < scores.pillars.length && (
+        <div className="shrink-0 px-4 py-2.5 border-b bg-amber-500/[0.07] flex flex-col gap-2">
+          <p className="text-[11.5px] leading-relaxed">
+            <span className="font-semibold">
+              {scoredPillars} of {scores.pillars.length} pillars scored.
+            </span>{" "}
+            {needsQuery
+              ? "Relevance is the heaviest pillar and it has nothing to measure against until you say what question this piece should answer."
+              : "The unscored ones are listed below with the reason."}
+          </p>
+          {needsQuery && onAddQuery && (
+            <div className="flex items-center gap-1.5">
+              <input
+                value={queryDraft}
+                onChange={(e) => setQueryDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && queryDraft.trim()) {
+                    onAddQuery(queryDraft.trim());
+                    setQueryDraft("");
+                  }
+                }}
+                placeholder="e.g. what is generative engine optimisation"
+                className="flex-1 min-w-0 h-7 rounded-lg border bg-background px-2 text-[12px] outline-none focus:border-primary"
+              />
+              <button
+                disabled={!queryDraft.trim()}
+                onClick={() => { onAddQuery(queryDraft.trim()); setQueryDraft(""); }}
+                className="h-7 shrink-0 rounded-lg bg-primary px-2.5 text-[12px] font-medium text-primary-foreground disabled:opacity-40"
+              >
+                Add
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Pillars.
           A pillar with every criterion skipped is NOT a zero — the engine drops

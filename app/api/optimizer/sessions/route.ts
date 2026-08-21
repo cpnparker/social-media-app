@@ -22,11 +22,17 @@ export async function GET(req: NextRequest) {
   const guard = await requireOptimizer(workspaceId);
   if (!guard.ok) return guard.response;
 
+  // Own-private plus everything the team can see — the same default branch the
+  // conversation list uses, because the sidebar partitions ONE payload into the
+  // Private and Team tabs client-side. Filtering to the owner here would leave
+  // the Team tab permanently empty and look like a data problem.
   const { data, error } = await intelligenceDb
     .from("optimizer_sessions")
-    .select("id_session, name_title, type_status, type_format, id_client, date_updated")
+    .select(
+      "id_session, name_title, type_status, type_format, type_visibility, type_source, id_client, user_created, date_updated"
+    )
     .eq("id_workspace", guard.caller.workspaceId)
-    .eq("user_created", guard.caller.userId)
+    .or(`and(type_visibility.eq.private,user_created.eq.${guard.caller.userId}),type_visibility.eq.team`)
     .order("date_updated", { ascending: false })
     .limit(50);
 

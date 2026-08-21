@@ -4,6 +4,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useMemo,
   useRef,
   Suspense,
   type KeyboardEvent,
@@ -101,6 +102,16 @@ import type { AIConversation, Attachment } from "@/lib/types/ai";
 import { useFileUploads, UploadChips, MAX_FILE_SIZE } from "@/components/ai-writer/use-file-uploads";
 
 
+interface OptimizerArticle {
+  id: string;
+  title: string;
+  status: string;
+  visibility: string;
+  source: string;
+  clientId: number | null;
+  updatedAt: string;
+}
+
 export default function EngineAIPage() {
   return (
     <Suspense>
@@ -156,6 +167,20 @@ function EngineAIContent() {
   >();
   const [searchQuery, setSearchQuery] = useState("");
   const [deepSearchResults, setDeepSearchResults] = useState<AIConversation[]>([]);
+  /**
+   * Optimiser articles, listed beside conversations.
+   *
+   * An article is a peer of a conversation, not a different product: it lives
+   * in the same workspace, under the same Private/Team tabs, and the writer
+   * thinks of it as another thing they are working on. Kept in its OWN state
+   * and its own sidebar section rather than merged into `conversations` —
+   * interleaving two kinds of row in one list makes both harder to scan, and
+   * every conversation action (rename, pin, delete) would need a type guard.
+   *
+   * Empty when the optimiser is switched off for this account, which is the
+   * normal state today: the route 403s and the section simply never renders.
+   */
+  const [articles, setArticles] = useState<OptimizerArticle[]>([]);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voiceTranscriptN, setVoiceTranscriptN] = useState(0);
   const [voiceWakeSession, setVoiceWakeSession] = useState(false);
@@ -228,6 +253,17 @@ function EngineAIContent() {
         )
       : customers
   ).sort((a, b) => a.name.localeCompare(b.name));
+
+  // Client id → name, so an article row can show its client without carrying a
+  // denormalised copy of the name that would go stale on a rename.
+  const clientNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (let i = 0; i < customers.length; i++) {
+      const id = Number(customers[i].id);
+      if (!Number.isNaN(id)) m.set(id, customers[i].name);
+    }
+    return m;
+  }, [customers]);
 
   // Prevent hydration mismatch for theme icon
   useEffect(() => setMounted(true), []);
@@ -736,6 +772,34 @@ function EngineAIContent() {
     return () => clearTimeout(timer);
   }, [searchQuery, workspaceId]);
 
+  // Articles list. Refetched when the workspace changes and after returning
+  // from the optimiser, so a piece written there appears here without a reload.
+  useEffect(() => {
+    if (!workspaceId) { setArticles([]); return; }
+    let cancelled = false;
+    fetch(`/api/optimizer/sessions?workspaceId=${encodeURIComponent(workspaceId)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d || !Array.isArray(d.sessions)) return;
+        setArticles(
+          d.sessions.map((row: any) => ({
+            id: row.id_session,
+            title: row.name_title || "Untitled piece",
+            status: row.type_status || "",
+            // Default to private on a null. A row with no visibility is
+            // invisible in BOTH tabs under strict equality, which reads as data
+            // loss; private is the safe direction to resolve it in.
+            visibility: row.type_visibility || "private",
+            source: row.type_source || "generated",
+            clientId: row.id_client ?? null,
+            updatedAt: row.date_updated,
+          }))
+        );
+      })
+      .catch(() => { /* the optimiser being off is not an error in this view */ });
+    return () => { cancelled = true; };
+  }, [workspaceId]);
+
   // Time formatting
   const timeAgo = (dateStr: string) => {
     const diff = Date.now() - new Date(dateStr).getTime();
@@ -773,6 +837,28 @@ function EngineAIContent() {
       )
     : [];
   const displayed = searchQuery ? [...filtered, ...deepExtra] : filtered;
+
+  /**
+   * Articles under the same tab and the same search box.
+   *
+   * Match FIRST, then filter by visibility — never the reverse. Filtering the
+   * list down to the current tab and searching within it would silently hide a
+   * team article from someone searching in Private, which reads as the article
+   * having been deleted.
+   */
+  const visibleArticles = articles.filter((a) => {
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      const client = a.clientId !== null ? clientNameById.get(a.clientId) : null;
+      const matches =
+        a.title.toLowerCase().indexOf(q) >= 0 ||
+        (client ? client.toLowerCase().indexOf(q) >= 0 : false);
+      if (!matches) return false;
+    }
+    if (tab === "private" && a.visibility !== "private") return false;
+    if (tab === "team" && a.visibility !== "team") return false;
+    return true;
+  });
 
   // How many conversations to show per client group before "more"
   const GROUP_PREVIEW_LIMIT = 5;
@@ -1339,16 +1425,90 @@ function EngineAIContent() {
               <div className="flex justify-center py-8">
                 <Loader2 className="h-4 w-4 animate-spin text-white/40" />
               </div>
-            ) : displayed.length === 0 ? (
+            ) : displayed.length === 0 && visibleArticles.length === 0 ? (
               <div className="text-center py-8 px-3">
                 <p className="text-[13px] text-white/50">
                   {searchQuery
-                    ? "No chats match your search"
-                    : "No conversations yet"}
+                    ? "Nothing matches your search"
+                    : "Nothing here yet"}
                 </p>
               </div>
             ) : (
               <div className="space-y-0.5">
+                {/* ─── Articles ───
+                    Its own section rather than rows mixed into the chat list.
+                    Two kinds of thing in one list is harder to scan than two
+                    short lists, and when searching it is the difference
+                    between "did it find my article?" and having to read every
+                    row to find out. The heading carries the count so an empty
+                    result under a heading never reads as a hung fetch. */}
+                {visibleArticles.length > 0 && (
+                  <div className="mb-1">
+                    <div className="flex items-center justify-between px-2.5 pt-3 pb-1">
+                      <p className="text-[11px] font-semibold text-white/55 uppercase tracking-wider">
+                        Articles
+                      </p>
+                      <span className="text-[11px] text-white/35 tabular-nums">
+                        {visibleArticles.length}
+                      </span>
+                    </div>
+                    {visibleArticles.slice(0, searchQuery ? 8 : 5).map((a) => (
+                      <button
+                        key={a.id}
+                        onClick={() => router.push(`/engineai/optimizer?session=${encodeURIComponent(a.id)}`)}
+                        className="w-full text-left rounded-lg px-2.5 py-2 transition-colors text-white/70 hover:bg-white/10 hover:text-white"
+                      >
+                        <div className="flex items-center gap-2">
+                          {/* A leading icon, not a trailing badge: it marks the
+                              row as a different KIND before the eye reaches the
+                              title, and it does not compete with the timestamp
+                              for the right edge. */}
+                          <PenLine className="h-3.5 w-3.5 text-white/40 shrink-0" />
+                          <p className="text-[14px] font-medium truncate flex-1">{a.title}</p>
+                          <span className="text-[11px] text-white/55 shrink-0">
+                            {a.updatedAt ? timeAgo(a.updatedAt) : ""}
+                          </span>
+                        </div>
+                        {a.clientId !== null && clientNameById.get(a.clientId) && (
+                          <div className="flex items-center gap-1 mt-0.5 pl-[22px]">
+                            <Building2 className="h-3 w-3 text-white/30 shrink-0" />
+                            <p className="text-[11px] text-white/55 truncate">
+                              {clientNameById.get(a.clientId)}
+                            </p>
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                    {visibleArticles.length > (searchQuery ? 8 : 5) && (
+                      <button
+                        onClick={() => router.push("/engineai/optimizer")}
+                        className="w-full text-left px-2.5 py-1.5 text-[12px] text-white/55 hover:text-white/80 transition-colors"
+                      >
+                        {visibleArticles.length - (searchQuery ? 8 : 5)} more...
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* ─── Conversations ───
+                    Headed only while searching, where the two lists sit
+                    together and each needs to say what it is. Unsearched, the
+                    chat list keeps its own client groupings and a second
+                    heading above them would just be noise. */}
+                {searchQuery && displayed.length > 0 && visibleArticles.length > 0 && (
+                  <div className="flex items-center justify-between px-2.5 pt-3 pb-1">
+                    <p className="text-[11px] font-semibold text-white/55 uppercase tracking-wider">
+                      Conversations
+                    </p>
+                    <span className="text-[11px] text-white/35 tabular-nums">{displayed.length}</span>
+                  </div>
+                )}
+                {searchQuery && displayed.length === 0 && visibleArticles.length > 0 && (
+                  <p className="px-2.5 pt-3 pb-1 text-[11.5px] text-white/40">
+                    No conversations match.
+                  </p>
+                )}
+
                 {sortedGroups ? (
                   /* ─── Grouped by client ─── */
                   sortedGroups.map((group) => (

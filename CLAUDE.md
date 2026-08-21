@@ -19,6 +19,23 @@ npx tsx scripts/verify-post-taint-policy.ts  # every registered tool is classifi
 npx tsx scripts/verify-safe-fetch.ts         # the SSRF guard blocks internal hosts in every notation
 ```
 
+## Content Optimizer checks
+
+Seven scripts guard `lib/optimizer/` and the import path. Run all of them
+before shipping anything that touches the rubric, the judge, anchoring or how
+content gets in:
+
+```
+for f in rubric anchors judge gate doc-index highlight import; do npx tsx scripts/verify-optimizer-$f.ts || break; done
+```
+
+Each carries a MUTATION LOG in its header, and each log records survivors as
+well as kills — a mutation that survived is a finding about the check, not an
+omission to tidy away. Two are already recorded: deleting the BOM strip in
+`lib/gdrive/doc-link.ts` changes nothing because `Response.text()` already
+strips it, and bypassing `pillar1`'s empty-query branch changes nothing because
+the code below skips again on "no usable terms".
+
 The layout check builds every layout twice: once with two-line titles and long
 labels, because every collision found so far was invisible with short ones, and
 once deliberately overloaded — twelve bars, ten stacked categories, five tracks,

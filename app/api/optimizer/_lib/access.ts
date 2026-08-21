@@ -57,15 +57,21 @@ export async function requireOptimizer(workspaceId: string | null): Promise<Guar
 }
 
 /**
- * Fetch a session the caller is entitled to.
+ * Fetch a session the caller is entitled to, and say WHICH entitlement.
  *
- * Ownership is `user_created` equality plus workspace match. Deliberately NOT
- * share-aware yet: the conversation sharing model (lib/ai/access.ts) is a real
- * design with view/collaborate semantics, and inventing a second, subtly
- * different one here would be worse than having none. When optimizer sessions
- * need sharing they should adopt that model, not grow their own.
+ * This adopts the conversation model in lib/ai/access.ts rather than growing a
+ * second one: owner gets everything, a workspace member gets `collaborate` on a
+ * team-visible article, and a private article belongs to one person. Articles
+ * sit beside conversations in the same sidebar under the same two tabs, so a
+ * teammate clicking a team article and getting "not found" would be the model
+ * visibly disagreeing with itself.
+ *
+ * There is no share tier here because there is no optimizer_shares table. That
+ * is an absence, not a denial dressed up as one — private means private.
  */
-export async function loadOwnedSession(sessionId: string, caller: OptimizerCaller) {
+export type OptimizerPermission = "owner" | "collaborate";
+
+export async function loadSessionForCaller(sessionId: string, caller: OptimizerCaller) {
   const { data, error } = await intelligenceDb
     .from("optimizer_sessions")
     .select("*")
@@ -74,9 +80,24 @@ export async function loadOwnedSession(sessionId: string, caller: OptimizerCalle
 
   if (error) return { ok: false as const, status: 500, error: "Could not load that session" };
   if (!data) return { ok: false as const, status: 404, error: "Session not found" };
-  if ((data as any).id_workspace !== caller.workspaceId || (data as any).user_created !== caller.userId) {
-    // 404 rather than 403: a wrong-owner 403 confirms the session exists.
+
+  const row = data as any;
+  // Workspace first, always. Everything below assumes the article belongs to
+  // the workspace the caller was admitted to.
+  if (row.id_workspace !== caller.workspaceId) {
     return { ok: false as const, status: 404, error: "Session not found" };
   }
-  return { ok: true as const, session: data as any };
+  if (row.user_created === caller.userId) {
+    return { ok: true as const, session: row, permission: "owner" as OptimizerPermission };
+  }
+  // Strict equality, so a row whose visibility was never written is private by
+  // omission rather than team by accident.
+  if (row.type_visibility === "team") {
+    return { ok: true as const, session: row, permission: "collaborate" as OptimizerPermission };
+  }
+  // 404 rather than 403: a wrong-owner 403 confirms the article exists.
+  return { ok: false as const, status: 404, error: "Session not found" };
 }
+
+/** @deprecated Use loadSessionForCaller — this name outlived the owner-only model. */
+export const loadOwnedSession = loadSessionForCaller;
