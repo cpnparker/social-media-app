@@ -3,6 +3,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
 import { createStreamingResponse, type AIMessage, localStamp } from "@/lib/ai/providers";
 import { buildSystemPrompt, normalizeContextConfig } from "@/lib/ai/system-prompts";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 
 /**
  * POST /api/engineai/meeting-prep — MeetingBrain's "Prepare me" button, answered
@@ -204,7 +205,28 @@ export async function POST(req: NextRequest) {
         resourcingAccess,
         source: "meeting-prep",
       } as any,
-      async (result) => { completion = result as any; resolve(); }
+      async (result) => {
+        completion = result as any;
+        // LOG THE SPEND. This endpoint runs a full headless turn — the whole
+        // system prompt, the whole tool array, Sonnet 5, up to 8,192 output
+        // tokens and eight tool rounds — and until now recorded nothing at all.
+        // It was the single largest unlabelled consumer on the bill: a real
+        // cost that could not be seen in intelligence.ai_usage, so nobody could
+        // tell whether prep was worth what it costs, or notice it running away.
+        try {
+          logAiUsage({
+            workspaceId,
+            userId: user.id_user,
+            model: "claude-sonnet-5",
+            source: "meeting-prep",
+            inputTokens: result.inputTokens || 0,
+            outputTokens: result.outputTokens || 0,
+            cacheReadTokens: (result as any).cacheReadTokens || 0,
+            cacheWriteTokens: (result as any).cacheWriteTokens || 0,
+          });
+        } catch { /* metering must never cost the user their brief */ }
+        resolve();
+      }
     );
     // Drain server-side; nothing is attached to a browser here.
     const reader = stream.getReader();
