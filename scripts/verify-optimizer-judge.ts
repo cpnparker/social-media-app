@@ -36,12 +36,19 @@
  * The last one is the anti-drift clause and the one to re-run whenever scoring
  * changes: counting a violation the judge asserted but could not point at means
  * charging a writer points for something they cannot see, find or fix.
+ *
+ * deriveVerdictFindings mutations (2026-08-21, throwaway worktree):
+ *   dependent-chunk derivation removed        → 1 fail  ✓
+ *   dedupe against model findings removed     → 1 fail  ✓
+ *   derived offsets shifted by +3             → 2 fail  ✓ (2nd try — a shifted
+ *     slice is still a verbatim substring, so the substring check passed over
+ *     the wrong words; the quotes are now pinned to their targets)
  */
 import { CRITERIA } from "../lib/optimizer/rubric";
 import { JUDGE_CRITERIA, JUDGE_CRITERION_KEYS } from "../lib/optimizer/judge-rubric";
 import {
   parseJudgeResponse, scoreJudgeResponse, anchorJudgeFindings,
-  assessmentKey, buildJudgePrompt,
+  assessmentKey, buildJudgePrompt, deriveVerdictFindings,
 } from "../lib/optimizer/judge";
 import type { JudgeInput } from "../lib/optimizer/judge";
 import { parseDraft } from "../lib/optimizer/parse";
@@ -331,6 +338,78 @@ console.log("\n6. The prompt states the anchoring contract");
   system.indexOf("never comment on anything it measures") >= 0
     ? pass("the prompt forbids the judge from re-litigating engine criteria")
     : fail("the prompt does not tell the judge to stay off engine territory");
+}
+
+
+// ── Derived findings: verdicts become marks without model cooperation ────
+console.log(`\n8. deriveVerdictFindings`);
+{
+  const draft =
+    "<p>The opening paragraph sets a scene without answering anything at all.</p>" +
+    "<h2>What routing solves</h2><p>As mentioned above, the second option wins. \"We just work harder than everyone else in the market,\" said a spokesperson.</p>";
+  const parsed = parseDraft({ body: draft, title: "t" });
+
+  // Preconditions: the fixture must give the derivation something to point at.
+  parsed.chunks.filter((c) => !c.isEmpty).length >= 2
+    ? pass("fixture has 2+ chunks, so a dependent-chunk verdict has a target")
+    : fail("fixture has fewer than 2 chunks — chunk derivation is untested");
+  parsed.quotes.length >= 1
+    ? pass("fixture has a quotation, so a weak-quote verdict has a target")
+    : fail("fixture has no quotation — quote derivation is untested");
+
+  const chunkIdx = parsed.chunks.findIndex((c) => !c.isEmpty && c.heading !== null);
+  const response = {
+    queryCoverage: [],
+    openingQuotability: { verdict: "no_answer", reason: "The opening defers the answer." },
+    chunkSelfContainment: [{ chunkId: "c" + chunkIdx, verdict: "dependent", dependency: "refers to an earlier option" }],
+    quoteAttribution: [{ quoteId: "qt0", verdict: "decorative" }],
+    findings: [],
+    summary: "",
+  } as any;
+
+  const derived = deriveVerdictFindings(response, parsed);
+  derived.length === 3
+    ? pass("three imperfect verdicts yield three findings")
+    : fail(`expected 3 derived findings, got ${derived.length}`);
+
+  // Every derived quote must be a verbatim slice — that is the entire point.
+  let sliced = 0;
+  for (let i = 0; i < derived.length; i++) if (parsed.text.indexOf(derived[i].quote) >= 0) sliced++;
+  sliced === derived.length
+    ? pass("every derived quote is a verbatim slice of the parsed text")
+    : fail(`${derived.length - sliced} derived quote(s) are not in the text`);
+
+  // ...and the RIGHT slice. A mutation shifting every offset by +3 survived
+  // the substring check — a shifted slice is still a verbatim slice, just of
+  // the wrong words. Pin each derived quote to the text it claims to be about.
+  const opening = derived.filter((f) => f.criterion === "opening-quotability")[0];
+  opening && opening.quote.indexOf("The opening paragraph") === 0
+    ? pass("the opening finding quotes the opening sentence from its first word")
+    : fail(`the opening finding starts ${JSON.stringify((opening ? opening.quote : "").slice(0, 30))} — offsets are shifted`);
+  const qf = derived.filter((f) => f.criterion === "quote-attribution-quality")[0];
+  qf && qf.quote.indexOf("We just work harder") >= 0 && parsed.text.indexOf(qf.prefix + qf.quote) >= 0
+    ? pass("the quote finding lands on the quotation, prefix contiguous")
+    : fail(`the quote finding is misplaced: ${JSON.stringify((qf ? qf.quote : "").slice(0, 40))}`);
+
+  // And they must anchor through the same pipeline as model findings.
+  const anchoredDerived = anchorJudgeFindings(parsed.text, derived);
+  anchoredDerived.filter((a) => !a.orphaned).length === derived.length
+    ? pass("all derived findings anchor — none orphan")
+    : fail("a derived finding failed to anchor through the standard pipeline");
+
+  // Model findings win dedupe: if the model DID supply an opening finding, the
+  // derivation must not double it.
+  const withModel = { ...response, findings: [{ criterion: "opening-quotability", severity: "high", quote: "x", prefix: "", suffix: "", explanation: "model's own", suggestedEdit: "better opening" }] };
+  const dd = deriveVerdictFindings(withModel as any, parsed);
+  dd.filter((f) => f.criterion === "opening-quotability").length === 0
+    ? pass("a model-supplied finding suppresses the derived one for that criterion")
+    : fail("derivation duplicated a criterion the model already covered");
+
+  // Perfect verdicts derive nothing.
+  const clean = { ...response, openingQuotability: { verdict: "quotable_alone", reason: "" }, chunkSelfContainment: [], quoteAttribution: [{ quoteId: "qt0", verdict: "substantive" }] };
+  deriveVerdictFindings(clean as any, parsed).length === 0
+    ? pass("perfect verdicts derive no findings")
+    : fail("a clean verdict produced a finding — marks would appear on good text");
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

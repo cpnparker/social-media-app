@@ -255,5 +255,56 @@ console.log(`\n6. Nothing is silently dropped`);
     : fail(`unbalanced: ${opens} open vs ${closes} close — Tiptap will restructure this`);
 }
 
+// ── 7. The article-template table ────────────────────────────────────────
+console.log(`\n7. The Docs article template unwraps into real structure`);
+{
+  // Shaped like the REAL template, including the workflow row that broke the
+  // first version of the guard ("Please tick and initial" is 4 words, and a
+  // label-length bail-out killed the whole unwrap because of it).
+  const template =
+    "<table>" +
+    "<tr><td><p>Headline</p></td><td><p><strong>How Zephyr Reshapes Routing</strong></p></td></tr>" +
+    "<tr><td><p>Byline</p></td><td><p>Ana Kessler, Vaultline</p></td></tr>" +
+    "<tr><td><p>Standfirst</p></td><td><p></p></td></tr>" +
+    "<tr><td><p>Article</p></td><td><p>The body of the piece, long enough to dominate the table by a wide margin. " +
+    "It keeps going with a second sentence, and a third, so the body share is unmistakable.</p>" +
+    "<p><strong>Why routing changed</strong></p><p>More body follows the pseudo-heading here.</p></td></tr>" +
+    "<tr><td><p>Please tick and initial</p></td><td><p>KM / AB</p></td></tr>" +
+    "</table>";
+  const out = sanitizeImportedHtml(template);
+  has("the headline row becomes an h1", out, "<h1>How Zephyr Reshapes Routing</h1>");
+  hasnt("the table itself is gone", out, "<table>");
+  has("the body flows out as paragraphs", out, "The body of the piece");
+  has("a whole-line bold paragraph inside the body becomes a heading", out, "<h2>Why routing changed</h2>");
+  has("the byline survives as content", out, "Ana Kessler");
+  hasnt("the workflow row's label is dropped as scaffold", out, "tick and initial");
+  // The VALUE must go too. A mutation that leaked workflow rows as content
+  // survived, because only the label was asserted absent — the initials
+  // "KM / AB" flowed into the article and nothing noticed.
+  hasnt("the workflow row's value is dropped with it", out, "KM / AB");
+  hasnt("the label cells are dropped as scaffold", out, "<p>Article</p>");
+
+  // Precondition: the fixture must carry the row that broke the first version.
+  template.indexOf("Please tick and initial") >= 0
+    ? pass("the fixture includes the workflow row that defeated the first guard")
+    : fail("the workflow row is missing — the guard that failed on the real doc is untested");
+
+  // A DATA table must never unwrap — tables are FOR data.
+  const data =
+    "<table><tr><td><p>Region</p></td><td><p>Uptake</p></td></tr>" +
+    "<tr><td><p>Nordic</p></td><td><p>62%</p></td></tr>" +
+    "<tr><td><p>Baltic</p></td><td><p>48%</p></td></tr></table>";
+  has("a data table stays a table", sanitizeImportedHtml(data), "<table>");
+
+  // Bold promotion limits: a short emphatic SENTENCE keeps its punctuation and
+  // stays a paragraph; a single word is not a heading either.
+  has("a bold sentence with a full stop is NOT promoted",
+      sanitizeImportedHtml("<p><strong>This changes everything.</strong></p>"), "<p><strong>This changes everything.</strong></p>");
+  has("a single bold word is NOT promoted",
+      sanitizeImportedHtml("<p><strong>Important</strong></p>"), "<p><strong>Important</strong></p>");
+  has("a mid-length bold line IS promoted",
+      sanitizeImportedHtml("<p><strong>Modernising the healthcare sector</strong></p>"), "<h2>Modernising the healthcare sector</h2>");
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
 process.exit(failures ? 1 : 0);

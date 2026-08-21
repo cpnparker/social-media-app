@@ -174,12 +174,21 @@ export function sanitizeImportedHtml(html: string): string {
   // A space immediately inside a tag boundary is always an artefact of
   // unwrapping, never the writer's, and it is what turns a rejoined word into
   // "Headlin e".
-  return balanceTags(s)
+  let out = balanceTags(s)
     .replace(/[ \t]{2,}/g, " ")
     .replace(/>\s+</g, "><")
     .replace(/<(p|h[1-6]|li|td|th|blockquote)>\s+/gi, "<$1>")
     .replace(/\s+<\/(p|h[1-6]|li|td|th|blockquote)>/gi, "</$1>")
     .trim();
+
+  // AFTER normalisation, deliberately. Both transforms pattern-match on tag
+  // adjacency, and running them against the pre-collapse form — where every
+  // unwrapped tag left a space — made their guards fail quietly on real
+  // documents while passing on tidy fixtures. The final form is the only one
+  // with a stable shape to match against.
+  out = unwrapTemplateTable(out);
+  out = promoteBoldLineHeadings(out);
+  return out;
 }
 
 /**
@@ -214,6 +223,100 @@ function balanceTags(html: string): string {
   }
   for (let i = stack.length - 1; i >= 0; i--) out.push(`</${stack[i]}>`);
   return out.join("");
+}
+
+/**
+ * Unwrap the label/value template table.
+ *
+ * The house Google Docs article template is a two-column table — Headline,
+ * Byline, Standfirst, Article down the left, content on the right — so a real
+ * imported draft arrives as ONE table whose "Article" cell holds the whole
+ * piece. Everything downstream then sees a document with one chunk and no
+ * headings: the judge reported "1 of 1 sections", question-heading criteria
+ * scored over zero headings, and chunk-level analysis had nothing to hold.
+ * Observed on the founder's own first import.
+ *
+ * The unwrap is deliberately conservative: it fires only when the table's left
+ * column is entirely short labels and one of them is headline/title-like.
+ * A data table — the thing tables are FOR — never matches, and stays a table.
+ */
+export function unwrapTemplateTable(html: string): string {
+  const m = html.match(/<table>([\s\S]*?)<\/table>/i);
+  if (!m) return html;
+
+  const CONTENT = /^(headline|title|byline|author|standfirst|intro|introduction|article|body|copy|text)s?$/;
+  const rows: { label: string; value: string }[] = [];
+  let scaffoldChars = 0;
+  const rowRe = /<tr>([\s\S]*?)<\/tr>/gi;
+  let rm: RegExpExecArray | null;
+  while ((rm = rowRe.exec(m[1])) !== null) {
+    const cells = rm[1].match(/<t[dh]>[\s\S]*?<\/t[dh]>/gi) || [];
+    const plain = rm[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    if (cells.length !== 2) {
+      // Not label/value shaped. Tolerable as scaffold if it is small; a row
+      // carrying real text means this is not the template and must survive.
+      scaffoldChars += plain.length;
+      continue;
+    }
+    const label = cells[0].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+    if (CONTENT.test(label)) {
+      rows.push({ label, value: cells[1].replace(/^<t[dh]>/i, "").replace(/<\/t[dh]>$/i, "") });
+    } else {
+      // The template carries workflow rows too — "Please tick and initial",
+      // sign-offs. Scaffold, not prose. Counted, because eating a row that
+      // turns out to hold content is the one unforgivable outcome here.
+      scaffoldChars += plain.length;
+    }
+  }
+
+  // Fire only when this is unmistakably the article template: a headline-like
+  // row, a body-like row holding most of the table's text, and no substantial
+  // row left unaccounted for.
+  const hasHeadline = rows.some((r) => /^(headline|title)s?$/.test(r.label));
+  const bodyRow = rows.filter((r) => /^(article|body|copy|text)s?$/.test(r.label))[0];
+  if (!hasHeadline || !bodyRow) return html;
+  const bodyLen = bodyRow.value.replace(/<[^>]+>/g, "").length;
+  const tableLen = m[1].replace(/<[^>]+>/g, "").length || 1;
+  if (bodyLen / tableLen < 0.5) return html;
+  if (scaffoldChars > 400) return html;
+
+  const parts: string[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const inner = r.value.trim();
+    if (!inner.replace(/<[^>]+>/g, "").trim()) continue;
+    if (/^(headline|title)s?$/.test(r.label)) {
+      parts.push(`<h1>${inner.replace(/<\/?p>/gi, "").replace(/<\/?strong>/gi, "")}</h1>`);
+    } else {
+      parts.push(inner);
+    }
+  }
+  return html.replace(m[0], parts.join(""));
+}
+
+/**
+ * Promote whole-line bold paragraphs to headings.
+ *
+ * Inside a Docs table cell, the Heading styles are unavailable-in-practice:
+ * writers bold a short line instead, and the export carries it as a bold
+ * paragraph. "Modernising the healthcare sector" arrived exactly that way.
+ *
+ * This is inference, and the rule that keeps it honest is strictness in every
+ * direction at once: the ENTIRE paragraph must be bold, 2-9 words, under 70
+ * characters, with no sentence-ending punctuation. A short emphatic sentence
+ * ("**This changes everything.**") keeps its full stop and stays a paragraph.
+ */
+export function promoteBoldLineHeadings(html: string): string {
+  return html.replace(
+    /<p>\s*<strong>([^<]{2,70})<\/strong>\s*<\/p>/gi,
+    (full, inner: string) => {
+      const text = inner.trim();
+      const words = text.split(/\s+/).length;
+      if (words < 2 || words > 9) return full;
+      if (/[.!?,;:]$/.test(text)) return full;
+      return `<h2>${text}</h2>`;
+    }
+  );
 }
 
 function escapeHtml(s: string): string {

@@ -436,6 +436,122 @@ export function scoreJudgeResponse(
   return out;
 }
 
+/**
+ * Derive findings from imperfect VERDICTS, deterministically.
+ *
+ * Prompt 1.1.0 asked the model in prose to attach a finding to every imperfect
+ * verdict. Tested live, the model returned `opening-quotability: no_answer`
+ * and an empty findings array anyway — an instruction is not a contract, and
+ * quota-style exhortations decay with every model update.
+ *
+ * So the floor is structural instead. The verdicts already carry everything a
+ * finding needs: a dependent chunk names its chunkId and the parser knows that
+ * chunk's offsets; a weak quotation names its quoteId and the parser holds the
+ * quote's Range; a no_answer opening IS the first prose sentence. The server
+ * derives the finding from the verdict and anchors it from ParsedDraft offsets
+ * — the same trick the live layer uses — so nothing depends on a model
+ * reproducing a quote character-for-character.
+ *
+ * The model's own findings still matter: when it supplies one for the same
+ * criterion it usually carries a suggestedEdit, which a derived finding never
+ * has. Model findings therefore win dedupe; derivation fills the holes.
+ */
+const DERIVE_CONTEXT = 40;
+
+function sliceFinding(
+  parsed: ParsedDraft,
+  start: number,
+  end: number,
+  criterion: string,
+  severity: "high" | "medium" | "low",
+  explanation: string
+): JudgeFinding | null {
+  const text = parsed.text;
+  if (start < 0 || end > text.length || end <= start) return null;
+  // The anchoring contract caps quotes at 200 characters; a sentence can run
+  // longer, so clamp to the first 200 — the mark still lands on the right
+  // place, which is the point.
+  const boundedEnd = Math.min(end, start + 200);
+  const quote = text.slice(start, boundedEnd);
+  if (!quote.trim()) return null;
+  return {
+    criterion,
+    severity,
+    quote,
+    prefix: text.slice(Math.max(0, start - DERIVE_CONTEXT), start),
+    suffix: text.slice(boundedEnd, Math.min(text.length, boundedEnd + DERIVE_CONTEXT)),
+    explanation,
+    suggestedEdit: null,
+  };
+}
+
+export function deriveVerdictFindings(
+  response: JudgeResponse,
+  parsed: ParsedDraft
+): JudgeFinding[] {
+  const out: JudgeFinding[] = [];
+  const have: { [criterion: string]: true } = {};
+  for (let i = 0; i < response.findings.length; i++) have[response.findings[i].criterion] = true;
+
+  // Opening: the verdict is ABOUT the first prose sentence, so anchor there.
+  const ov = (response.openingQuotability && response.openingQuotability.verdict) || "";
+  if ((ov === "needs_context" || ov === "no_answer") && !have["opening-quotability"]) {
+    let first = null as null | { start: number; end: number };
+    for (let i = 0; i < parsed.sentences.length; i++) {
+      if (parsed.sentences[i].kind === "prose") { first = parsed.sentences[i]; break; }
+    }
+    if (first) {
+      const f = sliceFinding(
+        parsed, first.start, first.end, "opening-quotability", "high",
+        (response.openingQuotability.reason || "The opening cannot be quoted alone as the answer.") +
+          " Rewrite it so an engine could lift it verbatim and it would still answer the question."
+      );
+      if (f) out.push(f);
+    }
+  }
+
+  // Dependent chunks: the verdict names the chunk; its first sentence is where
+  // the reader arriving from a citation gets lost.
+  const deps = response.chunkSelfContainment || [];
+  for (let i = 0; i < deps.length; i++) {
+    if (deps[i].verdict !== "dependent") continue;
+    const m = String(deps[i].chunkId || "").match(/^c(\d+)$/);
+    if (!m) continue;
+    const chunk = parsed.chunks[Number(m[1])];
+    if (!chunk) continue;
+    const at = chunk.firstSentence || chunk.heading;
+    if (!at) continue;
+    const f = sliceFinding(
+      parsed, at.start, at.end, "chunk-self-containment", "medium",
+      "This section does not stand alone" +
+        (deps[i].dependency ? ": " + deps[i].dependency : "") +
+        ". Name the subject here — sections are extracted and cited in isolation."
+    );
+    if (f) out.push(f);
+  }
+
+  // Weak or decorative quotations: the verdict names the quote; the parser
+  // holds its Range.
+  const qs = response.quoteAttribution || [];
+  for (let i = 0; i < qs.length; i++) {
+    const v = qs[i].verdict;
+    if (v !== "weak" && v !== "decorative") continue;
+    const m = String(qs[i].quoteId || "").match(/^qt(\d+)$/);
+    if (!m) continue;
+    const q = parsed.quotes[Number(m[1])];
+    if (!q) continue;
+    const f = sliceFinding(
+      parsed, q.start, q.end, "quote-attribution-quality", v === "decorative" ? "high" : "medium",
+      v === "decorative"
+        ? "This quotation has no real attribution — it reads as a slogan in quote marks. Name a plausible speaker or cut it."
+        : "This quotation is attributed but says nothing a paraphrase could not. Replace it with something only this speaker could say, or drop the quote marks."
+    );
+    if (f) out.push(f);
+  }
+
+  return out;
+}
+
 /** Anchor the judge's findings against the draft. Orphans are excluded from
  *  guard counts (anti-drift clause 2) but still returned for display. */
 export function anchorJudgeFindings(draftText: string, findings: JudgeFinding[]) {
@@ -447,7 +563,8 @@ export function anchorJudgeFindings(draftText: string, findings: JudgeFinding[])
  * makes "re-assessing unchanged text does not move the score" true by
  * construction rather than by hoping the model is consistent.
  */
-export const JUDGE_PIPELINE_VERSION = "2";
+export const JUDGE_PIPELINE_VERSION = "3";
+// 3: verdict-derived findings — the server anchors imperfect verdicts itself.
 
 export function assessmentKey(input: JudgeInput, rubricVersion: string): string {
   const parts = [

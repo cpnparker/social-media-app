@@ -28,7 +28,7 @@ import { parseDraft } from "@/lib/optimizer/parse";
 import { computeDraftScores } from "@/lib/optimizer/engine";
 import {
   buildJudgePrompt, parseJudgeResponse, scoreJudgeResponse,
-  anchorJudgeFindings, assessmentKey, JUDGE_MODEL,
+  anchorJudgeFindings, assessmentKey, deriveVerdictFindings, JUDGE_MODEL,
 } from "@/lib/optimizer/judge";
 import type { JudgeInput } from "@/lib/optimizer/judge";
 import { preGate } from "@/lib/optimizer/suggest-gate";
@@ -253,7 +253,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       );
     }
 
-    const anchored = anchorJudgeFindings(parsed.text, outcome.response.findings);
+    // The findings floor: derive one from every imperfect verdict the model
+    // returned without one. Tested live before this existed — the model gave
+    // "opening-quotability: no_answer" and an empty findings array, so the
+    // score moved and the text stayed unmarked.
+    const derived = deriveVerdictFindings(outcome.response, parsed);
+    const anchored = anchorJudgeFindings(parsed.text, outcome.response.findings.concat(derived));
     const live = anchored.filter((a) => !a.orphaned).map((a) => a.finding);
 
     const det = computeDraftScores({
