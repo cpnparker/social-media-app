@@ -19,7 +19,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { Button } from "@/components/ui/button";
-import { Check, ChevronRight, Loader2, X } from "lucide-react";
+import { Check, ChevronRight, Loader2, Pencil, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Issue } from "@/lib/optimizer/highlight-plugin";
 
@@ -63,13 +63,21 @@ interface Props {
   onApply: (id: string) => void;
   onNext: () => void;
   onClose: () => void;
+  /** Generate a rewrite for this finding on demand. */
+  onAiFix: (id: string) => void;
+  /** The rewrite that came back, when one has. */
+  aiEdit?: string;
+  aiFixing?: boolean;
+  /** Put the caret on the span and close — the "I'll do it myself" path. */
+  onManualEdit: (id: string) => void;
   applying?: boolean;
   /** How many active issues exist, for the "next" affordance. */
   activeCount: number;
 }
 
 export default function IssuePopover({
-  editor, issue, containerRef, onDismiss, onApply, onNext, onClose, applying, activeCount,
+  editor, issue, containerRef, onDismiss, onApply, onNext, onClose,
+  onAiFix, aiEdit, aiFixing, onManualEdit, applying, activeCount,
 }: Props) {
   const popRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ top: number; left: number; above: boolean } | null>(null);
@@ -136,22 +144,31 @@ export default function IssuePopover({
 
       <p className="text-[12px] leading-snug text-muted-foreground">{f.explanation}</p>
 
-      {f.suggestedEdit && (
-        <div className="rounded-lg border bg-muted/40 px-2.5 py-2">
+      {(f.suggestedEdit || aiEdit) && (
+        <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/[0.06] px-2.5 py-2">
           <p className="text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
             Suggested rewrite
           </p>
-          <p className="text-[12px] leading-snug">{f.suggestedEdit}</p>
+          <p className="text-[12px] leading-snug">{f.suggestedEdit || aiEdit}</p>
         </div>
       )}
 
-      <div className="flex items-center gap-1.5 pt-0.5">
-        {f.suggestedEdit && (
+      <div className="flex items-center gap-1.5 pt-0.5 flex-wrap">
+        {(f.suggestedEdit || aiEdit) ? (
           <Button size="sm" className="h-7 px-2.5 text-[12px]" disabled={applying} onClick={() => onApply(f.id)}>
             {applying ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
             Apply
           </Button>
+        ) : (
+          <Button size="sm" className="h-7 px-2.5 text-[12px]" disabled={!!aiFixing} onClick={() => onAiFix(f.id)}>
+            {aiFixing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+            {aiFixing ? "Writing…" : "Fix with AI"}
+          </Button>
         )}
+        <Button size="sm" variant="outline" className="h-7 px-2.5 text-[12px]" onClick={() => onManualEdit(f.id)}>
+          <Pencil className="h-3 w-3" />
+          Edit
+        </Button>
         <Button size="sm" variant="ghost" className="h-7 px-2.5 text-[12px] text-muted-foreground" onClick={() => onDismiss(f.id)}>
           Dismiss
         </Button>

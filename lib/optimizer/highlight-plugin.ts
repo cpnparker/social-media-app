@@ -258,7 +258,15 @@ export type ApplyResult =
  *    single undo restores both. Two transactions would let undo resurrect the
  *    old text with no highlight, or the highlight with no text.
  */
-export function applyFinding(editor: { state: EditorState; view: { dispatch: (tr: Transaction) => void } }, id: string): ApplyResult {
+export function applyFinding(
+  editor: { state: EditorState; view: { dispatch: (tr: Transaction) => void } },
+  id: string,
+  /** An on-demand AI rewrite, generated after the finding was anchored. The
+   *  plugin's stored finding cannot be mutated in place, so the caller passes
+   *  the edit it obtained; everything else — drift check, resolve, dismissal
+   *  of a deleted span — is identical to a baked-in suggestion. */
+  overrideEdit?: string
+): ApplyResult {
   const state = editor.state;
   const st = optimizerHighlightKey.getState(state);
   if (!st) return { ok: false, reason: "unknown" };
@@ -267,7 +275,7 @@ export function applyFinding(editor: { state: EditorState; view: { dispatch: (tr
   if (!issue) return { ok: false, reason: "unknown" };
   if (issue.status !== "active") return { ok: false, reason: "not-active" };
 
-  const replacement = issue.finding.suggestedEdit;
+  const replacement = overrideEdit || issue.finding.suggestedEdit;
   if (!replacement) return { ok: false, reason: "no-replacement" };
   if (issue.to <= issue.from) {
     editor.view.dispatch(state.tr.setMeta(optimizerHighlightKey, { type: "dismiss", ids: [id] }));

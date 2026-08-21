@@ -497,10 +497,56 @@ function OptimizerStudio() {
     setSelectedId(st ? st.selectedId : null);
   }, []);
 
+  /**
+   * On-demand AI rewrites, keyed by finding id.
+   *
+   * Held OUTSIDE the plugin: its findings are immutable once anchored, and a
+   * repaint (which fires on every keystroke) rebuilds them from scratch — an
+   * edit stored inside would be wiped by the next letter typed. The map
+   * survives because React owns it; a finding whose text drifts still fails
+   * applyFinding's own drift check, so a stale entry cannot misfire.
+   */
+  const [aiEdits, setAiEdits] = useState<{ [id: string]: string }>({});
+  const [aiFixing, setAiFixing] = useState<string | null>(null);
+
+  const handleAiFix = useCallback(async (id: string) => {
+    const editor = editorRef.current;
+    if (!editor || !sessionId || !workspaceId || aiFixing) return;
+    const st = optimizerHighlightKey.getState(editor.state);
+    const issue = st ? st.issues.filter((i) => i.finding.id === id)[0] : null;
+    if (!issue) return;
+    setAiFixing(id);
+    try {
+      const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}/suggest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          criterion: issue.finding.criterion,
+          quote: issue.finding.quote,
+          prefix: issue.finding.prefix,
+          suffix: issue.finding.suffix,
+          explanation: issue.finding.explanation,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Could not generate a rewrite");
+        return;
+      }
+      setAiEdits((prev) => ({ ...prev, [id]: data.suggestedEdit }));
+    } catch {
+      toast.error("Could not generate a rewrite");
+    } finally {
+      setAiFixing(null);
+    }
+  }, [sessionId, workspaceId, aiFixing]);
+
   const handleApply = useCallback((id: string) => {
+    /* the AI-edit override, when one was generated for this finding */
     const editor = editorRef.current;
     if (!editor) return;
-    const result = applyFinding(editor as any, id);
+    const result = applyFinding(editor as any, id, aiEdits[id]);
     if (!result.ok) {
       toast.error(
         result.reason === "drifted"
@@ -514,7 +560,7 @@ function OptimizerStudio() {
     // Persist immediately: the edit came from a button, not from typing, so
     // there is no debounce coming to save it.
     if (editor) saveBody(editor.getHTML());
-  }, [syncIssues]);
+  }, [syncIssues, aiEdits]);
 
   const handleDismiss = useCallback((id: string) => {
     const editor = editorRef.current;
@@ -989,6 +1035,22 @@ function OptimizerStudio() {
             onApply={handleApply}
             onNext={selectNext}
             onClose={() => handleSelect(null)}
+            onAiFix={handleAiFix}
+            aiEdit={selectedId ? aiEdits[selectedId] : undefined}
+            aiFixing={selectedId !== null && aiFixing === selectedId}
+            onManualEdit={(id) => {
+              // Manual edit: put the caret ON the span and get out of the way.
+              const editor = editorRef.current;
+              if (!editor) return;
+              const st = optimizerHighlightKey.getState(editor.state);
+              const issue = st ? st.issues.filter((i) => i.finding.id === id)[0] : null;
+              if (issue && issue.status === "active") {
+                editor.commands.focus();
+                editor.commands.setTextSelection({ from: issue.from, to: issue.to });
+                editor.commands.scrollIntoView();
+              }
+              handleSelect(null);
+            }}
             activeCount={issues.filter((i) => i.status === "active").length}
           />
           <div className="mx-auto w-full max-w-[46rem] px-6 py-6">
@@ -1048,6 +1110,9 @@ function OptimizerStudio() {
               diagnostics={diagnostics}
               hasAssessed={diagnostics !== null}
               onAssess={runAssess}
+              onAiFix={handleAiFix}
+              aiEdits={aiEdits}
+              aiFixingId={aiFixing}
             />
           )}
         </div>

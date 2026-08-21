@@ -15,7 +15,7 @@
  */
 
 import { cn } from "@/lib/utils";
-import { Check, X, Pencil, AlertCircle } from "lucide-react";
+import { Check, X, Pencil, AlertCircle , Loader2, Sparkles } from "lucide-react";
 import type { Issue } from "@/lib/optimizer/highlight-plugin";
 import { criterionLabel } from "@/components/optimizer/IssuePopover";
 
@@ -34,6 +34,10 @@ interface Props {
    *  level down. */
   hasAssessed?: boolean;
   onAssess?: () => void;
+  /** On-demand rewrite for a finding that arrived without one. */
+  onAiFix?: (id: string) => void;
+  aiEdits?: { [id: string]: string };
+  aiFixingId?: string | null;
 }
 
 const SEVERITY_DOT: { [k: string]: string } = {
@@ -44,6 +48,7 @@ const SEVERITY_DOT: { [k: string]: string } = {
 
 export default function IssueList({
   issues, selectedId, onSelect, onApply, onDismiss, diagnostics, degraded, hasAssessed, onAssess,
+  onAiFix, aiEdits, aiFixingId,
 }: Props) {
   // The two layers are shown apart, because they answer different questions and
   // cost different things. The instant ones are mechanical and always on — a
@@ -156,24 +161,29 @@ export default function IssueList({
 
               {selected && (
                 <>
-                  {f.suggestedEdit ? (
+                  {(f.suggestedEdit || (aiEdits && aiEdits[f.id])) ? (
                     <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/[0.06] px-2.5 py-2 mb-2">
-                      <p className="text-[12px] leading-snug">{f.suggestedEdit}</p>
+                      <p className="text-[12px] leading-snug">{f.suggestedEdit || (aiEdits && aiEdits[f.id])}</p>
                     </div>
-                  ) : (
-                    <p className="text-[11px] text-muted-foreground mb-2 italic">
-                      No single-span rewrite for this one — it needs a judgement call.
-                    </p>
-                  )}
-                  <div className="flex items-center gap-1.5">
-                    {f.suggestedEdit && (
+                  ) : null}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {(f.suggestedEdit || (aiEdits && aiEdits[f.id])) ? (
                       <button
                         onClick={(e) => { e.stopPropagation(); onApply(f.id); }}
                         className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-primary text-primary-foreground text-[12px] font-semibold"
                       >
                         <Check className="h-3 w-3" /> Apply
                       </button>
-                    )}
+                    ) : onAiFix ? (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onAiFix(f.id); }}
+                        disabled={aiFixingId === f.id}
+                        className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-primary text-primary-foreground text-[12px] font-semibold disabled:opacity-60"
+                      >
+                        {aiFixingId === f.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                        {aiFixingId === f.id ? "Writing…" : "Fix with AI"}
+                      </button>
+                    ) : null}
                     <button
                       onClick={(e) => { e.stopPropagation(); onSelect(f.id); }}
                       className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border text-[12px] font-medium"
