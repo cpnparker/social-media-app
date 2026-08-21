@@ -48,7 +48,7 @@ import { CRITERIA } from "../lib/optimizer/rubric";
 import { JUDGE_CRITERIA, JUDGE_CRITERION_KEYS } from "../lib/optimizer/judge-rubric";
 import {
   parseJudgeResponse, scoreJudgeResponse, anchorJudgeFindings,
-  assessmentKey, buildJudgePrompt, deriveVerdictFindings,
+  assessmentKey, assessmentKeyWith, buildJudgePrompt, deriveVerdictFindings,
 } from "../lib/optimizer/judge";
 import type { JudgeInput } from "../lib/optimizer/judge";
 import { parseDraft } from "../lib/optimizer/parse";
@@ -410,6 +410,26 @@ console.log(`\n8. deriveVerdictFindings`);
   deriveVerdictFindings(clean as any, parsed).length === 0
     ? pass("perfect verdicts derive no findings")
     : fail("a clean verdict produced a finding — marks would appear on good text");
+}
+
+
+// ── The memo key varies with every version that changes behaviour ────────
+console.log(`\n9. assessmentKey versioning`);
+{
+  const parsed = parseDraft({ body: "<p>Same draft text for every variant.</p>", title: "t" });
+  const input = { parsed, title: "t", targetQueries: [], format: "explainer" } as any;
+  const a = assessmentKeyWith(input, "1.0.0", "p1", "v1");
+  const b = assessmentKeyWith(input, "1.0.0", "p1", "v2");
+  const c = assessmentKeyWith(input, "1.0.0", "p2", "v1");
+  const d = assessmentKeyWith(input, "1.1.0", "p1", "v1");
+  a !== b
+    ? pass("a pipeline version bump changes the key")
+    : fail("PIPELINE VERSION DOES NOT REACH THE HASH — a cached result survives every behaviour change, which is the exact bug this section exists to prevent (it shipped once already)");
+  a !== c ? pass("a prompt version bump changes the key") : fail("prompt version does not reach the hash");
+  a !== d ? pass("a rubric version bump changes the key") : fail("rubric version does not reach the hash");
+  a === assessmentKeyWith(input, "1.0.0", "p1", "v1")
+    ? pass("identical inputs produce an identical key")
+    : fail("the key is not deterministic");
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

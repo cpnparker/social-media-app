@@ -567,6 +567,26 @@ export const JUDGE_PIPELINE_VERSION = "3";
 // 3: verdict-derived findings — the server anchors imperfect verdicts itself.
 
 export function assessmentKey(input: JudgeInput, rubricVersion: string): string {
+  return assessmentKeyWith(input, rubricVersion, JUDGE_PROMPT_VERSION, JUDGE_PIPELINE_VERSION);
+}
+
+/**
+ * The versions are PARAMETERS so a check can prove they reach the hash.
+ *
+ * The first attempt at pipeline-versioning added the constant, wrote a commit
+ * message about it, and never put it in the parts array: the edit silently
+ * failed to match — twice, because the join separator is a NULL BYTE that no
+ * terminal renders — and nothing asserted the key varies with the version. The
+ * memo kept serving a cached result across a behaviour change, exactly the
+ * failure the version was added to prevent. A version constant nobody reads is
+ * the same class of bug as a verify script that asserts code EXISTS.
+ */
+export function assessmentKeyWith(
+  input: JudgeInput,
+  rubricVersion: string,
+  promptVersion: string,
+  pipelineVersion: string
+): string {
   const parts = [
     input.parsed.text,
     (input.targetQueries || []).join("|"),
@@ -574,8 +594,9 @@ export function assessmentKey(input: JudgeInput, rubricVersion: string): string 
     (input.brandAliases || []).join("|"),
     input.format || "",
     rubricVersion,
-    JUDGE_PROMPT_VERSION,
+    promptVersion,
     JUDGE_MODEL,
+    pipelineVersion,
   ].join(" ");
   // Small, dependency-free FNV-1a. Collision risk is irrelevant here: the cost
   // of one is a stale assessment on a different draft of the same length, and
