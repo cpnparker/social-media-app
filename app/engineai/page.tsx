@@ -11,6 +11,7 @@ import {
 } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
+import EngineAISidebar from "@/components/engineai/EngineAISidebar";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import {
   Send,
@@ -167,20 +168,6 @@ function EngineAIContent() {
   >();
   const [searchQuery, setSearchQuery] = useState("");
   const [deepSearchResults, setDeepSearchResults] = useState<AIConversation[]>([]);
-  /**
-   * Optimiser articles, listed beside conversations.
-   *
-   * An article is a peer of a conversation, not a different product: it lives
-   * in the same workspace, under the same Private/Team tabs, and the writer
-   * thinks of it as another thing they are working on. Kept in its OWN state
-   * and its own sidebar section rather than merged into `conversations` —
-   * interleaving two kinds of row in one list makes both harder to scan, and
-   * every conversation action (rename, pin, delete) would need a type guard.
-   *
-   * Empty when the optimiser is switched off for this account, which is the
-   * normal state today: the route 403s and the section simply never renders.
-   */
-  const [articles, setArticles] = useState<OptimizerArticle[]>([]);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voiceTranscriptN, setVoiceTranscriptN] = useState(0);
   const [voiceWakeSession, setVoiceWakeSession] = useState(false);
@@ -196,10 +183,13 @@ function EngineAIContent() {
   const { canInstall, promptInstall } = useInstallPrompt();
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [userName, setUserName] = useState("");
-  const [userEmail, setUserEmail] = useState("");
+  // Still here for the DESKTOP TOP-BAR client selector, which is a separate
+  // control from the sidebar's. The sidebar keeps its own copy of this state
+  // internally; these two pickers were never wired together.
   const [clientSearchQuery, setClientSearchQuery] = useState("");
   const [clientPopoverOpen, setClientPopoverOpen] = useState(false);
+  const [userName, setUserName] = useState("");
+  const [userEmail, setUserEmail] = useState("");
   const [contextConfig, setContextConfig] = useState({
     contracts: "summary" as string,
     contentPipeline: "summary" as string,
@@ -245,25 +235,13 @@ function EngineAIContent() {
   const selectedCustomer = customerCtx?.selectedCustomer;
   const canViewAll = customerCtx?.canViewAll ?? false;
 
-  // Filter clients by search query
   const filteredClients = (
     clientSearchQuery
-      ? customers.filter((c) =>
-          c.name.toLowerCase().includes(clientSearchQuery.toLowerCase())
-        )
+      ? customers.filter((c) => c.name.toLowerCase().includes(clientSearchQuery.toLowerCase()))
       : customers
   ).sort((a, b) => a.name.localeCompare(b.name));
 
-  // Client id → name, so an article row can show its client without carrying a
-  // denormalised copy of the name that would go stale on a rename.
-  const clientNameById = useMemo(() => {
-    const m = new Map<number, string>();
-    for (let i = 0; i < customers.length; i++) {
-      const id = Number(customers[i].id);
-      if (!Number.isNaN(id)) m.set(id, customers[i].name);
-    }
-    return m;
-  }, [customers]);
+
 
   // Prevent hydration mismatch for theme icon
   useEffect(() => setMounted(true), []);
@@ -772,33 +750,6 @@ function EngineAIContent() {
     return () => clearTimeout(timer);
   }, [searchQuery, workspaceId]);
 
-  // Articles list. Refetched when the workspace changes and after returning
-  // from the optimiser, so a piece written there appears here without a reload.
-  useEffect(() => {
-    if (!workspaceId) { setArticles([]); return; }
-    let cancelled = false;
-    fetch(`/api/optimizer/sessions?workspaceId=${encodeURIComponent(workspaceId)}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (cancelled || !d || !Array.isArray(d.sessions)) return;
-        setArticles(
-          d.sessions.map((row: any) => ({
-            id: row.id_session,
-            title: row.name_title || "Untitled piece",
-            status: row.type_status || "",
-            // Default to private on a null. A row with no visibility is
-            // invisible in BOTH tabs under strict equality, which reads as data
-            // loss; private is the safe direction to resolve it in.
-            visibility: row.type_visibility || "private",
-            source: row.type_source || "generated",
-            clientId: row.id_client ?? null,
-            updatedAt: row.date_updated,
-          }))
-        );
-      })
-      .catch(() => { /* the optimiser being off is not an error in this view */ });
-    return () => { cancelled = true; };
-  }, [workspaceId]);
 
   // Time formatting
   const timeAgo = (dateStr: string) => {
@@ -838,27 +789,6 @@ function EngineAIContent() {
     : [];
   const displayed = searchQuery ? [...filtered, ...deepExtra] : filtered;
 
-  /**
-   * Articles under the same tab and the same search box.
-   *
-   * Match FIRST, then filter by visibility — never the reverse. Filtering the
-   * list down to the current tab and searching within it would silently hide a
-   * team article from someone searching in Private, which reads as the article
-   * having been deleted.
-   */
-  const visibleArticles = articles.filter((a) => {
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      const client = a.clientId !== null ? clientNameById.get(a.clientId) : null;
-      const matches =
-        a.title.toLowerCase().indexOf(q) >= 0 ||
-        (client ? client.toLowerCase().indexOf(q) >= 0 : false);
-      if (!matches) return false;
-    }
-    if (tab === "private" && a.visibility !== "private") return false;
-    if (tab === "team" && a.visibility !== "team") return false;
-    return true;
-  });
 
   // How many conversations to show per client group before "more"
   const GROUP_PREVIEW_LIMIT = 5;
@@ -1085,44 +1015,30 @@ function EngineAIContent() {
   return (
     <>
       {/* ─── Mobile overlay backdrop ─── */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
+      {/* The sidebar moved to components/engineai/EngineAISidebar.tsx so every
+          surface under /engineai has it. The Content Optimiser rendered with no
+          navigation and no header at all before this, against a design whose own
+          annotation read "Header — the chrome that was missing".
 
-      {/* ─── Sidebar (rail + panel) ─── */}
-      <aside
-        className={cn(
-          "fixed inset-y-0 left-0 z-50 w-[280px] flex",
-          "transform transition-transform duration-300 ease-in-out",
-          "lg:static lg:z-auto lg:translate-x-0 lg:shrink-0",
-          showRail && "lg:w-[308px]",
-          sidebarOpen ? "translate-x-0" : "-translate-x-full"
-        )}
-      >
-        {/* ═══════ Icon Rail (desktop only) ═══════ */}
-        {showRail && (
-          <div className="hidden lg:flex flex-col items-center w-12 bg-[#2e3440] py-3 shrink-0">
-            {/* Logo */}
-            <a href={getSubdomainUrl("engine", "/dashboard")} className="mb-4">
-              <div className="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-white/10 transition-colors">
-                <img
-                  src="/assets/logo_engine_icon.svg"
-                  alt="Home"
-                  width={24}
-                  height={24}
-                  className="h-6 w-6 brightness-0 invert"
-                />
-              </div>
-            </a>
-
-            {/* Area icons */}
-            <SectionRailDesktop currentArea="engineai" />
-
-            <div className="flex-1" />
-
+          Three blocks stay HERE as slots — the conversation list, the profile
+          dropdown and the rail avatar. They are the most intricate JSX in this
+          file (client grouping, pinning, inline rename, delete, deep-search
+          results) and the optimiser needs none of them, so moving them would
+          risk the daily-driver surface for no gain. Articles moved, because it
+          is genuinely identical on both surfaces and duplicating it is how two
+          sidebars begin to drift apart. */}
+      <EngineAISidebar
+        sidebarOpen={sidebarOpen}
+        onCloseSidebar={() => setSidebarOpen(false)}
+        onNewChat={() => { customerCtx?.setSelectedCustomerId(null); handleNewChat(); }}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        tab={tab}
+        onTabChange={setTab}
+        conversationsLoading={loading}
+        conversationCount={displayed.length}
+        railFooter={
+          <>
             {/* User avatar at bottom of rail */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1220,296 +1136,123 @@ function EngineAIContent() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-          </div>
-        )}
-
-        {/* ═══════ Sidebar Panel ═══════ */}
-        <div className="flex-1 flex flex-col bg-[#3b4252] text-white border-r border-white/[0.06] overflow-hidden">
-          {/* ── Mobile area switcher ── */}
-          {showRail && (
-            <SectionRailMobile currentArea="engineai" />
-          )}
-
-          {/* Top section */}
-          <div className="shrink-0 p-3 space-y-3">
-            {/* Logo + New Chat */}
-            <div className="flex items-center justify-between">
-              <button
-                onClick={() => {
-                  customerCtx?.setSelectedCustomerId(null);
-                  handleNewChat();
-                }}
-                className="flex items-center gap-2 hover:opacity-70 transition-opacity"
-              >
-                {!showRail && (
-                  <img
-                    src="/assets/logo_engine_icon.svg"
-                    alt="EngineAI"
-                    className="h-7 w-7 brightness-0 invert"
-                  />
-                )}
-                <span className="text-[15px] font-semibold text-white">
-                  EngineAI
-                </span>
-              </button>
-              <button
-                onClick={handleNewChat}
-                className="h-8 w-8 rounded-lg bg-white/10 hover:bg-white/15 flex items-center justify-center transition-colors text-white"
-                title="New chat"
-              >
-                <Plus className="h-4 w-4" />
-              </button>
-            </div>
-
-            {/* Client selector (searchable popover) */}
-            {customers.length > 0 && (
-              <Popover
-                open={clientPopoverOpen}
-                onOpenChange={(open) => {
-                  setClientPopoverOpen(open);
-                  if (!open) setClientSearchQuery("");
-                }}
-              >
-                <PopoverTrigger asChild>
-                  <button className="w-full flex items-center gap-2 rounded-lg bg-white/[0.06] hover:bg-white/10 px-2.5 py-2 transition-colors text-left">
-                    <Building2 className="h-3.5 w-3.5 text-white/40 shrink-0" />
-                    <span className="flex-1 truncate text-white/80 text-[13px] font-medium">
-                      {selectedCustomer?.name || "General"}
-                    </span>
-                    <ChevronsUpDown className="h-3 w-3 text-white/40 shrink-0" />
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent align="start" side="bottom" className="w-[256px] p-0">
-                  <div className="flex items-center border-b px-3">
-                    <Search className="mr-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <input
-                      placeholder="Search clients..."
-                      value={clientSearchQuery}
-                      onChange={(e) => setClientSearchQuery(e.target.value)}
-                      className="flex h-9 w-full bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
-                    />
-                    {clientSearchQuery && (
-                      <button
-                        onClick={() => setClientSearchQuery("")}
-                        className="ml-1 h-4 w-4 shrink-0 text-muted-foreground hover:text-foreground"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    )}
-                  </div>
-                  <div className="max-h-[240px] overflow-y-auto p-1">
-                    {canViewAll && !clientSearchQuery && (
-                      <button
-                        onClick={() => {
-                          customerCtx?.setSelectedCustomerId(null);
-                          setClientPopoverOpen(false);
-                          setClientSearchQuery("");
-                        }}
-                        className={cn(
-                          "w-full flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent transition-colors text-left",
-                          !selectedCustomer && "bg-accent"
-                        )}
-                      >
-                        <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                        <span className="flex-1">General</span>
-                        {!selectedCustomer && (
-                          <Check className="h-4 w-4 text-primary shrink-0" />
-                        )}
-                      </button>
-                    )}
-                    {filteredClients.length === 0 ? (
-                      <p className="py-4 text-center text-sm text-muted-foreground">
-                        No clients found
-                      </p>
-                    ) : (
-                      filteredClients.map((c) => (
-                        <button
-                          key={c.id}
-                          onClick={() => {
-                            customerCtx?.setSelectedCustomerId(c.id);
-                            setClientPopoverOpen(false);
-                            setClientSearchQuery("");
-                          }}
-                          className={cn(
-                            "w-full flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent transition-colors text-left",
-                            selectedCustomer?.id === c.id && "bg-accent"
-                          )}
-                        >
-                          {c.logoUrl ? (
-                            <img
-                              src={c.logoUrl}
-                              alt=""
-                              className="h-4 w-4 rounded object-cover shrink-0"
-                            />
-                          ) : (
-                            <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                          )}
-                          <span className="flex-1 truncate">{c.name}</span>
-                          {selectedCustomer?.id === c.id && (
-                            <Check className="h-4 w-4 text-primary shrink-0" />
-                          )}
-                        </button>
-                      ))
-                    )}
-                  </div>
-                </PopoverContent>
-              </Popover>
-            )}
-
-            {/* Tools.
-                EngineAI's sub-surfaces (/engineai/design, /engineai/optimizer)
-                render inside this same shell but had NO inbound link from
-                anywhere in the product — they were reachable only by typing the
-                URL, which in practice means nobody found them. A feature nobody
-                can navigate to is a feature that does not exist. */}
-            <button
-              onClick={() => router.push("/engineai/optimizer")}
-              className="w-full flex items-center gap-2 rounded-lg bg-white/[0.06] hover:bg-white/10 px-2.5 py-2 transition-colors text-left text-white/80 hover:text-white"
-              title="Write content optimised to be cited by AI assistants"
-            >
-              <PenLine className="h-3.5 w-3.5 text-white/40 shrink-0" />
-              <span className="flex-1 truncate text-[13px] font-medium">Content Optimiser</span>
-            </button>
-
-            {/* Search chats */}
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/40" />
-              <input
-                placeholder="Search chats..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full h-8 rounded-lg bg-white/[0.06] border border-white/[0.08] pl-8 pr-3 text-[13px] text-white placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-white/20"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery("")}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/60"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              )}
-            </div>
-
-            {/* Private / Team tabs */}
-            <div className="flex gap-0.5 bg-white/10 rounded-lg p-0.5">
-              <button
-                onClick={() => setTab("private")}
-                className={cn(
-                  "flex-1 px-2.5 py-1 rounded-md text-[13px] font-medium transition-all",
-                  tab === "private"
-                    ? "bg-white/15 text-white shadow-sm"
-                    : "text-white/50 hover:text-white/80"
-                )}
-              >
-                <Lock className="h-3.5 w-3.5 inline mr-1.5 -mt-0.5" />
-                Private
-              </button>
-              <button
-                onClick={() => setTab("team")}
-                className={cn(
-                  "flex-1 px-2.5 py-1 rounded-md text-[13px] font-medium transition-all",
-                  tab === "team"
-                    ? "bg-white/15 text-white shadow-sm"
-                    : "text-white/50 hover:text-white/80"
-                )}
-              >
-                <Users className="h-3.5 w-3.5 inline mr-1.5 -mt-0.5" />
-                Team
-              </button>
-            </div>
-          </div>
-
-          {/* Scrollable conversation list */}
-          <div className="flex-1 overflow-y-auto px-2 py-1 scrollbar-hide">
-            {loading ? (
-              <div className="flex justify-center py-8">
-                <Loader2 className="h-4 w-4 animate-spin text-white/40" />
-              </div>
-            ) : displayed.length === 0 && visibleArticles.length === 0 ? (
-              <div className="text-center py-8 px-3">
-                <p className="text-[13px] text-white/50">
-                  {searchQuery
-                    ? "Nothing matches your search"
-                    : "Nothing here yet"}
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-0.5">
-                {/* ─── Articles ───
-                    Its own section rather than rows mixed into the chat list.
-                    Two kinds of thing in one list is harder to scan than two
-                    short lists, and when searching it is the difference
-                    between "did it find my article?" and having to read every
-                    row to find out. The heading carries the count so an empty
-                    result under a heading never reads as a hung fetch. */}
-                {visibleArticles.length > 0 && (
-                  <div className="mb-1">
-                    <div className="flex items-center justify-between px-2.5 pt-3 pb-1">
-                      <p className="text-[11px] font-semibold text-white/55 uppercase tracking-wider">
-                        Articles
-                      </p>
-                      <span className="text-[11px] text-white/35 tabular-nums">
-                        {visibleArticles.length}
-                      </span>
-                    </div>
-                    {visibleArticles.slice(0, searchQuery ? 8 : 5).map((a) => (
-                      <button
-                        key={a.id}
-                        onClick={() => router.push(`/engineai/optimizer?session=${encodeURIComponent(a.id)}`)}
-                        className="w-full text-left rounded-lg px-2.5 py-2 transition-colors text-white/70 hover:bg-white/10 hover:text-white"
-                      >
-                        <div className="flex items-center gap-2">
-                          {/* A leading icon, not a trailing badge: it marks the
-                              row as a different KIND before the eye reaches the
-                              title, and it does not compete with the timestamp
-                              for the right edge. */}
-                          <PenLine className="h-3.5 w-3.5 text-white/40 shrink-0" />
-                          <p className="text-[14px] font-medium truncate flex-1">{a.title}</p>
-                          <span className="text-[11px] text-white/55 shrink-0">
-                            {a.updatedAt ? timeAgo(a.updatedAt) : ""}
-                          </span>
-                        </div>
-                        {a.clientId !== null && clientNameById.get(a.clientId) && (
-                          <div className="flex items-center gap-1 mt-0.5 pl-[22px]">
-                            <Building2 className="h-3 w-3 text-white/30 shrink-0" />
-                            <p className="text-[11px] text-white/55 truncate">
-                              {clientNameById.get(a.clientId)}
-                            </p>
-                          </div>
-                        )}
-                      </button>
-                    ))}
-                    {visibleArticles.length > (searchQuery ? 8 : 5) && (
-                      <button
-                        onClick={() => router.push("/engineai/optimizer")}
-                        className="w-full text-left px-2.5 py-1.5 text-[12px] text-white/55 hover:text-white/80 transition-colors"
-                      >
-                        {visibleArticles.length - (searchQuery ? 8 : 5)} more...
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                {/* ─── Conversations ───
-                    Headed only while searching, where the two lists sit
-                    together and each needs to say what it is. Unsearched, the
-                    chat list keeps its own client groupings and a second
-                    heading above them would just be noise. */}
-                {searchQuery && displayed.length > 0 && visibleArticles.length > 0 && (
-                  <div className="flex items-center justify-between px-2.5 pt-3 pb-1">
-                    <p className="text-[11px] font-semibold text-white/55 uppercase tracking-wider">
-                      Conversations
+          </>
+        }
+        footer={
+          <>
+          {/* Bottom section — user profile (hidden on desktop when rail is showing, since rail has its own avatar) */}
+          <div className={cn("shrink-0 border-t border-white/[0.08] p-3", showRail && "lg:hidden")}>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-white/10 transition-colors text-left">
+                  <Avatar className="h-7 w-7">
+                    <AvatarFallback className="bg-blue-500/30 text-blue-200 text-[10px] font-semibold">
+                      {userInitials}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium text-white truncate">
+                      {userName || "User"}
                     </p>
-                    <span className="text-[11px] text-white/35 tabular-nums">{displayed.length}</span>
+                    {userEmail && (
+                      <p className="text-[10px] text-white/50 truncate">
+                        {userEmail}
+                      </p>
+                    )}
                   </div>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" side="top" className="w-56">
+                <div className="px-3 py-2">
+                  <p className="text-sm font-medium">{userName || "User"}</p>
+                  <p className="text-xs text-muted-foreground">{userEmail}</p>
+                </div>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => { setPersonaliseTab("context"); setPersonaliseDialogOpen(true); }}
+                  className="gap-2"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  Personalise
+                </DropdownMenuItem>
+                {/* First-class entry, and NOT admin-gated. These are the user's
+                    own accounts; burying them as a tab inside Personalise meant
+                    people looked under Administration → Integrations instead,
+                    which most of them cannot even open. */}
+                <DropdownMenuItem
+                  onClick={() => { setPersonaliseTab("connections"); setPersonaliseDialogOpen(true); }}
+                  className="gap-2"
+                >
+                  <Link2 className="h-4 w-4" />
+                  Connections
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setMemoryManagerOpen(true)}
+                  className="gap-2"
+                >
+                  <Brain className="h-4 w-4" />
+                  Memories
+                  {memoryCount > 0 && (
+                    <span className="ml-auto text-[10px] text-muted-foreground">{memoryCount}</span>
+                  )}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setScheduledOpen(true)}
+                  className="gap-2"
+                >
+                  <Clock className="h-4 w-4" />
+                  Scheduled prompts
+                </DropdownMenuItem>
+                {isAdmin && (
+                  <DropdownMenuItem
+                    onClick={() => setAdminDialogOpen(true)}
+                    className="gap-2"
+                  >
+                    <Settings className="h-4 w-4" />
+                    Administration
+                  </DropdownMenuItem>
                 )}
-                {searchQuery && displayed.length === 0 && visibleArticles.length > 0 && (
-                  <p className="px-2.5 pt-3 pb-1 text-[11.5px] text-white/40">
-                    No conversations match.
-                  </p>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => setClientContextOpen(true)}
+                  className="gap-2"
+                >
+                  <BookOpen className="h-4 w-4" />
+                  Client Context
+                </DropdownMenuItem>
+                {/* Only rendered once Chrome/Edge has fired beforeinstallprompt,
+                    so the item never appears where it couldn't work (already
+                    installed, or a browser without the API). */}
+                {canInstall && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={async () => {
+                        const outcome = await promptInstall();
+                        if (outcome === "accepted") toast.success("EngineAI installed — look for it on your home screen");
+                      }}
+                      className="gap-2"
+                    >
+                      <Download className="h-4 w-4" />
+                      Install app
+                    </DropdownMenuItem>
+                  </>
                 )}
-
-                {sortedGroups ? (
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => signOut({ callbackUrl: "/login" })}
+                  className="text-destructive focus:text-destructive gap-2"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          </>
+        }
+      >
+                  {sortedGroups ? (
                   /* ─── Grouped by client ─── */
                   sortedGroups.map((group) => (
                     <div key={group.key}>
@@ -1683,121 +1426,7 @@ function EngineAIContent() {
                     </button>
                   ))
                 )}
-              </div>
-            )}
-          </div>
-
-          {/* Bottom section — user profile (hidden on desktop when rail is showing, since rail has its own avatar) */}
-          <div className={cn("shrink-0 border-t border-white/[0.08] p-3", showRail && "lg:hidden")}>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-white/10 transition-colors text-left">
-                  <Avatar className="h-7 w-7">
-                    <AvatarFallback className="bg-blue-500/30 text-blue-200 text-[10px] font-semibold">
-                      {userInitials}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[13px] font-medium text-white truncate">
-                      {userName || "User"}
-                    </p>
-                    {userEmail && (
-                      <p className="text-[10px] text-white/50 truncate">
-                        {userEmail}
-                      </p>
-                    )}
-                  </div>
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" side="top" className="w-56">
-                <div className="px-3 py-2">
-                  <p className="text-sm font-medium">{userName || "User"}</p>
-                  <p className="text-xs text-muted-foreground">{userEmail}</p>
-                </div>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() => { setPersonaliseTab("context"); setPersonaliseDialogOpen(true); }}
-                  className="gap-2"
-                >
-                  <Sparkles className="h-4 w-4" />
-                  Personalise
-                </DropdownMenuItem>
-                {/* First-class entry, and NOT admin-gated. These are the user's
-                    own accounts; burying them as a tab inside Personalise meant
-                    people looked under Administration → Integrations instead,
-                    which most of them cannot even open. */}
-                <DropdownMenuItem
-                  onClick={() => { setPersonaliseTab("connections"); setPersonaliseDialogOpen(true); }}
-                  className="gap-2"
-                >
-                  <Link2 className="h-4 w-4" />
-                  Connections
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setMemoryManagerOpen(true)}
-                  className="gap-2"
-                >
-                  <Brain className="h-4 w-4" />
-                  Memories
-                  {memoryCount > 0 && (
-                    <span className="ml-auto text-[10px] text-muted-foreground">{memoryCount}</span>
-                  )}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setScheduledOpen(true)}
-                  className="gap-2"
-                >
-                  <Clock className="h-4 w-4" />
-                  Scheduled prompts
-                </DropdownMenuItem>
-                {isAdmin && (
-                  <DropdownMenuItem
-                    onClick={() => setAdminDialogOpen(true)}
-                    className="gap-2"
-                  >
-                    <Settings className="h-4 w-4" />
-                    Administration
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() => setClientContextOpen(true)}
-                  className="gap-2"
-                >
-                  <BookOpen className="h-4 w-4" />
-                  Client Context
-                </DropdownMenuItem>
-                {/* Only rendered once Chrome/Edge has fired beforeinstallprompt,
-                    so the item never appears where it couldn't work (already
-                    installed, or a browser without the API). */}
-                {canInstall && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onClick={async () => {
-                        const outcome = await promptInstall();
-                        if (outcome === "accepted") toast.success("EngineAI installed — look for it on your home screen");
-                      }}
-                      className="gap-2"
-                    >
-                      <Download className="h-4 w-4" />
-                      Install app
-                    </DropdownMenuItem>
-                  </>
-                )}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() => signOut({ callbackUrl: "/login" })}
-                  className="text-destructive focus:text-destructive gap-2"
-                >
-                  <LogOut className="h-4 w-4" />
-                  Sign out
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
-      </aside>
+      </EngineAISidebar>
 
       {/* ─── Main content area ─── */}
       <div className="flex-1 min-h-0 flex flex-col min-w-0 overflow-hidden">

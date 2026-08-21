@@ -26,7 +26,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { ArrowRight, Check, Copy, Loader2, Sparkles, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Copy, Loader2, Menu, Sparkles, X } from "lucide-react";
 import { htmlToMarkdown, htmlToPlainText } from "@/lib/optimizer/export";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -36,6 +36,7 @@ import type { DraftInput } from "@/lib/optimizer/engine";
 import type { ClientCanon } from "@/lib/optimizer/client-canon";
 import IssueList from "@/components/optimizer/IssueList";
 import StartScreen from "@/components/optimizer/StartScreen";
+import EngineAISidebar from "@/components/engineai/EngineAISidebar";
 import {
   OptimizerHighlight, optimizerHighlightKey, applyFinding,
 } from "@/lib/optimizer/highlight-plugin";
@@ -90,6 +91,40 @@ function OptimizerStudio() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<{ dropped: number; orphaned: number; gateRejected: number } | null>(null);
   const [panelTab, setPanelTab] = useState<"score" | "issues">("score");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [navSearch, setNavSearch] = useState("");
+  const [navTab, setNavTab] = useState<"private" | "team">("private");
+  /** Conversations, listed read-only. Clicking one leaves for the chat surface,
+   *  so none of the chat page's rename/pin/delete affordances belong here. */
+  const [conversations, setConversations] = useState<{ id: string; title: string; visibility: string; updatedAt: string }[]>([]);
+  const [convLoading, setConvLoading] = useState(true);
+
+  useEffect(() => {
+    if (!workspaceId) { setConversations([]); setConvLoading(false); return; }
+    let cancelled = false;
+    setConvLoading(true);
+    fetch(`/api/ai/conversations?workspaceId=${encodeURIComponent(workspaceId)}&mode=general`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d) return;
+        setConversations(
+          (d.conversations || []).map((c: any) => ({
+            id: c.id, title: c.title || "Untitled",
+            visibility: c.visibility || "private", updatedAt: c.updatedAt,
+          }))
+        );
+      })
+      .catch(() => { /* the nav degrades to articles only, which is the point of this surface */ })
+      .finally(() => { if (!cancelled) setConvLoading(false); });
+    return () => { cancelled = true; };
+  }, [workspaceId]);
+
+  // Match FIRST, then filter by visibility — never the reverse, or a team
+  // conversation vanishes for someone searching in Private and reads as deleted.
+  const visibleConversations = conversations.filter((c) => {
+    if (navSearch && c.title.toLowerCase().indexOf(navSearch.toLowerCase()) < 0) return false;
+    return c.visibility === navTab;
+  });
 
   const editorRef = useRef<Editor | null>(null);
   // While streaming, the parent must NOT push `content` into the editor: the
@@ -521,8 +556,46 @@ function OptimizerStudio() {
     [body, streaming, title, queries, format, canon]
   );
 
+  const shell = (inner: React.ReactNode) => (
+    <>
+      <EngineAISidebar
+        sidebarOpen={sidebarOpen}
+        onCloseSidebar={() => setSidebarOpen(false)}
+        searchQuery={navSearch}
+        onSearchChange={setNavSearch}
+        tab={navTab}
+        onTabChange={setNavTab}
+        selectedArticleId={sessionId}
+        conversationsLoading={convLoading}
+        conversationCount={visibleConversations.length}
+        footer={
+          <div className="shrink-0 border-t border-white/[0.08] p-3">
+            <button
+              onClick={() => router.push("/engineai")}
+              className="w-full flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-white/10 transition-colors text-left text-[13px] text-white/70 hover:text-white"
+            >
+              <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
+              Back to chat
+            </button>
+          </div>
+        }
+      >
+        {visibleConversations.slice(0, 12).map((c) => (
+          <button
+            key={c.id}
+            onClick={() => router.push(`/engineai?c=${encodeURIComponent(c.id)}`)}
+            className="w-full text-left rounded-lg px-2.5 py-2 transition-colors text-white/70 hover:bg-white/10 hover:text-white"
+          >
+            <p className="text-[14px] font-medium truncate">{c.title}</p>
+          </button>
+        ))}
+      </EngineAISidebar>
+      {inner}
+    </>
+  );
+
   if (access === "denied") {
-    return (
+    return shell(
       <div className="flex-1 min-h-0 flex items-center justify-center p-8">
         <div className="max-w-md flex flex-col gap-3 text-center">
           <h1 className="text-lg font-semibold">The Content Optimiser is not switched on yet</h1>
@@ -542,7 +615,7 @@ function OptimizerStudio() {
 
   // ── Start ──
   if (phase === "start") {
-    return (
+    return shell(
       <StartScreen
         workspaceId={workspaceId}
         clientId={selectedCustomer ? Number(selectedCustomer.id) : null}
@@ -555,7 +628,7 @@ function OptimizerStudio() {
 
   // ── Brief ──
   if (phase === "brief") {
-    return (
+    return shell(
       <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="mx-auto w-full max-w-[46rem] px-6 py-10 flex flex-col gap-6">
           <button
@@ -695,14 +768,31 @@ function OptimizerStudio() {
   }
 
   // ── Studio ──
-  return (
+  return shell(
     <>
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <div className="shrink-0 h-12 border-b flex items-center gap-3 px-4">
-          <button onClick={closeSession} className="text-[13px] text-muted-foreground hover:text-foreground">
+        {/* The header the design called "the chrome that was missing". The menu
+            button is not decoration: below lg the sidebar is off-canvas, so
+            without it there is no way back to the nav on a narrow screen. */}
+        <div className="shrink-0 h-12 border-b flex items-center gap-2.5 px-4">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="lg:hidden -ml-1 p-1.5 rounded-lg hover:bg-muted text-muted-foreground"
+            aria-label="Open navigation"
+          >
+            <Menu className="h-4 w-4" />
+          </button>
+          <button onClick={closeSession} className="text-[13px] text-muted-foreground hover:text-foreground shrink-0">
             ← All content
           </button>
+          <span className="w-px h-4 bg-border shrink-0" />
           <span className="text-[13px] font-semibold truncate flex-1 min-w-0">{title}</span>
+          {selectedCustomer && (
+            <span className="hidden sm:inline-flex items-center gap-1.5 shrink-0 rounded-full border bg-muted/60 px-2.5 py-1 text-[11.5px] font-medium text-muted-foreground">
+              <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+              {selectedCustomer.name}
+            </span>
+          )}
           {streaming && (
             <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" /> writing
@@ -753,7 +843,12 @@ function OptimizerStudio() {
           </div>
         </div>
       </div>
-      <div className="hidden lg:flex shrink-0 w-[380px] border-l bg-background flex-col min-h-0">
+      {/* Narrower at lg than it used to be. With the sidebar now present, a
+          308px nav plus a 380px panel left the editor about 336px at 1024px —
+          too tight to write in. The score is the point of this surface, so it
+          stays visible rather than being pushed to xl; it just gives back
+          60px until there is room. */}
+      <div className="hidden lg:flex shrink-0 w-[320px] xl:w-[380px] border-l bg-background flex-col min-h-0">
         <div className="shrink-0 flex items-center gap-1 px-3 pt-2 border-b">
           <button
             onClick={() => setPanelTab("score")}
