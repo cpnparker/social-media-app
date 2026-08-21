@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { VOLATILE_MARKER } from "@/lib/ai/prompt-cache";
+import { splitVolatile } from "@/lib/ai/prompt-cache";
 import OpenAI from "openai";
 import { put } from "@vercel/blob";
 import { fetchBlobContent } from "./blob-utils";
@@ -7175,20 +7175,15 @@ const CACHE_MIN_CHARS = 6000; // ~1.5k tokens, comfortably over the minimum
 
 function cacheableSystem(systemText: string | undefined): any {
   if (!systemText || systemText.length < CACHE_MIN_CHARS) return systemText;
-  // Split the volatile tail into its own UNCACHED block. cache_control marks a
-  // breakpoint covering everything BEFORE it, so a stable block followed by a
-  // volatile one caches the stable part and leaves the clock free to change.
-  //
-  // Before this, the whole system string was one cached block with a
-  // minute-resolution timestamp inside it — a prefix that never repeats, so the
-  // cache could not hit on any turn of any conversation.
-  const i = systemText.lastIndexOf(VOLATILE_MARKER);
-  if (i === -1) return [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }];
-  const stable = systemText.slice(0, i);
-  const volatilePart = systemText.slice(i + VOLATILE_MARKER.length);
+  // Lift the volatile region out and put it LAST, in its own uncached block.
+  // cache_control marks a breakpoint covering everything before it, so this
+  // caches the whole prompt except the clock — no matter where in the string
+  // the clock happened to be, or what any caller appended after it.
+  const { stable, volatile } = splitVolatile(systemText);
+  if (!volatile) return [{ type: "text", text: stable, cache_control: { type: "ephemeral" } }];
   return [
     { type: "text", text: stable, cache_control: { type: "ephemeral" } },
-    { type: "text", text: volatilePart },
+    { type: "text", text: volatile },
   ];
 }
 
@@ -7197,7 +7192,11 @@ function cacheableSystem(systemText: string | undefined): any {
  *  also leaves their implicit prefix caching intact, since the volatile part is
  *  already last. */
 function flattenSystem(systemText: string): string {
-  return systemText.replace(VOLATILE_MARKER, "\n\n");
+  // Same reordering for the chains that take a plain string: the volatile part
+  // goes last so their implicit prefix caching sees a stable prefix too, and
+  // the markers never reach the model.
+  const { stable, volatile } = splitVolatile(systemText);
+  return volatile ? `${stable}\n\n${volatile}` : stable;
 }
 
 function cacheableTools(tools: Anthropic.Tool[]): Anthropic.Tool[] {

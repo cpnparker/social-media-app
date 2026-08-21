@@ -1,5 +1,5 @@
 import { categorizeContentType } from "@/lib/content-type-utils";
-import { VOLATILE_MARKER } from "@/lib/ai/prompt-cache";
+import { markVolatile } from "@/lib/ai/prompt-cache";
 import { fenceUntrusted } from "@/lib/ai/providers";
 
 // ── Detail level types ──
@@ -1436,7 +1436,11 @@ Search tips:
   // The clock, last and behind the marker. It is genuinely useful — "what is
   // still on this afternoon" needs it — but it must not sit in front of 100KB
   // of stable instructions.
-  prompt += `${VOLATILE_MARKER}The time right now is ${timeStr} (${TZ}). Use it for "this morning", "this afternoon", "later today", "still to come" and anything else that depends on the hour rather than the date.`;
+  // WRAPPED, not trailing. The messages route appends several more blocks after
+  // this function returns — the deck spec, tool hints, LiveSearch rules — and a
+  // trailing marker would have pushed all of them into the uncached tail. A
+  // wrapped region is lifted out and placed last regardless of what follows it.
+  prompt += markVolatile(`\n\nThe time right now is ${timeStr} (${TZ}). Use it for "this morning", "this afternoon", "later today", "still to come" and anything else that depends on the hour rather than the date.`);
   return prompt;
 }
 
