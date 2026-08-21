@@ -591,13 +591,17 @@ function markdownToHtml(md: string): string {
       if (/^[\s|:-]+$/.test(line)) continue;
       if (!inTable) { out.push("<table>"); inTable = true; }
       const cells = line.split("|").filter((c) => c.trim());
-      out.push("<tr>" + cells.map((c) => `<td>${c.trim()}</td>`).join("") + "</tr>");
+      out.push("<tr>" + cells.map((c) => `<td><p>${c.trim()}</p></td>`).join("") + "</tr>");
       continue;
     }
+    // NESTED, because that is what Tiptap actually emits: <li><p>text</p></li>,
+    // never a bare <li>. The first version of this helper emitted bare tags,
+    // which is why this parity check passed while every list item and table
+    // cell written in the real editor was being parsed as plain prose.
     const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    if (ol) { if (!inList) { out.push("<ol>"); inList = true; } out.push(`<li>${inlineToHtml(ol[1])}</li>`); continue; }
+    if (ol) { if (!inList) { out.push("<ol>"); inList = true; } out.push(`<li><p>${inlineToHtml(ol[1])}</p></li>`); continue; }
     const ul = line.match(/^\s*[-*+]\s+(.*)$/);
-    if (ul) { if (!inList) { out.push("<ul>"); inList = true; } out.push(`<li>${inlineToHtml(ul[1])}</li>`); continue; }
+    if (ul) { if (!inList) { out.push("<ul>"); inList = true; } out.push(`<li><p>${inlineToHtml(ul[1])}</p></li>`); continue; }
     out.push(`<p>${inlineToHtml(line)}</p>`);
   }
   if (inList) out.push("</ul>");

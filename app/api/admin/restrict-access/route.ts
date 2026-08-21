@@ -60,6 +60,25 @@ export async function POST() {
       })
       .eq("id_workspace", ws.id);
 
+    // Newer flags go in their OWN update, deliberately.
+    //
+    // PostgREST fails an entire statement when it names an unknown column, so
+    // folding a not-yet-migrated flag into the update above would break the
+    // whole lockdown on any deploy that ran ahead of its migration — turning a
+    // small gap (one flag not revoked) into a total failure to revoke anything.
+    // Errors here are logged, not thrown, for the same reason: a partial
+    // lockdown must still complete.
+    const { error: newFlagsError } = await intelligenceDb
+      .from("users_access")
+      .update({ flag_access_optimizer: 0 })
+      .eq("id_workspace", ws.id);
+    if (newFlagsError) {
+      console.warn(
+        "[restrict-access] optimizer flag not revoked (column may not be migrated yet):",
+        newFlagsError.message
+      );
+    }
+
     // 2. Create or update the owner's row to all-one
     const { data: existingOwnerAccess } = await intelligenceDb
       .from("users_access")

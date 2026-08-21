@@ -230,7 +230,7 @@ export function parseGateResponse(raw: string, count: number): GateOutcome[] {
 
   let parsed: any = null;
   try {
-    let t = (raw || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    const t = (raw || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
     const first = t.indexOf("[");
     const last = t.lastIndexOf("]");
     if (first >= 0 && last > first) parsed = JSON.parse(t.slice(first, last + 1));

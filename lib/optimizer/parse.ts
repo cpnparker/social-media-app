@@ -132,8 +132,16 @@ function decodeEntities(s: string): string {
     .replace(/&#(\d+);/g, function (_m, d) { return String.fromCharCode(parseInt(d, 10)); });
 }
 
+/**
+ * Tags become a SPACE, not nothing.
+ *
+ * Substituting the empty string glues text across every <br> and cell
+ * boundary: "one<br>two" became the single token "onetwo", so word counts,
+ * every per-1,000-word density and the mean-sentence-length metric were all
+ * quietly wrong on any draft using line breaks.
+ */
 function stripTags(s: string): string {
-  return decodeEntities(s.replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim();
+  return decodeEntities(s.replace(/<[^>]*>/g, " ")).replace(/\s+/g, " ").trim();
 }
 
 export function looksLikeHtml(body: string): boolean {
@@ -164,6 +172,22 @@ function htmlToRawBlocks(body: string): RawBlock[] {
     current = null;
   };
 
+  // Precedence, and the bug it fixes.
+  //
+  // Tiptap emits NESTED block tags: <li><p>text</p></li>,
+  // <blockquote><p>…</p></blockquote>, <td><p>…</p></td>. The original code
+  // flushed and re-opened on every opening tag, so the inner <p> overwrote the
+  // outer <li> and every list item, table cell and pull-quote written in our
+  // own editor parsed as plain prose — listItemCount 0, hasTable false, and
+  // comparative-format-match scoring 0/10 on a draft that IS a ranked list.
+  //
+  // Worse, it made the same content score differently as HTML and as markdown,
+  // breaking this file's own parity promise: the live panel scores editor HTML
+  // while a streamed draft scores markdown, so the score jumped the moment the
+  // writer touched the editor without changing a word.
+  //
+  // A weaker container never displaces a stronger one that is still open.
+  const RANK: { [k: string]: number } = { prose: 1, quote: 2, heading: 3, tableRow: 4, listItem: 5 };
   let m: RegExpExecArray | null;
   while ((m = tagRe.exec(withoutCode)) !== null) {
     if (current) buffer += withoutCode.slice(lastIndex, m.index);
@@ -174,14 +198,28 @@ function htmlToRawBlocks(body: string): RawBlock[] {
     if (tag === "ol") { orderedDepth += closing ? -1 : 1; continue; }
     if (tag === "ul" || tag === "table") continue;
 
-    if (closing) { flush(); continue; }
+    let next: { kind: BlockKind; level?: number; ordered?: boolean };
+    if (/^h[1-6]$/.test(tag)) next = { kind: "heading", level: parseInt(tag.slice(1), 10) };
+    else if (tag === "li") next = { kind: "listItem", ordered: orderedDepth > 0 };
+    else if (tag === "tr" || tag === "td" || tag === "th") next = { kind: "tableRow" };
+    else if (tag === "blockquote") next = { kind: "quote" };
+    else next = { kind: "prose" };
 
+    if (closing) {
+      // Only the tag that OPENED the current block closes it. A </p> inside an
+      // <li> ends the paragraph, not the list item.
+      if (current && RANK[next.kind] >= RANK[current.kind]) flush();
+      continue;
+    }
+
+    if (current && RANK[next.kind] <= RANK[current.kind]) {
+      // A nested weaker tag: keep accumulating into the open block, but insert
+      // a space so <p>a</p><p>b</p> inside one cell does not glue to "ab".
+      buffer += " ";
+      continue;
+    }
     flush();
-    if (/^h[1-6]$/.test(tag)) current = { kind: "heading", level: parseInt(tag.slice(1), 10) };
-    else if (tag === "li") current = { kind: "listItem", ordered: orderedDepth > 0 };
-    else if (tag === "tr") current = { kind: "tableRow" };
-    else if (tag === "blockquote") current = { kind: "quote" };
-    else current = { kind: "prose" };
+    current = next;
   }
   if (current) buffer += withoutCode.slice(lastIndex);
   flush();
@@ -320,10 +358,38 @@ const STAT_PATTERNS: { re: RegExp; kind: StatKind }[] = [
  * quotes is the sentence, so a statistic whose attribution sits in the NEXT
  * sentence travels naked when it is extracted.
  */
-const SOURCE_SIGNAL = /\b(?:according to|per\s+[A-Z]|source:|reports?|reported|found|finds|survey|surveyed|study|studies|analysis|analyses|research|modelling|modeling|data from|cited by)\b/;
+/**
+ * What counts as a source, and why this is stricter than it looks.
+ *
+ * The first version paired a bare source VERB with any capitalised word, which
+ * meant "Research found 60% of buyers switch" was marked fully sourced — the
+ * capitalised word was the sentence-initial common noun "Research" and the verb
+ * was "found". A draft with no named source anywhere passed the naked-statistic
+ * guard cleanly, and that guard is the one most likely to be trusted without
+ * checking.
+ *
+ * So a source verb is no longer sufficient on its own. It must be paired with a
+ * proper noun that is NOT merely the capitalised first word of the sentence.
+ */
+/** Explicit attribution — sufficient alone, wherever it appears. */
+const EXPLICIT_ATTRIBUTION = /\b(?:according to|per)\s+[A-Z]|\(\s*source\s*:|\bcited by\b/i;
 /** A named institutional source counts on its own — "Kessler Institute modelling shows…". */
-const NAMED_SOURCE = /\b[A-Z][a-zA-Z]+\s+(?:Institute|Benchmark|Report|Study|Survey|Index|Review|Association|University|Foundation)\b/;
+const NAMED_SOURCE = /\b[A-Z][a-zA-Z]+\s+(?:Institute|Benchmark|Report|Study|Survey|Index|Review|Association|University|Foundation|Council|Bureau)\b/;
+/** A source verb — necessary but NOT sufficient. */
+const SOURCE_VERB = /\b(?:reports?|reported|found|finds|survey|surveyed|study|studies|analysis|analyses|research|modelling|modeling|data from)\b/i;
 const CAPITALISED_NAME = /\b[A-Z][a-zA-Z]{2,}\b/;
+
+/** True when a capitalised token appears somewhere other than the first word. */
+function hasNonInitialProperNoun(sentence: string): boolean {
+  const trimmed = sentence.replace(/^[^A-Za-z]*[A-Za-z][a-zA-Z']*\s*/, "");
+  return CAPITALISED_NAME.test(trimmed);
+}
+
+function sentenceIsSourced(text: string): boolean {
+  if (EXPLICIT_ATTRIBUTION.test(text)) return true;
+  if (NAMED_SOURCE.test(text)) return true;
+  return SOURCE_VERB.test(text) && hasNonInitialProperNoun(text);
+}
 
 /** A bare year is a date, not a statistic — otherwise every dateline inflates evidence density. */
 function isBareYear(s: string): boolean {
@@ -471,7 +537,7 @@ export function parseDraft(input: ParseInput): ParsedDraft {
   for (let s = 0; s < sentences.length; s++) {
     const sent = sentences[s];
     if (sent.kind === "heading") continue;
-    const sourced = (SOURCE_SIGNAL.test(sent.text) && CAPITALISED_NAME.test(sent.text)) || NAMED_SOURCE.test(sent.text);
+    const sourced = sentenceIsSourced(sent.text);
     for (let p = 0; p < STAT_PATTERNS.length; p++) {
       const re = new RegExp(STAT_PATTERNS[p].re.source, STAT_PATTERNS[p].re.flags);
       let sm: RegExpExecArray | null;

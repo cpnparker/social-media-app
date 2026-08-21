@@ -82,6 +82,13 @@ CREATE TABLE IF NOT EXISTS intelligence.optimizer_drafts (
 CREATE INDEX IF NOT EXISTS idx_optimizer_drafts_session
   ON intelligence.optimizer_drafts(id_session, units_version DESC);
 
+-- Both writers read the current max version and then insert, so two concurrent
+-- saves can compute the same next version and both succeed. This makes the
+-- second one fail loudly instead of silently creating a duplicate version that
+-- the Phase 3 waterfall would then read as two different snapshots.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_optimizer_drafts_version_unique
+  ON intelligence.optimizer_drafts(id_session, units_version);
+
 -- ── 4. optimizer_assessments ───────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS intelligence.optimizer_assessments (
   id_assessment    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -215,6 +222,16 @@ COMMENT ON TABLE intelligence.optimizer_feedback IS
 
 COMMENT ON TABLE intelligence.optimizer_client_canon IS
   'Per-client grounding for drafts and entity checks. Facts are source-tagged (engine|assets|meetings|manual; authorityon is declared but has no producer yet). Only workspace-shared client meetings may contribute — personal MeetingBrain data must never reach a shared client fact sheet.';
+
+-- ── 8. Control Centre row ──────────────────────────────────────────────────
+-- assertServiceAllowed('engine','optimizer') reads this row. Without it
+-- getConfig returns null, assertNotKilled is a no-op and the kill switch in
+-- the generate route guards nothing — the guard is written, the data it needs
+-- does not exist. Seeded live (not killed, no cap) so an operator has a row to
+-- click the moment the feature is switched on.
+INSERT INTO intelligence.service_config (app, type_source, killed)
+VALUES ('engine', 'optimizer', false)
+ON CONFLICT (app, type_source) DO NOTHING;
 
 -- ── RLS ────────────────────────────────────────────────────────────────────
 -- Enabled with no policies, as everywhere else in this schema. The service-role

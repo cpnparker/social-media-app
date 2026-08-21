@@ -18,6 +18,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { createStreamingResponse } from "@/lib/ai/providers";
 import { assertServiceAllowed } from "@/lib/admin/service-control";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 import { requireOptimizer, loadOwnedSession } from "../../../_lib/access";
 import { buildGenerationPrompt } from "@/lib/optimizer/briefs";
 
@@ -73,7 +74,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         preserveLinks: true,
         source: "optimizer",
       } as any,
-      async ({ fullText }: { fullText: string }) => {
+      async (result: { fullText: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; model?: string }) => {
+        const fullText = result.fullText;
+
+        // Log the spend BEFORE the early return, and before anything that can
+        // throw. The tokens were consumed whether or not the generation was
+        // usable, and an unlogged call is worse than a wasted one: nothing
+        // under app/api/optimizer previously called logAiUsage, so no ai_usage
+        // row was ever written with source 'optimizer' — which is exactly what
+        // the spend cap filters on. The cap could never fire, optimizer spend
+        // was invisible in billing, and the "kill switch and spend cap" comment
+        // above was guarding nothing. The guard was written; the data it needs
+        // was never produced.
+        logAiUsage({
+          workspaceId: guard.caller.workspaceId,
+          userId: guard.caller.userId,
+          model: result.model || "claude-sonnet-5",
+          source: "optimizer",
+          inputTokens: result.inputTokens || 0,
+          outputTokens: result.outputTokens || 0,
+          cacheReadTokens: result.cacheReadTokens,
+          cacheWriteTokens: result.cacheWriteTokens,
+        });
+
         if (!fullText || !fullText.trim()) {
           // Never record an empty generation as a draft_ready draft — the
           // studio would show a blank editor and a score of zero as though the

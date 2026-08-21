@@ -127,17 +127,34 @@ function pillar1(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   const headingText = p.headings.map(function (h) { return h.textLower; }).join(" ");
   const bodyLower = p.text.toLowerCase();
 
-  let bestTitle = 0, bestHeadings = 0, bestBody = 0;
+  // Only queries that actually yielded content words are averaged over.
+  //
+  // Dividing by queries.length counted a query the engine had DISCARDED — one
+  // made entirely of stopwords, say — as scoring zero, dragging the pillar down
+  // for a reason the writer cannot see in the panel and cannot act on in the
+  // draft. If every query is discarded the criteria skip, exactly as they do
+  // when no query was set at all: same information available, same treatment.
+  let bestTitle = 0, headingSum = 0, bodySum = 0, scored = 0;
   for (let i = 0; i < queries.length; i++) {
     const terms = contentWords(queries[i]);
     if (terms.length === 0) continue;
     const t = Math.max(coverage(terms, titleLower), h1 ? coverage(terms, h1.textLower) : 0);
     if (t > bestTitle) bestTitle = t;
-    bestHeadings += coverage(terms, headingText);
-    bestBody += coverage(terms, bodyLower);
+    headingSum += coverage(terms, headingText);
+    bodySum += coverage(terms, bodyLower);
+    scored++;
   }
-  bestHeadings = bestHeadings / queries.length;
-  bestBody = bestBody / queries.length;
+
+  if (scored === 0) {
+    return [
+      skip("title-query-alignment", "No usable terms in the target queries"),
+      skip("query-terms-in-headings", "No usable terms in the target queries"),
+      skip("query-terms-in-body", "No usable terms in the target queries"),
+    ];
+  }
+
+  const bestHeadings = headingSum / scored;
+  const bestBody = bodySum / scored;
 
   const titlePts = tieredScore(bestTitle, TITLE_ALIGNMENT_TIERS);
   return [

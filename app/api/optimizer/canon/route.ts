@@ -24,11 +24,16 @@ export async function GET(req: NextRequest) {
   // The canon aggregates client meetings and uploaded client material, so it is
   // more sensitive than the client record it is keyed on. Same gate as
   // everywhere else rather than a bespoke one.
+  // Written as deny-unless-allowed, not allow-unless-denied. The previous shape
+  // (`if ("userId" in authed) { ...check... }`) SKIPPED the client check
+  // entirely when requireAuth returned its error response instead of a user.
+  // It happened to be safe because that response is returned anyway — but it is
+  // one refactor away from a hole, and a gate that reads as fail-open is a gate
+  // nobody can review confidently.
   const authed = await requireAuth();
-  if ("userId" in authed) {
-    const ok = await canAccessClient(authed.userId, authed.role, clientId);
-    if (!ok) return NextResponse.json({ error: "No access to that client" }, { status: 403 });
-  }
+  if (!("userId" in authed)) return authed;
+  const ok = await canAccessClient(authed.userId, authed.role, clientId);
+  if (!ok) return NextResponse.json({ error: "No access to that client" }, { status: 403 });
 
   try {
     const canon = await getClientCanon(guard.caller.workspaceId, clientId, guard.caller.email);

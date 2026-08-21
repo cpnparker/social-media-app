@@ -210,6 +210,15 @@ export const SERVICE_REGISTRY: ServiceEntry[] = [
     schedule: { type: "user-triggered" },
   },
   {
+    id: "engine-optimizer",
+    app: "engine",
+    typeSource: "optimizer",
+    label: "Content Optimizer",
+    description:
+      "Writer-facing GEO studio: generates a draft from a brief and assesses it against the rubric. Sonnet for generation and the judge, Haiku for the suggestion gate.",
+    schedule: { type: "user-triggered" },
+  },
+  {
     id: "engine-engineai",
     app: "engine",
     typeSource: "engineai",

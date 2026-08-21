@@ -50,6 +50,11 @@ export default function TiptapEditor({
   debounceMs = 2000,
 }: TiptapEditorProps) {
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  // Refs so the unmount cleanup can flush without re-registering on every
+  // render (which would defeat the point of an unmount-only effect).
+  const editorRef = useRef<Editor | null>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
   const editor = useEditor({
     extensions: [
@@ -88,17 +93,25 @@ export default function TiptapEditor({
   }, [content]);
 
   useEffect(() => {
+    editorRef.current = editor || null;
     if (editor && onReady) onReady(editor);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor]);
 
-  // A pending debounced save must not fire after unmount — it would call
-  // onChange against a parent that has gone, and in the optimizer's case write
-  // a stale body over a newer one.
+  // On unmount, FLUSH the pending save — do not cancel it.
+  //
+  // The first version cleared the timer, which discarded up to a full debounce
+  // window of the writer's typing whenever they navigated away or the editor
+  // unmounted. Losing someone's words is a worse failure than a late write, and
+  // it is invisible: the text was on screen a moment ago and is simply gone.
   useEffect(() => {
     return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+        if (editorRef.current) onChangeRef.current(editorRef.current.getHTML());
+      }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (!editor) return null;

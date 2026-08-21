@@ -56,11 +56,13 @@ export async function POST(req: NextRequest) {
   // in the app. Without this a user could ground a draft in — and later file it
   // against — a client they cannot otherwise see.
   if (clientId != null && !Number.isNaN(clientId)) {
+    // Deny-unless-allowed. See the note in app/api/optimizer/canon/route.ts —
+    // the `if ("userId" in authed)` shape skips the check rather than denying
+    // when requireAuth returns an error response.
     const authed = await requireAuth();
-    if ("userId" in authed) {
-      const ok = await canAccessClient(authed.userId, authed.role, clientId);
-      if (!ok) return NextResponse.json({ error: "No access to that client" }, { status: 403 });
-    }
+    if (!("userId" in authed)) return authed;
+    const ok = await canAccessClient(authed.userId, authed.role, clientId);
+    if (!ok) return NextResponse.json({ error: "No access to that client" }, { status: 403 });
   }
 
   let canon: any = {};
