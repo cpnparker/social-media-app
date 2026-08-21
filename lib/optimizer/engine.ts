@@ -221,9 +221,14 @@ function pillar2(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   }
 
   let attributed = 0;
-  for (let i = 0; i < p.quotes.length; i++) if (p.quotes[i].attributed) attributed++;
+  const unattributedQuotes: CriterionSpan[] = [];
+  for (let i = 0; i < p.quotes.length; i++) {
+    if (p.quotes[i].attributed) attributed++;
+    else unattributedQuotes.push({ start: p.quotes[i].start, end: p.quotes[i].end, note: "no speaker named" });
+  }
   const qPts = attributed >= 2 ? 10 : attributed === 1 ? 6 : 0;
-  out.push(score("attributed-quotes", qPts, attributed > 0, attributed + " attributed quotation" + (attributed === 1 ? "" : "s")));
+  out.push(score("attributed-quotes", qPts, attributed > 0,
+    attributed + " attributed quotation" + (attributed === 1 ? "" : "s"), unattributedQuotes));
 
   const brand = (input.brandName || "").toLowerCase();
   const hosts: string[] = [];
@@ -296,8 +301,24 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
     return false;
   };
   const afPts = qualifies(0.10) ? 20 : qualifies(0.20) ? 10 : qualifies(0.30) ? 5 : 0;
+  // When the answer is late or absent, point at the opening prose — the place
+  // the writer must edit. Marking "where the answer is not" sounds odd until
+  // you try to act on the alternative, which is a score and a hunt.
+  const afSpans: CriterionSpan[] = [];
+  if (afPts < 20) {
+    for (let i = 0; i < p.sentences.length; i++) {
+      const sen = p.sentences[i];
+      if (sen.kind !== "prose") continue;
+      afSpans.push({
+        start: sen.start, end: sen.end,
+        note: afPts > 0 ? "the answer lands later — it should be here" : "the opening should carry the answer, quotably",
+      });
+      break;
+    }
+  }
   out.push(score("answer-first-position", afPts, afPts >= 20,
-    afPts === 20 ? "answer lands in the first 10%" : afPts > 0 ? "answer lands late" : "no answer-bearing sentence found early"));
+    afPts === 20 ? "answer lands in the first 10%" : afPts > 0 ? "answer lands late" : "no answer-bearing sentence found early",
+    afSpans));
 
   // TL;DR. AuthorityOn matched its summary keywords ANYWHERE in site text,
   // which at article scale would award this to "in conclusion" in the closing
@@ -342,12 +363,14 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
     out.push(skip("heading-answer-adjacency", "No question headings to answer"));
   } else {
     let answered = 0;
+    const unansweredHeads: CriterionSpan[] = [];
     for (let i = 0; i < qHeads.length; i++) {
       const h = qHeads[i];
       const chunk = p.chunks.filter(function (c) { return c.heading && c.heading.blockIndex === h.blockIndex; })[0];
       if (!chunk) continue;
       const headWords = contentWords(h.text);
       const firstTwo = chunk.firstTwoSentences;
+      let thisAnswered = false;
       for (let s = 0; s < firstTwo.length; s++) {
         const sent = firstTwo[s];
         if (sent.wordCount > 35) continue;
@@ -357,12 +380,14 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
         for (let w = 0; w < headWords.length; w++) {
           if (headWords[w].length >= 4 && termPresent(sLower, headWords[w])) { shares = true; break; }
         }
-        if (shares) { answered++; break; }
+        if (shares) { thisAnswered = true; break; }
       }
+      if (thisAnswered) answered++;
+      else unansweredHeads.push({ start: h.start, end: h.end, note: "the two sentences after this heading do not answer it" });
     }
     const pct = (answered / qHeads.length) * 100;
     out.push(score("heading-answer-adjacency", tieredScore(pct, HEADING_ANSWER_TIERS), answered === qHeads.length,
-      answered + " of " + qHeads.length + " answered within two sentences"));
+      answered + " of " + qHeads.length + " answered within two sentences", unansweredHeads));
   }
 
   if (candidates.length === 0) {
@@ -402,9 +427,16 @@ function pillar4(p: ParsedDraft, input: DraftInput): CriterionResult[] {
 
   const scored = p.chunks.filter(function (c) { return !c.isEmpty; });
   let offending = 0;
-  for (let i = 0; i < scored.length; i++) if (opensWithPronoun(scored[i])) offending++;
+  const pronounOpeners: CriterionSpan[] = [];
+  for (let i = 0; i < scored.length; i++) {
+    if (!opensWithPronoun(scored[i])) continue;
+    offending++;
+    const fs = scored[i].firstSentence;
+    if (fs) pronounOpeners.push({ start: fs.start, end: fs.end, note: "an extracted section starts here with no named subject" });
+  }
   out.push(score("pronoun-opening-chunks", tieredScore(offending, PRONOUN_OPEN_TIERS), offending === 0,
-    offending === 0 ? "every section names its subject" : offending + " section" + (offending === 1 ? "" : "s") + " open on a pronoun"));
+    offending === 0 ? "every section names its subject" : offending + " section" + (offending === 1 ? "" : "s") + " open on a pronoun",
+    pronounOpeners));
 
   // Known aliases only. Detecting UNKNOWN variants (misspellings, unregistered
   // nicknames) needs NER and belongs to the judge — the methodology page must
@@ -580,7 +612,14 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
       if (!sent) continue;
       if (sent.text.indexOf(String(currentYear)) >= 0 || sent.text.indexOf(String(currentYear - 1)) >= 0) { dated = true; break; }
     }
-    out.push(score("current-year-stats", dated ? 5 : 0, dated, dated ? "statistics anchored to a current year" : "no statistic carries a current year"));
+    const undatedStats: CriterionSpan[] = [];
+    if (!dated) {
+      for (let i = 0; i < p.stats.length && undatedStats.length < 8; i++) {
+        undatedStats.push({ start: p.stats[i].start, end: p.stats[i].end, note: "no year anywhere near it — engines discount undatable figures" });
+      }
+    }
+    out.push(score("current-year-stats", dated ? 5 : 0, dated,
+      dated ? "statistics anchored to a current year" : "no statistic carries a current year", undatedStats));
   }
 
   const prose = p.sentences.filter(function (s) { return s.kind === "prose" && s.wordCount >= 3; });
@@ -657,8 +696,19 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
     if (rate > phrasePer100) phrasePer100 = rate;
   }
   const stuffPts = (share <= 2.5 && phrasePer100 <= 0.8) ? 10 : (share <= 4 && phrasePer100 <= 1.2) ? 5 : 0;
+  const stuffedSpans: CriterionSpan[] = [];
+  if (stuffPts < 10 && maxTerm) {
+    // Mark the term's occurrences from the same word index the count came from,
+    // so the marks and the percentage cannot disagree.
+    for (let i = 0; i < p.words.length && stuffedSpans.length < 8; i++) {
+      if (p.words[i].lower.replace(/[^a-z0-9'-]/g, "") === maxTerm) {
+        stuffedSpans.push({ start: p.words[i].start, end: p.words[i].end, note: "'" + maxTerm + "' — " + share.toFixed(1) + "% of all words" });
+      }
+    }
+  }
   out.push(score("keyword-stuffing-guard", stuffPts, stuffPts === 10,
-    stuffPts === 10 ? "natural term distribution" : "'" + maxTerm + "' is " + share.toFixed(1) + "% of all words"));
+    stuffPts === 10 ? "natural term distribution" : "'" + maxTerm + "' is " + share.toFixed(1) + "% of all words",
+    stuffedSpans));
 
   let tells = 0;
   for (let i = 0; i < AI_TELL_TERMS.length; i++) tells += countTerm(lower, AI_TELL_TERMS[i]);

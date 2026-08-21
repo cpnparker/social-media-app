@@ -46,7 +46,13 @@ const CONTEXT_CHARS = 24;
  */
 const SEVERITY: { [key: string]: "high" | "medium" | "low" } = {
   "stat-source-adjacency": "high",
+  "attributed-quotes": "high",
+  "current-year-stats": "medium",
+  "answer-first-position": "high",
+  "keyword-stuffing-guard": "medium",
   "ai-tell-guard": "medium",
+  "pronoun-opening-chunks": "medium",
+  "heading-answer-adjacency": "medium",
   "question-headings": "low",
   "sentence-length-norm": "low",
 };
@@ -62,6 +68,18 @@ const REMEDY: { [key: string]: string } = {
     "Phrase the heading as the question a reader would actually ask. Question-shaped headings match how people prompt, and the answer beneath becomes the extractable unit.",
   "sentence-length-norm":
     "Split this into two. Long sentences dilute the chunk an engine would lift, and the answer inside gets averaged away.",
+  "attributed-quotes":
+    "Name who said it. A quotation with no speaker is decoration; a named, credentialed speaker is what makes the passage citable as evidence.",
+  "current-year-stats":
+    "Date the figure — \"in 2026\" or \"as of August 2026\". Engines discount statistics they cannot date, and freshness is scored directly.",
+  "answer-first-position":
+    "Put a one-or-two-sentence direct answer here, before the scene-setting. Engines lift openings; an opening that defers the answer is an opening that never gets quoted.",
+  "keyword-stuffing-guard":
+    "Vary the phrasing or cut repetitions. Past a threshold, repetition reads as manipulation and is penalised rather than rewarded.",
+  "pronoun-opening-chunks":
+    "Name the subject in the first sentence. Sections are extracted alone — a reader landing here from a citation cannot resolve \"this\" or \"it\".",
+  "heading-answer-adjacency":
+    "Answer the heading's question in the first sentence or two beneath it. The heading + immediate answer is the unit engines extract.",
 };
 
 /**
