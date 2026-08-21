@@ -41,6 +41,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!owned.ok) return NextResponse.json({ error: owned.error }, { status: owned.status });
   const session = owned.session;
 
+  // Generation is for a piece that does not exist yet. Since import landed,
+  // a session can arrive already holding a writer's content and an EMPTY brief
+  // — and generating over that appends a new version, which the editor then
+  // shows instead of their words. Nothing is destroyed (versions are kept), but
+  // the writer would open their article and find something else in it, and
+  // there is no path in the UI that should ever ask for this.
+  //
+  // Checked on the DRAFT, not on type_source: a generated piece that has since
+  // been rewritten deserves the same protection.
+  const { data: existingDrafts } = await intelligenceDb
+    .from("optimizer_drafts")
+    .select("units_version, document_body")
+    .eq("id_session", id)
+    .order("units_version", { ascending: false })
+    .limit(1);
+  const existingBody = existingDrafts && existingDrafts.length > 0 ? (existingDrafts[0] as any).document_body || "" : "";
+  if (existingBody.replace(/<[^>]+>/g, "").trim()) {
+    return NextResponse.json(
+      { error: "This piece already has content. Generating would put a new draft over it — edit it instead, or start a new piece." },
+      { status: 409 }
+    );
+  }
+
   // Kill switch and spend cap, on its own source string so the optimizer can be
   // throttled or stopped from the Control Centre without touching chat.
   try {

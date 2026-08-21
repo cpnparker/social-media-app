@@ -26,7 +26,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { ArrowRight, Loader2, Sparkles, X } from "lucide-react";
+import { ArrowRight, Check, Copy, Loader2, Sparkles, X } from "lucide-react";
+import { htmlToMarkdown, htmlToPlainText } from "@/lib/optimizer/export";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { Editor } from "@tiptap/react";
 import type { DraftInput } from "@/lib/optimizer/engine";
 import type { ClientCanon } from "@/lib/optimizer/client-canon";
@@ -459,6 +463,52 @@ function OptimizerStudio() {
     }
   }, []);
 
+  /**
+   * Getting the piece out.
+   *
+   * Rich text is the default because that is where this content goes — a
+   * Google Doc, a Word file, a CMS editor — and it needs no conversion at all;
+   * the editor already holds the HTML. The text/plain half of the same
+   * clipboard write is what a plain field receives, and it is generated
+   * block-aware rather than with textContent, which would run the heading into
+   * the first paragraph.
+   */
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const copyOut = useCallback(async (as: "rich" | "markdown") => {
+    const html = editorRef.current ? editorRef.current.getHTML() : body;
+    if (!html || !html.replace(/<[^>]+>/g, "").trim()) {
+      toast.error("There is nothing to copy yet");
+      return;
+    }
+    try {
+      if (as === "markdown") {
+        await navigator.clipboard.writeText(htmlToMarkdown(html));
+      } else {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/html": new Blob([html], { type: "text/html" }),
+            "text/plain": new Blob([htmlToPlainText(html)], { type: "text/plain" }),
+          }),
+        ]);
+      }
+      setCopied(as);
+      setTimeout(() => setCopied(null), 2000);
+    } catch {
+      // Safari and any non-secure context refuse clipboard.write outright.
+      // Falling back to plain text is worse output, so SAY that rather than
+      // letting the writer paste unformatted text believing it worked.
+      try {
+        await navigator.clipboard.writeText(as === "markdown" ? htmlToMarkdown(html) : htmlToPlainText(html));
+        toast.success(as === "markdown" ? "Copied as Markdown" : "Copied as plain text — this browser would not take formatting");
+        setCopied(as);
+        setTimeout(() => setCopied(null), 2000);
+      } catch {
+        toast.error("This browser would not let the page write to the clipboard");
+      }
+    }
+  }, [body]);
+
   const scoreInput: DraftInput = useMemo(
     () => ({
       body: streaming ? streamBufferRef.current : body,
@@ -657,6 +707,30 @@ function OptimizerStudio() {
             <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" /> writing
             </span>
+          )}
+          {!streaming && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="ghost" className="gap-1.5">
+                  {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copied ? "Copied" : "Copy"}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-[248px]">
+                <DropdownMenuItem onClick={() => copyOut("rich")} className="flex-col items-start gap-0.5 py-2">
+                  <span className="text-[13px] font-medium">Copy with formatting</span>
+                  <span className="text-[11.5px] text-muted-foreground">
+                    For Google Docs, Word, most CMSs
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => copyOut("markdown")} className="flex-col items-start gap-0.5 py-2">
+                  <span className="text-[13px] font-medium">Copy as Markdown</span>
+                  <span className="text-[11.5px] text-muted-foreground">
+                    For publishing pipelines that take it
+                  </span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
           {!streaming && sessionId && (
             <Button size="sm" variant="outline" onClick={runAssess} disabled={assessing}>
