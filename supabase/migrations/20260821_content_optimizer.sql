@@ -34,6 +34,14 @@ ALTER TABLE intelligence.users_access
 COMMENT ON COLUMN intelligence.users_access.flag_access_optimizer IS
   'Content Optimizer access. Read as = 1 explicitly and in its own select — an absent row and a query error both deny.';
 
+-- ── 1b. users_access.data_pinned_articles ─────────────────────────────────
+-- Article pins, alongside the conversation and client pins already here.
+-- Its own column rather than sharing data_pinned_conversations: both hold
+-- uuids, so a mixed array would still "work", right up until a report asks how
+-- many conversations someone has pinned.
+ALTER TABLE intelligence.users_access
+  ADD COLUMN IF NOT EXISTS data_pinned_articles jsonb NOT NULL DEFAULT '[]'::jsonb;
+
 -- ── 2. optimizer_sessions ──────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS intelligence.optimizer_sessions (
   id_session       uuid PRIMARY KEY DEFAULT gen_random_uuid(),

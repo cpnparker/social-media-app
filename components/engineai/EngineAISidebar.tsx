@@ -34,12 +34,13 @@ import { useRouter } from "next/navigation";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 import { getSubdomainUrl } from "@/lib/subdomain";
 import { SectionRailDesktop, SectionRailMobile, useRailItems } from "@/components/layout/SectionRail";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import {
-  Building2, Check, ChevronDown, ChevronsUpDown, Loader2, Lock, PenLine, PenSquare, Plus, Search, Users, X,
+  Building2, Check, ChevronDown, ChevronsUpDown, Loader2, Lock, Pencil, PenLine, PenSquare, Pin, Plus, Search, Trash2, Users, X,
 } from "lucide-react";
 
 /** Kept in step with the shape app/engineai/page.tsx builds. */
@@ -51,6 +52,9 @@ export interface OptimizerArticle {
   source: string;
   clientId: number | null;
   updatedAt: string;
+  /** Decided by the server, never inferred here. Rename and delete are the
+   *  owner's, and a team article belongs to somebody else. */
+  isOwner: boolean;
 }
 
 interface Props {
@@ -152,6 +156,7 @@ export default function EngineAISidebar({
             source: row.type_source || "generated",
             clientId: row.id_client ?? null,
             updatedAt: row.date_updated,
+            isOwner: row.isOwner === true,
           }))
         );
       })
@@ -165,6 +170,20 @@ export default function EngineAISidebar({
    * from someone searching in Private, which reads as the article having been
    * deleted.
    */
+  // Declared ABOVE visibleArticles, which sorts by them. Below, this is a
+  // temporal dead zone crash on first render — and TypeScript does not flag
+  // it, because both are consts in the same function scope. This is the
+  // second time this exact trap has been hit in this file.
+  // ── Article row actions: rename, pin, delete ──
+  //
+  // Deliberately the same three the conversation rows have, in the same order,
+  // with the same idle/hover swap — an article is a peer of a conversation, and
+  // a row that looks the same but behaves differently is worse than one that
+  // looks different.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+  const [pinnedArticleIds, setPinnedArticleIds] = useState<Set<string>>(new Set());
+
   const visibleArticles = articles.filter((a) => {
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
@@ -177,7 +196,87 @@ export default function EngineAISidebar({
     if (tab === "private" && a.visibility !== "private") return false;
     if (tab === "team" && a.visibility !== "team") return false;
     return true;
+  }).sort((a, b) => {
+    // Pinned first, then most recent — matching the conversation list, so a pin
+    // means the same thing in both halves of the sidebar.
+    const ap = pinnedArticleIds.has(a.id);
+    const bp = pinnedArticleIds.has(b.id);
+    if (ap !== bp) return ap ? -1 : 1;
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
   });
+
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/me/preferences")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d || !Array.isArray(d.pinnedArticleIds)) return;
+        setPinnedArticleIds(new Set(d.pinnedArticleIds));
+      })
+      .catch(() => { /* an unpinned list is a fine fallback */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const togglePinArticle = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    const next = new Set(pinnedArticleIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setPinnedArticleIds(next);
+    fetch("/api/me/preferences", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinnedArticleIds: Array.from(next) }),
+    }).catch(() => {});
+  };
+
+  const startRenamingArticle = (e: React.MouseEvent, a: OptimizerArticle) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setEditingId(a.id);
+    setEditingTitle(a.title || "");
+  };
+
+  const saveArticleRename = async (id: string) => {
+    const trimmed = editingTitle.trim();
+    const current = articles.find((a) => a.id === id);
+    if (!trimmed || !current || trimmed === current.title) { setEditingId(null); return; }
+    // Optimistic, then reconciled: the row is the writer's own text, so showing
+    // it immediately is right, but a failed save must not leave the sidebar
+    // disagreeing with the database.
+    setArticles((prev) => prev.map((a) => (a.id === id ? { ...a, title: trimmed } : a)));
+    setEditingId(null);
+    try {
+      const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, title: trimmed }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "");
+    } catch (err: any) {
+      setArticles((prev) => prev.map((a) => (a.id === id ? { ...a, title: current.title } : a)));
+      toast.error(err?.message || "Could not rename that");
+    }
+  };
+
+  const deleteArticle = async (e: React.MouseEvent, a: OptimizerArticle) => {
+    e.stopPropagation();
+    if (!window.confirm(`Delete "${a.title}"? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(
+        `/api/optimizer/sessions/${encodeURIComponent(a.id)}?workspaceId=${encodeURIComponent(workspaceId || "")}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "");
+      setArticles((prev) => prev.filter((x) => x.id !== a.id));
+      // If the deleted piece is the one on screen, leave it — the studio would
+      // otherwise sit on a session that no longer exists and 404 on next save.
+      if (selectedArticleId === a.id) router.push("/engineai/optimizer");
+      toast.success("Article deleted");
+    } catch (err: any) {
+      toast.error(err?.message || "Could not delete that");
+    }
+  };
 
   const [clientSearchQuery, setClientSearchQuery] = useState("");
   const [clientPopoverOpen, setClientPopoverOpen] = useState(false);
@@ -469,9 +568,10 @@ export default function EngineAISidebar({
                       {visibleArticles.slice(0, searchQuery ? 8 : 5).map((a) => (
                         <button
                           key={a.id}
-                          onClick={() => router.push(`/engineai/optimizer?session=${encodeURIComponent(a.id)}`)}
+                          onClick={() => editingId !== a.id && router.push(`/engineai/optimizer?session=${encodeURIComponent(a.id)}`)}
+                          onDoubleClick={(e) => a.isOwner && startRenamingArticle(e, a)}
                           className={cn(
-                            "w-full text-left rounded-lg px-2.5 py-2 transition-colors",
+                            "w-full text-left rounded-lg px-2.5 py-2 transition-colors group/art",
                             selectedArticleId === a.id
                               ? "bg-white/15 text-white"
                               : "text-white/70 hover:bg-white/10 hover:text-white"
@@ -483,10 +583,84 @@ export default function EngineAISidebar({
                                 title, and it does not compete with the timestamp
                                 for the right edge. */}
                             <PenLine className="h-3.5 w-3.5 text-white/40 shrink-0" />
-                            <p className="text-[14px] font-medium truncate flex-1">{a.title}</p>
-                            <span className="text-[11px] text-white/55 shrink-0">
-                              {a.updatedAt ? timeAgo(a.updatedAt) : ""}
-                            </span>
+                            {editingId === a.id ? (
+                              <input
+                                autoFocus
+                                value={editingTitle}
+                                onChange={(e) => setEditingTitle(e.target.value)}
+                                onBlur={() => saveArticleRename(a.id)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") saveArticleRename(a.id);
+                                  if (e.key === "Escape") setEditingId(null);
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-[14px] font-medium flex-1 bg-white/10 text-white rounded px-1.5 py-0.5 outline-none ring-1 ring-white/30 focus:ring-white/60 min-w-0"
+                              />
+                            ) : (
+                              <p className="text-[14px] font-medium truncate flex-1">{a.title}</p>
+                            )}
+                            {/* Idle shows the timestamp (and a pin badge if
+                                pinned); hover or selected shows the actions.
+                                Swapped with hidden/flex rather than opacity, so
+                                an idle row gives its full width to the title and
+                                there are no invisible-but-clickable buttons —
+                                the same treatment the conversation rows get. */}
+                            <div className="flex items-center shrink-0">
+                              <span
+                                className={cn(
+                                  "flex items-center gap-1 text-[11px] text-white/55",
+                                  selectedArticleId === a.id ? "hidden" : "group-hover/art:hidden"
+                                )}
+                              >
+                                {pinnedArticleIds.has(a.id) && (
+                                  <Pin className="h-3 w-3 text-yellow-400 fill-yellow-400" />
+                                )}
+                                {a.updatedAt ? timeAgo(a.updatedAt) : ""}
+                              </span>
+                              <div
+                                className={cn(
+                                  "items-center gap-0.5",
+                                  selectedArticleId === a.id ? "flex" : "hidden group-hover/art:flex"
+                                )}
+                              >
+                                {/* Rename and delete are the OWNER's. A team
+                                    article belongs to someone else, and showing
+                                    a button that 403s is worse than not showing
+                                    it. Pinning is personal, so everyone gets it. */}
+                                {a.isOwner && (
+                                  <button
+                                    onClick={(e) => startRenamingArticle(e, a)}
+                                    className="p-1 rounded hover:bg-white/10"
+                                    title="Rename"
+                                  >
+                                    <Pencil className="h-3.5 w-3.5 text-white/50 hover:text-white/90" />
+                                  </button>
+                                )}
+                                <button
+                                  onClick={(e) => togglePinArticle(e, a.id)}
+                                  className="p-1 rounded hover:bg-white/10"
+                                  title={pinnedArticleIds.has(a.id) ? "Unpin" : "Pin"}
+                                >
+                                  <Pin
+                                    className={cn(
+                                      "h-3.5 w-3.5 transition-colors",
+                                      pinnedArticleIds.has(a.id)
+                                        ? "text-yellow-400 fill-yellow-400"
+                                        : "text-white/50 hover:text-white/90"
+                                    )}
+                                  />
+                                </button>
+                                {a.isOwner && (
+                                  <button
+                                    onClick={(e) => deleteArticle(e, a)}
+                                    className="p-1 rounded ml-0.5 hover:bg-red-500/15"
+                                    title="Delete"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5 text-white/50 hover:text-red-400" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
                           </div>
                           {a.clientId !== null && clientNameById.get(a.clientId) && (
                             <div className="flex items-center gap-1 mt-0.5 pl-[22px]">

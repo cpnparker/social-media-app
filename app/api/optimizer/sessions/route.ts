@@ -40,7 +40,15 @@ export async function GET(req: NextRequest) {
     console.error("[optimizer] session list failed:", error.message);
     return NextResponse.json({ error: "Could not load sessions" }, { status: 500 });
   }
-  return NextResponse.json({ sessions: data || [] });
+  // isOwner is decided HERE, not in the browser. Rename and delete are the
+  // owner's, and a client that worked it out from a user id we also had to send
+  // would be one refactor away from sending the wrong one — and from showing a
+  // teammate a delete button that 403s when they press it.
+  const sessions = (data || []).map((row: any) => ({
+    ...row,
+    isOwner: row.user_created === guard.caller.userId,
+  }));
+  return NextResponse.json({ sessions });
 }
 
 export async function POST(req: NextRequest) {

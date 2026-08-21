@@ -30,6 +30,7 @@ export async function GET() {
         region: "Global",
         pinnedConversationIds: [],
         pinnedClientIds: [],
+        pinnedArticleIds: [],
       });
     }
 
@@ -43,11 +44,34 @@ export async function GET() {
       .eq("user_target", userId)
       .maybeSingle();
 
+    // Article pins are read in their OWN select, deliberately.
+    //
+    // PostgREST fails an ENTIRE select when it names one unknown column, so
+    // adding data_pinned_articles to the query above would have taken the
+    // CONVERSATION and CLIENT pins down with it on any deploy that ran ahead of
+    // the migration — a new feature silently breaking two old ones. Same rule
+    // as the optimizer access flag, and for the same reason.
+    let pinnedArticleIds: string[] = [];
+    try {
+      const { data: pins } = await intelligenceDb
+        .from("users_access")
+        .select("data_pinned_articles")
+        .eq("id_workspace", ws.id)
+        .eq("user_target", userId)
+        .maybeSingle();
+      if (pins && Array.isArray((pins as any).data_pinned_articles)) {
+        pinnedArticleIds = (pins as any).data_pinned_articles;
+      }
+    } catch {
+      /* column not migrated yet — no pins, everything else still works */
+    }
+
     return NextResponse.json({
       personalContext: row?.information_personal_context || null,
       region: row?.name_region || "Global",
       pinnedConversationIds: row?.data_pinned_conversations || [],
       pinnedClientIds: row?.data_pinned_clients || [],
+      pinnedArticleIds,
       selectedRoleIds: row?.data_selected_roles || [],
     });
   } catch (error: any) {
@@ -76,6 +100,9 @@ export async function PATCH(req: NextRequest) {
     if (!ws) {
       return NextResponse.json({ error: "No workspace found" }, { status: 404 });
     }
+
+    /** Written separately from `updates` — see the note at its assignment. */
+    let articlePinsToWrite: string[] | null = null;
 
     // Build update object (only include provided fields)
     const updates: Record<string, any> = {
@@ -107,6 +134,11 @@ export async function PATCH(req: NextRequest) {
     if (body.pinnedConversationIds !== undefined) {
       updates.data_pinned_conversations = body.pinnedConversationIds;
     }
+    // Written on its own too, for the same reason: a failed article-pin write
+    // must not roll back a personal-context edit sent in the same request.
+    if (body.pinnedArticleIds !== undefined) {
+      articlePinsToWrite = body.pinnedArticleIds;
+    }
     if (body.pinnedClientIds !== undefined) {
       updates.data_pinned_clients = body.pinnedClientIds;
     }
@@ -127,6 +159,16 @@ export async function PATCH(req: NextRequest) {
         .from("users_access")
         .update(updates)
         .eq("id_access", existing.id_access);
+      if (articlePinsToWrite !== null) {
+        const { error: pinErr } = await intelligenceDb
+          .from("users_access")
+          .update({ data_pinned_articles: articlePinsToWrite })
+          .eq("id_access", existing.id_access);
+        // A pre-migration deploy loses the pin and keeps everything else. Worth
+        // a log line, not a 500: nobody should lose a personal-context edit
+        // because a pin could not be stored.
+        if (pinErr) console.warn("[preferences] article pins not saved:", pinErr.message);
+      }
     } else {
       // Create the row with NO access, matching what sign-in does for a new
       // user (lib/auth.ts: "add as viewer with no access", every flag 0).

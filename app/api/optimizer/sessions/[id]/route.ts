@@ -23,6 +23,41 @@ export const maxDuration = 30;
 const MAX_QUERIES = 5;
 const MAX_QUERY_CHARS = 160;
 
+/**
+ * DELETE /api/optimizer/sessions/[id] — remove an article.
+ *
+ * OWNER ONLY, matching how a conversation is deleted. A team article is
+ * editable by any workspace member, but deleting one is not editing it: the
+ * collaborator loses nothing and the owner loses the piece, and there is no
+ * undo. The drafts, assessments and findings go with it by FK cascade.
+ */
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const guard = await requireOptimizer(req.nextUrl.searchParams.get("workspaceId"));
+  if (!guard.ok) return guard.response;
+
+  const owned = await loadSessionForCaller(id, guard.caller);
+  if (!owned.ok) return NextResponse.json({ error: owned.error }, { status: owned.status });
+  if (owned.permission !== "owner") {
+    return NextResponse.json({ error: "Only the owner can delete this piece" }, { status: 403 });
+  }
+
+  const { error } = await intelligenceDb
+    .from("optimizer_sessions")
+    .delete()
+    .eq("id_session", id)
+    // Ownership was checked above; this is belt and braces on a service-role
+    // client that bypasses RLS, where a wrong id is an unscoped delete.
+    .eq("id_workspace", guard.caller.workspaceId)
+    .eq("user_created", guard.caller.userId);
+
+  if (error) {
+    console.error("[optimizer] delete failed:", error.message);
+    return NextResponse.json({ error: "Could not delete that" }, { status: 500 });
+  }
+  return NextResponse.json({ ok: true });
+}
+
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
