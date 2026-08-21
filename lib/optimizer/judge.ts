@@ -270,8 +270,11 @@ export function parseJudgeResponse(raw: string, draftText: string): ParseOutcome
   const response: JudgeResponse = {
     queryCoverage: normaliseVerdicts(obj.queryCoverage, "queryId", ["covered", "partial", "missing"], "gap"),
     openingQuotability: {
+      // An unrecognised or missing verdict passes through as "" so the scorer
+      // can SKIP it. Substituting a plausible middle verdict here would put a
+      // number on the board that the judge never gave.
       verdict: ["quotable_alone", "needs_context", "no_answer"].indexOf(str(obj.openingQuotability?.verdict, 40)) >= 0
-        ? obj.openingQuotability.verdict : "needs_context",
+        ? obj.openingQuotability.verdict : "",
       reason: str(obj.openingQuotability?.reason, 300),
     },
     chunkSelfContainment: normaliseVerdicts(obj.chunkSelfContainment, "chunkId", ["self_contained", "dependent"], "dependency"),
@@ -382,8 +385,16 @@ export function scoreJudgeResponse(
   // 3. opening-quotability
   {
     const v = response.openingQuotability.verdict;
-    const earned = OPENING_POINTS[v] != null ? OPENING_POINTS[v] : 5;
-    out.push(jScore("opening-quotability", earned, v === "quotable_alone", v.replace(/_/g, " ")));
+    if (OPENING_POINTS[v] == null) {
+      // A verdict the judge never gave must not be invented. The previous
+      // default of 5/10 was worth about a point of the headline and crossed a
+      // grade boundary in testing — a number attributed to an assessment that
+      // did not make it. Same rule the query-coverage branch above documents:
+      // an unreported unit leaves the denominator.
+      out.push(jSkip("opening-quotability", "The judge returned no verdict for the opening"));
+    } else {
+      out.push(jScore("opening-quotability", OPENING_POINTS[v], v === "quotable_alone", v.replace(/_/g, " ")));
+    }
   }
 
   // 4. chunk-self-containment

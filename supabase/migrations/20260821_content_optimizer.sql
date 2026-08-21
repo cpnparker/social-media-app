@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS intelligence.optimizer_sessions (
   date_updated     timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT optimizer_sessions_status_chk
     CHECK (type_status IN ('brief', 'drafting', 'draft_ready', 'assessing', 'refining', 'finalised')),
+  -- Set when a judge pass claims this session, cleared when it finishes. A
+  -- platform timeout can kill a request between claim and release, so the
+  -- claim carries its own timestamp and is treated as stale after a few
+  -- minutes — otherwise one dead lambda strands the session permanently and
+  -- the writer can never assess again.
+  date_assessing   timestamptz,
   CONSTRAINT optimizer_sessions_platform_chk
     CHECK (type_platform IN ('balanced', 'chatgpt', 'aio', 'perplexity'))
 );
@@ -103,6 +109,13 @@ CREATE TABLE IF NOT EXISTS intelligence.optimizer_assessments (
   units_citability numeric(5,2) NOT NULL DEFAULT 0,
   name_grade       text NOT NULL DEFAULT 'F',
   config_pillars   jsonb NOT NULL DEFAULT '[]'::jsonb,
+  -- Hash of everything the judge saw (draft text, queries, brand, rubric and
+  -- prompt versions, model). Its own column and its own index because it is
+  -- looked up by equality on every Assess: fetching the N most recent rows and
+  -- matching in the application MISSES a valid entry older than N, so an
+  -- identical input that was already paid for gets judged and billed a second
+  -- time. That is a correctness and cost bug, not a scale concern.
+  name_memo_key    text NOT NULL DEFAULT '',
   name_rubric_version text NOT NULL,
   date_created     timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT optimizer_assessments_kind_chk
@@ -111,6 +124,9 @@ CREATE TABLE IF NOT EXISTS intelligence.optimizer_assessments (
 
 CREATE INDEX IF NOT EXISTS idx_optimizer_assessments_session
   ON intelligence.optimizer_assessments(id_session, date_created DESC);
+CREATE INDEX IF NOT EXISTS idx_optimizer_assessments_memo
+  ON intelligence.optimizer_assessments(id_session, name_memo_key)
+  WHERE name_memo_key <> '';
 
 -- ── 5. optimizer_findings ──────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS intelligence.optimizer_findings (

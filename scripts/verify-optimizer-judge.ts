@@ -242,6 +242,32 @@ console.log("\n4. Scoring honours the anti-drift rules");
     ? pass("with no target queries the criterion skips out of the pillar entirely")
     : fail("no-queries did not skip semantic-query-coverage");
 
+  // A verdict the judge never gave must never become a number. This defaulted
+  // to 5/10 — worth about a point of the headline, enough to cross a grade
+  // boundary — for an assessment the model did not make.
+  const noOpening = parseJudgeResponse(JSON.stringify({
+    queryCoverage: [], openingQuotability: { reason: "the field is missing entirely" },
+    chunkSelfContainment: [], quoteAttribution: [], findings: [], summary: "",
+  }), parsed.text);
+  const noOpeningScored = noOpening.response
+    ? scoreJudgeResponse(noOpening.response, INPUT, [])
+    : [];
+  const opening = noOpeningScored.filter((c) => c.key === "opening-quotability")[0];
+  opening && opening.skipped && opening.maxPoints === 0
+    ? pass("an omitted opening verdict SKIPS rather than defaulting to a middling score")
+    : fail(`opening-quotability scored ${opening ? opening.earned + "/" + opening.maxPoints : "?"} with no verdict given`,
+           "A number the judge never produced is on the board, and it moves the writer's grade.");
+
+  const miscased = parseJudgeResponse(JSON.stringify({
+    queryCoverage: [], openingQuotability: { verdict: "Quotable_Alone", reason: "wrong case" },
+    chunkSelfContainment: [], quoteAttribution: [], findings: [], summary: "",
+  }), parsed.text);
+  const miscasedOpening = (miscased.response ? scoreJudgeResponse(miscased.response, INPUT, []) : [])
+    .filter((c) => c.key === "opening-quotability")[0];
+  miscasedOpening && miscasedOpening.skipped
+    ? pass("a mis-cased verdict skips too, rather than silently scoring")
+    : fail("a mis-cased verdict produced a score");
+
   const noBrand = scoreJudgeResponse(response as any, { ...INPUT, brandName: undefined, brandAliases: [] }, live);
   const drift = noBrand.filter((c) => c.key === "entity-variant-drift")[0];
   drift && drift.skipped

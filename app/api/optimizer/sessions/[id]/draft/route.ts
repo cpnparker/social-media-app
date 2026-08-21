@@ -95,10 +95,18 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     }
   }
 
+  // MUST NOT clobber an in-flight assessment.
+  //
+  // The editor autosaves on a 600ms debounce, so a writer typing while an
+  // assessment runs — the normal case, not an edge case — was resetting
+  // type_status out of "assessing" and unlocking the in-flight guard. A second
+  // Assess click was then admitted and billed a second judge call. The guard
+  // was defeated by our own autosave.
   await intelligenceDb
     .from("optimizer_sessions")
     .update({ type_status: "refining", date_updated: new Date().toISOString() })
-    .eq("id_session", id);
+    .eq("id_session", id)
+    .neq("type_status", "assessing");
 
   return NextResponse.json({ ok: true, words });
 }

@@ -38,9 +38,21 @@ import type { CriterionResult } from "@/lib/optimizer/types";
 
 export const maxDuration = 300;
 
-/** Per session. A writer editing and re-assessing every few minutes never
- *  notices this; a stuck retry loop hits it immediately. */
-const MIN_SECONDS_BETWEEN_ASSESSMENTS = 20;
+/** How long a claim may be held before another request may take it. Covers a
+ *  platform timeout killing a request between claim and release. */
+const ASSESS_LOCK_STALE_MS = 6 * 60 * 1000;
+
+/**
+ * Longest draft the judge will look at.
+ *
+ * Nothing previously bounded this, and an over-long draft is not a slow request
+ * — it is an unbounded money loop. It blows max_tokens, the JSON fails to
+ * parse, the call is billed, nothing is stored, no memo entry is written, and
+ * the writer clicks again. Deterministically, forever, with no cap in the way.
+ * 40,000 characters is far above the 800-2,500-word band the rubric is
+ * calibrated for.
+ */
+const MAX_ASSESS_CHARS = 40000;
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -55,31 +67,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!owned.ok) return NextResponse.json({ error: owned.error }, { status: owned.status });
   const session = owned.session;
 
-  // (2) In flight. type_status was previously written and never read — a
-  // status nobody checks is a comment.
-  if (session.type_status === "assessing") {
-    return NextResponse.json(
-      { error: "This draft is already being assessed" },
-      { status: 409 }
-    );
-  }
-
-  const { data: recent } = await intelligenceDb
-    .from("optimizer_assessments")
-    .select("date_created")
-    .eq("id_session", id)
-    .order("date_created", { ascending: false })
-    .limit(1);
-  if (recent && recent.length > 0) {
-    const age = (Date.now() - new Date((recent[0] as any).date_created).getTime()) / 1000;
-    if (age < MIN_SECONDS_BETWEEN_ASSESSMENTS) {
-      return NextResponse.json(
-        { error: `Give it a moment — you can re-assess in ${Math.ceil(MIN_SECONDS_BETWEEN_ASSESSMENTS - age)}s` },
-        { status: 429 }
-      );
-    }
-  }
-
   const { data: drafts } = await intelligenceDb
     .from("optimizer_drafts")
     .select("id_draft, document_body")
@@ -89,6 +76,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const draft = drafts && drafts.length > 0 ? (drafts[0] as any) : null;
   if (!draft || !draft.document_body || !draft.document_body.trim()) {
     return NextResponse.json({ error: "There is nothing to assess yet" }, { status: 400 });
+  }
+  // Refused BEFORE the claim and before any spend — an over-long draft would
+  // otherwise bill on every attempt and never succeed.
+  if (draft.document_body.length > MAX_ASSESS_CHARS) {
+    return NextResponse.json(
+      {
+        error: `This draft is too long to assess (${Math.round(draft.document_body.length / 1000)}k characters). Assess it in sections — the rubric is calibrated for 800-2,500 words.`,
+      },
+      { status: 413 }
+    );
   }
 
   const brief = session.config_brief || {};
@@ -103,22 +100,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     format: session.type_format,
   };
 
-  // (1) The memo.
+  // (1) The memo — queried BY KEY, not by scanning the most recent rows.
+  //
+  // Fetching the last N and matching in the application misses a valid entry
+  // older than N, so an identical input that was already paid for is judged and
+  // billed again. Equality on an indexed column cannot miss.
   const memoKey = assessmentKey(judgeInput, RUBRIC_VERSION);
   const { data: cached } = await intelligenceDb
     .from("optimizer_assessments")
     .select("id_assessment, units_overall, units_retrievability, units_citability, name_grade, config_pillars")
     .eq("id_session", id)
-    .eq("type_kind", "full")
+    .eq("name_memo_key", memoKey)
     .order("date_created", { ascending: false })
-    .limit(5);
-  if (cached) {
-    for (let i = 0; i < cached.length; i++) {
-      const c: any = cached[i];
-      if (c.config_pillars && c.config_pillars.memoKey === memoKey) {
-        return NextResponse.json({ assessment: shapeAssessment(c), memoHit: true });
-      }
-    }
+    .limit(1);
+  if (cached && cached.length > 0) {
+    return NextResponse.json({ assessment: shapeAssessment(cached[0]), memoHit: true });
   }
 
   // (4) Kill switch and spend cap, once, covering judge and gate together.
@@ -128,10 +124,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: e?.message || "The optimizer is temporarily unavailable" }, { status: 503 });
   }
 
-  await intelligenceDb
+  // (2) THE CLAIM IS THE TEST.
+  //
+  // Reading type_status into a variable and checking it later is a
+  // read-then-write race: the previous version tested a snapshot taken four
+  // awaited round trips earlier, and claimed with an unconditional update that
+  // never reported whether it had actually won. Two concurrent clicks both
+  // passed every guard and both billed a judge call.
+  //
+  // This is a conditional update that returns its affected rows — the same
+  // shape as the unique index on optimizer_drafts one file away. Zero rows back
+  // means somebody else holds it.
+  //
+  // The staleness window exists because a platform timeout can kill a request
+  // between claim and release; without it, one dead lambda strands the session
+  // and the writer can never assess again.
+  const staleBefore = new Date(Date.now() - ASSESS_LOCK_STALE_MS).toISOString();
+  const { data: claimed } = await intelligenceDb
     .from("optimizer_sessions")
-    .update({ type_status: "assessing", date_updated: new Date().toISOString() })
-    .eq("id_session", id);
+    .update({ type_status: "assessing", date_assessing: new Date().toISOString(), date_updated: new Date().toISOString() })
+    .eq("id_session", id)
+    .or(`type_status.neq.assessing,date_assessing.lt.${staleBefore}`)
+    .select("id_session");
+
+  if (!claimed || claimed.length === 0) {
+    return NextResponse.json({ error: "This draft is already being assessed" }, { status: 409 });
+  }
 
   try {
     const { system, sessionBlock, user } = buildJudgePrompt(judgeInput);
@@ -168,11 +186,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       if (block.type === "text") raw += block.text;
     }
 
+    // Truncation is not a transient failure — it is deterministic for the same
+    // input, so "try again" is advice to spend the same money for the same
+    // result. Distinguished from a genuine parse error so the message can say
+    // something true, and so a retry loop cannot form.
+    if (response.stop_reason === "max_tokens") {
+      await setStatus(id, "refining");
+      return NextResponse.json(
+        {
+          error:
+            "The assessment ran out of room before it finished. This draft is too long or too complex to assess in one pass — try assessing it in sections.",
+          retryable: false,
+        },
+        { status: 502 }
+      );
+    }
+
     const outcome = parseJudgeResponse(raw, parsed.text);
     if (!outcome.ok || !outcome.response) {
       await setStatus(id, "refining");
       return NextResponse.json(
-        { error: "The assessment came back unreadable. Try again.", detail: outcome.error },
+        { error: "The assessment came back unreadable. Try again.", detail: outcome.error, retryable: true },
         { status: 502 }
       );
     }
@@ -209,8 +243,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       units_retrievability: merged.retrievability,
       units_citability: merged.citability,
       name_grade: scoreToGrade(merged.overall),
+      name_memo_key: memoKey,
       config_pillars: {
-        memoKey,
         pillars: merged.pillars,
         droppedFindings: outcome.dropped,
         orphanedCount: anchored.length - live.length,
@@ -281,22 +315,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 }
 
+/** Release the claim as well as setting the status — leaving date_assessing set
+ *  would make the next claim wait out the full staleness window. */
 async function setStatus(id: string, status: string) {
   await intelligenceDb
     .from("optimizer_sessions")
-    .update({ type_status: status, date_updated: new Date().toISOString() })
+    .update({ type_status: status, date_assessing: null, date_updated: new Date().toISOString() })
     .eq("id_session", id);
 }
 
-/** Look the pillar and evidence grade up from the judge rubric — the single
- *  source of truth — rather than re-deriving them here where they would drift. */
+/**
+ * Look the pillar and evidence grade up from the judge rubric — the single
+ * source of truth — rather than re-deriving them here where they would drift.
+ *
+ * Throws rather than returning a default. parseJudgeResponse already hard-drops
+ * any criterion outside JUDGE_CRITERION_KEYS, so an unknown key here means the
+ * two files have diverged, and that is worth a loud failure. A silent fallback
+ * would file the finding under the wrong pillar and read, to the next person,
+ * like a safety net they could rely on.
+ */
 function metaOf(key: string): { pillar: number; evidence: string } {
   for (let i = 0; i < JUDGE_CRITERIA.length; i++) {
     if (JUDGE_CRITERIA[i].key === key) {
       return { pillar: JUDGE_CRITERIA[i].pillar, evidence: JUDGE_CRITERIA[i].evidence };
     }
   }
-  return { pillar: 1, evidence: "C" };
+  throw new Error(`Unknown judge criterion "${key}" — judge.ts and judge-rubric.ts have diverged`);
 }
 
 /**
