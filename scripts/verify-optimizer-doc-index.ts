@@ -153,16 +153,32 @@ console.log("1. The index text is byte-identical to what the parser produced");
 
 console.log("\n2. Every anchorable span resolves to a range holding exactly that text");
 {
+  // PRECONDITION COUNTER. The two `continue`s below used to skip silently, so a
+  // fixture that produced no text — or a bug that made every fixture produce no
+  // text — would have left this section green having tested nothing at all.
+  // That is the same shape as a regex extraction that matches nothing and
+  // reports "no drift": a check that cannot fail. The count is asserted at the
+  // end, from a different direction than the property being tested.
+  let exercised = 0;
+
   for (let i = 0; i < FIXTURES.length; i++) {
     const fx = FIXTURES[i];
     const doc = schema.nodeFromJSON(fx.json);
     const index = buildDocIndex(doc);
-    if (!index.text) continue;
+    if (!index.text) {
+      fail(`${fx.name}: produced no text at all`, "A fixture that yields nothing cannot exercise the mapping.");
+      continue;
+    }
 
     // Take a real span the way a finding would: a sentence out of the middle.
     const sentences = index.text.split(/\n\n/);
     const target = sentences[sentences.length - 1];
-    if (!target || target.length < 6) continue;
+    if (!target || target.length < 6) {
+      fail(`${fx.name}: its last block is too short to anchor (${JSON.stringify(target)})`,
+           "Fixtures must carry a real span; skipping one quietly is how a section stays green while testing nothing.");
+      continue;
+    }
+    exercised++;
 
     const anchor = findAnchor(index.text, { quote: target });
     if (!anchor.ok) { fail(`${fx.name}: could not anchor its own last block`); continue; }
@@ -198,6 +214,11 @@ console.log("\n2. Every anchorable span resolves to a range holding exactly that
     }
     pass(`${fx.name}: "${target.slice(0, 42)}${target.length > 42 ? "…" : ""}" (edges tight)`);
   }
+
+  exercised === FIXTURES.length
+    ? pass(`all ${FIXTURES.length} fixtures actually exercised the mapping`)
+    : fail(`only ${exercised} of ${FIXTURES.length} fixtures exercised the mapping`,
+           "The rest were skipped. Every 'ok' above is real, but the section did not cover what it claims to.");
 }
 
 // ── 3. Refusing rather than guessing ─────────────────────────────────────

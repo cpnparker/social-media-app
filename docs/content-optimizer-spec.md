@@ -246,6 +246,14 @@ Port AuthorityOn's closed loop to suggestions: fingerprint every finding → col
 
 Every milestone ends deployed behind `flag_access_optimizer` (deploy = `vercel deploy --prod`).
 
+## 9a. Known deferrals
+
+These are decided-not-to-do-yet, not oversights. Recorded so they are found here rather than in production.
+
+- **Spend fairness is not solved, only spend TOTAL.** `assertServiceAllowed` caps on `(app, source) = engine/optimizer`, which is global. One user looping assessments can exhaust the daily cap and 503 the optimizer for everyone else until it resets, and the users denied did nothing wrong. That is a blast-radius problem, not a spend problem, and the right guard is per-user or per-workspace spend — the same mechanism, a narrower key — not a per-session frequency limit (which punishes the writer who edits and re-assesses, exactly the behaviour the product is for, and is sidestepped by opening a second session anyway). Deferred deliberately: it is a tenancy design decision, and the feature is dark.
+- **Client data on provider fallback.** The generation path inherits the Anthropic→Grok fallback, so on an Anthropic failure a client's canon would reach xAI. That is a processor decision against the audience model in [[engineai-security-posture]], not a code detail. Needs an explicit answer before the flag is switched on for client-facing work.
+- **The judge's own stability is unmeasured.** `scripts/verify-optimizer-stability.ts` is designed (fixtures, thresholds, mutation protocol) but not built. Until it exists, the claim that the score holds still rests on the memo and on quantized verdicts — both structural, neither measured.
+
 ## 10. Open product decisions
 
 1. **Name.** Working title "Content Optimizer"; candidates: Answer Studio, Authority Writer. House vocab says the score should be called an **Optimization Score** and never "AI Score" (that's AuthorityOn's brand-level metric — same family, different object; the UI should say "feeds your AI Score").
