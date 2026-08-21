@@ -319,10 +319,19 @@ export default function OptimizerPage() {
       editor.state.tr.setMeta(optimizerHighlightKey, { type: "select", id })
     );
     setSelectedId(id);
+    // Clicking a highlight in the draft must reveal its card. With the Score
+    // tab open it previously changed a tint in the text and produced nothing in
+    // the panel — the forward path worked and the reverse path was silently
+    // dead, on the interaction the whole feature exists for.
+    if (id) setPanelTab("issues");
     if (id) {
       const st = optimizerHighlightKey.getState(editor.state);
       const issue = st ? st.issues.filter((i) => i.finding.id === id)[0] : null;
       if (issue && issue.status === "active") {
+        // focus() as well as select: the Edit affordance promises "jump to it
+        // and edit by hand", and without focus the caret never lands in the
+        // editor, so pressing it produced no observable change at all.
+        editor.commands.focus();
         editor.commands.setTextSelection({ from: issue.from, to: issue.to });
         editor.commands.scrollIntoView();
       }
@@ -563,6 +572,8 @@ export default function OptimizerPage() {
               onApply={handleApply}
               onDismiss={handleDismiss}
               diagnostics={diagnostics}
+              hasAssessed={diagnostics !== null}
+              onAssess={runAssess}
             />
           )}
         </div>

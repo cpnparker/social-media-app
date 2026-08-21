@@ -27,6 +27,12 @@ interface Props {
   /** Findings the judge produced that never reached a card, and why. */
   diagnostics?: { dropped: number; orphaned: number; gateRejected: number } | null;
   degraded?: boolean;
+  /** Whether an assessment has ever run. Without it, "nothing to fix" and
+   *  "nothing has been checked" render as the same sentence and mean opposite
+   *  things — the exact error the diagnostics footer exists to prevent one
+   *  level down. */
+  hasAssessed?: boolean;
+  onAssess?: () => void;
 }
 
 const SEVERITY_DOT: { [k: string]: string } = {
@@ -36,7 +42,7 @@ const SEVERITY_DOT: { [k: string]: string } = {
 };
 
 export default function IssueList({
-  issues, selectedId, onSelect, onApply, onDismiss, diagnostics, degraded,
+  issues, selectedId, onSelect, onApply, onDismiss, diagnostics, degraded, hasAssessed, onAssess,
 }: Props) {
   const open = issues.filter((i) => i.status === "active");
   const orphaned = issues.filter((i) => i.status === "orphaned");
@@ -54,9 +60,31 @@ export default function IssueList({
       )}
 
       <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 flex flex-col gap-1.5">
-        {open.length === 0 && orphaned.length === 0 && (
-          <p className="text-[12.5px] text-muted-foreground px-1 py-3">
-            No outstanding suggestions.
+        {open.length === 0 && orphaned.length === 0 && !hasAssessed && (
+          <div className="px-1 py-3 flex flex-col gap-2 items-start">
+            <p className="text-[12.5px] text-muted-foreground leading-snug">
+              This draft hasn&apos;t been assessed yet. The live score on the other tab is the
+              deterministic half; an assessment adds the judgement half and anchors suggestions
+              to specific sentences.
+            </p>
+            {onAssess && (
+              <button
+                onClick={onAssess}
+                className="h-7 px-2.5 rounded-lg bg-primary text-primary-foreground text-[12px] font-semibold"
+              >
+                Assess this draft
+              </button>
+            )}
+          </div>
+        )}
+        {open.length === 0 && orphaned.length === 0 && hasAssessed && done.length === 0 && (
+          <p className="text-[12.5px] text-muted-foreground px-1 py-3 leading-snug">
+            Assessed — nothing outstanding. The judge found no anchored issues in this draft.
+          </p>
+        )}
+        {open.length === 0 && orphaned.length === 0 && hasAssessed && done.length > 0 && (
+          <p className="text-[12.5px] text-muted-foreground px-1 py-3 leading-snug">
+            All suggestions handled. Re-assess to check the draft as it stands now.
           </p>
         )}
 

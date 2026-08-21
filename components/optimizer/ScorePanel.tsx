@@ -74,7 +74,11 @@ export default function ScorePanel({ input, muted }: Props) {
       if (!c.skipped && !c.passed) open.push(c);
     }
   }
-  open.sort((a, b) => b.maxPoints - a.maxPoints - (a.earned - b.earned));
+  // Sort by the GAP — which is the number each card prints as "+N".
+  // The previous comparator reduced algebraically to (max + earned) descending,
+  // so a criterion at 8/10 (printing "+2") sorted above one at 0/10 (printing
+  // "+10"). The list was visibly not ordered by the number on it.
+  open.sort((a, b) => (b.maxPoints - b.earned) - (a.maxPoints - a.earned));
 
   return (
     <div className={cn("flex flex-col min-h-0 h-full", muted && "opacity-50 pointer-events-none")}>
@@ -100,11 +104,28 @@ export default function ScorePanel({ input, muted }: Props) {
         </div>
       </div>
 
-      {/* Pillars */}
+      {/* Pillars.
+          A pillar with every criterion skipped is NOT a zero — the engine drops
+          it from the weighting entirely. Rendering it as a red 0 bar put a
+          number on screen that contradicted the headline above it and offered
+          nothing to fix, which is the "a view that drops data must say so" rule
+          in CLAUDE.md, broken. It now says why it was not scored. */}
       <div className="shrink-0 px-4 py-3 border-b flex flex-col gap-2">
-        {scores.pillars.map((p) => (
-          <Meter key={p.name} label={p.name} value={p.score} wide />
-        ))}
+        {scores.pillars.map((p) => {
+          const applicable = p.criteria.filter((c) => !c.skipped).length;
+          if (applicable === 0) {
+            const why = p.criteria.length > 0 && p.criteria[0].skipReason ? p.criteria[0].skipReason : "not applicable";
+            return (
+              <div key={p.name} className="flex items-center gap-2">
+                <span className="text-[11.5px] text-muted-foreground w-[150px] truncate">{p.name}</span>
+                <span className="flex-1 text-[11px] text-muted-foreground/80 italic truncate">
+                  not scored — {why.toLowerCase()}
+                </span>
+              </div>
+            );
+          }
+          return <Meter key={p.name} label={p.name} value={p.score} wide />;
+        })}
       </div>
 
       {/* What to fix */}
