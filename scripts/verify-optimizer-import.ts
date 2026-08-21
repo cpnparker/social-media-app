@@ -21,8 +21,15 @@
  *
  *   2026-08-21  host allowlist → hostname.includes("google.com") → 1 fail  ✓
  *   2026-08-21  the 200-text/html sign-in branch removed        → 1 fail   ✓
+ *               (that branch is GONE now: the document itself is html, so
+ *                content-type can no longer separate it from a sign-in page.
+ *                The two mutations below cover what replaced it.)
  *   2026-08-21  'gdoc-link' dropped from the migration CHECK    → 1 fail   ✓
  *   2026-08-21  export URL built from caller input, not the id  → 1 fail   ✓
+ *   2026-08-21  accounts.google.com redirect check removed     → 1 fail   ✓
+ *   2026-08-21  sign-in body backstop removed                  → 1 fail   ✓
+ *   2026-08-21  reverted to the plain-text export              → 1 fail   ✓
+ *   2026-08-21  isHtml flag dropped from the result            → 1 fail   ✓
  *   2026-08-21  BOM strip removed                    → SURVIVED, see below
  *   (baseline, unmutated: exit 0)
  *
@@ -112,33 +119,46 @@ async function fetchChecks() {
 console.log(`\n3. fetchDocText`);
 
 /** A fetch that returns exactly one canned response, then records the call. */
-function stubFetch(status: number, contentType: string, body: string) {
+function stubFetch(status: number, contentType: string, body: string, finalUrl?: string) {
   const calls: string[] = [];
   const fn = (async (url: any) => {
     calls.push(String(url));
-    return new Response(body, { status, headers: { "content-type": contentType } });
+    const res = new Response(body, { status, headers: { "content-type": contentType } });
+    // `Response.url` is read-only and empty on a constructed Response, but the
+    // code under test reads it to tell an export host from a sign-in redirect.
+    // Without this the redirect branch is never exercised at all.
+    if (finalUrl) Object.defineProperty(res, "url", { value: finalUrl, configurable: true });
+    return res;
   }) as unknown as typeof fetch;
   return { fn, calls };
 }
 
 {
-  const ok = stubFetch(200, "text/plain; charset=utf-8", "Headline\n\nBody text here.");
+  // HTML, not text. The plain-text export discards every heading, list and bold
+  // run, and this product SCORES heading structure — so importing via txt does
+  // not score an article leniently, it scores a different document.
+  const body = '<html><body><h2>Headline</h2><p>Body text here.</p></body></html>';
+  const ok = stubFetch(200, "text/html; charset=utf-8", body, `https://doc-10-4o-docstext.googleusercontent.com/export/abc`);
   const r = await fetchDocText(ID, 40000, ok.fn);
-  r.ok && r.text === "Headline\n\nBody text here."
-    ? pass("a plain-text export is returned verbatim")
-    : fail(`plain text → ok=${r.ok} text=${JSON.stringify((r.text || "").slice(0, 40))}`);
+  r.ok && r.text === body
+    ? pass("a Google Docs HTML export is returned verbatim")
+    : fail(`html export → ok=${r.ok} err=${JSON.stringify(r.error)} text=${JSON.stringify((r.text || "").slice(0, 60))}`);
+  r.isHtml === true
+    ? pass("and is flagged as html, so the importer sanitises rather than paragraph-wraps it")
+    : fail(`isHtml was ${JSON.stringify(r.isHtml)} — the importer would treat markup as plain text`);
 
   // The URL is built here, not taken from the caller. Assert it, because the
   // whole SSRF argument for this file rests on it.
-  ok.calls.length === 1 && ok.calls[0] === `https://docs.google.com/document/d/${ID}/export?format=txt`
-    ? pass("fetches a hardcoded docs.google.com URL built from the id")
+  ok.calls.length === 1 && ok.calls[0] === `https://docs.google.com/document/d/${ID}/export?format=html`
+    ? pass("fetches a hardcoded docs.google.com URL built from the id, asking for html")
     : fail(`fetched ${JSON.stringify(ok.calls)}`);
 }
 
 {
-  // Google returns the sign-in interstitial as 200 text/html. Accepting it
-  // would import a login page as an article and score it — a failure that
-  // looks like success, which is the worst kind this feature can have.
+  // Google returns the sign-in interstitial as 200 text/html — and now so does
+  // a real document, so content-type CANNOT tell them apart any more. This is
+  // the check that replaced it, and it is the most consequential branch in the
+  // file: a login page imported as an article looks exactly like success.
   const html = "<!doctype html><html><head><title>Sign in - Google Accounts</title></head><body>…</body></html>";
   const signin = stubFetch(200, "text/html; charset=utf-8", html);
   const r = await fetchDocText(ID, 40000, signin.fn);
@@ -149,11 +169,21 @@ function stubFetch(status: number, contentType: string, body: string) {
   } else {
     pass("a 200 text/html sign-in page is refused as a permission problem, not imported");
   }
-  // Precondition: the fixture must actually be HTML with a 200, or this proves
-  // nothing about the content-type branch.
+  // Precondition: the fixture must be HTML with a 200 AND carry no redirect, so
+  // it can only be caught by the BODY check. If it were also served from an
+  // accounts host, the earlier branch would catch it and this would prove
+  // nothing about the backstop.
   html.indexOf("<!doctype html") === 0
     ? pass("the sign-in fixture really is an HTML body served with status 200")
-    : fail("the sign-in fixture is not HTML — the content-type branch was never reached");
+    : fail("the sign-in fixture is not HTML — the sign-in branch was never reached");
+
+  // The other arm: a refusal that IS a redirect, to an accounts host.
+  const redirected = stubFetch(200, "text/html", "<html><body>anything at all</body></html>",
+    "https://accounts.google.com/ServiceLogin?continue=x");
+  const rr = await fetchDocText(ID, 40000, redirected.fn);
+  !rr.ok && rr.permission
+    ? pass("a redirect to accounts.google.com is refused as a permission problem")
+    : fail(`a redirect to an accounts host was ${rr.ok ? "IMPORTED AS THE DOCUMENT" : "refused but not as a permission problem"}`);
 }
 
 {

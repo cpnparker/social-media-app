@@ -31,6 +31,10 @@ export interface DocLinkResult {
   ok: boolean;
   id?: string;
   text?: string;
+  /** True when `text` is HTML rather than plain text. The importer needs to
+   *  know, because sanitising HTML and converting plain text are different
+   *  operations and guessing from the content is guessing. */
+  isHtml?: boolean;
   /** What to tell the user. Written for a person, not a model. */
   error?: string;
   /** True when the failure is "we can see it exists but may not read it". */
@@ -93,7 +97,11 @@ export async function fetchDocText(
   const doFetch = fetchImpl || fetch;
   if (!DOC_ID.test(id)) return { ok: false, error: "That does not look like a Google Doc link." };
 
-  const url = `https://docs.google.com/document/d/${id}/export?format=txt`;
+  // HTML, not txt. The plain-text export throws away every heading, list and
+  // bold run, and this product SCORES heading structure — importing an article
+  // as one flat block does not score it leniently, it scores a different
+  // document. The HTML export carries the real structure.
+  const url = `https://docs.google.com/document/d/${id}/export?format=html`;
   let sawPermissionError = false;
 
   const attempts: (string | null)[] = [];
@@ -123,16 +131,36 @@ export async function fetchDocText(
     }
     if (!res.ok) continue;
 
-    // A sign-in interstitial comes back as 200 text/html. Treating that as the
-    // document would import a login page and score it, which is the worst kind
-    // of failure here: it looks like it worked.
-    const ctype = (res.headers.get("content-type") || "").toLowerCase();
-    if (ctype.indexOf("text/html") >= 0) {
+    // A sign-in interstitial also comes back as 200 text/html, and now so does
+    // the document itself — so content-type can no longer tell them apart and
+    // the check moved to WHERE the response came from.
+    //
+    // A successful export redirects to a googleusercontent.com export host
+    // (verified live: doc-10-4o-docstext.googleusercontent.com). A refused one
+    // redirects to accounts.google.com. Landing on an accounts host is
+    // conclusive; the body check below is the backstop for a refusal served
+    // without a redirect.
+    const finalHost = (() => {
+      try { return new URL(res.url || url).hostname.toLowerCase(); } catch { return ""; }
+    })();
+    if (finalHost.indexOf("accounts.google.com") >= 0) {
       sawPermissionError = true;
       continue;
     }
 
     let text = await res.text();
+
+    // Backstop: a Google sign-in page, whatever host served it. Matched on the
+    // sign-in form's own markers rather than on the word "sign in", which
+    // appears in ordinary prose.
+    if (
+      /<title>[^<]*\bSign in\b[^<]*<\/title>/i.test(text) ||
+      text.indexOf("accounts.google.com/ServiceLogin") >= 0 ||
+      text.indexOf("identifierId") >= 0
+    ) {
+      sawPermissionError = true;
+      continue;
+    }
     // Docs exports carry a UTF-8 BOM in their bytes, which would sit in the
     // editor as an invisible first character and shift every anchor offset by
     // one. Belt and braces only: `Response.text()` is specified as a UTF-8
@@ -148,7 +176,7 @@ export async function fetchDocText(
         error: `That document is ${Math.round(text.length / 1000)}k characters. The rubric is calibrated for 800-2,500 words — bring it in a section at a time.`,
       };
     }
-    return { ok: true, id, text };
+    return { ok: true, id, text, isHtml: true };
   }
 
   return {

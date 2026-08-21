@@ -10,7 +10,7 @@
  * paste was a link in a sentence.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -47,8 +47,20 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pasted, setPasted] = useState("");
+  /**
+   * The clipboard's text/html flavour, when the source offered one.
+   *
+   * A textarea only ever receives text/plain, so pasting an article from Google
+   * Docs threw away every heading, list and bold run before the server saw it —
+   * and heading structure is SCORED, so the piece was then marked down for
+   * problems the paste had introduced. The paste event still carries the rich
+   * flavour, so it is captured here and sent alongside.
+   */
+  const [pastedHtml, setPastedHtml] = useState<string | null>(null);
   const [pasteTitle, setPasteTitle] = useState("");
   const [filter, setFilter] = useState("");
+  /** The plain text that arrived with the captured html, so an edit can be detected. */
+  const pastedPlainRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -83,7 +95,17 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
         const res = await fetch("/api/optimizer/import", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workspaceId, clientId, source: sourceOverride || SOURCE_FOR_TAB[tab], ref, title, content }),
+          body: JSON.stringify({
+            workspaceId, clientId,
+            source: sourceOverride || SOURCE_FOR_TAB[tab],
+            ref, title,
+            // Prefer the rich flavour when the clipboard offered one AND the
+            // writer has not since typed over it: `pasted` is the source of
+            // truth for what is on screen, so if it no longer matches what was
+            // pasted, the html is stale and must not be used.
+            content: content,
+            contentIsHtml: sourceOverride ? undefined : usingRichPaste,
+          }),
         });
         const data = await res.json();
         if (!res.ok) { toast.error(data.error || "Could not bring that in"); return; }
@@ -96,6 +118,10 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
     },
     [workspaceId, clientId, onImported]
   );
+
+  /** The captured html is only valid while the textarea still shows the text it
+   *  came from. Any edit invalidates it, silently and correctly. */
+  const usingRichPaste = pastedHtml !== null && pasted === pastedPlainRef.current;
 
   const docs = (sources?.docs || []).filter((d) =>
     !filter.trim() || d.name.toLowerCase().indexOf(filter.trim().toLowerCase()) >= 0
@@ -146,17 +172,35 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
               <Textarea
                 value={pasted}
                 onChange={(e) => setPasted(e.target.value)}
+                onPaste={(e) => {
+                  const html = e.clipboardData.getData("text/html");
+                  const text = e.clipboardData.getData("text/plain");
+                  if (html && html.trim()) {
+                    // Let the textarea take the plain text as normal — it is
+                    // what the writer sees and edits — and keep the rich
+                    // flavour beside it for the server.
+                    setPastedHtml(html);
+                    pastedPlainRef.current = text;
+                  } else {
+                    setPastedHtml(null);
+                    pastedPlainRef.current = null;
+                  }
+                }}
                 rows={7}
                 placeholder="Paste the content here…"
               />
               <div className="flex items-center justify-between">
                 <span className="text-[11.5px] text-muted-foreground">
-                  {pasted.trim() ? `${(pasted.match(/\S+/g) || []).length} words` : "Markdown or rich text both work"}
+                  {!pasted.trim()
+                    ? "Paste from a doc and the headings come with it"
+                    : usingRichPaste
+                      ? `${(pasted.match(/\S+/g) || []).length} words · headings and formatting kept`
+                      : `${(pasted.match(/\S+/g) || []).length} words · plain text`}
                 </span>
                 <Button
                   size="sm"
                   disabled={busy || !pasted.trim()}
-                  onClick={() => doImport("paste", undefined, pasteTitle, pasted)}
+                  onClick={() => doImport("paste", undefined, pasteTitle, usingRichPaste ? pastedHtml! : pasted)}
                 >
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                   Open in the editor

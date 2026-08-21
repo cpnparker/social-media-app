@@ -1,0 +1,259 @@
+/**
+ * Turning imported content into editor HTML, checked by making it fail.
+ *
+ * This code exists because of a bug that was invisible for exactly the reason
+ * these checks are written the way they are: nothing converted an import into
+ * HTML, so every pasted or Google-Doc article reached Tiptap as plain text and
+ * became ONE paragraph with no headings. It did not look like a parsing bug. It
+ * looked like a low score, and the writer was shown a list of structural
+ * problems the import had introduced.
+ *
+ * THE RULE WITH TWO DIRECTIONS, which is the heart of this file. When an
+ * unknown tag is unwrapped, what replaces it?
+ *   - a BLOCK tag must become a SPACE, or "alpha</div><div>beta" glues into
+ *     "alphabeta" — words nobody wrote;
+ *   - an INLINE tag must become NOTHING, or Google Docs' habit of splitting
+ *     words across spans ("<span>Headlin</span><span>e</span>") breaks real
+ *     words into "Headlin e".
+ * Both were shipped wrong at some point, in opposite directions, and a check
+ * asserting only one of them passes happily while the other is broken. Section
+ * 2 asserts both.
+ *
+ *   npx tsx scripts/verify-optimizer-import-html.ts
+ *
+ * MUTATION LOG — every entry run in a throwaway git worktree, never the shared
+ * tree (`vercel deploy --prod` uploads the working directory).
+ *
+ *   2026-08-21  inline unwrap inserts a space (Headlin e) → 4 fail  ✓
+ *   2026-08-21  block unwrap drops to "" (alphabeta)      → 1 fail  ✓ (2nd try)
+ *   2026-08-21  <style> nuked before classes resolved     → 1 fail  ✓
+ *   2026-08-21  plain text no longer split into blocks    → 3 fail  ✓
+ *   2026-08-21  href allowlist → javascript-only blacklist→ 2 fail  ✓ (2nd try)
+ *   2026-08-21  comment-anchor rejoin removed             → 1 fail  ✓
+ *   2026-08-21  any "<" counts as html                    → 1 fail  ✓ (2nd try)
+ *   (baseline, unmutated: exit 0)
+ *
+ * THREE OF THOSE SURVIVED THE FIRST TIME, and the reasons are the point:
+ *
+ *   - the block-gluing fixture was `<p>alpha</p><div>beta</div>`, where the
+ *     KEPT `</p>` already separates the two words. Dropping div to "" glued
+ *     nothing. The check named the rule and could not test it. Now the words
+ *     are separated by unknown tags only, and the fixture asserts that.
+ *   - the href fixture used only `javascript:`, so a blacklist that blocks
+ *     exactly "javascript" passed it. `data:` and `vbscript:` were added,
+ *     which is the whole reason the real rule is an allowlist.
+ *   - the html-sniff fixture was one paragraph of prose containing "<". Routed
+ *     down either path it came back looking similar, so mis-routing was
+ *     invisible. With two paragraphs the difference is structural — and the
+ *     mutated run showed the "<" being eaten out of "< 200ms" as well.
+ *
+ * Each was a check that named a real rule, passed, and proved nothing. That is
+ * the failure mode this repo keeps rediscovering, and it is only ever found by
+ * running the mutation rather than by reading the check.
+ */
+import { plainTextToHtml, sanitizeImportedHtml, toEditorHtml } from "../lib/optimizer/import-html";
+
+let failures = 0;
+const pass = (m: string) => console.log(`  ok    ${m}`);
+const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
+const eq = (label: string, got: string, want: string) =>
+  got === want ? pass(label) : fail(`${label}\n          got:  ${JSON.stringify(got)}\n          want: ${JSON.stringify(want)}`);
+const has = (label: string, hay: string, needle: string) =>
+  hay.indexOf(needle) >= 0 ? pass(label) : fail(`${label} — ${JSON.stringify(needle)} not in ${JSON.stringify(hay.slice(0, 160))}`);
+const hasnt = (label: string, hay: string, needle: string) =>
+  hay.indexOf(needle) < 0 ? pass(label) : fail(`${label} — ${JSON.stringify(needle)} IS present in ${JSON.stringify(hay.slice(0, 160))}`);
+
+// ── 1. The original bug ──────────────────────────────────────────────────
+console.log(`\n1. Plain text becomes real blocks`);
+{
+  // The exact shape a textarea paste produces, and the exact failure: Tiptap
+  // parses its input as HTML, where newlines are whitespace.
+  const text = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph.";
+  const html = plainTextToHtml(text);
+  const paras = (html.match(/<p\b/g) || []).length;
+  paras === 3
+    ? pass("three blank-line-separated blocks become three paragraphs")
+    : fail(`three blocks became ${paras} paragraph(s) — this is the original bug: ${JSON.stringify(html)}`);
+
+  // Precondition: the fixture must actually be plain text with blank lines. A
+  // fixture that already contained <p> would pass this section trivially.
+  text.indexOf("<") < 0 && text.indexOf("\n\n") > 0
+    ? pass("the fixture really is tag-free text with blank lines in it")
+    : fail("the fixture is not plain text — section 1 proves nothing");
+
+  // A hard-wrapped document must NOT become one paragraph per line.
+  const wrapped = plainTextToHtml("A sentence that was\nhard wrapped by the editor.\n\nA second paragraph.");
+  (wrapped.match(/<p\b/g) || []).length === 2
+    ? pass("single newlines are soft breaks, not new paragraphs")
+    : fail(`hard-wrapped text became ${(wrapped.match(/<p\b/g) || []).length} paragraphs: ${JSON.stringify(wrapped)}`);
+
+  eq("a markdown heading becomes a heading", plainTextToHtml("## Why it matters"), "<h2>Why it matters</h2>");
+  eq(
+    "bullets become a list Tiptap's shape",
+    plainTextToHtml("- one\n- two"),
+    "<ul><li><p>one</p></li><li><p>two</p></li></ul>"
+  );
+  eq(
+    "the bullet character a Docs export actually emits also works",
+    plainTextToHtml("• one\n• two"),
+    "<ul><li><p>one</p></li><li><p>two</p></li></ul>"
+  );
+  eq("numbered lines become an ordered list", plainTextToHtml("1. one\n2. two"), "<ol><li><p>one</p></li><li><p>two</p></li></ol>");
+
+  // Guessing is deliberately NOT done. A short line is a paragraph.
+  const shortLine = plainTextToHtml("The Opening Line\n\nBody text follows here.");
+  hasnt("a short line is NOT guessed into a heading", shortLine, "<h");
+}
+
+// ── 2. The unwrap rule, in BOTH directions ───────────────────────────────
+console.log(`\n2. Unwrapping unknown tags — both directions`);
+{
+  // INLINE → nothing. Google Docs splits words across spans routinely.
+  eq("an inline span is unwrapped to NOTHING, keeping the word whole",
+     sanitizeImportedHtml("<p>Headlin<span>e</span></p>"), "<p>Headline</p>");
+  eq("several spans inside one word", sanitizeImportedHtml("<p><span>Head</span><span>line</span></p>"), "<p>Headline</p>");
+  for (const t of ["sup", "font", "small", "ins"]) {
+    const out = sanitizeImportedHtml(`<p>Headlin<${t}>e</${t}></p>`);
+    out === "<p>Headline</p>"
+      ? pass(`<${t}> is treated as inline`)
+      : fail(`<${t}> broke the word: ${JSON.stringify(out)}`);
+  }
+
+  // BLOCK → a space. The opposite failure.
+  //
+  // The fixture must separate the two words with NOTHING BUT unknown tags. An
+  // earlier version used `<p>alpha</p><div>beta</div>`, where the kept `</p>`
+  // already separates them — so dropping div to "" glued nothing and the
+  // mutation survived. The check passed while the rule it names was broken.
+  const block = sanitizeImportedHtml("<div>alpha</div><div>beta</div>");
+  hasnt("a block-level unknown tag does NOT glue words together", block, "alphabeta");
+  has("...and its text is kept", block, "beta");
+  // Assert the fixture can actually detect it: no kept tag may sit between the
+  // two words in the INPUT.
+  /^<div>alpha<\/div><div>beta<\/div>$/.test("<div>alpha</div><div>beta</div>")
+    ? pass("the block fixture separates the two words with unknown tags only")
+    : fail("the block fixture contains a kept tag between the words — it cannot detect gluing");
+
+  // Precondition for BOTH: each fixture must butt two fragments against a tag
+  // boundary with no whitespace, or neither direction is being tested.
+  /Headlin<[a-z]+>e/.test("<p>Headlin<span>e</span></p>")
+    ? pass("the inline fixture really splits a word across a tag boundary")
+    : fail("the inline fixture has whitespace — it cannot detect a space-inserting bug");
+
+}
+
+// ── 3. Google Docs, as it actually exports ───────────────────────────────
+console.log(`\n3. Google Docs export quirks (verified against a real export)`);
+{
+  // Docs emits NO <strong>. Bold is a class, defined in a <style> block that a
+  // naive sanitiser strips first — losing every bold run in the document.
+  const docs =
+    '<html><head><style>.c4{font-weight:700}.c9{font-style:italic}.c1{color:#000}</style></head>' +
+    '<body><p class="c1"><span class="c1">plain </span><span class="c4">bold</span>' +
+    '<span class="c9"> italic</span></p></body></html>';
+  const out = sanitizeImportedHtml(docs);
+  has("a bold CSS class becomes <strong>", out, "<strong>bold</strong>");
+  has("an italic CSS class becomes <em>", out, "<em> italic</em>");
+  hasnt("the style block itself is gone", out, "font-weight");
+
+  // Precondition: the fixture must express bold ONLY via a class, with no
+  // <strong> and no inline style, or it is not testing class resolution.
+  docs.indexOf("<strong") < 0 && docs.indexOf('style="') < 0
+    ? pass("the Docs fixture uses a CSS class and nothing else for bold")
+    : fail("the Docs fixture already contains <strong> or an inline style — class resolution is untested");
+
+  // Inline style is the OTHER way it arrives (a clipboard paste), so both paths.
+  has("an inline font-weight style also becomes <strong>",
+      sanitizeImportedHtml('<p><span style="font-weight:700">b</span></p>'), "<strong>b</strong>");
+
+  // Comment anchors are editorial chatter, and Docs splits the paragraph around
+  // them — so removing the marker must also undo the split it caused.
+  const commented =
+    '<p><span>Headlin</span></p><sup><a href="#cmnt1" id="cmnt_ref1">[a]</a></sup><p><span>e</span></p>';
+  const fixed = sanitizeImportedHtml(commented);
+  eq("a comment anchor is removed AND the word it split is rejoined", fixed, "<p>Headline</p>");
+}
+
+// ── 4. Safety ────────────────────────────────────────────────────────────
+console.log(`\n4. Safety — the input is a third-party document`);
+{
+  const nasty =
+    '<p>ok</p><script>alert(1)</script><img src=x onerror="alert(1)">' +
+    '<a href="javascript:alert(1)">click</a><p onclick="alert(1)">y</p>' +
+    '<iframe src="https://evil.test"></iframe><style>body{}</style>';
+  const clean = sanitizeImportedHtml(nasty);
+  hasnt("no script tag survives", clean, "script");
+  hasnt("no event handler attribute survives", clean.toLowerCase(), "onerror");
+  hasnt("no onclick survives", clean.toLowerCase(), "onclick");
+  hasnt("no javascript: URL survives", clean.toLowerCase(), "javascript:");
+  // A blacklist that blocks only "javascript" passes the line above while
+  // letting these through, which is why the scheme rule is an ALLOWLIST. Each
+  // of these is a real XSS vector in a link.
+  for (const scheme of ["data:text/html;base64,PHNjcmlwdD4=", "vbscript:msgbox(1)", "JaVaScRiPt:alert(1)"]) {
+    const out = sanitizeImportedHtml(`<p><a href="${scheme}">x</a></p>`);
+    out.toLowerCase().indexOf(scheme.split(":")[0].toLowerCase() + ":") < 0
+      ? pass(`a ${scheme.split(":")[0]} URL is stripped from the href`)
+      : fail(`a ${scheme.split(":")[0]} URL survived: ${JSON.stringify(out)}`);
+  }
+  hasnt("no iframe survives", clean, "iframe");
+  has("the writer's actual prose survives all of it", clean, "ok");
+
+  // A comment can hide a whole tag from a naive tag-stripper.
+  hasnt("a tag hidden inside an HTML comment does not survive",
+        sanitizeImportedHtml("<p>a</p><!-- <script>alert(1)</script> -->"), "script");
+
+  // An http link is content and must be KEPT — over-stripping is its own bug.
+  has("an ordinary https link is kept", sanitizeImportedHtml('<p><a href="https://x.test/a">t</a></p>'), 'href="https://x.test/a"');
+}
+
+// ── 5. toEditorHtml routes correctly ─────────────────────────────────────
+console.log(`\n5. Routing between the two converters`);
+{
+  has("html input is sanitised, not paragraph-wrapped", toEditorHtml("<h2>T</h2><p>b</p>"), "<h2>T</h2>");
+  has("plain input is converted to blocks", toEditorHtml("one\n\ntwo"), "<p>one</p><p>two</p>");
+
+  // Prose containing a less-than sign is NOT html. Treating it as html would
+  // silently delete the rest of the sentence.
+  // The fixture needs TWO paragraphs, or mis-routing to the html path is
+  // undetectable: a single block comes back looking the same either way, and
+  // the earlier one-paragraph version let that mutation survive.
+  const prose = toEditorHtml("Latency was < 200ms and that mattered.\n\nA second paragraph.");
+  has("prose containing '<' keeps its words", prose, "200ms and that mattered");
+  (prose.match(/<p\b/g) || []).length === 2
+    ? pass("prose containing '<' is still split into paragraphs, so it took the text path")
+    : fail(`prose containing '<' was routed to the html path: ${JSON.stringify(prose)}`);
+
+  // An explicit flag beats the sniff, in both directions.
+  has("contentIsHtml:false forces text handling", toEditorHtml("<p>a</p>", false), "&lt;p&gt;");
+  eq("contentIsHtml:true forces html handling", toEditorHtml("<p>a</p>", true), "<p>a</p>");
+  eq("empty in, empty out", toEditorHtml(""), "");
+}
+
+// ── 6. Nothing is silently dropped ───────────────────────────────────────
+console.log(`\n6. Nothing is silently dropped`);
+{
+  const doc =
+    '<html><head><style>.b{font-weight:700}</style></head><body>' +
+    '<h2>Zephyr routing</h2><p>The <span class="b">Vaultline</span> study found 38% lower latency.</p>' +
+    '<ul><li><p>Nordvale adopted it</p></li></ul>' +
+    '<table><tr><td><p>Nordic</p></td><td><p>62%</p></td></tr></table>' +
+    '<p>See <a href="https://vaultline.example/r">the report</a>.</p></body></html>';
+  const out = sanitizeImportedHtml(doc);
+  const words = ["Zephyr", "routing", "Vaultline", "study", "38%", "latency", "Nordvale", "adopted", "Nordic", "62%", "report"];
+  const missing: string[] = [];
+  for (let i = 0; i < words.length; i++) if (out.indexOf(words[i]) < 0) missing.push(words[i]);
+  missing.length === 0 ? pass(`all ${words.length} words survive`) : fail(`dropped: ${missing.join(", ")}`);
+  has("the heading survives as a heading", out, "<h2>");
+  has("the list survives", out, "<li>");
+  has("the table survives", out, "<td>");
+
+  // Tags must be balanced, or Tiptap silently restructures the document.
+  const opens = (out.match(/<(p|h2|ul|li|table|tr|td|strong|a)\b/g) || []).length;
+  const closes = (out.match(/<\/(p|h2|ul|li|table|tr|td|strong|a)\s*>/g) || []).length;
+  opens === closes
+    ? pass(`tags balance (${opens} open, ${closes} close)`)
+    : fail(`unbalanced: ${opens} open vs ${closes} close — Tiptap will restructure this`);
+}
+
+console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
+process.exit(failures ? 1 : 0);

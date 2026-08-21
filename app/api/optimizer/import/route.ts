@@ -19,6 +19,7 @@ import { requireOptimizer } from "../_lib/access";
 import { getClientCanon } from "@/lib/optimizer/client-canon";
 import { canAccessClient, requireAuth } from "@/lib/permissions";
 import { RUBRIC_VERSION } from "@/lib/optimizer/rubric";
+import { toEditorHtml } from "@/lib/optimizer/import-html";
 
 export const maxDuration = 60;
 
@@ -145,12 +146,14 @@ export async function POST(req: NextRequest) {
     if (!result.ok) {
       return NextResponse.json({ error: result.error }, { status: result.permission ? 403 : 400 });
     }
-    content = result.text || "";
-    // The plain-text export has no title field; the first non-empty line is the
-    // best available, and the writer can rename it.
+    content = toEditorHtml(result.text || "", result.isHtml);
+    // The export carries no usable title, so the document's own first line is
+    // the best available and the writer can rename it. Taken from the CONVERTED
+    // html so it is the first line of the article, not a stray style rule.
     if (!title) {
-      const firstLine = content.split("\n").find((l) => l.trim());
-      title = (firstLine || "Imported document").trim().slice(0, 200);
+      const firstBlock = content.match(/<(h[1-6]|p)\b[^>]*>([\s\S]*?)<\/\1>/i);
+      const raw = firstBlock ? firstBlock[2].replace(/<[^>]+>/g, " ") : "";
+      title = (raw.replace(/&amp;/g, "&").replace(/\s+/g, " ").trim() || "Imported document").slice(0, 200);
     }
     sourceRef = `https://docs.google.com/document/d/${docId}/edit`;
   } else if (source === "gdoc") {
@@ -206,6 +209,20 @@ export async function POST(req: NextRequest) {
       // refusing: the writer can paste the body in and keep the grounding.
       content = "";
     }
+  }
+
+  // THE CONVERSION, for every source that did not already do its own.
+  //
+  // Without this an import reaches Tiptap as plain text, and Tiptap parses its
+  // input as HTML — where newlines are whitespace. Every imported article
+  // became one paragraph with no headings, and the rubric scores heading
+  // structure, so the writer was shown a low score and a list of structural
+  // problems that belonged to the conversion, not to their piece.
+  //
+  // `contentIsHtml` is passed explicitly where the source knows: a paste can
+  // carry real clipboard HTML, and guessing from the content is guessing.
+  if (source !== "gdoc-link") {
+    content = toEditorHtml(content, source === "pasted" ? body.contentIsHtml === true : undefined);
   }
 
   if (content.length > MAX_IMPORT_CHARS) {
