@@ -21,16 +21,31 @@
  *
  *   npx tsx scripts/verify-optimizer-rubric.ts
  *
- * Mutation log — proof this script has teeth (see §8 at the bottom):
- *   2026-08-21  tier table always max        → 21 fixtures red   ✓
- *   2026-08-21  stuffing guard inverted      → 2 red (D-stuff, S10) ✓
- *   2026-08-21  Math.min(100,sum) restored   → 6 red (S4 all pillars) ✓
- *   2026-08-21  injected clock → new Date()  → 1 red (determinism/clock) ✓
- *   2026-08-21  word-boundary guard dropped  → 1 red (boundary-trap)  ✓
+ * MUTATION LOG — proof this script has teeth. Every entry was actually run, in
+ * a throwaway git worktree (never the shared tree: `vercel deploy --prod`
+ * uploads the working directory, so a deliberate break sitting in it can ship).
+ * Re-run these whenever a criterion is added; a fixture nobody has watched go
+ * red is a fixture nobody should trust.
+ *
+ *   2026-08-21  tieredScore() always returns max     → 16 failures, exit 1  ✓
+ *   2026-08-21  keyword-stuffing guard inverted      →  2 failures, exit 1  ✓
+ *   2026-08-21  Math.min(100, sum) capping restored  → 13 failures, exit 1  ✓
+ *   2026-08-21  a criterion deleted from CRITERIA    →  diagnostic, exit 1  ✓
+ *   2026-08-21  injected clock → new Date()          →  1 failure,  exit 1  ✓
+ *   2026-08-21  word-boundary guard removed          →  2 failures, exit 1  ✓
+ *   (baseline, unmutated: exit 0)
+ *
+ * Two of those mutations were survived by an earlier version of this script and
+ * the fixtures had to be fixed, not the engine: the boundary trap asserted on a
+ * criterion that never calls countTerm, and a deleted criterion crashed at
+ * module scope with no output at all, which reads as a broken script rather
+ * than a broken rubric. Both are the same lesson — a check you have not watched
+ * fail is a check you do not have.
  */
 import { computeDraftScores } from "../lib/optimizer/engine";
 import type { DraftInput } from "../lib/optimizer/engine";
 import { CRITERIA, PILLARS, DROPPED_FROM_AUTHORITYON, RUBRIC_VERSION } from "../lib/optimizer/rubric";
+import { countTerm } from "../lib/optimizer/parse";
 import type { CriterionResult } from "../lib/optimizer/types";
 
 let failures = 0;
@@ -147,7 +162,19 @@ function criterionOf(scores: ReturnType<typeof computeDraftScores>, key: string)
   return null;
 }
 
-const cleanScores = computeDraftScores(CLEAN);
+// Wrapped because the engine throws on an unknown criterion key — which is the
+// right behaviour there, but at module scope it would abort this script before
+// a single line of output, and "no output" reads like a broken script rather
+// than a broken rubric. Deleting a criterion from CRITERIA is exactly the
+// mutation that lands here.
+let cleanScores: ReturnType<typeof computeDraftScores>;
+try {
+  cleanScores = computeDraftScores(CLEAN);
+} catch (e) {
+  console.log(`\nverify-optimizer-rubric\n\n  FAIL  the engine threw on the clean draft: ${String(e)}`);
+  console.log(`        A criterion is referenced by the engine but missing from CRITERIA in rubric.ts.\n`);
+  process.exit(1);
+}
 
 // ── 1. Rubric shape ──────────────────────────────────────────────────────
 
@@ -482,14 +509,24 @@ console.log(`\n7. Robustness`);
     ? pass(`the clock is injected, not read (dateline ${beforeD.earned} → ${afterD.earned} at +13 months)`)
     : fail("moving `now` forward 13 months did not age the dateline — the engine is reading the real clock somewhere");
 
-  // Word-boundary guard: these tokens CONTAIN rubric terms but are not them.
-  const trap = withBody(CLEAN_BODY.replace("The bottom line", "The bottom line on repayment, prepayment and orchestrations"));
-  const trapScore = computeDraftScores(trap);
-  const cleanStuff = criterionOf(cleanScores, "keyword-stuffing-guard");
-  const trapStuff = criterionOf(trapScore, "keyword-stuffing-guard");
-  cleanStuff && trapStuff && trapStuff.earned === cleanStuff.earned
-    ? pass("'repayment'/'orchestrations' do not match 'payment'/'orchestration' (word-boundary guard holds)")
-    : fail("substring matching is on — 'repayment' is being counted as 'payment'");
+  // Word-boundary guard, tested two ways. The first version of this check
+  // asserted on keyword-stuffing-guard, which tokenises on whitespace and
+  // never calls countTerm — so it passed with the guard deleted. A trap aimed
+  // at the wrong criterion is not a trap.
+  countTerm("the repayment schedule was prepaid", "payment") === 0 && countTerm("payment terms", "payment") === 1
+    ? pass("countTerm: 'repayment'/'prepaid' do not match 'payment'")
+    : fail("countTerm is substring-matching — 'repayment' counts as 'payment'");
+
+  // ...and through a criterion that actually calls it: "deleveraged" contains
+  // the AI tell "leveraged", so an unguarded match flags legitimate finance prose.
+  const trap = withBody(mutate(CLEAN_BODY,
+    "The gain concentrates in cross-border volume",
+    "Merchants who have deleveraged still see the gain concentrate in cross-border volume"));
+  const trapAiTell = criterionOf(computeDraftScores(trap), "ai-tell-guard");
+  const cleanAiTell = criterionOf(cleanScores, "ai-tell-guard");
+  cleanAiTell && trapAiTell && trapAiTell.earned === cleanAiTell.earned
+    ? pass("'deleveraged' is not flagged as the AI tell 'leveraged' (guard holds through the engine)")
+    : fail(`substring matching reaches the rubric — ai-tell went ${cleanAiTell ? cleanAiTell.earned : "?"} → ${trapAiTell ? trapAiTell.earned : "?"} on a legitimate word`);
 
   const degenerate = ["", "Payment orchestration.", "## Only a heading", "word ".repeat(900)];
   let broke = 0;
