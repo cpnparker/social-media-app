@@ -15,6 +15,7 @@
  */
 
 import {
+  SUPERLATIVE_TERMS, SUPERLATIVE_TIERS, ANON_FACT_TIERS,
   CRITERIA, PILLARS, RUBRIC_VERSION, scoreToGrade, tieredScore,
   TITLE_ALIGNMENT_TIERS, HEADING_QUERY_TIERS, BODY_QUERY_TIERS,
   STAT_DENSITY_TIERS, NAKED_STAT_TIERS, EXTERNAL_LINK_TIERS,
@@ -230,6 +231,25 @@ function pillar2(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   out.push(score("attributed-quotes", qPts, attributed > 0,
     attributed + " attributed quotation" + (attributed === 1 ? "" : "s"), unattributedQuotes));
 
+  // Unverifiable superlatives. Every span is the exact term, so the writer
+  // sees which word to cut; the fix is deletion or substantiation, never both.
+  {
+    const supSpans: CriterionSpan[] = [];
+    let sup = 0;
+    for (let i = 0; i < SUPERLATIVE_TERMS.length; i++) {
+      const term = SUPERLATIVE_TERMS[i];
+      const re = new RegExp("\\b" + term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "gi");
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(p.text)) !== null) {
+        sup++;
+        if (supSpans.length < 8) supSpans.push({ start: m.index, end: m.index + m[0].length, note: "unverifiable superlative" });
+      }
+    }
+    out.push(score("unverifiable-superlatives", tieredScore(sup, SUPERLATIVE_TIERS), sup === 0,
+      sup === 0 ? "no unverifiable superlatives" : sup + " superlative" + (sup === 1 ? "" : "s") + " with nothing behind " + (sup === 1 ? "it" : "them"),
+      supSpans));
+  }
+
   const brand = (input.brandName || "").toLowerCase();
   const hosts: string[] = [];
   for (let i = 0; i < p.links.length; i++) {
@@ -280,6 +300,47 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   const out: CriterionResult[] = [];
   const queries = input.targetQueries || [];
   const candidates = entityCandidates(input);
+  // Anonymous first-person facts: a statistic whose sentence says "we/our/us"
+  // and never names the entity. The fact travels when a model lifts the
+  // sentence; the brand does not. Experience-voice sentences are exempt —
+  // pillar 5 rewards them, and a rubric must not argue with itself.
+  if (candidates.length === 0) {
+    out.push(skip("anonymous-first-person-facts", "No brand to check against"));
+  } else if (p.stats.length === 0) {
+    out.push(skip("anonymous-first-person-facts", "No statistics to attribute"));
+  } else {
+    const FIRST_PERSON = /\b(we|our|us)\b/i;
+    let anon = 0;
+    const anonSpans: CriterionSpan[] = [];
+    const seenSent: { [k: number]: boolean } = {};
+    for (let i = 0; i < p.stats.length; i++) {
+      const si = p.stats[i].sentenceIndex;
+      if (seenSent[si]) continue;
+      seenSent[si] = true;
+      const sent = p.sentences[si];
+      if (!sent) continue;
+      if (!FIRST_PERSON.test(sent.text)) continue;
+      const sLower = sent.text.toLowerCase();
+      let named = false;
+      for (let c = 0; c < candidates.length; c++) {
+        const cw = contentWords(candidates[c]);
+        for (let w = 0; w < cw.length; w++) {
+          if (cw[w].length >= 4 && termPresent(sLower, cw[w])) { named = true; break; }
+        }
+        if (named) break;
+      }
+      if (named) continue;
+      if (containsAny(sLower, EXPERIENCE_MARKERS) > 0) continue;
+      anon++;
+      if (anonSpans.length < 8) {
+        anonSpans.push({ start: sent.start, end: sent.end, note: "the fact is \"ours\" — a model lifting this sentence never learns whose" });
+      }
+    }
+    out.push(score("anonymous-first-person-facts", tieredScore(anon, ANON_FACT_TIERS), anon === 0,
+      anon === 0 ? "every fact-bearing sentence names its owner" : anon + " fact sentence" + (anon === 1 ? "" : "s") + " say \"we\" and never name the brand",
+      anonSpans));
+  }
+
   const defs = definitionSentences(p, candidates);
 
   // Answer-first. The tier cliff sits at 30% because that is where the
@@ -326,15 +387,37 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   // the position requirement, and hence those two markers are not in the list.
   const earlyBlocks = Math.max(1, Math.ceil(p.blocks.length * 0.30));
   let tldr = 0;
+  const tldrSpans: CriterionSpan[] = [];
   for (let i = 0; i < Math.min(earlyBlocks, p.blocks.length); i++) {
     const bLower = p.blocks[i].text.toLowerCase();
     if (containsAny(bLower, SUMMARY_MARKERS) > 0) {
       let followed = false;
-      for (let j = i + 1; j <= Math.min(i + 3, p.blocks.length - 1); j++) {
-        if (p.blocks[j].kind === "listItem") { followed = true; break; }
-        if (p.blocks[j].kind === "prose" && (p.blocks[j].text.match(/\S+/g) || []).length <= 80) { followed = true; break; }
+      // Bullet QUALITY, not just presence: the TL;DR is the block a model
+      // quotes when summarising the page, so each bullet must be a complete,
+      // self-contained sentence — a row of three-word fragments is a table of
+      // contents wearing a summary's clothes. SENTENCE-SHAPED is the whole
+      // test, deliberately: the first version also demanded a figure or the
+      // brand name in every bullet, which flagged a perfectly liftable
+      // definitional bullet on the clean fixture — that is the number-
+      // sprinkling nudge the anti-checklist bans, and substance already has
+      // its own criteria. Weak bullets cap the criterion at 7 and are pointed
+      // at individually.
+      let bullets = 0, strong = 0;
+      for (let j = i + 1; j <= Math.min(i + 8, p.blocks.length - 1); j++) {
+        const blk = p.blocks[j];
+        if (blk.kind !== "listItem") { if (bullets > 0) break; else continue; }
+        bullets++;
+        followed = true;
+        const words = (blk.text.match(/\S+/g) || []).length;
+        if (words >= 8) strong++;
+        else if (tldrSpans.length < 6) tldrSpans.push({ start: blk.start, end: blk.end, note: "fragment — a bullet a model can quote is a complete, self-contained sentence" });
       }
-      tldr = followed ? 10 : 5;
+      if (!followed) {
+        for (let j = i + 1; j <= Math.min(i + 3, p.blocks.length - 1); j++) {
+          if (p.blocks[j].kind === "prose" && (p.blocks[j].text.match(/\S+/g) || []).length <= 80) { followed = true; break; }
+        }
+      }
+      tldr = !followed ? 5 : bullets > 0 && strong < bullets ? 7 : 10;
       break;
     }
   }
@@ -342,7 +425,9 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
     const anyMarker = containsAny(p.text.toLowerCase(), SUMMARY_MARKERS) > 0;
     if (anyMarker) tldr = 5;
   }
-  out.push(score("tldr-block", tldr, tldr === 10, tldr === 10 ? "present near the top" : tldr === 5 ? "present but not positioned early" : "none found"));
+  out.push(score("tldr-block", tldr, tldr === 10,
+    tldr === 10 ? "present near the top" : tldr === 7 ? "present, but some bullets cannot stand alone" : tldr === 5 ? "present but not positioned early" : "none found",
+    tldrSpans));
 
   // Question headings. AuthorityOn wanted 25 raw question marks for full marks
   // across concatenated SITE text — the poster child for recalibration. Here it
@@ -412,12 +497,13 @@ const BARE_DEFINITE = /^\s*the\s+(company|tool|platform|product|service|team|bra
  * determiner doing its job. A flat /^(this|that)\b/ flags both and teaches
  * writers to write worse to satisfy the tool.
  */
+const HERES_OPEN = /^\s*here['\u2019]s\s+(how|why|what|where|when)\b/i;
 const DEMONSTRATIVE_OPEN = /^\s*(this|that|these|those)\s*(?:[,.;:]|(?:is|are|was|were|means|makes|gives|shows|can|will|would|should|has|have|had|do|does|did)\b)/i;
 
 function opensWithPronoun(c: Chunk): boolean {
   if (!c.firstSentence) return false;
   const t = c.firstSentence.text;
-  return PRONOUN_OPEN.test(t) || BARE_DEFINITE.test(t) || DEMONSTRATIVE_OPEN.test(t);
+  return PRONOUN_OPEN.test(t) || BARE_DEFINITE.test(t) || DEMONSTRATIVE_OPEN.test(t) || HERES_OPEN.test(t);
 }
 
 function pillar4(p: ParsedDraft, input: DraftInput): CriterionResult[] {
@@ -477,6 +563,47 @@ function pillar4(p: ParsedDraft, input: DraftInput): CriterionResult[] {
     const pct = scored.length > 0 ? (named / scored.length) * 100 : 0;
     out.push(score("chunk-entity-naming", tieredScore(pct, CHUNK_NAMING_TIERS), pct >= 80,
       named + " of " + scored.length + " sections name their subject"));
+  }
+
+  // Anonymous first-person facts: a statistic whose sentence says "we/our/us"
+  // and never names the entity. The fact travels when a model lifts the
+  // sentence; the brand does not. Experience-voice sentences are exempt —
+  // pillar 5 rewards them, and a rubric must not argue with itself.
+  if (candidates.length === 0) {
+    out.push(skip("anonymous-first-person-facts", "No brand to check against"));
+  } else if (p.stats.length === 0) {
+    out.push(skip("anonymous-first-person-facts", "No statistics to attribute"));
+  } else {
+    const FIRST_PERSON = /\b(we|our|us)\b/i;
+    let anon = 0;
+    const anonSpans: CriterionSpan[] = [];
+    const seenSent: { [k: number]: boolean } = {};
+    for (let i = 0; i < p.stats.length; i++) {
+      const si = p.stats[i].sentenceIndex;
+      if (seenSent[si]) continue;
+      seenSent[si] = true;
+      const sent = p.sentences[si];
+      if (!sent) continue;
+      if (!FIRST_PERSON.test(sent.text)) continue;
+      const sLower = sent.text.toLowerCase();
+      let named = false;
+      for (let c = 0; c < candidates.length; c++) {
+        const cw = contentWords(candidates[c]);
+        for (let w = 0; w < cw.length; w++) {
+          if (cw[w].length >= 4 && termPresent(sLower, cw[w])) { named = true; break; }
+        }
+        if (named) break;
+      }
+      if (named) continue;
+      if (containsAny(sLower, EXPERIENCE_MARKERS) > 0) continue;
+      anon++;
+      if (anonSpans.length < 8) {
+        anonSpans.push({ start: sent.start, end: sent.end, note: "the fact is \"ours\" — a model lifting this sentence never learns whose" });
+      }
+    }
+    out.push(score("anonymous-first-person-facts", tieredScore(anon, ANON_FACT_TIERS), anon === 0,
+      anon === 0 ? "every fact-bearing sentence names its owner" : anon + " fact sentence" + (anon === 1 ? "" : "s") + " say \"we\" and never name the brand",
+      anonSpans));
   }
 
   const defs = definitionSentences(p, candidates);
@@ -574,11 +701,22 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
   }
   if (!resolved) {
     const zone = p.blocks.slice(0, Math.max(1, Math.ceil(p.blocks.length * 0.15))).map(function (b) { return b.text; }).join(" ");
-    const m = zone.match(/\b(\d{1,2}\s+[A-Z][a-z]+\s+(?:19|20)\d{2}|[A-Z][a-z]+\s+\d{1,2},?\s+(?:19|20)\d{2}|(?:19|20)\d{2}-\d{2}-\d{2})\b/);
-    if (m) {
+    const DATE_RE = /\b(\d{1,2}\s+[A-Z][a-z]+\s+(?:19|20)\d{2}|[A-Z][a-z]+\s+\d{1,2},?\s+(?:19|20)\d{2}|(?:19|20)\d{2}-\d{2}-\d{2})\b/g;
+    // An "Updated" date beats the first date found. A page carrying both
+    // "Published March 2025" and "Updated 19 August 2026" was being scored on
+    // March — first-date-wins actively under-scored exactly the freshness
+    // behaviour the rubric's one grade-A signal is supposed to reward.
+    let first: Date | null = null;
+    let updated: Date | null = null;
+    let m: RegExpExecArray | null;
+    while ((m = DATE_RE.exec(zone)) !== null) {
       const d = new Date(m[1]);
-      if (!isNaN(d.getTime())) resolved = d;
+      if (isNaN(d.getTime())) continue;
+      if (!first) first = d;
+      const before = zone.slice(Math.max(0, m.index - 30), m.index).toLowerCase();
+      if (/(updated|modified|revised|reviewed)\b[^.]{0,20}$/.test(before) && (!updated || d > updated)) updated = d;
     }
+    resolved = updated || first;
   }
   let dPts = 0, dNote = "no dateline";
   if (resolved) {

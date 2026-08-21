@@ -42,6 +42,10 @@ export const CRITERION_LABEL: { [k: string]: string } = {
   "keyword-stuffing-guard": "Term repeated past usefulness",
   "pronoun-opening-chunks": "Section opens on a pronoun",
   "heading-answer-adjacency": "Heading's answer doesn't follow it",
+  "anonymous-first-person-facts": "Fact says \"we\" — the brand doesn't travel",
+  "unverifiable-superlatives": "Superlative with nothing behind it",
+  "tldr-block": "Takeaway bullet can't stand alone",
+  "dateline-recency": "No visible date",
 };
 
 export function criterionLabel(key: string): string {

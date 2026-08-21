@@ -35,7 +35,18 @@
  *   2026-08-21  word-boundary guard removed          →  2 failures, exit 1  ✓
  *   2026-08-21  skip() marks criteria skipped:false  →  §6b red,   exit 1  ✓
  *   2026-08-21  coverage counted per criterion       →  §6b red,   exit 1  ✓
+ *   2026-08-21  superlative guard always passes      →  1 failure, exit 1  ✓
+ *   2026-08-21  anon-fact guard skips first person   →  1 failure, exit 1  ✓
+ *   2026-08-21  experience exemption removed         →  1 failure, exit 1  ✓
+ *   2026-08-21  Updated-date preference removed      →  §3b red,   exit 1  ✓ (2nd try — no fixture carried both dates)
+ *   2026-08-21  tldr quality cap removed             →  1 failure, exit 1  ✓ (2nd try — no fixture had fragment bullets)
  *   (baseline, unmutated: exit 0)
+ *
+ * The tldr fixture round also caught the CRITERION being wrong, not just the
+ * fixture: the first bullet-quality rule demanded a figure or brand name in
+ * every bullet and flagged a perfectly liftable definitional bullet on the
+ * clean draft — the number-sprinkling nudge the anti-checklist bans. The rule
+ * shrank to sentence-shaped-only; substance already has its own criteria.
  *
  * One mutation on §6b was SURVIVED and is recorded because the survival is the
  * finding: replacing `if (queries.length === 0)` in pillar1 with `if (false)`
@@ -277,7 +288,41 @@ D.push({ key: "attributed-quotes", label: "the attributed quotation removed", in
 D.push({ key: "external-reference-links", label: "every external citation link removed", input: withBody(
   CLEAN_BODY.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")) });
 
+D.push({
+  key: "unverifiable-superlatives",
+  label: "puffery inserted with nothing behind it",
+  input: withBody(CLEAN_BODY.replace(
+    "Vaultline is a payment orchestration platform that routes",
+    "Vaultline is a world-class, industry-leading payment orchestration platform with unparalleled reach that routes"
+  )),
+});
+// The brand carries the facts in CLEAN_BODY; rewriting them to "we/our" with
+// no brand in the sentence is exactly the Amrize failure this guard exists
+// for. Sentences keep their statistics so the stat→sentence join still fires.
+D.push({
+  key: "anonymous-first-person-facts",
+  label: "fact sentences rewritten to anonymous we/our",
+  input: withBody(CLEAN_BODY
+    .replace(
+      "Smaller merchants see less.",
+      "We processed 2 billion transactions across our network last year. Smaller merchants see less."
+    )
+    .replace(
+      "Migration runs in three stages,",
+      "We migrated 400 clients to the platform in 2025, and migration runs in three stages,"
+    )),
+});
+
 // Pillar 3
+D.push({
+  key: "tldr-block",
+  label: "takeaway bullets reduced to fragments nothing could quote",
+  input: withBody(CLEAN_BODY
+    .replace("- Orchestration routes each payment to the acquirer most likely to authorise it.", "- Faster routing")
+    .replace("- Authorisation rates rise around 4% with a fallback route configured, according to the Nordvale Treasury Benchmark.", "- Better authorisation")
+    .replace("- Any useful comparison starts with volume: below EUR 5 million a year, Kessler Institute modelling shows the fees outweigh the gains.", "- Lower total fees")),
+});
+
 D.push({ key: "answer-first-position", label: "the answer buried past the 30% mark", input: withBody(
   mutate(CLEAN_BODY,
     "Vaultline is a payment orchestration platform that routes card transactions across multiple acquirers from a single integration.\n\n",
@@ -409,6 +454,26 @@ console.log(`\n3. Every criterion goes red on a draft that violates it   [${D.le
     ? pass(`all ${CRITERIA.length} criteria have a defect fixture`)
     : fail(`${uncovered.length} criteria have NO defect fixture: ${uncovered.join(", ")}`,
            "An unfixtured criterion is untested — the house rule exists because one of those was reported closed while wide open.");
+}
+
+// ── 3b. The Updated date wins ────────────────────────────────────────────
+console.log(`\n3b. Dateline prefers the Updated date`);
+{
+  const both = withBody(CLEAN_BODY.replace(
+    "Published 21 August 2026.",
+    "Published 3 January 2025.\n\nUpdated 20 August 2026."
+  ));
+  const r = computeDraftScores(both);
+  let dPts = -1;
+  for (let i = 0; i < r.pillars.length; i++)
+    for (let c = 0; c < r.pillars[i].criteria.length; c++)
+      if (r.pillars[i].criteria[c].key === "dateline-recency") dPts = r.pillars[i].criteria[c].earned;
+  // Precondition: the fixture must genuinely carry two dates where the choice
+  // changes the outcome — January 2025 is >365 days from NOW, August 2026 is
+  // <90. If both dates fell in the same band this would prove nothing.
+  dPts === 10
+    ? pass("a page with Published Jan-2025 and Updated Aug-2026 scores on the Updated date")
+    : fail(`dateline-recency earned ${dPts} — the first date won, so refreshing a page is invisible to the one grade-A signal in the rubric`);
 }
 
 // ── 4. Renormalisation ───────────────────────────────────────────────────

@@ -46,6 +46,8 @@ const CONTEXT_CHARS = 24;
  */
 const SEVERITY: { [key: string]: "high" | "medium" | "low" } = {
   "stat-source-adjacency": "high",
+  "anonymous-first-person-facts": "high",
+  "unverifiable-superlatives": "medium",
   "attributed-quotes": "high",
   "current-year-stats": "medium",
   "answer-first-position": "high",
@@ -80,6 +82,14 @@ const REMEDY: { [key: string]: string } = {
     "Name the subject in the first sentence. Sections are extracted alone — a reader landing here from a citation cannot resolve \"this\" or \"it\".",
   "heading-answer-adjacency":
     "Answer the heading's question in the first sentence or two beneath it. The heading + immediate answer is the unit engines extract.",
+  "anonymous-first-person-facts":
+    "Name the brand in this sentence instead of \"we\". A model lifts the sentence, not the page — the fact travels, and whoever \"we\" is does not.",
+  "unverifiable-superlatives":
+    "Cut it or substantiate it. Models decline to repeat unsourced superlatives, and every one of them weakens the sentences around it.",
+  "tldr-block":
+    "Make each bullet a complete sentence carrying a figure or the brand name — a bullet a model can lift and quote alone.",
+  "dateline-recency":
+    "Add a visible \"Updated\" date. Freshness is the strongest single signal in the rubric, and an engine cannot reward a date it cannot find.",
 };
 
 /**

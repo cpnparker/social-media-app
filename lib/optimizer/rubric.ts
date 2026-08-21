@@ -91,6 +91,11 @@ export const CRITERIA: CriterionMeta[] = [
   { key: "statistic-density", name: "Statistics per 1,000 words", pillar: 2, maxPoints: 15, kind: "reward", rollUp: "citability", evidence: "A-" },
   { key: "stat-source-adjacency", name: "Statistics carry a source in the same sentence", pillar: 2, maxPoints: 15, kind: "guard", rollUp: "citability", evidence: "A-" },
   { key: "attributed-quotes", name: "Contains a directly attributed quotation", pillar: 2, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "A-" },
+  // The adjective form of an unsourced absolute claim. The judge guards the
+  // CLAUSE form ("the only platform that...") at grade B; this guards the
+  // mechanical lexicon — models decline to repeat unsourced superlatives, and
+  // an SEC-reporting client cannot substantiate "best-in-class" anyway.
+  { key: "unverifiable-superlatives", name: "No unverifiable superlatives", pillar: 2, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "C" },
   { key: "external-reference-links", name: "Cites external sources by link", pillar: 2, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "A-" },
 
   // Pillar 3 — Answer-first structure & extractability (max 60)
@@ -105,6 +110,14 @@ export const CRITERIA: CriterionMeta[] = [
   { key: "canonical-name-consistency", name: "Brand named consistently", pillar: 4, maxPoints: 10, kind: "guard", rollUp: "both", evidence: "C" },
   { key: "chunk-entity-naming", name: "Sections name their subject explicitly", pillar: 4, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "C" },
   { key: "entity-defined-once", name: "One definition of the main entity, not several", pillar: 4, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "C" },
+  // Thomas Cremese's "single most expensive mistake" (Amrize audit, Aug 2026):
+  // a model extracts the fact and cites the page WITHOUT the brand, because
+  // the sentence carrying the fact said "we". The entity must live inside the
+  // sentence a model would lift — not the byline, not the paragraph above.
+  // Sentences carrying an EXPERIENCE_MARKER are exempt: pillar 5 rewards
+  // first-person experience voice, and a criterion must not punish what
+  // another rewards.
+  { key: "anonymous-first-person-facts", name: "Fact-bearing sentences name the brand, not \"we\"", pillar: 4, maxPoints: 10, kind: "guard", rollUp: "citability", evidence: "C" },
 
   // Pillar 5 — Authority & experience signals (max 40)
   { key: "byline-present", name: "Byline near the top", pillar: 5, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "C" },
@@ -301,15 +314,37 @@ export const ROLE_TITLE_PATTERN = /\b(ceo|cto|cfo|coo|founder|co-founder|directo
 export const YEARS_EXPERIENCE_PATTERN = /\b\d{1,2}\+?\s+years?\b/i;
 
 /**
+ * Unverifiable superlatives — the puffery half of AuthorityOn's old
+ * AUTHORITY_VOICE_KEYWORDS, now guarded in its own criterion. (An earlier
+ * comment here claimed the AI-tell guard penalised these; it never did — none
+ * of them were in AI_TELL_TERMS. The claim was checked when the audit
+ * proposed this guard, which is exactly why comments about coverage need the
+ * same scepticism as checks that assert code exists.)
+ */
+export const SUPERLATIVE_TERMS = [
+  "unparalleled", "first-of-its-kind", "world-class", "best-in-class",
+  "industry-leading", "unmatched", "unrivalled", "unrivaled",
+  "one-of-a-kind", "second to none", "cutting-edge", "state-of-the-art",
+];
+
+export const SUPERLATIVE_TIERS: Tier[] = [
+  { min: 0, points: 5 }, { min: 1, points: 2 }, { min: 2, points: 0 },
+];
+
+export const ANON_FACT_TIERS: Tier[] = [
+  { min: 0, points: 10 }, { min: 1, points: 6 }, { min: 3, points: 3 }, { min: 5, points: 0 },
+];
+
+/**
  * First-person EXPERIENCE markers. Deliberately disjoint from AuthorityOn's
  * AUTHORITY_VOICE_KEYWORDS, which mixed genuine experience ("we found") with
- * puffery ("industry-leading", "best-in-class", "cutting-edge"). The puffery
- * half is not merely unported — it is penalised by the AI-tell guard.
+ * puffery ("industry-leading", "best-in-class", "cutting-edge") — the puffery
+ * half now lives in SUPERLATIVE_TERMS with its own guard.
  */
 export const EXPERIENCE_MARKERS = [
   "we tested", "we found", "we measured", "we analysed", "we analyzed",
   "we surveyed", "we built", "we've seen", "we have seen", "in our experience",
-  "our data", "our study", "our analysis", "our findings", "when we",
+  "our data", "our study", "our analysis", "our own analysis", "our findings", "when we",
   "hands-on", "first-hand", "firsthand", "we work with", "we worked with",
   "our clients", "i have run", "i have watched", "we ran",
 ];

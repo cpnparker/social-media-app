@@ -36,7 +36,10 @@ import type { EvidenceGrade, RollUp, Tier } from "./types";
 // queries set and no first-person claims could score 37/100 with ZERO marks on
 // the text — the judge was finding real problems and reporting them as
 // invisible score adjustments. Observed live on a real 1,014-word draft.
-export const JUDGE_PROMPT_VERSION = "1.1.0";
+// 1.2.0: substantive quotes require name + role/organisation (never invented
+// in a suggestedEdit — expose the gap instead); a concrete scope qualifier is
+// not hedging; the author joins the registered-entity list for drift.
+export const JUDGE_PROMPT_VERSION = "1.2.0";
 
 export interface JudgeCriterionMeta {
   key: string;

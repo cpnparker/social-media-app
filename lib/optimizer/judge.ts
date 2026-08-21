@@ -62,6 +62,7 @@ export interface JudgeInput {
   targetQueries: string[];
   brandName?: string;
   brandAliases?: string[];
+  authorName?: string;
   format?: string;
 }
 
@@ -78,9 +79,9 @@ A separate deterministic engine already scores 29 other criteria — counts, den
 
 YOUR SEVEN CRITERIA
 
-1. semantic-query-coverage — for each target query, does the draft ANSWER it? Not "does it contain the words" — the engine already checks that. A draft can use every word of a question and never answer it. Verdict per query: covered (a reader gets a direct answer), partial (touched but incomplete or hedged into uselessness), missing. For every PARTIAL verdict, also report a finding anchored at the passage that half-answers it, explaining what is missing from it and suggesting the completed passage.
+1. semantic-query-coverage — for each target query, does the draft ANSWER it? Not "does it contain the words" — the engine already checks that. A draft can use every word of a question and never answer it. Verdict per query: covered (a reader gets a direct answer), partial (touched but incomplete or hedged into uselessness), missing. An answer bounded by a concrete scope qualifier — "results vary by project, local materials and performance requirements" — is still COVERED; a scope limit makes a passage safer to repeat, and partial means the SUBSTANCE is missing, never that the answer was honest about its limits. For every PARTIAL verdict, also report a finding anchored at the passage that half-answers it, explaining what is missing from it and suggesting the completed passage.
 
-2. quote-attribution-quality — for each quotation the parser found, is the speaker named and plausibly real, and does the quote say something a paraphrase could not? Verdict: substantive, weak (attributed but says nothing), decorative (no real attribution, or a slogan in quote marks). For every WEAK or DECORATIVE verdict, also report a finding anchored at that quotation saying what would make it citable.
+2. quote-attribution-quality — for each quotation the parser found, is the speaker named and plausibly real, and does the quote say something a paraphrase could not? A SUBSTANTIVE verdict requires the speaker's full name PLUS a role or organisation in the surrounding text; a named speaker with neither is at best weak. Verdict: substantive, weak (attributed but says nothing, or named without role or organisation), decorative (no real attribution, or a slogan in quote marks). Never invent a title or organisation in a suggestedEdit — if the credential is missing, the rewrite must expose the gap ("says [name], [role, organisation]") for the writer to fill. For every WEAK or DECORATIVE verdict, also report a finding anchored at that quotation saying what would make it citable.
 
 3. opening-quotability — could the opening be lifted verbatim and stand alone as the answer, with no surrounding context? Verdict: quotable_alone, needs_context (the answer is there but depends on something else), no_answer. For NEEDS_CONTEXT or NO_ANSWER, also report a finding anchored at the opening sentence, with a suggestedEdit rewriting it to stand alone where one clean replacement exists.
 
@@ -124,7 +125,9 @@ export function buildSessionBlock(input: JudgeInput): string {
   } else {
     parts.push("Target queries: none set — return an empty queryCoverage array and do not guess at one.");
   }
-  const names = [input.brandName || ""].concat(input.brandAliases || []).filter(Boolean);
+  // The author is a registered entity too: a byline spelled three ways is the
+  // same drift problem as a brand spelled three ways.
+  const names = [input.brandName || ""].concat(input.brandAliases || []).concat(input.authorName ? [input.authorName] : []).filter(Boolean);
   if (names.length > 0) {
     parts.push(
       `Registered names for the main entity (any OTHER form is drift): ${names.join(", ")}`
@@ -416,7 +419,9 @@ export function scoreJudgeResponse(
   // 5-7. The guards, counted from ANCHORED findings only.
   const countFor = (key: string) => anchoredFindings.filter((f) => f.criterion === key).length;
 
-  const names = [input.brandName || ""].concat(input.brandAliases || []).filter(Boolean);
+  // The author is a registered entity too: a byline spelled three ways is the
+  // same drift problem as a brand spelled three ways.
+  const names = [input.brandName || ""].concat(input.brandAliases || []).concat(input.authorName ? [input.authorName] : []).filter(Boolean);
   if (names.length === 0) {
     out.push(jSkip("entity-variant-drift", "No brand registered to drift from"));
   } else {
