@@ -74,12 +74,33 @@ console.log("\n4. Nothing is lost or duplicated by the split");
   ? pass("markers never reach the model")
   : fail("a raw marker would be shown to the model");
 
-console.log("\n5. Two builds a moment apart are byte-identical up to the clock");
+console.log("\n5. Per-turn content does not sit in the cached block");
+// The failure this catches: volatileTail (memories + keyword-selected category
+// instructions) used to be appended INSIDE the cached region, at the very end.
+// A prefix cache matches exactly, so writing one memory changed the block at
+// char 53,437 of 54,168 — 99% through — and discarded all of it. The background
+// extractor writes memories on ordinary turns, so it happened constantly.
+const withMem = (n: number, msg: string) => splitVolatile(routeAppends(buildSystemPrompt({
+  workspaceConfig: { contentTypes: [], cuDefinitions: [], formatDescriptions: null, typeInstructions: null, companyContext: null },
+  clientContext: null, contentDetail: null, contextConfig: normalizeContextConfig({}), resourcingAccess: false,
+  memories: Array.from({ length: n }, (_, i) => ({ content: `Memory item ${i}`, category: "preference", strength: 80 })),
+  latestUserMessage: msg,
+} as any)));
+const m6 = withMem(6, "write a blog post");
+const m7 = withMem(7, "now make a graphic for it");
+m6.stable === m7.stable
+  ? pass("an extra memory and a topic change leave the cached block byte-identical")
+  : fail("a memory write changes the cached block — the whole prefix is discarded on any turn that writes one");
+m7.volatile.includes("Memory item 6")
+  ? pass("memories still reach the model, in the volatile block")
+  : fail("memories were dropped entirely — worse than the bug being fixed");
+
+console.log("\n6. Two builds a moment apart are byte-identical up to the clock");
 splitVolatile(routeAppends(base())).stable === splitVolatile(routeAppends(base())).stable
   ? pass("the cached block is stable across builds")
   : fail("the cached block differs between builds — something volatile is still in it");
 
-console.log("\n6. The runtime uses the split, on every chain");
+console.log("\n7. The runtime uses the split, on every chain");
 const providers = readFileSync("lib/ai/providers.ts", "utf8");
 /const \{ stable, volatile \} = splitVolatile\(systemText\)/.test(providers)
   ? pass("cacheableSystem lifts the region out")

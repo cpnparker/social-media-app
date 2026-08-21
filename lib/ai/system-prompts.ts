@@ -1429,7 +1429,9 @@ Search tips:
   // The volatile tail goes here — after every stable section, so the cacheable
   // prefix is as long as it can be, and before the final reminder so that
   // still has the last word.
-  prompt += volatileTail;
+  // volatileTail is NOT appended here — see the volatile region below. It
+  // carries the memories block and the keyword-selected category instructions,
+  // both of which change from turn to turn.
 
   prompt += `\n\n---\n**Final reminder:** Users publish your output. Every fabricated fact, URL, statistic, or citation damages their professional reputation. When uncertain: use [verify] markers, state limitations honestly, and never invent sources.`;
 
@@ -1440,7 +1442,23 @@ Search tips:
   // this function returns — the deck spec, tool hints, LiveSearch rules — and a
   // trailing marker would have pushed all of them into the uncached tail. A
   // wrapped region is lifted out and placed last regardless of what follows it.
-  prompt += markVolatile(`\n\nThe time right now is ${timeStr} (${TZ}). Use it for "this morning", "this afternoon", "later today", "still to come" and anything else that depends on the hour rather than the date.`);
+  // EVERYTHING THAT VARIES PER TURN GOES IN HERE, not just the clock.
+  //
+  // volatileTail used to be appended just above, inside the cached block, and
+  // that quietly cost most of the benefit of caching at all. A prefix cache
+  // matches EXACTLY, so a single differing byte anywhere discards the whole
+  // block — and the memories section sits at the very end. Measured: writing
+  // one additional memory changed the "stable" block at character 53,437 of
+  // 54,168, ninety-nine percent of the way through, throwing away all of it.
+  // The background extractor writes memories on ordinary turns, so this was
+  // happening constantly and silently.
+  //
+  // Moving it here does not make the memories block cheaper — it varies, so it
+  // was never cacheable. It stops it POISONING the 52,000 characters in front
+  // of it, which is the whole point.
+  prompt += markVolatile(
+    `${volatileTail}\n\nThe time right now is ${timeStr} (${TZ}). Use it for "this morning", "this afternoon", "later today", "still to come" and anything else that depends on the hour rather than the date.`
+  );
   return prompt;
 }
 
