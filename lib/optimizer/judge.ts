@@ -445,6 +445,8 @@ export function anchorJudgeFindings(draftText: string, findings: JudgeFinding[])
  * makes "re-assessing unchanged text does not move the score" true by
  * construction rather than by hoping the model is consistent.
  */
+export const JUDGE_PIPELINE_VERSION = "2";
+
 export function assessmentKey(input: JudgeInput, rubricVersion: string): string {
   const parts = [
     input.parsed.text,
