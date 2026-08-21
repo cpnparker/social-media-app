@@ -76,6 +76,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       format: owned.session.type_format,
       platform: owned.session.type_platform,
       clientId: owned.session.id_client,
+      source: owned.session.type_source,
+      sourceRef: owned.session.document_source_ref,
       brief: owned.session.config_brief,
       canon: owned.session.config_canon,
       rubricVersion: owned.session.name_rubric_version,

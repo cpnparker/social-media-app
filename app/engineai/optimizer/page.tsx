@@ -36,6 +36,7 @@ import type { DraftInput } from "@/lib/optimizer/engine";
 import type { ClientCanon } from "@/lib/optimizer/client-canon";
 import IssueList from "@/components/optimizer/IssueList";
 import IssuePopover from "@/components/optimizer/IssuePopover";
+import PageAudit from "@/components/optimizer/PageAudit";
 import StartScreen from "@/components/optimizer/StartScreen";
 import EngineAISidebar from "@/components/engineai/EngineAISidebar";
 import {
@@ -106,6 +107,14 @@ function OptimizerStudio() {
    * an undo back to the assessed state correctly reads as assessed again.
    */
   const [assessedBody, setAssessedBody] = useState<string | null>(null);
+  /**
+   * URL-imported sessions get two views: Optimise (the editor) and Page audit
+   * (the live page's furniture plus its text through the same rubric). The
+   * source ref is what makes the audit possible, so both come from hydration
+   * together and the tab renders only when there is a page to audit.
+   */
+  const [studioView, setStudioView] = useState<"optimise" | "audit">("optimise");
+  const [sourceInfo, setSourceInfo] = useState<{ source: string; ref: string | null }>({ source: "generated", ref: null });
   const [navSearch, setNavSearch] = useState("");
   const [navTab, setNavTab] = useState<"private" | "team">("private");
   /** Conversations, listed read-only. Clicking one leaves for the chat surface,
@@ -230,6 +239,8 @@ function OptimizerStudio() {
         const sess = data.session || {};
         setSessionId(sess.id || urlSession);
         setTitle(sess.title || "");
+        setSourceInfo({ source: sess.source || "generated", ref: sess.sourceRef || null });
+        setStudioView("optimise");
         setFormat(sess.format || "explainer");
         setPlatform(sess.platform || "balanced");
         if (sess.canon && sess.canon.clientName) setCanon(sess.canon);
@@ -939,6 +950,28 @@ function OptimizerStudio() {
           </button>
           <span className="w-px h-4 bg-border shrink-0" />
           <span className="text-[13px] font-semibold truncate flex-1 min-w-0">{title}</span>
+          {sourceInfo.source === "url" && sourceInfo.ref && (
+            <div className="hidden md:flex items-center rounded-lg border p-0.5 shrink-0">
+              <button
+                onClick={() => setStudioView("optimise")}
+                className={cn(
+                  "px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors",
+                  studioView === "optimise" ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Optimise
+              </button>
+              <button
+                onClick={() => setStudioView("audit")}
+                className={cn(
+                  "px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors",
+                  studioView === "audit" ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Page audit
+              </button>
+            </div>
+          )}
           {/* Assessment state, in the header rather than buried in a panel.
               Four states, because three of them were previously indistinguishable
               from each other: never assessed, assessed and current, assessed but
@@ -1022,7 +1055,19 @@ function OptimizerStudio() {
             </Button>
           )}
         </div>
-        <div ref={editorScrollRef} className="relative flex-1 min-h-0 overflow-y-auto">
+        {studioView === "audit" && sourceInfo.source === "url" && sourceInfo.ref && sessionId && workspaceId && (
+          <PageAudit sessionId={sessionId} workspaceId={workspaceId} sourceUrl={sourceInfo.ref} />
+        )}
+        <div
+          ref={editorScrollRef}
+          className={cn(
+            "relative flex-1 min-h-0 overflow-y-auto",
+            // Hidden, not unmounted: Tiptap's undo stack and the highlight
+            // plugin's state live in the editor instance, and remounting on
+            // every tab switch would discard both.
+            studioView === "audit" && "hidden"
+          )}
+        >
           <IssuePopover
             editor={editorRef.current}
             issue={(() => {

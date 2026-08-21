@@ -67,6 +67,29 @@ function decodeTitle(s: string): string {
     .replace(/\s+/g, " ").trim();
 }
 
+/** The raw page plus fetch metadata, for the live-page audit. Same safeFetch,
+ *  same UA — the audit must see the page a crawler sees, unsanitised. */
+export async function fetchPageForAudit(rawUrl: string): Promise<
+  { ok: true; page: string; finalUrl: string; httpStatus: number } | { ok: false; error: string }
+> {
+  const url = (rawUrl || "").trim();
+  if (!/^https?:\/\//i.test(url)) return { ok: false, error: "Not a web address." };
+  try {
+    const res = await safeFetch(url, {
+      timeoutMs: 20_000,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml",
+      },
+    });
+    const page = await res.text();
+    if (page.length > MAX_HTML_BYTES) return { ok: false, error: "That page is too large to read." };
+    return { ok: true, page, finalUrl: res.url || url, httpStatus: res.status };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || "").indexOf("not a public address") >= 0 ? "That address is not reachable from here." : "Could not reach that page." };
+  }
+}
+
 export async function importFromUrl(rawUrl: string): Promise<UrlImportResult> {
   const url = (rawUrl || "").trim();
   if (!/^https?:\/\//i.test(url)) {
