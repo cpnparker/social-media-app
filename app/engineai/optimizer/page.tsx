@@ -202,6 +202,11 @@ function OptimizerStudio() {
     setIssues([]);
     setDiagnostics(null);
     setPanelTab("score");
+    // A generated piece must not inherit the previous article's audit view or
+    // source: stale sourceInfo kept the Page audit tab alive for a session
+    // with no page, and the streaming draft wrote into a hidden editor.
+    setStudioView("optimise");
+    setSourceInfo({ source: "generated", ref: null });
   }, [router]);
 
   // Hydrate whatever the URL names. Runs on mount and on every change of the
@@ -332,6 +337,8 @@ function OptimizerStudio() {
       if (!createRes.ok) { toast.error(created.error || "Could not start that piece"); return; }
 
       setSessionId(created.sessionId);
+      setStudioView("optimise");
+      setSourceInfo({ source: "generated", ref: null });
       if (created.canon?.clientName) setCanon(created.canon);
       // Mark it hydrated before the URL changes: the piece is already in state
       // and the hydration effect would otherwise fetch it back mid-stream and
@@ -951,7 +958,7 @@ function OptimizerStudio() {
           <span className="w-px h-4 bg-border shrink-0" />
           <span className="text-[13px] font-semibold truncate flex-1 min-w-0">{title}</span>
           {sourceInfo.source === "url" && sourceInfo.ref && (
-            <div className="hidden md:flex items-center rounded-lg border p-0.5 shrink-0">
+            <div className="flex items-center rounded-lg border p-0.5 shrink-0">
               <button
                 onClick={() => setStudioView("optimise")}
                 className={cn(
@@ -1116,7 +1123,13 @@ function OptimizerStudio() {
           too tight to write in. The score is the point of this surface, so it
           stays visible rather than being pushed to xl; it just gives back
           60px until there is room. */}
-      <div className="hidden lg:flex shrink-0 w-[320px] xl:w-[380px] border-l bg-background flex-col min-h-0">
+      <div className={cn(
+        "hidden shrink-0 w-[320px] xl:w-[380px] border-l bg-background flex-col min-h-0",
+        // The audit view carries its own "live text through the rubric" card;
+        // keeping the DRAFT's score panel beside it put two different numbers
+        // for "this piece" on screen with nothing saying which was which.
+        studioView === "audit" ? "lg:hidden" : "lg:flex"
+      )}>
         <div className="shrink-0 flex items-center gap-1 px-3 pt-2 border-b">
           <button
             onClick={() => setPanelTab("score")}

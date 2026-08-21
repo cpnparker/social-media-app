@@ -62,23 +62,59 @@ export interface PageAuditResult {
 const strip = (s: string) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
 function attr(tag: string, name: string): string {
-  const m = tag.match(new RegExp(name + "\\s*=\\s*(\"([^\"]*)\"|'([^']*)')", "i"));
-  return m ? (m[2] !== undefined ? m[2] : m[3] || "") : "";
+  // Quoted, single-quoted, or UNQUOTED — minifiers strip quotes from
+  // space-free values, and an attr() blind to that inverted verdicts in both
+  // directions at once: a noindexed page passed while present metas read as
+  // missing.
+  const m = tag.match(new RegExp("(?:^|\\s)" + name + "\\s*=\\s*(\"([^\"]*)\"|'([^']*)'|([^\\s\"'>]+))", "i"));
+  if (!m) return "";
+  return m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4] || "";
 }
 
-function metaContent(page: string, matcher: RegExp): string | null {
+function metaContent(page: string, attrName: "name" | "property" | "any", value: string): string | null {
   const tags = page.match(/<meta\b[^>]*>/gi) || [];
   for (let i = 0; i < tags.length; i++) {
-    if (matcher.test(tags[i])) return attr(tags[i], "content");
+    const nameVal = attr(tags[i], "name").toLowerCase();
+    const propVal = attr(tags[i], "property").toLowerCase();
+    const hit =
+      attrName === "name" ? nameVal === value :
+      attrName === "property" ? propVal === value :
+      nameVal === value || propVal === value;
+    if (hit) return attr(tags[i], "content");
   }
   return null;
+}
+
+/** ALL matching meta contents — crawlers honour the most restrictive robots
+ *  tag, and a CMS plugin injecting a second one after the theme's permissive
+ *  one is a real WordPress pattern that a first-match read sails past. */
+function metaContents(page: string, value: string): string[] {
+  const tags = page.match(/<meta\b[^>]*>/gi) || [];
+  const out: string[] = [];
+  for (let i = 0; i < tags.length; i++) {
+    if (attr(tags[i], "name").toLowerCase() === value) out.push(attr(tags[i], "content"));
+  }
+  return out;
 }
 
 export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   const { page, finalUrl } = input;
   const checks: AuditCheck[] = [];
   const push = (c: AuditCheck) => checks.push(c);
-  const head = page.slice(0, page.search(/<body\b/i) >= 0 ? page.search(/<body\b/i) : Math.min(page.length, 60000));
+
+  // JSON-LD is extracted from the RAW page FIRST, because the very next step
+  // deletes every <script>.
+  const ldBlocks = page.match(/<script\b[^>]*type\s*=\s*["']?application\/ld\+json["']?[^>]*>([\s\S]*?)<\/script>/gi) || [];
+
+  // Everything structural reads a STRIPPED copy. The raw page is full of dead
+  // content that produced confident wrong verdicts: an <h1> inside a script
+  // template counted as a second H1, the GTM <noscript><img></noscript> pixel
+  // (alt-less, near-universal) raised a standing false alt warning, and an
+  // inline SVG's accessibility <title> could stand in for a missing head
+  // title. Machines reading the page strip these; the audit must too.
+  const dom = page
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|noscript|template|style|svg)\b[\s\S]*?<\/\1\s*>/gi, " ");
 
   // ── Indexability — everything else is moot if this fails ────────────────
   push({
@@ -88,8 +124,11 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: input.httpStatus !== 200 ? "A page that does not answer 200 cannot be crawled, cited or ranked." : undefined,
   });
 
-  const robots = metaContent(page, /name\s*=\s*["']robots["']/i);
-  const noindex = !!robots && /noindex/i.test(robots);
+  const robotsAll = metaContents(page, "robots");
+  const robots = robotsAll.length ? robotsAll.join(" | ") : null;
+  // content="none" is the documented equivalent of noindex,nofollow, and the
+  // most restrictive of SEVERAL robots tags is what crawlers honour.
+  const noindex = robotsAll.some((r) => /\bnoindex\b/i.test(r) || /\bnone\b/i.test(r));
   push({
     id: "robots-meta", section: "indexability", name: "Not blocked by a robots meta tag",
     status: noindex ? "fail" : "pass",
@@ -97,14 +136,28 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: noindex ? "noindex removes the page from every index and every AI training crawl. Nothing else on this audit matters until this is gone." : undefined,
   });
 
-  const canonicalTag = (page.match(/<link\b[^>]*rel\s*=\s*["']canonical["'][^>]*>/i) || [])[0];
-  const canonical = canonicalTag ? attr(canonicalTag, "href") : "";
+  const linkTags = page.match(/<link\b[^>]*>/gi) || [];
+  let canonical = "";
+  for (let i = 0; i < linkTags.length; i++) {
+    if (attr(linkTags[i], "rel").toLowerCase() === "canonical") { canonical = attr(linkTags[i], "href"); break; }
+  }
   let canonicalStatus: AuditStatus = "warn";
   let canonicalDetail = "no canonical link";
   if (canonical) {
-    const same = canonical.replace(/\/$/, "") === finalUrl.replace(/\/$/, "");
+    // Resolved, not string-compared. A relative self-canonical ("/blog/post")
+    // is perfectly valid and was being reported as "points elsewhere" — an
+    // alarming, concretely wrong claim about a correct page. <base href> wins
+    // as the resolution root when present, exactly as a browser resolves it.
+    const baseTag = (page.match(/<base\b[^>]*>/i) || [])[0];
+    const baseHref = baseTag ? attr(baseTag, "href") : "";
+    let resolved = canonical;
+    try {
+      resolved = new URL(canonical, baseHref ? new URL(baseHref, finalUrl).toString() : finalUrl).toString();
+    } catch { /* an unparseable href falls through to the string compare */ }
+    const norm = (u: string) => u.replace(/\/$/, "").toLowerCase().replace(/^https?:\/\//, "");
+    const same = norm(resolved) === norm(finalUrl);
     canonicalStatus = same ? "pass" : "warn";
-    canonicalDetail = same ? `self-referencing: ${canonical}` : `points elsewhere: ${canonical}`;
+    canonicalDetail = same ? `self-referencing: ${canonical}` : `points elsewhere: ${resolved}`;
   }
   push({
     id: "canonical", section: "indexability", name: "Canonical URL",
@@ -112,7 +165,8 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: canonicalStatus !== "pass" ? "A canonical pointing elsewhere hands this page's citations to another URL; missing means duplicates compete with it." : undefined,
   });
 
-  const langAttr = (page.match(/<html\b[^>]*\blang\s*=\s*["']([^"']+)["']/i) || [])[1] || "";
+  const htmlTag = (page.match(/<html\b[^>]*>/i) || [""])[0];
+  const langAttr = attr(htmlTag, "lang");
   push({
     id: "lang", section: "indexability", name: "Language declared",
     status: langAttr ? "pass" : "warn",
@@ -121,7 +175,7 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   });
 
   // ── Identity — the title/meta layer models actually read ────────────────
-  const title = strip((page.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || ["", ""])[1]);
+  const title = strip((dom.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || ["", ""])[1]);
   const brands = (input.brandNames || []).filter(Boolean);
   const titleHasBrand = brands.length > 0 && brands.some((b) => title.toLowerCase().indexOf(b.toLowerCase()) >= 0);
   let titleStatus: AuditStatus = "pass";
@@ -138,7 +192,7 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: titleStatus !== "pass" ? "Buyer's phrase + brand, under 60 characters. The title does not have to match the H1." : undefined,
   });
 
-  const metaDesc = metaContent(page, /name\s*=\s*["']description["']/i);
+  const metaDesc = metaContent(page, "name", "description");
   push({
     id: "meta-description", section: "identity", name: "Meta description",
     status: !metaDesc ? "fail" : metaDesc.length < 70 || metaDesc.length > 175 ? "warn" : "pass",
@@ -146,9 +200,12 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: !metaDesc ? "Write one sentence answering the page's question, naming the brand — engines fall back to arbitrary page text without it." : metaDesc && (metaDesc.length < 70 || metaDesc.length > 175) ? "Aim for 150–160 characters." : undefined,
   });
 
-  const ogTitle = metaContent(page, /property\s*=\s*["']og:title["']/i);
-  const ogDesc = metaContent(page, /property\s*=\s*["']og:description["']/i);
-  const ogImage = metaContent(page, /property\s*=\s*["']og:image["']/i);
+  // property= is the spec; name= is a widespread malformation that Facebook's
+  // and most answer engines' parsers deliberately accept. Reporting working
+  // tags as missing steers a developer to add duplicates for a non-problem.
+  const ogTitle = metaContent(page, "any", "og:title");
+  const ogDesc = metaContent(page, "any", "og:description");
+  const ogImage = metaContent(page, "any", "og:image");
   const ogMissing = [!ogTitle && "og:title", !ogDesc && "og:description", !ogImage && "og:image"].filter(Boolean);
   push({
     id: "og-tags", section: "identity", name: "Open Graph tags",
@@ -158,7 +215,7 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   });
 
   // ── Structure — as PUBLISHED, which can differ from the draft ───────────
-  const h1s = (page.match(/<h1\b[^>]*>[\s\S]*?<\/h1>/gi) || []).map((h) => strip(h));
+  const h1s = (dom.match(/<h1\b[^>]*>[\s\S]*?<\/h1>/gi) || []).map((h) => strip(h));
   push({
     id: "one-h1", section: "structure", name: "Exactly one H1",
     status: h1s.length === 1 ? "pass" : "fail",
@@ -166,7 +223,7 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: h1s.length !== 1 ? "One H1 stating the page's subject. Zero leaves the subject undeclared; several leave it ambiguous." : undefined,
   });
 
-  const headingTags = page.match(/<h([1-6])\b[^>]*>[\s\S]*?<\/h\1>/gi) || [];
+  const headingTags = dom.match(/<h([1-6])\b[^>]*>[\s\S]*?<\/h\1>/gi) || [];
   const headings = headingTags.map((h) => ({ level: Number((h.match(/<h([1-6])/i) || [])[1]), text: strip(h) }));
   let skips = 0;
   for (let i = 1; i < headings.length; i++) {
@@ -188,19 +245,25 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: questionHeads === 0 ? "A heading phrased as the buyer's question is what retrieval matches against; a label matches nothing." : undefined,
   });
 
-  const faqVisible = /Frequently asked|FAQ/i.test(strip(page.slice(0, 400000)));
+  const faqVisible = /Frequently asked|FAQ/i.test(strip(dom.slice(0, 400000)));
   push({
     id: "faq-visible", section: "structure", name: "Visible FAQ block",
-    status: faqVisible ? "pass" : "info",
+    // Info in BOTH states, deliberately: the draft rubric keeps FAQ presence
+    // unscored (DROPPED_FROM_AUTHORITYON, with a verify script asserting it),
+    // and letting it feed the audit's pass tally would smuggle the same score
+    // back in through the side door.
+    status: "info",
     detail: faqVisible ? "an FAQ section appears in the page text" : "no FAQ section found",
-    remedy: !faqVisible ? "Question + short answer pairs are pre-chunked for extraction — the most direct route to answer-engine citations. Optional, not a defect." : undefined,
+    remedy: !faqVisible ? "Question + short answer pairs are pre-chunked for extraction; FAQPage markup feeding answer-box extraction is the one schema mechanism with direct evidence. Optional, not a defect." : undefined,
   });
 
   // ── Images ──────────────────────────────────────────────────────────────
-  const imgs = page.match(/<img\b[^>]*>/gi) || [];
+  const imgs = dom.match(/<img\b[^>]*>/gi) || [];
   let missingAlt = 0, emptyAlt = 0, filenameAlt = 0;
   for (let i = 0; i < imgs.length; i++) {
-    const hasAlt = /\balt\s*=/i.test(imgs[i]);
+    // \s boundary, not \b: \b matches after the hyphen in data-alt, so an
+    // image with only data-alt read as having alt text.
+    const hasAlt = /\salt\s*=/i.test(imgs[i]);
     if (!hasAlt) { missingAlt++; continue; }
     const alt = attr(imgs[i], "alt").trim();
     if (!alt) { emptyAlt++; continue; }
@@ -215,7 +278,6 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   });
 
   // ── Schema — reported as machine-readability, never as ranking lift ─────
-  const ldBlocks = page.match(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi) || [];
   const schemaTypes: string[] = [];
   for (let i = 0; i < ldBlocks.length; i++) {
     const body = ldBlocks[i].replace(/^<script[^>]*>/i, "").replace(/<\/script>$/i, "");
@@ -244,26 +306,37 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
       : uniqueTypes.indexOf("(unparseable block)") >= 0 ? "A JSON-LD block failed to parse — invalid schema is worse than none, because it claims machine-readability it does not deliver." : undefined,
   });
 
-  const hasArticleWithAuthor = /"@type"\s*:\s*"(Article|NewsArticle|BlogPosting)"/.test(page) && /"author"/.test(page);
+  // From the PARSED types — the raw-regex version missed array-form @type
+  // ("@type": ["Article", "TechArticle"]) and read "author" from anywhere in
+  // the page, including body prose.
+  const articleTypes = ["Article", "NewsArticle", "BlogPosting", "TechArticle"];
+  const hasArticleType = uniqueTypes.some((t) => articleTypes.indexOf(t) >= 0);
+  const hasArticleWithAuthor = hasArticleType && ldBlocks.some((blk) => /"author"\s*:/.test(blk));
   push({
     id: "schema-author", section: "schema", name: "Article schema names an author",
-    status: uniqueTypes.some((t) => ["Article", "NewsArticle", "BlogPosting"].indexOf(t) >= 0) ? (hasArticleWithAuthor ? "pass" : "warn") : "info",
-    detail: hasArticleWithAuthor ? "Article schema with an author entity" : uniqueTypes.some((t) => ["Article", "NewsArticle", "BlogPosting"].indexOf(t) >= 0) ? "Article schema present but no author field" : "no Article schema (see structured data above)",
+    status: hasArticleType ? (hasArticleWithAuthor ? "pass" : "warn") : "info",
+    detail: hasArticleWithAuthor ? "Article schema with an author entity" : hasArticleType ? "Article schema present but no author field" : "no Article schema (see structured data above)",
     remedy: !hasArticleWithAuthor ? "A named author in schema is the machine-readable half of the byline." : undefined,
   });
 
   // ── Freshness ───────────────────────────────────────────────────────────
-  const visibleText = strip(page.slice(0, 300000));
-  const dateMatch = visibleText.match(/\b(?:published|updated|posted|revised)[^.]{0,30}?((?:\d{1,2}\s+)?(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}?,?\s*(?:19|20)\d{2}|\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:19|20)\d{2})/i);
+  const visibleText = strip(dom.slice(0, 300000));
+  const MONTH = "(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)";
+  const DATE_FORMS =
+    `(?:\\d{1,2}\\s+)?${MONTH}\\.?\\s+\\d{1,2}?,?\\s*(?:19|20)\\d{2}` + // 19 August 2026 / August 19, 2026 / August 2026
+    `|\\d{1,2}\\s+${MONTH}\\.?\\s+(?:19|20)\\d{2}` +
+    `|(?:19|20)\\d{2}-\\d{2}-\\d{2}` +                                        // ISO
+    `|\\d{1,2}[\\/.]\\d{1,2}[\\/.](?:19|20)\\d{2}`;                        // 19/08/2026
+  const dateMatch = visibleText.match(new RegExp(`\\b(?:published|updated|posted|revised|last modified)[^.]{0,30}?(${DATE_FORMS})`, "i"));
   push({
     id: "visible-date", section: "freshness", name: "A visible published or updated date",
     status: dateMatch ? "pass" : "warn",
     detail: dateMatch ? `found: "${dateMatch[0].slice(0, 60)}"` : "no visible published/updated date found in the page text",
-    remedy: !dateMatch ? "Freshness is the strongest single signal in the citation research, and an engine cannot reward a date it cannot find." : undefined,
+    remedy: !dateMatch ? "Freshness is a grade-A signal in the rubric — roughly double the citation rate for recently-updated content — and an engine cannot reward a date it cannot find." : undefined,
   });
 
   // ── Links ───────────────────────────────────────────────────────────────
-  const anchors = page.match(/<a\b[^>]*>[\s\S]*?<\/a>/gi) || [];
+  const anchors = dom.match(/<a\b[^>]*>[\s\S]*?<\/a>/gi) || [];
   let clickHere = 0;
   for (let i = 0; i < anchors.length; i++) {
     const t = strip(anchors[i]).toLowerCase();

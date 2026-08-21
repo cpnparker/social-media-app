@@ -117,6 +117,13 @@ export default function PageAudit({ sessionId, workspaceId, sourceUrl }: Props) 
     <div className="flex-1 min-h-0 overflow-y-auto">
       <div className="mx-auto w-full max-w-[46rem] px-6 py-6 flex flex-col gap-5">
 
+        {error && data && (
+          <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-[12.5px]">
+            <b>The re-audit failed:</b> {error} — the results below are from the earlier fetch at{" "}
+            {new Date(data.audit.fetchedAt).toLocaleTimeString()}, not the current page.
+          </div>
+        )}
+
         {/* Header: what was audited, when, and the honest tallies. */}
         <div className="flex items-start gap-3">
           <div className="flex-1 min-w-0">
@@ -164,6 +171,17 @@ export default function PageAudit({ sessionId, workspaceId, sourceUrl }: Props) 
               What the live page would score if it were your draft. The Optimise tab is where you improve it;
               this is the published baseline it improves on.
             </p>
+            {(() => {
+              let scored = 0;
+              for (const p of liveScores.pillars) if (p.criteria.filter((c) => !c.skipped).length > 0) scored++;
+              if (scored >= liveScores.pillars.length) return null;
+              return (
+                <p className="text-[11.5px] rounded-lg bg-amber-500/10 text-amber-700 dark:text-amber-500 px-2.5 py-1.5 mb-2">
+                  Measured on {scored} of {liveScores.pillars.length} pillars — Relevance has nothing to score
+                  until a target query is set on the Optimise tab. This number is a partial view, not a verdict.
+                </p>
+              );
+            })()}
             <div className="flex items-center gap-4 mb-2">
               <span className="text-[26px] font-bold tabular-nums leading-none">{Math.round(liveScores.overall)}</span>
               <div className="flex-1 flex flex-col gap-1.5">

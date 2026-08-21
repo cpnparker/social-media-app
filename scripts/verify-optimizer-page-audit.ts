@@ -25,6 +25,17 @@
  *   2026-08-21  decorative empty alt counted as a defect   → 1 fail  ✓
  *   (baseline, unmutated: exit 0)
  *
+ * A 14-agent adversarial review then confirmed ELEVEN wrong-verdict cases the
+ * first fixture could not see, §4 now holds them all: robots content="none"
+ * passing (the documented noindex equivalent), a permissive-then-noindex tag
+ * pair (first-match read vs most-restrictive-wins), minified unquoted
+ * attributes inverting verdicts in both directions at once, a relative
+ * self-canonical reported as "points elsewhere", og: via name=, phantom H1s
+ * from script templates and comments, the GTM noscript pixel as a standing
+ * false alt warning, and data-alt counting as alt. Every one is a wrong
+ * verdict delivered confidently — the exact failure an audit must never have,
+ * found only by agents told to assume the fixture was blind.
+ *
  * The first fixture round also caught the TEST being wrong, not the code:
  * the single-image fixture made a bad alt 100% of images, which is over the
  * proportional fail threshold — expecting "warn" there was the test
@@ -165,6 +176,73 @@ console.log(`\n3. No false alarms`);
   statusOf({ ...BASE, page: decorative }, "image-alt") === "pass"
     ? pass("an empty-alt decorative image is not flagged")
     : fail("a decorative image (empty alt) was flagged — the correct accessibility pattern reads as a defect");
+}
+
+// ── 4. The review round: false verdicts the first fixture could not see ──
+console.log(`\n4. Adversarial-review cases`);
+{
+  // content="none" is documented as equivalent to noindex,nofollow.
+  statusOf({ ...BASE, page: GOOD_PAGE.replace("<head>", '<head><meta name="robots" content="none">') }, "robots-meta") === "fail"
+    ? pass('robots content="none" fails — it deindexes just like noindex')
+    : fail('robots content="none" PASSED — a fully deindexed page sails through the audit');
+
+  // A permissive theme tag followed by a plugin-injected noindex: crawlers
+  // honour the most restrictive tag; a first-match read honours the first.
+  const twoRobots = GOOD_PAGE.replace("<head>", '<head><meta name="robots" content="index, follow"><meta name="robots" content="noindex">');
+  statusOf({ ...BASE, page: twoRobots }, "robots-meta") === "fail"
+    ? pass("the most restrictive of two robots tags wins")
+    : fail("a permissive first robots tag hid a noindex second one — the WordPress-plugin pattern passes");
+
+  // Minified, unquoted attributes: one malformation, verdicts inverted in
+  // BOTH directions at once under the quoted-only parser.
+  const minified = GOOD_PAGE
+    .replace('<html lang="en-US">', "<html lang=en-US>")
+    .replace("<head>", "<head><meta name=robots content=noindex>");
+  statusOf({ ...BASE, page: minified }, "robots-meta") === "fail"
+    ? pass("an unquoted noindex is still seen")
+    : fail("an unquoted robots meta was invisible — minified pages pass while deindexed");
+  statusOf({ ...BASE, page: minified }, "lang") === "pass"
+    ? pass("an unquoted lang attribute is still read")
+    : fail("an unquoted lang attribute reads as missing");
+
+  // A relative self-canonical is correct and must not alarm.
+  const relCanonical = GOOD_PAGE.replace('href="https://vaultline.example/orchestration"', 'href="/orchestration"');
+  statusOf({ ...BASE, page: relCanonical }, "canonical") === "pass"
+    ? pass("a relative self-canonical resolves and passes")
+    : fail('a relative self-canonical was reported as "points elsewhere" — an alarming claim about a correct page');
+
+  // og: declared via name= is a malformation every OG consumer accepts.
+  const ogName = GOOD_PAGE.replace(/property="og:/g, 'name="og:');
+  statusOf({ ...BASE, page: ogName }, "og-tags") === "pass"
+    ? pass("og tags declared with name= are recognised")
+    : fail("working og tags via name= reported missing — the developer is steered to add duplicates");
+
+  // Dead content must not produce phantom structure.
+  const scriptH1 = GOOD_PAGE.replace("</body>", '<script>document.write("<h1>phantom</h1>")</script></body>');
+  statusOf({ ...BASE, page: scriptH1 }, "one-h1") === "pass"
+    ? pass("an <h1> inside a script template is not a second H1")
+    : fail("a script-template <h1> counted as a second H1 — client-rendered pages fail falsely");
+  const gtmPixel = GOOD_PAGE.replace("</body>", '<noscript><img src="https://tracker.example/px"></noscript></body>');
+  statusOf({ ...BASE, page: gtmPixel }, "image-alt") === "pass"
+    ? pass("the alt-less GTM noscript pixel is not an image defect")
+    : fail("the near-universal GTM noscript pixel raises a standing false alt warning");
+  const commentH1 = GOOD_PAGE.replace("</body>", "<!-- <h1>old headline</h1> --></body>");
+  statusOf({ ...BASE, page: commentH1 }, "one-h1") === "pass"
+    ? pass("a commented-out <h1> is not a second H1")
+    : fail("a commented-out <h1> counted as real");
+
+  // data-alt is not alt.
+  const dataAlt = GOOD_PAGE.replace('alt="Routing decision flow across three acquirers"', 'data-alt="x"');
+  statusOf({ ...BASE, page: dataAlt }, "image-alt") === "fail"
+    ? pass("data-alt does not count as alt text")
+    : fail("an image with only data-alt passed the alt check");
+
+  // FAQ presence never feeds the pass tally.
+  const withFaq = auditPage(BASE, NOW);
+  const faqCheck = withFaq.checks.filter((c) => c.id === "faq-visible")[0];
+  faqCheck && faqCheck.status === "info"
+    ? pass("faq-visible is info in every state — FAQ scoring stays out, as the draft rubric decided")
+    : fail(`faq-visible is "${faqCheck ? faqCheck.status : "missing"}" — FAQ presence is leaking into the pass tally`);
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
