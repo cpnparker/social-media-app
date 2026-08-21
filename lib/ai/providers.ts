@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { VOLATILE_MARKER } from "@/lib/ai/prompt-cache";
 import OpenAI from "openai";
 import { put } from "@vercel/blob";
 import { fetchBlobContent } from "./blob-utils";
@@ -7174,7 +7175,29 @@ const CACHE_MIN_CHARS = 6000; // ~1.5k tokens, comfortably over the minimum
 
 function cacheableSystem(systemText: string | undefined): any {
   if (!systemText || systemText.length < CACHE_MIN_CHARS) return systemText;
-  return [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }];
+  // Split the volatile tail into its own UNCACHED block. cache_control marks a
+  // breakpoint covering everything BEFORE it, so a stable block followed by a
+  // volatile one caches the stable part and leaves the clock free to change.
+  //
+  // Before this, the whole system string was one cached block with a
+  // minute-resolution timestamp inside it — a prefix that never repeats, so the
+  // cache could not hit on any turn of any conversation.
+  const i = systemText.lastIndexOf(VOLATILE_MARKER);
+  if (i === -1) return [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }];
+  const stable = systemText.slice(0, i);
+  const volatilePart = systemText.slice(i + VOLATILE_MARKER.length);
+  return [
+    { type: "text", text: stable, cache_control: { type: "ephemeral" } },
+    { type: "text", text: volatilePart },
+  ];
+}
+
+/** The other chains take a plain string; the marker itself must not be shown to
+ *  the model, but the clock behind it still must be. Stripping only the marker
+ *  also leaves their implicit prefix caching intact, since the volatile part is
+ *  already last. */
+function flattenSystem(systemText: string): string {
+  return systemText.replace(VOLATILE_MARKER, "\n\n");
 }
 
 function cacheableTools(tools: Anthropic.Tool[]): Anthropic.Tool[] {
@@ -8691,7 +8714,10 @@ async function streamXAIChatCompletions(
   // Add system prompt
   const systemText = config.systemPrompt;
   if (systemText) {
-    openaiMessages.push({ role: "system", content: systemText });
+    // flattenSystem, not systemText: the marker is an internal boundary and
+    // must never be shown to the model. The clock stays, and stays last, which
+    // also keeps these chains' implicit prefix caching intact.
+    openaiMessages.push({ role: "system", content: flattenSystem(systemText) });
   }
 
   // Add conversation messages — use xAI-specific content builder to avoid
@@ -9741,7 +9767,10 @@ async function streamGemini(
   // Add system prompt
   const systemText = config.systemPrompt;
   if (systemText) {
-    geminiMessages.push({ role: "system", content: systemText });
+    // flattenSystem, not systemText: the marker is an internal boundary and
+    // must never be shown to the model. The clock stays, and stays last, which
+    // also keeps these chains' implicit prefix caching intact.
+    geminiMessages.push({ role: "system", content: flattenSystem(systemText) });
   }
 
   // Add conversation messages — include images from last 3 user messages only
@@ -10617,7 +10646,10 @@ async function streamOpenAI(
   // Add system prompt
   const systemText = config.systemPrompt;
   if (systemText) {
-    openaiMessages.push({ role: "system", content: systemText });
+    // flattenSystem, not systemText: the marker is an internal boundary and
+    // must never be shown to the model. The clock stays, and stays last, which
+    // also keeps these chains' implicit prefix caching intact.
+    openaiMessages.push({ role: "system", content: flattenSystem(systemText) });
   }
 
   // Add conversation messages — include images from last 3 user messages only

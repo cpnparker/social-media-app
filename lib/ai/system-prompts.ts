@@ -1,4 +1,5 @@
 import { categorizeContentType } from "@/lib/content-type-utils";
+import { VOLATILE_MARKER } from "@/lib/ai/prompt-cache";
 import { fenceUntrusted } from "@/lib/ai/providers";
 
 // ── Detail level types ──
@@ -301,10 +302,23 @@ ${FORMATTING_GUIDELINES}`;
   // expression, and the episodic-memory path had the identical bug.
   const now = new Date();
   const TZ = "Europe/Zurich";
+  // The DATE is safe to inline here: it changes once a day, so the cached
+  // prefix rotates once a day. The CLOCK is not, and used to sit in this same
+  // sentence at minute resolution — roughly six thousand characters into a
+  // prompt that is wrapped, in its entirety, in a single cache_control block.
+  // A prefix that changes every minute is a prefix that is never reused, so
+  // nothing after those six thousand characters was ever being cached, on any
+  // turn. The clock now goes at the very END, behind VOLATILE_MARKER, where the
+  // Anthropic chain splits it into its own uncached block and the other chains
+  // simply keep it as a stable-prefix suffix.
+  //
+  // The rule this encodes: anything that changes faster than the cache TTL must
+  // live at the END of the prompt. Putting it in the middle does not cost you
+  // that fragment, it costs you everything after it.
   const dateStr = now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: TZ });
   const timeStr = now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: TZ });
   const isoToday = now.toLocaleDateString("en-CA", { timeZone: TZ });
-  prompt += `\n\nToday is ${dateStr} (${isoToday}), ${timeStr} Europe/Zurich. Always use this as your reference for "today", "this week", "recent", etc. Your training data may be outdated — if the user asks about current events, recent news, industry trends, company information, market data, statistics, or anything that may have changed since your training cutoff, you MUST use web search to get up-to-date information before responding. Never present outdated training data as current fact. When writing content that includes factual claims about a client's industry, competitors, or market — search first, don't guess.
+  prompt += `\n\nToday is ${dateStr} (${isoToday}) in Europe/Zurich. Always use this as your reference for "today", "this week", "recent", etc. Your training data may be outdated — if the user asks about current events, recent news, industry trends, company information, market data, statistics, or anything that may have changed since your training cutoff, you MUST use web search to get up-to-date information before responding. Never present outdated training data as current fact. When writing content that includes factual claims about a client's industry, competitors, or market — search first, don't guess.
 
 **RELATIVE DATES INSIDE RETRIEVED MATERIAL ARE ANCHORED TO THAT MATERIAL, NOT TO TODAY.** An email, meeting note, Slack message or document was written on a particular day, and every "next week", "tomorrow", "yesterday", "on Monday", "in a fortnight" or "by the end of the month" in it means what it meant THEN. Convert it before you use it: an email sent on 7 August saying "both are on holiday next week and back on the 17th" means 10-14 August, back on the 17th — which, today being ${dateStr}, has already passed.
 
@@ -1419,6 +1433,10 @@ Search tips:
 
   prompt += `\n\n---\n**Final reminder:** Users publish your output. Every fabricated fact, URL, statistic, or citation damages their professional reputation. When uncertain: use [verify] markers, state limitations honestly, and never invent sources.`;
 
+  // The clock, last and behind the marker. It is genuinely useful — "what is
+  // still on this afternoon" needs it — but it must not sit in front of 100KB
+  // of stable instructions.
+  prompt += `${VOLATILE_MARKER}The time right now is ${timeStr} (${TZ}). Use it for "this morning", "this afternoon", "later today", "still to come" and anything else that depends on the hour rather than the date.`;
   return prompt;
 }
 
