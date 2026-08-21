@@ -18,6 +18,29 @@ import { cn } from "@/lib/utils";
 import { Check, X, Pencil, AlertCircle } from "lucide-react";
 import type { Issue } from "@/lib/optimizer/highlight-plugin";
 
+/**
+ * Human names for the criteria a finding can carry.
+ *
+ * The raw key was being printed with its hyphens swapped for spaces, so a card
+ * read "stat source adjacency" — machine vocabulary, in the one place the
+ * writer is being asked to act. Anything not listed falls back to the old
+ * de-hyphenation, which is wrong-looking rather than broken.
+ */
+const CRITERION_LABEL: { [k: string]: string } = {
+  "stat-source-adjacency": "Figure with no source",
+  "ai-tell-guard": "Reads as AI-written",
+  "sentence-length-norm": "Sentence runs long",
+  "question-headings": "Heading is not a question",
+  "answer-first-position": "Answer buried",
+  "opening-quotability": "Opening is not quotable",
+  "attribution-quality": "Weak attribution",
+  "unsourced-absolute-claims": "Unsourced absolute claim",
+};
+
+function criterionLabel(key: string): string {
+  return CRITERION_LABEL[key] || key.replace(/-/g, " ");
+}
+
 interface Props {
   issues: Issue[];
   selectedId: string | null;
@@ -136,17 +159,25 @@ export default function IssueList({
               <div className="flex items-center gap-2 mb-1">
                 <span className={cn("w-[7px] h-[7px] rounded-full shrink-0", SEVERITY_DOT[f.severity])} />
                 <span className="text-[12px] font-semibold flex-1 min-w-0 truncate">
-                  {f.criterion.replace(/-/g, " ")}
+                  {criterionLabel(f.criterion)}
                 </span>
               </div>
+
+              {/* The quoted text, always — not only when selected. Two findings
+                  of the same criterion rendered as identical cards, so a draft
+                  with three unsourced figures showed the same card three times
+                  with no way to tell which figure each meant. The quote IS the
+                  identity of the finding. */}
+              <p className="text-[12px] leading-snug mb-1 font-medium">
+                <span className="text-muted-foreground/60">&ldquo;</span>
+                {f.quote.length > 70 ? f.quote.slice(0, 70).trimEnd() + "…" : f.quote}
+                <span className="text-muted-foreground/60">&rdquo;</span>
+              </p>
 
               <p className="text-[11.5px] leading-snug text-muted-foreground mb-1.5">{f.explanation}</p>
 
               {selected && (
                 <>
-                  <p className="text-[11.5px] leading-snug text-muted-foreground/80 mb-1.5 line-clamp-2">
-                    &ldquo;{f.quote}&rdquo;
-                  </p>
                   {f.suggestedEdit ? (
                     <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/[0.06] px-2.5 py-2 mb-2">
                       <p className="text-[12px] leading-snug">{f.suggestedEdit}</p>
@@ -190,7 +221,7 @@ export default function IssueList({
             <div className="flex items-center gap-2 mb-1">
               <AlertCircle className="h-3 w-3 text-muted-foreground shrink-0" />
               <span className="text-[12px] font-semibold flex-1 min-w-0 truncate text-muted-foreground">
-                {issue.finding.criterion.replace(/-/g, " ")}
+                {criterionLabel(issue.finding.criterion)}
               </span>
               <button
                 onClick={() => onDismiss(issue.finding.id)}
