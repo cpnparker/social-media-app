@@ -17,29 +17,7 @@
 import { cn } from "@/lib/utils";
 import { Check, X, Pencil, AlertCircle } from "lucide-react";
 import type { Issue } from "@/lib/optimizer/highlight-plugin";
-
-/**
- * Human names for the criteria a finding can carry.
- *
- * The raw key was being printed with its hyphens swapped for spaces, so a card
- * read "stat source adjacency" — machine vocabulary, in the one place the
- * writer is being asked to act. Anything not listed falls back to the old
- * de-hyphenation, which is wrong-looking rather than broken.
- */
-const CRITERION_LABEL: { [k: string]: string } = {
-  "stat-source-adjacency": "Figure with no source",
-  "ai-tell-guard": "Reads as AI-written",
-  "sentence-length-norm": "Sentence runs long",
-  "question-headings": "Heading is not a question",
-  "answer-first-position": "Answer buried",
-  "opening-quotability": "Opening is not quotable",
-  "attribution-quality": "Weak attribution",
-  "unsourced-absolute-claims": "Unsourced absolute claim",
-};
-
-function criterionLabel(key: string): string {
-  return CRITERION_LABEL[key] || key.replace(/-/g, " ");
-}
+import { criterionLabel } from "@/components/optimizer/IssuePopover";
 
 interface Props {
   issues: Issue[];

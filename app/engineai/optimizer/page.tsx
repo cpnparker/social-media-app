@@ -35,6 +35,7 @@ import type { Editor } from "@tiptap/react";
 import type { DraftInput } from "@/lib/optimizer/engine";
 import type { ClientCanon } from "@/lib/optimizer/client-canon";
 import IssueList from "@/components/optimizer/IssueList";
+import IssuePopover from "@/components/optimizer/IssuePopover";
 import StartScreen from "@/components/optimizer/StartScreen";
 import EngineAISidebar from "@/components/engineai/EngineAISidebar";
 import {
@@ -140,6 +141,9 @@ function OptimizerStudio() {
   });
 
   const editorRef = useRef<Editor | null>(null);
+  /** The editor's scroll container — the popover positions inside it so it
+   *  scrolls with the text instead of floating over the wrong sentence. */
+  const editorScrollRef = useRef<HTMLDivElement | null>(null);
   // While streaming, the parent must NOT push `content` into the editor: the
   // prop-change effect would fire setContent and wipe the inserted nodes. The
   // editor is fed through insertContentAt instead, and `content` is synced once
@@ -466,6 +470,25 @@ function OptimizerStudio() {
   }, [sessionId, workspaceId, assessing]);
 
   /** Pull the plugin's current issue list into React after any dispatch. */
+  /**
+   * The reverse path: a click on a highlight IN THE TEXT.
+   *
+   * The plugin's handleClick dispatches a select meta into its own state, but a
+   * meta-only transaction never fires the editor's onChange — so React's copy
+   * of the selection went stale and clicking a mark changed a tint and nothing
+   * else. The transaction listener is the only place both directions of
+   * selection actually meet.
+   */
+  const wireSelectionSync = useCallback((editor: Editor) => {
+    editor.on("transaction", ({ transaction }) => {
+      if (!transaction.getMeta(optimizerHighlightKey)) return;
+      const st = optimizerHighlightKey.getState(editor.state);
+      if (!st) return;
+      setIssues(st.issues.slice());
+      setSelectedId(st.selectedId);
+    });
+  }, []);
+
   const syncIssues = useCallback(() => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -614,6 +637,18 @@ function OptimizerStudio() {
       // shows the same failure through its own try/catch.
     }
   }, [streaming, title, queries, format, canon]);
+
+  const selectNext = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const st = optimizerHighlightKey.getState(editor.state);
+    if (!st) return;
+    const active = st.issues.filter((i) => i.status === "active").sort((a, b) => a.from - b.from);
+    if (!active.length) return;
+    const at = active.findIndex((i) => i.finding.id === selectedId);
+    const next = active[(at + 1) % active.length];
+    handleSelect(next.finding.id);
+  }, [selectedId]);
 
   const scoreInput: DraftInput = useMemo(
     () => ({
@@ -941,12 +976,26 @@ function OptimizerStudio() {
             </Button>
           )}
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto">
+        <div ref={editorScrollRef} className="relative flex-1 min-h-0 overflow-y-auto">
+          <IssuePopover
+            editor={editorRef.current}
+            issue={(() => {
+              if (!selectedId) return null;
+              const found = issues.filter((i) => i.finding.id === selectedId);
+              return found.length ? found[0] : null;
+            })()}
+            containerRef={editorScrollRef}
+            onDismiss={handleDismiss}
+            onApply={handleApply}
+            onNext={selectNext}
+            onClose={() => handleSelect(null)}
+            activeCount={issues.filter((i) => i.status === "active").length}
+          />
           <div className="mx-auto w-full max-w-[46rem] px-6 py-6">
             <TiptapEditor
               content={streaming ? "" : body}
               onChange={(html) => { saveBody(html); syncIssues(); repaintLive(); }}
-              onReady={(e) => { editorRef.current = e; setTimeout(repaintLive, 0); }}
+              onReady={(e) => { editorRef.current = e; wireSelectionSync(e); setTimeout(repaintLive, 0); }}
               editable={!streaming}
               debounceMs={600}
               extraExtensions={OPTIMIZER_EXTENSIONS}

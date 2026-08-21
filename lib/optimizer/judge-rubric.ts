@@ -31,7 +31,12 @@ import type { EvidenceGrade, RollUp, Tier } from "./types";
 
 /** Bump on any change to the prompt bytes or this file. Part of the assessment
  *  memo key, so a prompt edit correctly invalidates cached assessments. */
-export const JUDGE_PROMPT_VERSION = "1.0.0";
+// 1.1.0: every imperfect verdict must carry an anchored finding. Under 1.0.0
+// only criteria 5-7 produced findings, so a draft with no brand registered, no
+// queries set and no first-person claims could score 37/100 with ZERO marks on
+// the text — the judge was finding real problems and reporting them as
+// invisible score adjustments. Observed live on a real 1,014-word draft.
+export const JUDGE_PROMPT_VERSION = "1.1.0";
 
 export interface JudgeCriterionMeta {
   key: string;
@@ -129,4 +134,8 @@ export const ABSOLUTE_CLAIM_TIERS: Tier[] = [
   { min: 0, points: 10 }, { min: 1, points: 6 }, { min: 3, points: 2 }, { min: 5, points: 0 },
 ];
 
-export const MAX_FINDINGS = 12;
+// 20, up from 12: under prompt 1.1.0 every imperfect verdict carries a finding,
+// so a six-section draft with partial coverage and weak quotes legitimately
+// produces more than twelve. The cap guards against a model reciting the whole
+// draft as findings, not against thoroughness.
+export const MAX_FINDINGS = 20;

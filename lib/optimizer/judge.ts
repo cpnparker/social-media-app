@@ -78,19 +78,21 @@ A separate deterministic engine already scores 29 other criteria — counts, den
 
 YOUR SEVEN CRITERIA
 
-1. semantic-query-coverage — for each target query, does the draft ANSWER it? Not "does it contain the words" — the engine already checks that. A draft can use every word of a question and never answer it. Verdict per query: covered (a reader gets a direct answer), partial (touched but incomplete or hedged into uselessness), missing.
+1. semantic-query-coverage — for each target query, does the draft ANSWER it? Not "does it contain the words" — the engine already checks that. A draft can use every word of a question and never answer it. Verdict per query: covered (a reader gets a direct answer), partial (touched but incomplete or hedged into uselessness), missing. For every PARTIAL verdict, also report a finding anchored at the passage that half-answers it, explaining what is missing from it and suggesting the completed passage.
 
-2. quote-attribution-quality — for each quotation the parser found, is the speaker named and plausibly real, and does the quote say something a paraphrase could not? Verdict: substantive, weak (attributed but says nothing), decorative (no real attribution, or a slogan in quote marks).
+2. quote-attribution-quality — for each quotation the parser found, is the speaker named and plausibly real, and does the quote say something a paraphrase could not? Verdict: substantive, weak (attributed but says nothing), decorative (no real attribution, or a slogan in quote marks). For every WEAK or DECORATIVE verdict, also report a finding anchored at that quotation saying what would make it citable.
 
-3. opening-quotability — could the opening be lifted verbatim and stand alone as the answer, with no surrounding context? Verdict: quotable_alone, needs_context (the answer is there but depends on something else), no_answer.
+3. opening-quotability — could the opening be lifted verbatim and stand alone as the answer, with no surrounding context? Verdict: quotable_alone, needs_context (the answer is there but depends on something else), no_answer. For NEEDS_CONTEXT or NO_ANSWER, also report a finding anchored at the opening sentence, with a suggestedEdit rewriting it to stand alone where one clean replacement exists.
 
-4. chunk-self-containment — for each section, would it make sense extracted alone? Look for semantic dependencies the engine cannot see: "as mentioned above", "the second option", comparisons to an antecedent named only earlier, a subject identifiable only from a previous section. Verdict: self_contained, dependent.
+4. chunk-self-containment — for each section, would it make sense extracted alone? Look for semantic dependencies the engine cannot see: "as mentioned above", "the second option", comparisons to an antecedent named only earlier, a subject identifiable only from a previous section. Verdict: self_contained, dependent. For every DEPENDENT verdict, also report a finding anchored at the dependent phrase itself — the words that would confuse a reader who arrived at this section alone — with a suggestedEdit naming the antecedent in place.
 
 5. entity-variant-drift — names for the main entity that are NOT in the registered list you are given: misspellings, unregistered abbreviations, inconsistent capitalisation of a proper noun. Report each as a finding.
 
 6. experience-substantiation — first-person experience claims ("in our experience", "we tested", "our data shows") that are followed by NOTHING: no number, no named context, no outcome. An empty authority costume. Report each as a finding.
 
 7. unsourced-absolute-claims — NON-NUMERIC absolute statements carrying no source: "the only platform that", "always", "never", "every merchant". Numeric claims are the engine's job — do not report those. Report each as a finding.
+
+EVERY IMPERFECT VERDICT PRODUCES A FINDING. This is the contract that makes your work usable: a verdict adjusts a score, but only a finding puts a mark on the writer's text, and a problem the writer cannot see in their text is a problem they will not fix. If you return a partial, missing, weak, decorative, needs_context, no_answer or dependent verdict with no corresponding finding, you have told the score something you kept from the writer. The only exception is a MISSING query verdict where no passage even attempts the answer — there is nothing to anchor, so describe the gap in the verdict's own field.
 
 FINDINGS — THE ANCHORING CONTRACT
 
@@ -105,7 +107,7 @@ Every finding carries a quote that will be located in the draft by exact string 
 
 suggestedEdit is the replacement text itself, ready to substitute for the quote. Not advice about what to change — the actual words. Null if no clean single-span replacement exists.
 
-WHEN UNCERTAIN, choose the better verdict. A false accusation costs a writer's trust in the whole tool; a missed issue costs one suggestion. Report at most ${MAX_FINDINGS} findings, most important first.
+WHEN UNCERTAIN about a VERDICT, choose the better one — a false accusation costs a writer's trust in the whole tool. But once you have chosen an imperfect verdict, the finding for it is not optional and not an accusation: it is you showing the writer what you already told the score. Report at most ${MAX_FINDINGS} findings, most important first.
 
 Return ONLY a JSON object. No preamble, no markdown fence, no commentary.`;
 
