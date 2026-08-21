@@ -33,7 +33,42 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!owned.ok) return NextResponse.json({ error: owned.error }, { status: owned.status });
 
   const draft = await latestDraft(id);
+
+  // The most recent assessment and its findings, so reopening a piece shows the
+  // marks that were already paid for. Without this, hydration cleared them and
+  // the only way back was to press Assess again — which, on unchanged text,
+  // hit the memo and returned nothing.
+  let assessment: any = null;
+  let findings: any[] = [];
+  const { data: latest } = await intelligenceDb
+    .from("optimizer_assessments")
+    .select("id_assessment, units_overall, units_retrievability, units_citability, name_grade, date_created")
+    .eq("id_session", id)
+    .eq("type_kind", "full")
+    .order("date_created", { ascending: false })
+    .limit(1);
+  if (latest && latest.length > 0) {
+    assessment = latest[0];
+    const { data: f } = await intelligenceDb
+      .from("optimizer_findings")
+      .select("id_finding, name_criterion, type_severity, document_quote, document_prefix, document_suffix, document_explanation, document_suggestion, type_status")
+      .eq("id_assessment", (latest[0] as any).id_assessment)
+      .neq("type_status", "dismissed");
+    findings = (f || []).map((r: any) => ({
+      id: r.id_finding,
+      criterion: r.name_criterion,
+      severity: r.type_severity,
+      quote: r.document_quote,
+      prefix: r.document_prefix || undefined,
+      suffix: r.document_suffix || undefined,
+      explanation: r.document_explanation,
+      suggestedEdit: r.document_suggestion || null,
+    }));
+  }
+
   return NextResponse.json({
+    assessment,
+    findings,
     session: {
       id: owned.session.id_session,
       title: owned.session.name_title,

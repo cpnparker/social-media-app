@@ -36,6 +36,32 @@ import { JUDGE_CRITERIA } from "@/lib/optimizer/judge-rubric";
 import { RUBRIC_VERSION, PILLARS, scoreToGrade } from "@/lib/optimizer/rubric";
 import type { CriterionResult } from "@/lib/optimizer/types";
 
+/**
+ * Read findings back for an assessment.
+ *
+ * optimizer_findings was written and never read — the table has been
+ * accumulating rows since the feature shipped and nothing has ever selected
+ * one. Both the memo path and a page reload need them, and paying a judge again
+ * to recover work already stored is the expensive kind of wrong.
+ */
+async function loadStoredFindings(assessmentId: string) {
+  const { data } = await intelligenceDb
+    .from("optimizer_findings")
+    .select("id_finding, name_criterion, type_severity, document_quote, document_prefix, document_suffix, document_explanation, document_suggestion, type_status")
+    .eq("id_assessment", assessmentId)
+    .neq("type_status", "dismissed");
+  return (data || []).map((r: any) => ({
+    id: r.id_finding,
+    criterion: r.name_criterion,
+    severity: r.type_severity,
+    quote: r.document_quote,
+    prefix: r.document_prefix || undefined,
+    suffix: r.document_suffix || undefined,
+    explanation: r.document_explanation,
+    suggestedEdit: r.document_suggestion || null,
+  }));
+}
+
 export const maxDuration = 300;
 
 /** How long a claim may be held before another request may take it. Covers a
@@ -114,7 +140,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .order("date_created", { ascending: false })
     .limit(1);
   if (cached && cached.length > 0) {
-    return NextResponse.json({ assessment: shapeAssessment(cached[0]), memoHit: true });
+    // The findings must come back WITH the memoised score.
+    //
+    // This returned `{assessment, memoHit}` and no findings at all, so the
+    // client dispatched an empty set into the highlight plugin and ERASED every
+    // mark on the page. Pressing Assess a second time on unchanged text — or
+    // the first time after reopening an assessed draft — wiped the very
+    // annotations it had been pressed to produce, then reported success. The
+    // panel said "hasn't been assessed yet" while the toast said "nothing
+    // changed since the last assessment", which is the same bug seen from two
+    // directions.
+    const findings = await loadStoredFindings((cached[0] as any).id_assessment);
+    return NextResponse.json({
+      assessment: shapeAssessment(cached[0]),
+      findings,
+      memoHit: true,
+      diagnostics: { dropped: 0, orphaned: 0, gateRejected: 0 },
+    });
   }
 
   // (4) Kill switch and spend cap, once, covering judge and gate together.

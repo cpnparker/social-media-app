@@ -41,6 +41,9 @@ import {
   OptimizerHighlight, optimizerHighlightKey, applyFinding,
 } from "@/lib/optimizer/highlight-plugin";
 import type { Issue, HighlightFinding } from "@/lib/optimizer/highlight-plugin";
+import { buildLiveFindings } from "@/lib/optimizer/live-issues";
+import { parseDraft } from "@/lib/optimizer/parse";
+import { computeDraftScores } from "@/lib/optimizer/engine";
 
 /**
  * Module constant, deliberately. useEditor does not rebuild on a changed
@@ -227,8 +230,19 @@ function OptimizerStudio() {
         streamBufferRef.current = html;
         setBody(html);
         setIssues([]);
-        setDiagnostics(null);
+        // Findings already paid for, restored rather than discarded. This used
+        // to clear them, so reopening a piece lost every mark and pressing
+        // Assess again just hit the memo.
+        const stored: HighlightFinding[] = (data.findings || []).map((f: any) => ({
+          id: f.id, criterion: f.criterion, severity: f.severity,
+          quote: f.quote, prefix: f.prefix, suffix: f.suffix,
+          explanation: f.explanation, suggestedEdit: f.suggestedEdit ?? null,
+        }));
+        judgeFindingsRef.current = stored;
+        setDiagnostics(data.assessment ? { dropped: 0, orphaned: 0, gateRejected: 0 } : null);
         setPhase("studio");
+        // The editor receives `body` on the next render; paint once it has.
+        setTimeout(() => repaintLive(), 60);
       } catch {
         if (cancelled) return;
         hydratedRef.current = null;
@@ -420,9 +434,13 @@ function OptimizerStudio() {
       }));
       const editor = editorRef.current;
       if (editor) {
+        // Held so a live repaint (which fires on every edit) re-includes them
+        // rather than wiping the pass that was just paid for.
+        judgeFindingsRef.current = findings;
         editor.view.dispatch(
           editor.state.tr.setMeta(optimizerHighlightKey, { type: "set", findings })
         );
+        repaintLive();
         const st = optimizerHighlightKey.getState(editor.state);
         setIssues(st ? st.issues : []);
       }
@@ -543,6 +561,47 @@ function OptimizerStudio() {
       }
     }
   }, [body]);
+
+  /**
+   * The free annotation layer.
+   *
+   * Deterministic findings anchored to the text, recomputed from the current
+   * draft and painted with no model call. This is what makes the editor feel
+   * like an editor rather than a form with a score beside it: the marks are
+   * there the moment content arrives, and they move as you type.
+   *
+   * Judge findings are held separately in `issues` and merged at dispatch, so a
+   * recompute here cannot wipe work that was paid for.
+   */
+  const judgeFindingsRef = useRef<HighlightFinding[]>([]);
+
+  const repaintLive = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor || streaming) return;
+    try {
+      const html = editor.getHTML();
+      const parsed = parseDraft({ body: html, title });
+      const scores = computeDraftScores({
+        body: html, title, targetQueries: queries, format,
+        brandName: canon?.brandName, brandAliases: canon?.brandAliases,
+      });
+      // parsed.text is passed explicitly because the spans index into it. A
+      // differently-derived string produces quotes that never match, and the
+      // failure looks like broken anchoring rather than a wrong argument.
+      const live = buildLiveFindings(scores, parsed.text);
+      editor.view.dispatch(
+        editor.state.tr.setMeta(optimizerHighlightKey, {
+          type: "set",
+          findings: [...judgeFindingsRef.current, ...live],
+        })
+      );
+      const st = optimizerHighlightKey.getState(editor.state);
+      setIssues(st ? st.issues.slice() : []);
+    } catch {
+      // A parse failure must not take the editor down with it. The score panel
+      // shows the same failure through its own try/catch.
+    }
+  }, [streaming, title, queries, format, canon]);
 
   const scoreInput: DraftInput = useMemo(
     () => ({
@@ -833,8 +892,8 @@ function OptimizerStudio() {
           <div className="mx-auto w-full max-w-[46rem] px-6 py-6">
             <TiptapEditor
               content={streaming ? "" : body}
-              onChange={(html) => { saveBody(html); syncIssues(); }}
-              onReady={(e) => { editorRef.current = e; }}
+              onChange={(html) => { saveBody(html); syncIssues(); repaintLive(); }}
+              onReady={(e) => { editorRef.current = e; setTimeout(repaintLive, 0); }}
               editable={!streaming}
               debounceMs={600}
               extraExtensions={OPTIMIZER_EXTENSIONS}

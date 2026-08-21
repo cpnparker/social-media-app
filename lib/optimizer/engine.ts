@@ -28,7 +28,7 @@ import {
 import { parseDraft, sliceByWords, countTerm, containsAny } from "./parse";
 import type { ParsedDraft, Chunk } from "./parse";
 import { validateHeadingHierarchy } from "./heading-hierarchy";
-import type { CriterionResult, DraftScores, PillarScore } from "./types";
+import type { CriterionSpan, CriterionResult, DraftScores, PillarScore } from "./types";
 
 export interface DraftInput {
   body: string;
@@ -82,7 +82,13 @@ function coverage(queryTerms: string[], hayLower: string): number {
 const META: { [k: string]: typeof CRITERIA[0] } = {};
 for (let i = 0; i < CRITERIA.length; i++) META[CRITERIA[i].key] = CRITERIA[i];
 
-function score(key: string, earned: number, passed: boolean, nameSuffix?: string): CriterionResult {
+function score(
+  key: string,
+  earned: number,
+  passed: boolean,
+  nameSuffix?: string,
+  spans?: CriterionSpan[]
+): CriterionResult {
   const m = META[key];
   if (!m) throw new Error("Unknown criterion key: " + key);
   return {
@@ -91,8 +97,25 @@ function score(key: string, earned: number, passed: boolean, nameSuffix?: string
     earned: earned, maxPoints: m.maxPoints, passed: passed,
     evidence: m.evidence, rollUp: m.rollUp,
     penalty: m.kind === "guard" ? true : undefined,
+    // Spans are kept even when the criterion PASSES, and that is deliberate.
+    // Several of these score an aggregate — sentence-length scores the mean —
+    // and a draft can sit comfortably inside the band while containing one
+    // fifty-word sentence. Suppressing the highlight because the average is
+    // fine would hide the only thing on the page worth editing.
+    //
+    // The rule that keeps this from becoming wallpaper is upstream instead:
+    // each criterion computes spans ONLY for individually bad items, so an
+    // empty array means there is genuinely nothing to point at.
+    spans: spans && spans.length ? spans.slice(0, MAX_SPANS_PER_CRITERION) : undefined,
   };
 }
+
+/**
+ * Nobody edits fifty highlighted sentences. Past a handful the layer stops
+ * being a to-do list and becomes wallpaper, so each criterion points at its
+ * worst few and the panel keeps reporting the true count.
+ */
+const MAX_SPANS_PER_CRITERION = 8;
 
 /**
  * A criterion whose input the writer cannot supply from the draft body.
@@ -180,11 +203,21 @@ function pillar2(p: ParsedDraft, input: DraftInput): CriterionResult[] {
     out.push(skip("stat-source-adjacency", "No statistics to source"));
   } else {
     let naked = 0;
-    for (let i = 0; i < p.stats.length; i++) if (!p.stats[i].sourced) naked++;
+    // Highlight the STATISTIC, but describe the sentence — the fix is adding a
+    // source beside the number, so pointing at the number is pointing at the
+    // thing to change. This is the single most valuable free annotation the
+    // tool has: an unsourced figure is what an engine refuses to cite.
+    const nakedSpans: CriterionSpan[] = [];
+    for (let i = 0; i < p.stats.length; i++) {
+      if (p.stats[i].sourced) continue;
+      naked++;
+      nakedSpans.push({ start: p.stats[i].start, end: p.stats[i].end, note: "no source in this sentence" });
+    }
     const nakedPct = (naked / p.stats.length) * 100;
     const pts = tieredScore(nakedPct, NAKED_STAT_TIERS);
     out.push(score("stat-source-adjacency", pts, naked === 0,
-      naked === 0 ? "all " + p.stats.length + " sourced" : naked + " of " + p.stats.length + " statistics have no source in the sentence"));
+      naked === 0 ? "all " + p.stats.length + " sourced" : naked + " of " + p.stats.length + " statistics have no source in the sentence",
+      nakedSpans));
   }
 
   let attributed = 0;
@@ -297,7 +330,13 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   const qHeads = sectionHeads.filter(function (h) { return h.isInterrogativeShaped; });
   const ratio = sectionHeads.length > 0 ? qHeads.length / sectionHeads.length : 0;
   const qhPts = (qHeads.length >= 3 || (qHeads.length >= 2 && ratio >= 0.3)) ? 10 : qHeads.length === 2 ? 7 : qHeads.length === 1 ? 4 : 0;
-  out.push(score("question-headings", qhPts, qhPts >= 10, qHeads.length + " of " + sectionHeads.length + " headings are question-shaped"));
+  const flatHeads = sectionHeads
+    .filter(function (h) { return !h.isInterrogativeShaped; })
+    .map(function (h): CriterionSpan {
+      return { start: h.start, end: h.end, note: "not question-shaped" };
+    });
+  out.push(score("question-headings", qhPts, qhPts >= 10,
+    qHeads.length + " of " + sectionHeads.length + " headings are question-shaped", flatHeads));
 
   if (qHeads.length === 0) {
     out.push(skip("heading-answer-adjacency", "No question headings to answer"));
@@ -549,7 +588,16 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
   for (let i = 0; i < prose.length; i++) totalWords += prose[i].wordCount;
   const mean = prose.length > 0 ? totalWords / prose.length : 0;
   const sPts = (mean >= 14 && mean <= 22) ? 5 : ((mean >= 11 && mean < 14) || (mean > 22 && mean <= 28)) ? 3 : 0;
-  out.push(score("sentence-length-norm", sPts, sPts === 5, "mean " + mean.toFixed(1) + " words"));
+  // The criterion scores the MEAN, but a writer cannot edit a mean. Point at
+  // the individual sentences pulling it up — sorted longest first, so the ones
+  // worth splitting come before the ones that are merely long.
+  const longSentences = prose
+    .filter(function (x) { return x.wordCount > 28; })
+    .sort(function (a, b) { return b.wordCount - a.wordCount; })
+    .map(function (x): CriterionSpan {
+      return { start: x.start, end: x.end, note: x.wordCount + " words" };
+    });
+  out.push(score("sentence-length-norm", sPts, sPts === 5, "mean " + mean.toFixed(1) + " words", longSentences));
 
   // Comparative format. Skipped, not failed, outside comparative intent — the
   // 63%-of-citations finding is intent-confounded, and nudging every explainer
@@ -621,8 +669,31 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
   const emDashes = (p.text.match(/—/g) || []).length;
   const emOverage = Math.max(0, emDashes * per1k - 1);
   const tellDensity = tells * per1k + emOverage;
+  // Locate each tell so the writer can see the actual word rather than a count.
+  // Matched on the same word boundaries countTerm uses, or the highlight would
+  // land on a substring the score never counted.
+  const tellSpans: CriterionSpan[] = [];
+  for (let i = 0; i < AI_TELL_TERMS.length; i++) {
+    const term = AI_TELL_TERMS[i];
+    const re = new RegExp("\\b" + term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "gi");
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(p.text)) !== null) {
+      tellSpans.push({ start: m.index, end: m.index + m[0].length, note: "AI tell" });
+      if (tellSpans.length >= 40) break;
+    }
+    if (tellSpans.length >= 40) break;
+  }
+  if (notJust) {
+    const njRe = new RegExp(NOT_JUST_PATTERN.source, NOT_JUST_PATTERN.flags.indexOf("g") >= 0 ? NOT_JUST_PATTERN.flags : NOT_JUST_PATTERN.flags + "g");
+    let nm: RegExpExecArray | null;
+    while ((nm = njRe.exec(p.text)) !== null && tellSpans.length < 48) {
+      tellSpans.push({ start: nm.index, end: nm.index + nm[0].length, note: "\"not just\" construction" });
+    }
+  }
+  tellSpans.sort(function (a, b) { return a.start - b.start; });
   out.push(score("ai-tell-guard", tieredScore(tellDensity, AI_TELL_TIERS), tellDensity === 0,
-    tells === 0 && emOverage === 0 ? "clean" : tells + " tell" + (tells === 1 ? "" : "s") + (emOverage > 0 ? ", em-dashes over norm" : "")));
+    tells === 0 && emOverage === 0 ? "clean" : tells + " tell" + (tells === 1 ? "" : "s") + (emOverage > 0 ? ", em-dashes over norm" : ""),
+    tellSpans));
 
   return out;
 }

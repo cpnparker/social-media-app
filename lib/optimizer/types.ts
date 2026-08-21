@@ -56,6 +56,17 @@ export interface Tier {
  * otherwise the tool penalises a draft for the tool's own missing inputs, and
  * the score stops meaning what it says.
  */
+export interface CriterionSpan {
+  /** Offsets into ParsedDraft.text — NOT ProseMirror positions. The editor
+   *  converts them with lib/optimizer/doc-index.ts, which is the only thing
+   *  that knows how the two coordinate systems line up. */
+  start: number;
+  end: number;
+  /** What is wrong with THIS span, if it differs from the criterion's own
+   *  message ("47 words", "no source in this sentence"). */
+  note?: string;
+}
+
 export interface CriterionResult {
   key: string;
   name: string;
@@ -68,6 +79,23 @@ export interface CriterionResult {
   skipped?: boolean;
   /** Why it was skipped — shown to the writer so the gap is visible, not silent. */
   skipReason?: string;
+  /**
+   * Where in the text this criterion is failing, as offsets into
+   * ParsedDraft.text.
+   *
+   * This is what makes the free layer of the product feel like a product. The
+   * parser already knows WHICH sentence runs long, WHICH statistic has no
+   * source beside it, WHICH heading breaks the hierarchy — it tracks offsets
+   * for all of them — and the engine was throwing that away and returning a
+   * number. So a writer saw "Sentence length: 6/10" and had to go and find the
+   * sentences themselves.
+   *
+   * Populated only by criteria that can point at something specific. A score
+   * about the document as a whole (word count, list presence) has no span and
+   * correctly has none — inventing one would highlight an arbitrary sentence
+   * and blame it for a whole-document property.
+   */
+  spans?: CriterionSpan[];
   /**
    * True when this check can only lose points, never gain them (keyword
    * stuffing, naked statistics, stale years, AI-tell vocabulary). Penalties are

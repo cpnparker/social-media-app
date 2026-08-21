@@ -2,6 +2,17 @@
 
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+// Tables are not in StarterKit, and their absence was not cosmetic. Tiptap
+// DISCARDS markup its schema cannot represent, so an imported Google Doc built
+// on a table template lost that structure the moment it hit the editor — and
+// the editor's text then no longer matched the text the optimiser's judge had
+// been given, so every finding failed to anchor and was dropped as unlocatable.
+// The writer saw "nothing outstanding" on a draft scoring 37/100.
+//
+// The invariant this restores is the important part: whatever is stored must
+// round-trip through the editor unchanged, or anchoring silently returns
+// nothing and looks like an empty result rather than a broken one.
+import { TableKit } from "@tiptap/extension-table";
 import Placeholder from "@tiptap/extension-placeholder";
 import { useEffect, useRef, useCallback } from "react";
 import {
@@ -70,6 +81,7 @@ export default function TiptapEditor({
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
       }),
+      TableKit.configure({ table: { resizable: false } }),
       Placeholder.configure({ placeholder }),
       ...(extraExtensions || []),
     ],
