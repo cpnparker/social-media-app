@@ -59,12 +59,27 @@ export default function OptimizerPage() {
   const [streaming, setStreaming] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  // Probed once on mount rather than discovered on submit. Without this the
+  // writer fills in an entire brief, hits Generate, and gets a toast — the
+  // work is not lost but the failure arrives at the worst possible moment, and
+  // it does not say what to do about it.
+  const [access, setAccess] = useState<"checking" | "ok" | "denied">("checking");
+
   const editorRef = useRef<Editor | null>(null);
   // While streaming, the parent must NOT push `content` into the editor: the
   // prop-change effect would fire setContent and wipe the inserted nodes. The
   // editor is fed through insertContentAt instead, and `content` is synced once
   // at the end.
   const streamBufferRef = useRef("");
+
+  useEffect(() => {
+    if (!workspaceId) return;
+    let cancelled = false;
+    fetch(`/api/optimizer/sessions?workspaceId=${encodeURIComponent(workspaceId)}`)
+      .then((r) => { if (!cancelled) setAccess(r.ok ? "ok" : "denied"); })
+      .catch(() => { if (!cancelled) setAccess("denied"); });
+    return () => { cancelled = true; };
+  }, [workspaceId]);
 
   // ── The canon ──
   useEffect(() => {
@@ -208,6 +223,25 @@ export default function OptimizerPage() {
     }),
     [body, streaming, title, queries, format, canon]
   );
+
+  if (access === "denied") {
+    return (
+      <div className="flex-1 min-h-0 flex items-center justify-center p-8">
+        <div className="max-w-md flex flex-col gap-3 text-center">
+          <h1 className="text-lg font-semibold">The Content Optimiser is not switched on yet</h1>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            The code is deployed, but the feature is still dark: its database tables have not been
+            created and no account has been granted access. Both are deliberate, one-time steps —
+            see <span className="font-mono text-[12px]">supabase/migrations/20260821_content_optimizer.sql</span>.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Run that migration in the Supabase SQL Editor, then set{" "}
+            <span className="font-mono">flag_access_optimizer = 1</span> for your user.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   // ── Brief ──
   if (phase === "brief") {

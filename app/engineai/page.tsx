@@ -21,6 +21,7 @@ import {
   Paperclip,
   X,
   FileText,
+  PenLine,
   Building2,
   Plus,
   Menu,
@@ -1248,6 +1249,21 @@ function EngineAIContent() {
                 </PopoverContent>
               </Popover>
             )}
+
+            {/* Tools.
+                EngineAI's sub-surfaces (/engineai/design, /engineai/optimizer)
+                render inside this same shell but had NO inbound link from
+                anywhere in the product — they were reachable only by typing the
+                URL, which in practice means nobody found them. A feature nobody
+                can navigate to is a feature that does not exist. */}
+            <button
+              onClick={() => router.push("/engineai/optimizer")}
+              className="w-full flex items-center gap-2 rounded-lg bg-white/[0.06] hover:bg-white/10 px-2.5 py-2 transition-colors text-left text-white/80 hover:text-white"
+              title="Write content optimised to be cited by AI assistants"
+            >
+              <PenLine className="h-3.5 w-3.5 text-white/40 shrink-0" />
+              <span className="flex-1 truncate text-[13px] font-medium">Content Optimiser</span>
+            </button>
 
             {/* Search chats */}
             <div className="relative">
