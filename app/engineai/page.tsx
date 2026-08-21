@@ -130,7 +130,24 @@ function EngineAIContent() {
   );
   const [loading, setLoading] = useState(true);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
+  /**
+   * WHICH LIST YOU ARE LOOKING AT. A filter, nothing more.
+   *
+   * This used to be the same value that decided the VISIBILITY of every new
+   * conversation, so clicking "Team" to browse team threads silently made the
+   * next thing you typed readable by the whole workspace. That is how a
+   * directors' catchup became a team artefact. Reading and publishing are not
+   * the same decision and no longer share a variable.
+   */
   const [tab, setTab] = useState<"private" | "team">("private");
+  /**
+   * WHO WILL BE ABLE TO READ THE NEXT CONVERSATION YOU START.
+   *
+   * Private by default, always, and only ever changed from the composer's own
+   * visibility control — never as a side effect of navigating. Incognito forces
+   * it private.
+   */
+  const [newVisibility, setNewVisibility] = useState<"private" | "team">("private");
   const [homeInput, setHomeInput] = useState("");
   const [sending, setSending] = useState(false);
   const [initialMessage, setInitialMessage] = useState<string | undefined>();
@@ -256,6 +273,7 @@ function EngineAIContent() {
       // — which instructs the model to call meeting_details — would pull the
       // full client transcript into a workspace-readable thread. handleVoiceStart
       // hardcodes "private" for exactly this reason; this path must match.
+      setNewVisibility("private");
       setTab("private");
       setIncognitoMode(false);
       setHomeInput((prev) => (prev.trim() ? prev : seed));
@@ -567,7 +585,9 @@ function EngineAIContent() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           workspaceId,
-          visibility: tab,
+          // newVisibility, not tab: the list you were browsing must not decide
+          // who can read what you are about to write.
+          visibility: incognitoMode ? "private" : newVisibility,
           model: selectedModel,
           customerId: customerId || undefined,
           isIncognito: incognitoMode,
@@ -1991,10 +2011,10 @@ function EngineAIContent() {
                           </div>
                           <div className="flex gap-1 px-2">
                             <button
-                              onClick={() => { setTab("private"); setIncognitoMode(false); }}
+                              onClick={() => { setNewVisibility("private"); setIncognitoMode(false); }}
                               className={cn(
                                 "flex-1 flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs transition-colors",
-                                !incognitoMode && tab === "private"
+                                !incognitoMode && newVisibility === "private"
                                   ? "bg-foreground/10 text-foreground font-medium"
                                   : "text-muted-foreground hover:bg-muted"
                               )}
@@ -2003,10 +2023,10 @@ function EngineAIContent() {
                               Private
                             </button>
                             <button
-                              onClick={() => { setTab("team"); setIncognitoMode(false); }}
+                              onClick={() => { setNewVisibility("team"); setIncognitoMode(false); }}
                               className={cn(
                                 "flex-1 flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs transition-colors",
-                                !incognitoMode && tab === "team"
+                                !incognitoMode && newVisibility === "team"
                                   ? "bg-foreground/10 text-foreground font-medium"
                                   : "text-muted-foreground hover:bg-muted"
                               )}
@@ -2017,7 +2037,7 @@ function EngineAIContent() {
                             <button
                               onClick={() => {
                                 setIncognitoMode(true);
-                                setTab("private");
+                                setNewVisibility("private");
                                 toast.info("Incognito — chat won't be saved and memories are disabled");
                               }}
                               className={cn(
@@ -2093,7 +2113,7 @@ function EngineAIContent() {
                               <Brain className={cn("h-3.5 w-3.5", contextConfig.memory === "on" ? "text-pink-400" : "text-muted-foreground/50")} />
                               Memory
                             </button>
-                            {tab !== "team" && (
+                            {newVisibility !== "team" && (
                               <button
                                 onClick={() =>
                                   setContextConfig((prev) => ({ ...prev, meetingBrain: prev.meetingBrain === "on" ? "off" : "on" }))
@@ -2198,26 +2218,26 @@ function EngineAIContent() {
                         >
                           {incognitoMode ? (
                             <EyeOff className="h-3 w-3" />
-                          ) : tab === "private" ? (
+                          ) : newVisibility === "private" ? (
                             <Lock className="h-3 w-3" />
                           ) : (
                             <Users className="h-3 w-3" />
                           )}
-                          {incognitoMode ? "Incognito" : tab === "private" ? "Private" : "Team"}
+                          {incognitoMode ? "Incognito" : newVisibility === "private" ? "Private" : "Team"}
                           <ChevronDown className="h-3 w-3" />
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start" className="w-44">
                         <DropdownMenuItem
-                          onClick={() => { setTab("private"); setIncognitoMode(false); }}
-                          className={cn("gap-2 text-sm", !incognitoMode && tab === "private" && "bg-muted font-medium")}
+                          onClick={() => { setNewVisibility("private"); setIncognitoMode(false); }}
+                          className={cn("gap-2 text-sm", !incognitoMode && newVisibility === "private" && "bg-muted font-medium")}
                         >
                           <Lock className="h-3.5 w-3.5" />
                           Private
                         </DropdownMenuItem>
                         <DropdownMenuItem
-                          onClick={() => { setTab("team"); setIncognitoMode(false); }}
-                          className={cn("gap-2 text-sm", !incognitoMode && tab === "team" && "bg-muted font-medium")}
+                          onClick={() => { setNewVisibility("team"); setIncognitoMode(false); }}
+                          className={cn("gap-2 text-sm", !incognitoMode && newVisibility === "team" && "bg-muted font-medium")}
                         >
                           <Users className="h-3.5 w-3.5" />
                           Team
@@ -2226,7 +2246,7 @@ function EngineAIContent() {
                         <DropdownMenuItem
                           onClick={() => {
                             setIncognitoMode(true);
-                            setTab("private");
+                            setNewVisibility("private");
                             toast.info("Incognito — chat won't be saved and memories are disabled");
                           }}
                           className={cn("gap-2 text-sm", incognitoMode && "bg-muted font-medium text-amber-500")}
@@ -2244,7 +2264,7 @@ function EngineAIContent() {
                         ? "text-amber-500 bg-amber-500/10"
                         : "text-muted-foreground/60"
                     )}>
-                      {incognitoMode ? "Incognito" : tab === "private" ? "" : "Team"}
+                      {incognitoMode ? "Incognito" : newVisibility === "private" ? "" : "Team"}
                     </span>
 
                     <div className="flex-1" />
@@ -2448,7 +2468,7 @@ function EngineAIContent() {
                     )} />
                     Memory
                   </button>
-                  {tab !== "team" && (
+                  {newVisibility !== "team" && (
                     <button
                       onClick={() =>
                         setContextConfig((prev) => ({
