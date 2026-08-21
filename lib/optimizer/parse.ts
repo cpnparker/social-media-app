@@ -350,7 +350,13 @@ const STAT_PATTERNS: { re: RegExp; kind: StatKind }[] = [
   { re: /\b\d+(?:\.\d+)?\s?(?:x|×)\b/gi, kind: "multiplier" },
   { re: /\b\d[\d,.]*\s?(?:trillion|billion|million|bn|k|m)\b/gi, kind: "largeNumber" },
   { re: /\b\d+\s+(?:out\s+of|of)\s+\d+\b/gi, kind: "ratio" },
-  { re: /\b\d[\d,.]*\s+(?:basis points|days?|weeks?|months?|hours?|minutes?|seconds?|users?|customers?|clients?|merchants?|companies|brands?|pages?|words?|citations?|respondents?|transactions?|migrations?)\b/gi, kind: "countWithUnit" },
+  // The unit list was fintech-flavoured (merchants, transactions, migrations)
+  // and missed the vocabulary of industrial and corporate content entirely —
+  // tested against a real client article, "19,000 employees" and "1,000 sites"
+  // did not count as statistics, so statistic-density read a figure-heavy
+  // corporate explainer as thin and the naked-statistic check never looked at
+  // its numbers. Units grouped by domain; all still require a leading figure.
+  { re: /\b\d[\d,.]*\s+(?:basis points|days?|weeks?|months?|years?|hours?|minutes?|seconds?|users?|customers?|clients?|merchants?|companies|brands?|pages?|words?|citations?|respondents?|transactions?|migrations?|employees|workers|staff|people|jobs|members|partners|suppliers|sites?|plants?|facilities|locations?|stores?|offices?|terminals?|quarries|factories|countries|states?|provinces?|cities|regions?|markets?|projects?|buildings?|homes?|units?|installations?|tons?|tonnes?|pounds?|kilograms?|kg|litres?|liters?|gallons?|barrels?|acres?|hectares?|megawatts?|gigawatts?|kilowatts?|miles?|kilometres?|kilometers?|metres?|meters?|feet|vehicles?|trucks?|machines?)\b/gi, kind: "countWithUnit" },
 ];
 
 /**

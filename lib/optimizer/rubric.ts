@@ -34,7 +34,11 @@ import type { EvidenceGrade, RollUp, Tier } from "./types";
  * Stored on every assessment so a re-score against a newer rubric is an
  * explicit act rather than a silent drift in a client's reported numbers.
  */
-export const RUBRIC_VERSION = "1.0.0";
+// 1.0.1: countWithUnit units broadened to industrial/corporate vocabulary
+// (employees, sites, plants, tons, megawatts...). Detection change, not a
+// weight change — but scores move on figure-heavy corporate content, so the
+// version moves with them and every memo re-keys.
+export const RUBRIC_VERSION = "1.0.1";
 
 // ── Pillars ──────────────────────────────────────────────────────────────
 
