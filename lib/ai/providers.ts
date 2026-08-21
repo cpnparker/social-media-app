@@ -7318,6 +7318,19 @@ async function streamAnthropic(
   const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
     query_xero: 8, query_engine: 8, query_meetingbrain: 6, query_drive_docs: 6,
     search_notebook: 6,
+    // SEARCHING A MAILBOX IS ITERATIVE, and the contract costs two calls per
+    // answer: search returns headers, only report "thread" returns the body.
+    // At the default cap of 3 a turn got roughly ONE real attempt, which is not
+    // how anyone finds an email — the first guess at a search term rarely hits.
+    //
+    // The visible cost: asked to confirm a won contract, the model searched
+    // once, missed, correctly worked out that the plain client name alone was
+    // the query to try, and then ASKED PERMISSION to try it rather than trying
+    // it — because it had no calls left. The user had to supply the sender's
+    // name from memory before it could find a thread that had been sitting in
+    // the mailbox, with the client's name in its subject, the whole time.
+    // Asking is what the model does when it cannot act.
+    query_gmail: 8, query_slack: 8, query_calendar: 6, query_microsoft: 6,
     // Four separate reports behind one tool name, so the default cap of 3
     // makes "how are we tracking, and who is free to take it on" unanswerable
     // — the turn runs out of calls before it runs out of questions.
@@ -8779,6 +8792,19 @@ async function streamXAIChatCompletions(
   const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
     query_xero: 8, query_engine: 8, query_meetingbrain: 6, query_drive_docs: 6,
     search_notebook: 6,
+    // SEARCHING A MAILBOX IS ITERATIVE, and the contract costs two calls per
+    // answer: search returns headers, only report "thread" returns the body.
+    // At the default cap of 3 a turn got roughly ONE real attempt, which is not
+    // how anyone finds an email — the first guess at a search term rarely hits.
+    //
+    // The visible cost: asked to confirm a won contract, the model searched
+    // once, missed, correctly worked out that the plain client name alone was
+    // the query to try, and then ASKED PERMISSION to try it rather than trying
+    // it — because it had no calls left. The user had to supply the sender's
+    // name from memory before it could find a thread that had been sitting in
+    // the mailbox, with the client's name in its subject, the whole time.
+    // Asking is what the model does when it cannot act.
+    query_gmail: 8, query_slack: 8, query_calendar: 6, query_microsoft: 6,
     // Four separate reports behind one tool name, so the default cap of 3
     // makes "how are we tracking, and who is free to take it on" unanswerable
     // — the turn runs out of calls before it runs out of questions.
