@@ -20,7 +20,38 @@
 
 import crypto from "crypto";
 
-const TTL_SECONDS = 30 * 24 * 60 * 60;
+/**
+ * TTL POLICY. A signed URL is a bearer capability: whoever holds it can fetch
+ * that blob, with no session and no further check. So the life of the URL is
+ * the size of the window if one ever leaks — through a log line, a copied link,
+ * a browser history, a referrer.
+ *
+ * Two classes, because they carry different things:
+ *
+ *  - LONG (30 days) is for material the workspace already treats as shareable:
+ *    client logos and brand assets pulled from the asset library. The long life
+ *    is load-bearing, and not for Google — Google fetches once at insertion and
+ *    keeps its own copy, so minutes would do there. It is for the IN-CHAT
+ *    PREVIEW, which is persisted on the message and re-rendered every time the
+ *    thread is reopened. A short URL with no reissue turns every older preview
+ *    into a broken image.
+ *
+ *  - SHORT (2 hours) is for anything sourced from a USER ATTACHMENT — a
+ *    screenshot, a document page, whatever someone dragged into the composer.
+ *    That is a different sensitivity class from a logo: it is client material,
+ *    uploaded in confidence, and there is no reason a URL to it should still
+ *    work in a month. Two hours covers the deck build and the rest of the
+ *    working session; after that the preview is refreshed by the read path
+ *    rather than kept alive by a grant nobody can revoke.
+ *
+ * SHORT is only safe once the read path reissues — see refreshSignedMediaUrl.
+ * Shortening it without that in place breaks previews instead of protecting
+ * anything, which is why the mint sites opt IN rather than this default moving.
+ */
+export const TTL_LONG_SECONDS = 30 * 24 * 60 * 60;
+export const TTL_SHORT_SECONDS = 2 * 60 * 60;
+
+const TTL_SECONDS = TTL_LONG_SECONDS;
 
 function secret(): string {
   const s = process.env.NEXTAUTH_SECRET;
@@ -38,9 +69,18 @@ function publicOrigin(): string {
   return isPublic ? configured : "https://ai.thecontentengine.com";
 }
 
-/** An absolute URL any server can fetch, for exactly this blob. */
-export function signedMediaUrl(blobPath: string, origin?: string): string {
-  const exp = Math.floor(Date.now() / 1000) + TTL_SECONDS;
+/**
+ * An absolute URL any server can fetch, for exactly this blob.
+ *
+ * `ttlSeconds` defaults to LONG so no existing caller changes behaviour. Pass
+ * TTL_SHORT_SECONDS at any site minting a URL to user-attachment material.
+ */
+export function signedMediaUrl(
+  blobPath: string,
+  origin?: string,
+  opts?: { ttlSeconds?: number }
+): string {
+  const exp = Math.floor(Date.now() / 1000) + (opts?.ttlSeconds ?? TTL_SECONDS);
   const params = new URLSearchParams({ path: blobPath, exp: String(exp), sig: sign(blobPath, exp) });
   return `${(origin || publicOrigin()).replace(/\/$/, "")}/api/media/signed?${params}`;
 }
