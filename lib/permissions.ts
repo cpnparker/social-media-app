@@ -141,6 +141,43 @@ export async function hasEngineAiAccess(
   }
 }
 
+/**
+ * May this user use the Content Optimizer in this workspace?
+ *
+ * Deliberately NOT folded into the hasEngineAiAccess select, for two reasons.
+ *
+ * The mechanical one: PostgREST fails the WHOLE select when any named column
+ * is unknown, so a select combining an established flag with a not-yet-migrated
+ * one returns nothing and silently revokes the established feature too. Every
+ * newer flag in this codebase is read in its own query for exactly that reason
+ * (see the split reads in the messages route).
+ *
+ * The semantic one: this tool generates billable AI content in a client's name
+ * and writes it into their pipeline. hasEngineAiAccess reads a truthy flag;
+ * this reads `=== 1` explicitly, matching the Gmail precedent — an absent row,
+ * a zero, a null and a query error all deny.
+ */
+export async function hasOptimizerAccess(
+  userId: number,
+  workspaceId: string
+): Promise<boolean> {
+  try {
+    const { data, error } = await intelligenceDb
+      .from("users_access")
+      .select("flag_access_optimizer")
+      .eq("id_workspace", workspaceId)
+      .eq("user_target", userId)
+      .maybeSingle();
+    if (error) {
+      console.error("[access] optimizer check failed:", error.message);
+      return false;
+    }
+    return (data as any)?.flag_access_optimizer === 1;
+  } catch {
+    return false;
+  }
+}
+
 // ── Apply client scoping to a Supabase query builder ──
 // Returns { query } with filters applied, or { query, error } with a 403 response.
 export async function scopeQueryToClients(

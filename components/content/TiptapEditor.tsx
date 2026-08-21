@@ -1,6 +1,6 @@
 "use client";
 
-import { useEditor, EditorContent } from "@tiptap/react";
+import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import { useEffect, useRef, useCallback } from "react";
@@ -24,6 +24,21 @@ interface TiptapEditorProps {
   onChange: (html: string) => void;
   placeholder?: string;
   editable?: boolean;
+  /**
+   * Hands the editor instance to the parent once it exists.
+   *
+   * Needed for streaming: appending generated text has to go through
+   * `insertContentAt`, because feeding each chunk back through `content` calls
+   * `setContent`, which replaces the whole document — resetting the caret on
+   * every chunk, destroying the undo stack, and reparsing half-formed HTML like
+   * `<h2>Why This Ma` into a different shape on every frame.
+   *
+   * The parent must ALSO stop updating `content` while streaming, or the
+   * effect below will fire a `setContent` and wipe the inserted nodes.
+   */
+  onReady?: (editor: Editor) => void;
+  /** Debounce for onChange in ms. Streaming callers want this shorter than the 2s default. */
+  debounceMs?: number;
 }
 
 export default function TiptapEditor({
@@ -31,6 +46,8 @@ export default function TiptapEditor({
   onChange,
   placeholder = "Start writing...",
   editable = true,
+  onReady,
+  debounceMs = 2000,
 }: TiptapEditorProps) {
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -54,7 +71,7 @@ export default function TiptapEditor({
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
         onChange(editor.getHTML());
-      }, 2000);
+      }, debounceMs);
     },
     onBlur: ({ editor }) => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -69,6 +86,20 @@ export default function TiptapEditor({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content]);
+
+  useEffect(() => {
+    if (editor && onReady) onReady(editor);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor]);
+
+  // A pending debounced save must not fire after unmount — it would call
+  // onChange against a parent that has gone, and in the optimizer's case write
+  // a stale body over a newer one.
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, []);
 
   if (!editor) return null;
 
