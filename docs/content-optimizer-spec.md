@@ -246,6 +246,27 @@ Port AuthorityOn's closed loop to suggestions: fingerprint every finding → col
 
 Every milestone ends deployed behind `flag_access_optimizer` (deploy = `vercel deploy --prod`).
 
+## 8a. How the optimiser meets the rest of EngineAI
+
+Decided 2026-08-21 from a design pass over the shipped studio, the Design Mode precedent, and a survey of eight comparable products. Designs: the *EngineAI Articles Integration* canvas.
+
+**Import is the PRIMARY entry point, not the escape hatch.** Most optimisation work is on content that already exists — a draft, a published page, a commissioned piece — and writing from a brief is the rarer case. The start screen leads with "bring content in" and demotes "write something new" below it. Three sources, all backed by plumbing that already exists:
+
+- **Paste.** Always available, no setup.
+- **A Google Doc**, via `queryDriveDocs` (`lib/gdrive/docs.ts`), which lists and reads Docs exported to `text/plain`. **Access is a service account**, so a doc must be shared with `GOOGLE_SA_EMAIL` as Viewer before it appears — surface that address in the picker, because "my doc isn't listed" is otherwise a dead end.
+- **From the Engine content pipeline.** Content units already carry `documentReference` with `documentType: "google_doc"`, so a commissioned piece can arrive with its client attached — which means the canon is known without asking.
+
+**For imported content the brief is for SCORING, not generation.** Target queries and the platform lens still matter; audience, goal, voice and length are generation-only inputs and must not be asked for a piece that already exists.
+
+**The Relevance gap, and the rule it forces.** Imported content arrives with no target query, so pillar 1 — the heaviest at 0.22 — skips. The score is then over five pillars, and printing a confident number over that gap would be the "a view that drops data must say so" rule broken at the product's most visible surface. So: the headline says *measured on 5 of 6 pillars*, the Relevance row reads *not scored — no target query* rather than showing a zero, and the fix is offered **where the gap is visible** (an inline query field in the panel, seeded from the client canon), never by sending the writer back to a form.
+
+**Articles are a PEER of conversations, not a kind of conversation.** Design Mode already settled this shape: the artifact gets its own table with its own `type_visibility` and its own share table mirroring `ai_shares`, and the chat transcript that produced it is hidden from the list (commit `bddedd4` — the exclusion was about NOISE, not privacy). Articles follow it, with one difference: an article is worth finding, so it gets a sidebar row.
+
+- **Prerequisite:** the Private/Team tabs filter on strict equality, so a row with no visibility value is invisible in *both*. `optimizer_sessions` needs `type_visibility text NOT NULL DEFAULT 'private'` before any of this can render.
+- **A titled Articles section above Conversations, never interleaved.** Interleaving by recency fails three ways independently: the 5-slot-per-client budget gets spent on chats; article titles are authored and stable while chat titles are auto-generated and churn; and articles are exactly the items whose value grows with age, so recency buries them.
+- **Type is a leading icon, not a badge.** A badge sits in the slot the timestamp owns and is read after the title — too late for someone scanning.
+- **Search keeps the two lists apart.** An article matched deep in its body and a chat matched on its title cannot be honestly ranked against each other; merging forces an arbitrary answer. Separate lists never ask, the per-type counts answer "does it exist" directly, and the structure stays identical whether browsing or searching. Two rules for article results: body text is a **first-class** match (not the fallback it is for a chat — a writer searches for the sentence they wrote), and a body match must **show the matched phrase** or the result looks like a mistake. Match, then filter by visibility — never the reverse.
+
 ## 9a. Known deferrals
 
 These are decided-not-to-do-yet, not oversights. Recorded so they are found here rather than in production.
