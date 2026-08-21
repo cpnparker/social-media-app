@@ -12,7 +12,8 @@
  */
 import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
-  estimateLines, drawnTextHeight, inheritContinuationImages, type SlideInput,
+  estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
+  type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
@@ -781,6 +782,59 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     fail("a Venn set label with a parenthetical was not split into name + descriptor");
   }
   if (failures === before22) pass("scatter plots and spreads its points; Venn draws its sets with name-over-descriptor labels");
+
+  /* 23. An attached image lands on the slide, and a REGION of it crops correctly.
+   *
+   *  A screenshot of the user's own product cannot be approximated by stock or
+   *  a generator — it has to be the actual file, cropped to the part the slide
+   *  is about. The crop maths is percentage-based (the model cannot know pixel
+   *  dimensions) and must clamp rather than throw when a region overshoots. */
+  const before23 = failures;
+  console.log(`\n23. An attached image, and a region of it, reach the slide`);
+  {
+    const sharpMod = (await import("sharp")).default;
+    const W = 1440, H = 900;
+    const src = await sharpMod({ create: { width: W, height: H, channels: 3, background: { r: 240, g: 244, b: 250 } } }).png().toBuffer();
+    const supplier = async (i: number) => (i === 1 ? { bytes: src, contentType: "image/png" } : null);
+
+    // The crop the resolver performs, asserted directly: percentages → pixels.
+    const pct = (v: number) => Math.max(0, Math.min(100, v)) / 100;
+    const crop = async (r: { x: number; y: number; width: number; height: number }) => {
+      const left = Math.round(pct(r.x) * W), top = Math.round(pct(r.y) * H);
+      const width = Math.max(8, Math.min(W - left, Math.round(pct(r.width) * W)));
+      const height = Math.max(8, Math.min(H - top, Math.round(pct(r.height) * H)));
+      return sharpMod(src).extract({ left, top, width, height }).png().toBuffer();
+    };
+    const right = await sharpMod(await crop({ x: 70, y: 0, width: 30, height: 100 })).metadata();
+    if (right.width !== 432 || right.height !== 900) {
+      fail(`a 30%-wide region of a 1440x900 image cropped to ${right.width}x${right.height}, expected 432x900`);
+    }
+    // Overshoot must clamp to the edge, not throw — a model estimating "the
+    // right third" from a picture will overshoot.
+    try {
+      const over = await sharpMod(await crop({ x: 80, y: 0, width: 50, height: 100 })).metadata();
+      if ((over.width || 0) !== 288) fail(`an overshooting region clamped to ${over.width}px, expected 288`);
+    } catch (e: any) {
+      fail(`an overshooting region threw instead of clamping: ${e?.message}`);
+    }
+
+    // A slide asking for an attachment that is not there must SAY so, not
+    // silently draw nothing.
+    // Asserted on the MESSAGE, not just the flag: a later fallback in the
+    // normal image chain also sets imageUnavailable ("no image could be found"),
+    // so a flag-only assertion passes even when the attachment branch is gone —
+    // it would report the check green for the wrong reason.
+    const missing: SlideInput[] = [{ layout: "image-split", title: "T", body: "x", image: { attachment: 9 } }];
+    await resolveDeckImages(missing, undefined, supplier);
+    if (!/attachment 9/.test(missing[0].imageError || "")) {
+      fail(`a missing attachment was not reported as one (imageError: "${missing[0].imageError || "none"}")`);
+    }
+    // A slide with no image at all is untouched by the attachment path.
+    const plain: SlideInput[] = [{ layout: "content", title: "T", body: "a\nb" }];
+    await resolveDeckImages(plain, undefined, supplier);
+    if (plain[0].resolvedImage || plain[0].imageUnavailable) fail("a slide with no image was altered by the attachment path");
+  }
+  if (failures === before23) pass("a region crops to the right pixels, overshoot clamps, a missing attachment is reported");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);

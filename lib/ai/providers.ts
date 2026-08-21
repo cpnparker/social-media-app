@@ -1368,10 +1368,25 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
               image: {
                 type: "object",
                 description:
-                  "A photograph for this slide. REQUIRED for image-split and feature, and strongly encouraged on cover, section and closing, which are photo-led and fall back to a plain colour without one. Give `query` and one is found or generated; give `url` only for a specific known image.",
+                  "A picture for this slide. REQUIRED for image-split and feature, and strongly encouraged on cover, section and closing, which are photo-led and fall back to a plain colour without one. Three sources: `query` finds or generates a photograph; `attachment` uses an image the USER uploaded in this conversation; `url` takes a specific known image.",
                 properties: {
                   query: { type: "string", description: "What the picture should be OF — 'wind turbines at dusk', 'modern office atrium'. Prefer places, textures, architecture and abstracts over people: stock photography carries no model releases, so a recognisable face in a client deck can read as endorsement." },
                   url: { type: "string", description: "An exact image URL to use instead of searching." },
+                  attachment: {
+                    type: "number",
+                    description:
+                      "Use an image the USER ATTACHED to this conversation: 1 = the first image on their most recent message that had one, 2 = the second, and so on. ALWAYS use this rather than `query` when the slide is about something they showed you — their own product, a screenshot, a chart, a photo of their site. A generated approximation of their screenshot is worthless; the real file is the point.",
+                  },
+                  region: {
+                    type: "object",
+                    description:
+                      "Show only PART of that attachment, as percentages of its width and height (x/y = the top-left corner, 0-100). This is how one screenshot becomes a whole sequence of slides: the full interface on one slide, then a slide per area — 'the scoring panel is the right third' would be roughly {x:70,y:0,width:30,height:100}. Estimate from what you can see in the image; the crop is clamped to the edges, so slight overshoot is fine.",
+                    properties: {
+                      x: { type: "number" }, y: { type: "number" },
+                      width: { type: "number" }, height: { type: "number" },
+                    },
+                    required: ["x", "y", "width", "height"],
+                  },
                 },
               },
               images: {
@@ -3924,22 +3939,24 @@ async function buildOrUpdateSlides(
   title: string,
   slides: any[],
   userEmail: string,
-  presentationId?: string
+  presentationId?: string,
+  messages?: AIMessage[]
 ): Promise<Awaited<ReturnType<typeof generateSlides>> & { fellBack?: boolean }> {
   // Photographs the deck cannot find are generated with the same pipeline the
   // chat uses. Passed in rather than imported by lib/slides, which would close
   // an import cycle back through this file.
   const imageGen = (prompt: string) =>
     generateImage(prompt, "1792x1024", "openai", undefined, undefined, "public");
+  const attach = messages ? attachmentSupplierFor(messages) : undefined;
 
   if (presentationId) {
-    const updated = await updateSlides(presentationId, title, slides, userEmail, imageGen);
+    const updated = await updateSlides(presentationId, title, slides, userEmail, imageGen, attach);
     if (updated.ok || !updated.notFound) return updated;
     console.warn(`[Slides] ${presentationId} not updatable — creating a new deck`);
-    const created = await generateSlides(title, slides, userEmail, imageGen);
+    const created = await generateSlides(title, slides, userEmail, imageGen, attach);
     return { ...created, fellBack: true };
   }
-  return generateSlides(title, slides, userEmail, imageGen);
+  return generateSlides(title, slides, userEmail, imageGen, attach);
 }
 
 /** How much of a deck is actually visual.
@@ -3974,12 +3991,38 @@ function visualAudit(slides: any[]): string {
  *  the preview shows the actual photograph rather than an empty frame. It is
  *  the slowest part of a draft, and worth it: a preview that omits the pictures
  *  cannot be judged on the thing that makes a deck visual. */
-async function buildSlidesDraft(title: string, rawSlides: any[]) {
+/** The user's attached images, for slides that embed one.
+ *
+ *  Reads the bytes from OUR OWN private blob store by path (fetchBlobContent),
+ *  never by fetching a caller-supplied URL — so the SSRF guard in safe-fetch is
+ *  not in play and not bypassed; this is simply not a URL fetch. Indexed 1-based
+ *  over the images on the most recent user message that carried any, which is
+ *  the same "these are the reference images" rule generate_image already uses.
+ */
+function attachmentSupplierFor(messages: AIMessage[]) {
+  const urls = recentImageAttachmentUrls(messages, 8);
+  return async (index: number) => {
+    const url = urls[(index || 1) - 1];
+    if (!url) return null;
+    try {
+      const raw = await fetchBlobContent(url);
+      return { bytes: raw.buffer, contentType: raw.contentType || "image/png" };
+    } catch (err: any) {
+      console.warn(`[Slides] attachment ${index} unreadable: ${err?.message}`);
+      return null;
+    }
+  };
+}
+
+async function buildSlidesDraft(title: string, rawSlides: any[], messages?: AIMessage[]) {
   // Split BEFORE anything else, so the preview shows the deck that will be
   // built rather than one slide fewer.
   const slides = splitOverflowingSlides(rawSlides);
-  await resolveDeckImages(slides, (prompt: string) =>
-    generateImage(prompt, "1792x1024", "openai", undefined, undefined, "public"));
+  await resolveDeckImages(
+    slides,
+    (prompt: string) => generateImage(prompt, "1792x1024", "openai", undefined, undefined, "public"),
+    messages ? attachmentSupplierFor(messages) : undefined,
+  );
   return {
     title,
     slides,
@@ -7872,7 +7915,7 @@ async function streamAnthropic(
           // Draft is the default. A file appears only when a person asked for
           // one; an editSlide on a deck already in Drive updates it in place.
           if (!tool.input.publish && !deckPresId) {
-            const draft = await buildSlidesDraft(deckTitle, deckSlides);
+            const draft = await buildSlidesDraft(deckTitle, deckSlides, messages);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
@@ -7889,7 +7932,8 @@ async function streamAnthropic(
             deckTitle,
             deckSlides,
             config.userEmail || "",
-            deckPresId
+            deckPresId,
+            messages
           );
 
           if (!result.ok) {
@@ -9123,7 +9167,7 @@ async function streamXAIChatCompletions(
           // Draft is the default; an editSlide on a deck already in Drive
           // updates it in place.
           if (!input.publish && !deckPresId) {
-            const draft = await buildSlidesDraft(deckTitle, deckSlides);
+            const draft = await buildSlidesDraft(deckTitle, deckSlides, messages);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
@@ -9140,7 +9184,8 @@ async function streamXAIChatCompletions(
             deckTitle,
             deckSlides,
             config.userEmail || "",
-            deckPresId
+            deckPresId,
+            messages
           );
 
           if (!result.ok) {
@@ -10105,7 +10150,7 @@ async function streamGemini(
           // Draft is the default; an editSlide on a deck already in Drive
           // updates it in place.
           if (!input.publish && !deckPresId) {
-            const draft = await buildSlidesDraft(deckTitle, deckSlides);
+            const draft = await buildSlidesDraft(deckTitle, deckSlides, messages);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
@@ -10122,7 +10167,8 @@ async function streamGemini(
             deckTitle,
             deckSlides,
             config.userEmail || "",
-            deckPresId
+            deckPresId,
+            messages
           );
 
           if (!result.ok) {
@@ -10975,7 +11021,7 @@ async function streamOpenAI(
           // Draft is the default; an editSlide on a deck already in Drive
           // updates it in place.
           if (!input.publish && !deckPresId) {
-            const draft = await buildSlidesDraft(deckTitle, deckSlides);
+            const draft = await buildSlidesDraft(deckTitle, deckSlides, messages);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
@@ -10992,7 +11038,8 @@ async function streamOpenAI(
             deckTitle,
             deckSlides,
             config.userEmail || "",
-            deckPresId
+            deckPresId,
+            messages
           );
 
           if (!result.ok) {

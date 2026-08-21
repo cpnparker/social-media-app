@@ -75,6 +75,16 @@ export function verifyMediaSignature(
  * made. Signing whatever path a caller hands over would turn this into an
  * oracle for the entire private store. Anything we did not mint is returned
  * untouched.
+ *
+ * NEVER MAKE THIS REACHABLE WITH CALLER-SUPPLIED INPUT. It accepts expired
+ * signatures by design — refusing to refresh the URLs that have actually rotted
+ * would defeat it — so it is safe only while every caller is server-side and
+ * passes a URL read from OUR OWN stored content, for a viewer already
+ * authorised to read it. Expose it as an endpoint (/api/media/refresh?url=…),
+ * or as a tool parameter, and mere possession of a leaked URL converts into
+ * permanent access: the holder renews it forever and the expiry buys nothing.
+ * If you need a refresh somewhere new, gate it on the caller's access to the
+ * owning conversation, not on their possession of the URL.
  */
 export function refreshSignedMediaUrl(url: string): string {
   try {

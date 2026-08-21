@@ -444,6 +444,15 @@ export interface ImageRequest {
   url?: string;
   /** What the slide needs a picture of. */
   query?: string;
+  /** An image the USER attached to the conversation, by 1-based index (1 = the
+   *  first image on their most recent message that carried one). A screenshot
+   *  of their own product is not something a stock search or a generator can
+   *  ever supply — it has to be the actual file. */
+  attachment?: number;
+  /** A REGION of that attachment, as percentages of its width/height. Lets one
+   *  screenshot serve a whole sequence of slides: the full UI on one, then the
+   *  scoring panel, then the issue list, each cropped from the same upload. */
+  region?: { x: number; y: number; width: number; height: number };
 }
 
 export interface ImageTreatment {
@@ -543,6 +552,57 @@ export async function selectImageSource(
     }
   }
   return null;
+}
+
+/**
+ * An image the user attached, optionally cropped to a region of it, uploaded as
+ * a Google-fetchable capability URL.
+ *
+ * Why it cannot just reuse the attachment's own URL: uploads live in the PRIVATE
+ * blob store behind `/api/media/file`, which gates on a session. Google fetches
+ * slide images from its own servers with no cookies, so that URL can never
+ * resolve for them — the picture would simply be missing from the deck. The
+ * bytes are re-published here as a signed, expiring capability URL, the same
+ * mechanism every baked photograph already uses.
+ *
+ * `region` is in PERCENTAGES rather than pixels so the model can describe a part
+ * of a screenshot it is looking at ("the right-hand panel, roughly the right
+ * third") without knowing the file's pixel dimensions — which it does not.
+ */
+export async function attachmentImageSource(
+  bytes: Buffer,
+  contentType: string,
+  region?: { x: number; y: number; width: number; height: number }
+): Promise<ImageSource | null> {
+  try {
+    if (!process.env.BLOB_READ_WRITE_TOKEN) return null;
+    const sharp = (await import("sharp")).default;
+    let img = sharp(bytes);
+    if (region) {
+      const meta = await img.metadata();
+      const W = meta.width || 0, H = meta.height || 0;
+      if (W && H) {
+        const pct = (v: number) => Math.max(0, Math.min(100, v)) / 100;
+        const left = Math.round(pct(region.x) * W);
+        const top = Math.round(pct(region.y) * H);
+        // Clamped so a region running past the edge crops to the edge rather
+        // than throwing — a model estimating "the right third" will overshoot.
+        const width = Math.max(8, Math.min(W - left, Math.round(pct(region.width) * W)));
+        const height = Math.max(8, Math.min(H - top, Math.round(pct(region.height) * H)));
+        img = sharp(await img.extract({ left, top, width, height }).toBuffer());
+      }
+    }
+    const out = await img.png().toBuffer();
+    const blob = await put(`slides/attachments/${Date.now()}.png`, out, {
+      access: "private",
+      contentType: "image/png",
+      addRandomSuffix: true,
+    });
+    return { url: signedMediaUrl(blob.pathname), source: "supplied" };
+  } catch (err: any) {
+    console.warn(`[SlideImages] attachment image failed: ${err?.message}`);
+    return null;
+  }
 }
 
 /** Choose a picture and prepare it. Kept as a literal composition of the two

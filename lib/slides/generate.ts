@@ -22,7 +22,7 @@ import {
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
 import { captureThumbnails } from "@/lib/slides/preview";
 import {
-  resolveImage, selectImageSource, bakeImageSource,
+  resolveImage, selectImageSource, bakeImageSource, attachmentImageSource,
   type ImageGenerator, type ImageSource, type ImageRequest, type TextBand,
 } from "@/lib/slides/images";
 import { resolveIcon } from "@/lib/slides/icons";
@@ -88,9 +88,17 @@ export interface SlideInput {
   venn?: { sets?: { label: string }[]; overlap?: string };
   milestones?: Milestone[];
   tracks?: Track[];
-  /** What this slide should be a picture OF, or an exact image to use. Resolved
-   *  before the deck is built, so the preview shows the real photograph. */
-  image?: { url?: string; query?: string };
+  /** What this slide should be a picture OF, or an exact image to use, or one
+   *  the USER attached (optionally cropped to a region of it). Resolved before
+   *  the deck is built, so the preview shows the real photograph. */
+  image?: {
+    url?: string;
+    query?: string;
+    /** 1-based index into the images the user attached to the conversation. */
+    attachment?: number;
+    /** A region of that attachment, in percentages of its width and height. */
+    region?: { x: number; y: number; width: number; height: number };
+  };
   /** Filled in by resolution — not supplied by the model. */
   resolvedImage?: { url: string; scrim: number; credit?: string; logo?: "white" | "navy" };
   /** Set when resolution ran and found nothing, so publishing does not quietly
@@ -3225,9 +3233,17 @@ export function refreshDeckImageUrls(slides: SlideInput[]): void {
   }
 }
 
+/** Hands back the bytes of the user's Nth attached image (1-based), or null.
+ *  Injected rather than imported so lib/slides never reaches into the chat
+ *  layer — the same reason the image GENERATOR is injected. */
+export type AttachmentSupplier = (
+  index: number
+) => Promise<{ bytes: Buffer; contentType: string } | null>;
+
 export async function resolveDeckImages(
   slides: SlideInput[],
-  generate?: ImageGenerator
+  generate?: ImageGenerator,
+  attachments?: AttachmentSupplier
 ): Promise<void> {
   // Normalise the layout name ONCE, here, because every build path goes through
   // this function. A slide asking for "title" or "bullets" — names the sibling
@@ -3264,6 +3280,40 @@ export async function resolveDeckImages(
       // could pick up a picture nobody had reviewed on the way into Drive, and
       // the deck the user approved is not the deck they got. A retry is still
       // available: changing the image in the preview resolves it explicitly.
+      // An ATTACHED image is resolved first and separately: it is not something
+      // a stock search or a generator could ever supply — a screenshot of the
+      // user's own product has to be the actual file they sent.
+      if (slide.image?.attachment && !slide.resolvedImage && attachments) {
+        const file = await attachments(slide.image.attachment);
+        if (file) {
+          const src = await attachmentImageSource(file.bytes, file.contentType, slide.image.region);
+          if (src) {
+            // Baked to the box it will sit in, like any other picture, so it
+            // does not letterbox. A screenshot carries text, so it is never
+            // darkened by a gradient — the crop is the whole treatment.
+            const railShape = slide.layout === "content" || slide.layout === "case-study"
+              ? { width: CANVAS.width - (GRID.margin + GRID.proseNarrow + IMAGE.railGap),
+                  height: CANVAS.height - GRID.bodyY }
+              : null;
+            const split = slide.layout === "image-split";
+            const baked = await bakeImageSource(src, {
+              aspect: railShape ? railShape.width / railShape.height
+                : split ? IMAGE.splitWidth / CANVAS.height
+                : CANVAS.width / CANVAS.height,
+              gradient: false,
+              // contain, not cover: cropping a UI screenshot to fill a box cuts
+              // off the very thing the slide is pointing at.
+              fit: "contain",
+            });
+            slide.resolvedImage = { url: baked.url, scrim: 0, credit: baked.credit, logo: baked.logo };
+          }
+        }
+        if (!slide.resolvedImage) {
+          slide.imageUnavailable = true;
+          slide.imageError = `attachment ${slide.image.attachment} could not be read`;
+        }
+      }
+
       if (slide.image && !slide.resolvedImage && !slide.imageUnavailable) {
         // Crop to the SHAPE OF THE BOX the image will sit in. Baking everything
         // to 16:9 and dropping it into a tall half-slide letterboxes exactly the
@@ -3398,7 +3448,8 @@ export async function updateSlides(
   title: string,
   slides: SlideInput[],
   userEmail: string,
-  generateImageFn?: ImageGenerator
+  generateImageFn?: ImageGenerator,
+  attachments?: AttachmentSupplier
 ): Promise<SlidesResult> {
   const auth = await getUserGoogleToken(userEmail);
   if (!auth.ok || !auth.accessToken) {
@@ -3423,7 +3474,7 @@ export async function updateSlides(
 
   slides = splitOverflowingSlides(slides);
   refreshDeckImageUrls(slides);
-  await resolveDeckImages(slides, generateImageFn);
+  await resolveDeckImages(slides, generateImageFn, attachments);
 
   const run = runId();
   const requests: Req[] = slides.flatMap((slide, i) => buildSlideRequests(slide, i, run));
@@ -3464,7 +3515,8 @@ export async function generateSlides(
   title: string,
   slides: SlideInput[],
   userEmail: string,
-  generateImageFn?: ImageGenerator
+  generateImageFn?: ImageGenerator,
+  attachments?: AttachmentSupplier
 ): Promise<SlidesResult> {
   if (!userEmail) return { ok: false, error: "No signed-in user to create the deck for." };
   if (!slides?.length) return { ok: false, error: "No slides to build." };
@@ -3496,7 +3548,7 @@ export async function generateSlides(
 
   slides = splitOverflowingSlides(slides);
   refreshDeckImageUrls(slides);
-  await resolveDeckImages(slides, generateImageFn);
+  await resolveDeckImages(slides, generateImageFn, attachments);
 
   const run = runId();
   const requests: Req[] = slides.flatMap((slide, i) => buildSlideRequests(slide, i, run));
