@@ -34,7 +34,11 @@ const budgets = providers.match(/const READ_ONLY_TOOL_BUDGET[\s\S]*?\n  \};/g) |
 budgets.length >= 2
   ? pass(`${budgets.length} budget tables found (one per provider chain)`)
   : fail(`only ${budgets.length} budget table(s) — a chain was missed`);
-for (const [i, table] of budgets.entries()) {
+// Indexed loop, not .entries(): scripts/ is type-checked by `next build`, whose
+// target predates ES2015 iteration helpers. Local tsc accepts it; the build does
+// not. See CLAUDE.md.
+for (let i = 0; i < budgets.length; i++) {
+  const table = budgets[i];
   for (const tool of ["query_gmail", "query_slack"]) {
     const n = Number(new RegExp(`${tool}:\\s*(\\d+)`).exec(table)?.[1] ?? 0);
     // Two calls per mailbox answer, so anything under ~6 is one or two attempts.
