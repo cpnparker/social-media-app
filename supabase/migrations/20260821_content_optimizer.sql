@@ -257,6 +257,66 @@ COMMENT ON TABLE intelligence.optimizer_feedback IS
 COMMENT ON TABLE intelligence.optimizer_client_canon IS
   'Per-client grounding for drafts and entity checks. Facts are source-tagged (engine|assets|meetings|manual; authorityon is declared but has no producer yet). Only workspace-shared client meetings may contribute — personal MeetingBrain data must never reach a shared client fact sheet.';
 
+-- ── 7b. Columns and constraints added AFTER the tables first shipped ───────
+--
+-- READ THIS BEFORE ASSUMING THIS FILE IS IDEMPOTENT. It is not, on its own.
+-- `CREATE TABLE IF NOT EXISTS` does exactly nothing when the table already
+-- exists — including for columns added to the definition above afterwards. A
+-- database that ran an earlier copy of this file therefore ends up with the
+-- tables present and the newer columns absent, and re-running the file reports
+-- Success while changing nothing. That state was found live on 2026-08-21:
+-- all six tables existed, and type_visibility, type_source, document_source_ref,
+-- date_assessing and name_memo_key did not.
+--
+-- It is not a cosmetic gap. PostgREST fails an ENTIRE select when it names one
+-- unknown column, so the sidebar's article list returns nothing at all and
+-- reads as "there are no articles" rather than as a missing migration.
+--
+-- So: every column and constraint added after the initial ship is repeated
+-- here as an explicit ALTER. Anything added to a CREATE TABLE above from now
+-- on must be added here too.
+
+ALTER TABLE intelligence.optimizer_sessions
+  ADD COLUMN IF NOT EXISTS type_visibility text NOT NULL DEFAULT 'private',
+  ADD COLUMN IF NOT EXISTS type_source text NOT NULL DEFAULT 'generated',
+  ADD COLUMN IF NOT EXISTS document_source_ref text,
+  ADD COLUMN IF NOT EXISTS date_assessing timestamptz;
+
+ALTER TABLE intelligence.optimizer_assessments
+  ADD COLUMN IF NOT EXISTS name_memo_key text NOT NULL DEFAULT '';
+
+-- Dropped and recreated rather than added conditionally: a constraint created
+-- by an earlier copy of this file carries that copy's value list, and the
+-- failure mode is a runtime constraint violation on the one import path nobody
+-- tested. scripts/verify-optimizer-import.ts asserts these lists against the
+-- route's, so they cannot drift silently — but only if what is DEPLOYED matches
+-- the file, which is what these statements guarantee.
+ALTER TABLE intelligence.optimizer_sessions
+  DROP CONSTRAINT IF EXISTS optimizer_sessions_visibility_chk,
+  DROP CONSTRAINT IF EXISTS optimizer_sessions_source_chk,
+  DROP CONSTRAINT IF EXISTS optimizer_sessions_status_chk,
+  DROP CONSTRAINT IF EXISTS optimizer_sessions_platform_chk;
+
+ALTER TABLE intelligence.optimizer_sessions
+  ADD CONSTRAINT optimizer_sessions_visibility_chk
+    CHECK (type_visibility IN ('private', 'team')),
+  ADD CONSTRAINT optimizer_sessions_source_chk
+    CHECK (type_source IN ('generated', 'pasted', 'gdoc', 'gdoc-link', 'engine')),
+  ADD CONSTRAINT optimizer_sessions_status_chk
+    CHECK (type_status IN ('brief', 'drafting', 'draft_ready', 'assessing', 'refining', 'finalised')),
+  ADD CONSTRAINT optimizer_sessions_platform_chk
+    CHECK (type_platform IN ('balanced', 'chatgpt', 'aio', 'perplexity'));
+
+-- These two are partial indexes on columns that did not exist in the first
+-- copy, so CREATE INDEX IF NOT EXISTS above would have thrown rather than been
+-- skipped. Repeated here, after the columns are guaranteed to exist.
+CREATE INDEX IF NOT EXISTS idx_optimizer_sessions_team
+  ON intelligence.optimizer_sessions(id_workspace, date_updated DESC)
+  WHERE type_visibility = 'team';
+CREATE INDEX IF NOT EXISTS idx_optimizer_assessments_memo
+  ON intelligence.optimizer_assessments(id_session, name_memo_key)
+  WHERE name_memo_key <> '';
+
 -- ── 8. Control Centre row ──────────────────────────────────────────────────
 -- assertServiceAllowed('engine','optimizer') reads this row. Without it
 -- getConfig returns null, assertNotKilled is a no-op and the kill switch in
