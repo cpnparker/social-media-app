@@ -21,12 +21,12 @@ npx tsx scripts/verify-safe-fetch.ts         # the SSRF guard blocks internal ho
 
 ## Content Optimizer checks
 
-Nine scripts guard `lib/optimizer/` and the import/export paths. Run all of them
+Ten scripts guard `lib/optimizer/` and the import/export paths. Run all of them
 before shipping anything that touches the rubric, the judge, anchoring or how
 content gets in:
 
 ```
-for f in rubric anchors judge gate doc-index highlight import export import-html; do npx tsx scripts/verify-optimizer-$f.ts || break; done
+for f in rubric anchors judge gate doc-index highlight import export import-html live; do npx tsx scripts/verify-optimizer-$f.ts || break; done
 ```
 
 Each carries a MUTATION LOG in its header, and each log records survivors as

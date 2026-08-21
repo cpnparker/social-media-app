@@ -95,6 +95,16 @@ function OptimizerStudio() {
   const [diagnostics, setDiagnostics] = useState<{ dropped: number; orphaned: number; gateRejected: number } | null>(null);
   const [panelTab, setPanelTab] = useState<"score" | "issues">("score");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  /**
+   * The body as it stood when the last assessment ran.
+   *
+   * "Has this been assessed?" is not a boolean once the writer starts editing.
+   * Marks anchored to text that has since changed are stale, and showing a
+   * confident tick over them is the same class of dishonesty as printing a
+   * score over a skipped pillar. Kept as the text itself rather than a flag so
+   * an undo back to the assessed state correctly reads as assessed again.
+   */
+  const [assessedBody, setAssessedBody] = useState<string | null>(null);
   const [navSearch, setNavSearch] = useState("");
   const [navTab, setNavTab] = useState<"private" | "team">("private");
   /** Conversations, listed read-only. Clicking one leaves for the chat surface,
@@ -240,6 +250,7 @@ function OptimizerStudio() {
         }));
         judgeFindingsRef.current = stored;
         setDiagnostics(data.assessment ? { dropped: 0, orphaned: 0, gateRejected: 0 } : null);
+        setAssessedBody(data.assessment ? html : null);
         setPhase("studio");
         // The editor receives `body` on the next render; paint once it has.
         setTimeout(() => repaintLive(), 60);
@@ -437,6 +448,7 @@ function OptimizerStudio() {
         // Held so a live repaint (which fires on every edit) re-includes them
         // rather than wiping the pass that was just paid for.
         judgeFindingsRef.current = findings;
+        setAssessedBody(editor.getHTML());
         editor.view.dispatch(
           editor.state.tr.setMeta(optimizerHighlightKey, { type: "set", findings })
         );
@@ -846,8 +858,49 @@ function OptimizerStudio() {
           </button>
           <span className="w-px h-4 bg-border shrink-0" />
           <span className="text-[13px] font-semibold truncate flex-1 min-w-0">{title}</span>
+          {/* Assessment state, in the header rather than buried in a panel.
+              Four states, because three of them were previously indistinguishable
+              from each other: never assessed, assessed and current, assessed but
+              the text has moved on, and running. The third is the one that
+              matters — marks anchored to text that has since been edited are
+              stale, and a confident tick over them is the same dishonesty as a
+              score printed over a skipped pillar. */}
+          {(() => {
+            const currentBody = editorRef.current ? editorRef.current.getHTML() : body;
+            const state = assessing
+              ? "running"
+              : assessedBody === null
+                ? "never"
+                : assessedBody === currentBody
+                  ? "current"
+                  : "stale";
+            const look = {
+              running: { cls: "border-primary/30 bg-primary/10 text-primary", dot: "bg-primary animate-pulse", label: "Reviewing…" },
+              never:   { cls: "border-border bg-muted/60 text-muted-foreground", dot: "bg-muted-foreground/50", label: "Not reviewed" },
+              current: { cls: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400", dot: "bg-emerald-500", label: "Reviewed" },
+              stale:   { cls: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-500", dot: "bg-amber-500", label: "Edited since review" },
+            }[state];
+            return (
+              <span
+                className={cn(
+                  "hidden sm:inline-flex items-center gap-1.5 shrink-0 rounded-full border px-2.5 py-1 text-[11.5px] font-medium",
+                  look.cls
+                )}
+                title={
+                  state === "stale"
+                    ? "The AI review ran on an earlier version. Its marks may no longer sit on the right words — re-run it when you are ready."
+                    : state === "never"
+                      ? "The instant checks are always on. The AI review reads for meaning and runs when you ask."
+                      : undefined
+                }
+              >
+                <span className={cn("h-1.5 w-1.5 rounded-full", look.dot)} />
+                {look.label}
+              </span>
+            );
+          })()}
           {selectedCustomer && (
-            <span className="hidden sm:inline-flex items-center gap-1.5 shrink-0 rounded-full border bg-muted/60 px-2.5 py-1 text-[11.5px] font-medium text-muted-foreground">
+            <span className="hidden lg:inline-flex items-center gap-1.5 shrink-0 rounded-full border bg-muted/60 px-2.5 py-1 text-[11.5px] font-medium text-muted-foreground">
               <span className="h-1.5 w-1.5 rounded-full bg-primary" />
               {selectedCustomer.name}
             </span>

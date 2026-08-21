@@ -44,7 +44,16 @@ const SEVERITY_DOT: { [k: string]: string } = {
 export default function IssueList({
   issues, selectedId, onSelect, onApply, onDismiss, diagnostics, degraded, hasAssessed, onAssess,
 }: Props) {
-  const open = issues.filter((i) => i.status === "active");
+  // The two layers are shown apart, because they answer different questions and
+  // cost different things. The instant ones are mechanical and always on — a
+  // figure with no source beside it, a forty-word sentence. The AI review reads
+  // for meaning and had to be asked for. Merging them into one pile was the
+  // "score vs suggestions is confusing" complaint: two lists of problems with
+  // no way to tell which had actually been run.
+  const active = issues.filter((i) => i.status === "active");
+  const liveOpen = active.filter((i) => i.finding.id.indexOf("live:") === 0);
+  const judgeOpen = active.filter((i) => i.finding.id.indexOf("live:") !== 0);
+  const open = active;
   const orphaned = issues.filter((i) => i.status === "orphaned");
   const done = issues.filter((i) => i.status === "resolved" || i.status === "dismissed");
 
@@ -60,6 +69,30 @@ export default function IssueList({
       )}
 
       <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 flex flex-col gap-1.5">
+        {(liveOpen.length > 0 || judgeOpen.length > 0) && (
+          <div className="px-1 pt-1 pb-2 flex flex-col gap-1.5">
+            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                {liveOpen.length} from the instant checks
+              </span>
+              <span className="opacity-40">·</span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className={"h-1.5 w-1.5 rounded-full " + (hasAssessed ? "bg-emerald-500" : "bg-muted-foreground/40")} />
+                {hasAssessed ? `${judgeOpen.length} from the AI review` : "AI review not run"}
+              </span>
+            </div>
+            {/* Says what the instant layer CANNOT see, so its silence is not
+                mistaken for approval. Most remaining criteria are absences — no
+                byline, no dateline, no key-takeaways block — and there is no
+                text to mark up for something that is not there. Those live in
+                the Score tab as a checklist, which is the honest home for them. */}
+            <p className="text-[11px] text-muted-foreground/80 leading-snug">
+              Instant checks mark problems in text that exists. What is <em>missing</em> — a byline, a
+              dateline, a takeaways block — has nothing to underline and is listed under Score.
+            </p>
+          </div>
+        )}
         {open.length === 0 && orphaned.length === 0 && !hasAssessed && (
           <div className="px-1 py-3 flex flex-col gap-2 items-start">
             <p className="text-[12.5px] text-muted-foreground leading-snug">
