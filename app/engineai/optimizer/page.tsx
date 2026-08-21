@@ -29,6 +29,18 @@ import { ArrowRight, Loader2, Sparkles, X } from "lucide-react";
 import type { Editor } from "@tiptap/react";
 import type { DraftInput } from "@/lib/optimizer/engine";
 import type { ClientCanon } from "@/lib/optimizer/client-canon";
+import IssueList from "@/components/optimizer/IssueList";
+import {
+  OptimizerHighlight, optimizerHighlightKey, applyFinding,
+} from "@/lib/optimizer/highlight-plugin";
+import type { Issue, HighlightFinding } from "@/lib/optimizer/highlight-plugin";
+
+/**
+ * Module constant, deliberately. useEditor does not rebuild on a changed
+ * extension array, so an inline literal would be silently ignored after the
+ * first render and the highlight plugin would never load.
+ */
+const OPTIMIZER_EXTENSIONS = [OptimizerHighlight];
 
 const FORMATS = ["explainer", "ranked list", "FAQ", "data brief", "op-ed"];
 const PLATFORMS: { id: string; label: string }[] = [
@@ -64,6 +76,11 @@ export default function OptimizerPage() {
   // work is not lost but the failure arrives at the worst possible moment, and
   // it does not say what to do about it.
   const [access, setAccess] = useState<"checking" | "ok" | "denied">("checking");
+  const [assessing, setAssessing] = useState(false);
+  const [issues, setIssues] = useState<Issue[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<{ dropped: number; orphaned: number; gateRejected: number } | null>(null);
+  const [panelTab, setPanelTab] = useState<"score" | "issues">("score");
 
   const editorRef = useRef<Editor | null>(null);
   // While streaming, the parent must NOT push `content` into the editor: the
@@ -211,6 +228,106 @@ export default function OptimizerPage() {
     },
     [sessionId, workspaceId, streaming]
   );
+
+  // ── Assess ──
+  const runAssess = useCallback(async () => {
+    if (!sessionId || !workspaceId || assessing) return;
+    setAssessing(true);
+    try {
+      const res = await fetch(`/api/optimizer/sessions/${sessionId}/assess`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        // The route distinguishes a deterministic failure from a transient one.
+        // Saying "try again" on a truncation is advice to spend the same money
+        // for the same result, so the message reflects which it was.
+        toast.error(data.error || "Assessment failed");
+        return;
+      }
+      setDiagnostics(data.diagnostics || null);
+      const findings: HighlightFinding[] = (data.findings || []).map((f: any, i: number) => ({
+        id: f.id || `f${i}`,
+        criterion: f.criterion,
+        severity: f.severity,
+        quote: f.quote,
+        prefix: f.prefix,
+        suffix: f.suffix,
+        explanation: f.explanation,
+        suggestedEdit: f.suggestedEdit || null,
+      }));
+      const editor = editorRef.current;
+      if (editor) {
+        editor.view.dispatch(
+          editor.state.tr.setMeta(optimizerHighlightKey, { type: "set", findings })
+        );
+        const st = optimizerHighlightKey.getState(editor.state);
+        setIssues(st ? st.issues : []);
+      }
+      setPanelTab("issues");
+      if (data.memoHit) toast.success("Nothing changed since the last assessment");
+    } catch (e: any) {
+      toast.error(e?.message || "Assessment failed");
+    } finally {
+      setAssessing(false);
+    }
+  }, [sessionId, workspaceId, assessing]);
+
+  /** Pull the plugin's current issue list into React after any dispatch. */
+  const syncIssues = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const st = optimizerHighlightKey.getState(editor.state);
+    setIssues(st ? st.issues.slice() : []);
+    setSelectedId(st ? st.selectedId : null);
+  }, []);
+
+  const handleApply = useCallback((id: string) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const result = applyFinding(editor as any, id);
+    if (!result.ok) {
+      toast.error(
+        result.reason === "drifted"
+          ? "That passage has changed since it was assessed — nothing was replaced"
+          : result.reason === "deleted"
+          ? "That passage is gone"
+          : "Could not apply that suggestion"
+      );
+    }
+    syncIssues();
+    // Persist immediately: the edit came from a button, not from typing, so
+    // there is no debounce coming to save it.
+    if (editor) saveBody(editor.getHTML());
+  }, [syncIssues]);
+
+  const handleDismiss = useCallback((id: string) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.view.dispatch(
+      editor.state.tr.setMeta(optimizerHighlightKey, { type: "dismiss", ids: [id] })
+    );
+    syncIssues();
+  }, [syncIssues]);
+
+  const handleSelect = useCallback((id: string | null) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.view.dispatch(
+      editor.state.tr.setMeta(optimizerHighlightKey, { type: "select", id })
+    );
+    setSelectedId(id);
+    if (id) {
+      const st = optimizerHighlightKey.getState(editor.state);
+      const issue = st ? st.issues.filter((i) => i.finding.id === id)[0] : null;
+      if (issue && issue.status === "active") {
+        editor.commands.setTextSelection({ from: issue.from, to: issue.to });
+        editor.commands.scrollIntoView();
+      }
+    }
+  }, []);
 
   const scoreInput: DraftInput = useMemo(
     () => ({
@@ -386,28 +503,69 @@ export default function OptimizerPage() {
           <button onClick={() => setPhase("brief")} className="text-[13px] text-muted-foreground hover:text-foreground">
             ← Brief
           </button>
-          <span className="text-[13px] font-semibold truncate">{title}</span>
+          <span className="text-[13px] font-semibold truncate flex-1 min-w-0">{title}</span>
           {streaming && (
             <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" /> writing
             </span>
+          )}
+          {!streaming && sessionId && (
+            <Button size="sm" variant="outline" onClick={runAssess} disabled={assessing}>
+              {assessing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+              {assessing ? "Assessing" : "Assess"}
+            </Button>
           )}
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto">
           <div className="mx-auto w-full max-w-[46rem] px-6 py-6">
             <TiptapEditor
               content={streaming ? "" : body}
-              onChange={saveBody}
+              onChange={(html) => { saveBody(html); syncIssues(); }}
               onReady={(e) => { editorRef.current = e; }}
               editable={!streaming}
               debounceMs={600}
+              extraExtensions={OPTIMIZER_EXTENSIONS}
               placeholder="Paste or write your content here…"
             />
           </div>
         </div>
       </div>
       <div className="hidden lg:flex shrink-0 w-[380px] border-l bg-background flex-col min-h-0">
-        <ScorePanel input={scoreInput} muted={streaming} />
+        <div className="shrink-0 flex items-center gap-1 px-3 pt-2 border-b">
+          <button
+            onClick={() => setPanelTab("score")}
+            className={cn("text-[12.5px] font-medium px-2.5 py-2 border-b-2 -mb-px",
+              panelTab === "score" ? "border-primary text-foreground" : "border-transparent text-muted-foreground")}
+          >
+            Score
+          </button>
+          <button
+            onClick={() => setPanelTab("issues")}
+            className={cn("text-[12.5px] font-medium px-2.5 py-2 border-b-2 -mb-px",
+              panelTab === "issues" ? "border-primary text-foreground" : "border-transparent text-muted-foreground")}
+          >
+            Suggestions
+            {issues.filter((i) => i.status === "active").length > 0 && (
+              <span className="ml-1.5 text-[11px] text-muted-foreground">
+                {issues.filter((i) => i.status === "active").length}
+              </span>
+            )}
+          </button>
+        </div>
+        <div className="flex-1 min-h-0">
+          {panelTab === "score" ? (
+            <ScorePanel input={scoreInput} muted={streaming} />
+          ) : (
+            <IssueList
+              issues={issues}
+              selectedId={selectedId}
+              onSelect={handleSelect}
+              onApply={handleApply}
+              onDismiss={handleDismiss}
+              diagnostics={diagnostics}
+            />
+          )}
+        </div>
       </div>
     </>
   );

@@ -39,6 +39,14 @@ interface TiptapEditorProps {
   onReady?: (editor: Editor) => void;
   /** Debounce for onChange in ms. Streaming callers want this shorter than the 2s default. */
   debounceMs?: number;
+  /**
+   * Extra Tiptap extensions, appended to the base set.
+   *
+   * MUST be referentially stable — useEditor does not rebuild on a changed
+   * extension array, so an inline literal here would be silently ignored on
+   * every render after the first. Define it as a module constant.
+   */
+  extraExtensions?: any[];
 }
 
 export default function TiptapEditor({
@@ -48,6 +56,7 @@ export default function TiptapEditor({
   editable = true,
   onReady,
   debounceMs = 2000,
+  extraExtensions,
 }: TiptapEditorProps) {
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   // Refs so the unmount cleanup can flush without re-registering on every
@@ -62,6 +71,7 @@ export default function TiptapEditor({
         heading: { levels: [1, 2, 3] },
       }),
       Placeholder.configure({ placeholder }),
+      ...(extraExtensions || []),
     ],
     content,
     editable,
