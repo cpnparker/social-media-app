@@ -73,8 +73,13 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: "No such user in Engine" }, { status: 404 });
 
   const { data: ws } = await intelligenceDb
-    .from("workspaces").select("id_workspace").limit(1).maybeSingle();
-  const workspaceId = (ws as any)?.id_workspace;
+    // `id`, not `id_workspace`. The wrong column made PostgREST return 42703,
+    // which surfaces as data:null — so this returned 500 "No workspace" on
+    // EVERY call from the day it shipped, and MeetingBrain's deliberately
+    // silent fallback served the old thin brief instead. Nothing errored
+    // anywhere a person would look; the button simply never got better.
+    .from("workspaces").select("id").limit(1).maybeSingle();
+  const workspaceId = (ws as any)?.id;
   if (!workspaceId) return NextResponse.json({ error: "No workspace" }, { status: 500 });
 
   // Per-user access flags, read exactly as the chat route does. Explicit `=== 1`
