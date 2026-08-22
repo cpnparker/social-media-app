@@ -309,6 +309,32 @@ async function main() {
         id_source: id, id_target: orgId, type_edge: "works_at",
         count_evidence: p.seen, flag_confirmed: 0,
       }, { onConflict: "id_source,id_target,type_edge", ignoreDuplicates: true });
+
+      // AND AN OBSERVATION FOR IT. Without one the edge is invisible: the
+      // visibility rule renders nothing that lacks a viewable observation, so
+      // all 433 works_at edges were unreachable by every reader — a fact the
+      // graph held and no human could ever see. An edge with no evidence SHOULD
+      // be invisible; the mistake was creating edges and never evidencing them.
+      //
+      // Workspace visibility, because this edge says only "this address is at
+      // this domain", which is arithmetic on the address itself, not anything
+      // learned in a meeting.
+      const { data: edgeRow } = await intel.from("entity_edge")
+        .select("id_edge").eq("id_source", id).eq("id_target", orgId)
+        .eq("type_edge", "works_at").is("date_invalidated", null).maybeSingle();
+      const edgeId = (edgeRow as any)?.id_edge;
+      if (edgeId) {
+        const { data: seenEdge, error: seenErr } = await intel.from("entity_observation")
+          .select("id_observation").eq("id_edge", edgeId)
+          .eq("type_source", "engine_record").limit(1);
+        if (!seenErr && (!seenEdge || seenEdge.length === 0)) {
+          await intel.from("entity_observation").insert({
+            id_edge: edgeId, id_node: null, type_source: "engine_record",
+            id_source_system: `domain:${d}`, date_observed: new Date().toISOString(),
+            type_visibility: "workspace", id_owner: null,
+          });
+        }
+      }
     }
   }
   console.log(`  people written: ${personIdByEmail.size}`);

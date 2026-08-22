@@ -27,12 +27,20 @@ export interface ResolvedEntity {
   detail: string;
   sightings: number;
   lastSeen: string | null;
+  /** What this entity IS to us, in words — "head of Gavi", "competitor on the
+   *  IFFIm pitch". Empty until a relationship fact exists and is visible.
+   *
+   *  This field is the whole point and it was missing. resolve.ts rendered
+   *  "colleague" or "external contact" and nothing else, so the graph could
+   *  hold a role and no reader would ever see it. */
+  relations: string[];
 }
 
 /** How many candidates get looked up, and how many observations we sample to
  *  decide visibility. Both bounded: this runs on every turn. */
 const MAX_LOOKUPS = 8;
-const OBS_SAMPLE = 200;
+/** Per candidate, not per turn. */
+const OBS_SAMPLE = 60;
 
 function mbClient() {
   return createClient(
@@ -71,6 +79,25 @@ async function eventsReaderAttended(readerEmail: string, eventIds: string[]): Pr
   return out;
 }
 
+/**
+ * A short label safe to put in a prompt, or nothing.
+ *
+ * DROPS rather than sanitises. A string that changes under normalisation is a
+ * string someone built to survive normalisation, and quietly cleaning it up
+ * hides that. Returning null costs one missing label; returning a scrubbed
+ * version of an attack keeps the attack.
+ */
+function safeShort(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const t = String(raw).trim();
+  if (!t || t.length > 60) return null;
+  // Explicit class, not \p{L}: unicode property escapes need the `u` flag,
+  // which needs an ES6 target, which this build does not set. Latin-1
+  // supplement covers the accented names that actually occur here.
+  if (!/^[A-Za-z0-9\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF .,'&-]+$/.test(t)) return null;
+  return t;
+}
+
 export async function resolveEntities(opts: {
   workspaceId: string;
   readerEmail: string;
@@ -99,13 +126,21 @@ export async function resolveEntities(opts: {
 
   // 2. Observations for those nodes. Nothing is rendered without one.
   const nodeIds = Array.from(byNode.keys());
-  const { data: obs } = await intelligenceDb
-    .from("entity_observation")
-    .select("id_node, type_visibility, id_visibility_key, id_owner, date_observed")
-    .in("id_node", nodeIds)
-    .order("date_observed", { ascending: false })
-    .limit(OBS_SAMPLE);
-  const observations = (obs || []) as any[];
+  // PER NODE, not one shared limit. A single `.in(...).limit(200)` across up to
+  // eight candidates meant one high-volume entity — an org seen in a hundred
+  // meetings — consumed the whole sample and every other candidate silently
+  // rendered nothing. It also made `sightings` a count of a truncated,
+  // recency-biased window rather than of what the reader can actually see.
+  const observations: any[] = [];
+  for (const nodeId of nodeIds) {
+    const { data: rows } = await intelligenceDb
+      .from("entity_observation")
+      .select("id_node, type_visibility, id_visibility_key, id_owner, date_observed")
+      .eq("id_node", nodeId)
+      .order("date_observed", { ascending: false })
+      .limit(OBS_SAMPLE);
+    if (rows?.length) observations.push(...rows);
+  }
   if (observations.length === 0) return [];
 
   // 3. The intersection.
@@ -127,6 +162,70 @@ export async function resolveEntities(opts: {
     return false;
   };
 
+  // ── Relationship facts ────────────────────────────────────────────────
+  // Edges are only rendered when the reader can see an observation supporting
+  // THE EDGE — the same intersection as nodes. An edge with no observations is
+  // invisible by design, which is correct: an unevidenced claim about a named
+  // person is the thing this system must never assert.
+  const { data: edgeRows } = await intelligenceDb
+    .from("entity_edge")
+    .select("id_edge, id_source, id_target, type_edge, role_text, flag_confirmed, date_invalidated")
+    .in("id_source", nodeIds)
+    .is("date_invalidated", null);
+  const edges = (edgeRows || []) as any[];
+
+  const edgeVisible = new Set<string>();
+  if (edges.length) {
+    const { data: edgeObs } = await intelligenceDb
+      .from("entity_observation")
+      .select("id_edge, type_visibility, id_visibility_key, id_owner")
+      .in("id_edge", edges.map((e) => e.id_edge))
+      .limit(OBS_SAMPLE);
+    const eObs = (edgeObs || []) as any[];
+    const eKeys = Array.from(new Set(
+      eObs.filter((o) => o.type_visibility === "meeting_attendees" && o.id_visibility_key)
+          .map((o) => o.id_visibility_key)
+    ));
+    const eAttended = eKeys.length ? await eventsReaderAttended(opts.readerEmail, eKeys) : new Set<string>();
+    for (const o of eObs) {
+      const ok = o.type_visibility === "workspace"
+        || (o.type_visibility === "team" && opts.audience === "team")
+        || (opts.audience === "private" && o.type_visibility === "meeting_attendees" && eAttended.has(o.id_visibility_key));
+      if (ok) edgeVisible.add(o.id_edge);
+    }
+  }
+
+  // Target names, so an edge can read "works at Gavi" rather than a uuid.
+  const targetIds = Array.from(new Set(edges.map((e) => e.id_target)));
+  const targetName = new Map<string, string>();
+  if (targetIds.length) {
+    const { data: targets } = await intelligenceDb
+      .from("entity_node").select("id_node, name_display").in("id_node", targetIds);
+    for (const t of (targets || []) as any[]) targetName.set(t.id_node, t.name_display);
+  }
+
+  const VERB: Record<string, string> = {
+    works_at: "works at", member_of: "is at", engagement_for: "engaged on",
+    competing_with: "competing with", introduced: "introduced us to",
+    owns: "owns", parent_of: "parent of", same_as: "also known as",
+  };
+  const relationsFor = (nodeId: string): string[] =>
+    edges
+      .filter((e) => e.id_source === nodeId && edgeVisible.has(e.id_edge))
+      .map((e) => {
+        const who = targetName.get(e.id_target) || "";
+        const verb = VERB[e.type_edge] || e.type_edge;
+        // role_text renders ONLY when a person confirmed it. It is free text
+        // that will one day be written by an extractor reading meeting notes —
+        // i.e. by whoever was in the room. Shipping the gate now, while the
+        // column is still empty everywhere, is the right order: escaping
+        // before there is anything to escape.
+        const role = e.flag_confirmed === 1 ? safeShort(e.role_text) : null;
+        return role ? `${role}${who ? ` (${who})` : ""}` : `${verb} ${who}`.trim();
+      })
+      .filter(Boolean)
+      .slice(0, 3);
+
   const out: ResolvedEntity[] = [];
   for (const [id, { node }] of Array.from(byNode.entries())) {
     const mine = observations.filter((o) => o.id_node === id && visibleFor(o));
@@ -137,7 +236,7 @@ export async function resolveEntities(opts: {
       out.push({
         name: node.name_display, kind: "person", key: node.email_primary || null,
         detail: node.type_person === "internal" ? "colleague" : "external contact",
-        sightings: mine.length, lastSeen: last,
+        sightings: mine.length, lastSeen: last, relations: relationsFor(id),
       });
     } else if (node.type_node === "org") {
       const rel = node.id_client
@@ -145,7 +244,7 @@ export async function resolveEntities(opts: {
         : "no client record in Engine";
       out.push({
         name: node.name_display, kind: "org", key: node.domain_primary || null,
-        detail: rel, sightings: mine.length, lastSeen: last,
+        detail: rel, sightings: mine.length, lastSeen: last, relations: relationsFor(id),
       });
     }
   }
@@ -169,12 +268,18 @@ export function formatResolvedEntities(entities: ResolvedEntity[]): string {
   const lines = entities.map((e) => {
     const when = e.lastSeen ? `, most recently ${String(e.lastSeen).slice(0, 10)}` : "";
     const key = e.key ? ` <${e.key}>` : "";
-    return `- ${e.name}${key} — ${e.detail}; seen in ${e.sightings} meeting${e.sightings === 1 ? "" : "s"} you have access to${when}.`;
+    const rel = e.relations.length ? ` ${e.relations.join("; ")};` : "";
+    return `- ${e.name}${key} —${rel} ${e.detail}; seen in ${e.sightings} meeting${e.sightings === 1 ? "" : "s"} you have access to${when}.`;
   });
   return [
     "",
     "[KNOWN TO THIS WORKSPACE — resolved from your own records, filtered to what you may see]",
     ...lines,
-    "Treat these as established facts; do not re-derive or doubt them. When searching mail or Slack for one of these, search by the ADDRESS or DOMAIN above, not the display name — that is what makes the difference between finding a thread and reporting it missing. If something here looks wrong, say so rather than working around it.",
+    // NOT "treat these as established facts". These lines contain strings
+    // authored by third parties — a calendar display name is whatever that
+    // person put in their own Google profile — and instructing the model to
+    // believe them without question is both an overclaim and an invitation.
+    // The useful half of the old sentence was the search advice; that stays.
+    "This is a workspace index. It may be stale or incomplete, and names in it are as people wrote them. Use it to identify who is being discussed, and when searching mail or Slack, search by the ADDRESS or DOMAIN above rather than the display name — that is the difference between finding a thread and reporting it missing. Verify anything you are about to act on.",
   ].join("\n");
 }
