@@ -310,12 +310,23 @@ async function main() {
       }))
       .filter((r) => r.id_node);
     if (!rows.length) continue;
-    // ignoreDuplicates: a sighting already recorded is the same sighting.
-    // Requires entity_observation_uq from scripts/fix-entity-duplicates.sql.
-    const { error } = await intel.from("entity_observation")
-      .upsert(rows, { onConflict: "id_node,id_edge,type_source,id_source_system,date_observed", ignoreDuplicates: true });
+    // Filtered in code, not by ON CONFLICT. The uniqueness indexes are PARTIAL
+    // (see fix-entity-duplicates.sql for why they have to be), and PostgREST
+    // cannot express a partial index's predicate in onConflict — the same
+    // limitation that made the node upserts fail with 42P10. The database
+    // constraint stays as the backstop; this keeps the script re-runnable.
+    const wanted = rows.map((r) => r.id_source_system);
+    const { data: already } = await intel
+      .from("entity_observation")
+      .select("id_node, id_source_system")
+      .eq("type_source", "calendar_attendee")
+      .in("id_source_system", Array.from(new Set(wanted)));
+    const seenKey = new Set((already || []).map((a: any) => `${a.id_node}|${a.id_source_system}`));
+    const fresh = rows.filter((r) => !seenKey.has(`${r.id_node}|${r.id_source_system}`));
+    if (!fresh.length) continue;
+    const { error } = await intel.from("entity_observation").insert(fresh);
     if (error) { console.log(`  observations: ${error.message}`); break; }
-    obs += rows.length;
+    obs += fresh.length;
   }
   console.log(`  observations written: ${obs}\n`);
 }

@@ -39,10 +39,22 @@ WHERE a.ctid > b.ctid
 
 -- 3. Now enforce it, so no future run can do this again. Both are partial:
 --    an invalidated edge is history and must not block its replacement.
-CREATE UNIQUE INDEX IF NOT EXISTS entity_observation_uq
+-- TWO indexes, not one covering both columns. A unique index treats NULLs as
+-- DISTINCT, and id_edge is NULL on every calendar sighting — so a single index
+-- over (id_node, id_edge, ...) accepted duplicates happily. Verified: seeded a
+-- duplicate against that version and Postgres took it without complaint.
+--
+-- Postgres 15+ has NULLS NOT DISTINCT, but these two partial indexes need no
+-- version assumption: each one's key columns are non-null by its own predicate.
+CREATE UNIQUE INDEX IF NOT EXISTS entity_observation_node_uq
   ON intelligence.entity_observation
-     (id_node, id_edge, type_source, id_source_system, date_observed)
+     (id_node, type_source, id_source_system, date_observed)
   WHERE id_node IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS entity_observation_edge_uq
+  ON intelligence.entity_observation
+     (id_edge, type_source, id_source_system, date_observed)
+  WHERE id_edge IS NOT NULL AND id_node IS NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS entity_edge_uq
   ON intelligence.entity_edge (id_source, id_target, type_edge)
