@@ -271,10 +271,13 @@ async function main() {
     const d = domainOf(email);
     const orgId = orgIdByDomain.get(d);
     if (orgId) {
-      await intel.from("entity_edge").insert({
+      // upsert, not insert: this script is expected to be re-run as the corpus
+      // grows, and plain inserts made it add a duplicate works_at edge every
+      // time. Requires entity_edge_uq from scripts/fix-entity-duplicates.sql.
+      await intel.from("entity_edge").upsert({
         id_source: id, id_target: orgId, type_edge: "works_at",
         count_evidence: p.seen, flag_confirmed: 0,
-      });
+      }, { onConflict: "id_source,id_target,type_edge", ignoreDuplicates: true });
     }
   }
   console.log(`  people written: ${personIdByEmail.size}`);
@@ -307,7 +310,10 @@ async function main() {
       }))
       .filter((r) => r.id_node);
     if (!rows.length) continue;
-    const { error } = await intel.from("entity_observation").insert(rows);
+    // ignoreDuplicates: a sighting already recorded is the same sighting.
+    // Requires entity_observation_uq from scripts/fix-entity-duplicates.sql.
+    const { error } = await intel.from("entity_observation")
+      .upsert(rows, { onConflict: "id_node,id_edge,type_source,id_source_system,date_observed", ignoreDuplicates: true });
     if (error) { console.log(`  observations: ${error.message}`); break; }
     obs += rows.length;
   }
