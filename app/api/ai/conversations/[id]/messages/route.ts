@@ -981,6 +981,49 @@ export async function POST(
       (shareCount || 0) > 0 ||
       conversation.user_created !== userId;
 
+    // ── Standing context: who and what this message is about ──────────────
+    //
+    // Resolved from the workspace's own entity index and appended to the LAST
+    // USER MESSAGE, not the system prompt. Messages carry no cache breakpoint,
+    // so appending here is free; the same text in the cached prefix would
+    // invalidate ~53,000 characters every turn, because it changes with every
+    // message.
+    //
+    // It runs unconditionally rather than as a tool the model may call. The
+    // prompt already instructs the model to look up unfamiliar internal names
+    // and, in the conversation that prompted all of this, it did not — it
+    // searched once for a person's display name, missed, and asked the user
+    // what to try next. Resolution that the model can decline has been tried
+    // here and failed.
+    //
+    // Audience is passed through so the visibility intersection is computed for
+    // THIS reader in THIS thread: a fact known only from a meeting they alone
+    // attended is not rendered into a thread other people will read.
+    try {
+      const { resolveEntities, formatResolvedEntities } = await import("@/lib/entities/resolve");
+      const resolved = await resolveEntities({
+        workspaceId: conversation.id_workspace,
+        readerEmail: session.user?.email || "",
+        audience: isMultiReaderThread ? "team" : "private",
+        userMessage: userContent || "",
+      });
+      if (resolved.length > 0) {
+        const block = formatResolvedEntities(resolved);
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === "user") {
+            messages[i] = { ...messages[i], content: `${messages[i].content}${block}` };
+            break;
+          }
+        }
+        console.log(`[Messages] Entity context: ${resolved.length} resolved (${isMultiReaderThread ? "team" : "private"} audience)`);
+      }
+    } catch (err) {
+      // Never cost the user their turn. A missing entity block makes the
+      // assistant no worse than it was yesterday; a thrown error loses the
+      // whole message.
+      console.error("[Messages] Entity resolution failed:", err instanceof Error ? err.message : err);
+    }
+
     // ── Parallel fetch: context, memories, role, user prefs ──
     // These are all independent and can run concurrently
 

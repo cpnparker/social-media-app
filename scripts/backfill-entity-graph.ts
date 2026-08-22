@@ -157,6 +157,12 @@ async function main() {
   const persons = new Map<string, { display: string; internal: boolean; seen: number; last: string }>();
   const orgs = new Map<string, { display: string; seen: number }>();
   const sightings: { email: string; eventId: string; userId: number; when: string }[] = [];
+  // ORGS NEED SIGHTINGS TOO. The first version recorded observations only for
+  // people, so every org node had zero — and since nothing is rendered without
+  // a visible observation, all 176 organisations were permanently invisible to
+  // the resolver. Caught by asking why "Amrize" would not resolve despite 112
+  // attendee sightings.
+  const orgSightings = new Map<string, { domain: string; eventId: string; when: string }>();
 
   for (;;) {
     const { data, error } = await mb.from("processed_meeting")
@@ -187,6 +193,12 @@ async function main() {
         }
         if (r.calendar_event_id) {
           sightings.push({ email, eventId: r.calendar_event_id, userId: r.user_id, when: r.meeting_date });
+          if (!isInternal(d)) {
+            // One per (org, event), not per attendee: three people from the
+            // same company in one meeting is one sighting of that company.
+            const k = `${d}|${r.calendar_event_id}`;
+            if (!orgSightings.has(k)) orgSightings.set(k, { domain: d, eventId: r.calendar_event_id, when: r.meeting_date });
+          }
         }
       }
     }
@@ -197,7 +209,7 @@ async function main() {
   console.log(`  meetings scanned: ${scanned} (${withAttendees} carried attendee data)`);
   console.log(`  distinct people:  ${persons.size}`);
   console.log(`  distinct orgs:    ${orgs.size}  (internal and free-mail domains excluded)`);
-  console.log(`  sightings:        ${sightings.length}`);
+  console.log(`  sightings:        ${sightings.length} people, ${orgSightings.size} org`);
 
   if (DRY) {
     const ext = Array.from(persons.values()).filter((p) => !p.internal).length;
@@ -245,6 +257,25 @@ async function main() {
         await intel.from("entity_node").update({ name_display: realName }).eq("id_node", nodeId);
       }
       await intel.from("entity_alias").upsert(aliases, { onConflict: "id_node,alias_text,type_alias" });
+
+      // An org that IS a registered client is WORKSPACE knowledge, not
+      // meeting-scoped. Engine's client list is already visible to everyone
+      // here, so knowing "amrize.com is client 42" leaks nothing that the
+      // clients page does not already show — and without this, a client fails
+      // to resolve in a team thread, which is where colleagues most often ask
+      // about one. The meeting-derived observations stay meeting-scoped; this
+      // adds identity, not activity.
+      if (idc) {
+        const { data: seen } = await intel.from("entity_observation")
+          .select("id_observation").eq("id_node", nodeId)
+          .eq("type_source", "engine_record").eq("id_source_system", String(idc)).limit(1);
+        if (!seen || seen.length === 0) {
+          await intel.from("entity_observation").insert({
+            id_node: nodeId, type_source: "engine_record", id_source_system: String(idc),
+            date_observed: new Date().toISOString(), type_visibility: "workspace", id_owner: null,
+          });
+        }
+      }
     }
   }
   console.log(`  orgs written: ${orgIdByDomain.size}`);
@@ -286,7 +317,9 @@ async function main() {
   // get_meeting_visibility function stays the single source of truth; baking
   // its answer here would be a second copy that drifts.
   let obs = 0;
-  const BATCH = 500;
+  // 200, not 500. An IN list of 500 event ids plus 176 node ids makes a URL
+  // long enough to be rejected, and the rejection was invisible — see below.
+  const BATCH = 200;
   for (let i = 0; i < sightings.length; i += BATCH) {
     const rows = sightings.slice(i, i + BATCH)
       .map((s) => ({
@@ -315,12 +348,26 @@ async function main() {
     // cannot express a partial index's predicate in onConflict — the same
     // limitation that made the node upserts fail with 42P10. The database
     // constraint stays as the backstop; this keeps the script re-runnable.
-    const wanted = rows.map((r) => r.id_source_system);
-    const { data: already } = await intel
+    // Constrained by NODE as well as source system. Filtering on source system
+    // alone returns every attendee of those events — about 4.4 each — which
+    // overruns PostgREST's default 1,000-row cap and returns a PARTIAL set.
+    // A partial "already seen" set reads as "not seen", so the filter let
+    // through rows that existed and the insert died on the unique constraint.
+    // The constraint caught it, which is what it is for; the filter should not
+    // have needed it.
+    const { data: already, error: alreadyErr } = await intel
       .from("entity_observation")
       .select("id_node, id_source_system")
       .eq("type_source", "calendar_attendee")
-      .in("id_source_system", Array.from(new Set(wanted)));
+      .in("id_node", Array.from(new Set(rows.map((r) => r.id_node as string))))
+      .in("id_source_system", Array.from(new Set(rows.map((r) => r.id_source_system))))
+      .limit(20000);
+    // CHECKED. Without this, a failed lookup returned null, the "already seen"
+    // set came back empty, every row looked new, and the insert died on the
+    // unique constraint — a silent wrong answer rescued only by the database.
+    // Skipping the batch is right: re-running adds what was missed, whereas
+    // inserting blind corrupts the counts this index exists to get right.
+    if (alreadyErr) { console.log(`  observation lookup failed, batch skipped: ${alreadyErr.message}`); continue; }
     const seenKey = new Set((already || []).map((a: any) => `${a.id_node}|${a.id_source_system}`));
     const fresh = rows.filter((r) => !seenKey.has(`${r.id_node}|${r.id_source_system}`));
     if (!fresh.length) continue;
@@ -328,7 +375,35 @@ async function main() {
     if (error) { console.log(`  observations: ${error.message}`); break; }
     obs += fresh.length;
   }
-  console.log(`  observations written: ${obs}\n`);
+  let orgObs = 0;
+  const orgRows = Array.from(orgSightings.values())
+    .map((o) => ({
+      id_node: orgIdByDomain.get(o.domain), type_source: "calendar_attendee",
+      id_source_system: o.eventId, date_observed: o.when,
+      type_visibility: "meeting_attendees", id_visibility_key: o.eventId, id_owner: null,
+    }))
+    .filter((r) => r.id_node);
+  for (let i = 0; i < orgRows.length; i += BATCH) {
+    const rows = orgRows.slice(i, i + BATCH);
+    const { data: already, error: alreadyErr } = await intel.from("entity_observation")
+      .select("id_node, id_source_system").eq("type_source", "calendar_attendee")
+      .in("id_node", Array.from(new Set(rows.map((r) => r.id_node as string))))
+      .in("id_source_system", Array.from(new Set(rows.map((r) => r.id_source_system))))
+      .limit(20000);
+    // CHECKED. Without this, a failed lookup returned null, the "already seen"
+    // set came back empty, every row looked new, and the insert died on the
+    // unique constraint — a silent wrong answer rescued only by the database.
+    // Skipping the batch is right: re-running adds what was missed, whereas
+    // inserting blind corrupts the counts this index exists to get right.
+    if (alreadyErr) { console.log(`  observation lookup failed, batch skipped: ${alreadyErr.message}`); continue; }
+    const seenKey = new Set((already || []).map((a: any) => `${a.id_node}|${a.id_source_system}`));
+    const fresh = rows.filter((r) => !seenKey.has(`${r.id_node}|${r.id_source_system}`));
+    if (!fresh.length) continue;
+    const { error } = await intel.from("entity_observation").insert(fresh);
+    if (error) { console.log(`  org observations batch failed: ${error.message}`); continue; }
+    orgObs += fresh.length;
+  }
+  console.log(`  observations written: ${obs} people, ${orgObs} org\n`);
 }
 
 main().catch((e) => { console.log(`\n  ERROR: ${e?.message || e}\n`); process.exit(2); });
