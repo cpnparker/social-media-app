@@ -16,146 +16,20 @@ import {
   Search,
   CalendarDays,
   Users,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatLocalDate } from "@/lib/date-utils";
+import { downloadCSV } from "@/lib/csv-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 
 /* ─────────────── Team structure ─────────────── */
 
-interface TeamNode {
-  label: string;
-  value: string;
-  children?: TeamNode[];
-}
+import { TEAMS as SHARED_TEAMS, getLeafIds as sharedGetLeafIds, isLeaf as sharedIsLeaf, type TeamNode } from "@/lib/teams";
 
-const TEAMS: TeamNode[] = [
-  {
-    label: "All Staff",
-    value: "all",
-    children: [
-      {
-        label: "Account Managers",
-        value: "accountmanagers",
-        children: [
-          { label: "Arne Dumez", value: "12" },
-          { label: "Catherine Allen", value: "14" },
-          { label: "Ceri Radford", value: "17" },
-          { label: "Charlie Filmer-Court", value: "172" },
-          { label: "Ed Brereton", value: "42" },
-          { label: "Jack Heslehurst", value: "62" },
-          { label: "Katie Roberts", value: "75" },
-          { label: "John Hills", value: "667" },
-          { label: "Amy White", value: "666" },
-        ],
-      },
-      {
-        label: "Hybrid",
-        value: "hybrid",
-        children: [{ label: "Charlie Avery", value: "191" }],
-      },
-      {
-        label: "Content Managers",
-        value: "content_managers",
-        children: [
-          { label: "Holly Goodall", value: "252" },
-          { label: "Marzia Daudzai", value: "61" },
-          { label: "Manali Bhutwala", value: "691" },
-        ],
-      },
-      {
-        label: "Video Team",
-        value: "video",
-        children: [
-          { label: "Carlota Caldeira da Silva", value: "92" },
-          { label: "Nathan Lomax-Cooke", value: "124" },
-        ],
-      },
-      {
-        label: "Video Freelancers",
-        value: "videofreelancers",
-        children: [
-          { label: "Espranza", value: "383" },
-          { label: "Hustle Media", value: "539" },
-          { label: "The Junxion (Agency User)", value: "648" },
-          { label: "The Junxion (Freelancer User)", value: "653" },
-          { label: "Kennedy Oduor", value: "79" },
-          { label: "Pearse Owens", value: "591" },
-          { label: "Nostro People", value: "697" },
-        ],
-      },
-      {
-        label: "Visuals Team",
-        value: "visuals",
-        children: [
-          { label: "Jessica Foley", value: "43" },
-          { label: "Katie Romvari", value: "164" },
-          { label: "Nell Prieto", value: "328" },
-        ],
-      },
-      {
-        label: "Visual Freelancers",
-        value: "visualfreelancers",
-        children: [
-          { label: "Jenny Amer", value: "46" },
-          { label: "Emily Waterfiled", value: "686" },
-          { label: "Nick Venables", value: "227" },
-          { label: "Harry Tate", value: "326" },
-          { label: "Emma Lansdown", value: "609" },
-          { label: "Fatma Al Mansoury", value: "650" },
-        ],
-      },
-      {
-        label: "Voiceover Artists",
-        value: "voiceover",
-        children: [
-          { label: "Alison Tilley", value: "166" },
-          { label: "David Gilbert", value: "435" },
-          { label: "Harriet Leitch", value: "535" },
-          { label: "Ally Ibach", value: "574" },
-          { label: "Sakshi Sharma", value: "418" },
-          { label: "Wanda Rush", value: "454" },
-        ],
-      },
-      {
-        label: "Writers Team",
-        value: "writers",
-        children: [{ label: "Farahnaz Mohammed", value: "387" }],
-      },
-      {
-        label: "Writers Freelance",
-        value: "writersfreelance",
-        children: [
-          { label: "Andrew Wright", value: "52" },
-          { label: "Si Brandon", value: "26" },
-          { label: "Hilary Lamb", value: "77" },
-          { label: "Andrew Pettie", value: "68" },
-          { label: "Kate Thomas", value: "468" },
-          { label: "Nick Walshe", value: "350" },
-          { label: "Stephanie Thomson", value: "467" },
-          { label: "Angela Wipperman", value: "44" },
-        ],
-      },
-      {
-        label: "Strategy Team",
-        value: "strategy_team",
-        children: [
-          { label: "Prachi Srivastava", value: "150" },
-          { label: "Edward Brydon", value: "253" },
-          { label: "Gabriella Beer", value: "13" },
-        ],
-      },
-      {
-        label: "Strategy Freelancers",
-        value: "strategy_freelance",
-        children: [{ label: "Sophia D'Cruz", value: "611" }],
-      },
-      {
-        label: "Analytics",
-        value: "analytics",
-        children: [{ label: "Edward Rycroft", value: "455" }],
-      },
-    ],
-  },
-];
+const TEAMS = SHARED_TEAMS;
+
 
 /* ─────────────── Helpers ─────────────── */
 
@@ -173,8 +47,8 @@ function isLeaf(node: TeamNode): boolean {
 const getThisMonthRange = () => {
   const d = new Date();
   return {
-    from: new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split("T")[0],
-    to: new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().split("T")[0],
+    from: formatLocalDate(new Date(d.getFullYear(), d.getMonth(), 1)),
+    to: formatLocalDate(new Date(d.getFullYear(), d.getMonth() + 1, 0)),
   };
 };
 
@@ -185,8 +59,8 @@ const presets = [
     getRange: () => {
       const d = new Date();
       return {
-        from: new Date(d.getFullYear(), d.getMonth() - 1, 1).toISOString().split("T")[0],
-        to: new Date(d.getFullYear(), d.getMonth(), 0).toISOString().split("T")[0],
+        from: formatLocalDate(new Date(d.getFullYear(), d.getMonth() - 1, 1)),
+        to: formatLocalDate(new Date(d.getFullYear(), d.getMonth(), 0)),
       };
     },
   },
@@ -196,8 +70,8 @@ const presets = [
       const d = new Date();
       const q = Math.floor(d.getMonth() / 3);
       return {
-        from: new Date(d.getFullYear(), q * 3, 1).toISOString().split("T")[0],
-        to: new Date(d.getFullYear(), q * 3 + 3, 0).toISOString().split("T")[0],
+        from: formatLocalDate(new Date(d.getFullYear(), q * 3, 1)),
+        to: formatLocalDate(new Date(d.getFullYear(), q * 3 + 3, 0)),
       };
     },
   },
@@ -398,8 +272,60 @@ export default function TeamProductionPage() {
   const [activePreset, setActivePreset] = useState<string | null>("This Month");
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
+
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(["all"]));
+
+  // All known user IDs across the engine, fetched once on mount. Users who
+  // aren't in the hardcoded TEAMS structure surface in a fallback "Other"
+  // group so they remain selectable here.
+  const [allUsers, setAllUsers] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/operations/team-members")
+      .then((r) => (r.ok ? r.json() : { users: [] }))
+      .then((data) => {
+        if (!cancelled) setAllUsers(data.users || []);
+      })
+      .catch(() => {
+        if (!cancelled) setAllUsers([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Build the tree shown in the picker — TEAMS + any users not already in it.
+  const teamTree: TeamNode[] = useMemo(() => {
+    if (allUsers.length === 0) return TEAMS;
+    const knownIds = new Set<string>();
+    const collect = (node: TeamNode) => {
+      if (isLeaf(node)) knownIds.add(node.value);
+      else node.children?.forEach(collect);
+    };
+    TEAMS.forEach(collect);
+    const others = allUsers
+      .filter((u) => !knownIds.has(u.id))
+      .map<TeamNode>((u) => ({ label: u.name, value: u.id }));
+    if (others.length === 0) return TEAMS;
+    // Insert "Other Team Members" as another child of the top "All Staff" node
+    return TEAMS.map((root) => {
+      if (root.value !== "all") return root;
+      return {
+        ...root,
+        children: [
+          ...(root.children || []),
+          {
+            label: "Other Team Members",
+            value: "other_team_members",
+            children: others.sort((a, b) => a.label.localeCompare(b.label)),
+          },
+        ],
+      };
+    });
+  }, [allUsers]);
 
   const [excludeTestClients, setExcludeTestClients] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
@@ -466,17 +392,20 @@ export default function TeamProductionPage() {
 
   /* ─── Filter by search ─── */
   const filteredTasks = useMemo(() => {
-    if (!searchQuery.trim()) return tasks;
-    const q = searchQuery.toLowerCase();
-    return tasks.filter(
-      (t) =>
+    const q = searchQuery.trim().toLowerCase();
+    return tasks.filter((t) => {
+      // Global customer scope (from the TopBar selector)
+      if (globalCustomerId && t.customerId !== globalCustomerId) return false;
+      if (!q) return true;
+      return (
         t.contentTitle.toLowerCase().includes(q) ||
         t.customerName.toLowerCase().includes(q) ||
         (t.assigneeName || "").toLowerCase().includes(q) ||
         t.taskTitle.toLowerCase().includes(q) ||
         t.contentType.toLowerCase().includes(q)
-    );
-  }, [tasks, searchQuery]);
+      );
+    });
+  }, [tasks, searchQuery, globalCustomerId]);
 
   /* ─── Split tasks ─── */
   const assignedTasks = useMemo(() => {
@@ -550,7 +479,11 @@ export default function TeamProductionPage() {
 
       {/* Controls bar — full width, matches other operations pages */}
       <Card className="border-0 shadow-sm">
-        <CardContent className="p-3 flex flex-wrap items-center gap-3">
+        <CardContent className="p-3 space-y-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <CustomerDropdownFilter />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
           {/* Date presets */}
           <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-0.5">
             {presets.map((p) => (
@@ -615,6 +548,7 @@ export default function TeamProductionPage() {
               </span>
             )}
           </button>
+          </div>
         </CardContent>
       </Card>
 
@@ -639,7 +573,7 @@ export default function TeamProductionPage() {
               <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider px-2 py-1 mb-1">
                 Select Team / Members
               </div>
-              {TEAMS.map((node) => (
+              {teamTree.map((node) => (
                 <TreeNode
                   key={node.value}
                   node={node}
@@ -699,7 +633,7 @@ export default function TeamProductionPage() {
                       <ClipboardList className="h-5 w-5 text-blue-500" />
                     </div>
                     <div>
-                      <p className="text-2xl font-bold tabular-nums">{totalAssignedCUs.toFixed(1)}</p>
+                      <p className="text-2xl font-bold tabular-nums">{totalAssignedCUs.toFixed(2)}</p>
                       <p className="text-xs text-muted-foreground">Assigned Tasks CUs</p>
                     </div>
                     <span className="ml-auto text-xs text-muted-foreground tabular-nums">{assignedTasks.length} tasks</span>
@@ -711,7 +645,7 @@ export default function TeamProductionPage() {
                       <CheckCircle2 className="h-5 w-5 text-emerald-500" />
                     </div>
                     <div>
-                      <p className="text-2xl font-bold tabular-nums">{totalDeliveredCUs.toFixed(1)}</p>
+                      <p className="text-2xl font-bold tabular-nums">{totalDeliveredCUs.toFixed(2)}</p>
                       <p className="text-xs text-muted-foreground">Delivered Tasks CUs</p>
                     </div>
                     <span className="ml-auto text-xs text-muted-foreground tabular-nums">{deliveredTasks.length} tasks</span>
@@ -722,6 +656,14 @@ export default function TeamProductionPage() {
               {/* Summary table */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-0">
+                  <div className="px-4 py-3 border-b flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">Summary</h3>
+                    {sortedSummary.length > 0 && (
+                      <button onClick={() => downloadCSV(sortedSummary.map(row => ({ "Team Member": row.assigneeName, "Assigned CUs": (row.assignedCUs).toFixed(2), "Delivered CUs": (row.deliveredCUs).toFixed(2) })), "team-production-summary.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
                   <div className="overflow-auto max-h-[240px]">
                     <table className="w-full text-xs">
                       <thead className="sticky top-0 bg-background z-[1]">
@@ -738,16 +680,16 @@ export default function TeamProductionPage() {
                           sortedSummary.map((u) => (
                             <tr key={u.assigneeId} className="border-b border-border/30 hover:bg-muted/20 transition-colors">
                               <td className="px-3 py-2 font-medium">{u.assigneeName}</td>
-                              <td className="px-3 py-2 text-right tabular-nums">{u.assignedCUs.toFixed(1)}</td>
-                              <td className="px-3 py-2 text-right tabular-nums">{u.deliveredCUs.toFixed(1)}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{u.assignedCUs.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{u.deliveredCUs.toFixed(2)}</td>
                             </tr>
                           ))
                         )}
                         {sortedSummary.length > 0 && (
                           <tr className="border-t-2 border-border bg-muted/20 font-semibold">
                             <td className="px-3 py-2">Total</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{totalAssignedCUs.toFixed(1)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{totalDeliveredCUs.toFixed(1)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{totalAssignedCUs.toFixed(2)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{totalDeliveredCUs.toFixed(2)}</td>
                           </tr>
                         )}
                       </tbody>
@@ -759,10 +701,17 @@ export default function TeamProductionPage() {
               {/* Assigned Tasks Table */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-0">
-                  <div className="px-4 py-3 border-b flex items-center gap-2">
-                    <ClipboardList className="h-4 w-4 text-blue-500" />
-                    <h3 className="text-sm font-semibold">Assigned Tasks</h3>
-                    <span className="text-xs text-muted-foreground">({assignedTasks.length})</span>
+                  <div className="px-4 py-3 border-b flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <ClipboardList className="h-4 w-4 text-blue-500" />
+                      <h3 className="text-sm font-semibold">Assigned Tasks</h3>
+                      <span className="text-xs text-muted-foreground">({assignedTasks.length})</span>
+                    </div>
+                    {assignedTasks.length > 0 && (
+                      <button onClick={() => downloadCSV(assignedTasks.map(row => ({ Assignee: row.assigneeName || "", Customer: row.customerName, Type: row.contentType, Content: row.contentTitle, Task: row.taskTitle, CUs: (row.taskCUs).toFixed(2), Deadline: row.deadline || "", Created: row.createdAt || "" })), "team-assigned-tasks.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                   <div className="overflow-auto max-h-[400px]">
                     <table className="w-full text-xs">
@@ -792,7 +741,7 @@ export default function TeamProductionPage() {
                                 <td className="px-3 py-2 capitalize">{t.contentType}</td>
                                 <td className="px-3 py-2 max-w-[200px] truncate" title={t.contentTitle}>{t.contentTitle}</td>
                                 <td className="px-3 py-2 capitalize">{t.taskTitle}</td>
-                                <td className="px-3 py-2 text-right tabular-nums">{t.taskCUs.toFixed(1)}</td>
+                                <td className="px-3 py-2 text-right tabular-nums">{t.taskCUs.toFixed(2)}</td>
                                 <td className={cn("px-3 py-2", overdue && "text-red-500 font-medium")}>{fmtDate(t.deadline)}</td>
                                 <td className="px-3 py-2">{fmtDate(t.createdAt)}</td>
                                 <td className="px-3 py-2 text-center">
@@ -815,10 +764,17 @@ export default function TeamProductionPage() {
               {/* Delivered Tasks Table */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-0">
-                  <div className="px-4 py-3 border-b flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                    <h3 className="text-sm font-semibold">Delivered Tasks</h3>
-                    <span className="text-xs text-muted-foreground">({deliveredTasks.length})</span>
+                  <div className="px-4 py-3 border-b flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                      <h3 className="text-sm font-semibold">Delivered Tasks</h3>
+                      <span className="text-xs text-muted-foreground">({deliveredTasks.length})</span>
+                    </div>
+                    {deliveredTasks.length > 0 && (
+                      <button onClick={() => downloadCSV(deliveredTasks.map(row => ({ Assignee: row.assigneeName || "", Customer: row.customerName, Type: row.contentType, Content: row.contentTitle, Task: row.taskTitle, CUs: (row.taskCUs).toFixed(2), Completed: row.completedAt || "", Created: row.createdAt || "" })), "team-delivered-tasks.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                   <div className="overflow-auto max-h-[400px]">
                     <table className="w-full text-xs">
@@ -846,7 +802,7 @@ export default function TeamProductionPage() {
                               <td className="px-3 py-2 capitalize">{t.contentType}</td>
                               <td className="px-3 py-2 max-w-[200px] truncate" title={t.contentTitle}>{t.contentTitle}</td>
                               <td className="px-3 py-2 capitalize">{t.taskTitle}</td>
-                              <td className="px-3 py-2 text-right tabular-nums">{t.taskCUs.toFixed(1)}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{t.taskCUs.toFixed(2)}</td>
                               <td className="px-3 py-2">{fmtDate(t.completedAt)}</td>
                               <td className="px-3 py-2">{fmtDate(t.createdAt)}</td>
                               <td className="px-3 py-2 text-center">

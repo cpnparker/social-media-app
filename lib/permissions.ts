@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { NextResponse } from "next/server";
 
 // ── Role Categories ──
@@ -79,6 +80,102 @@ export async function canAccessClient(
   const allowedIds = await getAllowedClientIds(userId, role);
   if (!allowedIds) return true;
   return allowedIds.includes(clientId);
+}
+
+// ── Workspace membership check ──
+// Verifies the user belongs to the given workspace via Supabase workspace_members.
+// Returns the member role ('owner' | 'admin' | 'editor' | 'viewer') or null if not a member.
+export async function verifyWorkspaceMembership(
+  userId: number,
+  workspaceId: string
+): Promise<string | null> {
+  try {
+    const { data: member } = await intelligenceDb
+      .from("workspace_members")
+      .select("role")
+      .eq("workspace_id", workspaceId)
+      .eq("user_id", userId)
+      .limit(1)
+      .single();
+    return member?.role || null;
+  } catch {
+    return null;
+  }
+}
+
+// ── EngineAI front door ──
+/**
+ * May this user run an EngineAI turn in this workspace?
+ *
+ * flag_access_enginegpt was previously enforced only in the browser: the rail
+ * hid EngineAI, but a session cookie could still POST straight to
+ * /api/ai/conversations and .../messages and get a full turn with Engine,
+ * client-context, MeetingBrain and Slack access. Revoking access — including
+ * the bulk /api/admin/restrict-access route — therefore did not actually
+ * revoke anything until the cookie expired.
+ *
+ * Semantics deliberately match the browser's source of truth exactly
+ * (/api/me/workspaces:64, `access ? !!access.flag_access_enginegpt : false`),
+ * so switching this on locks out nobody who can use the product today:
+ * an absent users_access row is DENIED, and so is a row with the flag at 0.
+ * A query error is also denied — this is the front door, so it fails closed.
+ */
+export async function hasEngineAiAccess(
+  userId: number,
+  workspaceId: string
+): Promise<boolean> {
+  try {
+    const { data, error } = await intelligenceDb
+      .from("users_access")
+      .select("flag_access_enginegpt")
+      .eq("id_workspace", workspaceId)
+      .eq("user_target", userId)
+      .maybeSingle();
+    if (error) {
+      console.error("[access] enginegpt check failed:", error.message);
+      return false;
+    }
+    return !!data?.flag_access_enginegpt;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * May this user use the Content Optimizer in this workspace?
+ *
+ * Deliberately NOT folded into the hasEngineAiAccess select, for two reasons.
+ *
+ * The mechanical one: PostgREST fails the WHOLE select when any named column
+ * is unknown, so a select combining an established flag with a not-yet-migrated
+ * one returns nothing and silently revokes the established feature too. Every
+ * newer flag in this codebase is read in its own query for exactly that reason
+ * (see the split reads in the messages route).
+ *
+ * The semantic one: this tool generates billable AI content in a client's name
+ * and writes it into their pipeline. hasEngineAiAccess reads a truthy flag;
+ * this reads `=== 1` explicitly, matching the Gmail precedent — an absent row,
+ * a zero, a null and a query error all deny.
+ */
+export async function hasOptimizerAccess(
+  userId: number,
+  workspaceId: string
+): Promise<boolean> {
+  try {
+    const { data, error } = await intelligenceDb
+      .from("users_access")
+      .select("flag_access_optimizer")
+      .eq("id_workspace", workspaceId)
+      .eq("user_target", userId)
+      .maybeSingle();
+    if (error) {
+      console.error("[access] optimizer check failed:", error.message);
+      return false;
+    }
+    return (data as any)?.flag_access_optimizer === 1;
+  } catch {
+    return false;
+  }
 }
 
 // ── Apply client scoping to a Supabase query builder ──

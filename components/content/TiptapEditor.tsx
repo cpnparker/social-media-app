@@ -1,7 +1,18 @@
 "use client";
 
-import { useEditor, EditorContent } from "@tiptap/react";
+import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+// Tables are not in StarterKit, and their absence was not cosmetic. Tiptap
+// DISCARDS markup its schema cannot represent, so an imported Google Doc built
+// on a table template lost that structure the moment it hit the editor — and
+// the editor's text then no longer matched the text the optimiser's judge had
+// been given, so every finding failed to anchor and was dropped as unlocatable.
+// The writer saw "nothing outstanding" on a draft scoring 37/100.
+//
+// The invariant this restores is the important part: whatever is stored must
+// round-trip through the editor unchanged, or anchoring silently returns
+// nothing and looks like an empty result rather than a broken one.
+import { TableKit } from "@tiptap/extension-table";
 import Placeholder from "@tiptap/extension-placeholder";
 import { useEffect, useRef, useCallback } from "react";
 import {
@@ -24,6 +35,29 @@ interface TiptapEditorProps {
   onChange: (html: string) => void;
   placeholder?: string;
   editable?: boolean;
+  /**
+   * Hands the editor instance to the parent once it exists.
+   *
+   * Needed for streaming: appending generated text has to go through
+   * `insertContentAt`, because feeding each chunk back through `content` calls
+   * `setContent`, which replaces the whole document — resetting the caret on
+   * every chunk, destroying the undo stack, and reparsing half-formed HTML like
+   * `<h2>Why This Ma` into a different shape on every frame.
+   *
+   * The parent must ALSO stop updating `content` while streaming, or the
+   * effect below will fire a `setContent` and wipe the inserted nodes.
+   */
+  onReady?: (editor: Editor) => void;
+  /** Debounce for onChange in ms. Streaming callers want this shorter than the 2s default. */
+  debounceMs?: number;
+  /**
+   * Extra Tiptap extensions, appended to the base set.
+   *
+   * MUST be referentially stable — useEditor does not rebuild on a changed
+   * extension array, so an inline literal here would be silently ignored on
+   * every render after the first. Define it as a module constant.
+   */
+  extraExtensions?: any[];
 }
 
 export default function TiptapEditor({
@@ -31,15 +65,25 @@ export default function TiptapEditor({
   onChange,
   placeholder = "Start writing...",
   editable = true,
+  onReady,
+  debounceMs = 2000,
+  extraExtensions,
 }: TiptapEditorProps) {
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  // Refs so the unmount cleanup can flush without re-registering on every
+  // render (which would defeat the point of an unmount-only effect).
+  const editorRef = useRef<Editor | null>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
       }),
+      TableKit.configure({ table: { resizable: false } }),
       Placeholder.configure({ placeholder }),
+      ...(extraExtensions || []),
     ],
     content,
     editable,
@@ -54,7 +98,7 @@ export default function TiptapEditor({
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
         onChange(editor.getHTML());
-      }, 2000);
+      }, debounceMs);
     },
     onBlur: ({ editor }) => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -69,6 +113,28 @@ export default function TiptapEditor({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content]);
+
+  useEffect(() => {
+    editorRef.current = editor || null;
+    if (editor && onReady) onReady(editor);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor]);
+
+  // On unmount, FLUSH the pending save — do not cancel it.
+  //
+  // The first version cleared the timer, which discarded up to a full debounce
+  // window of the writer's typing whenever they navigated away or the editor
+  // unmounted. Losing someone's words is a worse failure than a late write, and
+  // it is invisible: the text was on screen a moment ago and is simply gone.
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+        if (editorRef.current) onChangeRef.current(editorRef.current.getHTML());
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!editor) return null;
 

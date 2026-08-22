@@ -1,0 +1,309 @@
+/**
+ * GET  /api/optimizer/import — what can be brought in.
+ * POST /api/optimizer/import — bring one in and open it as an article.
+ *
+ * Import is the studio's PRIMARY entry point, not its escape hatch: most
+ * optimisation work is on content that already exists. Three sources, all
+ * backed by plumbing this repo already has.
+ *
+ * EVERYTHING IMPORTED IS A COPY. Nothing here writes back to a Google Doc or to
+ * a content unit, and the studio says so on the page. A writer who thinks the
+ * editor is a live view of their Doc would lose work believing it was saved
+ * somewhere it is not.
+ */
+
+import { NextRequest, NextResponse } from "next/server";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { supabase } from "@/lib/supabase";
+import { requireOptimizer } from "../_lib/access";
+import { getClientCanon } from "@/lib/optimizer/client-canon";
+import { canAccessClient, requireAuth } from "@/lib/permissions";
+import { RUBRIC_VERSION } from "@/lib/optimizer/rubric";
+import { toEditorHtml } from "@/lib/optimizer/import-html";
+
+export const maxDuration = 60;
+
+/**
+ * The cap is measured in WORDS OF PROSE, after conversion — never in raw
+ * characters. The first version compared `content.length` before conversion,
+ * and a browser copy of a ~1,500-word published article carries the page's
+ * markup with it: a writer pasted an ordinary article and was told it was
+ * "87k characters — too long to score", which was true of the markup and
+ * false of her article. Characters measure the wrapper; words measure the
+ * thing being scored.
+ *
+ * 6,000 is deliberately far above the rubric's 800-2,500 calibration band:
+ * the band is guidance the score panel already gives, and refusing an import
+ * is a much blunter instrument than a note on the score.
+ */
+const MAX_IMPORT_WORDS = 6000;
+/** Transport bound for the Drive fetch — raw HTML, before conversion. */
+const MAX_IMPORT_CHARS = 500000;
+
+export async function GET(req: NextRequest) {
+  const guard = await requireOptimizer(req.nextUrl.searchParams.get("workspaceId"));
+  if (!guard.ok) return guard.response;
+
+  const clientId = Number(req.nextUrl.searchParams.get("clientId")) || null;
+
+  // ── Google Docs shared with the service account ──
+  let docs: { id: string; name: string; modified: string }[] = [];
+  let docsNotice: string | null = null;
+  try {
+    const { queryDriveDocs } = await import("@/lib/gdrive/docs");
+    const result = await queryDriveDocs("list");
+    if (result.notice) {
+      // The service account may simply not be configured. That is a setup
+      // state, not an error — say it plainly rather than showing an empty list
+      // that looks like "you have no documents".
+      docsNotice = result.notice;
+    } else {
+      const raw: any[] = (result.data && result.data.documents) || [];
+      docs = raw
+        .filter((d) => d.type === "document")
+        .map((d) => ({ id: d.name, name: d.name, modified: d.modified || "" }));
+    }
+  } catch (e: any) {
+    docsNotice = "Google Drive is unreachable right now.";
+  }
+
+  // ── Commissioned pieces from the Engine content pipeline ──
+  let engineItems: { id: number; title: string; type: string; status: string }[] = [];
+  if (clientId) {
+    const authed = await requireAuth();
+    if (!("userId" in authed)) return authed;
+    const ok = await canAccessClient(authed.userId, authed.role, clientId);
+    if (!ok) return NextResponse.json({ error: "No access to that client" }, { status: 403 });
+    try {
+      // Columns verified against the real table: status lives in flag_completed
+      // and flag_spiked, NOT a type_status column. PostgREST fails the entire
+      // select on an unknown column, so a guess here returns nothing at all and
+      // reads as "this client has no content".
+      const { data } = await supabase
+        .from("app_content")
+        .select("id_content, name_content, type_content, flag_completed, flag_spiked")
+        .eq("id_client", clientId)
+        .order("id_content", { ascending: false })
+        .limit(40);
+      engineItems = (data || [])
+        // Spiked pieces are the bulk of the clutter in this table and nobody
+        // wants to optimise one.
+        .filter((c: any) => c.flag_spiked !== 1)
+        .slice(0, 25)
+        .map((c: any) => ({
+          id: c.id_content,
+          title: c.name_content || `Content ${c.id_content}`,
+          type: c.type_content || "",
+          status: c.flag_completed === 1 ? "Completed" : "In progress",
+        }));
+    } catch {
+      /* the pipeline is a bonus source; its absence must not break import */
+    }
+  }
+
+  return NextResponse.json({
+    docs,
+    docsNotice,
+    engineItems,
+    // Surfaced so "my doc isn't in the list" has an answer rather than being a
+    // dead end. Reading it needs no secret — it is an address to share TO.
+    serviceAccount: process.env.GOOGLE_SA_EMAIL || null,
+  });
+}
+
+export async function POST(req: NextRequest) {
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+  }
+
+  const guard = await requireOptimizer(body.workspaceId || null);
+  if (!guard.ok) return guard.response;
+  const { caller } = guard;
+
+  const source: string = body.source;
+  if (["pasted", "gdoc", "gdoc-link", "url", "engine"].indexOf(source) < 0) {
+    return NextResponse.json({ error: "Unknown import source" }, { status: 400 });
+  }
+
+  const clientId = body.clientId != null ? Number(body.clientId) : null;
+  if (clientId != null && !Number.isNaN(clientId)) {
+    const authed = await requireAuth();
+    if (!("userId" in authed)) return authed;
+    const ok = await canAccessClient(authed.userId, authed.role, clientId);
+    if (!ok) return NextResponse.json({ error: "No access to that client" }, { status: 403 });
+  }
+
+  let title = typeof body.title === "string" ? body.title.trim() : "";
+  let content = "";
+  let sourceRef: string | null = null;
+
+  if (source === "pasted") {
+    content = typeof body.content === "string" ? body.content : "";
+    if (!content.trim()) return NextResponse.json({ error: "Nothing to import" }, { status: 400 });
+  } else if (source === "url") {
+    // A published page. The most common content to optimise is content that is
+    // already live and should start earning AI citations.
+    const { importFromUrl } = await import("@/lib/optimizer/url-import");
+    const result = await importFromUrl(typeof body.ref === "string" ? body.ref : "");
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 });
+    content = result.html || "";
+    if (!title) title = (result.title || "Imported page").slice(0, 200);
+    sourceRef = (typeof body.ref === "string" ? body.ref : "").trim().slice(0, 500);
+  } else if (source === "gdoc-link") {
+    // A pasted link, which is the workflow that does NOT require the document
+    // to have been shared with the service account first. Verified 2026-08-21
+    // against a live "anyone with the link" doc; see lib/gdrive/doc-link.ts.
+    const { extractDocId, fetchDocText } = await import("@/lib/gdrive/doc-link");
+    const docId = extractDocId(typeof body.ref === "string" ? body.ref : "");
+    if (!docId) {
+      return NextResponse.json(
+        { error: "That is not a Google Doc link — it should look like docs.google.com/document/d/…" },
+        { status: 400 }
+      );
+    }
+    const result = await fetchDocText(docId, MAX_IMPORT_CHARS);
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: result.permission ? 403 : 400 });
+    }
+    content = toEditorHtml(result.text || "", result.isHtml);
+    // The export carries no usable title, so the document's own first line is
+    // the best available and the writer can rename it. Taken from the CONVERTED
+    // html so it is the first line of the article, not a stray style rule.
+    if (!title) {
+      const firstBlock = content.match(/<(h[1-6]|p)\b[^>]*>([\s\S]*?)<\/\1>/i);
+      const raw = firstBlock ? firstBlock[2].replace(/<[^>]+>/g, " ") : "";
+      title = (raw.replace(/&amp;/g, "&").replace(/\s+/g, " ").trim() || "Imported document").slice(0, 200);
+    }
+    sourceRef = `https://docs.google.com/document/d/${docId}/edit`;
+  } else if (source === "gdoc") {
+    const name = typeof body.ref === "string" ? body.ref : "";
+    if (!name) return NextResponse.json({ error: "Which document?" }, { status: 400 });
+    try {
+      const { queryDriveDocs, TRUNCATION_MARKER } = await import("@/lib/gdrive/docs");
+      const result = await queryDriveDocs("read", name);
+      if (result.error) return NextResponse.json({ error: result.error }, { status: 404 });
+      content = (result.data && result.data.content) || "";
+      // The Drive reader caps a document at 8,000 characters and appends a
+      // marker saying so. That marker is written for a model reading a brief;
+      // here it would land in the writer's editor as body text AND the
+      // optimiser would score the surviving two thirds as a whole article,
+      // producing a number for a piece nobody has read. Refuse, and say what
+      // to do instead — paste takes four times as much.
+      if (content.indexOf(TRUNCATION_MARKER) >= 0) {
+        return NextResponse.json(
+          {
+            error:
+              "That document is too long to pull from the shared list — only the first 8,000 characters come back that way, and scoring part of an article would give you a number for content nobody has read. Paste its link instead: that path reads the whole thing.",
+          },
+          { status: 413 }
+        );
+      }
+      if (!title) title = (result.data && result.data.name) || name;
+      sourceRef = name;
+    } catch (e: any) {
+      return NextResponse.json({ error: "Could not read that document" }, { status: 502 });
+    }
+  } else {
+    // From the Engine pipeline. The content unit carries the brief; the body
+    // itself may live in a Google Doc referenced by the unit.
+    const contentId = Number(body.ref);
+    if (!contentId || Number.isNaN(contentId)) {
+      return NextResponse.json({ error: "Which piece?" }, { status: 400 });
+    }
+    const { data } = await supabase
+      .from("app_content")
+      .select("id_content, id_client, name_content, information_brief")
+      .eq("id_content", contentId)
+      .maybeSingle();
+    if (!data) return NextResponse.json({ error: "That piece was not found" }, { status: 404 });
+    if (clientId != null && (data as any).id_client !== clientId) {
+      return NextResponse.json({ error: "That piece belongs to another client" }, { status: 403 });
+    }
+    if (!title) title = (data as any).name_content || `Content ${contentId}`;
+    content = typeof body.content === "string" ? body.content : "";
+    sourceRef = String(contentId);
+    if (!content.trim()) {
+      // The unit exists but its text is not in the Engine — a real and common
+      // state. Open the article anyway with the brief attached rather than
+      // refusing: the writer can paste the body in and keep the grounding.
+      content = "";
+    }
+  }
+
+  // THE CONVERSION, for every source that did not already do its own.
+  //
+  // Without this an import reaches Tiptap as plain text, and Tiptap parses its
+  // input as HTML — where newlines are whitespace. Every imported article
+  // became one paragraph with no headings, and the rubric scores heading
+  // structure, so the writer was shown a low score and a list of structural
+  // problems that belonged to the conversion, not to their piece.
+  //
+  // `contentIsHtml` is passed explicitly where the source knows: a paste can
+  // carry real clipboard HTML, and guessing from the content is guessing.
+  if (source !== "gdoc-link") {
+    content = toEditorHtml(content, source === "pasted" ? body.contentIsHtml === true : undefined);
+  }
+
+  const proseWords = (content.replace(/<[^>]+>/g, " ").match(/\S+/g) || []).length;
+  if (proseWords > MAX_IMPORT_WORDS) {
+    return NextResponse.json(
+      {
+        error: `That is ${Math.round(proseWords / 100) / 10}k words — too long to score in one piece. The rubric is calibrated for 800-2,500 words; bring it in a section at a time.`,
+      },
+      { status: 413 }
+    );
+  }
+
+  let canon: any = {};
+  if (clientId != null && !Number.isNaN(clientId)) {
+    try {
+      canon = await getClientCanon(caller.workspaceId, clientId, caller.email);
+    } catch {
+      canon = { gaps: [{ source: "engine", reason: "Canon unavailable at import time" }] };
+    }
+  }
+
+  const { data: session, error } = await intelligenceDb
+    .from("optimizer_sessions")
+    .insert({
+      id_workspace: caller.workspaceId,
+      user_created: caller.userId,
+      id_client: clientId != null && !Number.isNaN(clientId) ? clientId : null,
+      name_title: title || "Untitled piece",
+      // Straight to refining: there is nothing to generate, and a status of
+      // "brief" would send the writer to a form they do not need.
+      type_status: "refining",
+      type_format: typeof body.format === "string" ? body.format : "explainer",
+      type_platform: "balanced",
+      type_source: source,
+      document_source_ref: sourceRef,
+      // Imported content is scored, not generated — target queries are the only
+      // brief field that still matters, and the writer adds them in the panel
+      // where the unscored pillar is visible.
+      config_brief: { targetQueries: [], audience: "", goal: "", lengthBand: "", voice: "" },
+      config_canon: canon,
+      name_rubric_version: RUBRIC_VERSION,
+    })
+    .select("id_session")
+    .maybeSingle();
+
+  if (error || !session) {
+    console.error("[optimizer] import failed:", error?.message);
+    return NextResponse.json({ error: "Could not import that" }, { status: 500 });
+  }
+
+  const sessionId = (session as any).id_session;
+  if (content.trim()) {
+    await intelligenceDb.from("optimizer_drafts").insert({
+      id_session: sessionId,
+      units_version: 1,
+      document_body: content,
+      units_words: (content.match(/\S+/g) || []).length,
+    });
+  }
+
+  return NextResponse.json({ sessionId, title, words: (content.match(/\S+/g) || []).length });
+}

@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lateApiFetch } from "@/lib/late";
+import { auth } from "@/lib/auth";
 
 // GET /api/inbox — list conversations, comments, and reviews
 export async function GET(req: NextRequest) {
+  // This route had NO authentication: it reads (or writes) connected client
+  // social accounts via the Late API. Same class of hole as /api/analytics/export.
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { searchParams } = new URL(req.url);
   const type = searchParams.get("type") || "conversations";
   const limit = searchParams.get("limit") || "30";

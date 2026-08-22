@@ -1,14 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { requireAuth, canAccessClient } from "@/lib/permissions";
 
 // GET /api/customers/[id]/contracts
+//
+// Gated like every sibling in app/api/customers/. It previously had NO auth at
+// all — no session check and no client-access check — while returning contract
+// names, contracted and consumed unit volumes, and term dates for ANY client id
+// passed in the path. Enumerating ids returned the whole book of business to an
+// unauthenticated caller. The sibling route one directory up had both checks;
+// this one was simply never given them.
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const authResult = await requireAuth();
+  if (authResult instanceof NextResponse) return authResult;
+  const { userId, role } = authResult;
+
   try {
     const { id } = await params;
     const clientId = parseInt(id, 10);
+    // Reject a non-numeric id before it reaches the query: parseInt("abc") is
+    // NaN, and an eq() on NaN is a silently empty filter rather than an error.
+    if (!Number.isFinite(clientId)) {
+      return NextResponse.json({ error: "Invalid customer id" }, { status: 400 });
+    }
+
+    if (!(await canAccessClient(userId, role, clientId))) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
 
     // Validate client exists
     const { data: client } = await supabase

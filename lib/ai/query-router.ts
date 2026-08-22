@@ -1,0 +1,394 @@
+/**
+ * Smart Query Router: classifies user messages to control which
+ * data sources activate for each conversation turn.
+ *
+ * Zero-cost pattern matching — no LLM call required.
+ * Controls xAI search_mode ("on" | "off"), never "auto".
+ * Generates system prompt hints to steer tool usage.
+ */
+
+import type { NormalizedContextConfig } from "./system-prompts";
+
+/* ─────────────── Types ─────────────── */
+
+export type QueryIntent =
+  | "conversational"   // thanks, hi, rephrase, follow-up
+  | "workspace_data"   // contracts, CUs, clients, content
+  | "web_search"       // explicit web search or current events
+  | "meeting_data"     // meetings, action items
+  | "memory_recall"    // past conversations, preferences
+  | "hybrid"           // needs multiple sources
+  | "general";         // general knowledge
+
+export interface QueryRoute {
+  searchMode: "on" | "off";
+  suggestEngine: boolean;
+  suggestMemory: boolean;
+  suggestMeetingBrain: boolean;
+  intent: QueryIntent;
+  hints: string[];
+  /**
+   * The user asked us to WRITE something, rather than to find something out.
+   *
+   * Kept separate from searchMode on purpose. An earlier version of this file
+   * used a composition match to switch search OFF, which stripped web grounding
+   * from "write a post about the latest AI news" — topical drafting is the core
+   * workflow of a content product, and the reply came back written from
+   * training data with no signal that nothing had been looked up.
+   *
+   * Composition never removes grounding now. It only suppresses the two things
+   * that had no business following from a search-mode flag: forcing the model,
+   * and doubling the output ceiling.
+   */
+  composition: boolean;
+  /**
+   * This turn needs the user's own MAILBOX, not just any data source.
+   *
+   * Separate from every other signal because it is about CAPABILITY, not
+   * stakes or grounding. query_gmail is registered only on Claude chains — the
+   * mailbox processor terms are the ones we hold for Anthropic — so a turn
+   * that needs mail and lands on Grok cannot do the job however capable that
+   * model is.
+   *
+   * This was not a theoretical gap. "can you write an email to reply to
+   * Kaisa's latest email" matched the audience-writing keywords, routed to
+   * Grok as high-stakes drafting, and the reply had to tell the user their
+   * inbox was unavailable on this model — while four other phrasings of the
+   * same request reached Claude and worked. On EngineAI Auto that reads as
+   * the product being unreliable, which is exactly what it was.
+   */
+  needsMailbox: boolean;
+}
+
+/* ─────────────── Pattern Constants ─────────────── */
+
+// Step 1: Conversational — no search needed
+const GRATITUDE = /^(thanks|thank you|thx|ty|cheers|great|perfect|awesome|nice|cool|got it|ok|okay|noted|understood|will do)\b/i;
+const AFFIRMATIONS = /^(yes|no|yep|nope|sure|right|exactly|correct|agreed|absolutely|definitely)\b/i;
+const REPHRASE = /\b(rephrase|reword|rewrite|summarise|summarize|summary of (this|that|the (text|following|above))|tl;?dr|shorter|longer|simpler|more formal|more casual|bullet points|as a list|make it|format it|tone it|polish|clean up|tidy up|translate (this|that|the (text|following|above))|translate to)\b/i;
+const FOLLOW_UP_SHORT = /^(and |also |what about |how about |can you also |and the |what if )/i;
+const CLARIFICATION = /^(what do you mean|i meant|i was asking|no i mean|i'm asking|sorry i meant)\b/i;
+const GREETING_SHORT = /^(hi|hello|hey|good morning|good afternoon|good evening|howdy)\b/i;
+// Simple emoji check — just check if message is very short and has no letters
+function isEmojiOnly(text: string): boolean {
+  return text.length > 0 && text.length < 20 && !/[a-zA-Z0-9]/.test(text);
+}
+const EDITING = /^(make |change |edit |update |modify |adjust |tweak |fix |correct |improve )(it |this |that |the )?(to be |to |so it |more |less )?/i;
+
+// Data keywords that prevent conversational classification.
+//
+// "Update me on IFFIm" used to fall through here: the EDITING regex above
+// matches a leading "update ", nothing in the sentence was a data keyword (a
+// client's NAME isn't one), so it was classified as a text-editing request and
+// reached the model with no mandated tool calls at all. The briefing verbs
+// below close that, along with "account" and "brief".
+const DATA_KEYWORDS = /\b(contract|client|account|content|pipeline|social|meeting|task|CU|budget|report|data|metrics|performance|search|find|look up|web|price|cost|news|compare|brief|briefing|prep|prepare|status|update on|catch me up|where are we|up to speed)\b/i;
+
+// Step 2: Explicit web search
+const WEB_EXPLICIT = /\b(search the web|search online|google it|look up online|web search|search for me|find online|look it up online|browse the web)\b/i;
+const WEB_EXPLICIT_2 = /\b(latest news|current events|trending now|breaking news|what'?s happening)\b/i;
+const WEB_EXPLICIT_3 = /\b(current price|stock price|weather in|score of|released today|just announced|search for .{3,})\b/i;
+const WEB_EXPLICIT_4 = /\b(what is the (current|latest|recent)|what'?s the (latest|current|recent))\b/i;
+// Fact-checking / verification — inherently requires the web ("fact checking
+// without sources is useless"). Treated as an EXPLICIT web request so it fires
+// even when the Web toggle is off.
+const WEB_FACTCHECK = /\b(fact[\s-]?check(ed|ing)?|double[\s-]?check|cross[\s-]?check|is (this|that|it) (true|accurate|correct|real|right))\b/i;
+const WEB_FACTCHECK_2 = /\b(verify|verif(ies|ication)|confirm|check|source|substantiate|corroborate)\b[^.?!]{0,45}\b(claims?|facts?|figures?|numbers?|stats?|statistics|sources?|accura(te|cy)|true|correct|dates?|quotes?|citations?|references?|publication)\b/i;
+
+// Step 3: Meeting data
+const MEETING_KEYWORDS = /\b(meeting|meetings|discussed in|action items?|to-?do from|agenda|minutes|standup|stand-?up|sync with|call with)\b/i;
+const MEETING_KEYWORDS_2 = /\bwhat did (we|i|they) (discuss|talk about|decide|agree|cover)\b/i;
+const MEETING_KEYWORDS_3 = /\b(meeting notes?|meeting summary|from the meeting|in the call|during the meeting)\b/i;
+
+// Step 4: Workspace / Engine data
+const ENGINE_KEYWORDS = /\b(contracts?|CUs?|content units?|deliverables?|commissioned|completed units)\b/i;
+const ENGINE_KEYWORDS_2 = /\b(content pipeline|social posts?|scheduled posts?|published posts?|our ideas?|content calendar)\b/i;
+const ENGINE_KEYWORDS_3 = /\b(how many|how much|total|count of|number of|remaining|overdue|outstanding)\b/i;
+const ENGINE_KEYWORDS_4 = /\b(Q[1-4]|quarter|last month|this month|this week|last week|year to date|YTD|this year)\b/i;
+const ENGINE_KEYWORDS_5 = /\b(performance|metrics|report on|dashboard|overview of|summary of our|our (team|company|agency|workspace))\b/i;
+const ENGINE_KEYWORDS_6 = /\b(our clients?|client list|which clients?|for (client|the client))\b/i;
+
+// Step 5: Memory recall
+const MEMORY_KEYWORDS = /\b(remember when|you remember|we talked about|i told you|i mentioned|last time we|previously)\b/i;
+const MEMORY_KEYWORDS_2 = /\b(my preference|i prefer|i like to|i always|my style|my usual|the way i)\b/i;
+const MEMORY_KEYWORDS_3 = /\b(you said|you recommended|you suggested|your advice|you told me)\b/i;
+const MEMORY_KEYWORDS_4 = /\b(in our (last|previous|earlier) (conversation|chat|discussion|session))\b/i;
+
+// URL detection — if user pastes a URL, they want web access
+const CONTAINS_URL = /https?:\/\/[^\s]+/i;
+
+// Step 7: Implicit web (soft signals — benefits from web data)
+const WEB_IMPLICIT = /\b(competitors?|competitor analysis|industry (benchmark|trend|standard|average)|market (offerings?|rates?|leaders?|landscape|analysis|research))\b/i;
+const WEB_IMPLICIT_2 = /\b(best practices?|how to|tutorial|guide|documentation for)\b/i;
+const WEB_IMPLICIT_3 = /\b(pricing|cost of|how much does .{3,} cost|price of|price for|going rate|market rate|rates for)\b/i;
+const WEB_IMPLICIT_4 = /\b(vs\.?|versus|compared to|comparison of|compare .{3,} (with|to|and|vs|against)|compare against)\b/i;
+const WEB_IMPLICIT_5 = /\b(instagram|tiktok|linkedin|facebook|twitter|x algorithm|threads|youtube|canva|figma|hubspot|mailchimp|hootsuite)\b/i;
+const WEB_IMPLICIT_6 = /\b(news about|recent developments?|what'?s new with|updates? on|latest on)\b/i;
+const WEB_IMPLICIT_7 = /\b(what others are (doing|offering|charging|selling)|what.{1,20}(already selling|on the market|out there))\b/i;
+
+// Step 7 (continued): General research, buying decisions, product recommendations
+const WEB_IMPLICIT_8 = /\b(research|do (some|extensive|thorough|detailed) research|look into|find out about|investigate|look up)\b/i;
+
+/**
+ * "Compose something for me" — as opposed to "tell me something".
+ *
+ * Reported on QueryRoute.composition. It NEVER changes searchMode.
+ *
+ * An earlier comment here claimed that a prompt wanting both ("write a post
+ * about the latest GEO trends") trips WEB_IMPLICIT first and never reaches the
+ * catch-all. That was false, and it was offered as the proof that suppressing
+ * search here was safe: "trends" matches no implicit-web pattern (WEB_IMPLICIT
+ * wants "industry trend", WEB_IMPLICIT_6 wants "latest on"), so it fell
+ * straight through and lost its grounding. Only the near-identical "...latest
+ * GEO research" passes, because "research" is in WEB_IMPLICIT_8 — and that was
+ * the wording the regression test happened to use, so the test passed while
+ * the behaviour was broken.
+ *
+ * Deliberately anchored on the VERB. Matching the bare noun would swallow
+ * "what did the message from Siemens say", which is a lookup wearing a
+ * composition word.
+ */
+/**
+ * The user is asking about MAIL THEY HAVE, as opposed to mail they want written.
+ *
+ * "write an email to Kaisa" needs no mailbox. "reply to Kaisa's latest email"
+ * does — the reply cannot be written without reading what it answers. The
+ * distinction is possessive/referential language about existing mail, not the
+ * word "email" itself, which appears in both.
+ */
+const NEEDS_MAILBOX = [
+  /\b(my|the|latest|last|recent|her|his|their|any)\s+(e-?mails?|inbox|messages?)\b/i,
+  /\b(check|read|search|look at|find|pull|fetch|see)\b[^.?!]{0,40}\b(e-?mail|inbox|mailbox)\b/i,
+  /\b(reply|respond|replying|responding|follow[- ]?up)\b[^.?!]{0,40}\b(to )?(her|his|their|the|that|this)\b[^.?!]{0,30}\b(e-?mail|message|thread)\b/i,
+  // "from" and "with" mean mail that EXISTS. "to" means one being written —
+  // "write an email to the whole company" needs no mailbox at all, and
+  // including it here sent every outbound draft to a Claude model for nothing.
+  /\b(e-?mails?|thread)\s+(from|with)\s+\w/i,
+  /\bin my (inbox|mail|e-?mail)\b/i,
+  // Requires the mail context to be present too: "what did we say in the
+  // meeting" is a meeting question, and routing it for the mailbox would be
+  // paying Claude rates to read nothing.
+  /\bwhat did .{1,40}\b(say|write|send)\b[^.?!]{0,40}\b(e-?mail|inbox|message|thread)\b/i,
+];
+
+/**
+ * Does this text, on its own, ask about mail that exists?
+ *
+ * Exported so the messages route can ask the same question of EARLIER turns.
+ * A bare follow-up carries no nouns — "Can you write a reply" says nothing
+ * about mail — so judged alone it loses the mailbox and drops to a model that
+ * has none. That happened: turn 1 found the message, turn 2 was "Can you write
+ * a reply", and the answer came back "I don't have the full text" from a chain
+ * that could never have had it.
+ */
+export function textNeedsMailbox(text: string): boolean {
+  return NEEDS_MAILBOX.some((p) => p.test(text));
+}
+
+const COMPOSITION_REQUEST =
+  /\b(write|draft|compose|rewrite|reword|tighten|shorten|lengthen|polish|proofread|edit)\b[^.?!]{0,60}\b(message|email|note|memo|announcement|statement|post|reply|response|letter|comms|communication|update|brief|copy|caption|script|speech|agenda|summary|intro|outline|blurb|bio|newsletter|invite|invitation)\b/i;
+const WEB_IMPLICIT_9 = /\b(recommend(ation)?s?|best option|best choice|best deal|best value|top pick|worth buying|worth it|good (option|choice|deal|buy))\b/i;
+const WEB_IMPLICIT_10 = /\b(i want to buy|looking to buy|want to (purchase|get|order)|thinking of buying|planning to buy|considering buying|should i buy|i('m| am) (looking|trying) to (buy|get|find|purchase))\b/i;
+const WEB_IMPLICIT_11 = /\b(available (in|at|from|near)|in stock|where (can i|to) (buy|get|find|purchase|order)|where (is it|are they) (sold|available)|import (to|from))\b/i;
+const WEB_IMPLICIT_12 = /\b(find me (the|a|an)|help me find|find (the |a |an )best|what('s| is) (the |a |an )best|which (one|is|are) (best|better|recommended)|which (model|option|product|version) (should|would))\b/i;
+
+// Step 7 (continued): Store/site availability checks — "does X have Y", "check site.ch"
+const WEB_IMPLICIT_13 = /\b(do(es)? .{1,60} (have|carry|stock|sell|list)|have .{1,60} in stock|check .{1,50} for (me|us|stock|availability)|what does .{1,60} (charge|cost|offer|sell|ship)|can (i|you|we) .{1,50} at [a-z])\b/i;
+
+// Bare domain name references (bike.ch, galaxus.ch, bike24.de etc.) — user wants info FROM that site
+const WEB_IMPLICIT_14 = /\b[a-z0-9][a-z0-9-]+\.(ch|de|fr|at|be|nl|it|es|se|dk|no|fi|co\.uk|eu)\b/i;
+
+/* ─────────────── Helper ─────────────── */
+
+function matchesAny(text: string, patterns: RegExp[]): boolean {
+  return patterns.some((p) => p.test(text));
+}
+
+function hasDataKeywords(text: string): boolean {
+  return DATA_KEYWORDS.test(text);
+}
+
+/* ─────────────── Hint Generation ─────────────── */
+
+function generateHints(route: Omit<QueryRoute, "hints" | "composition" | "needsMailbox">): string[] {
+  const hints: string[] = [];
+  if (route.suggestEngine) {
+    // This hint is promoted to a MUST-call list in the chat route, so whatever
+    // it names is the only thing guaranteed to be retrieved. Naming only
+    // query_engine — and describing it contracts-first — is a large part of
+    // why answers about a client came back as contract recitals.
+    hints.push(
+      "This query likely involves workspace data — use query_engine (contracts_summary, pipeline_summary, assigned_tasks, social performance)."
+    );
+    hints.push(
+      "If the question is about a specific CLIENT, or is preparing the user to speak to one: call lookup_client_context(client_name) FIRST for identity, brand background and recent meetings, then fan out IN THE SAME ROUND — query_meetingbrain({report:'client_meetings'}) for what was actually said and promised, query_engine({report:'contracts_summary'}) for the commercial position, and search_notebook for anything the user saved about them. Commercial figures alone are not an answer to a question about a client."
+    );
+  }
+  if (route.suggestMemory) {
+    hints.push("The user may be referencing something from a past conversation — consider using search_memory to find relevant context.");
+  }
+  if (route.suggestMeetingBrain) {
+    hints.push("query_meetingbrain (the question mentions meetings/tasks). For 'now / today / current meeting' questions use report: 'upcoming_meetings', days: 1 and filter by current time. For searches about a specific person, use upcoming_meetings or meetings and scan the attendees field — do NOT use search_meetings with a person's name as the query, it only matches titles/summaries.");
+  }
+  if (route.searchMode === "on") {
+    hints.push("Web search is active for this query. Use the search results to provide current, factual information with sources.");
+  }
+  return hints;
+}
+
+/* ─────────────── Main Router ─────────────── */
+
+/**
+ * Classify a user message and determine which data sources to activate.
+ * Zero-cost pattern matching — runs in <2ms.
+ */
+export function routeQuery(
+  userMessage: string,
+  contextConfig: NormalizedContextConfig
+): QueryRoute {
+  // Wrapped rather than threaded through seventeen return sites: a field that
+  // has to be remembered at every `return` is a field that will be forgotten at
+  // one of them, and the one it is forgotten at will be the one that matters.
+  const lower = userMessage.toLowerCase().trim();
+  return {
+    ...routeQueryInner(userMessage, contextConfig),
+    composition: COMPOSITION_REQUEST.test(lower),
+    needsMailbox: textNeedsMailbox(userMessage),
+  };
+}
+
+function routeQueryInner(
+  userMessage: string,
+  contextConfig: NormalizedContextConfig
+): Omit<QueryRoute, "composition" | "needsMailbox"> {
+  const lower = userMessage.toLowerCase().trim();
+  const len = lower.length;
+
+  // Respect config toggles
+  const webAllowed = contextConfig.webSearch !== "off";
+  const meetingBrainAllowed = contextConfig.meetingBrain !== "off";
+  const memoryAllowed = contextConfig.memory !== "off";
+
+  // ── Step 1: Conversational fast-path ──
+  // Short gratitude/affirmations
+  if (len < 40 && GRATITUDE.test(lower)) {
+    return { searchMode: "off", suggestEngine: false, suggestMemory: false, suggestMeetingBrain: false, intent: "conversational", hints: [] };
+  }
+  if (len < 30 && AFFIRMATIONS.test(lower)) {
+    return { searchMode: "off", suggestEngine: false, suggestMemory: false, suggestMeetingBrain: false, intent: "conversational", hints: [] };
+  }
+  // Rephrase / editing requests (no data keywords)
+  if (REPHRASE.test(lower) && !hasDataKeywords(lower)) {
+    return { searchMode: "off", suggestEngine: false, suggestMemory: false, suggestMeetingBrain: false, intent: "conversational", hints: [] };
+  }
+  if (EDITING.test(lower) && !hasDataKeywords(lower)) {
+    return { searchMode: "off", suggestEngine: false, suggestMemory: false, suggestMeetingBrain: false, intent: "conversational", hints: [] };
+  }
+  // Short follow-ups without data keywords
+  if (len < 80 && FOLLOW_UP_SHORT.test(lower) && !hasDataKeywords(lower)) {
+    return { searchMode: "off", suggestEngine: false, suggestMemory: false, suggestMeetingBrain: false, intent: "conversational", hints: [] };
+  }
+  // Clarifications
+  if (CLARIFICATION.test(lower)) {
+    return { searchMode: "off", suggestEngine: false, suggestMemory: false, suggestMeetingBrain: false, intent: "conversational", hints: [] };
+  }
+  // Short greetings
+  if (len < 20 && GREETING_SHORT.test(lower)) {
+    return { searchMode: "off", suggestEngine: false, suggestMemory: false, suggestMeetingBrain: false, intent: "conversational", hints: [] };
+  }
+  // Emoji-only
+  if (isEmojiOnly(userMessage.trim())) {
+    return { searchMode: "off", suggestEngine: false, suggestMemory: false, suggestMeetingBrain: false, intent: "conversational", hints: [] };
+  }
+
+  // ── Step 2: Explicit web search ──
+  // An explicit request ("web search", "search online", "look it up online", a
+  // pasted URL) OVERRIDES an off toggle: a direct, current ask is a stronger
+  // signal than a persistent UI toggle the user may have forgotten is off.
+  // (Without this, "do a web search about X" silently fell through to a
+  // workspace-only answer — and the model, told to search but given no web
+  // tool, looped on query_engine: the tail-chasing spiral.) Implicit signals
+  // below still respect the toggle.
+  const hasUrl = CONTAINS_URL.test(userMessage);
+  const wantsFactCheck = matchesAny(lower, [WEB_FACTCHECK, WEB_FACTCHECK_2]);
+  const wantsWeb = hasUrl || wantsFactCheck || matchesAny(lower, [WEB_EXPLICIT, WEB_EXPLICIT_2, WEB_EXPLICIT_3, WEB_EXPLICIT_4]);
+  // Fact-checking gets an extra, forceful hint — the failure mode we're fixing
+  // is the model saying "I can't verify from my training data" instead of
+  // actually searching.
+  const factCheckHint = wantsFactCheck
+    ? "The user is asking you to VERIFY factual claims. You MUST use web search to check each claim against reliable sources and cite the actual URLs — never say you cannot verify from training data or that you lack web access. Search first, then report what the sources say (confirmed / contradicted / unverified)."
+    : null;
+
+  // ── Step 3-5: Detect data source signals ──
+  const wantsMeeting = meetingBrainAllowed && matchesAny(lower, [MEETING_KEYWORDS, MEETING_KEYWORDS_2, MEETING_KEYWORDS_3]);
+  const wantsEngine = matchesAny(lower, [ENGINE_KEYWORDS, ENGINE_KEYWORDS_2, ENGINE_KEYWORDS_3, ENGINE_KEYWORDS_4, ENGINE_KEYWORDS_5, ENGINE_KEYWORDS_6]);
+  const wantsMemory = memoryAllowed && matchesAny(lower, [MEMORY_KEYWORDS, MEMORY_KEYWORDS_2, MEMORY_KEYWORDS_3, MEMORY_KEYWORDS_4]);
+
+  // ── Step 6: Hybrid detection ──
+  // If explicit web + Engine data → hybrid
+  if (wantsWeb && wantsEngine) {
+    const partial = { searchMode: "on" as const, suggestEngine: true, suggestMemory: wantsMemory, suggestMeetingBrain: wantsMeeting, intent: "hybrid" as const };
+    return { ...partial, hints: [...generateHints(partial), ...(factCheckHint ? [factCheckHint] : [])] };
+  }
+
+  // ── Step 7: Implicit web search ──
+  const implicitWeb = webAllowed && !wantsEngine && matchesAny(lower, [WEB_IMPLICIT, WEB_IMPLICIT_2, WEB_IMPLICIT_3, WEB_IMPLICIT_4, WEB_IMPLICIT_5, WEB_IMPLICIT_6, WEB_IMPLICIT_7, WEB_IMPLICIT_8, WEB_IMPLICIT_9, WEB_IMPLICIT_10, WEB_IMPLICIT_11, WEB_IMPLICIT_12, WEB_IMPLICIT_13, WEB_IMPLICIT_14]);
+
+  // If Engine data + implicit web → hybrid
+  if (wantsEngine && implicitWeb) {
+    const partial = { searchMode: "on" as const, suggestEngine: true, suggestMemory: wantsMemory, suggestMeetingBrain: wantsMeeting, intent: "hybrid" as const };
+    return { ...partial, hints: generateHints(partial) };
+  }
+
+  // ── Return explicit web search ──
+  if (wantsWeb) {
+    const partial = { searchMode: "on" as const, suggestEngine: false, suggestMemory: wantsMemory, suggestMeetingBrain: wantsMeeting, intent: "web_search" as const };
+    return { ...partial, hints: [...generateHints(partial), ...(factCheckHint ? [factCheckHint] : [])] };
+  }
+
+  // ── Return meeting data ──
+  if (wantsMeeting && !wantsEngine) {
+    const partial = { searchMode: "off" as const, suggestEngine: false, suggestMemory: wantsMemory, suggestMeetingBrain: true, intent: "meeting_data" as const };
+    return { ...partial, hints: generateHints(partial) };
+  }
+
+  // ── Return Engine data ──
+  if (wantsEngine) {
+    const partial = { searchMode: "off" as const, suggestEngine: true, suggestMemory: wantsMemory, suggestMeetingBrain: wantsMeeting, intent: "workspace_data" as const };
+    return { ...partial, hints: generateHints(partial) };
+  }
+
+  // ── Return memory recall ──
+  if (wantsMemory) {
+    const partial = { searchMode: "off" as const, suggestEngine: false, suggestMemory: true, suggestMeetingBrain: false, intent: "memory_recall" as const };
+    return { ...partial, hints: generateHints(partial) };
+  }
+
+  // ── Return implicit web ──
+  if (implicitWeb) {
+    const partial = { searchMode: "on" as const, suggestEngine: false, suggestMemory: false, suggestMeetingBrain: false, intent: "web_search" as const };
+    return { ...partial, hints: generateHints(partial) };
+  }
+
+  // ── Step 8: Default — web search ON for anything unclassified ──
+  // Better to ground the model in real data than risk a hallucinated answer.
+  // Only structured intents (workspace_data, meeting_data, conversational) stay off.
+  //
+  // Composition does NOT change this. An earlier version skipped Step 8 for
+  // anything matching COMPOSITION_REQUEST, on the reasoning that "write me a
+  // message" has nothing to look up. That is true of "draft a reply to Ceri
+  // saying yes" and false of "write a post about the latest AI news" — and in
+  // a content marketing product the second is the core workflow. Measured, 13
+  // of 20 topical drafting prompts lost web search, and the reply came back
+  // written from training data with no signal that nothing had been looked up.
+  //
+  // The three costs that provoked that change are real, but none of them
+  // belongs to searchMode: forcing the model, doubling the output ceiling, and
+  // the tool itself. The first two are now suppressed via `composition` in the
+  // messages route, which is where those decisions actually live.
+  if (webAllowed) {
+    const partial = { searchMode: "on" as const, suggestEngine: false, suggestMemory: wantsMemory, suggestMeetingBrain: false, intent: "general" as const };
+    return { ...partial, hints: generateHints(partial) };
+  }
+  return { searchMode: "off", suggestEngine: false, suggestMemory: false, suggestMeetingBrain: false, intent: "general", hints: [] };
+}
