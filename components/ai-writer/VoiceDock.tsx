@@ -176,6 +176,39 @@ export default function VoiceDock({
   /** Last response|item seen on an audio frame, so a new render logs once
    *  rather than fifty times a second. */
   const lastAudioKeyRef = useRef("");
+  /**
+   * The render trace, kept so it can be posted at session end.
+   *
+   * Everything here also goes to the console, but a console needs somebody to
+   * open it, filter it, reproduce the fault and copy the result back — five
+   * steps to collect nine numbers, each one a chance to lose them. Bounded at
+   * 300: a long session must not grow this without limit, and the seam is
+   * always near the end.
+   */
+  const diagRef = useRef<string[]>([]);
+  const diagSessionRef = useRef("");
+  const vlog = useCallback((...parts: unknown[]) => {
+    const line = parts.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join(" ");
+    console.log("[V]", line);
+    const buf = diagRef.current;
+    buf.push(`${new Date().toISOString().slice(11, 23)} ${line}`);
+    if (buf.length > 300) buf.splice(0, buf.length - 300);
+  }, []);
+  /** Ship the trace. keepalive, because the most interesting session is the one
+   *  that ended with the tab being closed. */
+  const flushDiag = useCallback(() => {
+    const lines = diagRef.current.slice();
+    if (!lines.length) return;
+    diagRef.current = [];
+    try {
+      fetch("/api/ai/voice/diag", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: diagSessionRef.current, lines }),
+        keepalive: true,
+      }).catch(() => { /* a diagnostic must never break the session */ });
+    } catch { /* noop */ }
+  }, []);
   const rafRef = useRef<number>(0);
   /** Drives the wake-session closers independently of rAF — see shouldClose. */
   const idleTimerRef = useRef<number | null>(null);
@@ -250,8 +283,7 @@ export default function VoiceDock({
 
   /** Hard barge-in / pause: kill all queued assistant audio immediately. */
   const flushPlayback = useCallback((why = "?") => {
-    console.log(
-      "[V] FLUSH", why,
+    vlog("FLUSH", why,
       "live=", activeSourcesRef.current.size,
       "dropped_s=", audioCtxRef.current ? (playCursorRef.current - audioCtxRef.current.currentTime).toFixed(3) : "-"
     );
@@ -367,7 +399,7 @@ export default function VoiceDock({
    * pattern. Voice simply was not using it.
    */
   useEffect(() => {
-    const onHide = () => { teardownRef.current?.(); };
+    const onHide = () => { teardownRef.current?.(); flushDiag(); };
     window.addEventListener("pagehide", onHide);
     return () => window.removeEventListener("pagehide", onHide);
   }, []);
@@ -396,7 +428,10 @@ export default function VoiceDock({
     mediaDestRef.current = null;
     audioCtxRef.current?.close().catch(() => { /* noop */ });
     audioCtxRef.current = null;
-  }, [flushPlayback, persistTranscript]);
+    // Last, and after everything above has had its say — the interesting part
+    // of a trace is usually what happened on the way down.
+    flushDiag();
+  }, [flushPlayback, persistTranscript, flushDiag]);
 
   useEffect(() => { teardownRef.current = teardown; }, [teardown]);
 
@@ -460,8 +495,8 @@ export default function VoiceDock({
         //
         // rate matters too: the AudioContext can refuse the rate it is asked
         // for, and everything downstream assumes the one it got.
-        console.log(
-          "[V] SESSION voice=", cfg.voice, "model=", cfg.model,
+        diagSessionRef.current = `${Date.now().toString(36)}`;
+        vlog("SESSION voice=", cfg.voice, "model=", cfg.model,
           "rate_asked=", cfg.sampleRate, "rate_got=", ctx.sampleRate
         );
 
@@ -730,8 +765,7 @@ export default function VoiceDock({
               // silence first, and the seam is somewhere else entirely.
               const audioKey = `${msg.response_id ?? "?"}|${msg.item_id ?? "?"}`;
               if (audioKey !== lastAudioKeyRef.current) {
-                console.log(
-                  "[V] AUDIO-START", audioKey,
+                vlog("AUDIO-START", audioKey,
                   "lead_s=", (playCursorRef.current - audioCtx.currentTime).toFixed(3)
                 );
                 lastAudioKeyRef.current = audioKey;
@@ -975,14 +1009,13 @@ export default function VoiceDock({
             }
 
             case "response.created": {
-              console.log("[V] RESP-CREATED", msg.response?.id ?? msg.response_id);
+              vlog("RESP-CREATED", msg.response?.id ?? msg.response_id);
               responseActiveRef.current = true;
               break;
             }
 
             case "response.done": {
-              console.log(
-                "[V] RESP-DONE", msg.response?.id ?? msg.response_id,
+              vlog("RESP-DONE", msg.response?.id ?? msg.response_id,
                 "pendingTools=", pendingToolsRef.current,
                 "queuedCreate=", pendingResponseCreateRef.current
               );
@@ -1003,7 +1036,7 @@ export default function VoiceDock({
               if (pendingResponseCreateRef.current && !closingRef.current && pendingToolsRef.current === 0) {
                 pendingResponseCreateRef.current = false;
                 responseActiveRef.current = true;
-                console.log("[V] CREATE-SENT queued-at-done");
+                vlog("CREATE-SENT queued-at-done");
                 wsRef.current?.send(JSON.stringify({ type: "response.create" }));
                 break; // stay in "thinking" — more speech incoming
               }
