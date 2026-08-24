@@ -183,8 +183,17 @@ async function main() {
 `);
     console.log("INSERT INTO intelligence.client_email_domains (id_client, domain, type_source, count_evidence, information_note, flag_confirmed, date_confirmed)");
     console.log("VALUES");
+    // 'manual', not 'website'. client_email_domains constrains type_source to
+    // ('manual','inferred','alias_migration') — a CHECK violation fails the
+    // WHOLE multi-row INSERT, so a value invented here would have inserted
+    // nothing at all while looking like a careful bulk write.
+    //
+    // 'manual' is also the honest label: the domain comes from a field a person
+    // maintains in Engine, and nothing here is confirmed without a person
+    // reading it first. The derivation is recorded in information_note, which
+    // is where the detail belongs.
     console.log(corroborated.map((r) =>
-      `  (${r.id}, '${r.domain}', 'website', ${r.hits}, 'registered website domain, corroborated by ${r.hits} attendee record(s)', 1, now())`
+      `  (${r.id}, '${r.domain}', 'manual', ${r.hits}, 'registered website domain, corroborated by ${r.hits} attendee record(s)', 1, now())`
     ).join(",\n"));
     console.log("ON CONFLICT (id_client, domain) DO UPDATE SET flag_confirmed = 1, date_confirmed = now();\n");
   }
