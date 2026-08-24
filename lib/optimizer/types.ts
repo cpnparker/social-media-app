@@ -26,7 +26,14 @@ export type EvidenceGrade =
   | "B" // large-N observational
   | "B/C" // observational plus a mechanistic account
   | "C" // mechanistic — retrieval mechanics imply it, no measured effect size
-  | "D"; // house doctrine — TCE's own practice, no external study
+  | "D" // house doctrine — TCE's own practice, no external study
+  | "X"; // vendor correlation only — a measured association with no causal
+         // control. Its own rung, deliberately, because the alternative is to
+         // dress a single uncontrolled vendor study as D and let it sit beside
+         // criteria that earned their grade. The AI-search research grades
+         // promotional load exactly this way while reporting the largest
+         // effect size in the whole document, and both facts have to reach
+         // the writer: a big number and a weak warrant.
 
 /**
  * Which half of the funnel a check serves.

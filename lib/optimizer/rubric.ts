@@ -38,7 +38,7 @@ import type { EvidenceGrade, RollUp, Tier } from "./types";
 // (employees, sites, plants, tons, megawatts...). Detection change, not a
 // weight change — but scores move on figure-heavy corporate content, so the
 // version moves with them and every memo re-keys.
-export const RUBRIC_VERSION = "1.0.1";
+export const RUBRIC_VERSION = "1.1.0";
 
 // ── Pillars ──────────────────────────────────────────────────────────────
 
@@ -124,6 +124,14 @@ export const CRITERIA: CriterionMeta[] = [
   { key: "credential-line", name: "Author credentials shown", pillar: 5, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "C" },
   { key: "experience-markers", name: "First-hand experience evidence", pillar: 5, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "D" },
   { key: "worked-example", name: "Named customer story or worked example", pillar: 5, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "D" },
+  // Promotional load. The research reports the LARGEST measured effect in the
+  // whole document behind this — promotional language cutting citation rates
+  // by 26.19%, and an article on its own domain cited 7.6% of the time versus
+  // 34% distributed — and grades it X, a single vendor study with no causal
+  // control. Both facts have to reach the writer, so it carries the big claim
+  // at the weakest grade and a small weight, reported as a flag rather than a
+  // heavy penalty. That is the research's own instruction, verbatim.
+  { key: "promotional-claims", name: "First-person claims carry evidence", pillar: 5, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "X" },
 
   // Pillar 6 — Freshness & format hygiene (max 75)
   { key: "dateline-recency", name: "Dateline present and recent", pillar: 6, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "A" },
@@ -321,6 +329,51 @@ export const YEARS_EXPERIENCE_PATTERN = /\b\d{1,2}\+?\s+years?\b/i;
  * proposed this guard, which is exactly why comments about coverage need the
  * same scepticism as checks that assert code exists.)
  */
+/**
+ * Promotional-claim vocabulary (research B12).
+ *
+ * The detector is a CONJUNCTION, and that is the whole design: a brand writing
+ * about itself says "we" constantly and legitimately, so self-reference alone
+ * flags nothing. A sentence fires only when it refers to itself AND makes a
+ * benefit claim AND carries nothing to substantiate it. Tested against a real
+ * 2,000-word brand story: zero false positives.
+ *
+ * Deliberately absent from BENEFIT_VERBS: "work with", "ran", "tested",
+ * "measured", "surveyed" — those are EXPERIENCE_MARKERS, which pillar 5
+ * REWARDS. "We ran the test across 40 sites" is evidence, not marketing, and a
+ * detector that cannot tell the difference would punish the exact writing the
+ * rubric is trying to encourage.
+ */
+export const BENEFIT_VERBS = [
+  "help", "helps", "helping", "empower", "empowers", "empowering",
+  "enable", "enables", "enabling", "transform", "transforms", "transforming",
+  "accelerate", "accelerates", "accelerating", "streamline", "streamlines", "streamlining",
+  "optimise", "optimises", "optimising", "optimize", "optimizes", "optimizing",
+  "maximise", "maximises", "maximising", "maximize", "maximizes", "maximizing",
+  "supercharge", "supercharges", "supercharging", "future-proof", "future-proofs",
+  "reimagine", "reimagines", "reimagining", "unleash", "unleashes", "unleashing",
+];
+
+export const GENERIC_BENEFICIARIES = [
+  "businesses", "brands", "companies", "teams", "organisations", "organizations",
+  "enterprises", "clients", "customers", "marketers", "leaders", "executives",
+  "professionals", "partners", "firms", "startups", "retailers", "manufacturers",
+];
+
+export const TRANSFORMATION_NOUNS = [
+  "growth", "success", "transformation", "efficiency", "productivity", "results",
+  "outcomes", "value", "roi", "potential", "performance", "impact", "innovation",
+  "agility", "excellence",
+];
+
+/** The top tier tolerates roughly one such sentence per 1,100 words rather than
+ *  demanding zero — every brand article carries one boilerplate line, and on
+ *  grade-X evidence failing a piece for it would be a confident wrong verdict.
+ *  Same reasoning as NAKED_STAT_TIERS' tolerance. */
+export const PROMO_CLAIM_TIERS: Tier[] = [
+  { min: 0, points: 5 }, { min: 0.9, points: 3 }, { min: 2, points: 1 }, { min: 4, points: 0 },
+];
+
 export const SUPERLATIVE_TERMS = [
   "unparalleled", "first-of-its-kind", "world-class", "best-in-class",
   "industry-leading", "unmatched", "unrivalled", "unrivaled",

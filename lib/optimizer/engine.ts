@@ -23,10 +23,11 @@ import {
   CHUNK_NAMING_TIERS, DEFINITION_DRIFT_TIERS, STALE_YEAR_TIERS, AI_TELL_TIERS,
   SUMMARY_MARKERS, CREDENTIAL_KEYWORDS, ROLE_TITLE_PATTERN, YEARS_EXPERIENCE_PATTERN,
   EXPERIENCE_MARKERS, WORKED_EXAMPLE_STRONG, WORKED_EXAMPLE_WEAK,
+  BENEFIT_VERBS, GENERIC_BENEFICIARIES, TRANSFORMATION_NOUNS, PROMO_CLAIM_TIERS,
   CURRENCY_PHRASES, AI_TELL_TERMS, NOT_JUST_PATTERN,
   AUTHOR_LINE_PATTERN, COMPARATIVE_QUERY_PATTERN, STOPWORDS,
 } from "./rubric";
-import { parseDraft, sliceByWords, countTerm, containsAny, sectionLevels } from "./parse";
+import { parseDraft, sliceByWords, countTerm, containsAny, sectionLevels, sentenceIsSourced } from "./parse";
 import type { ParsedDraft, Chunk } from "./parse";
 import { validateHeadingHierarchy } from "./heading-hierarchy";
 import type { CriterionSpan, CriterionResult, DraftScores, PillarScore } from "./types";
@@ -620,17 +621,99 @@ function pillar4(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   return out;
 }
 
+
+/**
+ * Sentences that claim a benefit for the reader and offer nothing to back it.
+ *
+ * A CONJUNCTION of three tests, and the conjunction is the design. A brand
+ * writing about itself says "we" in almost every paragraph, so self-reference
+ * alone must never fire; and a sentence carrying a figure, a named source, a
+ * first-hand marker or a named third party is making a claim it can support,
+ * whatever verb it uses. Only the sentence that does the first two and none of
+ * the third is promotional in the sense the research measured.
+ */
+function promotionalClaims(p: ParsedDraft, input: DraftInput): CriterionSpan[] {
+  const brandTokens: string[] = [];
+  if (input.brandName) brandTokens.push(input.brandName.toLowerCase());
+  for (let i = 0; i < (input.brandAliases || []).length; i++) {
+    brandTokens.push(String((input.brandAliases as string[])[i]).toLowerCase());
+  }
+  const spans: CriterionSpan[] = [];
+
+  for (let i = 0; i < p.sentences.length; i++) {
+    const sent = p.sentences[i];
+    // Headings, pull quotes and table cells are not prose claims. Nor is
+    // anything inside a quotation: rewording a named interviewee misquotes them.
+    if (sent.kind !== "prose" && sent.kind !== "listItem") continue;
+    const lower = sent.text.toLowerCase();
+
+    // GATE A — the sentence talks about itself.
+    let selfRef = /\b(we|our|ours)\b/i.test(sent.text);
+    for (let b = 0; !selfRef && b < brandTokens.length; b++) {
+      if (brandTokens[b] && countTerm(lower, brandTokens[b]) > 0) selfRef = true;
+    }
+    if (!selfRef) continue;
+
+    // GATE B — it promises a benefit, either to a generic class of people or
+    // as an abstract transformation.
+    let verb = "";
+    for (let v = 0; v < BENEFIT_VERBS.length; v++) {
+      if (countTerm(lower, BENEFIT_VERBS[v]) > 0) { verb = BENEFIT_VERBS[v]; break; }
+    }
+    if (!verb) continue;
+    const object =
+      containsAny(lower, GENERIC_BENEFICIARIES) > 0 ? "a generic audience" :
+      containsAny(lower, TRANSFORMATION_NOUNS) > 0 ? "an abstract outcome" : "";
+    if (!object) continue;
+
+    // GATE C — anything that substantiates it exempts the sentence.
+    if (/[0-9]/.test(sent.text)) continue;
+    if (sentenceIsSourced(sent.text)) continue;
+    if (containsAny(lower, EXPERIENCE_MARKERS) > 0) continue;
+    // A named third party, ignoring the sentence's first word and the brand's
+    // own names — "Fine Concrete" substantiates, "Amrize" does not.
+    const words = sent.text.split(/\s+/).slice(1);
+    let namedThirdParty = false;
+    for (let w = 0; w < words.length; w++) {
+      const bare = words[w].replace(/[^A-Za-z-]/g, "");
+      if (bare.length < 3 || !/^[A-Z]/.test(bare)) continue;
+      if (brandTokens.indexOf(bare.toLowerCase()) >= 0) continue;
+      namedThirdParty = true; break;
+    }
+    if (namedThirdParty) continue;
+
+    spans.push({ start: sent.start, end: sent.end, note: `"${verb}" + ${object}, with nothing in the sentence behind it` });
+    if (spans.length >= 8) break;
+  }
+  return spans;
+}
+
 function pillar5(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   const out: CriterionResult[] = [];
 
+  // Promotional load is scored FIRST and unconditionally. An unattributed
+  // piece has no byline, which says nothing whatever about how promotional it
+  // is — and ghost-written brand content is precisely what this check exists
+  // for, so putting it after the early return would disable it on its main
+  // audience.
+  const promoSpans = promotionalClaims(p, input);
+  const promoPer1k = promoSpans.length * (1000 / Math.max(1, p.wordCount));
+  const promoResult = score("promotional-claims", tieredScore(promoPer1k, PROMO_CLAIM_TIERS), promoSpans.length === 0,
+    promoSpans.length === 0
+      ? "no evidence-free first-person claims"
+      : `${promoSpans.length} first-person claim${promoSpans.length === 1 ? "" : "s"} with nothing behind ${promoSpans.length === 1 ? "it" : "them"}`,
+    promoSpans);
+
   if (input.unattributed) {
     return [
+      promoResult,
       skip("byline-present", "Piece is declared unattributed"),
       skip("credential-line", "Piece is declared unattributed"),
       skip("experience-markers", "Piece is declared unattributed"),
       skip("worked-example", "Piece is declared unattributed"),
     ];
   }
+  out.push(promoResult);
 
   // Zone-restricted, unlike AuthorityOn's bare /by [A-Z][a-z]+ [A-Z]/ over all
   // site text — which matched "by Google Analytics" mid-sentence.

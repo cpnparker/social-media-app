@@ -423,7 +423,7 @@ function hasNonInitialProperNoun(sentence: string): boolean {
   return CAPITALISED_NAME.test(trimmed);
 }
 
-function sentenceIsSourced(text: string): boolean {
+export function sentenceIsSourced(text: string): boolean {
   if (EXPLICIT_ATTRIBUTION.test(text)) return true;
   if (NAMED_SOURCE.test(text)) return true;
   return SOURCE_VERB.test(text) && hasNonInitialProperNoun(text);

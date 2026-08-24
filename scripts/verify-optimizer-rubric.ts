@@ -72,6 +72,23 @@
  * chunk and so could never be answered — the criterion scored 0/10 on an
  * article that answers its heading in the next sentence. One rule, two
  * readers, and only one of them updated.
+ *
+ * MUTATION LOG — promotional load (2026-08-24), throwaway worktree.
+ *   gate A: self-reference no longer required     -> 1 fail  ✓
+ *   gate B: benefit verb no longer required       -> 1 fail  ✓
+ *   gate C: digit exemption removed               -> 1 fail  ✓
+ *   gate C: named-third-party exemption removed   -> 1 fail  ✓
+ *   gate C: experience-marker exemption removed   -> 1 fail  ✓
+ *   criterion computed but never pushed           -> 7 fail  ✓
+ *   (baseline: exit 0)
+ *
+ * THREE OF THESE FIRST SURVIVED, and the reason is the useful part. The defect
+ * fixture proved the criterion goes red, and the exemption fixtures each
+ * tripped two or three guards at once — so removing the figure test was masked
+ * by the experience-marker test, and the fixture passed for a reason that had
+ * nothing to do with what was broken. Every exemption case is now built so
+ * exactly ONE guard is load-bearing. A fixture that passes for the wrong
+ * reason is indistinguishable from one that works.
  */
 import { computeDraftScores } from "../lib/optimizer/engine";
 import { sectionLevels, parseDraft } from "../lib/optimizer/parse";
@@ -230,7 +247,10 @@ dupKey ? fail(`duplicate criterion key: ${dupKey}`) : pass(`${CRITERIA.length} u
 let ungraded = 0;
 for (let i = 0; i < CRITERIA.length; i++) {
   const c = CRITERIA[i];
-  const gradeOk = ["A", "A-", "B", "B/C", "C", "D"].indexOf(c.evidence) >= 0;
+  // "X" is the research's own bottom rung — a measured vendor association with
+  // no causal control. It exists so a check with a big effect size and a weak
+  // warrant can say so, instead of borrowing a grade it has not earned.
+  const gradeOk = ["A", "A-", "B", "B/C", "C", "D", "X"].indexOf(c.evidence) >= 0;
   const rollOk = ["retrievability", "citability", "both"].indexOf(c.rollUp) >= 0;
   if (!gradeOk || !rollOk) { ungraded++; fail(`${c.key} is missing an evidence grade or roll-up`); }
 }
@@ -395,6 +415,16 @@ D.push({ key: "experience-markers", label: "first-hand markers removed", input: 
     "Our own analysis of three mid-market retailers found", "Published figures for three mid-market retailers show"),
     "We worked with one of those retailers for a full year, and the case study is instructive: for example,",
     "One of those retailers ran for a full year, and the case study is instructive: for example,")) });
+// Promotional load. The clean draft says what it DID; the defect says what it
+// OFFERS, to a generic audience, with nothing behind it — which is the whole
+// distinction the criterion measures. The mutation deliberately keeps the
+// first person, because "we" is not the defect and a detector that thought so
+// would flag every honest sentence in a brand's own article.
+D.push({ key: "promotional-claims", label: "an evidence-free benefit claim replaces a sourced one", input: withBody(
+  mutate(CLEAN_BODY,
+    "We worked with one of those retailers for a full year, and the case study is instructive: for example, its cross-border share never rose above a tenth of total volume.",
+    "We help businesses transform their payment performance and unleash growth.")) });
+
 D.push({ key: "worked-example", label: "worked example removed", input: withBody(
   mutate(CLEAN_BODY,
     "We worked with one of those retailers for a full year, and the case study is instructive: for example, its cross-border share never rose above a tenth of total volume.",
@@ -570,10 +600,23 @@ console.log(`\n6. Missing context is skipped, not punished`);
     .replace("Dr. Brandt is a certified payments architect and the author of two books on transaction routing.\n\n", "");
   const declared = computeDraftScores(withBody(strippedBody, { unattributed: true, authorName: undefined }));
   const undeclared = computeDraftScores(withBody(strippedBody, { authorName: undefined }));
+  // The AUTHORSHIP criteria skip. promotional-claims deliberately does not:
+  // an unattributed piece has no byline, which says nothing whatever about how
+  // promotional it is, and ghost-written brand content is exactly what that
+  // check exists for. Skipping it there would disable it on its main audience,
+  // so it is excluded from this assertion by name rather than by pillar.
+  const AUTHORSHIP = ["byline-present", "credential-line", "experience-markers", "worked-example"];
   let declaredSkipped = true;
-  for (let i = 0; i < declared.pillars[4].criteria.length; i++) if (!declared.pillars[4].criteria[i].skipped) declaredSkipped = false;
-  declaredSkipped ? pass("declared-unattributed → Authority criteria skip rather than fail")
-                  : fail("declared-unattributed → Authority criteria still scored");
+  for (let i = 0; i < declared.pillars[4].criteria.length; i++) {
+    const c = declared.pillars[4].criteria[i];
+    if (AUTHORSHIP.indexOf(c.key) >= 0 && !c.skipped) declaredSkipped = false;
+  }
+  declaredSkipped ? pass("declared-unattributed → Authorship criteria skip rather than fail")
+                  : fail("declared-unattributed → Authorship criteria still scored");
+  const promoOnUnattributed = declared.pillars[4].criteria.filter((c: any) => c.key === "promotional-claims")[0];
+  promoOnUnattributed && !promoOnUnattributed.skipped
+    ? pass("...while promotional load is still measured — it is not an authorship question")
+    : fail("promotional load skipped on an unattributed piece — that is the content it exists for");
   undeclared.overall < declared.overall
     ? pass(`the same body costs points when NOT declared unattributed (${declared.overall} declared vs ${undeclared.overall} undeclared)`)
     : fail(`identical bodies scored ${declared.overall} / ${undeclared.overall} — skip is driven by absence, not declaration`);
@@ -793,6 +836,63 @@ console.log(`\nSection levels are read from the document`);
   adj && !adj.skipped && adj.earned > 0
     ? pass(`...and their answers are found (${adj.earned}/${adj.maxPoints}) — chunker and engine agree on what a section is`)
     : fail(`heading-answer-adjacency = ${adj ? (adj.skipped ? "skipped" : adj.earned) : "missing"} — the chunker still hard-codes levels`);
+}
+
+
+// ── Promotional load fires on the claim, never on the first person ────────
+//
+// The defect fixture above proves the criterion goes red. It says nothing
+// about the direction that matters more: a brand writing about itself says
+// "we" in almost every paragraph, and a detector that flagged those would be
+// unusable on exactly the content it is for. Two mutations survived the defect
+// fixture alone — removing the figure exemption, and dropping the benefit-verb
+// gate so self-reference fired by itself — because nothing here tested the
+// exemptions. These do.
+console.log(`\nPromotional load — the exemptions, not just the trigger`);
+{
+  const promo = (body: string) => {
+    const sc: any = computeDraftScores({ body, title: "Payment orchestration", targetQueries: [], format: "explainer", brandName: "Vaultline" });
+    for (const pl of sc.pillars) for (const c of pl.criteria) if (c.key === "promotional-claims") return c;
+    return null;
+  };
+  const pad = `<p>${"filler word ".repeat(220)}</p>`;
+  const one = (sentence: string) => promo(`<h1>Orchestration</h1><p>${sentence}</p>${pad}`);
+
+  const fires = one("We help businesses transform their payment performance.");
+  (fires && (fires.spans || []).length === 1)
+    ? pass("an evidence-free benefit claim is flagged")
+    : fail(`the plain promotional claim was not flagged (${fires ? (fires.spans||[]).length : "missing"} spans)`);
+
+  // EACH CASE ISOLATES ONE GUARD. The first version of this did not, and three
+  // mutations survived because every fixture tripped two or three exemptions
+  // at once — remove the figure test and the experience-marker test still
+  // caught it, so the fixture passed for a reason that had nothing to do with
+  // what was broken. Every sentence below is built so exactly one exemption is
+  // load-bearing; the comment names it.
+  const cases: [string, string][] = [
+    // digit ONLY: "help businesses" fires A+B; no experience marker, no
+    // capitalised non-brand token, not sourced. Only the figure saves it.
+    ["We help businesses transform performance by 30 percent.", "a figure in the sentence"],
+    // named third party ONLY: same claim, no digit, no experience marker.
+    // "Nordics" is the single capitalised non-brand token.
+    ["We help businesses transform performance across Nordics.", "a named third party"],
+    // experience marker ONLY: "in our experience" is the marker; no digit, no
+    // capitalised token, not sourced.
+    ["In our experience we help teams transform performance.", "a first-hand experience marker"],
+    // gate B ONLY: beneficiary and transformation nouns are both present, but
+    // there is no benefit VERB, so the claim never qualifies. Nothing else
+    // exempts it — drop gate B and this fires.
+    ["Our customers see growth.", "no benefit verb — a noun phrase is not a claim"],
+    // gate A ONLY: a full benefit claim with no self-reference at all.
+    ["Orchestration helps businesses transform performance.", "no self-reference"],
+  ];
+  for (const [sentence, why] of cases) {
+    const c = one(sentence);
+    const n = c ? (c.spans || []).length : -1;
+    n === 0
+      ? pass(`exempt: ${why}`)
+      : fail(`FALSE POSITIVE (${why}): "${sentence}" was flagged — a brand cannot use its own voice`);
+  }
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

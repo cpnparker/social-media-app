@@ -200,7 +200,7 @@ export default function ScorePanel({ input, muted, onAddQuery }: Props) {
               <span className="text-[12px] font-semibold flex-1 min-w-0 truncate">{c.name.split(" — ")[0]}</span>
               <span
                 className="text-[10px] font-semibold text-muted-foreground shrink-0"
-                title="How strong the research behind this check is: A causal, B observational, C mechanistic, D house practice"
+                title="How strong the research behind this check is: A causal, B observational, C mechanistic, D house practice, X vendor correlation with no causal control"
               >
                 {c.evidence}
               </span>

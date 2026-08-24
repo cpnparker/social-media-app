@@ -48,6 +48,7 @@ const SEVERITY: { [key: string]: "high" | "medium" | "low" } = {
   "stat-source-adjacency": "high",
   "anonymous-first-person-facts": "high",
   "unverifiable-superlatives": "medium",
+  "promotional-claims": "medium",
   "attributed-quotes": "high",
   "current-year-stats": "medium",
   "answer-first-position": "high",
@@ -72,6 +73,12 @@ const REMEDY: { [key: string]: string } = {
     "Split this into two. Long sentences dilute the chunk an engine would lift, and the answer inside gets averaged away.",
   "attributed-quotes":
     "Name who said it. A quotation with no speaker is decoration; a named, credentialed speaker is what makes the passage citable as evidence.",
+  // Bound by the research's recommendation guardrails: never ask for a figure
+  // without a source, and never propose a rewrite that strips the terms which
+  // get the page retrieved — body-only optimisation measurably REDUCED
+  // citation in the one end-to-end test that exists.
+  "promotional-claims":
+    "Say what you did, not what you offer. Replace the claim with the engagement behind it — who, what changed, over what period — using a figure you already hold; if you do not hold one, find and cite a source rather than asserting it. Keep the sentence and its terms: cutting it costs you the query words that get the page retrieved at all.",
   "current-year-stats":
     "Date the figure — \"in 2026\" or \"as of August 2026\". Engines discount statistics they cannot date, and freshness is scored directly.",
   "answer-first-position":
