@@ -918,26 +918,35 @@ export default function VoiceDock({
                 }, 6000);
                 break;
               }
-              // DISCARD ANYTHING SPOKEN BEFORE THE TOOL CALL.
+              // DO NOT FLUSH AUDIO HERE.
               //
-              // The instruction not to speak first is a request, not a
-              // guarantee, and the model still does it. When it does, the reply
-              // is split across TWO responses — filler in the first, the answer
-              // in the second — and the model renders its voice per response,
-              // so the second can come back as a noticeably different speaker.
-              // Audio from every response is queued onto ONE cursor back to
-              // back, which is why it is heard as the voice changing
-              // mid-sentence rather than as two people.
+              // This called flushPlayback("tool"), on the theory that anything
+              // spoken before a tool call is filler we had asked the model not
+              // to produce, so dropping it would leave one audible render per
+              // reply.
               //
-              // Removing the instruction reduced it. This removes the
-              // mechanism: anything already playing when a tool call arrives is
-              // filler BY POLICY — we asked for silence — so dropping it costs
-              // nothing and leaves exactly one audible render per reply.
+              // A trace from a real session disproves it. Audio started at
+              // +37.820, the tool call landed at +41.218, and the flush logged
+              // `live= 1 dropped_s= 0.126`. The filler had ALREADY BEEN HEARD
+              // for 3.4 seconds. A flush cannot un-hear audio — it drops only
+              // the ~0.1s still queued — so its entire effect was to cut the
+              // sentence off mid-word, 3.2s before the answer arrived in a
+              // different voice. It did not remove the seam; it made it as
+              // audible as a seam can be.
               //
-              // Not applied to end_conversation, which is handled above and
-              // whose whole purpose is to speak a sign-off.
-              flushPlayback("tool");
+              // Letting the filler finish costs nothing: responses queue onto
+              // one cursor back to back, so the answer still follows without
+              // overlap and the voice change lands on a sentence boundary
+              // instead of mid-word. The change itself is xAI rendering voice
+              // per response, and no client-side edit reaches it.
               pendingToolsRef.current += 1;
+              const toolStart = Date.now();
+              // Tool NAME only, never arguments. The first trace showed two
+              // tools running and could not say which, so "the model answered
+              // badly" and "the tool came back empty" were indistinguishable.
+              // A name, a duration and an output SIZE separate them without
+              // putting a single word of anyone's data in a log line.
+              vlog("TOOL-CALL", name);
               setTools((t) => t.concat([{ id: String(call_id), name, args: toolArgsPhrase(msg.arguments), at: Date.now() }]));
               // Both captured BEFORE the await: which turn asked for this, and
               // which session. Everything after the await is checked against
@@ -946,7 +955,7 @@ export default function VoiceDock({
               const toolSession = sessionSeqRef.current;
               const toolWs = ws;
               pendingByEpochRef.current.set(toolEpoch, (pendingByEpochRef.current.get(toolEpoch) || 0) + 1);
-              let toolOutput: string;
+              let toolOutput = "";
               try {
                 const toolRes = await fetch("/api/ai/voice/tools", {
                   method: "POST",
@@ -979,6 +988,7 @@ export default function VoiceDock({
                 else pendingByEpochRef.current.delete(toolEpoch);
                 pendingToolsRef.current = Math.max(0, pendingToolsRef.current - 1);
                 setTools((t) => t.filter((x) => x.id !== String(call_id)));
+                vlog("TOOL-DONE", name, "ms=", Date.now() - toolStart, "chars=", toolOutput.length);
               }
 
               // The session that started this call must still be the live one.
