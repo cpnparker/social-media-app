@@ -47,6 +47,64 @@ async function applySetSlot(payload: any): Promise<string | null> {
   return error ? error.message : null;
 }
 
+
+/**
+ * Perform a merge: fold the loser into the keeper.
+ *
+ * RETARGETED, NEVER DELETED. Aliases, observations and edges are all moved
+ * across before the loser is marked merged and pointed at its survivor, because
+ * an episode or an observation holding a dangling id_node is worse than a
+ * redundant row. entity_node has id_merged_into for exactly this, and the
+ * resolver already skips anything marked merged.
+ *
+ * Order matters: move the evidence first, mark the node last. Interrupted
+ * halfway, that leaves a node whose facts have already moved and which is still
+ * live — visible and empty. The reverse order would leave facts pointing at a
+ * node nothing renders, which is the invisible-fact failure this project has
+ * produced three times.
+ */
+async function applyMerge(payload: any): Promise<string | null> {
+  const keep = payload?.keep, loser = payload?.merge;
+  if (!keep || !loser || keep === loser) return "merge payload is missing a side";
+
+  const { data: both, error: readErr } = await intel.from("entity_node")
+    .select("id_node, type_node, id_client, domain_primary").in("id_node", [keep, loser]);
+  if (readErr) return readErr.message;
+  if (!both || both.length !== 2) return "one of the two nodes no longer exists";
+  const k = (both as any[]).find((n) => n.id_node === keep);
+  const l = (both as any[]).find((n) => n.id_node === loser);
+  if (k.type_node !== l.type_node) return `refusing to merge a ${l.type_node} into a ${k.type_node}`;
+  if (l.id_client && l.id_client !== k.id_client) return "the losing node belongs to a different client";
+
+  // Aliases: onConflict rather than a plain update, since the keeper may
+  // already hold the same alias text.
+  const { data: aliases } = await intel.from("entity_alias").select("*").eq("id_node", loser);
+  for (const a of (aliases || []) as any[]) {
+    await intel.from("entity_alias").upsert({
+      id_node: keep, alias_text: a.alias_text, type_alias: a.type_alias,
+      type_source: a.type_source, count_evidence: a.count_evidence,
+      flag_confirmed: a.flag_confirmed, date_last_seen: a.date_last_seen,
+    }, { onConflict: "id_node,alias_text,type_alias" });
+  }
+  await intel.from("entity_alias").delete().eq("id_node", loser);
+
+  await intel.from("entity_observation").update({ id_node: keep }).eq("id_node", loser);
+  await intel.from("entity_edge").update({ id_source: keep }).eq("id_source", loser);
+  await intel.from("entity_edge").update({ id_target: keep }).eq("id_target", loser);
+
+  // The keeper inherits a domain if it had none — that is usually the whole
+  // point, since the Engine-derived org knows the client and the calendar one
+  // knows the domain.
+  if (!k.domain_primary && l.domain_primary) {
+    await intel.from("entity_node").update({ domain_primary: l.domain_primary }).eq("id_node", keep);
+  }
+
+  const { error: markErr } = await intel.from("entity_node")
+    .update({ type_status: "merged", id_merged_into: keep, date_updated: new Date().toISOString() })
+    .eq("id_node", loser);
+  return markErr ? markErr.message : null;
+}
+
 async function decide(id: string, accept: boolean) {
   const { data: p, error } = await intel.from("entity_proposal")
     .select("id_proposal, type_action, data_payload, type_status").eq("id_proposal", id).maybeSingle();
@@ -54,8 +112,9 @@ async function decide(id: string, accept: boolean) {
   const row = p as any;
   if (row.type_status !== "pending") { console.log(`\n  Already ${row.type_status}.\n`); process.exit(1); }
   if (accept) {
-    if (row.type_action !== "set_slot") { console.log(`\n  Only set_slot is applyable today.\n`); process.exit(1); }
-    const err = await applySetSlot(row.data_payload);
+    const err = row.type_action === "set_slot" ? await applySetSlot(row.data_payload)
+      : row.type_action === "merge" ? await applyMerge(row.data_payload)
+      : `${row.type_action} proposals cannot be applied yet`;
     if (err) { console.log(`\n  Could not apply: ${err}\n`); process.exit(1); }
   }
   // type_status only. My first version also set `date_decided`, which does not
@@ -88,7 +147,13 @@ async function main() {
   if (!rows.length) { console.log("\n  Nothing to review.\n"); return; }
 
   // Names, so a row reads as a person rather than a uuid.
-  const nodeIds = Array.from(new Set(rows.map((r) => r.data_payload?.id_node).filter(Boolean)));
+  // Every node a proposal refers to, whatever shape its payload takes. The
+  // first version read only data_payload.id_node, which is a set_slot field, so
+  // every merge proposal rendered as "(unknown)" with a role of "undefined" —
+  // ten unreadable rows offering to change something they could not name.
+  const nodeIds = Array.from(new Set(rows.flatMap((r) => [
+    r.data_payload?.id_node, r.data_payload?.keep, r.data_payload?.merge,
+  ]).filter(Boolean)));
   const names = new Map<string, string>();
   for (let i = 0; i < nodeIds.length; i += 200) {
     const { data: ns } = await intel.from("entity_node")
@@ -100,14 +165,31 @@ async function main() {
   // several independent meetings agree on.
   rows.sort((a, b) => (b.data_evidence?.distinct_series || 0) - (a.data_evidence?.distinct_series || 0));
 
-  const surfaced = rows.filter((r) => r.data_evidence?.surfaced);
-  console.log(`\n  ${rows.length} proposal(s); ${surfaced.length} meet the two-series bar\n`);
+  const merges = rows.filter((r) => r.type_action === "merge").length;
+  const slots = rows.filter((r) => r.type_action === "set_slot");
+  const surfaced = slots.filter((r) => r.data_evidence?.surfaced).length;
+  console.log(`\n  ${rows.length} proposal(s): ${merges} merge, ${slots.length} role (${surfaced} meeting the two-series bar)\n`);
   for (const r of rows) {
     const ev = r.data_evidence || {};
-    const who = names.get(r.data_payload?.id_node) || r.data_payload?.id_node || "(unknown)";
-    const bar = ev.surfaced ? "**" : "  ";
-    console.log(`${bar} ${who}`);
-    console.log(`     "${r.data_payload?.value}"   ${ev.distinct_series || 0} distinct series, ${(ev.events || []).length} meeting(s)${r.type_status !== "pending" ? `  [${r.type_status}]` : ""}`);
+    const p = r.data_payload || {};
+    const state = r.type_status !== "pending" ? `  [${r.type_status}]` : "";
+
+    if (r.type_action === "merge") {
+      // No evidence bar on a merge. "Two independent series agree" is a
+      // statement about role claims and means nothing here — printing it beside
+      // a merge asserts a confidence that was never measured.
+      console.log(`   MERGE  ${names.get(p.keep) || p.keep}${state}`);
+      console.log(`     absorb: ${names.get(p.merge) || p.merge}`);
+      console.log(`     why   : ${p.reason || "two nodes appear to be one organisation"}${ev.other_domain ? ` (other node has domain ${ev.other_domain})` : ""}`);
+    } else if (r.type_action === "set_slot") {
+      const bar = ev.surfaced ? "**" : "  ";
+      console.log(`${bar} ${names.get(p.id_node) || p.id_node || "(unknown)"}${state}`);
+      console.log(`     "${p.value}"   ${ev.distinct_series || 0} distinct series, ${(ev.events || []).length} meeting(s)`);
+    } else {
+      // Named rather than mangled. An unhandled action should say so.
+      console.log(`   ${String(r.type_action).toUpperCase()}  (this tool cannot display or apply this kind yet)${state}`);
+      console.log(`     payload: ${JSON.stringify(p).slice(0, 120)}`);
+    }
     console.log(`     confirm: npx tsx scripts/review-entity-proposals.ts --confirm=${r.id_proposal}`);
   }
   console.log(`\n  ** = two or more independent series agree. One series is stored but weakly evidenced —`);

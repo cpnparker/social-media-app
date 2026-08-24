@@ -63,7 +63,38 @@ for (const v of visClasses) {
     : pass(`"${v}" can be visible to at least one reader`);
 }
 
-console.log("\n4. Backfills evidence what they create");
+console.log("\n4. Every proposal action is displayable and applyable");
+// The fourth writer/reader mismatch in this project. The reflection pass writes
+// set_slot; the engagement backfill writes merge; the review tool understood
+// only set_slot — so ten merge proposals rendered as "(unknown)" offering a
+// role of "undefined", and marked ** because merge evidence happens to carry
+// surfaced:true, asserting a confidence nobody measured.
+const review = readFileSync("scripts/review-entity-proposals.ts", "utf8");
+const actions = (/type_action\s+text NOT NULL CHECK \(type_action IN\s*\(([^)]*)\)/.exec(migration)?.[1] || "")
+  .match(/'([a-z_]+)'/g)?.map((s) => s.replace(/'/g, "")) || [];
+actions.length
+  ? pass(`schema allows: ${actions.join(", ")}`)
+  : fail("could not read the proposal actions from the migration");
+// Which actions does anything actually WRITE? Only those must be handled.
+const writers = [
+  "scripts/reflect-entity-roles.ts", "scripts/backfill-engagements.ts",
+  "scripts/backfill-entity-graph.ts", "lib/entities/record.ts",
+].map((f) => { try { return readFileSync(f, "utf8"); } catch { return ""; } }).join("\n");
+for (const a of actions) {
+  const written = new RegExp(`type_action: "${a}"`).test(writers);
+  if (!written) { console.log(`  skip  "${a}" is never written by anything`); continue; }
+  const displayed = new RegExp(`type_action === "${a}"`).test(review);
+  displayed
+    ? pass(`"${a}" is written and the review tool handles it`)
+    : fail(`"${a}" is WRITTEN but the review tool cannot display or apply it`);
+}
+// And an unknown action must degrade to something legible rather than to
+// "undefined", which is what made ten rows unreadable.
+/cannot display or apply this kind yet/.test(review)
+  ? pass("an unhandled action says so rather than printing undefined")
+  : fail("an unhandled action would render as undefined");
+
+console.log("\n5. Backfills evidence what they create");
 for (const f of ["scripts/backfill-entity-graph.ts", "scripts/backfill-engagements.ts"]) {
   const src = readFileSync(f, "utf8");
   const makesEdges = /from\("entity_edge"\)[\s\S]{0,200}(insert|upsert)/.test(src);
