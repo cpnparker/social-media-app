@@ -256,7 +256,7 @@ async function main() {
   const jobs = LIMIT ? eligible.slice(0, LIMIT) : eligible;
   const drop = { unbound: 0, unreachable: 0, tense: 0, empty_role: 0, no_claims: 0 };
   // (person, seniority, function) -> the distinct series that support it
-  const support = new Map<string, { personId: string; role: string; series: Set<string>; events: { id: string; when: string }[] }>();
+  const support = new Map<string, { personId: string; role: string; seniority: string; fn: string; series: Set<string>; events: { id: string; when: string }[] }>();
 
   for (let i = 0; i < jobs.length; i++) {
     const job = jobs[i];
@@ -289,7 +289,7 @@ async function main() {
       const person = job.roster[v.index];
       const role = v.role;
       const k = `${person.id}|${role}`;
-      const cur = support.get(k) || { personId: person.id, role, series: new Set<string>(), events: [] };
+      const cur = support.get(k) || { personId: person.id, role, seniority: String(c.seniority), fn: String(c.function), series: new Set<string>(), events: [] };
       cur.series.add(seriesKey(job.eventId));
       if (!cur.events.some((e) => e.id === job.eventId)) cur.events.push({ id: job.eventId, when: job.when });
       support.set(k, cur);
@@ -309,7 +309,18 @@ async function main() {
     const { error } = await intel.from("entity_proposal").insert({
       id_workspace: workspaceId,
       type_action: "set_slot",
-      data_payload: { id_edge: idEdge, id_node: s.personId, field: "role_text", value: s.role },
+      // The ENUMS are stored alongside the composed string, deliberately.
+      //
+      // The first run produced "founder the executive" and "works in the
+      // executive" — a composition bug, not an extraction one. With only the
+      // finished string on the row there was no way to re-word those without
+      // paying for the whole model pass again. Keeping the enums means the
+      // wording is a pure function that can be re-applied to what has already
+      // been derived.
+      data_payload: {
+        id_edge: idEdge, id_node: s.personId, field: "role_text",
+        value: s.role, seniority: s.seniority, function: s.fn,
+      },
       // Sub-threshold proposals ARE written, just not surfaced. That is what
       // makes the system improve as the corpus grows instead of asking the same
       // speculative question twice.

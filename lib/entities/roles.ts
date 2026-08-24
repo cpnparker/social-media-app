@@ -37,8 +37,21 @@ export function composeRole(seniority: string, fn: string): string | null {
   // Nothing said: the honest output is nothing. "unspecified/unspecified" is
   // the most common real answer and must not become a role.
   if (!hasS && !hasF) return null;
-  // A standalone title needs no function: "founder" is complete, "head of" is not.
-  if (!hasF) return ["founder", "board", "advisor"].indexOf(seniority) >= 0 ? S[seniority] : null;
+
+  // STANDALONE TITLES TAKE NO FUNCTION. "founder" is a complete description of
+  // what someone is; "head of" is not. The first version appended the function
+  // regardless and produced "founder the executive" in a live run — real
+  // output, on a real person, from the first pass. A title that reads as
+  // gibberish is worse than no title: it makes every other fact in the block
+  // look untrustworthy.
+  const STANDALONE = ["founder", "board", "advisor"];
+  if (STANDALONE.indexOf(seniority) >= 0) return S[seniority];
+  if (!hasF) return null;   // "head of" with nothing to head is not a role
+
+  // "executive" is not a department you work IN. It reads correctly after
+  // "head of" and nowhere else, so the bare case gets its own wording — the
+  // same run produced "works in the executive".
+  if (fn === "executive") return hasS ? `${S[seniority]} the executive team` : "is an executive";
   if (!hasS) return `works in ${F[fn]}`;
   return `${S[seniority]} ${F[fn]}`;
 }

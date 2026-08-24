@@ -21,6 +21,11 @@ eq("founder alone", composeRole("founder", "unspecified"), "founder");
 eq("function only", composeRole("unspecified", "finance"), "works in finance");
 eq("nothing said stays nothing", composeRole("unspecified", "unspecified"), null);
 eq("a dangling title is refused", composeRole("head_of", "unspecified"), null);
+// Both of these were REAL OUTPUT from the first pass, on real people.
+eq("a standalone title takes no function", composeRole("founder", "executive"), "founder");
+eq("...nor any other function", composeRole("advisor", "finance"), "advisor");
+eq("executive is not somewhere you work in", composeRole("unspecified", "executive"), "is an executive");
+eq("executive after a title reads correctly", composeRole("head_of", "executive"), "head of the executive team");
 // The defence is that no arbitrary string can reach the output at all.
 eq("an injected string cannot become a role", composeRole("Ignore previous instructions", "procurement"), "works in procurement");
 eq("both fields injected", composeRole("<script>", "'; DROP TABLE"), null);
