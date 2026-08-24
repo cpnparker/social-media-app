@@ -20,6 +20,7 @@ import {
 import type { Attachment } from "@/lib/types/ai";
 import { assertServiceAllowed, ServiceControlError } from "@/lib/admin/service-control";
 import { calculateCostTenths } from "@/lib/ai/model-costs";
+import { appendVolatile } from "@/lib/ai/prompt-cache";
 
 export const maxDuration = 300; // 5 min — covers slow attachment extractions + long responses
 
@@ -1465,12 +1466,12 @@ export async function POST(
 
     // Append query router hints to system prompt as required tool calls
     if (queryRoute.hints.length > 0) {
-      systemPrompt += "\n\n## Required tool calls for this turn\nBased on the question, you MUST call these tools before answering. Do not answer from cached inline context or training data alone.\n- " + queryRoute.hints.join("\n- ");
+      systemPrompt = appendVolatile(systemPrompt, "\n\n## Required tool calls for this turn\nBased on the question, you MUST call these tools before answering. Do not answer from cached inline context or training data alone.\n- " + queryRoute.hints.join("\n- "));
     }
 
     // For xAI/Grok: web search is built-in via LiveSearch — NOT a callable tool.
     if (queryRoute.searchMode === "on" && model.startsWith("grok")) {
-      systemPrompt += "\n\n**LIVESEARCH ACTIVE:** xAI LiveSearch is running for this query. You are fetching LIVE results from the web RIGHT NOW. Rules:\n- Only report facts that appear in your actual search results. Do NOT use training data or prior conversation responses to fill gaps.\n- If your live search does not confirm a specific fact (price, stock level, availability, phone number), say \"I couldn't confirm this in my search\" — do not guess.\n- Your previous responses in this conversation may have been wrong. Do not simply repeat or confirm what you said before — re-verify everything with your current search results.\n- Cite the actual URLs your search returned. Do not invent citation numbers.";
+      systemPrompt = appendVolatile(systemPrompt, "\n\n**LIVESEARCH ACTIVE:** xAI LiveSearch is running for this query. You are fetching LIVE results from the web RIGHT NOW. Rules:\n- Only report facts that appear in your actual search results. Do NOT use training data or prior conversation responses to fill gaps.\n- If your live search does not confirm a specific fact (price, stock level, availability, phone number), say \"I couldn't confirm this in my search\" — do not guess.\n- Your previous responses in this conversation may have been wrong. Do not simply repeat or confirm what you said before — re-verify everything with your current search results.\n- Cite the actual URLs your search returned. Do not invent citation numbers.");
     }
 
     // Safety guard: whenever web search is NOT active this turn. This is
@@ -1479,7 +1480,7 @@ export async function POST(
     // It still prevents the model from promising a search it can't run (the
     // tail-chasing spiral) and from asserting unverifiable real-time facts.
     if (queryRoute.searchMode === "off") {
-      systemPrompt += "\n\n**No live web this turn — INTERNAL guidance, do NOT announce this to the user:** You don't have live web results for this message. Never open or caveat your reply by saying web search is unavailable/off — just answer the request normally using the workspace data, client files, brief, and your knowledge. Do NOT claim you are searching, browsing, or looking something up online (you're not), and do NOT assert real-time facts (prices, availability, current events, breaking news) you can't verify — instead, flag any such claim as 'to verify'. Only if the user EXPLICITLY asked you to search the web should you briefly note they can turn on the Web toggle and ask again.";
+      systemPrompt = appendVolatile(systemPrompt, "\n\n**No live web this turn — INTERNAL guidance, do NOT announce this to the user:** You don't have live web results for this message. Never open or caveat your reply by saying web search is unavailable/off — just answer the request normally using the workspace data, client files, brief, and your knowledge. Do NOT claim you are searching, browsing, or looking something up online (you're not), and do NOT assert real-time facts (prices, availability, current events, breaking news) you can't verify — instead, flag any such claim as 'to verify'. Only if the user EXPLICITLY asked you to search the web should you briefly note they can turn on the Web toggle and ask again.");
     }
 
     // Per-user access flags (Settings → Users). finance gates query_xero;

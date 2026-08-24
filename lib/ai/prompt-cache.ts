@@ -40,6 +40,36 @@ export function markVolatile(text: string): string {
 }
 
 /**
+ * Append text INTO the volatile region, wherever it sits.
+ *
+ * The messages route adds blocks AFTER buildSystemPrompt has returned, and a
+ * plain `+=` puts them after VOLATILE_CLOSE — which is to say, into the CACHED
+ * prefix. For the deck spec that is right and deliberate: a 23-slide
+ * specification does not change between turns of a deck conversation, and
+ * caching it is the whole reason this region is wrapped rather than trailing.
+ *
+ * For a PER-TURN block it is the opposite of right. The required-tools hint is
+ * built from the current message and the LiveSearch rules flip with searchMode,
+ * so filing them as stable changes the cached block on almost every turn.
+ * Measured: swapping one tool hint moved the first differing byte to char
+ * 53,084 of 53,090 — 100% of the way through — discarding the entire prefix.
+ *
+ * So the rule is a question about the CONTENT, not about where the code lives:
+ * does this text change between turns of the same conversation? If yes, it
+ * belongs in here. `stable` is the default and per-turn content is the
+ * exception, which is why it has to be asked deliberately each time.
+ *
+ * If no region exists yet the text becomes one, so a caller can never
+ * accidentally create a second region and strand the first.
+ */
+export function appendVolatile(systemText: string, extra: string): string {
+  if (!extra) return systemText;
+  const at = systemText.lastIndexOf(VOLATILE_CLOSE);
+  if (at === -1) return systemText + markVolatile(extra);
+  return systemText.slice(0, at) + extra + systemText.slice(at);
+}
+
+/**
  * Lift the volatile region out, wherever it sits.
  *
  * Returns the prompt with the region removed (`stable`) and the region's

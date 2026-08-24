@@ -283,6 +283,44 @@ Record the projected saving in the PR description.
       is Haiku 4.5 — poor value vs Luna, but the feature is dark until its
       migration runs. Add to the optimizer backlog.
 
+## A-6. Model-id issues surfaced by the 2026-08-24 AuthorityOn audit
+
+These are EngineAI bugs found while verifying current provider ids. Verify
+each against the live provider before acting — but all three are cheap checks.
+
+- [ ] ⚠️ **Perplexity `sonar` retires 2026-09-27 (34 days).** "Sonar will be
+      supported until September 27, 2026" — Chat Completions moves to the
+      Agent API. EngineAI carries `sonar` and `sonar-pro` as hidden registry
+      entries (`providers.ts:690, 697`). `sonar-pro`'s fate is an inference,
+      not documented — confirm with Perplexity. **Also hits AuthorityOn**,
+      where sonar is a scan target *and* four analysis sources.
+- [ ] ⚠️ **`gemini-3-flash` may not be a valid API id.** Gemini 3 Flash
+      shipped only as `gemini-3-flash-preview`; Google's migration doc renames
+      it to `gemini-3.5-flash`. EngineAI exposes bare `gemini-3-flash` as a
+      **user-selectable picker model** (`providers.ts:621`). If the bare id
+      404s, that picker entry is dead. Test one live call before anything else
+      here.
+- [ ] **`RATE_EXPIRIES` may be on the wrong model.** The $0.75/$3.75 →
+      $1.50/$7.50 doubling on 2027-01-01 belongs to `gemini-3.7-flash` /
+      `gemini-3.6-flash`. `gemini-3.5-flash` — the actual successor to the id
+      the repo carries — is $1.50/$9.00 flat with no promo. Re-point the
+      expiry to whichever id the previous item lands on.
+- [ ] **`gpt-5.6-sol` is over-priced in the cost table.** OpenAI lists
+      $4.00/$20.00 with "promotional pricing available at least through
+      November 21, 2026"; `model-costs.ts:61` carries the pre-promo $5/$30.
+      Correct it **and** add a `RATE_EXPIRIES` entry for the November
+      reversion. (The $5/$30 figure is what secondhand blogs quote — exactly
+      the stale-table failure mode CLAUDE.md warns about.)
+- [ ] **`mistral-large-latest` no longer means "the best Mistral."** Mistral's
+      top model is now `mistral-medium-3-5-26-04`; Large 3 became a mid-tier
+      open-weight model at $0.50/$1.50. The repo prices it $2/$6, matching
+      neither. It is a cost-table-only row with no call path — correct or drop.
+- [ ] **DeepSeek peak pricing, if `deepseek-chat` is ever repointed:** V4 rates
+      double during peak (01:00–04:00 and 06:00–10:00 **UTC**, Mon–Fri) — that
+      second window is 08:00–12:00 Zurich, this workspace's business morning.
+      Correct target for both retired aliases is `deepseek-v4-flash`, not
+      `-pro` (assuming `-pro` costs ~3.1x more for identical tokens).
+
 ---
 
 # Part B — MeetingBrain
