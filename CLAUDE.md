@@ -19,7 +19,42 @@ npx tsx scripts/verify-post-taint-policy.ts  # every registered tool is classifi
 npx tsx scripts/verify-safe-fetch.ts         # the SSRF guard blocks internal hosts in every notation
 ```
 
+## Voice checks
+
+```
+npx tsx scripts/verify-voice-config.ts --self-test
+```
+
+The speech-to-speech model renders its voice FRESH PER RESPONSE, and xAI has no
+per-response voice field — voice is session-level only (docs.x.ai, checked
+2026-08-24). So one reply must be one response, and a tool turn is structurally
+two: the function call ends the first, the answer speaks in the second. If the
+model ALSO speaks before the call, both responses carry audio, both are
+rendered, and the second can come back as a different speaker. VoiceDock queues
+audio from every response onto one cursor back to back, so the change lands
+seamlessly — which is why it is reported as the voice changing MID-SENTENCE
+rather than as two speakers.
+
+Serializing the responses (ae563a4) stopped them OVERLAPPING. It did not stop
+there being two renders. Do not trust the comment at `response.done` claiming
+the reply "stays ONE voice, back to back" — serializing made the seam seamless,
+not single-voiced.
+
+The check asserts that nothing tells the model to speak before a tool call — in
+the assembled prompt for all five gate combinations, AND in every tool
+description, because a tool description is prompt text too. On its first run it
+caught a live instruction saying the exact opposite ("Before any tool call, say
+a SHORT acknowledgment first"), which had been competing with the new rule
+rather than replaced by it. A new rule beside a contradicting old one changes
+nothing; that is why the check reads the ASSEMBLED prompt rather than diffing
+the edit.
+
+Never instruct an ACCENT (c03d4fc): it destabilises the render and produces the
+same symptom. British spelling in TEXT is fine; a British accent must come from
+the VOICE — and xAI has no British female, `leo` is British male.
+
 ## Model and pricing checks
+
 
 Two scripts guard which model runs and what it is billed at. Run both before
 shipping anything that adds a model id, changes a route's model, or touches
