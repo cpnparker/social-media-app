@@ -21,6 +21,38 @@
 
 export interface Range { start: number; end: number }
 
+/**
+ * Which heading levels are this document's SECTION headings.
+ *
+ * This was hard-coded to levels 2 and 3, which is right for a WEB PAGE — one
+ * H1 is the page title, H2/H3 are the sections — and wrong for everything that
+ * arrives from a word processor. Word's "Heading 1" is a top-level SECTION,
+ * and the piece's title is carried separately in the session, so an uploaded
+ * or pasted article has its real sections at H1 and nothing at H2 at all.
+ *
+ * On the founder's own imported .docx that produced a nonsense verdict: five
+ * H1 section headings were discarded, three H3 PULL QUOTES became "the
+ * sections", and every heading criterion then described the pull quotes.
+ * "0 of 3 headings are question-shaped" was measuring three quotations, while
+ * two of the five real headings are interrogative and one more is literally
+ * "What is MAXtect?".
+ *
+ * The rule reads the document instead of assuming one: sections start at the
+ * shallowest level actually used, EXCEPT where exactly one heading sits at
+ * that level and it is an H1 — the web-page shape, where that lone H1 is the
+ * title and sections begin one level down. URL imports therefore keep scoring
+ * exactly as before.
+ */
+export function sectionLevels(headings: { level: number }[]): number[] {
+  if (headings.length === 0) return [2, 3];
+  let top = 6;
+  for (let i = 0; i < headings.length; i++) if (headings[i].level < top) top = headings[i].level;
+  let atTop = 0;
+  for (let i = 0; i < headings.length; i++) if (headings[i].level === top) atTop++;
+  const base = atTop === 1 && top === 1 ? 2 : top;
+  return [base, base + 1];
+}
+
 export type BlockKind = "heading" | "prose" | "listItem" | "tableRow" | "quote" | "code";
 
 export interface Block extends Range {
@@ -469,6 +501,12 @@ export function parseDraft(input: ParseInput): ParsedDraft {
     });
   }
 
+  // Section levels, read from the document, shared by the chunker and the
+  // engine so a heading that IS a section cannot be a section for one and not
+  // the other — which is what left an H1 question heading with no chunk, and
+  // therefore permanently unanswerable.
+  const chunkLv = sectionLevels(headings);
+
   // Sentences, per block. A sentence never crosses a block boundary — which
   // removes the largest error class ("…rose 12% How to fix it Start by…") and
   // lets the ~18-word prose norm be measured over prose only.
@@ -530,7 +568,7 @@ export function parseDraft(input: ParseInput): ParsedDraft {
   };
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
-    if (b.kind === "heading" && (b.level === 2 || b.level === 3)) {
+    if (b.kind === "heading" && (b.level === chunkLv[0] || b.level === chunkLv[1])) {
       if (i > 0) pushChunk(i - 1);
       openHeading = headings.filter(function (h) { return h.blockIndex === i; })[0] || null;
       openStartBlock = i;

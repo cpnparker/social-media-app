@@ -50,6 +50,17 @@
  * Each was a check that named a real rule, passed, and proved nothing. That is
  * the failure mode this repo keeps rediscovering, and it is only ever found by
  * running the mutation rather than by reading the check.
+ *
+ * MUTATION LOG (2026-08-24) — run in a throwaway worktree.
+ *   layout-table unwrap disabled                  -> 4 fail  ✓
+ *   data tables also flattened (over-broad)       -> 3 fail  ✓
+ *   empty headings/paragraphs left in place       -> 3 fail  ✓
+ *   (baseline: exit 0)
+ *
+ * Two of these first reported as SURVIVORS and were not: the mutation had
+ * failed to apply through shell escaping. A mutation that does not apply looks
+ * exactly like one the check missed, so every entry here asserts the edit
+ * changed the file before drawing a conclusion.
  */
 import { plainTextToHtml, sanitizeImportedHtml, toEditorHtml } from "../lib/optimizer/import-html";
 
@@ -304,6 +315,53 @@ console.log(`\n7. The Docs article template unwraps into real structure`);
       sanitizeImportedHtml("<p><strong>Important</strong></p>"), "<p><strong>Important</strong></p>");
   has("a mid-length bold line IS promoted",
       sanitizeImportedHtml("<p><strong>Modernising the healthcare sector</strong></p>"), "<h2>Modernising the healthcare sector</h2>");
+}
+
+
+// ── Layout tables and the debris a .docx conversion leaves ────────────────
+//
+// A Word writer sets a definition box or a row of contributor cards as a
+// TABLE. The parser ranks a table row above a heading, so a heading inside a
+// cell never opens its own block: on the founder's own import, seven of
+// nineteen headings — including the only question-shaped one in the piece —
+// were invisible to every heading criterion. None of the fixtures here had a
+// heading inside a table, which is why thirteen green checks said nothing.
+console.log(`\nLayout tables, empty headings and empty paragraphs`);
+{
+  const layout = `<table><tbody><tr><th><h1>What is MAXtect?</h1><p></p><p>MAXtect is an ultra-high-performance concrete.</p></th></tr></tbody></table>`;
+  const outL = toEditorHtml(layout, true);
+  /<h1>What is MAXtect\?<\/h1>/.test(outL) && !/<table/i.test(outL)
+    ? pass("a heading inside a layout table is freed to top level")
+    : fail(`the layout table was not unwrapped: ${outL.slice(0, 130)}`);
+  /MAXtect is an ultra-high-performance concrete\./.test(outL)
+    ? pass("...and the cell's prose survives the unwrap")
+    : fail("unwrapping the layout table lost its text");
+
+  // The other direction, which matters just as much: a DATA table is what
+  // tables are for, and must survive untouched.
+  const data = `<table><tbody><tr><th>Region</th><th>Rate</th></tr><tr><td>Nordics</td><td>94.2%</td></tr></tbody></table>`;
+  const outD = toEditorHtml(data, true);
+  /<table/i.test(outD) && /Nordics/.test(outD) && /94\.2%/.test(outD)
+    ? pass("a data table — no headings in its cells — is left alone")
+    : fail(`a data table was flattened: ${outD.slice(0, 130)}`);
+
+  // Word leaves a heading behind wherever a heading-styled paragraph held only
+  // an image, and an empty paragraph wherever an image sat.
+  const debris = `<h1>Real heading</h1><h1></h1><h3>  </h3><p>Prose.</p><p></p><p>More prose.</p>`;
+  const outE = toEditorHtml(debris, true);
+  (outE.match(/<h[1-6]>/g) || []).length === 1
+    ? pass("headings emptied by the conversion are dropped")
+    : fail(`expected 1 heading, got ${(outE.match(/<h[1-6]>/g) || []).length}: ${outE.slice(0, 120)}`);
+  !/<p><\/p>/.test(outE) && /Prose\./.test(outE) && /More prose\./.test(outE)
+    ? pass("empty paragraphs go, real ones stay")
+    : fail(`empty paragraph handling wrong: ${outE.slice(0, 130)}`);
+
+  // The empty paragraph is not cosmetic: it sat between a question heading and
+  // the sentence answering it, and the answer criterion reads the NEXT block.
+  const gap = toEditorHtml(`<h1>What is MAXtect?</h1><p></p><p>MAXtect is a concrete.</p>`, true);
+  /<h1>What is MAXtect\?<\/h1><p>MAXtect is a concrete\.<\/p>/.test(gap)
+    ? pass("a question heading ends up adjacent to its answer")
+    : fail(`an empty block still separates the heading from its answer: ${gap}`);
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

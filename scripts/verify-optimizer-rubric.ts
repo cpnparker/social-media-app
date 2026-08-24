@@ -61,8 +61,20 @@
  * module scope with no output at all, which reads as a broken script rather
  * than a broken rubric. Both are the same lesson — a check you have not watched
  * fail is a check you do not have.
+ *
+ * MUTATION LOG (2026-08-24) — section levels, run in a throwaway worktree.
+ *   sectionLevels hard-coded back to [2,3]        -> 3 fail  ✓
+ *   chunker reverts to its own hard-coded levels  -> 1 fail  ✓
+ *   (baseline: exit 0)
+ *
+ * The second entry is the interesting one. The chunker held a SECOND copy of
+ * the same rule, and while the two disagreed an H1 question heading had no
+ * chunk and so could never be answered — the criterion scored 0/10 on an
+ * article that answers its heading in the next sentence. One rule, two
+ * readers, and only one of them updated.
  */
 import { computeDraftScores } from "../lib/optimizer/engine";
+import { sectionLevels, parseDraft } from "../lib/optimizer/parse";
 import type { DraftInput } from "../lib/optimizer/engine";
 import { CRITERIA, PILLARS, DROPPED_FROM_AUTHORITYON, RUBRIC_VERSION } from "../lib/optimizer/rubric";
 import { countTerm } from "../lib/optimizer/parse";
@@ -730,6 +742,57 @@ function markdownToHtml(md: string): string {
   if (inList) out.push("</ul>");
   if (inTable) out.push("</table>");
   return out.join("\n");
+}
+
+
+// ── Section headings are read FROM the document, not assumed ──────────────
+//
+// The levels were hard-coded to 2 and 3, which is the WEB PAGE shape — one H1
+// title, H2/H3 sections. Everything from a word processor has the opposite
+// shape: Word's "Heading 1" is a top-level SECTION and the title is carried
+// separately, so an uploaded article has its sections at H1 and nothing at H2.
+// On a real import that discarded all five section headings and left three
+// PULL QUOTES as "the sections" — every heading criterion then described the
+// quotations. Not one fixture in this suite had ever been Word-shaped, which
+// is why the whole suite stayed green while the verdicts were nonsense.
+console.log(`\nSection levels are read from the document`);
+{
+  const at = (levels: number[]) => sectionLevels(levels.map((l) => ({ level: l })));
+  const eq = (got: number[], want: number[]) => got[0] === want[0] && got[1] === want[1];
+
+  eq(at([1, 2, 2, 3]), [2, 3])
+    ? pass("web shape — ONE H1 is a title, so sections start at H2")
+    : fail(`web shape gave ${JSON.stringify(at([1, 2, 2, 3]))}, expected [2,3]`);
+  eq(at([1, 1, 1, 3, 3]), [1, 2])
+    ? pass("Word shape — several H1s are sections, so sections start at H1")
+    : fail(`Word shape gave ${JSON.stringify(at([1, 1, 1, 3, 3]))}, expected [1,2]`);
+  eq(at([2, 2, 3]), [2, 3])
+    ? pass("an H2-rooted document is unchanged")
+    : fail(`H2-rooted gave ${JSON.stringify(at([2, 2, 3]))}`);
+  eq(at([]), [2, 3])
+    ? pass("no headings falls back to the web default")
+    : fail("empty heading list did not fall back");
+
+  // End to end: the same article, Word-shaped, must score its question
+  // headings. Under the hard-coded rule this scored zero.
+  const wordShaped = `<h1>What is orchestration?</h1><p>Orchestration routes a transaction across several acquirers.</p>
+<h1>Why does it lift authorisation?</h1><p>Authorisation improves because a declined transaction is retried elsewhere.</p>
+<h1>How much does orchestration cost?</h1><p>Orchestration costs from eight basis points per transaction.</p>
+<p>${"word ".repeat(400)}</p>`;
+  const s2: any = computeDraftScores({ body: wordShaped, title: "Payment orchestration", targetQueries: [], format: "explainer" });
+  let qh: any = null, adj: any = null;
+  for (const pl of s2.pillars) for (const c of pl.criteria) {
+    if (c.key === "question-headings") qh = c;
+    if (c.key === "heading-answer-adjacency") adj = c;
+  }
+  qh && qh.earned > 0
+    ? pass(`three H1 question headings score (${qh.earned}/${qh.maxPoints}) instead of zero`)
+    : fail(`Word-shaped question headings scored ${qh ? qh.earned : "missing"} — the levels are hard-coded again`);
+  // The chunker has its OWN copy of this rule, and when the two disagreed an
+  // H1 question heading had no chunk and was permanently unanswerable.
+  adj && !adj.skipped && adj.earned > 0
+    ? pass(`...and their answers are found (${adj.earned}/${adj.maxPoints}) — chunker and engine agree on what a section is`)
+    : fail(`heading-answer-adjacency = ${adj ? (adj.skipped ? "skipped" : adj.earned) : "missing"} — the chunker still hard-codes levels`);
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

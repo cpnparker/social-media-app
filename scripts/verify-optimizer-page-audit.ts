@@ -61,6 +61,7 @@
 import { auditPage } from "../lib/optimizer/page-audit";
 import type { PageAuditInput } from "../lib/optimizer/page-audit";
 import type { RenderOutcome } from "../lib/optimizer/render";
+import { fenceDecision } from "../lib/optimizer/render";
 
 let failures = 0;
 const pass = (m: string) => console.log(`  ok    ${m}`);
@@ -271,8 +272,14 @@ console.log(`\n4. Adversarial-review cases`);
 // hidden navigation as broken images.
 console.log(`\n5. Rendering — and never claiming to have looked when it did not`);
 {
-  const renderOk = (over: Partial<RenderOutcome>): RenderOutcome => ({
-    ok: true, html: "<html></html>", finalUrl: BASE.finalUrl, reason: null,
+  // The rendered word count is now derived from the rendered HTML by the SAME
+  // function that measures the served page, so a fixture must supply real
+  // markup: passing a contentWords number alone no longer influences anything,
+  // which is the entire point of the parity fix.
+  const renderedHtml = (words: number) =>
+    `<!doctype html><html><body><main><h1>R</h1><p>${"word ".repeat(words)}</p></main></body></html>`;
+  const renderOk = (over: Partial<RenderOutcome> & { words?: number }): RenderOutcome => ({
+    ok: true, html: renderedHtml(over.words ?? 68), finalUrl: BASE.finalUrl, reason: null,
     // 68 is MEASURED, not chosen: it is the word count of GOOD_PAGE's own
     // content region. A default that disagreed with the fixture page made the
     // audit report a huge JavaScript gap — correctly — and the test that
@@ -305,16 +312,16 @@ console.log(`\n5. Rendering — and never claiming to have looked when it did no
   // (d) A real JavaScript gap fails; a page that ships its content passes.
   //     GOOD_PAGE's article region is short, so the rendered figure is what
   //     makes the ratio — a huge rendered body means the HTML carries little.
-  statusWith(renderOk({ contentWords: 4000 }), "js-dependency") === "fail"
+  statusWith(renderOk({ words: 4000 }), "js-dependency") === "fail"
     ? pass("a page whose content is mostly JavaScript-injected FAILS")
     : fail("a large JavaScript gap was not reported");
-  statusWith(renderOk({ contentWords: 80 }), "js-dependency") === "pass"
+  statusWith(renderOk({ words: 80 }), "js-dependency") === "pass"
     ? pass("a page that ships its content in the HTML passes")
     : fail("a server-rendered page was wrongly flagged as JavaScript-dependent");
 
   // (e) A partly-fenced render must WITHHOLD the measurement rather than
   //     report a comfortable number from an incomplete page.
-  statusWith(renderOk({ contentWords: 4000, blockedRequests: 3 }), "js-dependency") === "info"
+  statusWith(renderOk({ words: 4000, blockedRequests: 3 }), "js-dependency") === "info"
     ? pass("a render with refused subrequests withholds the JavaScript verdict")
     : fail("a verdict was issued from an incomplete render");
 
@@ -381,6 +388,80 @@ console.log(`\n6. Article scoping — nav images must not dilute the verdict`);
   alt2 && alt2.status !== "info"
     ? pass("a page with no <main> still gets an image verdict rather than silence")
     : fail("removing <main> made the image check evaporate");
+}
+
+// ── 7. Wrong verdicts found by a 14-agent adversarial review, 2026-08-24 ──
+//
+// Every one of these was live in production. None was caught by a check, a
+// build or a typecheck, because in each case the CODE was doing what it said —
+// it was reading the wrong string, or comparing two numbers that came from
+// different definitions.
+console.log(`\n7. Regressions from the adversarial review`);
+{
+  // (a) Commenting a tag out is how a developer disables it. The head was read
+  //     from the raw string, so a disabled noindex was reported as live — the
+  //     most alarming verdict this file can produce, about a healthy page.
+  const commentedNoindex = GOOD_PAGE.replace("<head>", '<head><!-- <meta name="robots" content="noindex"> -->');
+  statusOf({ ...BASE, page: commentedNoindex }, "robots-meta") === "pass"
+    ? pass("a commented-out noindex is not a live noindex")
+    : fail("a DISABLED robots tag was reported as blocking the page from every index");
+
+  // ...and the real one still fails, so the fix did not just blind the check.
+  const realNoindex = GOOD_PAGE.replace("<head>", '<head><meta name="robots" content="noindex">');
+  statusOf({ ...BASE, page: realNoindex }, "robots-meta") === "fail"
+    ? pass("...and a real noindex still fails")
+    : fail("the comment fix blinded the noindex check entirely");
+
+  // (b) Same bug, other tag: commented-out JSON-LD counted as schema present.
+  const noSchema = GOOD_PAGE.replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/, "");
+  const commentedSchema = noSchema.replace("</head>", '<!-- <script type="application/ld+json">{"@type":"Article"}</script> --></head>');
+  const sc = auditPage({ ...BASE, page: commentedSchema }, NOW).checks.filter((c) => c.id === "schema-present")[0];
+  sc && sc.status !== "pass"
+    ? pass("commented-out JSON-LD is not counted as schema")
+    : fail("a disabled JSON-LD block was reported as structured data the page has");
+
+  // (c) The two sides of the JavaScript ratio must come from ONE definition.
+  //     They did not: this file's regex on one side, render.ts's querySelector
+  //     on the other. A page whose <main> the regex accepts but the selector
+  //     misses reported a server-rendered page as JavaScript-dependent.
+  const article = `<main><h1>T</h1><p>${"word ".repeat(300)}</p></main>`;
+  const served = `<!doctype html><html lang="en"><head><title>Parity | Vaultline</title>
+<meta name="description" content="A description long enough for the audit to treat it as a real one, naming Vaultline.">
+<link rel="canonical" href="https://vaultline.example/parity"></head><body>${article}</body></html>`;
+  const renderedSame: RenderOutcome = {
+    ok: true, html: served, finalUrl: "https://vaultline.example/parity", reason: null,
+    blockedRequests: 0, images: [], renderedWords: 9999,
+    // Deliberately a LIE, and the point of the case: the browser-side number
+    // disagrees wildly with the served page. If the ratio still uses it, this
+    // identical page is reported as JavaScript-dependent.
+    contentWords: 9999,
+    headings: { h1: 1, h2: 0, h3: 0 }, jsonLdBlocks: 0, renderMs: 1000,
+  };
+  const parity = auditPage({ ...BASE, page: served, finalUrl: "https://vaultline.example/parity", render: renderedSame }, NOW)
+    .checks.filter((c) => c.id === "js-dependency")[0];
+  parity && parity.status === "pass"
+    ? pass("an identical served and rendered page passes — both sides measured the same way")
+    : fail(`identical HTML reported as JavaScript-dependent (${parity ? parity.detail : "missing"}) — the ratio is comparing two different regions`);
+
+  // (d) The address fence must ignore schemes that fetch nothing. Counting a
+  //     data: URI as a refusal makes js-dependency withhold its verdict, which
+  //     silently disabled the headline check on any page with an inline SVG.
+  const cases: [string, string][] = [
+    ["data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=", "inert"],
+    ["blob:https://x.example/abc", "inert"],
+    ["about:blank", "inert"],
+    ["https://cdn.example/app.js", "check"],
+    ["http://cdn.example/app.js", "check"],
+    ["file:///etc/passwd", "refuse"],
+    ["chrome-extension://abc/x.js", "refuse"],
+    ["not a url at all", "refuse"],
+  ];
+  let fenceOk = true;
+  for (const [url, want] of cases) {
+    const got = fenceDecision(url);
+    if (got !== want) { fail(`fenceDecision("${url.slice(0, 34)}") = ${got}, expected ${want}`); fenceOk = false; }
+  }
+  if (fenceOk) pass(`the fence classifies all ${cases.length} scheme cases correctly — data: is inert, file: is refused`);
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

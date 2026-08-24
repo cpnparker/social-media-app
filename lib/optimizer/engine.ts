@@ -26,7 +26,7 @@ import {
   CURRENCY_PHRASES, AI_TELL_TERMS, NOT_JUST_PATTERN,
   AUTHOR_LINE_PATTERN, COMPARATIVE_QUERY_PATTERN, STOPWORDS,
 } from "./rubric";
-import { parseDraft, sliceByWords, countTerm, containsAny } from "./parse";
+import { parseDraft, sliceByWords, countTerm, containsAny, sectionLevels } from "./parse";
 import type { ParsedDraft, Chunk } from "./parse";
 import { validateHeadingHierarchy } from "./heading-hierarchy";
 import type { CriterionSpan, CriterionResult, DraftScores, PillarScore } from "./types";
@@ -432,7 +432,8 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   // Question headings. AuthorityOn wanted 25 raw question marks for full marks
   // across concatenated SITE text — the poster child for recalibration. Here it
   // counts question-shaped HEADINGS, the structural unit extraction matches.
-  const sectionHeads = p.headings.filter(function (h) { return h.level === 2 || h.level === 3; });
+  const secLv = sectionLevels(p.headings);
+  const sectionHeads = p.headings.filter(function (h) { return h.level === secLv[0] || h.level === secLv[1]; });
   const qHeads = sectionHeads.filter(function (h) { return h.isInterrogativeShaped; });
   const ratio = sectionHeads.length > 0 ? qHeads.length / sectionHeads.length : 0;
   const qhPts = (qHeads.length >= 3 || (qHeads.length >= 2 && ratio >= 0.3)) ? 10 : qHeads.length === 2 ? 7 : qHeads.length === 1 ? 4 : 0;
@@ -794,7 +795,8 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
   }
 
   const hier = validateHeadingHierarchy(p.headings, !!input.title);
-  const sectionHeads = p.headings.filter(function (h) { return h.level === 2 || h.level === 3; });
+  const secLv = sectionLevels(p.headings);
+  const sectionHeads = p.headings.filter(function (h) { return h.level === secLv[0] || h.level === secLv[1]; });
   let hierScore = hier.score;
   let hierNote = hier.issues.length === 0 ? "clean" : hier.issues.map(function (i) { return i.detail; }).slice(0, 2).join("; ");
   // Article-scale addition: under the original, a structureless 2,000-word wall

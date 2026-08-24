@@ -204,6 +204,10 @@ export function sanitizeImportedHtml(html: string): string {
   // documents while passing on tidy fixtures. The final form is the only one
   // with a stable shape to match against.
   out = unwrapTemplateTable(out);
+  // After the house-template unwrap, which recognises only the label/value
+  // shape, and before heading promotion — a heading freed from a layout cell
+  // must exist before anything reasons about the heading tree.
+  out = unwrapLayoutTables(out);
   out = promoteBoldLineHeadings(out);
   return out;
 }
@@ -441,6 +445,53 @@ export function plainTextToHtml(text: string): string {
  * kept vocabulary, not merely the presence of "<": prose about "a < b" is not
  * HTML, and treating it as such would strip the sentence.
  */
+
+/**
+ * Flatten LAYOUT tables — a table used for two-column page furniture rather
+ * than for data — and drop headings the conversion left empty.
+ *
+ * Both defects came from one real .docx and both were invisible until the
+ * scores were read closely.
+ *
+ * LAYOUT TABLES. Word writers routinely set a definition box or a row of
+ * contributor cards as a table. The parser ranks a table row ABOVE a heading,
+ * so a heading inside a cell never opens its own block: on the founder's
+ * import, seven of nineteen headings — including "What is MAXtect?", the one
+ * question-shaped heading in the piece — were absorbed into table rows and
+ * were invisible to every heading criterion. unwrapTemplateTable above already
+ * handles the house Google-Docs template for exactly this reason; it declines
+ * a Word layout table because there is no label column to recognise. The test
+ * here is different and simpler: a table whose cells contain HEADINGS is
+ * carrying document structure, not data. A real data table has headings in
+ * neither its cells nor its header row, so it is left alone.
+ *
+ * EMPTY HEADINGS. A Word paragraph styled as a heading that holds only an
+ * image converts to a heading with no text once the image is lifted out.
+ * Four arrived in that draft. They render as blank gaps, and page-audit's
+ * own H1 regex counts them, so a document with one real H1 reported nine.
+ */
+export function unwrapLayoutTables(html: string): string {
+  let out = html.replace(/<table\b[^>]*>([\s\S]*?)<\/table\s*>/gi, (whole, inner) => {
+    if (!/<h[1-6]\b/i.test(inner)) return whole;      // a data table: untouched
+    // Cell boundaries become block boundaries; everything else is already
+    // block-level markup the sanitiser knows.
+    return inner
+      .replace(/<\/(td|th)\s*>/gi, " ")
+      .replace(/<(td|th)\b[^>]*>/gi, " ")
+      .replace(/<\/?(thead|tbody|tfoot|tr|colgroup|col)\b[^>]*>/gi, " ");
+  });
+  // Headings emptied by the conversion. Done after the unwrap so a heading
+  // that only ever held a table cell's image is caught too.
+  out = out.replace(/<h([1-6])\b[^>]*>(?:\s|<br\s*\/?>|&nbsp;)*<\/h\1\s*>/gi, "");
+  // ...and empty paragraphs, for a reason that is not cosmetic. Word leaves one
+  // wherever an image sat, and one landed between "What is MAXtect?" and the
+  // sentence answering it. The heading-answer criterion reads the block
+  // FOLLOWING a question heading, found an empty block, and scored the piece 0
+  // for failing to answer a question it answers in the very next sentence.
+  out = out.replace(/<p\b[^>]*>(?:\s|<br\s*\/?>|&nbsp;)*<\/p\s*>/gi, "");
+  return out;
+}
+
 export function toEditorHtml(content: string, contentIsHtml?: boolean): string {
   const s = content || "";
   if (!s.trim()) return "";

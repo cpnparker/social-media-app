@@ -132,14 +132,44 @@ function metaContents(page: string, value: string): string[] {
   return out;
 }
 
+/**
+ * Words in the article region of a document, by ONE definition.
+ *
+ * The JavaScript-gap ratio divides a served-HTML number by a rendered number,
+ * and the two were produced by different code: this file's contentRegion()
+ * regex on one side, and render.ts's `document.querySelector("main, article,
+ * [role=main], #main, .main-content")` on the other. Those disagree on real
+ * pages — a <main> under the 400-character floor, an <article> nested inside
+ * <nav>, a page whose content sits in #main — and when they disagree the ratio
+ * compares two different regions and reports a fully server-rendered page as
+ * JavaScript-dependent. Both sides now call this, on their own HTML.
+ */
+function regionWords(html: string): number {
+  const live = html.replace(/<!--[\s\S]*?-->/g, " ");
+  const dom = live.replace(/<(script|noscript|template|style|svg)\b[\s\S]*?<\/\1\s*>/gi, " ");
+  const region = contentRegion(dom).region;
+  const text = strip(region);
+  return text ? text.split(" ").filter(Boolean).length : 0;
+}
+
 export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   const { page, finalUrl } = input;
   const checks: AuditCheck[] = [];
   const push = (c: AuditCheck) => checks.push(c);
 
-  // JSON-LD is extracted from the RAW page FIRST, because the very next step
-  // deletes every <script>.
-  const ldBlocks = page.match(/<script\b[^>]*type\s*=\s*["']?application\/ld\+json["']?[^>]*>([\s\S]*?)<\/script>/gi) || [];
+  // Comments come out FIRST, before anything reads the markup.
+  //
+  // Commenting a tag out is how a developer disables it, and the audit read
+  // the raw string: a commented-out `<meta name="robots" content="noindex">`
+  // was reported as a live noindex, which is the single most alarming verdict
+  // this file can produce — "nothing else on this audit matters until this is
+  // gone" — delivered about a page that is perfectly indexable. The same held
+  // for a commented-out JSON-LD block, reported as schema the page does not
+  // have. The <h1> checks already stripped comments; the head never did.
+  const live = page.replace(/<!--[\s\S]*?-->/g, " ");
+
+  // JSON-LD is extracted BEFORE scripts are deleted, but AFTER comments are.
+  const ldBlocks = live.match(/<script\b[^>]*type\s*=\s*["']?application\/ld\+json["']?[^>]*>([\s\S]*?)<\/script>/gi) || [];
 
   // Everything structural reads a STRIPPED copy. The raw page is full of dead
   // content that produced confident wrong verdicts: an <h1> inside a script
@@ -147,9 +177,7 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   // (alt-less, near-universal) raised a standing false alt warning, and an
   // inline SVG's accessibility <title> could stand in for a missing head
   // title. Machines reading the page strip these; the audit must too.
-  const dom = page
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<(script|noscript|template|style|svg)\b[\s\S]*?<\/\1\s*>/gi, " ");
+  const dom = live.replace(/<(script|noscript|template|style|svg)\b[\s\S]*?<\/\1\s*>/gi, " ");
 
   // ── Indexability — everything else is moot if this fails ────────────────
   push({
@@ -159,7 +187,7 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: input.httpStatus !== 200 ? "A page that does not answer 200 cannot be crawled, cited or ranked." : undefined,
   });
 
-  const robotsAll = metaContents(page, "robots");
+  const robotsAll = metaContents(live, "robots");
   const robots = robotsAll.length ? robotsAll.join(" | ") : null;
   // content="none" is the documented equivalent of noindex,nofollow, and the
   // most restrictive of SEVERAL robots tags is what crawlers honour.
@@ -171,7 +199,7 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: noindex ? "noindex removes the page from every index and every AI training crawl. Nothing else on this audit matters until this is gone." : undefined,
   });
 
-  const linkTags = page.match(/<link\b[^>]*>/gi) || [];
+  const linkTags = live.match(/<link\b[^>]*>/gi) || [];
   let canonical = "";
   for (let i = 0; i < linkTags.length; i++) {
     if (attr(linkTags[i], "rel").toLowerCase() === "canonical") { canonical = attr(linkTags[i], "href"); break; }
@@ -183,7 +211,7 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     // is perfectly valid and was being reported as "points elsewhere" — an
     // alarming, concretely wrong claim about a correct page. <base href> wins
     // as the resolution root when present, exactly as a browser resolves it.
-    const baseTag = (page.match(/<base\b[^>]*>/i) || [])[0];
+    const baseTag = (live.match(/<base\b[^>]*>/i) || [])[0];
     const baseHref = baseTag ? attr(baseTag, "href") : "";
     let resolved = canonical;
     try {
@@ -200,7 +228,7 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: canonicalStatus !== "pass" ? "A canonical pointing elsewhere hands this page's citations to another URL; missing means duplicates compete with it." : undefined,
   });
 
-  const htmlTag = (page.match(/<html\b[^>]*>/i) || [""])[0];
+  const htmlTag = (live.match(/<html\b[^>]*>/i) || [""])[0];
   const langAttr = attr(htmlTag, "lang");
   push({
     id: "lang", section: "indexability", name: "Language declared",
@@ -227,7 +255,7 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: titleStatus !== "pass" ? "Buyer's phrase + brand, under 60 characters. The title does not have to match the H1." : undefined,
   });
 
-  const metaDesc = metaContent(page, "name", "description");
+  const metaDesc = metaContent(live, "name", "description");
   push({
     id: "meta-description", section: "identity", name: "Meta description",
     status: !metaDesc ? "fail" : metaDesc.length < 70 || metaDesc.length > 175 ? "warn" : "pass",
@@ -238,9 +266,9 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   // property= is the spec; name= is a widespread malformation that Facebook's
   // and most answer engines' parsers deliberately accept. Reporting working
   // tags as missing steers a developer to add duplicates for a non-problem.
-  const ogTitle = metaContent(page, "any", "og:title");
-  const ogDesc = metaContent(page, "any", "og:description");
-  const ogImage = metaContent(page, "any", "og:image");
+  const ogTitle = metaContent(live, "any", "og:title");
+  const ogDesc = metaContent(live, "any", "og:description");
+  const ogImage = metaContent(live, "any", "og:image");
   const ogMissing = [!ogTitle && "og:title", !ogDesc && "og:description", !ogImage && "og:image"].filter(Boolean);
   push({
     id: "og-tags", section: "identity", name: "Open Graph tags",
@@ -329,6 +357,9 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   // JavaScript runs, and is therefore invisible to them?
   const r = input.render;
   const rawContentWords = strip(contentDom).split(" ").filter(Boolean).length;
+  // The rendered side measured by the SAME function, over the DOM the browser
+  // actually built — which render.ts already returns in full.
+  const renderedContentWords = r && r.ok && r.html ? regionWords(r.html) : 0;
 
   // Audit-infrastructure status is INFO, never pass/warn/fail: it describes
   // how much the audit could see, not a defect in the page, and it must not
@@ -347,7 +378,7 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   // run less JavaScript than a real browser would. Reporting a comfortable
   // "no gap" off that would be a confident wrong verdict of exactly the kind
   // this file exists to avoid, so the measurement is withheld instead.
-  const renderTrustworthy = !!r && r.ok && r.blockedRequests === 0 && r.contentWords >= 50;
+  const renderTrustworthy = !!r && r.ok && r.blockedRequests === 0 && renderedContentWords >= 50;
   if (!renderTrustworthy) {
     push({
       id: "js-dependency", section: "rendering", name: "Content present without JavaScript",
@@ -359,7 +390,7 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
           : "Not measured — the rendered article was too short to compare against reliably.",
     });
   } else {
-    const ratio = rawContentWords / r!.contentWords;
+    const ratio = rawContentWords / renderedContentWords;
     const pct = Math.round(ratio * 100);
     push({
       id: "js-dependency", section: "rendering", name: "Content present without JavaScript",
@@ -371,16 +402,25 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
       // nonsense and invites a reader to distrust every other number here.
       detail: ratio >= 1
         ? `The served HTML carries the whole article (${rawContentWords} words) — nothing here waits on JavaScript.`
-        : `The served HTML carries ${rawContentWords} of the ${r!.contentWords} words a browser ends up showing — about ${pct}%.`,
+        : `The served HTML carries ${rawContentWords} of the ${renderedContentWords} words a browser ends up showing — about ${pct}%.`,
       remedy: ratio >= 0.75 ? undefined
         : `The crawlers behind AI answers mostly do not run JavaScript, so roughly ${100 - pct}% of this article is invisible to them. Server-render the article body, or ship it in the initial HTML.`,
     });
 
+  }
+
+  // Image findings depend on a SUCCESSFUL RENDER, not on the word ratio. They
+  // were nested inside the ratio's branch, so a page whose JavaScript gap
+  // could not be measured — a short article, or (before the scheme fix) any
+  // page carrying an inline SVG — silently lost its broken-image and
+  // resolution findings too. Two independent questions had been wired to one
+  // gate, and the coupling was invisible until the ratio changed.
+  if (r && r.ok && r.images.length > 0) {
     // Only a render knows whether an image ever actually arrived. Judged over
     // ARTICLE images with a real layout box: a hidden megamenu image never
     // loads by design, and counting those produced 33 "broken images" on a
     // page whose 10 article images were all fine.
-    const judged = r!.images.filter((i) => i.inContent && (i.width > 0 || i.height > 0));
+    const judged = r.images.filter((i) => i.inContent && (i.width > 0 || i.height > 0));
     const broken = judged.filter((i) => !i.loaded);
     if (judged.length > 0) {
       push({

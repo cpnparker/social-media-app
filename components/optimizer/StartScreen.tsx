@@ -115,7 +115,20 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
       tab: Tab,
       ref?: string,
       title?: string,
-      content?: string,
+      /**
+       * The pasted body AND whether it is real clipboard HTML, as ONE
+       * argument, because they are one fact and they diverged when they were
+       * two. The flag used to be read from the enclosing scope while the text
+       * was passed in — and this callback's dependency array does not list it,
+       * so the flag was frozen at the value it held before anything was
+       * pasted (false) while the text was a fresh read of the clipboard HTML.
+       * The server takes contentIsHtml:false as a hard veto on tag sniffing,
+       * so every rich paste was escaped into the editor as visible
+       * &lt;p&gt; source text with its headings gone — the exact regression
+       * the conversion was written to prevent. Passing them together makes
+       * the mismatch unrepresentable rather than merely fixed.
+       */
+      content?: { text: string; isHtml: boolean },
       /** Overrides the tab's default source. The Google Doc tab has two: a
        *  pasted link and a pick from the shared list, which reach the server
        *  by different routes and must be recorded differently. */
@@ -139,8 +152,8 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             // writer has not since typed over it: `pasted` is the source of
             // truth for what is on screen, so if it no longer matches what was
             // pasted, the html is stale and must not be used.
-            content: content,
-            contentIsHtml: sourceOverride ? undefined : usingRichPaste,
+            content: content ? content.text : undefined,
+            contentIsHtml: content ? content.isHtml : undefined,
             ...(extra || {}),
           }),
         });
@@ -354,7 +367,10 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
                 <Button
                   size="sm"
                   disabled={busy || !pasted.trim()}
-                  onClick={() => doImport("paste", undefined, pasteTitle, usingRichPaste ? pastedHtml! : pasted)}
+                  onClick={() =>
+                    // Both halves read in the SAME render, so they cannot disagree.
+                    doImport("paste", undefined, pasteTitle, { text: usingRichPaste ? pastedHtml! : pasted, isHtml: usingRichPaste })
+                  }
                 >
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                   Open in the editor

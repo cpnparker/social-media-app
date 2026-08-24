@@ -74,6 +74,29 @@ export interface RenderOutcome {
   renderMs: number;
 }
 
+/**
+ * What the address fence should do with one request URL, as a pure function so
+ * a check can drive it without a browser.
+ *
+ *  "inert"  — data:, blob:, about:. No network, no host, nothing to check.
+ *             These MUST NOT count as refusals: they have an empty hostname,
+ *             the classifier rejected them, and every inline SVG therefore
+ *             incremented the refusal count — which makes the js-dependency
+ *             check withhold its verdict. The headline finding switched itself
+ *             off on most of the modern web, and looked fine because the one
+ *             page it was built against uses none.
+ *  "check"  — http/https. Ask the classifier, as safeFetch does.
+ *  "refuse" — everything else (file:, ftp:, chrome-extension:). Refused AND
+ *             counted, which is exactly what the fence is for.
+ */
+export function fenceDecision(rawUrl: string): "inert" | "check" | "refuse" {
+  let u: URL;
+  try { u = new URL(rawUrl); } catch { return "refuse"; }
+  if (u.protocol === "data:" || u.protocol === "blob:" || u.protocol === "about:") return "inert";
+  if (u.protocol === "http:" || u.protocol === "https:") return "check";
+  return "refuse";
+}
+
 const FAILED = (reason: string): RenderOutcome => ({
   ok: false, html: null, finalUrl: null, reason,
   blockedRequests: 0, images: [], renderedWords: 0, contentWords: 0,
@@ -151,8 +174,11 @@ export async function renderPage(url: string, timeoutMs = 20_000): Promise<Rende
     await page.setRequestInterception(true);
     page.on("request", async (req: any) => {
       try {
-        const h = new URL(req.url()).hostname;
-        if (await destinationIsPublicForTest(h)) req.continue();
+        const decision = fenceDecision(req.url());
+        if (decision === "inert") { req.continue(); return; }
+        if (decision === "refuse") { blockedRequests++; req.abort(); return; }
+        const host = new URL(req.url()).hostname;
+        if (await destinationIsPublicForTest(host)) req.continue();
         else { blockedRequests++; req.abort(); }
       } catch {
         blockedRequests++;
