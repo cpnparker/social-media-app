@@ -979,6 +979,28 @@ export default function ChatPanel({
     }
   };
 
+  // Why it was unhelpful — a follow-up to the flag, never a precondition for it.
+  //
+  // Sent as its own PATCH so the rating is already saved by the time the picker
+  // appears: if the user skips it, closes the tab, or the request fails, the
+  // flag still stands. Silent on success — a toast for a one-tap answer is
+  // noise, and the click already gave its feedback by disappearing.
+  const handleRateReason = async (messageId: string, reason: string) => {
+    try {
+      const res = await fetch(`/api/ai/messages/${messageId}/feedback`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rating: -1, reason }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch {
+      // Deliberately quiet. The rating survived; only the reason was lost, and
+      // telling the user their reason failed invites them to re-rate, which
+      // would overwrite a flag that is already recorded.
+      console.error("[Feedback] Reason not saved");
+    }
+  };
+
   // Change visibility (private ↔ team)
   const handleVisibilityChange = async (newVisibility: string) => {
     try {
@@ -1708,6 +1730,11 @@ export default function ChatPanel({
                   onRate={
                     msg.role === "assistant" && !msg.id.startsWith("temp-") && !msg.id.startsWith("factcheck-") && !msg.id.startsWith("assistant-")
                       ? (rating) => handleRateMessage(msg.id, rating)
+                      : undefined
+                  }
+                  onRateReason={
+                    msg.role === "assistant" && !msg.id.startsWith("temp-") && !msg.id.startsWith("factcheck-") && !msg.id.startsWith("assistant-")
+                      ? (reason) => handleRateReason(msg.id, reason)
                       : undefined
                   }
                   workspaceId={conversation?.workspaceId ?? null}

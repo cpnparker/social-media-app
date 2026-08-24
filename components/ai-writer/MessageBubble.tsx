@@ -13,6 +13,16 @@ import ScheduledProposalCard, { type ScheduledProposal } from "./ScheduledPropos
 import { toast } from "sonner";
 import { saveToNotebook, normaliseSelection } from "@/lib/notebook/client";
 
+/** Keys must match the CHECK on intelligence.ai_message_feedback.type_reason. */
+const FEEDBACK_REASONS = [
+  { key: "wrong_facts", label: "Wrong facts" },
+  { key: "wrong_datetime", label: "Wrong date/time" },
+  { key: "made_it_up", label: "Made it up" },
+  { key: "missed_data", label: "Missed data it had" },
+  { key: "ignored_request", label: "Ignored what I asked" },
+  { key: "tone_format", label: "Tone or format" },
+] as const;
+
 interface MessageBubbleProps {
   role: "user" | "assistant" | "system";
   content: string;
@@ -26,6 +36,8 @@ interface MessageBubbleProps {
   /** Current feedback rating (1 / -1 / null) and change handler. Thumbs render only when handler provided. */
   rating?: 1 | -1 | null;
   onRate?: (rating: 1 | -1 | null) => void;
+  /** Optional follow-up: WHY it was unhelpful. One tap, dismissible. */
+  onRateReason?: (reason: string) => void;
   /** Promote this answer's prompt to a scheduled (recurring) task. */
   onMakeRecurring?: () => void;
   /** Needed by embedded scheduled-proposal confirmation cards. */
@@ -59,6 +71,7 @@ export default function MessageBubble({
   onEdit,
   rating,
   onRate,
+  onRateReason,
   onMakeRecurring,
   workspaceId,
   messageId,
@@ -68,6 +81,7 @@ export default function MessageBubble({
 }: MessageBubbleProps) {
   const isUser = role === "user";
   const [copied, setCopied] = useState(false);
+  const [showReasons, setShowReasons] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(content);
   const editRef = useRef<HTMLTextAreaElement>(null);
@@ -604,7 +618,7 @@ export default function MessageBubble({
             {onRate && (
               <>
                 <button
-                  onClick={() => onRate(rating === 1 ? null : 1)}
+                  onClick={() => { setShowReasons(false); onRate(rating === 1 ? null : 1); }}
                   className={cn(
                     "inline-flex items-center text-[10px] transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50",
                     rating === 1 ? "text-green-500" : "text-muted-foreground hover:text-foreground"
@@ -614,7 +628,14 @@ export default function MessageBubble({
                   <ThumbsUp className="h-3 w-3" />
                 </button>
                 <button
-                  onClick={() => onRate(rating === -1 ? null : -1)}
+                  onClick={() => {
+                    const next = rating === -1 ? null : -1;
+                    onRate(next);
+                    // Ask only when a flag is being SET, and only once — a
+                    // picker that reappears every time the thumb is toggled
+                    // is a nag, and this channel is fragile enough already.
+                    setShowReasons(next === -1 && !!onRateReason);
+                  }}
                   className={cn(
                     "inline-flex items-center text-[10px] transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50",
                     rating === -1 ? "text-red-500" : "text-muted-foreground hover:text-foreground"
@@ -625,6 +646,30 @@ export default function MessageBubble({
                 </button>
               </>
             )}
+          </div>
+        )}
+        {/* One tap, and skippable. A longer form at this volume would cost more
+            signal than it gathers — an unanswered reason still counts as a
+            flag, which is why nothing here is required. */}
+        {showReasons && rating === -1 && onRateReason && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+            <span className="text-[10px] text-muted-foreground mr-0.5">What went wrong?</span>
+            {FEEDBACK_REASONS.map((r) => (
+              <button
+                key={r.key}
+                onClick={() => { onRateReason(r.key); setShowReasons(false); }}
+                className="text-[10px] rounded-full border border-border px-2 py-0.5 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+              >
+                {r.label}
+              </button>
+            ))}
+            <button
+              onClick={() => setShowReasons(false)}
+              className="text-[10px] text-muted-foreground/60 hover:text-foreground px-1"
+              title="Skip"
+            >
+              Skip
+            </button>
           </div>
         )}
       </div>
