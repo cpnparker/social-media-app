@@ -30,7 +30,7 @@
  * that works, so this one proves its own preconditions before trusting itself.
  */
 import { MODEL_REGISTRY, getModelInfo } from "../lib/ai/providers";
-import { MODEL_COSTS, calculateCostTenths, RATES_VERIFIED_ON } from "../lib/ai/model-costs";
+import { MODEL_COSTS, calculateCostTenths, RATES_VERIFIED_ON, RATE_EXPIRIES } from "../lib/ai/model-costs";
 import { AI_MODELS, getModelLabel } from "../lib/ai/models";
 import { FAST_MODEL, REASONING_MODEL, GROUNDED_MODEL } from "../lib/ai/auto-router";
 
@@ -138,6 +138,43 @@ for (let i = 0; i < registryIds.length; i++) {
 }
 if (failures === before5) ok("every id and wire slug has a display label");
 
+// ── 6. No rate is past its expiry ───────────────────────────────────────
+// A promotional rate is correct until a date and wrong after it, and nothing
+// in the running system notices the day it turns. So the date is the check.
+type Expiry = (typeof RATE_EXPIRIES)[number];
+type Verdict = { state: "expired" | "applied" | "soon" | "valid"; days: number; message: string };
+
+/**
+ * What to say about one expiring rate on a given day.
+ *
+ * Takes the date as an argument rather than reading the clock, so the
+ * self-test can drive it past its own expiry without waiting a week or
+ * touching a repo file.
+ */
+export function expiryVerdict(todayIso: string, e: Expiry, row: { inputPer1M: number; outputPer1M: number } | undefined): Verdict {
+  const days = Math.ceil((Date.parse(e.until) - Date.parse(todayIso)) / 86_400_000);
+  if (!row) return { state: "expired", days, message: `${e.model} has an expiry recorded but no rate row` };
+  const applied = row.inputPer1M === e.then.inputPer1M && row.outputPer1M === e.then.outputPer1M;
+  if (todayIso > e.until) {
+    return applied
+      ? { state: "applied", days, message: `${e.model} expired ${e.until} and the new rate is already applied — remove this entry` }
+      : { state: "expired", days, message: `${e.model} rate expired on ${e.until}. Set inputPer1M: ${e.then.inputPer1M}, outputPer1M: ${e.then.outputPer1M}. ${e.why}` };
+  }
+  return days <= 14
+    ? { state: "soon", days, message: `${e.model} rate changes in ${days} day(s), on ${e.until}: $${e.then.inputPer1M / 100}/$${e.then.outputPer1M / 100} per 1M` }
+    : { state: "valid", days, message: `${e.model} rate valid until ${e.until} (${days} days)` };
+}
+
+console.log("\nNo rate is past its known expiry date");
+const todayIso = new Date().toISOString().slice(0, 10);
+for (let i = 0; i < RATE_EXPIRIES.length; i++) {
+  const e = RATE_EXPIRIES[i];
+  const v = expiryVerdict(todayIso, e, MODEL_COSTS[e.model]);
+  if (v.state === "expired") fail(v.message);
+  else if (v.state === "soon") console.log(`  NOTE ${v.message}`);
+  else ok(v.message);
+}
+
 // ── Self-test ───────────────────────────────────────────────────────────
 // Prove the detectors go red, without mutating a repo file. Break-test-restore
 // in a shared working tree already shipped one deliberate break to production
@@ -162,6 +199,18 @@ if (process.argv.indexOf("--self-test") >= 0) {
 
   st("a missing label falling back to the raw id",
     getModelLabel("some-unlabelled-model") === "some-unlabelled-model");
+
+  // The expiry check, driven past its own date. This is the one detector that
+  // cannot be proven by waiting, so it is proven by argument instead.
+  const sonnet = RATE_EXPIRIES.filter((e) => e.model === "claude-sonnet-5")[0];
+  if (!sonnet) { selfFails++; console.log("  FAIL no claude-sonnet-5 expiry to test against"); }
+  else {
+    st("a rate still inside its window", expiryVerdict("2026-08-24", sonnet, MODEL_COSTS["claude-sonnet-5"]).state !== "expired");
+    st("a rate one day past expiry", expiryVerdict("2026-09-01", sonnet, MODEL_COSTS["claude-sonnet-5"]).state === "expired");
+    st("an expiry already actioned (asks for removal, not a failure)",
+      expiryVerdict("2026-09-01", sonnet, { inputPer1M: sonnet.then.inputPer1M, outputPer1M: sonnet.then.outputPer1M }).state === "applied");
+    st("the 14-day notice", expiryVerdict("2026-08-24", sonnet, MODEL_COSTS["claude-sonnet-5"]).state === "soon");
+  }
 
   // The real assertion behind check 1: Luna priced as Luna, not as Sonnet.
   const lunaPerM = calculateCostTenths("gpt-5-6-luna", 1_000_000, 0) / 1000; // tenths of a cent → dollars

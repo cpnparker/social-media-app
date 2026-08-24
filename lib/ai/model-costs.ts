@@ -46,6 +46,7 @@ export const MODEL_COSTS: Record<
   // September 2026 increase to $3/$15 "will not occur" — so this table was
   // overstating Sonnet 5 by 50%, on the model the auto-router forces for web
   // search and personal-data turns.
+  // $2/$10 is INTRODUCTORY and expires — see RATE_EXPIRIES below.
   "claude-sonnet-5": { inputPer1M: 200, outputPer1M: 1000, cachedInputPer1M: 20, cacheWriteMultiplier: 1.25 },     // $2/$10, cache $0.20
   "claude-sonnet-4-6": { inputPer1M: 300, outputPer1M: 1500 },       // $3/$15
   "claude-sonnet-4-20250514": { inputPer1M: 300, outputPer1M: 1500 },
@@ -140,3 +141,32 @@ export function calculateCostTenths(
 
   return Math.round(inputCost + outputCost + cacheReadCost + cacheWriteCost);
 }
+
+/**
+ * Rates that are known to expire, with the date and what replaces them.
+ *
+ * A promotional rate is a correct rate that becomes a wrong one on a schedule.
+ * Nothing in the code notices the day it turns, so the ledger simply starts
+ * understating — and understating is the direction this file calls dangerous
+ * everywhere else, because the ledger feeds a hard provider cap and a figure
+ * that is too low lets spend run past it instead of tripping it.
+ *
+ * A comment would not have helped. The failure is a DATE passing, so the check
+ * is a date comparison: scripts/verify-model-ids.ts fails once one of these is
+ * in the past and prints the rate to put in its place. The reminder is the
+ * build, not somebody's memory.
+ */
+export const RATE_EXPIRIES: {
+  model: string;
+  /** Last day the current rate is correct, inclusive. ISO date. */
+  until: string;
+  then: { inputPer1M: number; outputPer1M: number };
+  why: string;
+}[] = [
+  {
+    model: "claude-sonnet-5",
+    until: "2026-08-31",
+    then: { inputPer1M: 300, outputPer1M: 1500 },
+    why: "Anthropic introductory pricing. Reverts to $3/$15 on 2026-09-01 — a 50% rise on the auto-router's GROUNDED_MODEL, which every document upload routes to.",
+  },
+];

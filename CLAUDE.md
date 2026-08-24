@@ -19,6 +19,45 @@ npx tsx scripts/verify-post-taint-policy.ts  # every registered tool is classifi
 npx tsx scripts/verify-safe-fetch.ts         # the SSRF guard blocks internal hosts in every notation
 ```
 
+## Model and pricing checks
+
+Two scripts guard which model runs and what it is billed at. Run both before
+shipping anything that adds a model id, changes a route's model, or touches
+the rate table:
+
+```
+npx tsx scripts/verify-model-ids.ts --self-test   # registry, rates and labels agree
+npx tsx scripts/verify-model-params.ts            # sampling vs thinking per model
+```
+
+`verify-model-ids` exists because BOTH lookups fail soft. `getModelInfo`
+answers an unknown id with claude-sonnet-5; `calculateCostTenths` prices an
+unknown id at the claude-sonnet-4-6 fallback. Neither throws. So a half-added
+model routes somewhere else at a different price and reports nothing — the
+plan's own `gpt-5-6-luna` was an id that existed in no table, and writing it
+into a routing constant would have sent the cheap tier to Sonnet 5 at fifteen
+times the intended price while the ledger looked perfectly healthy.
+
+Adding a model id touches five files and four of them fail silently. The check
+asserts they agree, and it queries the tables through the same functions the
+app calls rather than grepping for lines — a regex proving a line EXISTS once
+reported a live security hole here as closed.
+
+`RATE_EXPIRIES` in `lib/ai/model-costs.ts` holds rates with a known end date,
+and check 6 fails once one is past it. A promotional rate is a correct rate
+that becomes wrong on a schedule, and nothing in a running system notices the
+day it turns; the reminder has to be the build, not somebody's memory. Sonnet 5's
+introductory $2/$10 reverts to $3/$15 on 2026-09-01 — a 50% rise on the
+auto-router's GROUNDED_MODEL, which every document upload routes to.
+
+`--self-test` drives every detector against synthetic bad input and refuses to
+report anything if one fails to fire. Use it rather than break-test-restore:
+this working tree is shared with other sessions and also deploys, and a
+deliberate break has already reached production from here once. It earns its
+keep — it caught two live faults (deepseek-chat still selectable a month after
+DeepSeek retired the alias; grok-4.3 and grok-4.6 billing at the $3/$15
+fallback) and one wrong assertion of my own.
+
 ## Content Optimizer checks
 
 Twelve scripts guard `lib/optimizer/` and the import/export paths. Run all of them
