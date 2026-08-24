@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { checkConversationAccess } from "@/lib/ai/access";
-import { VOICE_COST_TENTHS_PER_MIN, VOICE_MODEL } from "@/lib/ai/voice";
+import { voiceCostTenthsPerMin, VOICE_MODEL } from "@/lib/ai/voice";
 
 // POST /api/ai/voice/transcript — persist voice turns into the conversation
 // Body: { conversationId, turns: [{ role: "user"|"assistant", content }], durationSeconds? }
@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
         type_source: "engineai-voice",
         units_input: Math.round(Number(durationSeconds)),
         units_output: 0,
-        units_cost_tenths: Math.max(1, Math.round(minutes * VOICE_COST_TENTHS_PER_MIN)),
+        units_cost_tenths: Math.max(1, Math.round(minutes * voiceCostTenthsPerMin(VOICE_MODEL))),
         id_conversation: conversationId,
       });
       if (usageErr) console.error("[VoiceTranscript] Usage log failed:", usageErr.message);
