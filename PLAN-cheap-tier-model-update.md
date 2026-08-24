@@ -146,16 +146,50 @@ move from $1.25–$3.00 per M input to $0.20. MeetingBrain's structural fixes
 - [ ] Size the prize. Verify column names against `lib/db/schema.ts` / the
       usage-logger insert before running:
 
+**The query below was corrected on 2026-08-24 — every column name in the
+original was wrong** (`model`, `tokens_input`, `tokens_output`,
+`cost_tenths_cent`, `created_at`), so it would have errored rather than
+returned a baseline. Real columns per `scripts/create-intelligence-schema.sql`:
+`name_model`, `units_input`, `units_output`, `units_cost_tenths`,
+`date_created`, plus `type_app` from the 2026-03-20 multi-app migration.
+
+It is also no longer scoped to Grok. Scoping the baseline to the models you
+already intend to move measures the answer you assumed, not the bill.
+
 ```sql
-select model, type_source, count(*) as calls,
-       sum(tokens_input) as tokens_in, sum(tokens_output) as tokens_out,
-       round(sum(cost_tenths_cent)::numeric / 1000, 2) as cost_usd
+-- Where EngineAI's model spend actually goes, last 30 days.
+select
+  type_source,
+  name_model,
+  count(*)                                         as calls,
+  sum(units_input)                                 as tokens_in,
+  sum(units_output)                                as tokens_out,
+  round(sum(units_cost_tenths)::numeric / 1000, 2) as cost_usd
 from intelligence.ai_usage
-where created_at >= now() - interval '30 days'
-  and model in ('grok-4-1-fast','grok-4-3','grok-4.3','grok-3','grok-3-mini')
-group by model, type_source
-order by cost_usd desc;
+where date_created >= now() - interval '30 days'
+  and type_app = 'engine'
+group by type_source, name_model
+order by cost_usd desc
+limit 60;
 ```
+
+Sanity check first — if `rows_30d` is 0 or `earliest` is only days old, the
+window is not what you think it is and the numbers below mean nothing:
+
+```sql
+select
+  count(*)                                         as rows_30d,
+  min(date_created)                                as earliest,
+  max(date_created)                                as latest,
+  round(sum(units_cost_tenths)::numeric / 1000, 2) as total_usd
+from intelligence.ai_usage
+where date_created >= now() - interval '30 days'
+  and type_app = 'engine';
+```
+
+⚠️ Whatever this returns is a FLOOR, not a measurement, until web search has
+been logging for a full window. `executeWebSearch` never logged at all before
+2026-08-24.
 
 Record the projected saving in the PR description.
 
