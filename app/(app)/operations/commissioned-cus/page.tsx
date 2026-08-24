@@ -23,6 +23,7 @@ import {
   Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { isExpiredCUWriteOff } from "@/lib/expired-cus";
 import { formatLocalDate } from "@/lib/date-utils";
 import { downloadCSV } from "@/lib/csv-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
@@ -207,6 +208,7 @@ export default function CommissionedCUsPage() {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
+  const [hideExpiredCUs, setHideExpiredCUs] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
 
   // Global customer filter from the TopBar selector
@@ -297,7 +299,8 @@ export default function CommissionedCUsPage() {
   }, [formatOptions]);
 
   /* ─── Filtered tasks ─── */
-  const filtered = useMemo(() => {
+  // Every filter EXCEPT the expired-CU one, so the toggle can report what it hides.
+  const filteredBeforeExpiry = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return tasks.filter((t) => {
       // Global customer scope (from the TopBar selector)
@@ -321,6 +324,26 @@ export default function CommissionedCUsPage() {
       return true;
     });
   }, [tasks, searchQuery, selectedCategories, selectedFormats, globalCustomerId]);
+
+  const filtered = useMemo(
+    () =>
+      hideExpiredCUs
+        ? filteredBeforeExpiry.filter((t) => !isExpiredCUWriteOff(t.contentTitle, t.contentType))
+        : filteredBeforeExpiry,
+    [filteredBeforeExpiry, hideExpiredCUs]
+  );
+
+  // What the toggle is holding back — surfaced so the number is never silently
+  // different from Retool or a previous export.
+  const expiredExcluded = useMemo(() => {
+    const items = filteredBeforeExpiry.filter((t) => isExpiredCUWriteOff(t.contentTitle, t.contentType));
+    const cus = items.reduce((sum, t) => sum + t.taskCUs, 0);
+    // Count by content id, not title: two clients can both have an item
+    // literally named "Expired CUs" and they must not collapse into one.
+    const ids = Array.from(new Set(items.map((t) => t.contentId || t.taskId)));
+    const names = Array.from(new Set(items.map((t) => `${t.customerName} — ${t.contentTitle}`)));
+    return { count: ids.length, cus, names };
+  }, [filteredBeforeExpiry]);
 
   /* ─── Totals ─── */
   const totals = useMemo(() => {
@@ -478,6 +501,11 @@ export default function CommissionedCUsPage() {
     return sortRows(Object.values(map), userContentSort.currentSort, userContentSort.currentAsc);
   }, [filtered, selectedCommissioner, userContentSort.currentSort, userContentSort.currentAsc]);
 
+  // The exported file must carry the toggle state: a CSV pulled today and
+  // one pulled last week otherwise differ with nothing in either to say why.
+  const csvName = (base: string) =>
+    `${base}${hideExpiredCUs && expiredExcluded.count > 0 ? "-ex-writeoffs" : ""}.csv`;
+
   const isFiltered = dateFrom || dateTo;
   const selectionLabel = useMemo(() => {
     const n = selectedCustomerIds.size;
@@ -560,6 +588,13 @@ export default function CommissionedCUsPage() {
                 <input type="checkbox" checked={excludeTestClients} onChange={(e) => setExcludeTestClients(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
                 Hide TCE and test clients
               </label>
+              <label
+                className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer shrink-0 select-none"
+                title="Contract-closure write-offs (e.g. 'WBCSD expired CUs (2026)') are accounting adjustments, not produced work. When ticked they are removed from Total CUs, CUs by type, the customer/team tables, both charts, Period CUs and every CSV export here. The all-time Contract Total / Commissioned / Remaining columns still count them, because the client's balance really was consumed."
+              >
+                <input type="checkbox" checked={hideExpiredCUs} onChange={(e) => setHideExpiredCUs(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
+                Hide expired CUs
+              </label>
             </div>
           </div>
 
@@ -599,6 +634,14 @@ export default function CommissionedCUsPage() {
             ))}
           </div>
 
+          {/* Expired-CU write-offs held back by the toggle — shown so the
+              headline number is never silently different from Retool. */}
+          {hideExpiredCUs && expiredExcluded.count > 0 && (
+            <p className="text-[11px] text-muted-foreground" title={expiredExcluded.names.join("\n")}>
+              Excludes {expiredExcluded.count} expired-CU write-off{expiredExcluded.count === 1 ? "" : "s"} ({expiredExcluded.cus.toFixed(2)} CU) &mdash; contract-closure adjustments, not produced work. Untick &ldquo;Hide expired CUs&rdquo; to include them.
+            </p>
+          )}
+
           {/* CU by type */}
           {cusByType.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
@@ -618,7 +661,7 @@ export default function CommissionedCUsPage() {
               <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Active Customers</h2>
                 {customerList.length > 0 && (
-                  <button onClick={() => downloadCSV(customerList.map(row => ({ Customer: row.name, CUs: (row.cus).toFixed(2), Tasks: row.taskCount })), "customers-commissioned.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerList.map(row => ({ Customer: row.name, CUs: (row.cus).toFixed(2), Tasks: row.taskCount })), csvName("customers-commissioned"))} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -687,7 +730,7 @@ export default function CommissionedCUsPage() {
                   Contract Activity{selectionLabel}
                 </h2>
                 {customerContracts.length > 0 && (
-                  <button onClick={() => downloadCSV(customerContracts.map(row => ({ Contract: row.contractName, "Total CUs": (row.totalContractCUs).toFixed(2), Commissioned: (row.commissionedContractCUs).toFixed(2), Remaining: (row.remaining).toFixed(2), "Period CUs": (row.periodCUs).toFixed(2) })), "contract-activity.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerContracts.map(row => ({ Contract: row.contractName, "Total CUs": (row.totalContractCUs).toFixed(2), Commissioned: (row.commissionedContractCUs).toFixed(2), Remaining: (row.remaining).toFixed(2), "Period CUs": (row.periodCUs).toFixed(2) })), csvName("contract-activity"))} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -739,7 +782,7 @@ export default function CommissionedCUsPage() {
                   Content Commissioned{selectionLabel}
                 </h2>
                 {customerContent.length > 0 && (
-                  <button onClick={() => downloadCSV(customerContent.map(row => ({ Content: row.title, Type: row.type, "Commissioned By": row.commissionedBy || "", CUs: (row.cus).toFixed(2), Commissioned: row.createdAt ? fmtDate(row.createdAt) : "", Link: row.contentId ? `https://app.thecontentengine.com/all/contents/${row.contentId}` : "", "Media download URLs": (mediaByContent[row.contentId] || []).map(m => m.url).join("\n") })), "content-commissioned.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                  <button onClick={() => downloadCSV(customerContent.map(row => ({ Content: row.title, Type: row.type, "Commissioned By": row.commissionedBy || "", CUs: (row.cus).toFixed(2), Commissioned: row.createdAt ? fmtDate(row.createdAt) : "", Link: row.contentId ? `https://app.thecontentengine.com/all/contents/${row.contentId}` : "", "Media download URLs": (mediaByContent[row.contentId] || []).map(m => m.url).join("\n") })), csvName("content-commissioned"))} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                     <Download className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -835,7 +878,7 @@ export default function CommissionedCUsPage() {
                 <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Team Commissions</h2>
                   {teamList.length > 0 && (
-                    <button onClick={() => downloadCSV(teamList.map(row => ({ Name: row.name, Items: row.count, CUs: (row.cus).toFixed(2) })), "team-commissions.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <button onClick={() => downloadCSV(teamList.map(row => ({ Name: row.name, Items: row.count, CUs: (row.cus).toFixed(2) })), csvName("team-commissions"))} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
                       <Download className="h-3.5 w-3.5" />
                     </button>
                   )}

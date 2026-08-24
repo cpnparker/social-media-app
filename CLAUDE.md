@@ -64,6 +64,50 @@ keep — it caught two live faults (deepseek-chat still selectable a month after
 DeepSeek retired the alias; grok-4.3 and grok-4.6 billing at the $3/$15
 fallback) and one wrong assertion of my own.
 
+## Expired-CU write-off checks
+
+One script guards `lib/expired-cus.ts`, which decides what the operations
+dashboards' "Hide expired CUs" toggle removes from the totals. Run it before
+shipping anything that touches the predicate, the toggle, or the client export:
+
+```
+npx tsx scripts/verify-expired-cus.ts --self-test
+```
+
+When a contract ends with an unused balance, that balance is booked as a
+content item so the contract burns down to zero. Those entries are accounting
+adjustments, not produced work, and they are large and lumpy: July 2026 was
+109.84 CU commissioned of which 40.74 — 37% — was write-offs, while most
+months are 0.
+
+There is NO structured marker for them. They are ordinary `Service` content
+identified only by a hand-typed name, in 20 variants across 30 items, so the
+predicate is a text heuristic and the check exists to keep it honest in BOTH
+directions. Positive fixtures are every real write-off name; negative fixtures
+are real content plus deliberately synthetic expiry-worded items that pin the
+`Service` type gate. The two failure modes are not symmetric — a missed
+write-off leaves an obviously large number on screen, a wrongly-hidden real
+item silently under-reports delivered work — which is why the type gate is
+exact (`Service Analytics Report` carries real quarterly work) and why new
+name patterns should be confirmed per item rather than guessed.
+
+The pattern already missed one: CPI's "RETIRED CONTENT UNITS" (29.68 CU, the
+second-largest on record) said nothing about expiry, and its sibling
+"Retiring Units — Contract Expiration" was caught only because someone
+appended a word. Hence `/expir|retir/i`.
+
+`checkWiring()` asserts the predicate is USED, not merely present — that both
+pages apply it and that their `totals` memo reads the filtered list. Pointing
+`totals` at the pre-filter list silently restores the inflated number while
+tsc, eslint and every fixture assertion stay green; this repo has already
+closed a live hole on the strength of a line merely EXISTING.
+
+Deliberately NOT covered, and needing per-item review before anyone widens the
+pattern: contract-boundary ledger entries ("Contract adjustment", "Moving CUs
+from old contract", ~44 CU over ~64 items — several relocate charges for work
+that WAS produced) and the 2022 Engine-V1 migration backfill ("Content units
+from V1", 859.50 CU, the single largest row in `app_content`).
+
 ## Content Optimizer checks
 
 Twelve scripts guard `lib/optimizer/` and the import/export paths. Run all of them

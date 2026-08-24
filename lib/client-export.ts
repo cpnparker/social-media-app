@@ -3,13 +3,22 @@ import { supabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/supabase-paginate";
 import { nextDay } from "@/lib/date-utils";
 import { canSignMedia, signMediaUrl } from "@/lib/gcs-sign";
+import { isExpiredCUWriteOff } from "@/lib/expired-cus";
 
 // Client handover export: a two-sheet workbook for one client covering all
 // content COMMISSIONED in the period (task date_created basis — the same
-// definition as the operations dashboards, so the export always agrees with
-// the on-screen numbers). Sheet 1 is one row per content item with Google Doc
+// definition as the operations dashboards, so the export agrees with the
+// on-screen numbers). Sheet 1 is one row per content item with Google Doc
 // links and media download URLs; sheet 2 is one row per final-revision media
 // file with a signed, no-login download URL (1-year validity).
+//
+// Expired-CU write-offs are excluded, matching the pages' "Hide expired CUs"
+// default. They are contract-closure accounting entries, not deliverables:
+// a row reading "WBCSD expired CUs (2026)" with no document and no media, in
+// a client-facing handover titled "Content Commissioned", is worse than
+// misleading. The workbook says what it excluded, and the contract's own
+// burn-down is unaffected — this only ever removes rows, never CUs the client
+// was charged for.
 
 interface ContentRow {
   idContent: number | null; // null: standalone task with no content record
@@ -75,9 +84,17 @@ export async function buildClientExport(
   let clientName = "Client";
   const aggByContent = new Map<number, TaskAgg>();
   const standaloneRows: ContentRow[] = [];
+  let writeOffCUs = 0;
+  const writeOffIds: Record<string, true> = {};
   for (const t of [...contentTasks, ...socialTasks]) {
     if (t.flag_spiked === 1 && !t.date_completed) continue;
     if (t.name_client) clientName = t.name_client;
+    // Expired-CU write-offs: excluded, but measured so the sheet can say so.
+    if (isExpiredCUWriteOff(t.name_content, t.type_content)) {
+      writeOffCUs += Number(t.units_content) || 0;
+      writeOffIds[String(t.id_content || t.id_task)] = true;
+      continue;
+    }
     const cus = Number(t.units_content) || 0;
     const name = t.name_content || t.name_social || "Untitled";
     const type = t.type_content || (t.name_social !== undefined ? "social promo" : "unknown");
@@ -208,7 +225,11 @@ export async function buildClientExport(
   const ws = wb.addWorksheet("Content");
   ws.getCell("A1").value = `${clientName} — Content Commissioned`;
   ws.getCell("A1").font = { name: "Arial", size: 14, bold: true };
-  ws.getCell("A2").value = `Content commissioned ${range}. Generated ${today} from The Content Engine operations database. Same definition as the operations dashboards (tasks created in period; spiked-incomplete excluded).`;
+  const writeOffCount = Object.keys(writeOffIds).length;
+  const writeOffNote = writeOffCount
+    ? ` Excludes ${writeOffCount} expired-CU write-off${writeOffCount === 1 ? "" : "s"} (${writeOffCUs.toFixed(2)} CU) — contract-closure accounting entries, not produced content.`
+    : "";
+  ws.getCell("A2").value = `Content commissioned ${range}. Generated ${today} from The Content Engine operations database. Same definition as the operations dashboards (tasks created in period; spiked-incomplete excluded).${writeOffNote}`;
   ws.getCell("A2").font = subFont;
   ws.getCell("A3").value = `Doc links are Google Docs shared "anyone with the link". Media download links need no login and are valid until ${expiryDate}. Full per-file list on the "Media Files" sheet.`;
   ws.getCell("A3").font = subFont;
