@@ -16,7 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { ArrowRight, ClipboardPaste, FileText, Building2, Globe, Loader2, PenLine, Info } from "lucide-react";
+import { ArrowRight, ClipboardPaste, FileText, Building2, Globe, Loader2, PenLine, Info, Upload, FileUp } from "lucide-react";
 
 export interface ImportSources {
   docs: { id: string; name: string; modified: string }[];
@@ -37,9 +37,13 @@ interface Props {
  *  differently ("paste" vs "pasted"), so the mapping is a total record keyed by
  *  Tab — adding a tab without a source is then a type error rather than a 400
  *  at the moment someone tries to import. */
-type Tab = "paste" | "url" | "gdoc" | "engine";
-type ImportSource = "pasted" | "gdoc" | "gdoc-link" | "url" | "engine";
-const SOURCE_FOR_TAB: { [k in Tab]: ImportSource } = { paste: "pasted", url: "url", gdoc: "gdoc", engine: "engine" };
+type Tab = "paste" | "upload" | "url" | "gdoc" | "engine";
+type ImportSource = "pasted" | "gdoc" | "gdoc-link" | "url" | "engine" | "file";
+const SOURCE_FOR_TAB: { [k in Tab]: ImportSource } = { paste: "pasted", upload: "file", url: "url", gdoc: "gdoc", engine: "engine" };
+
+/** What importFile in lib/optimizer/file-import.ts will actually accept. Kept
+ *  next to the picker so the dialog and the server cannot drift apart. */
+const ACCEPTED_UPLOAD = ".docx,.html,.htm,.md,.markdown,.txt";
 
 export default function StartScreen({ workspaceId, clientId, clientName, onImported, onWriteNew }: Props) {
   const [tab, setTab] = useState<Tab>("paste");
@@ -78,6 +82,9 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
 
   const [docUrl, setDocUrl] = useState("");
   const [pageUrl, setPageUrl] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [uploadingName, setUploadingName] = useState<string | null>(null);
 
   const doImport = useCallback(
     async (
@@ -88,7 +95,11 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
       /** Overrides the tab's default source. The Google Doc tab has two: a
        *  pasted link and a pick from the shared list, which reach the server
        *  by different routes and must be recorded differently. */
-      sourceOverride?: ImportSource
+      sourceOverride?: ImportSource,
+      /** Extra body fields a source needs — the uploaded file's blob URL and
+       *  name. A bag rather than three more positional parameters, which at
+       *  this arity is where a caller silently passes them in the wrong order. */
+      extra?: { [k: string]: unknown }
     ) => {
       if (!workspaceId) { toast.error("Select a workspace first"); return; }
       setBusy(true);
@@ -106,10 +117,16 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             // pasted, the html is stale and must not be used.
             content: content,
             contentIsHtml: sourceOverride ? undefined : usingRichPaste,
+            ...(extra || {}),
           }),
         });
         const data = await res.json();
         if (!res.ok) { toast.error(data.error || "Could not bring that in"); return; }
+        // What did NOT survive the import, said out loud. An import that
+        // quietly drops figures is worse than one that refuses.
+        if (Array.isArray(data.warnings)) {
+          for (const w of data.warnings) toast.warning(String(w), { duration: 8000 });
+        }
         onImported(data.sessionId);
       } catch (e: any) {
         toast.error(e?.message || "Could not bring that in");
@@ -118,6 +135,53 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
       }
     },
     [workspaceId, clientId, onImported]
+  );
+
+  /**
+   * Take an uploaded document.
+   *
+   * The bytes go BROWSER → BLOB directly, not through the import route: a
+   * Vercel serverless request body caps at 4.5MB and a Word document with
+   * photographs passes that routinely. The route is then handed the URL and
+   * deletes the object once it has converted it.
+   */
+  const handleFile = useCallback(
+    async (file: File) => {
+      if (!workspaceId) { toast.error("Select a workspace first"); return; }
+      const ext = (file.name.toLowerCase().match(/\.([a-z0-9]+)$/) || [])[1] || "";
+      // Refused here as well as on the server, so the writer is told before
+      // waiting for a 4MB upload to complete and then be rejected.
+      if (ext === "doc") {
+        toast.error("That is the older binary .doc format. Open it in Word and save as .docx.");
+        return;
+      }
+      if (ext === "pdf") {
+        toast.error("A PDF loses its headings, lists and figures when extracted — the score would describe the file format, not the writing. Export the source as .docx.");
+        return;
+      }
+      if (["docx", "html", "htm", "md", "markdown", "txt"].indexOf(ext) < 0) {
+        toast.error("Upload a .docx, .html, .md or .txt.");
+        return;
+      }
+      setUploadingName(file.name);
+      setBusy(true);
+      try {
+        const { upload } = await import("@vercel/blob/client");
+        const blob = await upload(`optimizer-uploads/${file.name}`, file, {
+          access: "public",
+          handleUploadUrl: "/api/media/upload",
+        });
+        await doImport("upload", undefined, undefined, undefined, undefined, {
+          blobUrl: blob.url, fileName: file.name, fileType: file.type,
+        });
+      } catch (e: any) {
+        toast.error(e?.message || "That upload did not complete");
+      } finally {
+        setBusy(false);
+        setUploadingName(null);
+      }
+    },
+    [workspaceId, doImport]
   );
 
   /** The captured html is only valid while the textarea still shows the text it
@@ -158,10 +222,66 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
 
           <div className="flex gap-1.5 mb-3">
             <SourceTab active={tab === "paste"} onClick={() => setTab("paste")} icon={<ClipboardPaste className="h-3.5 w-3.5" />} label="Paste it" />
+            <SourceTab active={tab === "upload"} onClick={() => setTab("upload")} icon={<FileUp className="h-3.5 w-3.5" />} label="Upload a file" />
             <SourceTab active={tab === "url"} onClick={() => setTab("url")} icon={<Globe className="h-3.5 w-3.5" />} label="A published page" />
             <SourceTab active={tab === "gdoc"} onClick={() => setTab("gdoc")} icon={<FileText className="h-3.5 w-3.5" />} label="A Google Doc" />
             <SourceTab active={tab === "engine"} onClick={() => setTab("engine")} icon={<Building2 className="h-3.5 w-3.5" />} label="From the Engine" />
           </div>
+
+          {tab === "upload" && (
+            <div className="flex flex-col gap-2">
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => !busy && fileInputRef.current?.click()}
+                onKeyDown={(e) => { if ((e.key === "Enter" || e.key === " ") && !busy) fileInputRef.current?.click(); }}
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOver(false);
+                  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+                  if (f && !busy) handleFile(f);
+                }}
+                className={cn(
+                  "rounded-xl border-2 border-dashed px-4 py-9 text-center transition-colors outline-none",
+                  busy ? "opacity-60 cursor-wait" : "cursor-pointer",
+                  dragOver ? "border-primary bg-primary/5" : "border-border hover:border-primary/40 focus-visible:border-primary"
+                )}
+              >
+                {busy && uploadingName ? (
+                  <div className="flex flex-col items-center gap-2">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                    <span className="text-[13px] text-muted-foreground">Reading {uploadingName}…</span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-1.5">
+                    <Upload className="h-5 w-5 text-muted-foreground" />
+                    <span className="text-[13.5px] font-medium">Drop a document here, or click to choose</span>
+                    <span className="text-[12px] text-muted-foreground">
+                      .docx keeps its headings, lists, tables and images
+                    </span>
+                  </div>
+                )}
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={ACCEPTED_UPLOAD}
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files && e.target.files[0];
+                  // Cleared so choosing the SAME file twice fires onChange again.
+                  e.target.value = "";
+                  if (f) handleFile(f);
+                }}
+              />
+              <p className="text-[11.5px] text-muted-foreground leading-relaxed">
+                Images are stored privately with the piece and stay visible only to this workspace.
+                PDFs are not accepted — extraction strips the structure the score is about.
+              </p>
+            </div>
+          )}
 
           {tab === "paste" && (
             <div className="flex flex-col gap-2">

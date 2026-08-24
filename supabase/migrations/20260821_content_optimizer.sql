@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS intelligence.optimizer_sessions (
   CONSTRAINT optimizer_sessions_visibility_chk
     CHECK (type_visibility IN ('private', 'team')),
   CONSTRAINT optimizer_sessions_source_chk
-    CHECK (type_source IN ('generated', 'pasted', 'gdoc', 'gdoc-link', 'url', 'engine')),
+    CHECK (type_source IN ('generated', 'pasted', 'gdoc', 'gdoc-link', 'url', 'engine', 'file')),
   CONSTRAINT optimizer_sessions_status_chk
     CHECK (type_status IN ('brief', 'drafting', 'draft_ready', 'assessing', 'refining', 'finalised')),
   -- Set when a judge pass claims this session, cleared when it finishes. A
@@ -311,7 +311,7 @@ ALTER TABLE intelligence.optimizer_sessions
   ADD CONSTRAINT optimizer_sessions_visibility_chk
     CHECK (type_visibility IN ('private', 'team')),
   ADD CONSTRAINT optimizer_sessions_source_chk
-    CHECK (type_source IN ('generated', 'pasted', 'gdoc', 'gdoc-link', 'url', 'engine')),
+    CHECK (type_source IN ('generated', 'pasted', 'gdoc', 'gdoc-link', 'url', 'engine', 'file')),
   ADD CONSTRAINT optimizer_sessions_status_chk
     CHECK (type_status IN ('brief', 'drafting', 'draft_ready', 'assessing', 'refining', 'finalised')),
   ADD CONSTRAINT optimizer_sessions_platform_chk
@@ -347,3 +347,23 @@ ALTER TABLE intelligence.optimizer_assessments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE intelligence.optimizer_findings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE intelligence.optimizer_feedback ENABLE ROW LEVEL SECURITY;
 ALTER TABLE intelligence.optimizer_client_canon ENABLE ROW LEVEL SECURITY;
+
+
+-- ── 8. Uploaded documents (2026-08-24) ─────────────────────────────────────
+--
+-- 'file' joins the source vocabulary for documents uploaded from the writer's
+-- machine — a .docx keeps its headings, lists, tables and figures, which is
+-- the whole reason the optimiser can score it.
+--
+-- Written as a DROP-then-ADD rather than an ALTER because a CHECK constraint
+-- cannot be extended in place. This is the same wall 'url' hit: the deployed
+-- constraint rejected the new value with 23514 while the migration file
+-- claimed to allow it, because CREATE TABLE IF NOT EXISTS had skipped the
+-- whole definition on an existing table. Verified against the live database
+-- on 2026-08-24 — 'file', 'upload' and 'docx' were all rejected before this
+-- ran.
+ALTER TABLE intelligence.optimizer_sessions
+  DROP CONSTRAINT IF EXISTS optimizer_sessions_source_chk;
+ALTER TABLE intelligence.optimizer_sessions
+  ADD CONSTRAINT optimizer_sessions_source_chk
+  CHECK (type_source IN ('generated', 'pasted', 'gdoc', 'gdoc-link', 'url', 'engine', 'file'));

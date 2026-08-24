@@ -29,6 +29,7 @@ interface AuditResponse {
   audit: PageAuditResult;
   liveScores: DraftScores | null;
   liveWords: number;
+  render?: { ran: boolean; reason: string | null; ms: number } | null;
 }
 
 interface Props {
@@ -38,6 +39,7 @@ interface Props {
 }
 
 const SECTION_LABEL: { [k: string]: string } = {
+  rendering: "What an AI crawler actually receives",
   indexability: "Can it be crawled and cited at all?",
   identity: "Identity — what a result carries",
   structure: "Structure — how it chunks",
@@ -46,7 +48,7 @@ const SECTION_LABEL: { [k: string]: string } = {
   freshness: "Freshness",
   links: "Links",
 };
-const SECTION_ORDER = ["indexability", "identity", "structure", "images", "schema", "freshness", "links"];
+const SECTION_ORDER = ["rendering", "indexability", "identity", "structure", "images", "schema", "freshness", "links"];
 
 function StatusIcon({ s }: { s: AuditCheck["status"] }) {
   if (s === "pass") return <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />;
@@ -121,6 +123,14 @@ export default function PageAudit({ sessionId, workspaceId, sourceUrl }: Props) 
           <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-[12.5px]">
             <b>The re-audit failed:</b> {error} — the results below are from the earlier fetch at{" "}
             {new Date(data.audit.fetchedAt).toLocaleTimeString()}, not the current page.
+          </div>
+        )}
+
+        {data.render && !data.render.ran && (
+          <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-[12.5px]">
+            <b>The technical render did not run.</b> {data.render.reason} — the checks below read the
+            page&apos;s served HTML, which is what an AI crawler sees anyway. What is missing is the
+            comparison that would reveal content only appearing after JavaScript runs.
           </div>
         )}
 

@@ -32,6 +32,11 @@ const KEEP = [
   "ul", "ol", "li", "blockquote", "pre", "code",
   "strong", "b", "em", "i", "s", "u", "a",
   "table", "thead", "tbody", "tr", "td", "th", "hr",
+  // Images arrive with uploaded documents, which carry the figures the prose
+  // refers to. Dropping them silently would leave "as the chart below shows"
+  // pointing at nothing, and the alt-text criteria scoring an article that
+  // appears to have no images at all.
+  "img",
 ];
 
 /**
@@ -167,6 +172,18 @@ export function sanitizeImportedHtml(html: string): string {
       const safe = /^(https?:|mailto:|#|\/)/i.test(href.trim()) ? href.trim() : "";
       return safe ? `<a href="${safe.replace(/"/g, "&quot;")}">` : "<a>";
     }
+    if (tag === "img") {
+      const src = (String(attrs).match(/\bsrc\s*=\s*["']([^"']*)["']/i) || [])[1] || "";
+      // Same whitelist reasoning as href, with data: deliberately excluded:
+      // data:image/svg+xml carries executable script, and a base64 image would
+      // also push a multi-megabyte string through the draft column on every
+      // save. Uploaded images are put in blob storage and referenced by URL.
+      const safeSrc = /^(https?:|\/)/i.test(src.trim()) ? src.trim() : "";
+      if (!safeSrc) return " ";
+      const alt = (String(attrs).match(/\balt\s*=\s*["']([^"']*)["']/i) || [])[1] || "";
+      const esc = (v: string) => v.replace(/"/g, "&quot;").replace(/</g, "&lt;");
+      return `<img src="${esc(safeSrc)}"${alt ? ` alt="${esc(alt)}"` : ""}>`;
+    }
     if (tag === "br" || tag === "hr") return `<${tag}>`;
     return `<${tag}>`;
   });
@@ -200,7 +217,10 @@ export function sanitizeImportedHtml(html: string): string {
  * once, in one place.
  */
 function balanceTags(html: string): string {
-  const VOID = ["br", "hr"];
+  // img belongs here with br and hr: it never closes. Without it the balancer
+  // pushes img onto the stack and emits a stray </img> at the end of the
+  // document, which ProseMirror then parses as a stray paragraph break.
+  const VOID = ["br", "hr", "img"];
   const out: string[] = [];
   const stack: string[] = [];
   const re = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>|[^<]+/g;

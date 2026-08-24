@@ -43,6 +43,7 @@
  */
 import { auditPage } from "../lib/optimizer/page-audit";
 import type { PageAuditInput } from "../lib/optimizer/page-audit";
+import type { RenderOutcome } from "../lib/optimizer/render";
 
 let failures = 0;
 const pass = (m: string) => console.log(`  ok    ${m}`);
@@ -243,6 +244,126 @@ console.log(`\n4. Adversarial-review cases`);
   faqCheck && faqCheck.status === "info"
     ? pass("faq-visible is info in every state — FAQ scoring stays out, as the draft rubric decided")
     : fail(`faq-visible is "${faqCheck ? faqCheck.status : "missing"}" — FAQ presence is leaking into the pass tally`);
+}
+
+// ── 5. The render layer, and the honesty rules around it ─────────────────
+//
+// Every assertion here is about a WRONG VERDICT rather than a crash. The two
+// failure modes are opposite and both are worse than saying nothing: claiming
+// "no JavaScript gap" when no render ran, and reporting a healthy page's
+// hidden navigation as broken images.
+console.log(`\n5. Rendering — and never claiming to have looked when it did not`);
+{
+  const renderOk = (over: Partial<RenderOutcome>): RenderOutcome => ({
+    ok: true, html: "<html></html>", finalUrl: BASE.finalUrl, reason: null,
+    // 68 is MEASURED, not chosen: it is the word count of GOOD_PAGE's own
+    // content region. A default that disagreed with the fixture page made the
+    // audit report a huge JavaScript gap — correctly — and the test that
+    // caught it was the one asserting render plumbing changes no tally.
+    blockedRequests: 0, images: [], renderedWords: 68, contentWords: 68,
+    headings: { h1: 1, h2: 2, h3: 3 }, jsonLdBlocks: 1, renderMs: 3000, ...over,
+  });
+  const statusWith = (render: RenderOutcome | null, id: string) =>
+    statusOf({ ...BASE, render }, id);
+
+  // (a) No render at all — the load-bearing honesty case.
+  statusWith(null, "js-dependency") === "info"
+    ? pass("with no render, the JavaScript check reports INFO, not a pass")
+    : fail("a page with NO render was given a verdict on JavaScript dependency — that is a claim nobody checked");
+
+  // (b) A failed render must carry its reason, not a shrug.
+  const failed = auditPage({ ...BASE, render: { ...renderOk({}), ok: false, reason: "browser launch failed" } }, NOW);
+  const ran = failed.checks.filter((c) => c.id === "render-ran")[0];
+  ran && ran.status === "info" && ran.detail.indexOf("browser launch failed") >= 0
+    ? pass("a failed render reports WHY it failed")
+    : fail("a failed render did not surface its reason");
+
+  // (c) Audit-infrastructure status must never move the reader's to-do tally.
+  const noRender = auditPage({ ...BASE, render: null }, NOW);
+  const withRender = auditPage({ ...BASE, render: renderOk({}) }, NOW);
+  noRender.counts.fail === withRender.counts.fail
+    ? pass("render availability does not change the number of blocking findings")
+    : fail("the presence of a render changed the fail tally — audit plumbing is leaking into page findings");
+
+  // (d) A real JavaScript gap fails; a page that ships its content passes.
+  //     GOOD_PAGE's article region is short, so the rendered figure is what
+  //     makes the ratio — a huge rendered body means the HTML carries little.
+  statusWith(renderOk({ contentWords: 4000 }), "js-dependency") === "fail"
+    ? pass("a page whose content is mostly JavaScript-injected FAILS")
+    : fail("a large JavaScript gap was not reported");
+  statusWith(renderOk({ contentWords: 80 }), "js-dependency") === "pass"
+    ? pass("a page that ships its content in the HTML passes")
+    : fail("a server-rendered page was wrongly flagged as JavaScript-dependent");
+
+  // (e) A partly-fenced render must WITHHOLD the measurement rather than
+  //     report a comfortable number from an incomplete page.
+  statusWith(renderOk({ contentWords: 4000, blockedRequests: 3 }), "js-dependency") === "info"
+    ? pass("a render with refused subrequests withholds the JavaScript verdict")
+    : fail("a verdict was issued from an incomplete render");
+
+  // (f) THE nav-chrome case. This is the regression that motivated scoping:
+  //     hidden menu images that never load are not broken images.
+  const img = (o: Partial<RenderOutcome["images"][0]>) => ({
+    src: "/x.png", alt: "a thing", width: 100, height: 80,
+    naturalWidth: 100, naturalHeight: 80, loaded: true, lazy: false, inContent: true, ...o,
+  });
+  const hiddenNav = renderOk({
+    images: [img({}), img({ inContent: false, width: 0, height: 0, loaded: false })],
+  });
+  statusWith(hiddenNav, "images-resolve") === "pass"
+    ? pass("a hidden, never-loaded navigation image is not counted as broken")
+    : fail("hidden nav images were reported as broken — the verdict that would have said 33 broken images on a healthy page");
+
+  // ...and a genuinely broken ARTICLE image still fails.
+  statusWith(renderOk({ images: [img({ loaded: false }), img({ loaded: false }), img({})] }), "images-resolve") === "fail"
+    ? pass("article images that genuinely fail to load are reported")
+    : fail("broken article images were missed");
+
+  // (g) Upscaling is render-only knowledge.
+  statusWith(renderOk({ images: [img({ naturalWidth: 400, width: 1200 })] }), "image-resolution") === "warn"
+    ? pass("an image displayed far larger than its file is flagged")
+    : fail("an upscaled image was not flagged");
+  statusWith(renderOk({ images: [img({})] }), "image-resolution") === "(missing)"
+    ? pass("...and a correctly-sized image raises nothing")
+    : fail("a correctly-sized image produced a resolution warning");
+}
+
+// ── 6. Image checks measure the ARTICLE, not the site chrome ─────────────
+console.log(`\n6. Article scoping — nav images must not dilute the verdict`);
+{
+  // The measured shape of the page this was built against: a large captioned
+  // navigation wrapped around an article whose own images have no alt text.
+  // Unscoped, the nav's alt text drags the proportion under the fail
+  // threshold and the page passes while every article image is unlabelled.
+  const navImgs = Array.from({ length: 20 }, (_, i) => `<img src="/nav${i}.png" alt="Menu item ${i}">`).join("");
+  const page = `<!doctype html><html lang="en"><head><title>Scoped | Vaultline</title>
+<meta name="description" content="A page whose navigation is larger than its article, which is the normal case.">
+<link rel="canonical" href="https://vaultline.example/scoped"></head><body>
+<nav>${navImgs}</nav>
+<main><h1>The article</h1><p>${"word ".repeat(120)}</p>
+<img src="/a.png"><img src="/b.png"><img src="/c.png"></main>
+<footer><img src="/f.png" alt="Footer logo"></footer></body></html>`;
+
+  const r = auditPage({ ...BASE, page, finalUrl: "https://vaultline.example/scoped" }, NOW);
+  const alt = r.checks.filter((c) => c.id === "image-alt")[0];
+  alt && alt.status === "fail"
+    ? pass("three unlabelled article images FAIL even behind twenty captioned nav images")
+    : fail(`image-alt was "${alt ? alt.status : "missing"}" — site chrome is still diluting the article's verdict`);
+  alt && /3 article image/.test(alt.detail)
+    ? pass("the detail counts the article's images, not the page's")
+    : fail(`the detail did not report 3 article images: "${alt ? alt.detail : ""}"`);
+  alt && /21 nav\/footer images excluded/.test(alt.detail)
+    ? pass("and it SAYS what it excluded, so the number can be checked")
+    : fail(`the exclusion was silent: "${alt ? alt.detail : ""}"`);
+
+  // The guard on the guard: without a <main>, there is nothing to scope to and
+  // the check must fall back rather than silently measure an empty region.
+  const noMain = page.replace(/<\/?main>/g, "");
+  const r2 = auditPage({ ...BASE, page: noMain, finalUrl: "https://vaultline.example/scoped" }, NOW);
+  const alt2 = r2.checks.filter((c) => c.id === "image-alt")[0];
+  alt2 && alt2.status !== "info"
+    ? pass("a page with no <main> still gets an image verdict rather than silence")
+    : fail("removing <main> made the image check evaporate");
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

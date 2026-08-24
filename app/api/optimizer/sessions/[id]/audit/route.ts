@@ -23,10 +23,16 @@ import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
 import { fetchPageForAudit, extractArticleRegion } from "@/lib/optimizer/url-import";
 import { toEditorHtml } from "@/lib/optimizer/import-html";
 import { auditPage } from "@/lib/optimizer/page-audit";
+import { renderPage } from "@/lib/optimizer/render";
 import { parseDraft } from "@/lib/optimizer/parse";
 import { computeDraftScores } from "@/lib/optimizer/engine";
 
-export const maxDuration = 30;
+// The render launches a headless Chromium; a cold start plus a real page is
+// comfortably more than the 30s the fetch-only audit needed.
+export const maxDuration = 60;
+// puppeteer-core and the Chromium binary must not be traced into the bundle by
+// webpack — they are loaded at runtime from the serverless filesystem.
+export const runtime = "nodejs";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -54,6 +60,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const fetched = await fetchPageForAudit(session.document_source_ref);
   if (!fetched.ok) return NextResponse.json({ error: fetched.error }, { status: 502 });
 
+  // The render runs alongside, and is allowed to fail. The served HTML is the
+  // authoritative view for an AI crawler, so a page whose render dies still
+  // gets a complete audit — it just loses the JavaScript-gap comparison, and
+  // says so rather than reporting a clean bill of health it never checked.
+  const render = await renderPage(fetched.finalUrl).catch((e) => {
+    return { ok: false, html: null, finalUrl: null, reason: `render threw: ${String(e).slice(0, 120)}`,
+             blockedRequests: 0, images: [], renderedWords: 0, contentWords: 0,
+             headings: { h1: 0, h2: 0, h3: 0 }, jsonLdBlocks: 0, renderMs: 0 };
+  });
+
   const canon = session.config_canon || {};
   const brief = session.config_brief || {};
   const brandNames = [canon.brandName].concat(canon.brandAliases || []).filter(Boolean);
@@ -65,6 +81,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       httpStatus: fetched.httpStatus,
       brandNames,
       targetQueries: brief.targetQueries || [],
+      render,
     },
     new Date()
   );
@@ -96,5 +113,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     audit,
     liveScores,
     liveWords,
+    render: { ran: render.ok, reason: render.reason, ms: render.renderMs },
   });
 }

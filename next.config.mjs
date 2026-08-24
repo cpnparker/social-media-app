@@ -1,9 +1,22 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  /**
+   * Chromium is loaded at RUNTIME, not bundled. webpack tracing @sparticuz's
+   * ~50MB brotli-compressed binary into the route bundle would blow the
+   * serverless size limit; puppeteer-core also resolves optional native deps
+   * that only exist at runtime. Both are required by the live-page audit's
+   * technical render (lib/optimizer/render.ts).
+   */
   experimental: {
     serverActions: {
       bodySizeLimit: "200mb",
     },
+    // NOTE the key: this project is on Next 14, where the option lives under
+    // experimental as serverComponentsExternalPackages. The Next 15 spelling
+    // (top-level serverExternalPackages) is accepted silently and does
+    // nothing here — the build would succeed and the function would ship a
+    // bundled Chromium, failing only at deploy on size.
+    serverComponentsExternalPackages: ["puppeteer-core", "@sparticuz/chromium"],
   },
 
   /**

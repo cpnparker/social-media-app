@@ -28,12 +28,14 @@
  * owns proving these checks can fail.
  */
 
+import type { RenderOutcome } from "./render";
+
 export type AuditStatus = "pass" | "warn" | "fail" | "info";
 
 export interface AuditCheck {
   id: string;
   /** Grouping key for the UI. */
-  section: "indexability" | "identity" | "structure" | "images" | "schema" | "links" | "freshness";
+  section: "rendering" | "indexability" | "identity" | "structure" | "images" | "schema" | "links" | "freshness";
   name: string;
   status: AuditStatus;
   /** What was found — the evidence, not advice. */
@@ -51,6 +53,11 @@ export interface PageAuditInput {
   /** Brand / entity names, from the session canon, for title and schema checks. */
   brandNames?: string[];
   targetQueries?: string[];
+  /** The technical render, when one was performed. Null or absent means the
+   *  render did not run — which is REPORTED, never quietly treated as "no
+   *  JavaScript gap found". Not looking and finding nothing are different
+   *  claims, and only one of them is honest. */
+  render?: RenderOutcome | null;
 }
 
 export interface PageAuditResult {
@@ -60,6 +67,34 @@ export interface PageAuditResult {
 }
 
 const strip = (s: string) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+
+/**
+ * The article region of an already-script-stripped page, for checks that must
+ * not be diluted by site chrome.
+ *
+ * Measured, not assumed: the Amrize page this audit was built against carries
+ * 47 images, of which 10 are the article's and 37 are the megamenu and footer.
+ * A proportional alt-text rule over all 47 is mostly measuring the nav — and
+ * because nav images are template-generated and always captioned, they drag
+ * every image verdict toward "pass" no matter what the article does.
+ *
+ * Deliberately NOT lib/optimizer/url-import's extractArticleRegion: that one
+ * exists to extract TEXT and is free to discard markup, whereas this must keep
+ * <img> tags intact. Same intuition, different contract — sharing one function
+ * across both would mean one of the two callers silently getting the wrong
+ * thing. It also keeps this module import-free of anything touching the
+ * network, which is what lets it stay pure and offline.
+ */
+function contentRegion(dom: string): { region: string; scoped: boolean } {
+  const s = dom.replace(/<(nav|header|footer|aside|form)\b[\s\S]*?<\/\1\s*>/gi, " ");
+  for (const tag of ["article", "main"]) {
+    const m = s.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}\\s*>`, "i"));
+    // The length floor stops a decorative <main> wrapper around a hero banner
+    // from being mistaken for the article and shrinking every count to nothing.
+    if (m && m[1].replace(/<[^>]+>/g, "").trim().length > 400) return { region: m[1], scoped: true };
+  }
+  return { region: s, scoped: false };
+}
 
 function attr(tag: string, name: string): string {
   // Quoted, single-quoted, or UNQUOTED — minifiers strip quotes from
@@ -257,8 +292,11 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: !faqVisible ? "Question + short answer pairs are pre-chunked for extraction; FAQPage markup feeding answer-box extraction is the one schema mechanism with direct evidence. Optional, not a defect." : undefined,
   });
 
-  // ── Images ──────────────────────────────────────────────────────────────
-  const imgs = dom.match(/<img\b[^>]*>/gi) || [];
+  // ── Images — scoped to the ARTICLE, not the site chrome ─────────────────
+  const { region: contentDom, scoped: regionFound } = contentRegion(dom);
+  const allImgs = dom.match(/<img\b[^>]*>/gi) || [];
+  const imgs = contentDom.match(/<img\b[^>]*>/gi) || [];
+  const chromeImgs = allImgs.length - imgs.length;
   let missingAlt = 0, emptyAlt = 0, filenameAlt = 0;
   for (let i = 0; i < imgs.length; i++) {
     // \s boundary, not \b: \b matches after the hyphen in data-alt, so an
@@ -270,12 +308,102 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     if (/\.(jpe?g|png|webp|gif|svg)\s*$/i.test(alt) || /^(img|dsc|image)[-_]?\d+/i.test(alt)) filenameAlt++;
   }
   const altBad = missingAlt + filenameAlt;
+  const scopeNote = regionFound && chromeImgs > 0
+    ? ` (${chromeImgs} nav/footer image${chromeImgs === 1 ? "" : "s"} excluded)`
+    : "";
   push({
     id: "image-alt", section: "images", name: "Images carry real alt text",
     status: imgs.length === 0 ? "info" : altBad === 0 ? "pass" : altBad > imgs.length / 2 ? "fail" : "warn",
-    detail: imgs.length === 0 ? "no images on the page" : `${imgs.length} images — ${missingAlt} with no alt attribute, ${filenameAlt} with a filename as alt${emptyAlt ? `, ${emptyAlt} decorative (empty alt)` : ""}`,
+    detail: imgs.length === 0
+      ? `no images in the article${chromeImgs > 0 ? ` (${chromeImgs} in site chrome, not judged)` : ""}`
+      : `${imgs.length} article image${imgs.length === 1 ? "" : "s"}${scopeNote} — ${missingAlt} with no alt attribute, ${filenameAlt} with a filename as alt${emptyAlt ? `, ${emptyAlt} decorative (empty alt)` : ""}`,
     remedy: altBad > 0 ? "Models read alt text to understand the page. Describe what the image shows factually; empty alt is correct only for decoration." : undefined,
   });
+
+  // ── Rendering — what an AI crawler actually receives ─────────────────────
+  //
+  // The crawlers that feed AI answers largely do not execute JavaScript, so
+  // the SERVED HTML is what they see. Everything above reads that HTML on
+  // purpose. This section exists to answer the one question the served HTML
+  // cannot answer about itself: is there content here that only appears after
+  // JavaScript runs, and is therefore invisible to them?
+  const r = input.render;
+  const rawContentWords = strip(contentDom).split(" ").filter(Boolean).length;
+
+  // Audit-infrastructure status is INFO, never pass/warn/fail: it describes
+  // how much the audit could see, not a defect in the page, and it must not
+  // move a tally the reader takes as a to-do list.
+  push({
+    id: "render-ran", section: "rendering", name: "Technical render",
+    status: "info",
+    detail: !r
+      ? "No technical render was performed — every check on this page reads the served HTML only."
+      : r.ok
+        ? `Rendered in a headless browser in ${(r.renderMs / 1000).toFixed(1)}s${r.blockedRequests > 0 ? `, ${r.blockedRequests} subresource request(s) refused by the address fence` : ""}.`
+        : `The render did not complete: ${r.reason}. The checks above still hold — they read the served HTML — but nothing here rules out JavaScript-dependent content.`,
+  });
+
+  // A render whose subresources were partly refused is a render that may have
+  // run less JavaScript than a real browser would. Reporting a comfortable
+  // "no gap" off that would be a confident wrong verdict of exactly the kind
+  // this file exists to avoid, so the measurement is withheld instead.
+  const renderTrustworthy = !!r && r.ok && r.blockedRequests === 0 && r.contentWords >= 50;
+  if (!renderTrustworthy) {
+    push({
+      id: "js-dependency", section: "rendering", name: "Content present without JavaScript",
+      status: "info",
+      detail: !r || !r.ok
+        ? "Not measured — this needs a successful render to compare against the served HTML."
+        : r.blockedRequests > 0
+          ? `Not measured — ${r.blockedRequests} of the page's own requests were refused, so the rendered view is incomplete and any comparison against it would understate the gap.`
+          : "Not measured — the rendered article was too short to compare against reliably.",
+    });
+  } else {
+    const ratio = rawContentWords / r!.contentWords;
+    const pct = Math.round(ratio * 100);
+    push({
+      id: "js-dependency", section: "rendering", name: "Content present without JavaScript",
+      status: ratio >= 0.75 ? "pass" : ratio >= 0.4 ? "warn" : "fail",
+      // The served HTML routinely holds MORE words than the browser shows,
+      // because innerText omits what is hidden — collapsed menus, tab panels,
+      // screen-reader text. That is the healthy direction, but phrased as a
+      // ratio it printed "carries 68 of the 60 words — about 113%", which is
+      // nonsense and invites a reader to distrust every other number here.
+      detail: ratio >= 1
+        ? `The served HTML carries the whole article (${rawContentWords} words) — nothing here waits on JavaScript.`
+        : `The served HTML carries ${rawContentWords} of the ${r!.contentWords} words a browser ends up showing — about ${pct}%.`,
+      remedy: ratio >= 0.75 ? undefined
+        : `The crawlers behind AI answers mostly do not run JavaScript, so roughly ${100 - pct}% of this article is invisible to them. Server-render the article body, or ship it in the initial HTML.`,
+    });
+
+    // Only a render knows whether an image ever actually arrived. Judged over
+    // ARTICLE images with a real layout box: a hidden megamenu image never
+    // loads by design, and counting those produced 33 "broken images" on a
+    // page whose 10 article images were all fine.
+    const judged = r!.images.filter((i) => i.inContent && (i.width > 0 || i.height > 0));
+    const broken = judged.filter((i) => !i.loaded);
+    if (judged.length > 0) {
+      push({
+        id: "images-resolve", section: "rendering", name: "Article images actually load",
+        status: broken.length === 0 ? "pass" : broken.length > judged.length / 2 ? "fail" : "warn",
+        detail: broken.length === 0
+          ? `all ${judged.length} visible article image${judged.length === 1 ? "" : "s"} loaded`
+          : `${broken.length} of ${judged.length} visible article images did not load`,
+        remedy: broken.length > 0 ? "A broken image is a dead reference to a machine and a hole to a reader. Check the src values that failed." : undefined,
+      });
+
+      // Upscaling is invisible in the HTML and obvious on screen.
+      const upscaled = judged.filter((i) => i.loaded && i.naturalWidth > 0 && i.width > i.naturalWidth * 1.35);
+      if (upscaled.length > 0) {
+        push({
+          id: "image-resolution", section: "rendering", name: "Images served at display size",
+          status: "warn",
+          detail: `${upscaled.length} article image${upscaled.length === 1 ? " is" : "s are"} displayed larger than the file supplied — e.g. ${upscaled[0].naturalWidth}px wide shown at ${upscaled[0].width}px.`,
+          remedy: "An upscaled image looks soft on the page. Supply the asset at least at its displayed width.",
+        });
+      }
+    }
+  }
 
   // ── Schema — reported as machine-readability, never as ranking lift ─────
   const schemaTypes: string[] = [];

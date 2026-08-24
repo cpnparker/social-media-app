@@ -124,7 +124,7 @@ export async function POST(req: NextRequest) {
   const { caller } = guard;
 
   const source: string = body.source;
-  if (["pasted", "gdoc", "gdoc-link", "url", "engine"].indexOf(source) < 0) {
+  if (["pasted", "gdoc", "gdoc-link", "url", "engine", "file"].indexOf(source) < 0) {
     return NextResponse.json({ error: "Unknown import source" }, { status: 400 });
   }
 
@@ -139,6 +139,9 @@ export async function POST(req: NextRequest) {
   let title = typeof body.title === "string" ? body.title.trim() : "";
   let content = "";
   let sourceRef: string | null = null;
+  /** Surfaced to the writer — what did not survive the import. Silence about a
+   *  dropped figure is how an import stops being trustworthy. */
+  let importWarnings: string[] = [];
 
   if (source === "pasted") {
     content = typeof body.content === "string" ? body.content : "";
@@ -152,6 +155,62 @@ export async function POST(req: NextRequest) {
     content = result.html || "";
     if (!title) title = (result.title || "Imported page").slice(0, 200);
     sourceRef = (typeof body.ref === "string" ? body.ref : "").trim().slice(0, 500);
+  } else if (source === "file") {
+    // An uploaded document. The bytes do NOT come through this request: a
+    // Vercel serverless function caps its request body at 4.5MB, and a Word
+    // document with photographs passes that routinely — the founder's own test
+    // file is 3.9MB. So the browser sends the file straight to blob storage and
+    // this route is handed the URL.
+    //
+    // That URL arrives from the CLIENT, which makes it attacker-controlled, so
+    // it is pinned to the blob store's own host before anything fetches it and
+    // then fetched through safeFetch, which re-checks the address on every
+    // redirect hop. Without the host pin this is a server-side request forgery
+    // with the caller choosing the target.
+    const blobUrl = typeof body.blobUrl === "string" ? body.blobUrl : "";
+    let parsedBlob: URL | null = null;
+    try { parsedBlob = new URL(blobUrl); } catch { parsedBlob = null; }
+    const hostOk = !!parsedBlob && /(^|\.)blob\.vercel-storage\.com$/i.test(parsedBlob.hostname);
+    if (!hostOk) {
+      return NextResponse.json({ error: "That upload could not be located." }, { status: 400 });
+    }
+
+    const { safeFetch } = await import("@/lib/net/safe-fetch");
+    let buffer: Buffer;
+    try {
+      const res = await safeFetch(blobUrl, { timeoutMs: 30_000 });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      buffer = Buffer.from(await res.arrayBuffer());
+    } catch (e: any) {
+      return NextResponse.json(
+        { error: `The uploaded file could not be read back: ${String(e?.message || e).slice(0, 120)}` },
+        { status: 502 }
+      );
+    }
+
+    const fileName = typeof body.fileName === "string" ? body.fileName : "document.docx";
+    const { importFile } = await import("@/lib/optimizer/file-import");
+    const result = await importFile(
+      { name: fileName, type: typeof body.fileType === "string" ? body.fileType : "", buffer },
+      { workspaceId: caller.workspaceId, maxChars: MAX_IMPORT_CHARS }
+    );
+
+    // The source document is deleted either way. It was only ever a transport
+    // for the bytes; its figures already live in their own private blobs, and
+    // leaving the original behind would keep a second copy of a client document
+    // in storage that nothing reads and nobody remembers to remove.
+    try {
+      const { del } = await import("@vercel/blob");
+      await del(blobUrl);
+    } catch {
+      /* a failed cleanup must not fail the import the writer is waiting on */
+    }
+
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 });
+    content = result.html || "";
+    if (!title) title = (result.title || "Uploaded document").slice(0, 200);
+    sourceRef = fileName.slice(0, 500);
+    importWarnings = result.warnings || [];
   } else if (source === "gdoc-link") {
     // A pasted link, which is the workflow that does NOT require the document
     // to have been shared with the service account first. Verified 2026-08-21
@@ -243,7 +302,7 @@ export async function POST(req: NextRequest) {
   //
   // `contentIsHtml` is passed explicitly where the source knows: a paste can
   // carry real clipboard HTML, and guessing from the content is guessing.
-  if (source !== "gdoc-link") {
+  if (source !== "gdoc-link" && source !== "file") {
     content = toEditorHtml(content, source === "pasted" ? body.contentIsHtml === true : undefined);
   }
 
@@ -305,5 +364,10 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  return NextResponse.json({ sessionId, title, words: (content.match(/\S+/g) || []).length });
+  return NextResponse.json({
+    sessionId,
+    title,
+    words: (content.match(/\S+/g) || []).length,
+    warnings: importWarnings.length ? importWarnings : undefined,
+  });
 }

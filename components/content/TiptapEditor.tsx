@@ -14,6 +14,12 @@ import StarterKit from "@tiptap/starter-kit";
 // nothing and looks like an empty result rather than a broken one.
 import { TableKit } from "@tiptap/extension-table";
 import Placeholder from "@tiptap/extension-placeholder";
+// Images are not in StarterKit either, and their absence fails the same silent
+// way tables did: ProseMirror DROPS a node type it has no schema for, so an
+// uploaded document's figures vanish between import and editor with nothing
+// logged. The optimiser scores what is in the editor, so a dropped image is
+// also an image the alt-text criteria can never see.
+import Image from "@tiptap/extension-image";
 import { useEffect, useRef, useCallback } from "react";
 import {
   Bold,
@@ -82,6 +88,10 @@ export default function TiptapEditor({
         heading: { levels: [1, 2, 3] },
       }),
       TableKit.configure({ table: { resizable: false } }),
+      // inline:false — figures are block-level in an article. allowBase64 stays
+      // OFF: uploaded images live in blob storage and are referenced by URL,
+      // and a base64 image would ride the draft body through every autosave.
+      Image.configure({ inline: false, allowBase64: false }),
       Placeholder.configure({ placeholder }),
       ...(extraExtensions || []),
     ],
