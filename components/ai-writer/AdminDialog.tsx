@@ -53,6 +53,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import type { AIRole } from "@/lib/types/ai";
+import { getModelLabel } from "@/lib/ai/models";
 
 /* ─────────────── Types ─────────────── */
 
@@ -163,6 +164,19 @@ const MODEL_LABELS: Record<string, string> = {
   "grok-imagine-image": "Grok Image",
   "dall-e-3": "DALL-E 3",
 };
+
+/**
+ * Chart label for a model id.
+ *
+ * MODEL_LABELS above is an OVERRIDE layer, not the source of truth. Anything
+ * it does not name falls through to the shared getModelLabel, so adding a
+ * model no longer means remembering this file too — the same duplicate map
+ * lives in settings/ai-usage, and keeping two hand-maintained copies of the
+ * same list in sync is how grok-4-6 came to render as a raw id in one of them.
+ */
+function modelLabel(id: string): string {
+  return MODEL_LABELS[id] || getModelLabel(String(id));
+}
 
 const CHART_COLORS: Record<string, string> = {
   "grok-4-1-fast-non-reasoning": "#00D4AA",
@@ -413,7 +427,7 @@ function UsageTab({ workspaceId }: { workspaceId: string }) {
                         stroke="hsl(var(--muted-foreground))"
                       />
                       <Tooltip
-                        formatter={(value: any, name: any) => [formatCost(Number(value)), MODEL_LABELS[String(name)] || String(name)]}
+                        formatter={(value: any, name: any) => [formatCost(Number(value)), modelLabel(String(name))]}
                         labelFormatter={(label: any) => {
                           const d = new Date(String(label) + "T00:00:00");
                           return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
@@ -426,7 +440,7 @@ function UsageTab({ workspaceId }: { workspaceId: string }) {
                         }}
                       />
                       <Legend
-                        formatter={(value: string) => MODEL_LABELS[value] || value}
+                        formatter={(value: string) => modelLabel(value)}
                         wrapperStyle={{ fontSize: 10, paddingTop: 8 }}
                       />
                       {(usageData.dailyModels || []).map((model, i) => (
@@ -465,7 +479,7 @@ function UsageTab({ workspaceId }: { workspaceId: string }) {
                     <div className="flex items-center justify-between mb-1">
                       <div className="flex items-center gap-2">
                         <div className={cn("h-2.5 w-2.5 rounded-sm shrink-0", barColor)} />
-                        <span className="text-sm font-medium">{MODEL_LABELS[m.model] || m.model}</span>
+                        <span className="text-sm font-medium">{modelLabel(m.model)}</span>
                         <span className="text-[10px] text-muted-foreground">
                           {m.calls} call{m.calls !== 1 ? "s" : ""} ({callPct}%)
                         </span>
@@ -593,7 +607,7 @@ function UsageTab({ workspaceId }: { workspaceId: string }) {
                                 <td className="pl-8 pr-3 py-1.5 text-xs text-muted-foreground">
                                   <div className="flex items-center gap-1.5">
                                     <div className={cn("h-2 w-2 rounded-sm shrink-0", MODEL_COLORS[um.model] || "bg-gray-400")} />
-                                    {MODEL_LABELS[um.model] || um.model}
+                                    {modelLabel(um.model)}
                                   </div>
                                 </td>
                                 <td className="px-3 py-1.5 text-xs text-right text-muted-foreground">{formatCost(um.cost)}</td>
