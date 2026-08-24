@@ -75,6 +75,13 @@ export const VOICE_SAMPLE_RATE = 24000;
 const VOICE_RATE_TENTHS_PER_MIN: Record<string, number> = {
   "grok-voice-think-fast-2.0": 80,
   "grok-voice-think-fast-1.0": 50, // deprecated by xAI
+  // An ALIAS, not a version, and the id this app defaulted to from 2026-06-10
+  // until 2026-08-12 — so it is the most common value in the ledger. xAI does
+  // not document it or say what it resolves to; priced at the newest concrete
+  // version, since that is what "latest" means and 1.0 is deprecated. REVISIT
+  // when a 3.0 ships: this entry will then be quietly wrong in the cheap
+  // direction, which is the one that hides.
+  "grok-voice-latest": 80,
 };
 /** Date the rates above were last read off xAI's pricing page. */
 export const VOICE_RATES_VERIFIED_ON = "2026-08-24";
