@@ -45,6 +45,22 @@ const SOURCE_FOR_TAB: { [k in Tab]: ImportSource } = { paste: "pasted", upload: 
  *  next to the picker so the dialog and the server cannot drift apart. */
 const ACCEPTED_UPLOAD = ".docx,.html,.htm,.md,.markdown,.txt";
 
+/**
+ * Which tabs show the "or pick one already shared" list underneath.
+ *
+ * A TOTAL RECORD keyed by Tab, for exactly the reason SOURCE_FOR_TAB is one.
+ * This was written as a DENYLIST — `tab !== "paste" && tab !== "url"` — back
+ * when the remaining tabs were gdoc and engine, so it read as "the two list
+ * tabs". Adding the upload tab silently opted it in, and the drop zone shipped
+ * with an empty card and a "Search commissioned pieces" box under it that
+ * searched nothing. A denylist over a union type quietly grants the default to
+ * every member added later; a total record makes the next tab a COMPILE ERROR
+ * until somebody decides.
+ */
+const SHOWS_SHARED_PICKER: { [k in Tab]: boolean } = {
+  paste: false, upload: false, url: false, gdoc: true, engine: true,
+};
+
 /** The upload route matches an allow-list of MIME types, and a browser reports
  *  none for .md — so the type is set from the extension rather than trusted. */
 const CONTENT_TYPE_FOR: { [ext: string]: string } = {
@@ -417,7 +433,7 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             </div>
           )}
 
-          {tab !== "paste" && tab !== "url" && (
+          {SHOWS_SHARED_PICKER[tab] && (
             <div className="rounded-xl border bg-card overflow-hidden">
               <div className="px-3 py-2 border-b">
                 <Input
