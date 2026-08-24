@@ -1764,7 +1764,7 @@ export async function POST(
       // attributed to the model that failed, in the message row and the ledger
       // alike. Any per-model quality or cost comparison drawn from that data was
       // reading the wrong name.
-      async ({ fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, modelUsed }) => {
+      async ({ fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, modelUsed, toolsUsed }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
           let assistantErr: any = null;
@@ -1774,6 +1774,12 @@ export async function POST(
               .update({
                 document_message: fullText,
                 name_model: modelUsed,
+                // Which tools ran, on EVERY message rather than only flagged
+                // ones — most quality events are found by mining turns nobody
+                // rated, and those turns need the same context to be readable.
+                // Names and counts only; a tool never called is absent, and
+                // that absence is the finding.
+                data_tools: toolsUsed && toolsUsed.length ? toolsUsed : null,
                 status_message: "complete",
               })
               .eq("id_message", pendingMessageId);
@@ -1789,6 +1795,7 @@ export async function POST(
                 role_message: "assistant",
                 document_message: fullText,
                 name_model: modelUsed,
+                data_tools: toolsUsed && toolsUsed.length ? toolsUsed : null,
               });
             assistantErr = error;
           }

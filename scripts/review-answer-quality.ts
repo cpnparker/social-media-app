@@ -156,7 +156,7 @@ async function main() {
   for (let from = 0; ; from += 1000) {
     const { data, error } = await db
       .from("ai_messages")
-      .select("id_message, id_conversation, role_message, document_message, date_created, name_model, rating_message")
+      .select("id_message, id_conversation, role_message, document_message, date_created, name_model, rating_message, data_tools")
       .gte("date_created", since)
       .order("date_created", { ascending: true })
       .range(from, from + 999);
@@ -268,10 +268,29 @@ async function main() {
       const prior = priorUser.get(h.row.id_message) || "";
       if (prior) console.log(`    ASKED: ${prior.slice(0, 200).replace(/\s+/g, " ")}`);
       console.log(`    SAID : ${(h.row.document_message || "").slice(0, 400).replace(/\s+/g, " ")}`);
+      // The question a reviewer actually has. A turn that answered from nothing,
+      // or that never tried the tool holding the answer, looks identical in the
+      // text — this is the only place the difference shows.
+      const tools = (h.row.data_tools || []) as { name: string; calls: number; blocked: number }[];
+      if (tools.length) {
+        const parts: string[] = [];
+        for (let k = 0; k < tools.length; k++) {
+          parts.push(`${tools[k].name}×${tools[k].calls}${tools[k].blocked ? ` (${tools[k].blocked} refused)` : ""}`);
+        }
+        console.log(`    TOOLS: ${parts.join(", ")}`);
+      } else {
+        console.log(`    TOOLS: ${h.row.data_tools === null || h.row.data_tools === undefined ? "not recorded (turn predates 2026-08-24)" : "NONE — answered without calling anything"}`);
+      }
     }
   } else if (hits.length) {
     console.log(`\n  Re-run with --show to read them.`);
   }
+
+  // How much of the window can even be read this way — a rate computed over
+  // rows with no tool record is a rate about a different question.
+  const withTools = assistants.filter((r) => r.data_tools !== null && r.data_tools !== undefined).length;
+  console.log(`\n  ${withTools}/${assistants.length} message(s) carry a tool record (recording began 2026-08-24).`);
+  if (withTools === 0) console.log(`  Until that covers a useful span, "answered without calling anything" cannot be told from "not recorded".`);
 
   console.log(`\n  Track "${per100.toFixed(2)} per 100" over time. It moves when quality moves, and needs nobody to click anything.\n`);
 }

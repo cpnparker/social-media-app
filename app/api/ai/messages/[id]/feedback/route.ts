@@ -51,7 +51,7 @@ export async function PATCH(
   try {
     const { data: message } = await intelligenceDb
       .from("ai_messages")
-      .select("id_message, id_conversation, role_message, document_message, name_model, date_created")
+      .select("id_message, id_conversation, role_message, document_message, name_model, date_created, data_tools")
       .eq("id_message", messageId)
       .maybeSingle();
     if (!message) {
@@ -133,6 +133,10 @@ export async function PATCH(
         name_model: (message as any).name_model || null,
         document_answer: ((message as any).document_message || "").slice(0, 20000),
         document_asked: (((prior as any[]) || [])[0]?.document_message || "").slice(0, 4000),
+        // Snapshotted, like the text either side of it: ai_messages cascades
+        // when its conversation goes, and a feedback record that loses its
+        // evidence is not a record.
+        data_tools: (message as any).data_tools ?? null,
       });
       if (recErr) {
         recorded = false;
