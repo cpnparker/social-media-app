@@ -347,7 +347,14 @@ console.log(`\nLayout tables, empty headings and empty paragraphs`);
 
   // Word leaves a heading behind wherever a heading-styled paragraph held only
   // an image, and an empty paragraph wherever an image sat.
-  const debris = `<h1>Real heading</h1><h1></h1><h3>  </h3><p>Prose.</p><p></p><p>More prose.</p>`;
+  //
+  // THE SHAPES HERE ARE THE REAL ONES. The first version of this fixture used
+  // `<h1></h1>`, which never occurs: a .docx is full of bookmark anchors, so
+  // the blank headings arrive as `<h1><a></a></h1>`. The rule was a regex
+  // listing the whitespace it tolerated, it matched nothing, and both the
+  // check and the measurement reported success while four blank headings sat
+  // in the document. Emptiness is judged on TEXT CONTENT for that reason.
+  const debris = `<h1>Real heading</h1><h1><a></a></h1><h1></h1><h3>  </h3><p>Prose.</p><p><a></a></p><p></p><p>More prose.</p>`;
   const outE = toEditorHtml(debris, true);
   (outE.match(/<h[1-6]>/g) || []).length === 1
     ? pass("headings emptied by the conversion are dropped")
@@ -355,6 +362,20 @@ console.log(`\nLayout tables, empty headings and empty paragraphs`);
   !/<p><\/p>/.test(outE) && /Prose\./.test(outE) && /More prose\./.test(outE)
     ? pass("empty paragraphs go, real ones stay")
     : fail(`empty paragraph handling wrong: ${outE.slice(0, 130)}`);
+
+
+  // And the direction that matters more, because getting it wrong deletes the
+  // writer's figures: a block whose only content is an IMAGE has no text and
+  // is emphatically not empty. Judging on text alone removed all twelve images
+  // from the founder's document, since Word wraps each one in its own
+  // paragraph.
+  const figures = toEditorHtml(`<p>Before.</p><p><img src="/api/media/file?path=a.jpg" alt="A figure"></p><p>After.</p>`, true);
+  (figures.match(/<img/g) || []).length === 1
+    ? pass("a paragraph holding only a figure survives — text-only emptiness would delete it")
+    : fail(`the image-only paragraph was deleted: ${figures}`);
+  /Before\./.test(figures) && /After\./.test(figures)
+    ? pass("...and the prose either side is untouched")
+    : fail("removing blank blocks damaged the surrounding prose");
 
   // The empty paragraph is not cosmetic: it sat between a question heading and
   // the sentence answering it, and the answer criterion reads the NEXT block.

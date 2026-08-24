@@ -480,15 +480,32 @@ export function unwrapLayoutTables(html: string): string {
       .replace(/<(td|th)\b[^>]*>/gi, " ")
       .replace(/<\/?(thead|tbody|tfoot|tr|colgroup|col)\b[^>]*>/gi, " ");
   });
-  // Headings emptied by the conversion. Done after the unwrap so a heading
-  // that only ever held a table cell's image is caught too.
-  out = out.replace(/<h([1-6])\b[^>]*>(?:\s|<br\s*\/?>|&nbsp;)*<\/h\1\s*>/gi, "");
-  // ...and empty paragraphs, for a reason that is not cosmetic. Word leaves one
-  // wherever an image sat, and one landed between "What is MAXtect?" and the
-  // sentence answering it. The heading-answer criterion reads the block
-  // FOLLOWING a question heading, found an empty block, and scored the piece 0
-  // for failing to answer a question it answers in the very next sentence.
-  out = out.replace(/<p\b[^>]*>(?:\s|<br\s*\/?>|&nbsp;)*<\/p\s*>/gi, "");
+  // Word bookmark anchors. A .docx is full of <a id="_bedn2swudz4f"></a>
+  // targets; the sanitiser strips the id and leaves <a></a> behind. They are
+  // invisible, but they are why the emptiness test below cannot be a regex
+  // listing the whitespace it tolerates — the first version of this checked
+  // for /<h1>(\s|<br>|&nbsp;)*<\/h1>/, found nothing, and reported success
+  // while four blank headings sat in the document as <h1><a></a></h1>.
+  out = out.replace(/<a>\s*<\/a>/gi, "");
+
+  // Headings and paragraphs the conversion emptied, judged on TEXT CONTENT
+  // rather than on a list of permitted filler. A Word paragraph styled as a
+  // heading that held only an image becomes a textless heading once the image
+  // is lifted; four arrived in the founder's document. They render as blank
+  // gaps and page-audit's own H1 regex counts them.
+  //
+  // The empty PARAGRAPH case is not cosmetic either: one landed between
+  // "What is MAXtect?" and the sentence answering it, and the heading-answer
+  // criterion reads the block FOLLOWING a question heading — so the piece
+  // scored zero for failing to answer a question it answers immediately.
+  out = out.replace(/<(h[1-6]|p)\b[^>]*>([\s\S]*?)<\/\1\s*>/gi, (whole, _tag, inner) => {
+    const hasText = inner.replace(/<[^>]+>/g, "").replace(/&nbsp;/gi, " ").trim().length > 0;
+    // A block holding ONLY a figure has no text and is emphatically not empty.
+    // Deleting on the text test alone removed every image in the document —
+    // twelve of them — because Word wraps each one in its own paragraph.
+    const hasMedia = /<(img|iframe|video)\b/i.test(inner);
+    return hasText || hasMedia ? whole : "";
+  });
   return out;
 }
 
