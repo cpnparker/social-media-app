@@ -46,9 +46,15 @@ reported a live security hole here as closed.
 `RATE_EXPIRIES` in `lib/ai/model-costs.ts` holds rates with a known end date,
 and check 6 fails once one is past it. A promotional rate is a correct rate
 that becomes wrong on a schedule, and nothing in a running system notices the
-day it turns; the reminder has to be the build, not somebody's memory. Sonnet 5's
-introductory $2/$10 reverts to $3/$15 on 2026-09-01 — a 50% rise on the
-auto-router's GROUNDED_MODEL, which every document upload routes to.
+day it turns; the reminder has to be the build, not somebody's memory. The one
+live entry is gemini-3-flash: $0.75/$3.75 doubles on 2027-01-01.
+
+Verify a rate against the PROVIDER's own page before adding an expiry for it.
+Sonnet 5's $2/$10 was introductory and a cached June pricing table still says
+it reverts to $3/$15 on 1 September — but Anthropic made it permanent on
+2026-08-10. An expiry added on the strength of the stale table would have
+fired in a week on a day nothing happened, and a check that cries wolf is
+worse than no check at all.
 
 `--self-test` drives every detector against synthetic bad input and refuses to
 report anything if one fails to fire. Use it rather than break-test-restore:

@@ -202,14 +202,15 @@ if (process.argv.indexOf("--self-test") >= 0) {
 
   // The expiry check, driven past its own date. This is the one detector that
   // cannot be proven by waiting, so it is proven by argument instead.
-  const sonnet = RATE_EXPIRIES.filter((e) => e.model === "claude-sonnet-5")[0];
-  if (!sonnet) { selfFails++; console.log("  FAIL no claude-sonnet-5 expiry to test against"); }
+  const gem = RATE_EXPIRIES.filter((e) => e.model === "gemini-3-flash")[0];
+  if (!gem) { selfFails++; console.log("  FAIL no gemini-3-flash expiry to test against"); }
   else {
-    st("a rate still inside its window", expiryVerdict("2026-08-24", sonnet, MODEL_COSTS["claude-sonnet-5"]).state !== "expired");
-    st("a rate one day past expiry", expiryVerdict("2026-09-01", sonnet, MODEL_COSTS["claude-sonnet-5"]).state === "expired");
+    const row = MODEL_COSTS["gemini-3-flash"];
+    st("a rate still inside its window", expiryVerdict("2026-08-24", gem, row).state === "valid");
+    st("a rate one day past expiry", expiryVerdict("2027-01-01", gem, row).state === "expired");
     st("an expiry already actioned (asks for removal, not a failure)",
-      expiryVerdict("2026-09-01", sonnet, { inputPer1M: sonnet.then.inputPer1M, outputPer1M: sonnet.then.outputPer1M }).state === "applied");
-    st("the 14-day notice", expiryVerdict("2026-08-24", sonnet, MODEL_COSTS["claude-sonnet-5"]).state === "soon");
+      expiryVerdict("2027-01-01", gem, { inputPer1M: gem.then.inputPer1M, outputPer1M: gem.then.outputPer1M }).state === "applied");
+    st("the 14-day notice", expiryVerdict("2026-12-20", gem, row).state === "soon");
   }
 
   // The real assertion behind check 1: Luna priced as Luna, not as Sonnet.

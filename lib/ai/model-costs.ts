@@ -46,7 +46,9 @@ export const MODEL_COSTS: Record<
   // September 2026 increase to $3/$15 "will not occur" — so this table was
   // overstating Sonnet 5 by 50%, on the model the auto-router forces for web
   // search and personal-data turns.
-  // $2/$10 is INTRODUCTORY and expires — see RATE_EXPIRIES below.
+  // $2/$10 is PERMANENT. Anthropic cancelled the 1 Sep rise to $3/$15 on
+  // 2026-08-10 (verified against platform.claude.com 2026-08-24). Do not add
+  // an expiry for this row on the strength of an older pricing table.
   "claude-sonnet-5": { inputPer1M: 200, outputPer1M: 1000, cachedInputPer1M: 20, cacheWriteMultiplier: 1.25 },     // $2/$10, cache $0.20
   "claude-sonnet-4-6": { inputPer1M: 300, outputPer1M: 1500 },       // $3/$15
   "claude-sonnet-4-20250514": { inputPer1M: 300, outputPer1M: 1500 },
@@ -164,9 +166,19 @@ export const RATE_EXPIRIES: {
   why: string;
 }[] = [
   {
-    model: "claude-sonnet-5",
-    until: "2026-08-31",
-    then: { inputPer1M: 300, outputPer1M: 1500 },
-    why: "Anthropic introductory pricing. Reverts to $3/$15 on 2026-09-01 — a 50% rise on the auto-router's GROUNDED_MODEL, which every document upload routes to.",
+    model: "gemini-3-flash",
+    until: "2026-12-31",
+    then: { inputPer1M: 150, outputPer1M: 750 },
+    why: "Google promotional pricing. $0.75/$3.75 doubles to $1.50/$7.50 on 2027-01-01.",
   },
+  // NOT claude-sonnet-5. Its $2/$10 reads like an introductory rate and was
+  // one, but Anthropic made it permanent on 2026-08-10 and the 1 Sep rise to
+  // $3/$15 will not occur. An expiry was added here on the strength of a
+  // pricing table cached in June and removed the same day on the strength of
+  // the provider's own page — which is the rule this file already states:
+  // verify against the PROVIDER's docs, never a secondhand table.
+  //
+  // Worth keeping the near-miss written down. A check that fires on a date
+  // nothing happens on is not a harmless spare alarm; it is the thing that
+  // teaches people to skip the output, and it would have gone off in a week.
 ];
