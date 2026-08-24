@@ -651,13 +651,13 @@ export default function AllContentPage() {
             ))}
           </div>
 
-          {{/* Expired-CU write-offs held back by the toggle — shown so the
-              headline number is never silently different from Retool. */}}
-          {{hideExpiredCUs && expiredExcluded.count > 0 && (
-            <p className="text-[11px] text-muted-foreground" title={{expiredExcluded.names.join("\n")}}>
-              Excludes {{expiredExcluded.count}} expired-CU write-off{{expiredExcluded.count === 1 ? "" : "s"}} ({{expiredExcluded.cus.toFixed(2)}} CU) &mdash; contract-closure adjustments, not produced work. Untick &ldquo;Hide expired CUs&rdquo; to include them.
+          {/* Expired-CU write-offs held back by the toggle — shown so the
+              headline number is never silently different from Retool. */}
+          {hideExpiredCUs && expiredExcluded.count > 0 && (
+            <p className="text-[11px] text-muted-foreground" title={expiredExcluded.names.join("\n")}>
+              Excludes {expiredExcluded.count} expired-CU write-off{expiredExcluded.count === 1 ? "" : "s"} ({expiredExcluded.cus.toFixed(2)} CU) &mdash; contract-closure adjustments, not produced work. Untick &ldquo;Hide expired CUs&rdquo; to include them.
             </p>
-          )}}
+          )}
 
           {/* Main content table */}
           <Card className="border-0 shadow-sm">

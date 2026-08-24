@@ -312,6 +312,9 @@ export default function ProfitabilityPage() {
             {meta && (
               <span className="text-xs text-muted-foreground ml-auto">
                 {meta.timeEntriesCount.toLocaleString()} time entries from {meta.clockifyClientsCount} Clockify clients
+                {meta.expiredCUsExcluded > 0 && (
+                  <> &middot; excludes {meta.expiredCUsExcluded.toFixed(2)} CU of expired-CU write-offs, which consumed no production hours</>
+                )}
               </span>
             )}
           </div>

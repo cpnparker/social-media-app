@@ -19,6 +19,7 @@ import {
   Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { isExpiredCUWriteOff } from "@/lib/expired-cus";
 import { formatLocalDate } from "@/lib/date-utils";
 import { downloadCSV } from "@/lib/csv-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
@@ -328,6 +329,7 @@ export default function TeamProductionPage() {
   }, [allUsers]);
 
   const [excludeTestClients, setExcludeTestClients] = useState(true);
+  const [hideExpiredCUs, setHideExpiredCUs] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
 
   // Mobile team panel
@@ -391,7 +393,8 @@ export default function TeamProductionPage() {
   }, [fetchData]);
 
   /* ─── Filter by search ─── */
-  const filteredTasks = useMemo(() => {
+  // Every filter EXCEPT the expired-CU one, so the toggle can report what it hides.
+  const filteredBeforeExpiry = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return tasks.filter((t) => {
       // Global customer scope (from the TopBar selector)
@@ -406,6 +409,23 @@ export default function TeamProductionPage() {
       );
     });
   }, [tasks, searchQuery, globalCustomerId]);
+
+  const filteredTasks = useMemo(
+    () =>
+      hideExpiredCUs
+        ? filteredBeforeExpiry.filter((t) => !isExpiredCUWriteOff(t.contentTitle, t.contentType))
+        : filteredBeforeExpiry,
+    [filteredBeforeExpiry, hideExpiredCUs]
+  );
+
+  const expiredExcluded = useMemo(() => {
+    const items = filteredBeforeExpiry.filter((t) => isExpiredCUWriteOff(t.contentTitle, t.contentType));
+    return {
+      count: Array.from(new Set(items.map((t) => t.contentId || t.taskId))).length,
+      cus: items.reduce((sum, t) => sum + t.taskCUs, 0),
+      names: Array.from(new Set(items.map((t) => `${t.customerName} \u2014 ${t.contentTitle}`))),
+    };
+  }, [filteredBeforeExpiry]);
 
   /* ─── Split tasks ─── */
   const assignedTasks = useMemo(() => {
@@ -531,6 +551,13 @@ export default function TeamProductionPage() {
             <input type="checkbox" checked={excludeTestClients} onChange={(e) => setExcludeTestClients(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
             Hide TCE &amp; test
           </label>
+          <label
+            className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer shrink-0 select-none"
+            title="Contract-closure write-offs (e.g. 'WBCSD expired CUs (2026)') are accounting adjustments, not produced work — nobody spent production time on them."
+          >
+            <input type="checkbox" checked={hideExpiredCUs} onChange={(e) => setHideExpiredCUs(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
+            Hide expired CUs
+          </label>
 
           {/* Mobile team selector toggle */}
           <button
@@ -653,6 +680,13 @@ export default function TeamProductionPage() {
                 </Card>
               </div>
 
+              {/* Expired-CU write-offs held back by the toggle — shown so the
+                  headline number is never silently different from Retool. */}
+              {hideExpiredCUs && expiredExcluded.count > 0 && (
+                <p className="text-[11px] text-muted-foreground mb-3" title={expiredExcluded.names.join("\n")}>
+                  Excludes {expiredExcluded.count} expired-CU write-off{expiredExcluded.count === 1 ? "" : "s"} ({expiredExcluded.cus.toFixed(2)} CU) &mdash; contract-closure adjustments, not produced work. Untick &ldquo;Hide expired CUs&rdquo; to include them.
+                </p>
+              )}
               {/* Summary table */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-0">
