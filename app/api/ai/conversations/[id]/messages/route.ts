@@ -21,6 +21,7 @@ import type { Attachment } from "@/lib/types/ai";
 import { assertServiceAllowed, ServiceControlError } from "@/lib/admin/service-control";
 import { calculateCostTenths } from "@/lib/ai/model-costs";
 import { appendVolatile } from "@/lib/ai/prompt-cache";
+import { needsClaudeForPersonalData } from "@/lib/ai/personal-data-intent";
 
 export const maxDuration = 300; // 5 min — covers slow attachment extractions + long responses
 
@@ -1609,53 +1610,33 @@ export async function POST(
     // "e-?mailed?" requires the second e, so it matched "emailed" but not
     // "did X email me"; and "gmail" — the actual product name — appeared
     // nowhere, so "check my gmail" routed to Grok and got denied.
-    const MAIL_INTENT = new RegExp(
-      [
-        "\\bg-?mail\\b",
-        "\\bmy (inbox|mailbox|e-?mails?|mails)\\b",
-        "\\bin my (inbox|mailbox|mail|e-?mails?)\\b",
-        "\\b(check|search|read|look in|find in|go through) (my )?(mail|e-?mails?|inbox|mailbox)\\b",
-        "\\b(e-?mailed|mailed) (me|us)\\b",
-        "\\b(did|does|has|have|hasn.t|didn.t|will) \\w+ (e-?mail(ed)?|replied|reply|written|got back|come back)",
-        "\\b(e-?mails?|mail) from\\b",
-        "\\bany (unread|new) (mail|e-?mails?)\\b",
-        "\\bunread (mail|e-?mails?)\\b",
-        "\\b(e-?mails?|mail) (i|we) (got|received|have|missed)\\b",
-        "\\breceived (an?|any) (e-?mails?|mail)\\b",
-        "\\bthe (e-?mail|thread) (from|about)\\b",
-      ].join("|"),
-      "i"
-    );
-    // Calendar and Microsoft register on the Claude chains only, for the same
-    // reason mail does, so they need the same auto-route override or the tool
-    // is simply never offered and the model answers from nothing.
-    // Narrow, like MAIL_INTENT: "the meeting" and "my diary" are everyday words
-    // here, and "calendar" alone appears in content-planning chat constantly.
-    const PERSONAL_SCHEDULE_INTENT = new RegExp(
-      [
-        "\\bmy (calendar|diary|schedule|agenda)\\b",
-        "\\b(in|on) my (calendar|diary|schedule)\\b",
-        "\\bwhat.s (on|in) (my )?(calendar|diary|schedule|agenda)\\b",
-        "\\b(am i|are we) (free|busy|meeting)\\b",
-        "\\bwhen (am i|do i) (next )?(meet|meeting|see)\\b",
-        "\\bnext meeting\\b",
-        "\\boutlook\\b",
-        "\\bteams (chat|message|messages)\\b",
-        "\\bmicrosoft 365\\b",
-        "\\bm365\\b",
-      ].join("|"),
-      "i"
-    );
-    if (
-      (gmailAccess || calendarAccess || microsoftAccess) &&
-      !isTeamThread &&
-      wasAutoRouted &&
-      !model.startsWith("claude") &&
-      (MAIL_INTENT.test(userContent || "") ||
-        ((calendarAccess || microsoftAccess) && PERSONAL_SCHEDULE_INTENT.test(userContent || "")))
-    ) {
+    // The predicates live in lib/ai/personal-data-intent.ts so they can be
+    // tested against the real thing — a check that re-implements a regex tests
+    // its own copy and stays green while the product is wrong.
+    if (needsClaudeForPersonalData({
+      userMessage: userContent || "",
+      intent: queryRoute.intent,
+      gmailAccess, calendarAccess, microsoftAccess,
+      isTeamThread, wasAutoRouted, model,
+    })) {
       model = "claude-sonnet-5";
       console.log(`[Messages] Personal-data intent: auto-route override → claude-sonnet-5 (these tools are Claude-only)`);
+    }
+
+    // Name the tool that can actually answer.
+    //
+    // The hint block above is promoted to "you MUST call these tools before
+    // answering", so whatever it names is the only thing guaranteed to be
+    // retrieved — and for a meeting question it named query_meetingbrain
+    // alone, a source that carries attendees and has no organiser field at
+    // all. Composed here rather than in generateHints because calendarAccess
+    // is not known until further down this file, and a hint naming a tool the
+    // user cannot reach is worse than no hint.
+    if (calendarAccess && !isTeamThread && queryRoute.intent === "meeting_data" && model.startsWith("claude")) {
+      systemPrompt = appendVolatile(
+        systemPrompt,
+        "\n\n## Also required this turn\nThis is a question about the user's calendar. query_meetingbrain carries ATTENDEES and has no organiser field — it cannot tell you who sent or scheduled anything. Call query_calendar as well, and prefer it for anything about who organised, sent or created an invite, or for the authoritative time of a specific event."
+      );
     }
 
     // Say the true thing about the mailbox.
@@ -1776,7 +1757,14 @@ export async function POST(
       // gate personal reports server-side via conversationVisibility, while the
       // workspace-shared client_meetings report stays available to everyone.
       { ...aiConfigRef, onSlidesDraft: (draft: any) => { lastSlidesDraft = draft; } },
-      async ({ fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }) => {
+      // modelUsed, not `model`. `model` is what this route CHOSE; four paths make
+      // the answering model differ from it — Anthropic falling back to grok-4.3,
+      // xAI falling back to claude-sonnet-5 on error OR on an empty reply, and a
+      // Control Centre override. All four were silent, so a fallback answer was
+      // attributed to the model that failed, in the message row and the ledger
+      // alike. Any per-model quality or cost comparison drawn from that data was
+      // reading the wrong name.
+      async ({ fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, modelUsed }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
           let assistantErr: any = null;
@@ -1785,7 +1773,7 @@ export async function POST(
               .from("ai_messages")
               .update({
                 document_message: fullText,
-                name_model: model,
+                name_model: modelUsed,
                 status_message: "complete",
               })
               .eq("id_message", pendingMessageId);
@@ -1800,7 +1788,7 @@ export async function POST(
                 id_conversation: conversationId,
                 role_message: "assistant",
                 document_message: fullText,
-                name_model: model,
+                name_model: modelUsed,
               });
             assistantErr = error;
           }
@@ -1828,7 +1816,9 @@ export async function POST(
           // inputTokens is already NET of cache — normalised per provider in
           // providers.ts, since the two families report it differently.
           const costTenths = calculateCostTenths(
-            model,
+            // Priced as the model that ANSWERED. A Claude turn that fell back to
+            // grok-4.3 was being billed at Claude's rate and vice versa.
+            modelUsed,
             inputTokens,
             outputTokens,
             cacheReadTokens || 0,
@@ -1837,7 +1827,7 @@ export async function POST(
           if ((cacheReadTokens || 0) > 0 || (cacheWriteTokens || 0) > 0) {
             console.log(
               `[Messages] Cache: read=${cacheReadTokens || 0} write=${cacheWriteTokens || 0} ` +
-              `uncached_in=${inputTokens} model=${model}`
+              `uncached_in=${inputTokens} model=${modelUsed}`
             );
           }
           const { error: usageErr } = await intelligenceDb
@@ -1845,7 +1835,7 @@ export async function POST(
             .insert({
               id_workspace: conversation.id_workspace,
               user_usage: userId,
-              name_model: model,
+              name_model: modelUsed,
               type_source: conversation.id_content ? "engine" : "enginegpt",
               units_input: inputTokens,
               units_output: outputTokens,

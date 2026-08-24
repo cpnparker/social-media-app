@@ -228,7 +228,7 @@ function generateHints(route: Omit<QueryRoute, "hints" | "composition" | "needsM
     hints.push("The user may be referencing something from a past conversation — consider using search_memory to find relevant context.");
   }
   if (route.suggestMeetingBrain) {
-    hints.push("query_meetingbrain (the question mentions meetings/tasks). For 'now / today / current meeting' questions use report: 'upcoming_meetings', days: 1 and filter by current time. For searches about a specific person, use upcoming_meetings or meetings and scan the attendees field — do NOT use search_meetings with a person's name as the query, it only matches titles/summaries.");
+    hints.push("query_meetingbrain (the question mentions meetings/tasks). For 'now / today / tomorrow / current meeting' questions use report: 'upcoming_meetings' with days: 2 or more and read each row's `day` field — it says TODAY or TOMORROW outright. Do NOT work the day out yourself from the date, and do NOT assume days: 1 means one calendar day: the window is rolling from right now, so it stops at this time tomorrow and spans two days. For searches about a specific person, use upcoming_meetings or meetings and scan the attendees field — do NOT use search_meetings with a person's name as the query, it only matches titles/summaries.");
   }
   if (route.searchMode === "on") {
     hints.push("Web search is active for this query. Use the search results to provide current, factual information with sources.");

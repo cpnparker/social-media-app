@@ -7080,6 +7080,21 @@ export interface StreamResult {
   cacheReadTokens: number;
   /** Tokens written to cache. Anthropic bills these ABOVE base input. */
   cacheWriteTokens: number;
+  /**
+   * The model that ACTUALLY produced this text — not the one the route asked for.
+   *
+   * Four paths make those differ: Anthropic falling back to grok-4.3, xAI
+   * falling back to claude-sonnet-5 on an error OR on an empty response, and a
+   * Control Centre override swapping the model outright. All four are silent to
+   * the caller, which logged the model it CHOSE. So every row attributing a
+   * fallback answer named the wrong model, in ai_messages and ai_usage alike —
+   * and any per-model quality or cost comparison drawn from them was unsound
+   * in a way nothing surfaced.
+   *
+   * Required, not optional. A new provider chain that forgets it fails to
+   * compile, which is the only version of this that stays true.
+   */
+  modelUsed: string;
 }
 
 /* ─────────────── Streaming Response (SSE) ─────────────── */
@@ -7103,7 +7118,11 @@ export function createStreamingResponse(
   return new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
-      let result: StreamResult = { fullText: "", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+      // modelUsed seeded from the RESOLVED apiModel, so a turn that never reaches a
+      // provider (capped, thrown before the branch) still attributes to something
+      // real rather than to the empty string. Every branch below overwrites it with
+      // what actually ran, including after a fallback.
+      let result: StreamResult = { fullText: "", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: modelInfo.apiModel };
 
       // Control Centre model override + global provider cap.
       // - Override > registry-resolved model.
@@ -8820,6 +8839,7 @@ async function streamAnthropic(
     outputTokens: totalOutputTokens,
     cacheReadTokens: totalCacheReadTokens,
     cacheWriteTokens: totalCacheWriteTokens,
+    modelUsed: apiModel,
   };
 }
 
@@ -9804,6 +9824,7 @@ async function streamXAIChatCompletions(
     outputTokens: totalOutputTokens,
     cacheReadTokens: totalCacheReadTokens,
     cacheWriteTokens: totalCacheWriteTokens,
+    modelUsed: apiModel,
   };
 }
 
@@ -9890,7 +9911,7 @@ async function streamXAIResponses(
     }
   }
 
-  return { fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0 };
+  return { fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0, modelUsed: apiModel };
 }
 
 /* ─────────────── Gemini Streaming ─────────────── */
@@ -10768,6 +10789,7 @@ async function streamGemini(
     outputTokens: totalOutputTokens,
     cacheReadTokens: totalCacheReadTokens,
     cacheWriteTokens: totalCacheWriteTokens,
+    modelUsed: apiModel,
   };
 }
 
@@ -11642,6 +11664,7 @@ async function streamOpenAI(
     outputTokens: totalOutputTokens,
     cacheReadTokens: totalCacheReadTokens,
     cacheWriteTokens: totalCacheWriteTokens,
+    modelUsed: apiModel,
   };
 }
 
@@ -11695,5 +11718,5 @@ async function streamPerplexity(
 
   // Perplexity offers no prompt caching, so these are structurally zero
   // rather than unmeasured.
-  return { fullText, inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  return { fullText, inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: apiModel };
 }
