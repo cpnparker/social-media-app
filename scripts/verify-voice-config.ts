@@ -28,7 +28,8 @@
  * render and is a known cause of the same symptom (fixed c03d4fc). British
  * spelling in TEXT is fine; a British accent must come from the VOICE.
  */
-import { buildVoiceInstructions, getVoiceTools, VOICE_NAME, VOICE_NAME_FALLBACK } from "../lib/ai/voice";
+import { buildVoiceInstructions, getVoiceTools, VOICE_NAME, VOICE_NAME_FALLBACK, VOICE_TOOL_NAMES } from "../lib/ai/voice";
+import { toolBudgetFor } from "../lib/ai/tool-loop-guard";
 
 let failures = 0;
 const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
@@ -172,7 +173,15 @@ console.log("\n6. The session knows what its own thread already said");
 // "the handover list in this thread" it replied "I can't pull up that specific
 // thread; it looks like I'm not a member of the conversation", from inside
 // that conversation.
-const DIGEST = "They said: what is still left off Rob's handover list\nYou said: three items remain — the SOW, the PO and the transition note";
+// Shaped like the real thing: a rolling SUMMARY plus recent turns. Recent
+// turns alone are not enough, and a live failure proved it — asked what was
+// left on a handover list, voice could not find it, because the list was
+// message THREE of a hundred and fifty-four and no window of recent turns
+// reaches that. The summary is the half that carries old content.
+const DIGEST = [
+  "What this conversation has covered so far:\nRob sent a handover list before his holiday covering Siemens, IFFIm, Catherine's new role and several clients.",
+  "The most recent turns:\nThey said: what is still left off Rob's handover list\nYou said: three items remain",
+].join("\n\n");
 const withDigest = buildVoiceInstructions({ ...CTX, threadDigest: DIGEST } as any);
 const noDigest = buildVoiceInstructions({ ...CTX } as any);
 
@@ -182,6 +191,14 @@ const noDigest = buildVoiceInstructions({ ...CTX } as any);
 withDigest.indexOf("Rob") >= 0
   ? pass("the actual content is present, not just a heading")
   : fail("the digest heading rendered without the turns");
+// Both halves must survive into the prompt. Dropping the summary is the exact
+// regression that made this useless in a long thread.
+/covered so far/.test(withDigest)
+  ? pass("the rolling summary half survives")
+  : fail("the summary was dropped — old content becomes unreachable again");
+/most recent turns/.test(withDigest)
+  ? pass("the recent-turns half survives")
+  : fail("recent turns were dropped — \"it\" and \"that\" stop resolving");
 /do not say you cannot see the conversation/i.test(withDigest)
   ? pass("it is told it IS in the conversation")
   : fail("nothing stops it claiming it cannot see the thread it is in");
@@ -196,9 +213,42 @@ withDigest.indexOf("Rob") >= 0
 // voice prompt is short on purpose. Assert the digest stays a budget, not a
 // blank cheque.
 const added = withDigest.length - noDigest.length;
-added > 0 && added < 6000
+// The route caps each half at 2,500 chars, so a real digest lands near 5,000
+// plus the fixed framing. Bounded, but deliberately larger than the
+// turns-only version was: an assistant that cannot see its own thread is
+// useless, and that is worth about a second of first-audio latency.
+added > 0 && added < 7000
   ? pass(`digest adds ${added} chars (~${Math.round(added / 3.6)} tokens) — bounded`)
-  : fail(`digest adds ${added} chars — that delays first audio`);
+  : fail(`digest adds ${added} chars — that delays first audio too far`);
+
+console.log("\n6b. It can reach the thread it cannot fit in the prompt");
+// Two digests failed the same real case before this: a handover list pasted as
+// message THREE of a hundred and fifty-four. A rolling summary summarises the
+// RECENT conversation and never preserved it; measured on that thread, the
+// digest reached 3 of the list's 14 items. No window of bounded size fixes a
+// problem of DEPTH — retrieval does, and it costs no first-audio latency
+// because nothing sits in the prompt until it is asked for.
+const allTools = getVoiceTools({ finance: false, resourcing: false }) as any[];
+const threadTool = allTools.filter((t) => (t?.name || t?.function?.name) === "search_thread")[0];
+threadTool
+  ? pass("search_thread is offered to the model")
+  : fail("search_thread is not in the tool list — voice cannot reach anything beyond the digest");
+VOICE_TOOL_NAMES.indexOf("search_thread") >= 0
+  ? pass("and the tools route will accept it")
+  : fail("search_thread is offered but the route would reject it as an unknown tool");
+toolBudgetFor("search_thread") > 3
+  ? pass(`its budget is ${toolBudgetFor("search_thread")} — room to try a second term`)
+  : fail("search_thread has the default budget of 3, so it gives up after ~2 attempts — the failure it exists to prevent");
+const td = String(threadTool?.description || threadTool?.function?.description || "");
+/distinctive word/i.test(td)
+  ? pass("it tells the model to search ONE distinctive word, not a phrase")
+  : fail("nothing tells the model how to search — a phrase matches nothing in prose");
+for (let i = 0; i < VARIANTS.length; i++) {
+  if (!/search_thread/.test(VARIANTS[i].text)) { fail(`${VARIANTS[i].label}: the prompt never mentions search_thread`); break; }
+}
+/before saying you cannot find it|BEFORE saying/i.test(withDigest) || /call search_thread/i.test(withDigest)
+  ? pass("the prompt tells it to search before claiming it cannot see the thread")
+  : fail("nothing stops it saying \"paste the list\" for something already in the conversation");
 
 // ── Self-test ───────────────────────────────────────────────────────────
 // The detectors are regexes over prose, which is exactly the kind of check
