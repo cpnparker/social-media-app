@@ -111,7 +111,7 @@ export async function resolveEntities(opts: {
   // 1. Candidates -> nodes, through the alias index.
   const { data: aliasRows, error } = await intelligenceDb
     .from("entity_alias")
-    .select("alias_text, count_evidence, id_node, entity_node!inner(id_node, id_workspace, type_node, name_display, email_primary, domain_primary, type_person, type_relationship, id_client, type_status)")
+    .select("alias_text, count_evidence, id_node, entity_node!inner(id_node, id_workspace, type_node, name_display, email_primary, domain_primary, type_person, type_relationship, id_client, type_status, type_stage, id_contract, id_engagement_client)")
     .in("alias_text", candidates.map((c) => c.text));
   if (error || !aliasRows?.length) return [];
 
@@ -236,6 +236,20 @@ export async function resolveEntities(opts: {
       out.push({
         name: node.name_display, kind: "person", key: node.email_primary || null,
         detail: node.type_person === "internal" ? "colleague" : "external contact",
+        sightings: mine.length, lastSeen: last, relations: relationsFor(id),
+      });
+    } else if (node.type_node === "engagement") {
+      // The commercial spine: what we are actually contracted to do. Stage is
+      // derived from the contract's own dates in Engine, so it cannot drift
+      // from what a person sees in the app.
+      const stage: Record<string, string> = {
+        pitch: "a live pitch", won: "won, not yet started", live: "live work",
+        closed: "finished", lost: "lost",
+      };
+      out.push({
+        name: node.name_display, kind: "engagement",
+        key: node.id_contract ? `contract ${node.id_contract}` : null,
+        detail: stage[node.type_stage as string] || "an engagement",
         sightings: mine.length, lastSeen: last, relations: relationsFor(id),
       });
     } else if (node.type_node === "org") {
