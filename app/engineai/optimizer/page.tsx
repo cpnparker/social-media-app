@@ -35,6 +35,7 @@ import type { Editor } from "@tiptap/react";
 import type { DraftInput } from "@/lib/optimizer/engine";
 import type { ClientCanon } from "@/lib/optimizer/client-canon";
 import IssueList from "@/components/optimizer/IssueList";
+import CoveragePanel from "@/components/optimizer/CoveragePanel";
 import IssuePopover from "@/components/optimizer/IssuePopover";
 import PageAudit from "@/components/optimizer/PageAudit";
 import StartScreen from "@/components/optimizer/StartScreen";
@@ -42,6 +43,7 @@ import EngineAISidebar from "@/components/engineai/EngineAISidebar";
 import {
   OptimizerHighlight, optimizerHighlightKey, applyFinding,
 } from "@/lib/optimizer/highlight-plugin";
+import { buildDocIndex, textRangeToPos } from "@/lib/optimizer/doc-index";
 import type { Issue, HighlightFinding } from "@/lib/optimizer/highlight-plugin";
 import { buildLiveFindings } from "@/lib/optimizer/live-issues";
 import { parseDraft } from "@/lib/optimizer/parse";
@@ -95,7 +97,7 @@ function OptimizerStudio() {
   const [issues, setIssues] = useState<Issue[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<{ dropped: number; orphaned: number; gateRejected: number } | null>(null);
-  const [panelTab, setPanelTab] = useState<"score" | "issues">("score");
+  const [panelTab, setPanelTab] = useState<"score" | "issues" | "coverage">("score");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   /**
    * The body as it stood when the last assessment ran.
@@ -588,6 +590,28 @@ function OptimizerStudio() {
     );
     syncIssues();
   }, [syncIssues]);
+
+
+  /**
+   * Scroll a passage into view from TEXT offsets, which is what the coverage
+   * panel has — it carries quotes verified against ParsedDraft.text, not
+   * issue ids, so handleSelect cannot serve it.
+   */
+  const revealTextRange = useCallback((start: number, end: number) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    try {
+      const index = buildDocIndex(editor.state.doc);
+      const range = textRangeToPos(index, start, end);
+      if (!range) return;
+      editor.chain().focus().setTextSelection({ from: range.from, to: range.to }).run();
+      const dom = editor.view.domAtPos(range.from);
+      const node = (dom.node as any).nodeType === 1 ? (dom.node as Element) : (dom.node as any).parentElement;
+      if (node && node.scrollIntoView) node.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch {
+      /* a passage that cannot be located is not worth an error to the writer */
+    }
+  }, []);
 
   const handleSelect = useCallback((id: string | null) => {
     const editor = editorRef.current;
@@ -1149,9 +1173,22 @@ function OptimizerStudio() {
               </span>
             )}
           </button>
+          <button
+            onClick={() => setPanelTab("coverage")}
+            className={cn("text-[12.5px] font-medium px-2.5 py-2 border-b-2 -mb-px",
+              panelTab === "coverage" ? "border-primary text-foreground" : "border-transparent text-muted-foreground")}
+          >
+            Coverage
+          </button>
         </div>
         <div className="flex-1 min-h-0">
-          {panelTab === "score" ? (
+          {panelTab === "coverage" ? (
+            <CoveragePanel
+              sessionId={sessionId || ""}
+              workspaceId={workspaceId}
+              onReveal={revealTextRange}
+            />
+          ) : panelTab === "score" ? (
             <ScorePanel
               input={scoreInput}
               muted={streaming}

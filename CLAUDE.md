@@ -145,13 +145,37 @@ from V1", 859.50 CU, the single largest row in `app_content`).
 
 ## Content Optimizer checks
 
-Thirteen scripts guard `lib/optimizer/` and the import/export paths. Run all of
+Fourteen scripts guard `lib/optimizer/` and the import/export paths. Run all of
 them before shipping anything that touches the rubric, the judge, anchoring or
 how content gets in:
 
 ```
-for f in rubric anchors judge gate doc-index highlight import export import-html live url page-audit file-import; do npx tsx scripts/verify-optimizer-$f.ts || break; done
+for f in rubric anchors judge gate doc-index highlight import export import-html live url page-audit file-import coverage; do npx tsx scripts/verify-optimizer-$f.ts || break; done
 ```
+
+Two checks in `verify-optimizer-rubric.ts` are about the SET rather than any
+one criterion, and exist because nothing tied the engine to the register:
+`anonymous-first-person-facts` was emitted from BOTH `pillar3()` and
+`pillar4()` in byte-identical blocks, so a pillar renormalised over ten points
+belonging to another pillar and read 61 where it should read 55. A duplicated
+PASS is invisible in a total. The assertions are that the emitted key set
+equals `CRITERIA` exactly, and — the one that pins the real defect — that every
+criterion is emitted from the pillar the rubric assigns it. A SINGLE misplaced
+copy satisfies every counting check while misreporting two pillars at once.
+
+`verify-optimizer-coverage.ts` tests fan-out coverage and the novelty gap at
+their PURE SEAMS, the way `judge.ts` is tested: prompt builders and parsers are
+exported, only the route touches the network, and the interesting failures all
+live in the response handling. A model asserting coverage it cannot quote is
+demoted to uncovered rather than credited; a novelty claim quoting a sentence
+that is not in the draft is dropped outright; both count what they discarded.
+The parametric prompt must NEVER contain the draft — if it does, novelty is
+measured against itself and everything reads as commodity — and the novelty
+comparison runs on a DIFFERENT model from the one that produced the answer, so
+nothing marks its own homework. That last assertion compares the model ids as
+widened strings on purpose: as literal types TypeScript proves the comparison
+can never be false, so the check would pass forever after someone pointed both
+at the same model.
 
 The live-page audit renders as well as fetches, and the two views answer
 different questions. The SERVED HTML is authoritative — the crawlers behind AI

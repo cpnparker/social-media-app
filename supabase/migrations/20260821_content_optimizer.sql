@@ -367,3 +367,22 @@ ALTER TABLE intelligence.optimizer_sessions
 ALTER TABLE intelligence.optimizer_sessions
   ADD CONSTRAINT optimizer_sessions_source_chk
   CHECK (type_source IN ('generated', 'pasted', 'gdoc', 'gdoc-link', 'url', 'engine', 'file'));
+
+-- ── 9. Coverage runs (2026-08-24) ──────────────────────────────────────────
+--
+-- Fan-out coverage and the novelty gap are three model calls per press, so
+-- they are memoised like the judge. 'coverage' joins the assessment kinds and
+-- the payload gets its own column rather than borrowing config_pillars, which
+-- holds a different shape for a different kind.
+--
+-- Until this runs the feature still WORKS — the route degrades to computing
+-- fresh every time and says so in notAssessable — but every reopen is billed
+-- again. The route reads config_coverage in its own SELECT for the usual
+-- reason: PostgREST fails an ENTIRE statement on one unknown column.
+ALTER TABLE intelligence.optimizer_assessments
+  DROP CONSTRAINT IF EXISTS optimizer_assessments_kind_chk;
+ALTER TABLE intelligence.optimizer_assessments
+  ADD CONSTRAINT optimizer_assessments_kind_chk
+  CHECK (type_kind IN ('deterministic', 'full', 'coverage'));
+ALTER TABLE intelligence.optimizer_assessments
+  ADD COLUMN IF NOT EXISTS config_coverage jsonb NOT NULL DEFAULT '{}'::jsonb;
