@@ -22,6 +22,7 @@
  *      result.
  */
 import { readFileSync } from "fs";
+import { toolBudgetFor } from "../lib/ai/tool-loop-guard";
 
 const providers = readFileSync("lib/ai/providers.ts", "utf8");
 const prompt = readFileSync("lib/ai/system-prompts.ts", "utf8");
@@ -30,23 +31,32 @@ const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
 const pass = (m: string) => console.log(`  ok    ${m}`);
 
 console.log("\n1. Search tools have enough calls to actually search");
-const budgets = providers.match(/const READ_ONLY_TOOL_BUDGET[\s\S]*?\n  \};/g) || [];
-budgets.length >= 2
-  ? pass(`${budgets.length} budget tables found (one per provider chain)`)
-  : fail(`only ${budgets.length} budget table(s) — a chain was missed`);
-// Indexed loop, not .entries(): scripts/ is type-checked by `next build`, whose
-// target predates ES2015 iteration helpers. Local tsc accepts it; the build does
-// not. See CLAUDE.md.
-for (let i = 0; i < budgets.length; i++) {
-  const table = budgets[i];
-  for (const tool of ["query_gmail", "query_slack"]) {
-    const n = Number(new RegExp(`${tool}:\\s*(\\d+)`).exec(table)?.[1] ?? 0);
-    // Two calls per mailbox answer, so anything under ~6 is one or two attempts.
-    n >= 6
-      ? pass(`table ${i + 1}: ${tool} = ${n}`)
-      : fail(`table ${i + 1}: ${tool} = ${n || "absent (defaults to 3)"} — too few to search iteratively`);
-  }
+// ASKED OF THE FUNCTION, not of a regex over a literal.
+//
+// This used to count `const READ_ONLY_TOOL_BUDGET` tables in providers.ts and
+// require at least two — which described the world only while the chains each
+// kept their own copy. They were folded onto lib/ai/tool-loop-guard.ts on
+// 2026-08-24 and the count went to zero, so the check failed on a repair.
+//
+// Counting copies was always the weaker question. It could not have caught the
+// divergence that actually happened either: the two inline tables agreed with
+// each other and BOTH disagreed with the shared one, which had none of the
+// personal-data tools, so Gemini and OpenAI capped query_slack at 3. Asking
+// toolBudgetFor what a chain will actually allow is the question that matters,
+// and there is now exactly one answer to it.
+const SEARCH_TOOLS = ["query_gmail", "query_slack", "query_meetingbrain", "query_calendar", "query_microsoft"];
+for (let i = 0; i < SEARCH_TOOLS.length; i++) {
+  const tool = SEARCH_TOOLS[i];
+  const n = toolBudgetFor(tool);
+  // Two calls per mailbox answer — search returns headers, only "thread"
+  // returns bodies — so anything under 6 is one or two real attempts.
+  n >= 6
+    ? pass(`${tool} = ${n}`)
+    : fail(`${tool} = ${n} — too few to search iteratively (the default 3 gives one attempt)`);
 }
+(providers.match(/createToolLoopGuard\(\)/g) || []).length === 4
+  ? pass("all four chains draw that budget from the one shared loop")
+  : fail("a chain is not using the shared loop — budgets can diverge again, silently");
 
 console.log("\n2. The prompt requires finishing the search before reporting the outcome");
 const RULES: [string, RegExp][] = [
@@ -62,8 +72,13 @@ for (const [label, re] of RULES) {
 }
 
 console.log("\n3. The prompt does not contradict the budget it promises");
+// Same repair as section 1: read the budget the app enforces, not a literal in
+// a file that no longer holds it. The prompt tells the model it has eight
+// mailbox calls; if that promise and the guard ever disagree, one of them is
+// lying and the model pays for it either by giving up early or by being cut off
+// mid-search.
 const promised = Number(/mailbox and Slack tools allow (\w+) calls/.exec(prompt)?.[1] === "eight" ? 8 : 0);
-const actual = Number(/query_gmail:\s*(\d+)/.exec(providers)?.[1] ?? 0);
+const actual = toolBudgetFor("query_gmail");
 promised === actual
   ? pass(`prompt says ${promised}, code allows ${actual}`)
   : fail(`prompt promises ${promised || "?"} calls but code allows ${actual} — one of them is lying to the model`);

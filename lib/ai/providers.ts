@@ -8,7 +8,7 @@ import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
 import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings } from "@/lib/slides/generate";
-import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice } from "@/lib/ai/tool-loop-guard";
+import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, type ToolUsage } from "@/lib/ai/tool-loop-guard";
 import { toPreviewModel } from "@/lib/slides/preview-model";
 import { signedMediaUrl } from "@/lib/media/signed";
 import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
@@ -7095,6 +7095,19 @@ export interface StreamResult {
    * compile, which is the only version of this that stays true.
    */
   modelUsed: string;
+  /**
+   * Which tools ran this turn, and how often the guard refused them.
+   *
+   * NAMES AND COUNTS ONLY — never arguments, never results. That keeps the
+   * record free of third-party text, which matters because a flagged
+   * conversation can contain mailbox content restricted to a single processor.
+   *
+   * It answers the question a reviewer actually has: was a tool that could have
+   * answered simply never called? "Did Carol send the invite?" was answered
+   * from MeetingBrain alone while query_calendar sat unregistered, and nothing
+   * recorded that — the reply looked like a considered no.
+   */
+  toolsUsed: ToolUsage[];
 }
 
 /* ─────────────── Streaming Response (SSE) ─────────────── */
@@ -7122,7 +7135,7 @@ export function createStreamingResponse(
       // provider (capped, thrown before the branch) still attributes to something
       // real rather than to the empty string. Every branch below overwrites it with
       // what actually ran, including after a fallback.
-      let result: StreamResult = { fullText: "", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: modelInfo.apiModel };
+      let result: StreamResult = { fullText: "", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: modelInfo.apiModel, toolsUsed: [] };
 
       // Control Centre model override + global provider cap.
       // - Override > registry-resolved model.
@@ -7534,36 +7547,7 @@ async function streamAnthropic(
   let stalledOut = false;
   // No-progress guard (mirrors the xAI loop): stop the model re-calling the
   // same tool with no progress, which produces a wall of repeated text.
-  const executedToolSigs = new Set<string>();
-  const toolCallCounts = new Map<string, number>();
-  const MAX_CALLS_PER_TOOL = 3;
-  // Read-only data tools get more headroom: a legitimate multi-part report
-  // ("net profit by month across every scenario") needs several pulls, and
-  // capping those at 3 made the model fill the rest of a table with
-  // placeholders. The identical-arguments dedup above still stops true
-  // spirals, which is what this guard was added for.
-  const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
-    query_xero: 8, query_engine: 8, query_meetingbrain: 6, query_drive_docs: 6,
-    search_notebook: 6,
-    // SEARCHING A MAILBOX IS ITERATIVE, and the contract costs two calls per
-    // answer: search returns headers, only report "thread" returns the body.
-    // At the default cap of 3 a turn got roughly ONE real attempt, which is not
-    // how anyone finds an email — the first guess at a search term rarely hits.
-    //
-    // The visible cost: asked to confirm a won contract, the model searched
-    // once, missed, correctly worked out that the plain client name alone was
-    // the query to try, and then ASKED PERMISSION to try it rather than trying
-    // it — because it had no calls left. The user had to supply the sender's
-    // name from memory before it could find a thread that had been sitting in
-    // the mailbox, with the client's name in its subject, the whole time.
-    // Asking is what the model does when it cannot act.
-    query_gmail: 8, query_slack: 8, query_calendar: 6, query_microsoft: 6,
-    // Four separate reports behind one tool name, so the default cap of 3
-    // makes "how are we tracking, and who is free to take it on" unanswerable
-    // — the turn runs out of calls before it runs out of questions.
-    query_resourcing: 8,
-  };
-  const budgetFor = (name: string) => READ_ONLY_TOOL_BUDGET[name] ?? MAX_CALLS_PER_TOOL;
+  const toolLoopGuard = createToolLoopGuard();
   let postTaintCallsUsed = 0;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     // HARD taint: suppress tool use for the rest of the turn. The executor
@@ -7797,20 +7781,11 @@ async function streamAnthropic(
         postTaintCallsUsed++;
         console.log(`[Anthropic] post-taint read ${postTaintCallsUsed}/${MAX_POST_TAINT_CALLS}: ${tool.name}`);
       }
-      const toolSig = `${tool.name}:${JSON.stringify(tool.input ?? {})}`;
-      const toolCount = (toolCallCounts.get(tool.name) || 0) + 1;
-      toolCallCounts.set(tool.name, toolCount);
-      if (executedToolSigs.has(toolSig) || toolCount > budgetFor(tool.name)) {
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: tool.id,
-          content: executedToolSigs.has(toolSig)
-            ? repeatedCallNotice(tool.name)
-            : overBudgetNotice(tool.name),
-        });
+      const blockedWhy = toolLoopGuard.blockFor(tool.name, tool.input);
+      if (blockedWhy) {
+        toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: blockedWhy });
         continue;
       }
-      executedToolSigs.add(toolSig);
       executedAnyTool = true;
       if (tool.name === "generate_image") {
         try {
@@ -7895,7 +7870,7 @@ async function streamAnthropic(
           }
           // A failed call must not trip the duplicate-signature guard into
           // "answer with what you have" — allow an honest identical retry.
-          executedToolSigs.delete(toolSig);
+          toolLoopGuard.release(tool.name, tool.input);
           toolResults.push({
             type: "tool_result",
             tool_use_id: tool.id,
@@ -8840,6 +8815,7 @@ async function streamAnthropic(
     cacheReadTokens: totalCacheReadTokens,
     cacheWriteTokens: totalCacheWriteTokens,
     modelUsed: apiModel,
+    toolsUsed: toolLoopGuard.usage(),
   };
 }
 
@@ -9013,36 +8989,7 @@ async function streamXAIChatCompletions(
   // over, gets the same "no results", and re-narrates each round until the round
   // cap — producing a wall of repeated text. Track executed tool signatures +
   // per-tool counts; skip repeats and stop when a round makes no real progress.
-  const executedToolSigs = new Set<string>();
-  const toolCallCounts = new Map<string, number>();
-  const MAX_CALLS_PER_TOOL = 3;
-  // Read-only data tools get more headroom: a legitimate multi-part report
-  // ("net profit by month across every scenario") needs several pulls, and
-  // capping those at 3 made the model fill the rest of a table with
-  // placeholders. The identical-arguments dedup above still stops true
-  // spirals, which is what this guard was added for.
-  const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
-    query_xero: 8, query_engine: 8, query_meetingbrain: 6, query_drive_docs: 6,
-    search_notebook: 6,
-    // SEARCHING A MAILBOX IS ITERATIVE, and the contract costs two calls per
-    // answer: search returns headers, only report "thread" returns the body.
-    // At the default cap of 3 a turn got roughly ONE real attempt, which is not
-    // how anyone finds an email — the first guess at a search term rarely hits.
-    //
-    // The visible cost: asked to confirm a won contract, the model searched
-    // once, missed, correctly worked out that the plain client name alone was
-    // the query to try, and then ASKED PERMISSION to try it rather than trying
-    // it — because it had no calls left. The user had to supply the sender's
-    // name from memory before it could find a thread that had been sitting in
-    // the mailbox, with the client's name in its subject, the whole time.
-    // Asking is what the model does when it cannot act.
-    query_gmail: 8, query_slack: 8, query_calendar: 6, query_microsoft: 6,
-    // Four separate reports behind one tool name, so the default cap of 3
-    // makes "how are we tracking, and who is free to take it on" unanswerable
-    // — the turn runs out of calls before it runs out of questions.
-    query_resourcing: 8,
-  };
-  const budgetFor = (name: string) => READ_ONLY_TOOL_BUDGET[name] ?? MAX_CALLS_PER_TOOL;
+  const toolLoopGuard = createToolLoopGuard();
   let postTaintCallsUsed = 0;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const stream = (await xai.chat.completions.create({
@@ -9223,7 +9170,7 @@ async function streamXAIChatCompletions(
     // the same round as query_gmail still run.
     const taintedBeforeBatch = config.sawUntrustedContent === true;
     for (const tc of toolCallsArray) {
-      // No-progress guard (see executedToolSigs above): skip a tool call
+      // No-progress guard (lib/ai/tool-loop-guard.ts): skip a tool call
       // identical to one already run this turn, or any tool called too many
       // times, and tell the model to answer instead of churning the same call.
       // TAINTED TURN — see the Anthropic chain.
@@ -9241,20 +9188,14 @@ async function streamXAIChatCompletions(
         continue;
       }
       if (taintedBeforeBatch) postTaintCallsUsed++;
-      const toolSig = `${tc.function.name}:${(tc.function.arguments || "").replace(/\s+/g, "")}`;
-      const toolCount = (toolCallCounts.get(tc.function.name) || 0) + 1;
-      toolCallCounts.set(tc.function.name, toolCount);
-      if (executedToolSigs.has(toolSig) || toolCount > budgetFor(tc.function.name)) {
-        openaiMessages.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: executedToolSigs.has(toolSig)
-            ? repeatedCallNotice(tc.function.name)
-            : overBudgetNotice(tc.function.name),
-        } as any);
+      // Whitespace-stripped, as before: two calls differing only in formatting
+      // are the same call, and the model reformats its own JSON between rounds.
+      const toolArgSig = (tc.function.arguments || "").replace(/\s+/g, "");
+      const blockedWhy = toolLoopGuard.blockFor(tc.function.name, toolArgSig);
+      if (blockedWhy) {
+        openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: blockedWhy } as any);
         continue;
       }
-      executedToolSigs.add(toolSig);
       executedAnyTool = true;
       if (tc.function.name === "generate_image") {
         try {
@@ -9297,7 +9238,7 @@ async function streamXAIChatCompletions(
             }
             fullText += failNote;
           }
-          executedToolSigs.delete(toolSig);
+          toolLoopGuard.release(tc.function.name, toolArgSig);
           openaiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
@@ -9825,6 +9766,7 @@ async function streamXAIChatCompletions(
     cacheReadTokens: totalCacheReadTokens,
     cacheWriteTokens: totalCacheWriteTokens,
     modelUsed: apiModel,
+    toolsUsed: toolLoopGuard.usage(),
   };
 }
 
@@ -9911,7 +9853,7 @@ async function streamXAIResponses(
     }
   }
 
-  return { fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0, modelUsed: apiModel };
+  return { fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0, modelUsed: apiModel, toolsUsed: [] };
 }
 
 /* ─────────────── Gemini Streaming ─────────────── */
@@ -10790,6 +10732,7 @@ async function streamGemini(
     cacheReadTokens: totalCacheReadTokens,
     cacheWriteTokens: totalCacheWriteTokens,
     modelUsed: apiModel,
+    toolsUsed: toolLoopGuard.usage(),
   };
 }
 
@@ -11665,6 +11608,7 @@ async function streamOpenAI(
     cacheReadTokens: totalCacheReadTokens,
     cacheWriteTokens: totalCacheWriteTokens,
     modelUsed: apiModel,
+    toolsUsed: toolLoopGuard.usage(),
   };
 }
 
@@ -11718,5 +11662,5 @@ async function streamPerplexity(
 
   // Perplexity offers no prompt caching, so these are structurally zero
   // rather than unmeasured.
-  return { fullText, inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: apiModel };
+  return { fullText, inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: apiModel, toolsUsed: [] };
 }
