@@ -163,49 +163,84 @@ async function main() {
   for (const e of (edges || []) as any[]) if (!edgeByPerson.has(e.id_source)) edgeByPerson.set(e.id_source, e.id_edge);
   console.log(`  external people with a works_at edge: ${Array.from(byEmail.values()).filter(p => edgeByPerson.has(p.id)).length}`);
 
-  // Events carrying any Tier-2 text. Deliberately NOT transcripts.
+  // TWO PASSES, and the order matters for speed as much as for tidiness.
+  //
+  // The first version selected key_topics, insights and next_steps for all
+  // 8,696 rows — tens of megabytes of meeting text — and only then discovered
+  // that most meetings are internal and ineligible. It also printed nothing
+  // while doing it, so a slow scan was indistinguishable from a hang. Both
+  // fixed: find the eligible events from attendee data alone, then fetch text
+  // only for those.
   const PAGE = 1000;
-  const events = new Map<string, { when: string; texts: string[]; emails: Set<string> }>();
+  const attendeesByEvent = new Map<string, { when: string; emails: Set<string> }>();
+  process.stdout.write("  scanning attendees");
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await mb.from("processed_meeting")
-      .select("calendar_event_id, meeting_date, attendees, key_topics, insights, next_steps")
+      .select("calendar_event_id, meeting_date, attendees")
       .like("attendees", "[%")
       .range(from, from + PAGE - 1);
-    if (error) { console.log(`  query failed: ${error.message}`); process.exit(2); }
+    if (error) { console.log(`\n  query failed: ${error.message}`); process.exit(2); }
     const rows = (data || []) as any[];
     if (!rows.length) break;
     for (const r of rows) {
       if (!r.calendar_event_id) continue;
-      const text = [r.key_topics, r.insights, r.next_steps].filter(Boolean).map(String);
-      if (!text.length) continue;
       let list: any[] = [];
       try { list = JSON.parse(r.attendees); } catch { continue; }
-      const cur = events.get(r.calendar_event_id) || { when: r.meeting_date as string, texts: [] as string[], emails: new Set<string>() };
-      // Attendees UNIONED across sibling rows: 1,183 events have more than one
-      // recorder and each sees a different slice of the room.
+      const cur = attendeesByEvent.get(r.calendar_event_id) || { when: r.meeting_date as string, emails: new Set<string>() };
+      // Unioned across sibling rows: 1,183 events have more than one recorder
+      // and each sees a different slice of the room.
       for (const a of list) {
         const em = String(a?.email || "").toLowerCase().trim();
         if (em.indexOf("@") > 0) cur.emails.add(em);
       }
-      for (const t of text) if (cur.texts.indexOf(t) < 0) cur.texts.push(t);
-      events.set(r.calendar_event_id, cur);
+      attendeesByEvent.set(r.calendar_event_id, cur);
     }
+    process.stdout.write(".");
     if (rows.length < PAGE) break;
   }
+  console.log(` ${attendeesByEvent.size} events`);
 
-  // Eligible = at least one roster member we could attach a role to.
-  const eligible: { eventId: string; when: string; text: string; roster: { id: string; name: string }[] }[] = [];
-  for (const [eventId, e] of Array.from(events.entries())) {
+  // Eligible = at least one attendee we could attach a role to.
+  const rosterByEvent = new Map<string, { when: string; roster: { id: string; name: string }[] }>();
+  for (const [eventId, e] of Array.from(attendeesByEvent.entries())) {
     const roster: { id: string; name: string }[] = [];
     for (const em of Array.from(e.emails)) {
       const p = byEmail.get(em);
       if (p && edgeByPerson.has(p.id) && !roster.some((r) => r.id === p.id)) roster.push(p);
     }
-    if (!roster.length) continue;
-    eligible.push({ eventId, when: e.when, text: e.texts.join("\n\n").slice(0, 6000), roster });
+    if (roster.length) rosterByEvent.set(eventId, { when: e.when, roster });
   }
+  console.log(`  events with a known external attendee: ${rosterByEvent.size}`);
+
+  // Text for eligible events ONLY.
+  const eligible: { eventId: string; when: string; text: string; roster: { id: string; name: string }[] }[] = [];
+  const ids = Array.from(rosterByEvent.keys());
+  const TEXT_BATCH = 200;
+  process.stdout.write("  fetching text");
+  for (let i = 0; i < ids.length; i += TEXT_BATCH) {
+    const slice = ids.slice(i, i + TEXT_BATCH);
+    const { data, error } = await mb.from("processed_meeting")
+      .select("calendar_event_id, key_topics, insights, next_steps")
+      .in("calendar_event_id", slice);
+    if (error) { console.log(`\n  text fetch failed: ${error.message}`); process.exit(2); }
+    const texts = new Map<string, string[]>();
+    for (const r of (data || []) as any[]) {
+      const parts = [r.key_topics, r.insights, r.next_steps].filter(Boolean).map(String);
+      if (!parts.length) continue;
+      const cur = texts.get(r.calendar_event_id) || [];
+      for (const t of parts) if (cur.indexOf(t) < 0) cur.push(t);
+      texts.set(r.calendar_event_id, cur);
+    }
+    for (const [eventId, parts] of Array.from(texts.entries())) {
+      const meta = rosterByEvent.get(eventId);
+      if (!meta) continue;
+      eligible.push({ eventId, when: meta.when, text: parts.join("\n\n").slice(0, 6000), roster: meta.roster });
+    }
+    process.stdout.write(".");
+  }
+  console.log(` ${eligible.length} of them carry key_topics / insights / next_steps`);
+
   const seriesCount = new Set(eligible.map((e) => seriesKey(e.eventId))).size;
-  console.log(`  events with Tier-2 text: ${events.size}`);
   console.log(`  eligible events:         ${eligible.length}  across ${seriesCount} distinct series`);
   console.log(`  (series_key = calendar_event_id before the first "_" — ${eligible.length - seriesCount} instances collapse)`);
 
