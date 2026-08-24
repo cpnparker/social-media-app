@@ -63,8 +63,12 @@ async function eventsReaderAttended(readerEmail: string, eventIds: string[]): Pr
   if (!readerEmail || eventIds.length === 0) return out;
   try {
     const mb = mbClient();
-    const { data: user } = await mb.from("users").select("id").ilike("email", readerEmail).maybeSingle();
-    const uid = (user as any)?.id;
+    // limit(1): two rows differing only by case would raise PGRST116 and, since
+    // this fails closed, silently hide every meeting-scoped fact from the
+    // reader rather than showing too much. Wrong in the safe direction is
+    // still wrong.
+    const { data: user } = await mb.from("users").select("id").ilike("email", readerEmail).limit(1);
+    const uid = (user as any[])?.[0]?.id;
     if (!uid) return out;
     const { data } = await mb
       .from("processed_meeting")

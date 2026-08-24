@@ -82,9 +82,14 @@ async function ensureNode(
     .eq("id_workspace", payload.id_workspace as string)
     .eq(keyColumn, keyValue)
     .neq("type_status", "merged")
-    .maybeSingle();
+    // Oldest first and limit(1), never maybeSingle: two matching rows is a
+    // real state in this table and must not raise PGRST116 in the function
+    // whose job is to reconcile them. Deterministic order so a re-run keeps
+    // choosing the same node rather than alternating between twins.
+    .order("date_created", { ascending: true })
+    .limit(1);
   if (findErr) { console.log(`  lookup ${keyValue}: ${findErr.message}`); return null; }
-  if (found) return (found as any).id_node;
+  if (found && found.length) return (found as any[])[0].id_node;
 
   const { data: made, error: insErr } = await intel
     .from("entity_node").insert(payload).select("id_node").maybeSingle();
@@ -93,8 +98,8 @@ async function ensureNode(
     if (insErr.code === "23505") {
       const { data: retry } = await intel.from("entity_node").select("id_node")
         .eq("id_workspace", payload.id_workspace as string).eq(keyColumn, keyValue)
-        .neq("type_status", "merged").maybeSingle();
-      return retry ? (retry as any).id_node : null;
+        .neq("type_status", "merged").order("date_created", { ascending: true }).limit(1);
+      return retry && retry.length ? (retry as any[])[0].id_node : null;
     }
     console.log(`  insert ${keyValue}: ${insErr.message}`);
     return null;
@@ -321,8 +326,8 @@ async function main() {
       // learned in a meeting.
       const { data: edgeRow } = await intel.from("entity_edge")
         .select("id_edge").eq("id_source", id).eq("id_target", orgId)
-        .eq("type_edge", "works_at").is("date_invalidated", null).maybeSingle();
-      const edgeId = (edgeRow as any)?.id_edge;
+        .eq("type_edge", "works_at").is("date_invalidated", null).limit(1);
+      const edgeId = (edgeRow as any[])?.[0]?.id_edge;
       if (edgeId) {
         const { data: seenEdge, error: seenErr } = await intel.from("entity_observation")
           .select("id_observation").eq("id_edge", edgeId)

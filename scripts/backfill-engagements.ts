@@ -127,11 +127,18 @@ async function ensureNode(
   match: Record<string, unknown>,
   payload: Record<string, unknown>
 ): Promise<string | null> {
+  // NOT maybeSingle(). It raises PGRST116 — "multiple (or no) rows returned" —
+  // the moment two rows match, and two rows matching is exactly the state this
+  // function exists to find and heal. The lookup that hunts for duplicates was
+  // the one thing that broke on them.
+  //
+  // Oldest first, so a re-run keeps choosing the same node instead of
+  // alternating between twins and doubling the edges hanging off each.
   let q = intel.from("entity_node").select("id_node").neq("type_status", "merged");
   for (const [k, v] of Object.entries(match)) q = q.eq(k, v as any);
-  const { data: found, error: findErr } = await q.maybeSingle();
+  const { data: found, error: findErr } = await q.order("date_created", { ascending: true }).limit(1);
   if (findErr) { console.log(`  lookup failed: ${findErr.message}`); return null; }
-  if (found) return (found as any).id_node;
+  if (found && found.length) return (found as any[])[0].id_node;
   const { data: made, error: insErr } = await intel.from("entity_node").insert(payload).select("id_node").maybeSingle();
   if (insErr) { console.log(`  insert failed: ${insErr.message}`); return null; }
   return made ? (made as any).id_node : null;
@@ -285,10 +292,12 @@ async function main() {
 
     const orgId = orgByClient.get(k.id_client);
     if (!orgId) continue;
+    // Same reason: a duplicate edge from an earlier run would make maybeSingle
+    // throw rather than let this reuse one.
     const { data: existing } = await intel.from("entity_edge").select("id_edge")
       .eq("id_source", id).eq("id_target", orgId).eq("type_edge", "engagement_for")
-      .is("date_invalidated", null).maybeSingle();
-    let edgeId = (existing as any)?.id_edge;
+      .is("date_invalidated", null).limit(1);
+    let edgeId = (existing as any[])?.[0]?.id_edge;
     if (!edgeId) {
       const { data: e } = await intel.from("entity_edge").insert({
         id_source: id, id_target: orgId, type_edge: "engagement_for",
