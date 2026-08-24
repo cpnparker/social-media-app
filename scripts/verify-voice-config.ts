@@ -28,7 +28,8 @@
  * render and is a known cause of the same symptom (fixed c03d4fc). British
  * spelling in TEXT is fine; a British accent must come from the VOICE.
  */
-import { buildVoiceInstructions, getVoiceTools, VOICE_NAME, VOICE_NAME_FALLBACK } from "../lib/ai/voice";
+import { buildVoiceInstructions, getVoiceTools, VOICE_NAME, VOICE_NAME_FALLBACK, VOICE_TOOL_NAMES } from "../lib/ai/voice";
+import { toolBudgetFor } from "../lib/ai/tool-loop-guard";
 
 let failures = 0;
 const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
@@ -219,6 +220,35 @@ const added = withDigest.length - noDigest.length;
 added > 0 && added < 7000
   ? pass(`digest adds ${added} chars (~${Math.round(added / 3.6)} tokens) — bounded`)
   : fail(`digest adds ${added} chars — that delays first audio too far`);
+
+console.log("\n6b. It can reach the thread it cannot fit in the prompt");
+// Two digests failed the same real case before this: a handover list pasted as
+// message THREE of a hundred and fifty-four. A rolling summary summarises the
+// RECENT conversation and never preserved it; measured on that thread, the
+// digest reached 3 of the list's 14 items. No window of bounded size fixes a
+// problem of DEPTH — retrieval does, and it costs no first-audio latency
+// because nothing sits in the prompt until it is asked for.
+const allTools = getVoiceTools({ finance: false, resourcing: false }) as any[];
+const threadTool = allTools.filter((t) => (t?.name || t?.function?.name) === "search_thread")[0];
+threadTool
+  ? pass("search_thread is offered to the model")
+  : fail("search_thread is not in the tool list — voice cannot reach anything beyond the digest");
+VOICE_TOOL_NAMES.indexOf("search_thread") >= 0
+  ? pass("and the tools route will accept it")
+  : fail("search_thread is offered but the route would reject it as an unknown tool");
+toolBudgetFor("search_thread") > 3
+  ? pass(`its budget is ${toolBudgetFor("search_thread")} — room to try a second term`)
+  : fail("search_thread has the default budget of 3, so it gives up after ~2 attempts — the failure it exists to prevent");
+const td = String(threadTool?.description || threadTool?.function?.description || "");
+/distinctive word/i.test(td)
+  ? pass("it tells the model to search ONE distinctive word, not a phrase")
+  : fail("nothing tells the model how to search — a phrase matches nothing in prose");
+for (let i = 0; i < VARIANTS.length; i++) {
+  if (!/search_thread/.test(VARIANTS[i].text)) { fail(`${VARIANTS[i].label}: the prompt never mentions search_thread`); break; }
+}
+/before saying you cannot find it|BEFORE saying/i.test(withDigest) || /call search_thread/i.test(withDigest)
+  ? pass("the prompt tells it to search before claiming it cannot see the thread")
+  : fail("nothing stops it saying \"paste the list\" for something already in the conversation");
 
 // ── Self-test ───────────────────────────────────────────────────────────
 // The detectors are regexes over prose, which is exactly the kind of check

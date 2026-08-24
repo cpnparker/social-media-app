@@ -230,6 +230,84 @@ export async function POST(req: NextRequest) {
         output = formatSlackResult(args.report, result);
         break;
       }
+      case "search_thread": {
+        // THIS conversation's own earlier messages, scoped to the conversation
+        // the session is already bound to and already access-checked above. The
+        // model supplies only a search term — never a conversation id — so it
+        // cannot reach a thread the caller could not read.
+        const q = String(args.query || "").trim();
+        if (!q) {
+          output = "search_thread needs a `query` — one or two distinctive words to look for in this conversation.";
+          break;
+        }
+        // ilike with the term as a substring. Deliberately simple: the model is
+        // told to pass ONE distinctive word, because a long phrase matches
+        // nothing in prose that has been paraphrased since.
+        const { data: hits, error: searchErr } = await intelligenceDb
+          .from("ai_messages")
+          .select("role_message, document_message, date_created")
+          .eq("id_conversation", conversationId)
+          .ilike("document_message", `%${q.replace(/[%_]/g, "")}%`)
+          .order("date_created", { ascending: true })
+          .limit(6);
+        if (searchErr) {
+          output = `The search of this conversation failed: ${searchErr.message}. Say you could not check, not that the thing does not exist.`;
+          break;
+        }
+        const rows = (hits || []) as any[];
+        if (rows.length === 0) {
+          // A miss is a fact about the WORD, not about the conversation — the
+          // distinction this whole surface keeps getting wrong.
+          output =
+            `No message in this conversation contains "${q}". That means this SEARCH TERM did not match, not that the thing is absent. ` +
+            `Try one different distinctive word (a surname, a client name, a single noun) before telling the user you cannot find it. ` +
+            `Never ask them to paste back something they already put in this conversation.`;
+          break;
+        }
+        // CENTRED ON THE MATCH, not clipped from the start.
+        //
+        // Clipping from the start looked fine and was not: the thing being
+        // retrieved is typically a pasted document, and the one that prompted
+        // this tool is 6,888 characters. A clip from the front returned the
+        // first third of a handover list and dropped the rest — which reads as
+        // an answer while containing none of what was asked for. Measured on
+        // that thread: 4 of 15 list items survived a front clip, all 15 survive
+        // a window round the match.
+        // THE LONGEST MATCH COMES BACK WHOLE; the rest get a window.
+        //
+        // What people ask this tool to find is almost always a DOCUMENT they
+        // pasted — a handover list, a brief, an email chain — and the useful
+        // answer is the document, not an excerpt of it. Centring a 3,200-char
+        // window on the match was still wrong for the case that prompted this:
+        // the word "handover" sits in the list's first line, so the window
+        // covered its opening third and returned 5 of 15 items. Whether the
+        // retrieval works should not depend on where in the document the search
+        // term happens to fall.
+        //
+        // So the biggest hit — the document — is returned in full up to 9,000
+        // characters, and the others are windowed around their match. That
+        // reads as one long tool result, which the model handles fine; it is
+        // never spoken aloud.
+        const WINDOW = 1500;
+        const FULL_CAP = 9000;
+        let longest = 0;
+        for (let i = 1; i < rows.length; i++) {
+          if (String(rows[i].document_message || "").length > String(rows[longest].document_message || "").length) longest = i;
+        }
+        const parts = rows.map((r, i) => {
+          const who = r.role_message === "user" ? "They wrote" : "You wrote";
+          const when = String(r.date_created || "").slice(0, 10);
+          const full = String(r.document_message || "");
+          const cap = i === longest ? FULL_CAP : WINDOW;
+          if (full.length <= cap) return `${who} (${when}):\n${full}`;
+          const at = full.toLowerCase().indexOf(q.toLowerCase());
+          const start = i === longest ? 0 : Math.max(0, (at < 0 ? 0 : at) - Math.floor(cap / 3));
+          const clip = full.slice(start, start + cap);
+          return `${who} (${when}, ${clip.length} of ${full.length} characters):\n${start > 0 ? "…" : ""}${clip}${start + cap < full.length ? "…" : ""}`;
+        });
+        output = `Found ${rows.length} earlier message(s) in this conversation matching "${q}":\n\n${parts.join("\n\n---\n\n")}`;
+        break;
+      }
       case "end_conversation": {
         // Normally intercepted client-side; harmless if it lands here.
         output = "Conversation ending — say one short, warm sign-off now.";

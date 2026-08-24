@@ -29,6 +29,11 @@ const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
   // "how are we tracking, and who is free to take it on" unanswerable — the
   // turn runs out of calls before it runs out of questions.
   query_resourcing: 8,
+  // A search of the conversation is a cheap DB query, and the model is told to
+  // try a DIFFERENT distinctive word when one misses. Capping that at the
+  // default 3 gives it barely two attempts, which is how a search tool ends up
+  // reporting absence — the exact failure it was added to prevent.
+  search_thread: 6,
   // SEARCHING A MAILBOX IS ITERATIVE, and the contract costs two calls per
   // answer: search returns headers, only report "thread" returns the body. At
   // the default cap of 3 a turn got roughly ONE real attempt, which is not how
