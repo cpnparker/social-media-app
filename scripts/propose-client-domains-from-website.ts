@@ -118,9 +118,60 @@ async function main() {
   console.log(`  ${websiteOnly.length} with a website domain but no attendee ever seen from it`);
   console.log(`  ${noWebsite.length} with no usable website recorded\n`);
 
-  if (corroborated.length) {
+  // ── One domain, several client records ────────────────────────────────
+  //
+  // A domain confirmed for two clients attributes to NEITHER: loadConfirmedClientDomains
+  // deletes it outright, because "guessing which one is how a meeting lands on
+  // the wrong account". Engine holds several records per organisation — three
+  // Marsh entities, three UBS, three ETH, two World Bank, and Gavi alongside
+  // IFFIm which it hosts — so confirming the obvious domain for each would
+  // silently leave all of them with no mapping whatever, which is worse than
+  // leaving them alone.
+  //
+  // The lowest id_client wins: it is the original record, and it is right for
+  // Marsh (19 over Marsh Cyber), UBS (39, the bank itself), Zurich (35, the
+  // insurer) and Gavi (9, which hosts IFFIm rather than being it). It is a
+  // heuristic, so the losers are printed rather than hidden — if the parent
+  // account is not the oldest one, say so and it can be changed by hand.
+  const byDomain = new Map<string, { id: number; name: string; domain: string; hits: number }[]>();
+  for (const r of corroborated) {
+    const l = byDomain.get(r.domain) || [];
+    l.push(r);
+    byDomain.set(r.domain, l);
+  }
+  const canonical: typeof corroborated = [];
+  const shared: { domain: string; winner: string; others: string[] }[] = [];
+  for (const [domain, rows] of Array.from(byDomain.entries())) {
+    if (rows.length === 1) { canonical.push(rows[0]); continue; }
+    rows.sort((a, b) => a.id - b.id);
+    canonical.push(rows[0]);
+    shared.push({
+      domain,
+      winner: `${rows[0].name} (id ${rows[0].id})`,
+      others: rows.slice(1).map((r) => `${r.name} (id ${r.id})`),
+    });
+  }
+
+  if (shared.length) {
+    console.log("── SHARED DOMAINS — one organisation, several client records ──\n");
+    for (const s of shared) {
+      console.log(`  ${s.domain}`);
+      console.log(`     attributing to : ${s.winner}`);
+      console.log(`     also claimed by: ${s.others.join(", ")}`);
+    }
+    console.log(`
+  Confirming a domain for more than one client makes it attribute to NEITHER —
+  loadConfirmedClientDomains deletes any domain claimed twice, deliberately,
+  because guessing puts a meeting on the wrong account. So only the first row
+  above is emitted for each. If the account named is not the right parent,
+  change the id by hand before running the SQL.
+`);
+  }
+
+  if (canonical.length) {
     console.log("── CORROBORATED — a record you maintain and addresses seen in the wild agree ──\n");
-    corroborated.sort((a, b) => b.hits - a.hits);
+    canonical.sort((a, b) => b.hits - a.hits);
+    const corroborated = canonical;
     for (const r of corroborated) {
       console.log(`  ${r.name}  (id ${r.id})`);
       console.log(`     ${r.domain}   seen on ${r.hits} meeting attendee record(s)${known.has(`${r.id}|${r.domain}`) ? "   [already proposed, unconfirmed]" : ""}`);
