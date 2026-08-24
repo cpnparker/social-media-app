@@ -244,6 +244,9 @@ export default function DeliveredPage() {
       // Scope the query server-side when a customer is selected — a wide
       // date range over all clients is tens of MB; one client's is tiny.
       if (clientId) params.set("clientId", clientId);
+      // Delivered means completed IN the period, not "created in the period
+      // and finished at some point" — see the basis param in the API route.
+      params.set("basis", "completed");
       const res = await fetch(`/api/operations/commissioned-cus?${params.toString()}`);
       const data = await res.json();
       setAllTasks(data.tasks || []);
@@ -519,7 +522,7 @@ export default function DeliveredPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Delivered Content Units</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Completed tasks {isFiltered ? "for the selected period" : "across all time"}.
+            Tasks completed {isFiltered ? "in the selected period" : "across all time"}.
             {!loading && ` ${totals.tasks} completed tasks across ${totals.contentItems} content items.`}
           </p>
         </div>

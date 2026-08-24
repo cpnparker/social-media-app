@@ -227,6 +227,22 @@ function checkWiring(): string[] {
     }
   }
 
+  // Adjacent invariant, guarded here because this is the only check that reads
+  // these two page sources and because breaking it silently changes a reported
+  // number: Delivered must ask the API for the COMPLETED basis. Without it the
+  // page filters on creation date and merely keeps rows that are done, which
+  // reports the commissioned figure under a "Delivered" heading (CGAP May 2026
+  // showed 31.40 against a true 21.90).
+  let deliveredSrc = "";
+  try {
+    deliveredSrc = readFileSync(join(root, "app/(app)/operations/delivered/page.tsx"), "utf8");
+  } catch {
+    /* already reported above */
+  }
+  if (deliveredSrc.length > 0 && deliveredSrc.indexOf('params.set("basis", "completed")') === -1) {
+    failures.push("delivered/page.tsx: does not request basis=completed — it would report commissioned CUs as delivered");
+  }
+
   // The client handover export must use the same definition as the pages.
   const exportRel = "lib/client-export.ts";
   let exportSrc = "";

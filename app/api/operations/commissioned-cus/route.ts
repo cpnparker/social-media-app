@@ -24,6 +24,15 @@ export async function GET(req: NextRequest) {
   // multi-MB payload; scoping server-side keeps customer-filtered views fast.
   const clientIdParam = parseInt(searchParams.get("clientId") || "", 10);
   const clientId = isNaN(clientIdParam) ? null : clientIdParam;
+  // Which date the range filters on. Commissioned CUs asks for the default
+  // ("created"); Delivered asks for "completed". Filtering on creation and
+  // then keeping the rows that happen to be done answers NEITHER question: it
+  // counts work created in the period but finished later, and misses work
+  // finished in the period but created earlier. For CGAP's Member 5 contract
+  // in May 2026 that was +13.25 / -3.75 CU, showing 31.40 where the true
+  // delivered figure is 21.90 (and 31.40 is just the commissioned number).
+  const basis = searchParams.get("basis") === "completed" ? "completed" : "created";
+  const dateColumn = basis === "completed" ? "date_completed" : "date_created";
 
   try {
     // ── 1. Fetch ALL content tasks from the enriched view (paginated) ──
@@ -37,8 +46,8 @@ export async function GET(req: NextRequest) {
         .from("app_tasks_content")
         .select("*")
         .order("id_task", { ascending: true });
-      if (from) q = q.gte("date_created", from);
-      if (to) q = q.lt("date_created", nextDay(to));
+      if (from) q = q.gte(dateColumn, from);
+      if (to) q = q.lt(dateColumn, nextDay(to));
       if (clientId !== null) q = q.eq("id_client", clientId);
       return q.range(start, end);
     };
@@ -49,8 +58,8 @@ export async function GET(req: NextRequest) {
         .from("app_tasks_social")
         .select("*")
         .order("id_task", { ascending: true });
-      if (from) q = q.gte("date_created", from);
-      if (to) q = q.lt("date_created", nextDay(to));
+      if (from) q = q.gte(dateColumn, from);
+      if (to) q = q.lt(dateColumn, nextDay(to));
       if (clientId !== null) q = q.eq("id_client", clientId);
       return q.range(start, end);
     };
