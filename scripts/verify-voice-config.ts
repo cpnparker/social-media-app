@@ -105,7 +105,7 @@ const before2 = failures;
 for (let i = 0; i < VARIANTS.length; i++) {
   const v = VARIANTS[i];
   if (!/Never speak before a tool call/i.test(v.text)) fail(`${v.label}: the no-speech-before-tool rule is missing`);
-  if (!/two renders|different speaker/i.test(v.text)) fail(`${v.label}: the rule states no REASON — a rule without its reason is the first one dropped in an edit`);
+  // The rule's REASON deliberately no longer mentions voices. See section 4.
 }
 if (failures === before2) pass("the rule and its reason are in every variant");
 
@@ -135,22 +135,43 @@ for (let i = 0; i < toolSets.length; i++) {
 if (described < 5) fail(`only ${described} tool descriptions inspected — getVoiceTools returned an unexpected shape`);
 if (failures === before3) pass(`${described} tool descriptions inspected, none instructs pre-tool speech`);
 
-console.log("\n4. Voice consistency is stated, and no ACCENT is instructed");
+console.log("\n4. The prompt does not talk to the model about its own voice");
+// INVERTED on 2026-08-24, and this is the point of the whole file now.
+//
+// Measurement killed the theory these checks were built on. Every recent voice
+// reply is ONE assistant row per user row — no split replies — so the reply the
+// owner heard change mid-sentence was a SINGLE response, and three fixes aimed
+// at response boundaries were aimed at a mechanism that was not running.
+//
+// What remains is the model's own render drifting, and the leading candidate is
+// the prompt itself. There was a "# Voice consistency — CRITICAL" paragraph
+// naming accents three times, plus imitation, drift, impressions and
+// "performance" voices, ending "do NOT attempt a British accent" — while the
+// minted voice IS the British one. This repo already recorded that instructing
+// an accent destabilises the render; a NEGATED accent instruction is still an
+// accent instruction to a speech-to-speech model. And the paragraph grew every
+// time the symptom recurred, which is the shape of a cure making the disease.
+//
+// So the invariant flipped: the prompt must not discuss voice, accent or
+// switching at all. The voice is set at mint time, which is the actual control.
+const VOICE_TALK: [string, RegExp][] = [
+  ["instructs an accent", /\b(speak|talk|use|adopt|attempt|with|in)\s+(a|an|in)?\s*\w*\s*accent\b/i],
+  ["names accent drift", /\b(drift|switch|change)\w*\s+(into\s+)?(accents?|voices?)\b/i],
+  ["describes sounding like two people", /\btwo (different )?(people|speakers|voices)\b|\bdifferent speaker\b/i],
+  ["mentions renders", /\b(two )?renders?\b/i],
+  ["asks for impressions or performance voices", /\b(impressions?|role-?play|performance voice)\b/i],
+  ["instructs pitch or delivery consistency", /\bsame (voice|pitch)\b/i],
+];
 const before4 = failures;
 for (let i = 0; i < VARIANTS.length; i++) {
   const v = VARIANTS[i];
-  if (!/same voice|Voice consistency/i.test(v.text)) fail(`${v.label}: no voice-consistency rule`);
-  // "do NOT attempt a British accent" is the guard, not a violation — match
-  // only an instruction TO adopt one.
-  const instructsAccent = /\b(speak|talk|use|adopt|with)\s+(a|an|in)?\s*(british|american|australian|irish|scottish|posh|rp)\s+accent\b/i;
-  const m = v.text.match(instructsAccent);
-  if (m) {
-    const at = v.text.indexOf(m[0]);
-    const around = v.text.slice(Math.max(0, at - 60), at + m[0].length);
-    if (!/\b(not|never|don't|do NOT|avoid)\b/i.test(around)) fail(`${v.label}: instructs an accent — a known cause of mid-reply voice drift: "${m[0]}"`);
+  for (let j = 0; j < VOICE_TALK.length; j++) {
+    const [label, re] = VOICE_TALK[j];
+    const m = v.text.match(re);
+    if (m) fail(`${v.label}: prompt ${label} — "${m[0]}". Telling a speech-to-speech model about voice switching is a known destabiliser; the voice is set at mint time.`);
   }
 }
-if (failures === before4) pass("voice consistency stated; no accent instructed");
+if (failures === before4) pass("no variant discusses voice, accent or switching");
 
 console.log("\n5. The configured voice is one xAI actually has");
 // A wrong name does not fail loudly at runtime — the session route falls back

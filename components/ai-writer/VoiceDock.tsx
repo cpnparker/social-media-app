@@ -173,6 +173,9 @@ export default function VoiceDock({
   /** Latest teardown, so the pagehide listener — registered once — always
    *  calls the current one rather than the closure it was created with. */
   const teardownRef = useRef<(() => void) | null>(null);
+  /** Last response|item seen on an audio frame, so a new render logs once
+   *  rather than fifty times a second. */
+  const lastAudioKeyRef = useRef("");
   const rafRef = useRef<number>(0);
   /** Drives the wake-session closers independently of rAF — see shouldClose. */
   const idleTimerRef = useRef<number | null>(null);
@@ -246,7 +249,12 @@ export default function VoiceDock({
   };
 
   /** Hard barge-in / pause: kill all queued assistant audio immediately. */
-  const flushPlayback = useCallback(() => {
+  const flushPlayback = useCallback((why = "?") => {
+    console.log(
+      "[V] FLUSH", why,
+      "live=", activeSourcesRef.current.size,
+      "dropped_s=", audioCtxRef.current ? (playCursorRef.current - audioCtxRef.current.currentTime).toFixed(3) : "-"
+    );
     activeSourcesRef.current.forEach((src) => {
       try { src.stop(); } catch { /* already stopped */ }
     });
@@ -375,7 +383,7 @@ export default function VoiceDock({
     persistTranscript(true);
     try { wsRef.current?.close(); } catch { /* noop */ }
     wsRef.current = null;
-    flushPlayback();
+    flushPlayback("teardown");
     try { processorRef.current?.disconnect(); } catch { /* noop */ }
     try { micSourceRef.current?.disconnect(); } catch { /* noop */ }
     micStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -693,6 +701,25 @@ export default function VoiceDock({
               followUpDeadlineRef.current = null; // Orac is speaking
               const audioCtx = audioCtxRef.current;
               if (!audioCtx || !msg.delta) break;
+              // THE LINE THAT DECIDES IT. Four fixes have been argued from
+              // theories about where the seam falls, and the client threw away
+              // the only field that answers it: response_id. Logged on the
+              // FIRST frame of each new response/item, never per frame —
+              // deltas arrive around fifty a second.
+              //
+              // lead_s is how much previous audio is still queued ahead of this
+              // new render. Above ~0.05 it is being glued onto the unplayed
+              // tail of the last one with no silence between, which is exactly
+              // the reported symptom. At or below zero there was audible
+              // silence first, and the seam is somewhere else entirely.
+              const audioKey = `${msg.response_id ?? "?"}|${msg.item_id ?? "?"}`;
+              if (audioKey !== lastAudioKeyRef.current) {
+                console.log(
+                  "[V] AUDIO-START", audioKey,
+                  "lead_s=", (playCursorRef.current - audioCtx.currentTime).toFixed(3)
+                );
+                lastAudioKeyRef.current = audioKey;
+              }
               const i16 = base64ToInt16(msg.delta);
               const f32 = new Float32Array(i16.length);
               for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 0x8000;
@@ -757,7 +784,7 @@ export default function VoiceDock({
               // New utterance starting — give id-less transcription events a
               // fresh fallback key so utterances never merge into each other.
               utteranceCounterRef.current += 1;
-              flushPlayback();
+              flushPlayback("bargein");
               setUserSaid(""); setBotSaid("");
               setStatusBoth("listening");
               break;
@@ -859,7 +886,7 @@ export default function VoiceDock({
               //
               // Not applied to end_conversation, which is handled above and
               // whose whole purpose is to speak a sign-off.
-              flushPlayback();
+              flushPlayback("tool");
               pendingToolsRef.current += 1;
               setTools((t) => t.concat([{ id: String(call_id), name, args: toolArgsPhrase(msg.arguments), at: Date.now() }]));
               // Both captured BEFORE the await: which turn asked for this, and
@@ -932,18 +959,35 @@ export default function VoiceDock({
             }
 
             case "response.created": {
+              console.log("[V] RESP-CREATED", msg.response?.id ?? msg.response_id);
               responseActiveRef.current = true;
               break;
             }
 
             case "response.done": {
+              console.log(
+                "[V] RESP-DONE", msg.response?.id ?? msg.response_id,
+                "pendingTools=", pendingToolsRef.current,
+                "queuedCreate=", pendingResponseCreateRef.current
+              );
               responseActiveRef.current = false;
               // A continuation was queued while this response streamed (tool
               // result mid-speech) — create it now that the previous render
               // finished, so the reply stays ONE voice, back to back.
-              if (pendingResponseCreateRef.current && !closingRef.current) {
+              // pendingToolsRef, not just the queue flag.
+              //
+              // A turn calling TWO tools could fire the continuation queued by
+              // the first while the second was still in flight: the model then
+              // spoke an answer built without data it had asked for, and the
+              // real answer arrived afterwards as yet another response glued to
+              // the same playback cursor. A wrong answer AND an extra render.
+              // Holding the flag until the turn's tools are done costs nothing —
+              // the tool handler calls requestResponse() when the last one
+              // resolves, so the continuation still happens, just in order.
+              if (pendingResponseCreateRef.current && !closingRef.current && pendingToolsRef.current === 0) {
                 pendingResponseCreateRef.current = false;
                 responseActiveRef.current = true;
+                console.log("[V] CREATE-SENT queued-at-done");
                 wsRef.current?.send(JSON.stringify({ type: "response.create" }));
                 break; // stay in "thinking" — more speech incoming
               }
@@ -1024,7 +1068,7 @@ export default function VoiceDock({
     } else {
       prePauseStatusRef.current = statusRef.current;
       pausedRef.current = true;
-      flushPlayback();
+      flushPlayback("pause");
       setUserSaid(""); setBotSaid("");
       setStatusBoth("paused");
       // Persist whatever we have so the thread is current while paused
