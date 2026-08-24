@@ -1999,6 +1999,43 @@ export async function POST(
           })().catch((err) => console.error("[Episodes] capture failed:", err));
         }
 
+        // ── Durable facts the user stated about their world ──────────────
+        //
+        // The third source feeding the entity graph. Engine records what was
+        // contracted and the meeting corpus records who was in the room;
+        // neither can know that someone runs an organisation and introduced us
+        // to a prospect. A reflection pass over 209 meetings produced six leads
+        // and none of them was that, because notes describe what was DISCUSSED,
+        // not who people ARE.
+        //
+        // Skipped on any turn that touched third-party content. The whole
+        // justification for letting a sentence create a person is that the
+        // USER is the authority on their own world — and the moment an email
+        // body is in scope that justification is gone. Same gate as memory
+        // extraction, for the same reason.
+        if (!turnHadThirdParty && (userContent || "").trim().length > 12) {
+          (async () => {
+            const { captureStatedFacts } = await import("@/lib/entities/capture");
+            const { recordStatedFacts } = await import("@/lib/entities/record");
+            const { facts } = await captureStatedFacts(userContent || "");
+            // Nothing found is the common case and is meant to be.
+            if (!facts.length) return;
+            const result = await recordStatedFacts({
+              workspaceId: conversation.id_workspace,
+              userId,
+              conversationId,
+              audience: isMultiReaderThread ? "team" : "private",
+              facts,
+            });
+            if (result.recorded.length || result.refused.length) {
+              console.log(
+                `[Entities] stated facts — recorded ${result.recorded.length}, refused ${result.refused.length}` +
+                  (result.refused.length ? `: ${result.refused.join("; ")}` : "")
+              );
+            }
+          })().catch((err) => console.error("[Entities] stated-fact capture failed:", err));
+        }
+
         // Fire-and-forget: background conversation summary update
         // Gated by memoryEnabled — follows same rules as memory extraction:
         // only for private/shared threads with memory toggle on, never team threads
