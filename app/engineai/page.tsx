@@ -954,6 +954,24 @@ function EngineAIContent() {
     ? conversations.find((c) => c.id === selectedId) ?? null
     : null;
 
+/**
+ * Orac — the hands-free wake phrase — is OFF while it is reworked.
+ *
+ * One flag rather than deleted code: the wake engine, the enrolment flow and
+ * the templates all still work and all still have their hard-won fixes in them
+ * (Chrome's AEC destroying wake audio, background-tab burst handling, the
+ * double-append that made server VAD open two turns at once). Deleting that and
+ * writing it again later would pay for those a second time.
+ *
+ * Off means NOT MOUNTED, not merely hidden: WakeMode holds the microphone open
+ * to listen for the phrase, so a hidden-but-mounted component would keep the
+ * mic live with no way to turn it off — the worst of both.
+ *
+ * Voice itself is unaffected. The composer's voice button opens VoiceDock
+ * directly and is the supported way in.
+ */
+const ORAC_ENABLED = false;
+
   const liveEnabled = !!(workspaceId && wsCtx?.selectedWorkspace?.accessEngineAiLive);
 
   /**
@@ -987,6 +1005,7 @@ function EngineAIContent() {
           <Radio className={cn("h-[18px] w-[18px]", liveInMeeting && "animate-pulse")} />
         </button>
       )}
+      {ORAC_ENABLED && (
       <button
         onClick={() => wakeRef.current?.toggle()}
         aria-label={wakeUi.armed ? "Orac is listening — turn off" : "Turn on Orac hands-free voice"}
@@ -1009,6 +1028,7 @@ function EngineAIContent() {
           </span>
         )}
       </button>
+      )}
     </div>
   );
 
@@ -2479,8 +2499,10 @@ function EngineAIContent() {
           initialAudioPromise={voiceWakeAudioRef.current}
         />
       )}
-      {/* "Orac" — hands-free wake phrase (local-only listening) */}
-      {workspaceId && (
+      {/* "Orac" — hands-free wake phrase (local-only listening). Off while it
+          is reworked; see ORAC_ENABLED. Not mounted rather than hidden, because
+          mounting it opens the microphone. */}
+      {ORAC_ENABLED && workspaceId && (
         <WakeMode
           ref={wakeRef}
           onStateChange={setWakeUi}
