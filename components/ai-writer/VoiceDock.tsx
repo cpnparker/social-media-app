@@ -168,6 +168,24 @@ export default function VoiceDock({
   const activeUserItemRef = useRef<string | null>(null);
   const utteranceCounterRef = useRef(0);
   const sessionStartRef = useRef(0);
+  /**
+   * When the socket actually OPENED, which is not when the dock mounted.
+   * sessionStartRef is set before the mint and before getUserMedia, so billing
+   * from it charges for sessions that never connected: a rejected mint, a 429
+   * "out of credits" or a denied microphone leaves the dock open, the user
+   * reads the error for three minutes, and a three-minute row is written for a
+   * session that never opened a socket. Zero here means never connected, and a
+   * session that never connected is not billed at all.
+   */
+  const connectedAtRef = useRef(0);
+  /**
+   * The model xAI actually MINTED. The route sends this back because it can
+   * differ from the configured one — an unrecognised XAI_VOICE_MODEL is
+   * 4xx-rejected and the session runs on the fallback. Logging the CONFIGURED
+   * id made name_model state something that had not happened, which is exactly
+   * what made the billing history ambiguous after the fact.
+   */
+  const mintedModelRef = useRef("");
   const pendingToolsRef = useRef(0);
   const closingRef = useRef(false);
   /** Latest teardown, so the pagehide listener — registered once — always
@@ -338,9 +356,10 @@ export default function VoiceDock({
           i.content.trim() &&
           (final || i.role === "assistant" || i.id !== activeUserItemRef.current)
       );
-      const durationSeconds = final
-        ? Math.round((Date.now() - sessionStartRef.current) / 1000)
-        : undefined;
+      const durationSeconds =
+        final && connectedAtRef.current
+          ? Math.round((Date.now() - connectedAtRef.current) / 1000)
+          : undefined;
       if (pending.length === 0 && !durationSeconds) return;
       // Optimistic, so a second flush mid-request cannot send the same turns
       // twice — but reverted below on anything that is not a confirmed save.
@@ -353,6 +372,7 @@ export default function VoiceDock({
             conversationId,
             turns: pending.map(({ role, content }) => ({ role, content: content.trim() })),
             durationSeconds,
+            model: mintedModelRef.current || undefined,
           }),
           keepalive: final,
         });
@@ -447,6 +467,8 @@ export default function VoiceDock({
     activeUserItemRef.current = null;
     utteranceCounterRef.current = 0;
     sessionStartRef.current = Date.now();
+    connectedAtRef.current = 0;
+    mintedModelRef.current = "";
     lastUserSpeechRef.current = Date.now();
     setUserSaid(""); setBotSaid("");
     setElapsed(0);
@@ -496,6 +518,7 @@ export default function VoiceDock({
         // rate matters too: the AudioContext can refuse the rate it is asked
         // for, and everything downstream assumes the one it got.
         diagSessionRef.current = `${Date.now().toString(36)}`;
+        mintedModelRef.current = String(cfg.model || "");
         vlog("SESSION voice=", cfg.voice, "model=", cfg.model,
           "rate_asked=", cfg.sampleRate, "rate_got=", ctx.sampleRate
         );
@@ -604,6 +627,7 @@ export default function VoiceDock({
 
         ws.onopen = () => {
           if (cancelled) return;
+          connectedAtRef.current = Date.now();
           ws.send(
             JSON.stringify({
               type: "session.update",

@@ -5,7 +5,7 @@ import { checkConversationAccess } from "@/lib/ai/access";
 import { voiceCostTenthsPerMin, VOICE_MODEL } from "@/lib/ai/voice";
 
 // POST /api/ai/voice/transcript — persist voice turns into the conversation
-// Body: { conversationId, turns: [{ role: "user"|"assistant", content }], durationSeconds? }
+// Body: { conversationId, turns: [{ role: "user"|"assistant", content }], durationSeconds?, model? }
 // durationSeconds (sent once, on session end) logs voice minutes to ai_usage.
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  const { conversationId, turns, durationSeconds } = body || {};
+  const { conversationId, turns, durationSeconds, model: reportedModel } = body || {};
   if (!conversationId || (!Array.isArray(turns) && !durationSeconds)) {
     return NextResponse.json({ error: "conversationId and turns (or durationSeconds) are required" }, { status: 400 });
   }
@@ -79,14 +79,30 @@ export async function POST(req: NextRequest) {
     // Log voice minutes on session end
     if (durationSeconds && Number(durationSeconds) > 0) {
       const minutes = Number(durationSeconds) / 60;
+      // Bill the model that actually RAN, which the client learns from the mint
+      // response, not the one this server is configured with. They diverge
+      // whenever xAI rejects the configured id and the session falls back.
+      //
+      // The client is not trusted to set a price: an unrecognised value is
+      // ignored in favour of the configured model, and voiceCostTenthsPerMin
+      // resolves anything it does not know to the DEAREST rate. So the worst a
+      // forged value can do is overstate the cost.
+      const claimed = typeof reportedModel === "string" ? reportedModel.trim() : "";
+      const billedModel =
+        claimed && claimed.length <= 60 && /^grok-voice[a-z0-9.\-]*$/i.test(claimed)
+          ? claimed
+          : VOICE_MODEL;
+      if (claimed && billedModel !== claimed) {
+        console.warn(`[VoiceTranscript] ignoring unrecognised reported model=${claimed.slice(0, 60)}`);
+      }
       const { error: usageErr } = await intelligenceDb.from("ai_usage").insert({
         id_workspace: conversation.id_workspace,
         user_usage: userId,
-        name_model: VOICE_MODEL,
+        name_model: billedModel,
         type_source: "engineai-voice",
         units_input: Math.round(Number(durationSeconds)),
         units_output: 0,
-        units_cost_tenths: Math.max(1, Math.round(minutes * voiceCostTenthsPerMin(VOICE_MODEL))),
+        units_cost_tenths: Math.max(1, Math.round(minutes * voiceCostTenthsPerMin(billedModel))),
         id_conversation: conversationId,
       });
       if (usageErr) console.error("[VoiceTranscript] Usage log failed:", usageErr.message);
