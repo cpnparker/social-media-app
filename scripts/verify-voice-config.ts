@@ -172,7 +172,15 @@ console.log("\n6. The session knows what its own thread already said");
 // "the handover list in this thread" it replied "I can't pull up that specific
 // thread; it looks like I'm not a member of the conversation", from inside
 // that conversation.
-const DIGEST = "They said: what is still left off Rob's handover list\nYou said: three items remain — the SOW, the PO and the transition note";
+// Shaped like the real thing: a rolling SUMMARY plus recent turns. Recent
+// turns alone are not enough, and a live failure proved it — asked what was
+// left on a handover list, voice could not find it, because the list was
+// message THREE of a hundred and fifty-four and no window of recent turns
+// reaches that. The summary is the half that carries old content.
+const DIGEST = [
+  "What this conversation has covered so far:\nRob sent a handover list before his holiday covering Siemens, IFFIm, Catherine's new role and several clients.",
+  "The most recent turns:\nThey said: what is still left off Rob's handover list\nYou said: three items remain",
+].join("\n\n");
 const withDigest = buildVoiceInstructions({ ...CTX, threadDigest: DIGEST } as any);
 const noDigest = buildVoiceInstructions({ ...CTX } as any);
 
@@ -182,6 +190,14 @@ const noDigest = buildVoiceInstructions({ ...CTX } as any);
 withDigest.indexOf("Rob") >= 0
   ? pass("the actual content is present, not just a heading")
   : fail("the digest heading rendered without the turns");
+// Both halves must survive into the prompt. Dropping the summary is the exact
+// regression that made this useless in a long thread.
+/covered so far/.test(withDigest)
+  ? pass("the rolling summary half survives")
+  : fail("the summary was dropped — old content becomes unreachable again");
+/most recent turns/.test(withDigest)
+  ? pass("the recent-turns half survives")
+  : fail("recent turns were dropped — \"it\" and \"that\" stop resolving");
 /do not say you cannot see the conversation/i.test(withDigest)
   ? pass("it is told it IS in the conversation")
   : fail("nothing stops it claiming it cannot see the thread it is in");
@@ -196,9 +212,13 @@ withDigest.indexOf("Rob") >= 0
 // voice prompt is short on purpose. Assert the digest stays a budget, not a
 // blank cheque.
 const added = withDigest.length - noDigest.length;
-added > 0 && added < 6000
+// The route caps each half at 2,500 chars, so a real digest lands near 5,000
+// plus the fixed framing. Bounded, but deliberately larger than the
+// turns-only version was: an assistant that cannot see its own thread is
+// useless, and that is worth about a second of first-audio latency.
+added > 0 && added < 7000
   ? pass(`digest adds ${added} chars (~${Math.round(added / 3.6)} tokens) — bounded`)
-  : fail(`digest adds ${added} chars — that delays first audio`);
+  : fail(`digest adds ${added} chars — that delays first audio too far`);
 
 // ── Self-test ───────────────────────────────────────────────────────────
 // The detectors are regexes over prose, which is exactly the kind of check

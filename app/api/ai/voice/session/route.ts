@@ -225,6 +225,25 @@ export async function POST(req: NextRequest) {
      */
     let threadDigest: string | null = null;
     try {
+      // THE ROLLING SUMMARY FIRST, and it is the more important half.
+      //
+      // Recent turns alone are not enough, and a real failure showed exactly
+      // why: asked "what's left on Rob's handover list?", voice could not find
+      // it — because the list was pasted as message THREE of a hundred and
+      // fifty-four, 6,888 characters of it, a hundred and fifty-one turns
+      // earlier. No window of recent turns reaches that, and widening the
+      // window until it does would put the whole thread in the prompt.
+      //
+      // The summary is how the text pipeline solves the same problem, it is
+      // already maintained on the conversation, and voice was simply not
+      // reading it.
+      const { data: convRow } = await intelligenceDb
+        .from("ai_conversations")
+        .select("document_summary")
+        .eq("id_conversation", conversation.id_conversation)
+        .maybeSingle();
+      const summary = String((convRow as any)?.document_summary || "").trim();
+
       const { data: recent } = await intelligenceDb
         .from("ai_messages")
         .select("role_message, document_message, date_created")
@@ -239,7 +258,14 @@ export async function POST(req: NextRequest) {
         lines.push(`${rows[i].role_message === "user" ? "They said" : "You said"}: ${text.slice(0, 400)}`);
       }
       const joined = lines.join("\n");
-      if (joined) threadDigest = joined.slice(0, 4000);
+      // Summary then recent turns: the summary carries what was established
+      // long ago, the turns carry what "it" and "that" refer to right now.
+      // Each capped separately so a very long summary cannot crowd out the
+      // recent turns, or the other way round.
+      const parts: string[] = [];
+      if (summary) parts.push(`What this conversation has covered so far:\n${summary.slice(0, 2500)}`);
+      if (joined) parts.push(`The most recent turns:\n${joined.slice(0, 2500)}`);
+      if (parts.length) threadDigest = parts.join("\n\n");
     } catch (e: any) {
       // A digest is an improvement, not a precondition. If this fails the
       // session still starts — amnesiac, as it was before, rather than not at
