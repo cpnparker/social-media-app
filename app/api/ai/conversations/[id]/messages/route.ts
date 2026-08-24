@@ -1004,6 +1004,10 @@ export async function POST(
       const resolved = await resolveEntities({
         workspaceId: conversation.id_workspace,
         readerEmail: session.user?.email || "",
+        // Without this, facts the user stated themselves are invisible to them:
+        // stated observations carry id_owner and the visibility test needs an
+        // id to compare it against.
+        readerUserId: userId,
         audience: isMultiReaderThread ? "team" : "private",
         userMessage: userContent || "",
       });

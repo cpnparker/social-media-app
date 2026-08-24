@@ -36,7 +36,34 @@ console.log("\n2. Edges are read, and their evidence is read with them");
   ? pass("edge observations are fetched, so an edge can be shown to a reader")
   : fail("edge observations are never read — edges cannot pass the visibility rule");
 
-console.log("\n3. Backfills evidence what they create");
+console.log("\n3. Every visibility class is reachable by SOME reader");
+// The generalisation of a bug this system has now produced three times: a fact
+// written to the graph that no reader can ever see. 433 works_at edges nothing
+// read; engagement nodes with no render branch; and stated facts stored as
+// personal_mailbox while the resolver refused every personal_mailbox row
+// outright. Each was invisible in a different place, so each needed finding
+// separately. This asserts the whole set at once.
+const visClasses = (/type_visibility text NOT NULL CHECK \(type_visibility IN\s*\(([^)]*)\)/.exec(migration)?.[1] || "")
+  .match(/'([a-z_]+)'/g)?.map((s) => s.replace(/'/g, "")) || [];
+visClasses.length >= 4
+  ? pass(`schema allows: ${visClasses.join(", ")}`)
+  : fail("could not read the visibility classes from the migration");
+for (const v of visClasses) {
+  // Every class must appear in resolve.ts as something that can return TRUE,
+  // not merely be mentioned. A `return false` branch is the bug, not the fix.
+  const branch = new RegExp(`type_visibility === "${v}"[\\s\\S]{0,220}`).exec(resolver)?.[0] || "";
+  if (!branch) { fail(`"${v}" is never tested in resolve.ts — anything stored with it is unreachable`); continue; }
+  // The literal, anywhere in the branch head — NOT anchored to end-of-line.
+  // The first version required `return false;` to be followed by a newline,
+  // and the bug it was written for ended with a trailing comment, so it
+  // reported the shipped defect as fine. Proven against the real line before
+  // being trusted.
+  /return\s+false\b/.test(branch.split("\n").slice(0, 3).join("\n"))
+    ? fail(`"${v}" is tested and always refused — facts stored with it can never be seen`)
+    : pass(`"${v}" can be visible to at least one reader`);
+}
+
+console.log("\n4. Backfills evidence what they create");
 for (const f of ["scripts/backfill-entity-graph.ts", "scripts/backfill-engagements.ts"]) {
   const src = readFileSync(f, "utf8");
   const makesEdges = /from\("entity_edge"\)[\s\S]{0,200}(insert|upsert)/.test(src);

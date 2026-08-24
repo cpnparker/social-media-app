@@ -101,6 +101,10 @@ function safeShort(raw: string | null | undefined): string | null {
 export async function resolveEntities(opts: {
   workspaceId: string;
   readerEmail: string;
+  /** The Engine user id. Needed to see facts THIS person stated: those
+   *  observations carry id_owner, and without the id there is no way to tell
+   *  the owner's own facts from someone else's, so they were all refused. */
+  readerUserId?: number;
   /** "team" means more than one person will read the answer. */
   audience: "team" | "private";
   userMessage: string;
@@ -158,7 +162,15 @@ export async function resolveEntities(opts: {
     // theirs to publish.
     if (opts.audience !== "private") return false;
     if (o.type_visibility === "meeting_attendees") return attended.has(o.id_visibility_key);
-    if (o.type_visibility === "personal_mailbox") return false; // owner ids not yet mapped; fail closed
+    // A fact this person stated themselves. It was refused outright until now
+    // — "owner ids not yet mapped" — which meant every fact anyone typed into
+    // chat was written to the graph and then invisible to its own author. The
+    // third time this system has held a fact no reader could reach: 433
+    // works_at edges nothing read, engagement nodes with no render branch, and
+    // this.
+    if (o.type_visibility === "personal_mailbox") {
+      return typeof opts.readerUserId === "number" && o.id_owner === opts.readerUserId;
+    }
     return false;
   };
 
@@ -190,7 +202,10 @@ export async function resolveEntities(opts: {
     for (const o of eObs) {
       const ok = o.type_visibility === "workspace"
         || (o.type_visibility === "team" && opts.audience === "team")
-        || (opts.audience === "private" && o.type_visibility === "meeting_attendees" && eAttended.has(o.id_visibility_key));
+        || (opts.audience === "private" && o.type_visibility === "meeting_attendees" && eAttended.has(o.id_visibility_key))
+        // Same as nodes: a relationship the reader stated is theirs to see.
+        || (opts.audience === "private" && o.type_visibility === "personal_mailbox"
+            && typeof opts.readerUserId === "number" && o.id_owner === opts.readerUserId);
       if (ok) edgeVisible.add(o.id_edge);
     }
   }
