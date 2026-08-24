@@ -152,7 +152,7 @@ export async function importDocx(
     raw = raw.replace(titleMatch[0], "");
   }
 
-  let html = toEditorHtml(raw, true);
+  const html = toEditorHtml(raw, true);
 
   if (!title) {
     const firstBlock = html.match(/<(h[1-6]|p)\b[^>]*>([\s\S]*?)<\/\1>/i);

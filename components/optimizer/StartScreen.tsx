@@ -45,6 +45,14 @@ const SOURCE_FOR_TAB: { [k in Tab]: ImportSource } = { paste: "pasted", upload: 
  *  next to the picker so the dialog and the server cannot drift apart. */
 const ACCEPTED_UPLOAD = ".docx,.html,.htm,.md,.markdown,.txt";
 
+/** The upload route matches an allow-list of MIME types, and a browser reports
+ *  none for .md — so the type is set from the extension rather than trusted. */
+const CONTENT_TYPE_FOR: { [ext: string]: string } = {
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  html: "text/html", htm: "text/html",
+  md: "text/markdown", markdown: "text/markdown", txt: "text/plain",
+};
+
 export default function StartScreen({ workspaceId, clientId, clientName, onImported, onWriteNew }: Props) {
   const [tab, setTab] = useState<Tab>("paste");
   const [sources, setSources] = useState<ImportSources | null>(null);
@@ -167,12 +175,20 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
       setBusy(true);
       try {
         const { upload } = await import("@vercel/blob/client");
-        const blob = await upload(`optimizer-uploads/${file.name}`, file, {
-          access: "public",
+        const blob = await upload(`optimizer-uploads/w${workspaceId}/${file.name}`, file, {
+          // The store is configured PRIVATE, and passing "public" is rejected
+          // outright rather than downgraded. The workspace segment is what the
+          // import route checks the path against, so a caller cannot hand it
+          // the path of somebody else's file.
+          access: "private",
           handleUploadUrl: "/api/media/upload",
+          // Set explicitly: a browser reports no MIME type at all for .md and
+          // often for .txt, and the upload route matches on an allow-list, so
+          // an empty type is refused before the file leaves the machine.
+          contentType: CONTENT_TYPE_FOR[ext] || file.type || "application/octet-stream",
         });
         await doImport("upload", undefined, undefined, undefined, undefined, {
-          blobUrl: blob.url, fileName: file.name, fileType: file.type,
+          blobPath: blob.pathname, fileName: file.name, fileType: file.type,
         });
       } catch (e: any) {
         toast.error(e?.message || "That upload did not complete");

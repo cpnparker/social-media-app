@@ -25,6 +25,23 @@
  *   2026-08-21  decorative empty alt counted as a defect   → 1 fail  ✓
  *   (baseline, unmutated: exit 0)
  *
+ * The 2026-08-24 render and article-scoping layer, mutated the same way:
+ *
+ *   2026-08-24  no-render branch reports "pass" not "info"  → 2 fail  ✓
+ *   2026-08-24  failed render stops reporting its reason    → 1 fail  ✓
+ *   2026-08-24  blocked-subrequest guard removed            → 1 fail  ✓
+ *   2026-08-24  image checks read the whole page again      → 3 fail  ✓
+ *   2026-08-24  broken-image check counts zero-box images   → 1 fail  ✓
+ *   2026-08-24  upscaling threshold disabled                → 1 fail  ✓
+ *   2026-08-24  render-ran promoted from info to pass       → 3 fail  ✓
+ *
+ * A NOTE ON THE HARNESS, which produced a false survivor. Forcing
+ * renderTrustworthy to a constant makes auditPage THROW on the first fixture
+ * (r! is null), so the run exits 1 with no named FAIL line. A harness counting
+ * FAIL lines reads that as "the mutation survived" — the exact opposite of the
+ * truth. Mutation results are read from the EXIT CODE; the line count is only
+ * ever a detail alongside it.
+ *
  * A 14-agent adversarial review then confirmed ELEVEN wrong-verdict cases the
  * first fixture could not see, §4 now holds them all: robots content="none"
  * passing (the documented noindex equivalent), a permissive-then-noindex tag

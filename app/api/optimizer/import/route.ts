@@ -159,28 +159,34 @@ export async function POST(req: NextRequest) {
     // An uploaded document. The bytes do NOT come through this request: a
     // Vercel serverless function caps its request body at 4.5MB, and a Word
     // document with photographs passes that routinely — the founder's own test
-    // file is 3.9MB. So the browser sends the file straight to blob storage and
-    // this route is handed the URL.
+    // file is 3.9MB. The browser sends the file straight to blob storage and
+    // this route is handed the PATH it landed at.
     //
-    // That URL arrives from the CLIENT, which makes it attacker-controlled, so
-    // it is pinned to the blob store's own host before anything fetches it and
-    // then fetched through safeFetch, which re-checks the address on every
-    // redirect hop. Without the host pin this is a server-side request forgery
-    // with the caller choosing the target.
-    const blobUrl = typeof body.blobUrl === "string" ? body.blobUrl : "";
-    let parsedBlob: URL | null = null;
-    try { parsedBlob = new URL(blobUrl); } catch { parsedBlob = null; }
-    const hostOk = !!parsedBlob && /(^|\.)blob\.vercel-storage\.com$/i.test(parsedBlob.hostname);
-    if (!hostOk) {
+    // The path is attacker-controlled, and the blob store holds everything
+    // this app has ever written — decks, chat attachments, generated
+    // documents. An unconstrained path here would convert any of them into the
+    // caller's editor, which is a cross-workspace read. So the path must sit
+    // under this caller's OWN workspace prefix, which requireOptimizer has
+    // already proved they belong to.
+    //
+    // Read through the blob SDK rather than over HTTP: the store is private,
+    // so a plain fetch of the URL gets nothing, and going through the SDK with
+    // the server's own token means there is no user-supplied URL to fetch and
+    // therefore no request forgery to defend against.
+    const blobPath = typeof body.blobPath === "string" ? body.blobPath : "";
+    const expectedPrefix = `optimizer-uploads/w${caller.workspaceId}/`;
+    if (!blobPath.startsWith(expectedPrefix) || blobPath.indexOf("..") >= 0) {
       return NextResponse.json({ error: "That upload could not be located." }, { status: 400 });
     }
 
-    const { safeFetch } = await import("@/lib/net/safe-fetch");
     let buffer: Buffer;
     try {
-      const res = await safeFetch(blobUrl, { timeoutMs: 30_000 });
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      buffer = Buffer.from(await res.arrayBuffer());
+      const { get } = await import("@vercel/blob");
+      const stored = await get(blobPath, { access: "private" });
+      if (!stored || stored.statusCode !== 200 || !stored.stream) {
+        throw new Error("the stored file could not be read back");
+      }
+      buffer = Buffer.from(await new Response(stored.stream as ReadableStream).arrayBuffer());
     } catch (e: any) {
       return NextResponse.json(
         { error: `The uploaded file could not be read back: ${String(e?.message || e).slice(0, 120)}` },
@@ -196,12 +202,12 @@ export async function POST(req: NextRequest) {
     );
 
     // The source document is deleted either way. It was only ever a transport
-    // for the bytes; its figures already live in their own private blobs, and
-    // leaving the original behind would keep a second copy of a client document
-    // in storage that nothing reads and nobody remembers to remove.
+    // for the bytes; its figures already live in their own blobs, and leaving
+    // the original behind keeps a second copy of a client document in storage
+    // that nothing reads and nobody remembers to remove.
     try {
       const { del } = await import("@vercel/blob");
-      await del(blobUrl);
+      await del(blobPath);
     } catch {
       /* a failed cleanup must not fail the import the writer is waiting on */
     }
@@ -351,6 +357,22 @@ export async function POST(req: NextRequest) {
 
   if (error || !session) {
     console.error("[optimizer] import failed:", error?.message);
+    // 23514 is a CHECK violation, and for this table it means the deployed
+    // type_source constraint has not been widened for this source yet. The
+    // migration file and the database disagreeing is not hypothetical here —
+    // CREATE TABLE IF NOT EXISTS skips the constraint on an existing table, so
+    // 'url' shipped ahead of its ALTER once already. Say which migration is
+    // owed rather than returning a blank 500 that looks like a bug in the file
+    // the writer just uploaded.
+    if ((error as any)?.code === "23514") {
+      return NextResponse.json(
+        {
+          error:
+            "This deployment's database has not been migrated for this import type yet. Run the ALTER at the end of supabase/migrations/20260821_content_optimizer.sql, then try again.",
+        },
+        { status: 503 }
+      );
+    }
     return NextResponse.json({ error: "Could not import that" }, { status: 500 });
   }
 

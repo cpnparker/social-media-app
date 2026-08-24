@@ -19,13 +19,23 @@
  * MUTATION LOG — every entry run in a throwaway git worktree, never the shared
  * tree (`vercel deploy --prod` uploads the working directory).
  *
- *   2026-08-24  drop the Title lift (title stays in body)   → 2 fail  ✓
- *   2026-08-24  swallow upload failures (no warning)        → 1 fail  ✓
- *   2026-08-24  remove "img" from import-html's KEEP list   → 2 fail  ✓
+ *   2026-08-24  drop the Title lift (title stays in body)   → 1 fail  ✓
+ *   2026-08-24  swallow upload failures (no warning)        → 2 fail  ✓
+ *   2026-08-24  remove "img" from import-html's KEEP list   → 3 fail  ✓
  *   2026-08-24  remove "img" from balanceTags' VOID list    → 1 fail  ✓
- *   2026-08-24  accept .pdf instead of refusing it          → 1 fail  ✓
  *   2026-08-24  allow data: URLs through the img sanitiser  → 1 fail  ✓
+ *   2026-08-24  accept .pdf instead of refusing it          → SURVIVED
+ *   2026-08-24  ...same mutation, after tightening §5       → 1 fail  ✓
  *   (baseline, unmutated: exit 0)
+ *
+ * THE SURVIVOR IS THE USEFUL ENTRY. Deleting the PDF branch outright still
+ * refuses the file — it falls through to the generic "upload a .docx, .html,
+ * .md or .txt", which also contains the word docx, so an assertion matching
+ * /structure|docx/ was satisfied by a refusal that had lost its explanation.
+ * The check now asserts the REASON each refusal gives (/binary/, /headings/),
+ * because a dead end wearing a reason's clothes is what the writer actually
+ * suffers from. Asserting that something failed is not the same as asserting
+ * it failed for the right reason.
  */
 import JSZip from "jszip";
 import { importFile, importDocx } from "../lib/optimizer/file-import";
