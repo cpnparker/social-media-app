@@ -670,6 +670,14 @@ function EngineAIContent() {
           visibility: "private",
           model: selectedModel,
           customerId: customerId || undefined,
+          // isIncognito, exactly as the text composer sends it.
+          //
+          // It was missing here, and the two buttons sit in the SAME composer
+          // row: a user with Incognito visibly selected pressed the mic and got
+          // a persisted, sidebar-visible, verbatim-transcribed thread. The UI
+          // promised one thing and the server did another, which is worse than
+          // not offering the toggle.
+          isIncognito: incognitoMode,
         }),
       });
       if (!res.ok) {
@@ -2484,6 +2492,7 @@ const ORAC_ENABLED = false;
       {/* Docked voice conversation — thread stays visible and fills live */}
       {workspaceId && selectedId && (
         <VoiceDock
+          incognito={incognitoMode}
           open={voiceOpen}
           onClose={() => {
             setVoiceOpen(false);

@@ -19,6 +19,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Pause, Play, Square, Database, Brain, ListChecks, MessageSquare, Sparkles, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import {
+  HARD_END_RE, BARE_STOP_RE, IDLE_WARN_MS, IDLE_END_MS,
+  toolLabel, toolArgsPhrase,
+} from "@/lib/ai/voice-session";
 
 type VoiceStatus = "connecting" | "listening" | "thinking" | "speaking" | "paused" | "error";
 
@@ -39,26 +43,35 @@ interface VoiceDockProps {
   /** Raw post-wake command audio (16kHz) from the trained wake engine —
    *  flushed into the session so the server transcribes it directly. */
   initialAudioPromise?: () => Promise<Float32Array | null>;
+  /** Nothing is persisted from an incognito thread — the badge says so, up
+   *  front, rather than letting the user discover it from an empty thread. */
+  incognito?: boolean;
 }
 
-/** Spoken hard-stop phrases — immediate end, no model round-trip. */
-const HARD_END_RE = /\b(stop listening|end (the )?(conversation|chat|session)|that('|')?s all,? thanks?)\b/i;
-/** Bare voice commands (whole utterance) that end the session — Alexa-style. */
-const BARE_STOP_RE = /^\s*(orac[,!.]?\s*)?(stop|cancel|never ?mind|go to sleep|shut up|that('|')?s (all|enough))[.!?]?\s*$/i;
-/** Absolute inactivity backstop for wake sessions. */
-const SILENCE_END_MS = 60_000;
 /** Alexa-style follow-up window: after Orac finishes speaking, the session
  *  stays open this long for a follow-up question, then closes and rearms. */
 const FOLLOWUP_WINDOW_MS = 8_000;
 
-const TOOL_LABELS: Record<string, { label: string; Icon: typeof Database }> = {
-  query_engine: { label: "Checking the Engine", Icon: Database },
-  lookup_client_context: { label: "Pulling client profile", Icon: Database },
-  search_memory: { label: "Searching memories", Icon: Brain },
-  query_meetingbrain: { label: "Checking meetings", Icon: ListChecks },
-  query_slack: { label: "Checking Slack", Icon: MessageSquare },
-  consult_analyst: { label: "Consulting the analyst", Icon: Sparkles },
+/** ICONS only — the label text lives in lib/ai/voice-session.ts, where it can
+ *  be tested and where a missing entry falls back instead of rendering blank. */
+const TOOL_ICONS: Record<string, typeof Database> = {
+  query_engine: Database,
+  lookup_client_context: Database,
+  search_memory: Brain,
+  query_meetingbrain: ListChecks,
+  query_slack: MessageSquare,
+  consult_analyst: Sparkles,
 };
+
+/** Absolute inactivity backstop for WAKE sessions (separate from the ordinary
+ *  idle timeout, which lives in lib/ai/voice-session.ts). */
+const SILENCE_END_MS = 60_000;
+
+/** Seconds a tool has been running. `_tick` is unused on purpose: passing the
+ *  session clock re-renders this once a second without a second timer. */
+function toolSecs(at: number, _tick: number): number {
+  return Math.max(0, Math.round((Date.now() - at) / 1000));
+}
 
 const STATUS_TEXT: Record<VoiceStatus, string> = {
   connecting: "Connecting…",
@@ -101,12 +114,27 @@ export default function VoiceDock({
   wakeSession,
   initialCommand,
   initialAudioPromise,
+  incognito,
 }: VoiceDockProps) {
   const [status, setStatus] = useState<VoiceStatus>("connecting");
-  const [caption, setCaption] = useState("");
-  const [activeTool, setActiveTool] = useState<string | null>(null);
+
+  /**
+   * Tools in flight, as a LIST. setActiveTool(name) overwrote, so a turn that
+   * called two tools showed only whichever landed last — while the pending
+   * counter correctly tracked both. Parallel calls are normal here.
+   */
+  const [tools, setTools] = useState<{ id: string; name: string; args: string; at: number }[]>([]);
   const [level, setLevel] = useState(0);
   const [elapsed, setElapsed] = useState(0);
+  /** The thread turns are being written to, or null when nothing is persisted
+   *  (incognito). Returned by the session route and previously discarded. */
+  const savingTo = incognito ? null : "thread";
+  /** The live transcript, kept as TWO rows. One caption slot meant the user's
+   *  words and the assistant's overwrote each other. */
+  const [userSaid, setUserSaid] = useState("");
+  const [botSaid, setBotSaid] = useState("");
+  /** Seconds until an idle session closes itself, or null when not idling. */
+  const [idleIn, setIdleIn] = useState<number | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -142,6 +170,9 @@ export default function VoiceDock({
   const sessionStartRef = useRef(0);
   const pendingToolsRef = useRef(0);
   const closingRef = useRef(false);
+  /** Latest teardown, so the pagehide listener — registered once — always
+   *  calls the current one rather than the closure it was created with. */
+  const teardownRef = useRef<(() => void) | null>(null);
   const rafRef = useRef<number>(0);
   /** Drives the wake-session closers independently of rAF — see shouldClose. */
   const idleTimerRef = useRef<number | null>(null);
@@ -271,9 +302,11 @@ export default function VoiceDock({
         ? Math.round((Date.now() - sessionStartRef.current) / 1000)
         : undefined;
       if (pending.length === 0 && !durationSeconds) return;
+      // Optimistic, so a second flush mid-request cannot send the same turns
+      // twice — but reverted below on anything that is not a confirmed save.
       pending.forEach((i) => { i.saved = true; });
       try {
-        await fetch("/api/ai/voice/transcript", {
+        const res = await fetch("/api/ai/voice/transcript", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -283,13 +316,53 @@ export default function VoiceDock({
           }),
           keepalive: final,
         });
-        if (pending.length > 0) onTranscriptSaved?.();
+        // A NON-OK RESPONSE IS NOT A THROW. Only a network failure reaches the
+        // catch, so a 403 from the view-only guard or a 500 from the insert
+        // resolved normally and left every turn flagged saved — the whole
+        // conversation dropped with no toast, no retry and no trace. That is
+        // the defect this branch exists for.
+        if (!res.ok) {
+          pending.forEach((i) => { i.saved = false; });
+          console.error("[Voice] Transcript save failed:", res.status);
+          toast.error(
+            res.status === 403
+              ? "You have view-only access to this thread — the voice turns were not saved"
+              : "Voice turns could not be saved to the thread"
+          );
+          return;
+        }
+        // The server DELIBERATELY discards in an incognito thread and reports
+        // saved: 0. That is not a failure, but it is not a save either: firing
+        // onTranscriptSaved would tell the thread to refetch turns that were
+        // never written, so the user watches an empty thread being told it
+        // filled. The persistence badge is what tells them, up front.
+        const body = await res.json().catch(() => null);
+        const wrote = typeof body?.saved === "number" ? body.saved : pending.length;
+        if (pending.length > 0 && wrote > 0) onTranscriptSaved?.();
       } catch {
         pending.forEach((i) => { i.saved = false; });
       }
     },
     [conversationId, onTranscriptSaved]
   );
+
+  /**
+   * Closing the tab, or backgrounding it on iOS, must still flush.
+   *
+   * durationSeconds is only sent on the FINAL flush, which also writes the
+   * ai_usage row — so an unloaded tab lost the last exchange and the billing
+   * record together, and the keepalive flag was set on precisely the request
+   * that never fired.
+   *
+   * pagehide rather than beforeunload: beforeunload does not fire reliably on
+   * mobile Safari, and the sibling meeting surface already ships exactly this
+   * pattern. Voice simply was not using it.
+   */
+  useEffect(() => {
+    const onHide = () => { teardownRef.current?.(); };
+    window.addEventListener("pagehide", onHide);
+    return () => window.removeEventListener("pagehide", onHide);
+  }, []);
 
   const teardown = useCallback(() => {
     if (closingRef.current) return;
@@ -317,6 +390,8 @@ export default function VoiceDock({
     audioCtxRef.current = null;
   }, [flushPlayback, persistTranscript]);
 
+  useEffect(() => { teardownRef.current = teardown; }, [teardown]);
+
   // ── Session lifecycle ──
   useEffect(() => {
     if (!open) return;
@@ -330,7 +405,7 @@ export default function VoiceDock({
     utteranceCounterRef.current = 0;
     sessionStartRef.current = Date.now();
     lastUserSpeechRef.current = Date.now();
-    setCaption("");
+    setUserSaid(""); setBotSaid("");
     setElapsed(0);
     setStatusBoth("connecting");
 
@@ -556,8 +631,16 @@ export default function VoiceDock({
            * browsers throttle but do not stop.
            */
           const shouldClose = () => {
-            if (closingRef.current || !wakeSession || pausedRef.current) return false;
+            if (closingRef.current || pausedRef.current) return false;
             if (statusRef.current !== "listening") return false;
+            // Ordinary sessions: warn, then close. Only silence counts — the
+            // status is "listening" here, so nothing is being said or fetched.
+            if (!wakeSession) {
+              const idleFor = Date.now() - lastUserSpeechRef.current;
+              if (idleFor > IDLE_END_MS) return true;
+              setIdleIn(idleFor > IDLE_WARN_MS ? Math.ceil((IDLE_END_MS - idleFor) / 1000) : null);
+              return false;
+            }
             // Alexa-style follow-up window after Orac finishes speaking.
             if (followUpDeadlineRef.current !== null && Date.now() > followUpDeadlineRef.current) return true;
             // Absolute backstop, so a missed sign-off cannot leave it running.
@@ -569,7 +652,13 @@ export default function VoiceDock({
             onClose();
             return true;
           };
-          idleTimerRef.current = window.setInterval(closeIfIdle, 1000);
+          idleTimerRef.current = window.setInterval(() => {
+            // The session timer lives here as well as in the rAF tick, for the
+            // same reason the closers do: browsers stop rAF in a hidden tab,
+            // so the clock froze while the session — and the bill — ran on.
+            if (!closingRef.current) setElapsed(Math.floor((Date.now() - sessionStartRef.current) / 1000));
+            closeIfIdle();
+          }, 1000);
 
           const tick = () => {
             if (closingRef.current) return;
@@ -669,7 +758,7 @@ export default function VoiceDock({
               // fresh fallback key so utterances never merge into each other.
               utteranceCounterRef.current += 1;
               flushPlayback();
-              setCaption("");
+              setUserSaid(""); setBotSaid("");
               setStatusBoth("listening");
               break;
             }
@@ -682,7 +771,12 @@ export default function VoiceDock({
             case "response.output_audio_transcript.delta":
             case "response.audio_transcript.delta": {
               if (msg.delta && !pausedRef.current) {
-                setCaption((prev) => (prev + msg.delta).slice(-160));
+                setBotSaid((prev) => (prev + msg.delta).slice(-160));
+                // The assistant speaking is activity too. Without this a long
+                // answer counts toward the idle clock and the session could
+                // close while it was still talking.
+                lastUserSpeechRef.current = Date.now();
+                setIdleIn(null);
               }
               break;
             }
@@ -706,7 +800,7 @@ export default function VoiceDock({
               const id = msg.item_id || `u-${utteranceCounterRef.current}`;
               activeUserItemRef.current = id;
               upsertItem(id, "user", t);
-              if (!pausedRef.current) setCaption(t.slice(-160));
+              if (!pausedRef.current) { setUserSaid(t.slice(-160)); setBotSaid(""); }
               lastUserSpeechRef.current = Date.now();
               // Hard-stop — immediate end, no model round-trip. Either a stop
               // phrase anywhere, or an Alexa-style bare command ("stop",
@@ -748,7 +842,7 @@ export default function VoiceDock({
                 break;
               }
               pendingToolsRef.current += 1;
-              setActiveTool(name);
+              setTools((t) => t.concat([{ id: String(call_id), name, args: toolArgsPhrase(msg.arguments), at: Date.now() }]));
               // Both captured BEFORE the await: which turn asked for this, and
               // which session. Everything after the await is checked against
               // them, because both can change while a fetch is in flight.
@@ -788,7 +882,7 @@ export default function VoiceDock({
                 if (left > 0) pendingByEpochRef.current.set(toolEpoch, left);
                 else pendingByEpochRef.current.delete(toolEpoch);
                 pendingToolsRef.current = Math.max(0, pendingToolsRef.current - 1);
-                if (pendingByEpochRef.current.size === 0) setActiveTool(null);
+                setTools((t) => t.filter((x) => x.id !== String(call_id)));
               }
 
               // The session that started this call must still be the live one.
@@ -859,6 +953,18 @@ export default function VoiceDock({
           if (!closingRef.current) {
             setStatusBoth("error");
             toast.error("Voice connection error");
+            // TEAR DOWN, do not just paint it red. onerror used to set the
+            // state and stop, and onclose then skipped teardown BECAUSE the
+            // state was error — so nothing stopped the microphone and nothing
+            // saved the transcript. Pause is disabled in this state, so the
+            // only way out was Stop, which nothing told the user to press.
+            //
+            // teardown() is idempotent (closingRef) and it is the only caller
+            // of persistTranscript(true) and the only place mic tracks stop.
+            // onClose() is NOT called: the dock stays up showing the error, so
+            // the failure is visible rather than a session that silently
+            // vanished mid-sentence.
+            teardown();
           }
         };
         ws.onclose = () => {
@@ -900,7 +1006,7 @@ export default function VoiceDock({
       prePauseStatusRef.current = statusRef.current;
       pausedRef.current = true;
       flushPlayback();
-      setCaption("");
+      setUserSaid(""); setBotSaid("");
       setStatusBoth("paused");
       // Persist whatever we have so the thread is current while paused
       persistTranscript(false);
@@ -909,7 +1015,9 @@ export default function VoiceDock({
 
   if (!open) return null;
 
-  const tool = activeTool ? TOOL_LABELS[activeTool] : null;
+  // Icon from the known map where there is one, generic elsewhere. The LABEL
+  // always resolves via toolLabel(), so a tool can never be in flight unnamed.
+  const ToolIcon = (tools.length && TOOL_ICONS[tools[0].name]) || Database;
   const paused = status === "paused";
   const orbScale =
     1 + (status === "listening" ? level * 0.5 : status === "speaking" ? 0.2 + level * 0.15 : 0);
@@ -949,25 +1057,69 @@ export default function VoiceDock({
           </div>
         </div>
 
-        {/* Status / caption / tool */}
+        {/* Status / transcript / tools */}
         <div className="min-w-0 max-w-[44vw] sm:max-w-xs">
-          <div className="flex items-center gap-2 text-[11px] text-white/50 leading-tight">
+          {/* A polite live region. There was not one aria-live in this file, so
+              a screen-reader user got no state at all. */}
+          <div
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            className="flex items-center gap-2 text-[11px] text-white/50 leading-tight"
+          >
             <span>{STATUS_TEXT[status]}</span>
-            <span className="text-white/30">
+            <span className="text-white/30 tabular-nums">
               {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
             </span>
-            {tool && (
-              <span className="flex items-center gap-1 text-white/60">
-                <tool.Icon className="h-3 w-3 animate-pulse" />
-                {tool.label}…
-              </span>
+            {/* WHERE THE TURNS ARE GOING, said up front. A user with Incognito
+                selected was watching a verbatim transcript being written to a
+                thread they believed was private. */}
+            {savingTo === null ? (
+              <span className="text-amber-300/80 shrink-0">Not saved</span>
+            ) : (
+              <span className="text-emerald-300/70 truncate">Saving to thread</span>
             )}
           </div>
-          <p className="text-[13px] text-white/85 truncate leading-tight">
-            {paused
-              ? "Paused — resume when you're ready"
-              : caption || (status === "listening" ? "Just talk — interrupt me any time" : " ")}
-          </p>
+
+          {/* Tools in flight, with their own elapsed. A dead pause is the one
+              thing voice can no longer explain out loud. */}
+          {tools.length > 0 && (
+            <div className="mt-0.5 space-y-0.5">
+              {tools.map((t) => (
+                <div key={t.id} className="flex items-center gap-1.5 text-[11px] text-white/60 leading-tight">
+                  <ToolIcon className="h-3 w-3 shrink-0 animate-pulse" />
+                  <span className="truncate">
+                    {toolLabel(t.name)}{t.args ? " \u00b7 " + t.args : ""}
+                  </span>
+                  <span className="text-white/30 tabular-nums shrink-0">{toolSecs(t.at, elapsed)}s</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* TWO ATTRIBUTED ROWS, never one. A single caption slot meant the
+              user's words and the assistant's overwrote each other, so neither
+              could be read back. */}
+          {paused ? (
+            <p className="text-[13px] text-white/85 truncate leading-tight">Paused \u2014 resume when you are ready</p>
+          ) : idleIn !== null ? (
+            <p className="text-[13px] text-amber-300/90 truncate leading-tight">
+              Still there? Ending in {idleIn}s \u2014 just speak to stay
+            </p>
+          ) : userSaid || botSaid ? (
+            <div className="leading-tight">
+              {userSaid && (
+                <p className="text-[12px] text-white/45 truncate">
+                  <span className="text-white/30">You </span>{userSaid}
+                </p>
+              )}
+              {botSaid && <p className="text-[13px] text-white/85 truncate">{botSaid}</p>}
+            </div>
+          ) : (
+            <p className="text-[13px] text-white/85 truncate leading-tight">
+              {status === "listening" ? "Just talk \u2014 interrupt me any time" : " "}
+            </p>
+          )}
         </div>
 
         {/* Controls — Stop is the primary action (ends the conversation;
