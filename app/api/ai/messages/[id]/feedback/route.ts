@@ -56,6 +56,21 @@ export async function PATCH(
     if (!access.allowed) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
+    // A VIEW-only share recipient must not write here, matching the sibling
+    // guard in app/api/ai/voice/transcript/route.ts.
+    //
+    // rating_message is a single column with no rater — last writer wins and
+    // nothing records who. So a viewer could silently flip or clear the owner's
+    // rating on a shared thread, and this feedback is about to be read as a
+    // quality signal. An unattributable rating that anyone with a link can
+    // overwrite is worse than no rating, because it looks like evidence.
+    //
+    // If viewers SHOULD be able to flag answers — a reasonable product call —
+    // that needs a rater column first, so two people's opinions can coexist
+    // instead of overwriting each other.
+    if (access.permission === "view") {
+      return NextResponse.json({ error: "Read-only access to this conversation" }, { status: 403 });
+    }
 
     const { error } = await intelligenceDb
       .from("ai_messages")

@@ -350,6 +350,55 @@ export function localDay(iso: string | null | undefined): string | null {
   return d.toLocaleDateString("en-CA", { timeZone: WORKSPACE_TZ });
 }
 
+/**
+ * The calendar day after a local YYYY-MM-DD, computed without touching a clock.
+ *
+ * Parsed at UTC NOON deliberately. Adding 24h to local midnight lands on the
+ * wrong day twice a year — on the 23-hour spring day it overshoots and on the
+ * 25-hour autumn day it falls short — and Europe/Zurich has both. From noon,
+ * a 24-hour step is still the next day whatever the offset did in between.
+ */
+function nextLocalDay(day: string): string {
+  const parts = day.split("-");
+  const t = Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), 12, 0, 0);
+  const n = new Date(t + 24 * 60 * 60 * 1000);
+  const mm = String(n.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(n.getUTCDate()).padStart(2, "0");
+  return `${n.getUTCFullYear()}-${mm}-${dd}`;
+}
+
+/**
+ * "TOMORROW (Tuesday 25 August)" — the day a meeting falls on, said outright.
+ *
+ * WHY THIS EXISTS. Asked on Monday who he was meeting tomorrow, the voice
+ * assistant answered with Wednesday's meetings and labelled them "tomorrow".
+ * It was not confused about the date: challenged, it said "Today is Monday the
+ * 24th, so tomorrow is Tuesday the 25th" — correctly. It had simply been handed
+ * a flat list of rows stamped "2026-08-25 15:00" and "2026-08-26 09:00" over a
+ * rolling now→now+N×24h window, so both days were present, and the ONE step it
+ * had to perform itself — today plus one — is the step it got wrong.
+ *
+ * The server already does every other piece of date arithmetic here. Doing this
+ * one too costs nothing and removes the only place the model could slip. It
+ * matters most on voice, where it cannot re-read what it just said.
+ *
+ * Compared on the ZURICH calendar day, never on a UTC prefix: 2026-08-25T22:30Z
+ * is 00:30 on the 26th in Zurich, and a UTC-prefix implementation would call
+ * that the 25th and label it tomorrow.
+ */
+export function dayLabel(iso: string | null | undefined, now?: Date): string | null {
+  const day = localDay(iso);
+  if (!day) return null;
+  const today = localDay((now || new Date()).toISOString());
+  const weekday = new Date(iso as string).toLocaleDateString("en-GB", {
+    timeZone: WORKSPACE_TZ, weekday: "long", day: "numeric", month: "long",
+  });
+  if (!today) return weekday;
+  if (day === today) return `TODAY (${weekday})`;
+  if (day === nextLocalDay(today)) return `TOMORROW (${weekday})`;
+  return weekday;
+}
+
 /** Stated once per tool result, so the rendered times above need no per-row
  *  suffix and the model has no reason to convert anything. */
 export const TZ_NOTE = ` All dates and times in this result are already Europe/Zurich local time (the workspace's own timezone) — report them exactly as given and do NOT convert them or apply any offset.`;
@@ -499,12 +548,40 @@ export function formatMeetingBrainResult(report: string, result: { data: any; co
   const payload = isArray ? sample : result.data;
   const truncNote = isArray && rows.length > MAX_TOOL_RESULT_ROWS ? `\n(showing first ${MAX_TOOL_RESULT_ROWS} of ${rows.length})` : "";
   const hintNote = result.hint ? `\n\n${result.hint}` : "";
+
+  // WHAT THIS SOURCE STRUCTURALLY CANNOT ANSWER.
+  //
+  // Asked "did Carol send the kick-off invite?", the model searched here, found
+  // nothing matching, and answered "No, Carol did not send it" — then found the
+  // organiser (cpiot@gavi.org, Carol) on the very next turn from the calendar.
+  // MeetingBrain rows carry ATTENDEES; the organiser field does not exist in
+  // them at all. So a miss here was never evidence about who sent anything, and
+  // the result said nothing to stop that being read as one.
+  //
+  // Stated on every result rather than only on empty ones, because the failing
+  // turn DID get rows back — just irrelevant ones. An empty-set branch would
+  // not have fired.
+  const scopeNote =
+    `\n\nSCOPE — what these records do and do not contain: they carry ATTENDEES, never the ORGANISER who sent an invite. ` +
+    `Nothing here is evidence about who sent, scheduled or created a meeting; for that you need the calendar itself. ` +
+    `And a search that returns nothing, or nothing relevant, means THIS SOURCE did not match your keyword — it is not evidence that the meeting, person or invite does not exist. ` +
+    `Never turn a miss here into "no" about the world. Say what you searched and what you would need to check next.`;
+
+  // A count of zero reads as a clean, authoritative empty set. Say plainly that
+  // the query ran and matched nothing, and give the retry that usually works,
+  // before the model decides the absence is an answer.
+  const emptyNote =
+    isArray && result.count === 0
+      ? `\n\nTHIS SEARCH MATCHED NOTHING. The query ran and returned zero rows — that is a statement about the keyword, not about the world. ` +
+        `Try the plainest form of the noun (one distinctive word: a surname, a client name) before reporting a miss, and if it still finds nothing, tell the user you could not find it — never that it does not exist.`
+      : "";
+
   // Titles, notes and above all TRANSCRIPTS are authored by meeting
   // participants, including external attendees.
   return fenceUntrusted(payload, {
     source: "MeetingBrain records — titles, notes and transcripts authored by meeting participants",
     preamble: `MeetingBrain ${report}: ${result.count} results.${TZ_NOTE}`,
-    instructions: `${truncNote}${hintNote}\n(Internal fields like client_id / meeting ids are for YOUR follow-up tool calls only — never write raw ids in your reply to the user; use names and dates.)`,
+    instructions: `${truncNote}${hintNote}${emptyNote}${scopeNote}\n(Internal fields like client_id / meeting ids are for YOUR follow-up tool calls only — never write raw ids in your reply to the user; use names and dates.)`,
   });
 }
 
@@ -4538,7 +4615,12 @@ export const MEETINGBRAIN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         query: { type: "string", description: "Search keyword for search_meetings" },
         meeting_id: { type: "string", description: "Meeting ID for meeting_details (from search_meetings results)" },
         status: { type: "string", enum: ["open", "completed", "all"], description: "Task status filter. Default: open" },
-        days: { type: "number", description: "Lookback window in days. Default: 90 for meetings, 14 for upcoming" },
+        // Direction stated per report. It read "Lookback window" on a tool
+        // whose upcoming_meetings report looks FORWARD, and the guidance
+        // elsewhere tells the model to pass days:1 for a single-day question —
+        // which from 11:26 stops at 11:26 the NEXT day, so it silently spans
+        // two calendar days and returns both.
+        days: { type: "number", description: "Window size in days. For `meetings` it looks BACK (default 90). For `upcoming_meetings` it looks FORWARD from right now (default 14) — note it is a rolling 24h-per-day window, not calendar days, so days:1 reaches this time tomorrow and therefore covers parts of two calendar days. Every returned row carries its own `day` field saying which day it is on; use that rather than counting." },
       },
       required: ["report"],
     },
@@ -5053,11 +5135,18 @@ export async function queryMeetingBrain(
         const data = (meetings || []).map((r: any) => ({
           id: r.id,
           title: r.meeting_title,
+          // Said outright, so the model never computes today+1 itself — the one
+          // step it got wrong when it answered Monday's "tomorrow" with
+          // Wednesday's meetings. See dayLabel.
+          day: dayLabel(r.meeting_date),
           date: localStamp(r.meeting_date),
           end_date: localStamp(r.meeting_end_date),
           attendees: r.attendees,
           location: r.location?.slice(0, 200) || null,
         }));
+        // Ascending, here rather than trusting the RPC's order: this list is
+        // read aloud in sequence, and "the next thing" has to be the next row.
+        data.sort((a: any, b: any) => String(a.date || "").localeCompare(String(b.date || "")));
         console.log(`[MeetingBrain] Upcoming: ${data.length} (${d}d window)`);
         return { data, count: data.length };
       }
