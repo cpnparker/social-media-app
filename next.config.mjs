@@ -17,6 +17,20 @@ const nextConfig = {
     // nothing here — the build would succeed and the function would ship a
     // bundled Chromium, failing only at deploy on size.
     serverComponentsExternalPackages: ["puppeteer-core", "@sparticuz/chromium"],
+    /**
+     * Externalising keeps webpack from BUNDLING Chromium; it does not make the
+     * tracer COPY it. The binary and its libraries are brotli archives under
+     * bin/ — data, not JavaScript — so nothing imports them and the trace
+     * misses them. The lambda then holds the package's code and none of its
+     * payload, and the launch fails with the bin directory not existing.
+     *
+     * Only the audit route needs it, and the archives are tens of megabytes,
+     * so this is scoped to that one function rather than every serverless
+     * bundle in the app.
+     */
+    outputFileTracingIncludes: {
+      "/api/optimizer/sessions/[id]/audit": ["./node_modules/@sparticuz/chromium/**"],
+    },
   },
 
   /**
