@@ -61,6 +61,32 @@ function stageOf(c: { date_start?: string | null; date_end?: string | null; flag
   return "live";
 }
 
+/**
+ * Is this contract name distinctive enough to be a searchable alias?
+ *
+ * Contract names are often generic — "Retainer", "Content", "Phase 2". Making
+ * every one an alias means the word "retainer" in an ordinary sentence
+ * resolves to a finished 2024 engagement, and 212 of 237 contracts here are
+ * closed, so most of that noise would be about work that ended.
+ *
+ * A multi-word name is almost always specific to the client ("Amrize content
+ * retainer"). A single common word almost never is. Engagements remain
+ * reachable through their client either way — the alias is a convenience, not
+ * the route.
+ */
+const GENERIC_CONTRACT_WORDS = new Set([
+  "retainer","content","social","contract","agreement","project","phase",
+  "support","services","package","plan","pilot","trial","extension","renewal",
+  "annual","monthly","quarterly","misc","other","general","standard",
+]);
+function aliasableContractName(name: string | null | undefined): string | null {
+  const t = (name || "").trim();
+  if (t.length < 4) return null;
+  const words = t.split(/\s+/);
+  if (words.length === 1 && GENERIC_CONTRACT_WORDS.has(t.toLowerCase())) return null;
+  return t;
+}
+
 /** Find-or-create, never upsert: the unique indexes on entity_node are PARTIAL
  *  and PostgREST cannot express a partial predicate in onConflict (42P10). */
 async function ensureNode(
@@ -124,7 +150,10 @@ async function main() {
     const { count: orgsLinked } = await intel.from("entity_node")
       .select("*", { count: "exact", head: true }).eq("type_node", "org").not("id_client", "is", null);
     console.log(`\n  org nodes currently linked to a client: ${orgsLinked}`);
+    const named = (contracts || []).filter((k: any) => aliasableContractName(k.name_contract)).length;
     console.log(`  would create or link: ${(clients || []).length} client orgs, ${(contracts || []).length} engagements`);
+    console.log(`  of those, ${named} contract names are distinctive enough to be searchable`);
+    console.log(`  (${(contracts || []).length - named} generic names skipped — they would match ordinary words)`);
     console.log(`\n  Nothing written. Re-run without --dry-run.\n`);
     return;
   }
@@ -177,9 +206,10 @@ async function main() {
     });
     if (!id) continue;
     made++;
-    if (k.name_contract) {
+    const aliasName = aliasableContractName(k.name_contract);
+    if (aliasName) {
       await intel.from("entity_alias").upsert({
-        id_node: id, alias_text: k.name_contract, type_alias: "display_name",
+        id_node: id, alias_text: aliasName, type_alias: "display_name",
         type_source: "engine_record", flag_confirmed: 1,
       }, { onConflict: "id_node,alias_text,type_alias" });
     }
