@@ -87,6 +87,40 @@ function aliasableContractName(name: string | null | undefined): string | null {
   return t;
 }
 
+/**
+ * Is there already an organisation node that looks like this client?
+ *
+ * THE SPLIT THIS PREVENTS. Orgs arrive from two directions: from calendar
+ * attendees, keyed on domain, and from Engine's client list, keyed on
+ * id_client. They only merge when the client's email domain is confirmed — and
+ * only 5 of 92 clients have one. Without this check the other 87 each get a
+ * SECOND node: the Engine one carrying contracts and no people, the calendar
+ * one carrying people and no contracts. One company, two rows, and every
+ * question about it answered from whichever half the resolver reached first.
+ *
+ * It returns a CANDIDATE, never a merge. Name matching is exactly the thing
+ * this codebase already learned not to trust automatically — "zurich" matches
+ * Zurich Instruments, ETH Zurich and Zurich Insurance, and the top inferred
+ * domain for two of them belonged to the third. So a match becomes a proposal
+ * a person accepts, and a non-match costs nothing.
+ */
+async function findOrgByName(workspaceId: string, name: string): Promise<{ id: string; domain: string | null } | null> {
+  const { data, error } = await intel
+    .from("entity_alias")
+    .select("id_node, entity_node!inner(id_node, id_workspace, type_node, id_client, domain_primary, type_status)")
+    .ilike("alias_text", name)
+    .limit(5);
+  if (error) return null;
+  for (const r of (data || []) as any[]) {
+    const n = r.entity_node;
+    if (!n || n.id_workspace !== workspaceId || n.type_node !== "org") continue;
+    if (n.type_status === "merged" || n.type_status === "rejected") continue;
+    if (n.id_client) continue;               // already a client org; not a duplicate
+    return { id: n.id_node, domain: n.domain_primary || null };
+  }
+  return null;
+}
+
 /** Find-or-create, never upsert: the unique indexes on entity_node are PARTIAL
  *  and PostgREST cannot express a partial predicate in onConflict (42P10). */
 async function ensureNode(
@@ -154,6 +188,14 @@ async function main() {
     console.log(`  would create or link: ${(clients || []).length} client orgs, ${(contracts || []).length} engagements`);
     console.log(`  of those, ${named} contract names are distinctive enough to be searchable`);
     console.log(`  (${(contracts || []).length - named} generic names skipped — they would match ordinary words)`);
+    const undomained = (clients || []).filter((c: any) => !domainFor.get(c.id_client)).length;
+    if (undomained) {
+      console.log(`\n  WARNING: ${undomained} of ${(clients || []).length} clients have no confirmed email domain.`);
+      console.log(`  Each may create a SECOND org node beside one already built from calendar`);
+      console.log(`  attendees — the same company split in two, contracts on one and people on`);
+      console.log(`  the other. Merge proposals are written where a name matches, but confirming`);
+      console.log(`  domains first (npx tsx scripts/propose-client-domains.ts) avoids the split.`);
+    }
     console.log(`\n  Nothing written. Re-run without --dry-run.\n`);
     return;
   }
@@ -163,7 +205,7 @@ async function main() {
   // still exist, and matching on a null domain would collide every one of them
   // into a single row.
   const orgByClient = new Map<number, string>();
-  let orgsMade = 0;
+  let orgsMade = 0, duplicates = 0;
   for (const c of (clients || []) as any[]) {
     const domain = domainFor.get(c.id_client) || null;
     let id = await ensureNode({ id_workspace: workspaceId, type_node: "org", id_client: c.id_client }, {
@@ -183,6 +225,28 @@ async function main() {
     if (!id) continue;
     orgByClient.set(c.id_client, id);
     orgsMade++;
+
+    // No confirmed domain means this client org could not adopt an existing
+    // domain-derived node, so there may now be two rows for one organisation.
+    // Propose the merge rather than performing it: a wrong split is recoverable
+    // and a wrong merge is not.
+    if (!domain && c.name_client) {
+      const twin = await findOrgByName(workspaceId, c.name_client);
+      if (twin && twin.id !== id) {
+        // Don't re-propose the same merge on a second run.
+        const { data: already } = await intel.from("entity_proposal")
+          .select("id_proposal").eq("type_action", "merge").eq("type_status", "pending")
+          .eq("id_workspace", workspaceId).contains("data_payload", { keep: id, merge: twin.id }).limit(1);
+        if (already && already.length) continue;
+        await intel.from("entity_proposal").insert({
+          id_workspace: workspaceId, type_action: "merge",
+          data_payload: { keep: id, merge: twin.id, reason: "same organisation from Engine and from calendar" },
+          data_evidence: { client_name: c.name_client, other_domain: twin.domain, surfaced: true },
+          type_status: "pending",
+        });
+        duplicates++;
+      }
+    }
     if (c.name_client) {
       await intel.from("entity_alias").upsert({
         id_node: id, alias_text: c.name_client, type_alias: "display_name",
@@ -192,6 +256,10 @@ async function main() {
     await observe({ id_node: id, source: `client:${c.id_client}` });
   }
   console.log(`  client orgs ensured: ${orgsMade}`);
+  if (duplicates) {
+    console.log(`  ${duplicates} possible duplicate org(s) — merge proposals written for review.`);
+    console.log(`  Confirming these clients' email domains first would have avoided them entirely.`);
+  }
 
   // ── engagements ────────────────────────────────────────────────────────
   let made = 0, linked = 0;
