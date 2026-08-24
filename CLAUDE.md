@@ -145,13 +145,43 @@ from V1", 859.50 CU, the single largest row in `app_content`).
 
 ## Content Optimizer checks
 
-Twelve scripts guard `lib/optimizer/` and the import/export paths. Run all of them
-before shipping anything that touches the rubric, the judge, anchoring or how
-content gets in:
+Thirteen scripts guard `lib/optimizer/` and the import/export paths. Run all of
+them before shipping anything that touches the rubric, the judge, anchoring or
+how content gets in:
 
 ```
-for f in rubric anchors judge gate doc-index highlight import export import-html live url page-audit; do npx tsx scripts/verify-optimizer-$f.ts || break; done
+for f in rubric anchors judge gate doc-index highlight import export import-html live url page-audit file-import; do npx tsx scripts/verify-optimizer-$f.ts || break; done
 ```
+
+The live-page audit renders as well as fetches, and the two views answer
+different questions. The SERVED HTML is authoritative — the crawlers behind AI
+answers mostly do not run JavaScript — so every check reads that. The render
+exists for the GAP: content that only appears after JavaScript is invisible to
+those crawlers, and nothing in the page's own HTML says so. When the render
+does not run, `js-dependency` reports INFO with the reason and never "no gap
+found"; not looking and finding nothing are different claims.
+
+Image and heading checks are scoped to the ARTICLE, and this was measured, not
+assumed: the Amrize page carries 47 images of which 10 are the article's and 37
+are the megamenu and footer. Nav images are template-generated and always
+captioned, so unscoped they drag every image verdict toward pass. The same
+measurement kills a tempting check — 33 of those 37 never load, because they
+are hidden, so a naive "broken images" rule reported 33 failures on a page
+whose 10 article images were all fine.
+
+Uploaded `.docx` is the only mammoth caller here that uses `convertToHtml`
+rather than `extractRawText`: every other caller feeds a model, which needs
+words, while the optimiser scores STRUCTURE. Its check builds a real docx in
+memory — content types, relationships, a styles part, a drawing referencing an
+embedded PNG — because a mock of mammoth would only assert that the mock works.
+
+Two things about blob storage that cost time to learn. The store is configured
+PRIVATE, and `access: "public"` is rejected outright rather than downgraded, so
+a public upload fails in production while looking fine in review. And the
+`BLOB_READ_WRITE_TOKEN` in `.env.local` is a DIFFERENT, older token pointing at
+a public store — image writes therefore fail locally and succeed in production.
+Test blob paths with a token pulled from production (`vercel env pull` to a
+scratch path, never over `.env.local`, which is shared with other sessions).
 
 Each carries a MUTATION LOG in its header, and each log records survivors as
 well as kills — a mutation that survived is a finding about the check, not an
