@@ -56,8 +56,46 @@ export const VOICE_NAME = (process.env.XAI_VOICE_NAME || "leo").trim();
 export const VOICE_MODEL_FALLBACK = "grok-voice-latest";
 export const VOICE_NAME_FALLBACK = "eve"; // xAI's documented default
 export const VOICE_SAMPLE_RATE = 24000;
-/** $0.05/min → tenths-of-cents per minute for ai_usage logging */
-export const VOICE_COST_TENTHS_PER_MIN = 50;
+/**
+ * Voice is billed per MINUTE of audio, and the rate belongs to the MODEL —
+ * which is what the constant this replaces forgot.
+ *
+ * `VOICE_COST_TENTHS_PER_MIN` was pinned at 50 ($0.05/min) while VOICE_MODEL
+ * defaulted to grok-voice-think-fast-2.0, which xAI prices at $0.08/min
+ * (docs.x.ai/docs/models, read 2026-08-24: $0.05 is the 1.0 rate and 1.0 is
+ * marked deprecated). Every session on 2.0 was written to ai_usage 37.5%
+ * light, and nothing failed, because a wrong number is still a number. The
+ * model id was already being recorded next to it in `name_model` the whole
+ * time; only the rate was blind to it.
+ *
+ * An unknown id resolves to the DEAREST known rate and says so in the log.
+ * A billing fallback must err upward: under-reporting is invisible until
+ * someone reconciles an invoice, which is precisely how this one survived.
+ */
+const VOICE_RATE_TENTHS_PER_MIN: Record<string, number> = {
+  "grok-voice-think-fast-2.0": 80,
+  "grok-voice-think-fast-1.0": 50, // deprecated by xAI
+};
+/** Date the rates above were last read off xAI's pricing page. */
+export const VOICE_RATES_VERIFIED_ON = "2026-08-24";
+
+export function voiceCostTenthsPerMin(model: string = VOICE_MODEL): number {
+  const hit = VOICE_RATE_TENTHS_PER_MIN[String(model || "").trim()];
+  if (hit !== undefined) return hit;
+  // Indexed loop, not Object.values + spread: scripts/ is type-checked by
+  // `next build` and tsconfig sets no target, so ES2017 helpers fail there.
+  const ids = Object.keys(VOICE_RATE_TENTHS_PER_MIN);
+  let dearest = 0;
+  for (let i = 0; i < ids.length; i++) {
+    const r = VOICE_RATE_TENTHS_PER_MIN[ids[i]];
+    if (r > dearest) dearest = r;
+  }
+  console.warn(
+    `[Voice] no per-minute rate known for model=${model} — billing at the dearest known rate ` +
+      `(${dearest} tenths/min). Add it to VOICE_RATE_TENTHS_PER_MIN.`
+  );
+  return dearest;
+}
 
 /**
  * ask_engine — hand the whole question to the text pipeline and relay the answer.

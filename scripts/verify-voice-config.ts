@@ -28,7 +28,7 @@
  * render and is a known cause of the same symptom (fixed c03d4fc). British
  * spelling in TEXT is fine; a British accent must come from the VOICE.
  */
-import { buildVoiceInstructions, getVoiceTools, VOICE_NAME, VOICE_NAME_FALLBACK, VOICE_TOOL_NAMES } from "../lib/ai/voice";
+import { buildVoiceInstructions, getVoiceTools, VOICE_MODEL, VOICE_NAME, VOICE_NAME_FALLBACK, VOICE_TOOL_NAMES, voiceCostTenthsPerMin } from "../lib/ai/voice";
 import { toolBudgetFor } from "../lib/ai/tool-loop-guard";
 
 let failures = 0;
@@ -293,13 +293,46 @@ const ed = String(escalation?.description || escalation?.function?.description |
   ? pass("and tells it the detail is written down rather than read aloud")
   : fail("the model will read a cross-referenced list aloud");
 
+// ── 7. The per-minute rate follows the MODEL ────────────────────────────
+// A constant pinned at 50 tenths ($0.05/min) sat next to a VOICE_MODEL that
+// defaulted to grok-voice-think-fast-2.0, which xAI prices at $0.08/min. Every
+// voice session on 2.0 was logged to ai_usage 37.5% light and nothing failed,
+// because a wrong number is still a number. What makes it a check rather than
+// a fix: the rate and the model can drift apart again the next time either
+// moves, and the symptom is silent.
+console.log("\n7. Voice billing — the rate is keyed to the model in use");
+
+const rate = voiceCostTenthsPerMin(VOICE_MODEL);
+const dearestKnown = voiceCostTenthsPerMin("definitely-not-a-model-id");
+
+// The direction of the fallback is the whole point. Falling back CHEAP is how
+// an under-report hides until someone reconciles an invoice.
+rate <= dearestKnown
+  ? pass(`the configured model (${VOICE_MODEL}) bills at ${rate} tenths/min`)
+  : fail("the configured model bills above the dearest known rate");
+
+voiceCostTenthsPerMin("grok-voice-think-fast-2.0") === 80
+  ? pass("grok-voice-think-fast-2.0 is 80 tenths ($0.08/min), as published")
+  : fail(`grok-voice-think-fast-2.0 is ${voiceCostTenthsPerMin("grok-voice-think-fast-2.0")} tenths, not the published 80`);
+
+// An unknown id must not quietly inherit the cheapest row.
+dearestKnown === 80
+  ? pass("an unknown model falls back to the DEAREST rate, not the cheapest")
+  : fail(`an unknown model falls back to ${dearestKnown} tenths — a cheap fallback under-reports silently`);
+
+// The configured model should be priced explicitly, not by fallback. This is
+// the one that fires when someone changes XAI_VOICE_MODEL and forgets the rate.
+process.env.XAI_VOICE_MODEL && rate === dearestKnown && VOICE_MODEL !== "grok-voice-think-fast-2.0"
+  ? fail(`XAI_VOICE_MODEL=${VOICE_MODEL} has no rate row — it is billing at the fallback`)
+  : pass("the model in use has an explicit rate row");
+
 // ── Self-test ───────────────────────────────────────────────────────────
 // The detectors are regexes over prose, which is exactly the kind of check
 // that silently matches nothing after an innocuous rewording. Fixture-only:
 // no repo file is mutated, because this tree is shared with other sessions
 // and also deploys.
 if (process.argv.indexOf("--self-test") >= 0) {
-  console.log("\n7. Self-test — the detectors fire on the shapes they exist for");
+  console.log("\n8. Self-test — the detectors fire on the shapes they exist for");
   let selfFails = 0;
   const detects = (name: string, caught: boolean) => {
     if (caught) console.log(`  ok    detects ${name}`);
