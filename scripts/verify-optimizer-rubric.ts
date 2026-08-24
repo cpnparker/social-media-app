@@ -89,6 +89,18 @@
  * nothing to do with what was broken. Every exemption case is now built so
  * exactly ONE guard is load-bearing. A fixture that passes for the wrong
  * reason is indistinguishable from one that works.
+ *
+ * MUTATION LOG — register/engine agreement (2026-08-24), throwaway worktree.
+ *   duplicate block reintroduced into pillar3()   -> caught (dupes + pillar)
+ *   a SINGLE copy emitted from the wrong pillar   -> caught (pillar only)
+ *   the criterion declared but never emitted      -> caught (missing)
+ *   (baseline before and after: exit 0)
+ *
+ * The middle entry is why the pillar-membership assertion exists. A single
+ * misplaced copy satisfies every set-equality test — right count, no
+ * duplicates, nothing undeclared, nothing missing — while misreporting TWO
+ * pillars at once: the one that gained the points and the one that lost them.
+ * Counting was never enough.
  */
 import { computeDraftScores } from "../lib/optimizer/engine";
 import { sectionLevels, parseDraft } from "../lib/optimizer/parse";
@@ -265,6 +277,74 @@ reintroduced
   : pass(`none of the ${DROPPED_FROM_AUTHORITYON.length} dropped AuthorityOn criteria reappeared`);
 
 // ── 2. The clean draft ───────────────────────────────────────────────────
+
+// ── 1c. What the engine EMITS is exactly what the rubric DECLARES ────────
+//
+// The rubric is the register of what this tool scores; the engine is six
+// pillar functions that each push their own results. Nothing tied the two
+// together, and they drifted: `anonymous-first-person-facts` was emitted from
+// BOTH pillar3() and pillar4() — byte-identical blocks, 1,889 characters each
+// — while rubric.ts declares it pillar 4. The engine returned 33 results for
+// 32 declared criteria, and pillar 3's renormalised score (earned/max*100 over
+// its own criteria) was computed over a 10-point criterion belonging to
+// another pillar. On a real 2,000-word draft that read 61 where it should read
+// 55, silently, for every piece with a brand and at least one statistic.
+//
+// Nothing caught it. Every criterion still had a fixture, every fixture still
+// went red, the duplicate scored the same in both places, and a duplicated
+// PASS is invisible in a total. The assertion has to be about the SET, which
+// no per-criterion check can express.
+console.log(`\n1c. The engine emits exactly the declared criteria, once each`);
+{
+  const scored = computeDraftScores(withBody(CLEAN_BODY));
+  const emitted: string[] = [];
+  for (let i = 0; i < scored.pillars.length; i++) {
+    for (let j = 0; j < scored.pillars[i].criteria.length; j++) emitted.push(scored.pillars[i].criteria[j].key);
+  }
+
+  const counts: { [k: string]: number } = {};
+  for (let i = 0; i < emitted.length; i++) counts[emitted[i]] = (counts[emitted[i]] || 0) + 1;
+  const dupes = Object.keys(counts).filter((k) => counts[k] > 1);
+  dupes.length === 0
+    ? pass(`no criterion is emitted twice (${emitted.length} results)`)
+    : fail(`emitted more than once: ${dupes.join(", ")}`,
+           "Two pillar functions are pushing the same criterion, so one pillar is renormalising over points that are not its own.");
+
+  const declared: { [k: string]: boolean } = {};
+  for (let i = 0; i < CRITERIA.length; i++) declared[CRITERIA[i].key] = true;
+  const undeclared = Object.keys(counts).filter((k) => !declared[k]);
+  undeclared.length === 0
+    ? pass("every emitted key is declared in CRITERIA")
+    : fail(`emitted but not declared: ${undeclared.join(", ")}`);
+
+  const missing: string[] = [];
+  for (let i = 0; i < CRITERIA.length; i++) if (!counts[CRITERIA[i].key]) missing.push(CRITERIA[i].key);
+  missing.length === 0
+    ? pass(`all ${CRITERIA.length} declared criteria are emitted`)
+    : fail(`declared but never emitted: ${missing.join(", ")}`,
+           "A criterion in the register that no pillar function pushes is dead weight the UI will never show.");
+
+  // The stronger form, and the one that pins the ACTUAL defect: a criterion
+  // must come out of the pillar the rubric assigns it to. A single copy in the
+  // wrong pillar would satisfy every assertion above and still misreport two
+  // pillars at once.
+  const pillarIdByName: { [k: string]: number } = {};
+  for (let i = 0; i < PILLARS.length; i++) pillarIdByName[PILLARS[i].name] = PILLARS[i].id;
+  const declaredPillar: { [k: string]: number } = {};
+  for (let i = 0; i < CRITERIA.length; i++) declaredPillar[CRITERIA[i].key] = CRITERIA[i].pillar;
+  const misplaced: string[] = [];
+  for (let i = 0; i < scored.pillars.length; i++) {
+    const pid = pillarIdByName[scored.pillars[i].name];
+    for (let j = 0; j < scored.pillars[i].criteria.length; j++) {
+      const k = scored.pillars[i].criteria[j].key;
+      if (declaredPillar[k] !== undefined && declaredPillar[k] !== pid) misplaced.push(`${k} (declared p${declaredPillar[k]}, emitted from p${pid})`);
+    }
+  }
+  misplaced.length === 0
+    ? pass("every criterion is emitted from the pillar the rubric assigns it")
+    : fail(`emitted from the wrong pillar: ${misplaced.join("; ")}`,
+           "Both the pillar that gained it and the pillar that lost it are renormalising over the wrong denominator.");
+}
 
 console.log(`\n2. The clean draft scores well across every pillar`);
 {

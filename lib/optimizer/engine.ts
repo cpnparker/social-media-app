@@ -301,47 +301,6 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   const out: CriterionResult[] = [];
   const queries = input.targetQueries || [];
   const candidates = entityCandidates(input);
-  // Anonymous first-person facts: a statistic whose sentence says "we/our/us"
-  // and never names the entity. The fact travels when a model lifts the
-  // sentence; the brand does not. Experience-voice sentences are exempt —
-  // pillar 5 rewards them, and a rubric must not argue with itself.
-  if (candidates.length === 0) {
-    out.push(skip("anonymous-first-person-facts", "No brand to check against"));
-  } else if (p.stats.length === 0) {
-    out.push(skip("anonymous-first-person-facts", "No statistics to attribute"));
-  } else {
-    const FIRST_PERSON = /\b(we|our|us)\b/i;
-    let anon = 0;
-    const anonSpans: CriterionSpan[] = [];
-    const seenSent: { [k: number]: boolean } = {};
-    for (let i = 0; i < p.stats.length; i++) {
-      const si = p.stats[i].sentenceIndex;
-      if (seenSent[si]) continue;
-      seenSent[si] = true;
-      const sent = p.sentences[si];
-      if (!sent) continue;
-      if (!FIRST_PERSON.test(sent.text)) continue;
-      const sLower = sent.text.toLowerCase();
-      let named = false;
-      for (let c = 0; c < candidates.length; c++) {
-        const cw = contentWords(candidates[c]);
-        for (let w = 0; w < cw.length; w++) {
-          if (cw[w].length >= 4 && termPresent(sLower, cw[w])) { named = true; break; }
-        }
-        if (named) break;
-      }
-      if (named) continue;
-      if (containsAny(sLower, EXPERIENCE_MARKERS) > 0) continue;
-      anon++;
-      if (anonSpans.length < 8) {
-        anonSpans.push({ start: sent.start, end: sent.end, note: "the fact is \"ours\" — a model lifting this sentence never learns whose" });
-      }
-    }
-    out.push(score("anonymous-first-person-facts", tieredScore(anon, ANON_FACT_TIERS), anon === 0,
-      anon === 0 ? "every fact-bearing sentence names its owner" : anon + " fact sentence" + (anon === 1 ? "" : "s") + " say \"we\" and never name the brand",
-      anonSpans));
-  }
-
   const defs = definitionSentences(p, candidates);
 
   // Answer-first. The tier cliff sits at 30% because that is where the
