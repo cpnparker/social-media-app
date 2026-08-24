@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { formatLocalDate } from "@/lib/date-utils";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
+import { getModelLabel } from "@/lib/ai/models";
 import {
   BarChart,
   Bar,
@@ -154,6 +155,8 @@ const MODEL_COLORS: Record<string, string> = {
   "grok-3-fast": "#60A5FA",
   "grok-3-mini": "#93C5FD",
   "grok-imagine-image": "#818CF8",
+  "grok-4-6": "#1D4ED8",
+  "grok-4.6": "#1D4ED8",
   "claude-opus-5": "#C2410C",
   "claude-opus-4-8": "#EA580C",
   "claude-fable-5": "#9A3412",
@@ -163,10 +166,31 @@ const MODEL_COLORS: Record<string, string> = {
   "claude-haiku-4-5": "#FED7AA",
   "gpt-4o": "#10B981",
   "gpt-4o-mini": "#34D399",
+  "gpt-5-6-terra": "#059669",
+  "gpt-5.6-terra": "#059669",
+  "gpt-5-6-luna": "#6EE7B7",
+  "gpt-5.6-luna": "#6EE7B7",
   "dall-e-3": "#A78BFA",
   "gemini-3-flash": "#EC4899",
   "gemini-3.1-flash-lite": "#F472B6",
 };
+/**
+ * Chart label for a model id.
+ *
+ * MODEL_LABELS above is an OVERRIDE layer, not the source of truth: it holds
+ * the deliberate chart-specific shortenings ("Gemini 3.1 Lite", "Grok 3
+ * (Legacy)") and nothing else needs to be there. Anything it does not name
+ * falls through to the shared getModelLabel, so adding a model no longer means
+ * remembering this file — which is the failure this map kept producing.
+ *
+ * It was not cosmetic. grok-4-6 is the auto-router's own reasoning leg, and it
+ * rendered here as a raw id: the flagship model, unnamed, on the very
+ * dashboard used to judge what models cost.
+ */
+function modelLabel(id: string): string {
+  return MODEL_LABELS[id] || getModelLabel(String(id));
+}
+
 const DEFAULT_MODEL_COLORS = ["#6366F1", "#8B5CF6", "#06B6D4", "#14B8A6", "#F59E0B", "#EF4444", "#84CC16", "#E879F9"];
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -743,7 +767,7 @@ export default function AIUsagePage() {
                         <Tooltip
                           formatter={(value: any, name: any) => [
                             formatCost(Number(value)),
-                            MODEL_LABELS[String(name)] || String(name),
+                            modelLabel(String(name)),
                           ]}
                           labelFormatter={(label: any) => {
                             const d = new Date(String(label) + "T00:00:00");
@@ -761,7 +785,7 @@ export default function AIUsagePage() {
                           }}
                         />
                         <Legend
-                          formatter={(value: string) => MODEL_LABELS[value] || value}
+                          formatter={(value: string) => modelLabel(value)}
                           wrapperStyle={{ fontSize: 10, paddingTop: 8 }}
                         />
                         {(usageData.dailyModels || []).map((model, i) => (
@@ -795,7 +819,7 @@ export default function AIUsagePage() {
                       <div className="flex items-center justify-between mb-1">
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-medium">
-                            {MODEL_LABELS[m.model] || m.model}
+                            {modelLabel(m.model)}
                           </span>
                           <span className="text-[10px] text-muted-foreground">
                             {m.calls} call{m.calls !== 1 ? "s" : ""}
@@ -908,7 +932,7 @@ export default function AIUsagePage() {
                                 </span>
                                 {product.models.length > 0 && (
                                   <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">
-                                    {product.models.map(([m]) => MODEL_LABELS[m] || m).join(", ")}
+                                    {product.models.map(([m]) => modelLabel(m)).join(", ")}
                                   </span>
                                 )}
                               </div>
@@ -930,7 +954,7 @@ export default function AIUsagePage() {
                                   <div className="flex items-center gap-2 min-w-0">
                                     <span className="text-xs font-medium truncate">{fn.label}</span>
                                     <span className="text-[9px] px-1 py-0.5 rounded bg-muted/80 text-muted-foreground font-mono shrink-0">
-                                      {MODEL_LABELS[fn.model] || fn.model}
+                                      {modelLabel(fn.model)}
                                     </span>
                                     <span className="text-[10px] text-muted-foreground/60 shrink-0">
                                       {fn.calls} call{fn.calls !== 1 ? "s" : ""}
@@ -945,7 +969,7 @@ export default function AIUsagePage() {
                                   <p className="text-[10px] text-muted-foreground mb-1 font-medium">Model breakdown:</p>
                                   {product.models.map(([model, data]) => (
                                     <div key={model} className="flex items-center justify-between py-0.5">
-                                      <span className="text-[10px] text-muted-foreground">{MODEL_LABELS[model] || model}</span>
+                                      <span className="text-[10px] text-muted-foreground">{modelLabel(model)}</span>
                                       <span className="text-[10px] text-muted-foreground">
                                         {(data as any).calls} calls &middot; {formatCost((data as any).cost)}
                                       </span>

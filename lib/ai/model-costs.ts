@@ -58,6 +58,13 @@ export const MODEL_COSTS: Record<
   "gpt-5-6-terra": { inputPer1M: 200, outputPer1M: 1200 },           // $2/$12
   "gpt-5.6-terra": { inputPer1M: 200, outputPer1M: 1200 },           // $2/$12
   "gpt-5.6-luna": { inputPer1M: 20, outputPer1M: 120 },              // $0.20/$1.20
+  // Both spellings, deliberately. The dashed key is the registry id and the
+  // dotted one is the wire slug; whichever a caller happens to log, it must
+  // price the same. A dotted-only key falls through to the Sonnet-4.6 fallback
+  // at $3/$15 — 15x over — which is exactly how Terra was once mispriced.
+  // No cachedInputPer1M: no verified cached rate for this model, and an
+  // absent one bills reads at full input price, which overstates on purpose.
+  "gpt-5-6-luna": { inputPer1M: 20, outputPer1M: 120 },              // $0.20/$1.20
   "gpt-5.6-sol": { inputPer1M: 500, outputPer1M: 3000 },             // $5/$30
   "gpt-4o": { inputPer1M: 250, outputPer1M: 1000 },                  // $2.50/$10 (retired; historic rows only)
   "gpt-4o-mini": { inputPer1M: 15, outputPer1M: 60 },                // $0.15/$0.60
@@ -74,6 +81,14 @@ export const MODEL_COSTS: Record<
   "grok-4-1-fast": { inputPer1M: 125, outputPer1M: 250 },            // redirected to grok-4.3
   "grok-4-1-fast-non-reasoning": { inputPer1M: 125, outputPer1M: 250 }, // redirected to grok-4.3
   "grok-4-3": { inputPer1M: 125, outputPer1M: 250, cachedInputPer1M: 20 },        // $1.25/$2.50, cache $0.20
+  // Wire slugs, priced as their dashed twins. Same model, same bill — only the
+  // spelling differs, and call sites do not agree on which one they log.
+  // Several send grok-4.3 today; without these rows those calls bill at the
+  // $3/$15 fallback, which is the grok-4-1-fast mispricing with the sign
+  // flipped. Kept beside the twin so the two move together.
+  "grok-4.3": { inputPer1M: 125, outputPer1M: 250, cachedInputPer1M: 20 },        // $1.25/$2.50, cache $0.20
+  "grok-4.6": { inputPer1M: 200, outputPer1M: 600, cachedInputPer1M: 50 },        // $2/$6, cache $0.50
+  "claude-haiku-4-5-20251001": { inputPer1M: 100, outputPer1M: 500, cachedInputPer1M: 10, cacheWriteMultiplier: 1.25 }, // $1/$5
   "grok-4-6": { inputPer1M: 200, outputPer1M: 600, cachedInputPer1M: 50 },        // $2/$6, cache $0.50
   "grok-4-5": { inputPer1M: 200, outputPer1M: 600, cachedInputPer1M: 50 },        // $2/$6, cache $0.50
   "grok-3": { inputPer1M: 300, outputPer1M: 1500 },                  // $3/$15

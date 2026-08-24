@@ -71,6 +71,12 @@ export async function extractRfpDocumentText(
       const truncatedText = extractedText.slice(0, 8000);
 
       const response = await xai.chat.completions.create({
+        // UNVERIFIED. grok-3-mini is not on xAI's confirmed retirement list,
+        // unlike grok-3 — so it is left alone rather than repointed on a
+        // guess. But if it HAS been retired, this bills the wrong way round:
+        // a redirected call costs grok-4.3's $1.25/$2.50 while the ledger
+        // charges $0.30/$0.50, understating spend against a hard provider
+        // cap. Confirm in the xAI console before trusting this line's cost.
         model: "grok-3-mini",
         messages: [
           {

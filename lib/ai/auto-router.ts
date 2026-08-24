@@ -15,9 +15,9 @@
  * Uses keyword/pattern matching — no LLM call required.
  */
 
-const FAST_MODEL = "grok-4-1-fast" as const;
-const REASONING_MODEL = "grok-4-6" as const;
-const GROUNDED_MODEL = "claude-sonnet-5" as const;
+export const FAST_MODEL = "grok-4-1-fast" as const;
+export const REASONING_MODEL = "grok-4-6" as const;
+export const GROUNDED_MODEL = "claude-sonnet-5" as const;
 
 // ── Keyword patterns that signal a reasoning-heavy prompt ──
 

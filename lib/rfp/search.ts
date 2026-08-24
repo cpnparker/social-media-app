@@ -700,7 +700,10 @@ async function searchWithGrok(params: {
       Authorization: `Bearer ${process.env.XAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "grok-3",
+      // grok-3 was retired 2026-05-15 and every request to it has been
+      // silently answered by a successor since. Named explicitly so the
+      // request, the log line below and the bill all say the same thing.
+      model: "grok-4.3",
       input: [
         { role: "system", content: systemPrompt },
         {
@@ -749,7 +752,7 @@ async function searchWithGrok(params: {
 
   // Log usage
   logAiUsage({
-    model: "grok-3",
+    model: "grok-4.3",
     source: "rfp-search",
     inputTokens: data.usage?.input_tokens || 0,
     outputTokens: data.usage?.output_tokens || 0,

@@ -15,7 +15,6 @@ export const AI_MODELS = [
   { id: "grok-4-6", label: "Grok 4.6", provider: "xai", description: "xAI's flagship — most capable" },
   { id: "grok-4-3", label: "Grok 4.3", provider: "xai", description: "Strong and cheaper than 4.6" },
   { id: "gemini-3-flash", label: "Gemini 3 Flash", provider: "gemini", description: "Fast, large context window" },
-  { id: "deepseek-chat", label: "DeepSeek Chat", provider: "deepseek", description: "Fast & cost-effective open model" },
 ] as const;
 
 /**
@@ -50,6 +49,18 @@ export const DEFAULT_MODEL: AIModelId = "auto";
 const LEGACY_MODEL_LABELS: Record<string, string> = {
   "gpt-4o": "GPT-4o",
   "gpt-4o-mini": "GPT-4o Mini",
+  // Both spellings for each GPT-5.6 model: getModelLabel falls back to the raw
+  // id, so a row logged under the wire slug would caption a past answer
+  // "gpt-5.6-luna" rather than name the model that wrote it.
+  "gpt-5-6-luna": "GPT-5.6 Luna",
+  "gpt-5.6-luna": "GPT-5.6 Luna",
+  "gpt-5.6-terra": "GPT-5.6 Terra",
+  "grok-4.3": "Grok 4.3",
+  "grok-4.6": "Grok 4.6",
+  "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+  "gemini-3.1-flash-lite": "Gemini 3.1 Flash-Lite",
+  "sonar": "Perplexity Sonar",
+  "sonar-pro": "Perplexity Sonar Pro",
   "grok-4-1-fast-non-reasoning": "Grok 4 Fast",
   "claude-opus-4-8": "Claude Opus 4.8",
   "claude-opus-4-7": "Claude Opus 4.7",
@@ -60,6 +71,10 @@ const LEGACY_MODEL_LABELS: Record<string, string> = {
   "gemini-2.5-pro": "Gemini 2.5 Pro",
   "gemini-2.5-flash": "Gemini 2.5 Flash",
   "grok-3": "Grok 3",
+  // Retired from the picker 2026-08-24: DeepSeek retired the alias on
+  // 2026-07-24, so selecting it errored. Deliberately NOT repointed at
+  // DeepSeek V4 — first-party DeepSeek stores data in the PRC.
+  "deepseek-chat": "DeepSeek Chat",
 };
 
 /** Get display label for a model ID */

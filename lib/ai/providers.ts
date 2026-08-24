@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { splitVolatile } from "@/lib/ai/prompt-cache";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 import OpenAI from "openai";
 import { put } from "@vercel/blob";
 import { fetchBlobContent } from "./blob-utils";
@@ -586,7 +587,10 @@ interface ModelInfo {
   reasoningEffort?: "none" | "low" | "high";
 }
 
-const MODEL_REGISTRY: Record<string, ModelInfo> = {
+// Exported so scripts/verify-model-ids.ts can see EVERY entry, including the
+// hidden and legacy ones. getAvailableModels() filters both out, so a check
+// built on it would be blind to exactly the entries most likely to rot.
+export const MODEL_REGISTRY: Record<string, ModelInfo> = {
   "auto": {
     provider: "xai",
     apiModel: "grok-4.3",
@@ -635,6 +639,24 @@ const MODEL_REGISTRY: Record<string, ModelInfo> = {
     apiModel: "gpt-5.6-terra",
     label: "GPT-5.6 Terra",
     description: "OpenAI's balanced model",
+  },
+  // Registered first-class so a route can NAME it. Luna previously existed
+  // only as the apiModel of the hidden legacy gpt-4o-mini entry, so the id
+  // "gpt-5-6-luna" resolved to nothing — and getModelInfo answers an unknown
+  // id with claude-sonnet-5, silently, at fifteen times Luna's input price.
+  //
+  // That is the shape of the failure worth naming: a change made to CUT cost
+  // would have raised it, and the ledger would have shown nothing wrong,
+  // because the Sonnet call it logged is the Sonnet call it really made. The
+  // saving would simply never have appeared, with no error to chase.
+  //
+  // hidden until Decision 4 decides whether it belongs in the picker.
+  "gpt-5-6-luna": {
+    provider: "openai",
+    apiModel: "gpt-5.6-luna",
+    label: "GPT-5.6 Luna",
+    description: "Fastest and cheapest — no web search",
+    hidden: true,
   },
   // Retired from the picker 2026-08-14. OpenAI no longer lists 4o among active
   // models, and it cost MORE than the model replacing it ($2.50/$10 against
@@ -4418,8 +4440,27 @@ const WEB_SEARCH_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
 
 /**
  * Execute a web search via xAI's Responses API and return text results.
- * Always uses grok-3-mini for speed and cost efficiency.
+ *
+ * Uses grok-4.3, named explicitly. This function has described itself three
+ * different ways at once: the docstring said grok-3-mini, the call sent
+ * grok-4-1-fast, and the comment beside it quoted $0.20/$0.50 — the retired
+ * slug's advertised price, not the $1.25/$2.50 xAI actually billed once the
+ * request was redirected. That gap is the same one that understated a month
+ * of spend by 6x.
  */
+// One constant, read by both the request and the ledger line below. Two
+// separate literals are exactly how this function came to send grok-4-1-fast
+// while its own docstring claimed grok-3-mini.
+//
+// grok-4-1-fast was retired 2026-05-15 and silently answered by grok-4.3 ever
+// since, so naming 4.3 is a rename, not a switch: the same model answers, and
+// now the code and the bill agree on which. Only the grok-4 family supports
+// the web_search tool.
+//
+// NOT adding reasoning_effort:"none" without a probe — this path has no
+// fallback, and a rejected parameter would 400 every web search in the app.
+const WEB_SEARCH_MODEL = "grok-4.3";
+
 async function executeWebSearch(
   query: string,
   _systemPrompt?: string,
@@ -4430,7 +4471,7 @@ async function executeWebSearch(
 
   try {
     const searchPromise = (xai.responses.create as any)({
-      model: "grok-4-1-fast", // Only grok-4 family supports web_search tool — fast and cheap ($0.20/$0.50)
+      model: WEB_SEARCH_MODEL,
       temperature: 0.3,
       instructions: "You are a web research assistant. Search the web and return factual, well-sourced information. Include source URLs where possible. Be concise.",
       input: [{ role: "user", content: query }],
@@ -4455,6 +4496,19 @@ async function executeWebSearch(
         }
       }
     }
+
+    // Web search spend was absent from the ledger entirely until now — this
+    // function never logged. Every search, on a path the auto-router reaches
+    // for constantly, cost real money that no cost report could see. A price
+    // review run against a ledger blind to one of its busiest callers measures
+    // the wrong thing, so this lands before any model is moved on the strength
+    // of those numbers.
+    logAiUsage({
+      model: WEB_SEARCH_MODEL,
+      source: "web-search",
+      inputTokens: (response as any)?.usage?.input_tokens || 0,
+      outputTokens: (response as any)?.usage?.output_tokens || 0,
+    });
 
     console.log(`[WebSearch] Query: "${query.slice(0, 60)}" → ${searchResults.length} chars`);
     const trimmed = (searchResults || "No results found.").slice(0, MAX_WEB_SEARCH_CHARS);
