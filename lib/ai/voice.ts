@@ -59,6 +59,43 @@ export const VOICE_SAMPLE_RATE = 24000;
 /** $0.05/min → tenths-of-cents per minute for ai_usage logging */
 export const VOICE_COST_TENTHS_PER_MIN = 50;
 
+/**
+ * ask_engine — hand the whole question to the text pipeline and relay the answer.
+ *
+ * WHY VOICE SHOULD NOT ANSWER SOME QUESTIONS ITSELF. Asked what was left on a
+ * handover list, voice read the list back, and when asked which items were
+ * already DONE it checked one source — open tasks — found none of them, and
+ * concluded they "look complete". Absence from one list is not evidence of
+ * completion, and that is the same error as answering "no, Carol did not send
+ * it" from a search that returned nothing.
+ *
+ * The question needed the thread, the task list and the mailbox cross-referenced.
+ * Voice has seven tools and a latency budget measured in hundreds of
+ * milliseconds; the text pipeline has around thirty and a reasoning budget. The
+ * honest division of labour is that voice COMMISSIONS this work rather than
+ * attempting it — and then says one sentence while the detail is written down,
+ * because a cross-referenced list belongs on screen where it can be acted on,
+ * not read aloud.
+ */
+const ASK_ENGINE_TOOL = {
+  type: "function" as const,
+  function: {
+    name: "ask_engine",
+    description:
+      "Hand a question to the full EngineAI assistant, which has every tool and can cross-reference sources — the conversation, tasks, meetings, clients, contracts. Use it whenever a question needs more than one source combined, needs a judgement about what is DONE versus OUTSTANDING, or asks you to check something against something else. Also use it when you have looked and are not confident, INSTEAD of answering from one partial source. Call it silently. It takes a few seconds and comes back with a written answer; relay the headline aloud in a sentence or two and tell the user the detail is in the thread.",
+    parameters: {
+      type: "object",
+      properties: {
+        question: {
+          type: "string",
+          description: "The user's question in full, with everything they said that bears on it. Write it as they would.",
+        },
+      },
+      required: ["question"],
+    },
+  },
+};
+
 /** consult_analyst — escalation hatch to Claude for heavy reasoning. */
 const CONSULT_ANALYST_TOOL = {
   type: "function" as const,
@@ -141,7 +178,12 @@ const VOICE_TOOL_DEFS: { type: string; function: { name: string; description?: s
   MEETINGBRAIN_OPENAI_TOOL,
   SLACK_OPENAI_TOOL,
   SEARCH_THREAD_TOOL,
-  CONSULT_ANALYST_TOOL,
+  // ask_engine REPLACES consult_analyst. Two escalation hatches invited the
+  // model to pick, and the one it picked had no data access at all — its
+  // answers came back as a tool result, which the prompt says to relay, so an
+  // answer from priors was laundered into a spoken fact with the same
+  // confidence as one from Xero. One hatch, and it can look things up.
+  ASK_ENGINE_TOOL,
   END_CONVERSATION_TOOL,
 ] as any[];
 

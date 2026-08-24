@@ -271,6 +271,28 @@ for (let i = 0; i < VARIANTS.length; i++) {
   ? pass("the prompt tells it to search before claiming it cannot see the thread")
   : fail("nothing stops it saying \"paste the list\" for something already in the conversation");
 
+console.log("\n6c. It can escalate a question it should not answer alone");
+// The failure: asked which handover items were already DONE, voice checked ONE
+// source — open tasks — found none of them, and concluded they "look
+// complete". Absence from one list is not evidence of completion. That needs
+// the thread, the tasks and the mailbox reconciled, which is the text
+// pipeline's job, not a seven-tool voice session's.
+const escalation = allTools.filter((t) => (t?.name || t?.function?.name) === "ask_engine")[0];
+escalation ? pass("ask_engine is offered") : fail("voice has no way to escalate — it will keep answering from one partial source");
+!allTools.some((t) => (t?.name || t?.function?.name) === "consult_analyst")
+  ? pass("the tool-less analyst is gone, so there is one hatch and it can look things up")
+  : fail("consult_analyst is still offered — the model can pick the one with no data access");
+VOICE_TOOL_NAMES.indexOf("ask_engine") >= 0
+  ? pass("and the route will accept it")
+  : fail("ask_engine is offered but the route would reject it");
+const ed = String(escalation?.description || escalation?.function?.description || "");
+/cross-reference|more than one source/i.test(ed)
+  ? pass("its description names the case it is for")
+  : fail("nothing tells the model WHEN to escalate, so it will not");
+/thread/i.test(ed)
+  ? pass("and tells it the detail is written down rather than read aloud")
+  : fail("the model will read a cross-referenced list aloud");
+
 // ── Self-test ───────────────────────────────────────────────────────────
 // The detectors are regexes over prose, which is exactly the kind of check
 // that silently matches nothing after an innocuous rewording. Fixture-only:
