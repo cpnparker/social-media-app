@@ -17,6 +17,7 @@ import {
   Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { isExpiredCUWriteOff } from "@/lib/expired-cus";
 import { formatLocalDate } from "@/lib/date-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
@@ -193,6 +194,7 @@ export default function FormatsPage() {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
+  const [hideExpiredCUs, setHideExpiredCUs] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
 
   // Global customer filter from the TopBar selector
@@ -249,7 +251,8 @@ export default function FormatsPage() {
   };
 
   /* ─── Filtered tasks ─── */
-  const filtered = useMemo(() => {
+  // Every filter EXCEPT the expired-CU one, so the toggle can report what it hides.
+  const filteredBeforeExpiry = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return tasks.filter((t) => {
       // Global customer scope (from the TopBar selector)
@@ -263,6 +266,23 @@ export default function FormatsPage() {
       );
     });
   }, [tasks, searchQuery, globalCustomerId]);
+
+  const filtered = useMemo(
+    () =>
+      hideExpiredCUs
+        ? filteredBeforeExpiry.filter((t) => !isExpiredCUWriteOff(t.contentName, t.contentType))
+        : filteredBeforeExpiry,
+    [filteredBeforeExpiry, hideExpiredCUs]
+  );
+
+  const expiredExcluded = useMemo(() => {
+    const items = filteredBeforeExpiry.filter((t) => isExpiredCUWriteOff(t.contentName, t.contentType));
+    return {
+      count: Array.from(new Set(items.map((t) => t.contentId || t.taskId))).length,
+      cus: items.reduce((sum, t) => sum + t.cus, 0),
+      names: Array.from(new Set(items.map((t) => `${t.clientName} \u2014 ${t.contentName}`))),
+    };
+  }, [filteredBeforeExpiry]);
 
   /* ─── Category summaries ─── */
   const categorySummary = useMemo(() => {
@@ -530,6 +550,13 @@ export default function FormatsPage() {
                 <input type="checkbox" checked={excludeTestClients} onChange={(e) => setExcludeTestClients(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
                 Hide TCE and test clients
               </label>
+              <label
+                className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer shrink-0 select-none"
+                title="Contract-closure write-offs (e.g. 'WBCSD expired CUs (2026)') are accounting adjustments, not produced work. They are all Service-type, so they otherwise inflate that one format bucket."
+              >
+                <input type="checkbox" checked={hideExpiredCUs} onChange={(e) => setHideExpiredCUs(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
+                Hide expired CUs
+              </label>
             </div>
           </div>
           <div className="flex flex-wrap items-end gap-3">
@@ -574,6 +601,14 @@ export default function FormatsPage() {
                 </Card>
               ))}
             </div>
+
+            {{/* Expired-CU write-offs held back by the toggle — shown so the
+                headline number is never silently different from Retool. */}}
+            {{hideExpiredCUs && expiredExcluded.count > 0 && (
+              <p className="text-[11px] text-muted-foreground" title={{expiredExcluded.names.join("\n")}}>
+                Excludes {{expiredExcluded.count}} expired-CU write-off{{expiredExcluded.count === 1 ? "" : "s"}} ({{expiredExcluded.cus.toFixed(2)}} CU) &mdash; contract-closure adjustments, not produced work. Untick &ldquo;Hide expired CUs&rdquo; to include them.
+              </p>
+            )}}
 
             {/* ── Formats list + Pie chart (side by side) ── */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

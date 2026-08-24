@@ -213,16 +213,39 @@ async function main() {
   console.log(`  QUALITY EVENTS FOUND BY MINING : ${hits.length}   (${per100.toFixed(2)} per 100)`);
   console.log(`  thumbs-down in the same window : ${rated.length}   (${((rated.length / assistants.length) * 100).toFixed(2)} per 100)`);
 
+  // OVERLAP IS AN INCIDENT QUESTION, NOT A MESSAGE-ID ONE.
+  //
+  // Comparing message ids said "zero overlap" and was technically true and
+  // practically wrong: the model's retraction lands on the message AFTER the
+  // answer that was flagged, so the Carol correction and the Carol answer are
+  // two ids describing one incident. Counting them separately inflated the
+  // headline — it reported nine distinct events across the corpus when four of
+  // them were second halves of ones already flagged.
+  //
+  // Same conversation = same incident. Coarse, and deliberately so: a
+  // conversation is a single line of enquiry, and two problems in one thread
+  // are usually the same problem seen twice.
   const flaggedIds = new Set(rated.map((r) => r.id_message));
-  const overlap = hits.filter((h) => flaggedIds.has(h.row.id_message)).length;
-  console.log(`  overlap                        : ${overlap}`);
-  console.log(`  → mining surfaces ${hits.length - overlap} event(s) nobody flagged\n`);
+  const flaggedConvs = new Set(rated.map((r) => r.id_conversation));
+  const sameMessage = hits.filter((h) => flaggedIds.has(h.row.id_message)).length;
+  const sameIncident = hits.filter((h) => flaggedConvs.has(h.row.id_conversation)).length;
+  const novel = hits.filter((h) => !flaggedConvs.has(h.row.id_conversation)).length;
+  const incidents = flaggedConvs.size + new Set(
+    hits.filter((h) => !flaggedConvs.has(h.row.id_conversation)).map((h) => h.row.id_conversation)
+  ).size;
+  console.log(`  same message as a flag         : ${sameMessage}`);
+  console.log(`  same INCIDENT as a flag        : ${sameIncident}   (the retraction lands after the answer that was flagged)`);
+  console.log(`  → ${novel} mined event(s) in threads nobody flagged at all`);
+  console.log(`\n  DISTINCT INCIDENTS THIS WINDOW : ${incidents}   (vs ${rated.length} from thumbs alone)\n`);
 
+  let multi = 0;
   for (let j = 0; j < DETECTORS.length; j++) {
     const d = DETECTORS[j];
     const n = hits.filter((h) => h.keys.indexOf(d.key) >= 0).length;
     console.log(`   ${String(n).padStart(4)}  ${d.key.padEnd(20)} ${d.what}`);
   }
+  multi = hits.filter((h) => h.keys.length > 1).length;
+  if (multi) console.log(`   (these sum to more than ${hits.length}: ${multi} message(s) trip several detectors and are counted once as an event)`);
 
   // By model — only meaningful for messages written AFTER name_model started
   // recording the model that actually ANSWERED rather than the one the route
