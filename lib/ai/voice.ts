@@ -59,13 +59,50 @@ export const VOICE_SAMPLE_RATE = 24000;
 /** $0.05/min → tenths-of-cents per minute for ai_usage logging */
 export const VOICE_COST_TENTHS_PER_MIN = 50;
 
+/**
+ * ask_engine — hand the whole question to the text pipeline and relay the answer.
+ *
+ * WHY VOICE SHOULD NOT ANSWER SOME QUESTIONS ITSELF. Asked what was left on a
+ * handover list, voice read the list back, and when asked which items were
+ * already DONE it checked one source — open tasks — found none of them, and
+ * concluded they "look complete". Absence from one list is not evidence of
+ * completion, and that is the same error as answering "no, Carol did not send
+ * it" from a search that returned nothing.
+ *
+ * The question needed the thread, the task list and the mailbox cross-referenced.
+ * Voice has seven tools and a latency budget measured in hundreds of
+ * milliseconds; the text pipeline has around thirty and a reasoning budget. The
+ * honest division of labour is that voice COMMISSIONS this work rather than
+ * attempting it — and then says one sentence while the detail is written down,
+ * because a cross-referenced list belongs on screen where it can be acted on,
+ * not read aloud.
+ */
+const ASK_ENGINE_TOOL = {
+  type: "function" as const,
+  function: {
+    name: "ask_engine",
+    description:
+      "Hand a question to the full EngineAI assistant, which has every tool and can cross-reference sources — the conversation, tasks, meetings, clients, contracts. Use it whenever a question needs more than one source combined, needs a judgement about what is DONE versus OUTSTANDING, or asks you to check something against something else. Also use it when you have looked and are not confident, INSTEAD of answering from one partial source. Call it silently. It takes a few seconds and comes back with a written answer; relay the headline aloud in a sentence or two and tell the user the detail is in the thread.",
+    parameters: {
+      type: "object",
+      properties: {
+        question: {
+          type: "string",
+          description: "The user's question in full, with everything they said that bears on it. Write it as they would.",
+        },
+      },
+      required: ["question"],
+    },
+  },
+};
+
 /** consult_analyst — escalation hatch to Claude for heavy reasoning. */
 const CONSULT_ANALYST_TOOL = {
   type: "function" as const,
   function: {
     name: "consult_analyst",
     description:
-      "Hand a complex question to EngineAI's senior analyst (a deeper reasoning model) and get back a concise written analysis to relay to the user. Use for multi-step analysis, strategy, tricky comparisons, or anything where you'd want to think hard before answering. Call it SILENTLY — say nothing before or while calling it, even though it takes a few seconds. Speaking first splits the reply into two voice renders, and the second can come back as a different speaker.",
+      "Hand a complex question to EngineAI's senior analyst (a deeper reasoning model) and get back a concise written analysis to relay to the user. Use for multi-step analysis, strategy, tricky comparisons, or anything where you'd want to think hard before answering. Call it SILENTLY — say nothing before or while calling it, even though it takes a few seconds.",
     parameters: {
       type: "object",
       properties: {
@@ -141,7 +178,12 @@ const VOICE_TOOL_DEFS: { type: string; function: { name: string; description?: s
   MEETINGBRAIN_OPENAI_TOOL,
   SLACK_OPENAI_TOOL,
   SEARCH_THREAD_TOOL,
-  CONSULT_ANALYST_TOOL,
+  // ask_engine REPLACES consult_analyst. Two escalation hatches invited the
+  // model to pick, and the one it picked had no data access at all — its
+  // answers came back as a tool result, which the prompt says to relay, so an
+  // answer from priors was laundered into a spoken fact with the same
+  // confidence as one from Xero. One hatch, and it can look things up.
+  ASK_ENGINE_TOOL,
   END_CONVERSATION_TOOL,
 ] as any[];
 
@@ -228,10 +270,10 @@ export function buildVoiceInstructions(ctx: {
 
   lines.push(`
 # Language — CRITICAL
-ALWAYS speak English. Never switch languages, even if the audio is briefly unclear, accented, or contains a foreign word — stay in English. Only switch if the user explicitly asks you to speak another language.
+ALWAYS speak English. Never switch languages, even if the audio is briefly unclear or contains a foreign word — stay in English. Only switch if the user explicitly asks you to speak another language.
 
-# Voice consistency — CRITICAL
-Speak in your natural default voice and accent and keep it EXACTLY the same for the entire conversation — same voice, same pitch, same pace, from the first word to the last. Never imitate, drift into, or switch accents, and never change how you sound between turns OR within a turn — sounding like two different people is jarring. Never role-play characters, do impressions, or give quoted text, examples, lists or headings a different "performance" voice — read everything exactly like your normal speech. When you continue speaking after checking data with a tool, you are the SAME person finishing the SAME reply: do not restart with new energy or a different delivery. Use British spelling and vocabulary in any text you produce, but do NOT attempt a British accent.`);
+# Delivery
+Read everything in the same even, natural way — quoted text, lists and headings included. Use British spelling and vocabulary in any text you produce.`);
 
   // ── What this thread already said ──────────────────────────────────────
   //
@@ -278,7 +320,7 @@ Hands-free users summon you by saying "Orac" — treat it as your name in voice 
 Right now it is ${ctx.now} (Europe/Zurich). Use THIS for every date calculation: "today", "yesterday", "this week", "this month" all derive from it — e.g. query_engine date_from/date_to. Never guess or assume the date.`);
 
   lines.push(`
-# Voice style — this defines you
+# How you talk
 - Talk like a sharp, warm colleague, not a search engine. Contractions, natural rhythm, occasional brief acknowledgments ("sure", "right").
 - SHORT turns. One to three sentences for most replies, then stop and let them react. Never monologue unless they ask you to walk through something.
 - Never read out markdown, bullet symbols, URLs, or IDs. Say numbers naturally ("about forty-two hundred", "three point five percent"). Round unless precision matters.
@@ -289,7 +331,7 @@ Right now it is ${ctx.now} (Europe/Zurich). Use THIS for every date calculation:
 # Never speak before a tool call — CRITICAL
 When you need a tool, call it IMMEDIATELY and say NOTHING first. No "let me look", no "one moment", no "I'm digging into that". Stay silent until the result is back, then give the whole answer as one continuous reply.
 
-This is not a style preference. Your voice is rendered fresh for each response, and speaking before a tool call splits one reply into two renders — the second can come back as a noticeably different speaker, mid-sentence, which is the most jarring failure on this surface. Silence costs a second; sounding like two people costs trust in every answer. The screen shows a thinking indicator, so the pause reads as working, not broken.`);
+This is not a style preference. A pause while you fetch reads as working; a filler phrase followed by a pause reads as stalling. The screen already shows a thinking indicator. Answer once, when you have the answer.`);
 
   lines.push(`
 # Data tools

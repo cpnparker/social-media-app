@@ -90,11 +90,10 @@ import VoiceDock from "@/components/ai-writer/VoiceDock";
 import WakeMode, { type WakeModeHandle } from "@/components/ai-writer/WakeMode";
 import MemoryManager from "@/components/ai-writer/MemoryManager";
 import ScheduledPromptsDialog from "@/components/ai-writer/ScheduledPromptsDialog";
-import { Clock, Radio, Download } from "lucide-react";
+import { Clock, Download } from "lucide-react";
 import AdminDialog from "@/components/ai-writer/AdminDialog";
 import PersonaliseDialog from "@/components/ai-writer/PersonaliseDialog";
 import ClientContextDialog from "@/components/ai-writer/ClientContextDialog";
-import LiveLauncher, { openLiveWindow, useLiveSession } from "@/components/meeting-mode/LiveLauncher";
 import { useInstallPrompt } from "@/lib/use-install-prompt";
 import NotebookPanel from "@/components/notebook/NotebookPanel";
 import { signOut } from "next-auth/react";
@@ -178,7 +177,6 @@ function EngineAIContent() {
   // engine lives inside it — so the header drives it through this handle.
   const wakeRef = useRef<WakeModeHandle>(null);
   const [wakeUi, setWakeUi] = useState({ armed: false, listening: false, loading: false });
-  const liveInMeeting = useLiveSession();
   const [seedText, setSeedText] = useState<{ text: string; nonce: number } | null>(null);
   const { canInstall, promptInstall } = useInstallPrompt();
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
@@ -980,65 +978,26 @@ function EngineAIContent() {
  */
 const ORAC_ENABLED = false;
 
-  const liveEnabled = !!(workspaceId && wsCtx?.selectedWorkspace?.accessEngineAiLive);
 
   /**
-   * Mobile-only header controls. Live and Orac used to float at the viewport's
-   * bottom-right, which on a phone is exactly where the composer's send button
-   * sits — the two overlapped. Header buttons keep both one tap away (better
-   * than burying them in a menu) and leave the composer clear. Rendered in the
-   * home header and, via headerExtra, in the thread header.
+   * Mobile-only header controls — now empty, and that is the point.
+   *
+   * This held two buttons and neither survives. The meeting copilot is launched
+   * from MeetingBrain, whose MeetingDetailModal opens
+   * ai.thecontentengine.com/meeting?mb=<id> directly: that is where a meeting
+   * actually starts, and it is the only launcher carrying the meeting id. A
+   * second door here bought nothing and cost the word "Live" — Radio meant
+   * "meeting", AudioLines in the composer meant "voice", and AudioLines in this
+   * header meant the wake word. Three controls, two identical icons, and the
+   * only one labelled Live was the one that was not voice.
+   *
+   * The wake-word button went with ORAC_ENABLED. Voice is reachable from the
+   * composer on every breakpoint, so nothing is lost on a phone.
+   *
+   * Kept as a named slot rather than deleted: both headers render it, and this
+   * is where the next header control will go.
    */
-  const mobileTools = (
-    <div className="lg:hidden ml-auto flex items-center gap-1 shrink-0">
-      {liveEnabled && (
-        <button
-          onClick={() =>
-            openLiveWindow({
-              clientId:
-                (customerId ? String(customerId) : "") ||
-                (selectedId ? String(conversations.find((c) => c.id === selectedId)?.customerId || "") : ""),
-              threadId: selectedId || "",
-            })
-          }
-          aria-label={liveInMeeting ? "EngineAI Live — session in progress" : "Open EngineAI Live"}
-          title={liveInMeeting ? "EngineAI Live — session in progress" : "EngineAI Live"}
-          className={cn(
-            "h-9 w-9 rounded-lg flex items-center justify-center transition-colors",
-            liveInMeeting
-              ? "text-amber-600 dark:text-amber-400 bg-amber-500/10"
-              : "text-muted-foreground hover:text-foreground hover:bg-muted"
-          )}
-        >
-          <Radio className={cn("h-[18px] w-[18px]", liveInMeeting && "animate-pulse")} />
-        </button>
-      )}
-      {ORAC_ENABLED && (
-      <button
-        onClick={() => wakeRef.current?.toggle()}
-        aria-label={wakeUi.armed ? "Orac is listening — turn off" : "Turn on Orac hands-free voice"}
-        aria-pressed={wakeUi.armed}
-        title={wakeUi.armed ? 'Orac is listening — say "Orac". Tap to turn off.' : 'Orac — hands-free voice'}
-        className={cn(
-          "relative h-9 w-9 rounded-lg flex items-center justify-center transition-colors",
-          wakeUi.armed ? "text-foreground bg-muted" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-        )}
-      >
-        {wakeUi.loading ? (
-          <Loader2 className="h-[18px] w-[18px] animate-spin" />
-        ) : (
-          <AudioLines className="h-[18px] w-[18px]" />
-        )}
-        {wakeUi.listening && (
-          <span className="absolute top-1.5 right-1.5 flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60 animate-ping" />
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-          </span>
-        )}
-      </button>
-      )}
-    </div>
-  );
+  const mobileTools = null;
 
   return (
     <>
@@ -1621,12 +1580,21 @@ const ORAC_ENABLED = false;
               seedText={seedText}
               inputEndSlot={
                 <button
-                  onClick={() => { setVoiceWakeSession(false); setVoiceOpen(true); }}
-                  disabled={voiceOpen}
-                  title="Voice conversation"
-                  className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40"
+                  /* A TOGGLE, not a one-way door. disabled={voiceOpen} left the
+                     only exit as Stop inside the dock, so pressing the control
+                     you had just pressed did nothing and it read as broken. */
+                  onClick={() => { setVoiceWakeSession(false); setVoiceOpen((v) => !v); }}
+                  title={voiceOpen ? "End the live voice session" : "Live — talk to EngineAI"}
+                  aria-pressed={voiceOpen}
+                  className={cn(
+                    "h-8 rounded-lg px-2.5 inline-flex items-center gap-1.5 text-[11px] font-medium transition-colors",
+                    voiceOpen
+                      ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                      : "text-muted-foreground/70 hover:text-foreground hover:bg-muted"
+                  )}
                 >
-                  <AudioLines className="h-4 w-4" />
+                  <AudioLines className={cn("h-4 w-4", voiceOpen && "animate-pulse")} />
+                  <span>Live</span>
                 </button>
               }
               headerExtra={
@@ -2524,21 +2492,12 @@ const ORAC_ENABLED = false;
           }}
         />
       )}
-      {/* EngineAI Live — second-screen meeting copilot (per-user flag).
-          Resolve the client from the global selector, else the open
-          conversation's client, so "open Live from a client" always carries
-          that client into the meeting window. */}
-      {workspaceId && wsCtx?.selectedWorkspace?.accessEngineAiLive && (
-        <LiveLauncher
-          clientId={
-            (customerId ? String(customerId) : "") ||
-            (selectedId
-              ? String(conversations.find((c) => c.id === selectedId)?.customerId || "")
-              : "")
-          }
-          threadId={selectedId || ""}
-        />
-      )}
+      {/* The meeting copilot has no entry point here any more.
+          It is launched from MeetingBrain, whose MeetingDetailModal opens
+          ai.thecontentengine.com/meeting with the meeting id — the place a
+          meeting actually starts, and the only launcher that carries that id.
+          The feature is unchanged; only this second door is gone, so that
+          "Live" in this app means voice and nothing else. */}
     </>
   );
 }

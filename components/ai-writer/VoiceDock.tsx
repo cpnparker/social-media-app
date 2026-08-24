@@ -173,6 +173,42 @@ export default function VoiceDock({
   /** Latest teardown, so the pagehide listener — registered once — always
    *  calls the current one rather than the closure it was created with. */
   const teardownRef = useRef<(() => void) | null>(null);
+  /** Last response|item seen on an audio frame, so a new render logs once
+   *  rather than fifty times a second. */
+  const lastAudioKeyRef = useRef("");
+  /**
+   * The render trace, kept so it can be posted at session end.
+   *
+   * Everything here also goes to the console, but a console needs somebody to
+   * open it, filter it, reproduce the fault and copy the result back — five
+   * steps to collect nine numbers, each one a chance to lose them. Bounded at
+   * 300: a long session must not grow this without limit, and the seam is
+   * always near the end.
+   */
+  const diagRef = useRef<string[]>([]);
+  const diagSessionRef = useRef("");
+  const vlog = useCallback((...parts: unknown[]) => {
+    const line = parts.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join(" ");
+    console.log("[V]", line);
+    const buf = diagRef.current;
+    buf.push(`${new Date().toISOString().slice(11, 23)} ${line}`);
+    if (buf.length > 300) buf.splice(0, buf.length - 300);
+  }, []);
+  /** Ship the trace. keepalive, because the most interesting session is the one
+   *  that ended with the tab being closed. */
+  const flushDiag = useCallback(() => {
+    const lines = diagRef.current.slice();
+    if (!lines.length) return;
+    diagRef.current = [];
+    try {
+      fetch("/api/ai/voice/diag", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: diagSessionRef.current, lines }),
+        keepalive: true,
+      }).catch(() => { /* a diagnostic must never break the session */ });
+    } catch { /* noop */ }
+  }, []);
   const rafRef = useRef<number>(0);
   /** Drives the wake-session closers independently of rAF — see shouldClose. */
   const idleTimerRef = useRef<number | null>(null);
@@ -246,7 +282,11 @@ export default function VoiceDock({
   };
 
   /** Hard barge-in / pause: kill all queued assistant audio immediately. */
-  const flushPlayback = useCallback(() => {
+  const flushPlayback = useCallback((why = "?") => {
+    vlog("FLUSH", why,
+      "live=", activeSourcesRef.current.size,
+      "dropped_s=", audioCtxRef.current ? (playCursorRef.current - audioCtxRef.current.currentTime).toFixed(3) : "-"
+    );
     activeSourcesRef.current.forEach((src) => {
       try { src.stop(); } catch { /* already stopped */ }
     });
@@ -359,7 +399,7 @@ export default function VoiceDock({
    * pattern. Voice simply was not using it.
    */
   useEffect(() => {
-    const onHide = () => { teardownRef.current?.(); };
+    const onHide = () => { teardownRef.current?.(); flushDiag(); };
     window.addEventListener("pagehide", onHide);
     return () => window.removeEventListener("pagehide", onHide);
   }, []);
@@ -375,7 +415,7 @@ export default function VoiceDock({
     persistTranscript(true);
     try { wsRef.current?.close(); } catch { /* noop */ }
     wsRef.current = null;
-    flushPlayback();
+    flushPlayback("teardown");
     try { processorRef.current?.disconnect(); } catch { /* noop */ }
     try { micSourceRef.current?.disconnect(); } catch { /* noop */ }
     micStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -388,7 +428,10 @@ export default function VoiceDock({
     mediaDestRef.current = null;
     audioCtxRef.current?.close().catch(() => { /* noop */ });
     audioCtxRef.current = null;
-  }, [flushPlayback, persistTranscript]);
+    // Last, and after everything above has had its say — the interesting part
+    // of a trace is usually what happened on the way down.
+    flushDiag();
+  }, [flushPlayback, persistTranscript, flushDiag]);
 
   useEffect(() => { teardownRef.current = teardown; }, [teardown]);
 
@@ -440,6 +483,22 @@ export default function VoiceDock({
         const ctx = new AudioContext({ sampleRate: cfg.sampleRate || 24000 });
         audioCtxRef.current = ctx;
         playCursorRef.current = ctx.currentTime;
+
+        // WHICH VOICE IS ACTUALLY LIVE, said out loud in the console.
+        //
+        // XAI_VOICE_NAME is stored in Vercel as a Sensitive variable, which
+        // cannot be read back — so "which voice is running?" is otherwise
+        // unanswerable, and the session route ALSO falls back to a different
+        // voice if xAI rejects the configured one. The client is told the voice
+        // that was actually minted, so this is the honest answer rather than
+        // the configured one.
+        //
+        // rate matters too: the AudioContext can refuse the rate it is asked
+        // for, and everything downstream assumes the one it got.
+        diagSessionRef.current = `${Date.now().toString(36)}`;
+        vlog("SESSION voice=", cfg.voice, "model=", cfg.model,
+          "rate_asked=", cfg.sampleRate, "rate_got=", ctx.sampleRate
+        );
 
         // Echo-cancellable playback path (see refs above). If autoplay is
         // blocked we fall back to direct WebAudio output — audible, but AEC
@@ -693,6 +752,24 @@ export default function VoiceDock({
               followUpDeadlineRef.current = null; // Orac is speaking
               const audioCtx = audioCtxRef.current;
               if (!audioCtx || !msg.delta) break;
+              // THE LINE THAT DECIDES IT. Four fixes have been argued from
+              // theories about where the seam falls, and the client threw away
+              // the only field that answers it: response_id. Logged on the
+              // FIRST frame of each new response/item, never per frame —
+              // deltas arrive around fifty a second.
+              //
+              // lead_s is how much previous audio is still queued ahead of this
+              // new render. Above ~0.05 it is being glued onto the unplayed
+              // tail of the last one with no silence between, which is exactly
+              // the reported symptom. At or below zero there was audible
+              // silence first, and the seam is somewhere else entirely.
+              const audioKey = `${msg.response_id ?? "?"}|${msg.item_id ?? "?"}`;
+              if (audioKey !== lastAudioKeyRef.current) {
+                vlog("AUDIO-START", audioKey,
+                  "lead_s=", (playCursorRef.current - audioCtx.currentTime).toFixed(3)
+                );
+                lastAudioKeyRef.current = audioKey;
+              }
               const i16 = base64ToInt16(msg.delta);
               const f32 = new Float32Array(i16.length);
               for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 0x8000;
@@ -757,7 +834,7 @@ export default function VoiceDock({
               // New utterance starting — give id-less transcription events a
               // fresh fallback key so utterances never merge into each other.
               utteranceCounterRef.current += 1;
-              flushPlayback();
+              flushPlayback("bargein");
               setUserSaid(""); setBotSaid("");
               setStatusBoth("listening");
               break;
@@ -859,7 +936,7 @@ export default function VoiceDock({
               //
               // Not applied to end_conversation, which is handled above and
               // whose whole purpose is to speak a sign-off.
-              flushPlayback();
+              flushPlayback("tool");
               pendingToolsRef.current += 1;
               setTools((t) => t.concat([{ id: String(call_id), name, args: toolArgsPhrase(msg.arguments), at: Date.now() }]));
               // Both captured BEFORE the await: which turn asked for this, and
@@ -932,18 +1009,34 @@ export default function VoiceDock({
             }
 
             case "response.created": {
+              vlog("RESP-CREATED", msg.response?.id ?? msg.response_id);
               responseActiveRef.current = true;
               break;
             }
 
             case "response.done": {
+              vlog("RESP-DONE", msg.response?.id ?? msg.response_id,
+                "pendingTools=", pendingToolsRef.current,
+                "queuedCreate=", pendingResponseCreateRef.current
+              );
               responseActiveRef.current = false;
               // A continuation was queued while this response streamed (tool
               // result mid-speech) — create it now that the previous render
               // finished, so the reply stays ONE voice, back to back.
-              if (pendingResponseCreateRef.current && !closingRef.current) {
+              // pendingToolsRef, not just the queue flag.
+              //
+              // A turn calling TWO tools could fire the continuation queued by
+              // the first while the second was still in flight: the model then
+              // spoke an answer built without data it had asked for, and the
+              // real answer arrived afterwards as yet another response glued to
+              // the same playback cursor. A wrong answer AND an extra render.
+              // Holding the flag until the turn's tools are done costs nothing —
+              // the tool handler calls requestResponse() when the last one
+              // resolves, so the continuation still happens, just in order.
+              if (pendingResponseCreateRef.current && !closingRef.current && pendingToolsRef.current === 0) {
                 pendingResponseCreateRef.current = false;
                 responseActiveRef.current = true;
+                vlog("CREATE-SENT queued-at-done");
                 wsRef.current?.send(JSON.stringify({ type: "response.create" }));
                 break; // stay in "thinking" — more speech incoming
               }
@@ -1024,7 +1117,7 @@ export default function VoiceDock({
     } else {
       prePauseStatusRef.current = statusRef.current;
       pausedRef.current = true;
-      flushPlayback();
+      flushPlayback("pause");
       setUserSaid(""); setBotSaid("");
       setStatusBoth("paused");
       // Persist whatever we have so the thread is current while paused

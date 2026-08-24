@@ -313,6 +313,142 @@ export async function POST(req: NextRequest) {
         output = "Conversation ending — say one short, warm sign-off now.";
         break;
       }
+      case "ask_engine": {
+        // The escalation hatch, WITH TOOLS.
+        //
+        // consult_analyst had none, so it answered from priors — and its reply
+        // came back as a tool result, which the voice prompt says to relay, so
+        // an invented figure was laundered into a spoken answer carrying the
+        // same confidence as one from Xero. This one can look things up, and
+        // its whole job is the class of question voice keeps getting wrong:
+        // ones needing two sources cross-referenced, or a judgement about what
+        // is DONE rather than merely listed.
+        const question = String(args.question || "").trim();
+        if (!question) { output = "ask_engine needs a `question`."; break; }
+
+        const { data: clientRows } = await supabase.from("app_clients").select("id_client");
+        const clientIds = (clientRows || []).map((c: any) => c.id_client).filter(Boolean) as number[];
+
+        /** Run one tool for the escalated model, reusing the same executors and
+         *  the same formatters the voice path uses — so a result reaching Claude
+         *  carries the identical caveats, including the ones about absence. */
+        const runTool = async (n: string, a: any): Promise<string> => {
+          try {
+            if (n === "query_engine") {
+              return formatToolResult(await queryEngine(
+                a.table, a.columns, a.filters, a.order, a.limit, clientIds, a.report,
+                a.date_from, a.date_to, a.client_id, a.group_by, a.assignee_name, a,
+                conversation.id_client || undefined
+              ));
+            }
+            if (n === "query_meetingbrain") {
+              return formatMeetingBrainResult(a.report, await queryMeetingBrain(
+                a.report, userEmail,
+                { query: a.query, status: a.status, days: a.days, workspaceId, meetingId: a.meeting_id, visibility }
+              ));
+            }
+            if (n === "search_thread") {
+              const term = String(a.query || "").replace(/[%_]/g, "").trim();
+              if (!term) return "search_thread needs a query.";
+              const { data: hits } = await intelligenceDb
+                .from("ai_messages")
+                .select("role_message, document_message, date_created")
+                .eq("id_conversation", conversationId)
+                .ilike("document_message", `%${term}%`)
+                .order("date_created", { ascending: true })
+                .limit(6);
+              const hr = (hits || []) as any[];
+              if (!hr.length) return `Nothing in this conversation contains "${term}". That is a fact about the WORD, not about the world — try another distinctive term before concluding anything is absent.`;
+              let big = 0;
+              for (let i = 1; i < hr.length; i++) {
+                if (String(hr[i].document_message || "").length > String(hr[big].document_message || "").length) big = i;
+              }
+              return hr.map((r, i) => {
+                const cap = i === big ? 9000 : 1500;
+                return `${r.role_message === "user" ? "They wrote" : "You wrote"} (${String(r.date_created).slice(0, 10)}):\n${String(r.document_message || "").slice(0, cap)}`;
+              }).join("\n\n---\n\n");
+            }
+            if (n === "search_memory") {
+              const m = await searchMemory(a.query, a.scope || "both", workspaceId, userId, visibility);
+              return `${m.summary}\n\nMemories:\n${m.memories.map((x: any) => `- [${x.category}] ${x.content} (${x.date})`).join("\n") || "None found"}`;
+            }
+            if (n === "lookup_client_context") {
+              return await lookupClientContext(a.client_name, workspaceId);
+            }
+            return `Unknown tool ${n}.`;
+          } catch (e: any) {
+            // A failed tool must read as a failure, never as an empty result —
+            // an empty result is what gets reported to the user as "there
+            // isn't any", which is the error this whole tool exists to stop.
+            return `${n} FAILED: ${e?.message || e}. This is a failure to look, not a finding. Do not report the thing as absent.`;
+          }
+        };
+
+        const ESCALATION_TOOLS = [
+          { name: "query_engine", description: "Workspace data: contracts, content pipeline, tasks, clients, social performance. Pass a `report` such as contracts_summary, pipeline_summary or assigned_tasks.", input_schema: { type: "object" as const, properties: { report: { type: "string" }, table: { type: "string" }, client_id: { type: "number" }, assignee_name: { type: "string" }, date_from: { type: "string" }, date_to: { type: "string" }, limit: { type: "number" } } } },
+          { name: "query_meetingbrain", description: "The user's meetings and tasks. Reports: my_tasks, meetings, upcoming_meetings, search_meetings, meeting_details, client_meetings.", input_schema: { type: "object" as const, properties: { report: { type: "string" }, query: { type: "string" }, meeting_id: { type: "string" }, status: { type: "string" }, days: { type: "number" } }, required: ["report"] } },
+          { name: "search_thread", description: "Search THIS conversation's earlier messages, however far back. One distinctive word works best.", input_schema: { type: "object" as const, properties: { query: { type: "string" } }, required: ["query"] } },
+          { name: "search_memory", description: "Things the user told the assistant in past conversations.", input_schema: { type: "object" as const, properties: { query: { type: "string" } }, required: ["query"] } },
+          { name: "lookup_client_context", description: "A client's profile, brand background, contracts and recent meetings.", input_schema: { type: "object" as const, properties: { client_name: { type: "string" } }, required: ["client_name"] } },
+        ];
+
+        const anthropicEsc = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+        const convo: any[] = [{ role: "user", content: question }];
+        let answer = "";
+        // Bounded. A voice turn is waiting on this, and an unbounded loop would
+        // hold the line open indefinitely; four rounds is enough to fetch two
+        // or three sources and reconcile them.
+        for (let round = 0; round < 4; round++) {
+          const res: any = await anthropicEsc.messages.create({
+            model: "claude-sonnet-5",
+            max_tokens: 1600,
+            ...anthropicCallParams("claude-sonnet-5", 0.2),
+            system:
+              "You are EngineAI answering a question escalated from a live VOICE conversation. You have tools — USE THEM before answering, and never answer a factual question about this workspace from memory.\n\n" +
+              "THE ERROR YOU EXIST TO PREVENT: reporting something as done, absent or nonexistent on the strength of ONE source that did not mention it. A task missing from an open-task list is not evidence it was completed — it may never have been tracked. A search returning nothing means that SEARCH found nothing. When you cannot establish something, say which sources you checked and what you could not confirm.\n\n" +
+              "If the question is about a list, a handover or anything the user pasted earlier, call search_thread FIRST — the conversation is often the only place it exists.\n\n" +
+              "Write for a person reading it on screen: plain prose or short lines, no markdown headers, no bullet symbols. Lead with the direct answer. Then, on a final line beginning 'SPOKEN: ', give one or two sentences the voice assistant can say aloud — the headline only, no lists.",
+            tools: ESCALATION_TOOLS as any,
+            messages: convo,
+          });
+          const toolUses = (res.content || []).filter((c: any) => c.type === "tool_use");
+          const text = (res.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
+          if (!toolUses.length) { answer = text; break; }
+          convo.push({ role: "assistant", content: res.content });
+          const results = [];
+          for (const tu of toolUses) {
+            results.push({ type: "tool_result", tool_use_id: tu.id, content: (await runTool(tu.name, tu.input || {})).slice(0, 20000) });
+          }
+          convo.push({ role: "user", content: results });
+          answer = text || answer;
+        }
+
+        if (!answer.trim()) {
+          output = "EngineAI could not complete that in time. Tell the user you could not get it, and offer to try again — do not answer from what you already have.";
+          break;
+        }
+        // The written answer goes into the THREAD, where a cross-referenced
+        // list is usable, and only the SPOKEN line is read aloud. Speak the
+        // conclusion, render the evidence.
+        const spokenAt = answer.lastIndexOf("SPOKEN:");
+        const written = (spokenAt >= 0 ? answer.slice(0, spokenAt) : answer).trim();
+        const spoken = spokenAt >= 0 ? answer.slice(spokenAt + 7).trim() : "";
+        try {
+          await intelligenceDb.from("ai_messages").insert({
+            id_conversation: conversationId,
+            role_message: "assistant",
+            document_message: written,
+            name_model: "claude-sonnet-5",
+          });
+        } catch (e: any) {
+          console.error("[Voice] ask_engine could not write to the thread:", e?.message || e);
+        }
+        output =
+          `EngineAI has answered and the full detail is now written in the thread. Say ONLY the headline aloud, in one or two sentences, then tell them the detail is in the thread. Do NOT read the whole answer out.\n\n` +
+          `HEADLINE TO SAY: ${spoken || written.slice(0, 300)}\n\n` +
+          `(The full written answer, already in the thread — do not read this aloud:)\n${written.slice(0, 4000)}`;
+        break;
+      }
       case "consult_analyst": {
         const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
         const msg = await anthropic.messages.create({
