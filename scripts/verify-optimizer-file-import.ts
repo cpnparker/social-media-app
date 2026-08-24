@@ -210,8 +210,14 @@ async function main() {
     const cases: { name: string; expectOk: boolean; expect?: RegExp }[] = [
       { name: "notes.txt", expectOk: true },
       { name: "page.html", expectOk: true },
-      { name: "old.doc", expectOk: false, expect: /\.docx/i },
-      { name: "report.pdf", expectOk: false, expect: /structure|docx/i },
+      // These two assert the SPECIFIC reason, not merely that a refusal
+      // happened. Deleting the pdf branch entirely still refuses the file —
+      // it falls through to the generic "upload a .docx, .html, .md or .txt",
+      // which also contains the word docx — so a looser assertion passed a
+      // mutation that had removed the explanation the writer needs. The
+      // refusal has to say WHY, or it is a dead end wearing a reason's clothes.
+      { name: "old.doc", expectOk: false, expect: /binary/i },
+      { name: "report.pdf", expectOk: false, expect: /headings/i },
       { name: "sheet.xlsx", expectOk: false },
       { name: "noextension", expectOk: false },
     ];
