@@ -23,16 +23,18 @@
 --    stale offset does not fail loudly — it silently highlights, and then
 --    silently REWRITES, the wrong sentence.
 
--- ── 1. users_access.flag_access_optimizer ──────────────────────────────────
--- Follows the Gmail precedent (20260724_gmail_access.sql): NOT NULL DEFAULT 0
--- and read as `= 1` explicitly. Elsewhere an absent users_access row has been
--- treated as allowed; for a tool that generates billable AI content on a
--- client's behalf that convention would mean everyone, so this fails closed.
+-- ── 1. users_access.flag_access_optimizer (SUPERSEDED 2026-08-24) ──────────
+-- Added on the Gmail precedent so the optimiser could ship dark to a handful
+-- of accounts while it was unproven. It is no longer read: the optimiser is
+-- part of EngineAI and gates on flag_access_enginegpt, because a second flag
+-- that must be granted alongside the first is a synchronisation job nobody is
+-- assigned. The column and this ALTER stay so the schema still matches every
+-- deployed database and /api/admin/restrict-access can keep zeroing it.
 ALTER TABLE intelligence.users_access
   ADD COLUMN IF NOT EXISTS flag_access_optimizer integer NOT NULL DEFAULT 0;
 
 COMMENT ON COLUMN intelligence.users_access.flag_access_optimizer IS
-  'Content Optimizer access. Read as = 1 explicitly and in its own select — an absent row and a query error both deny.';
+  'SUPERSEDED 2026-08-24 and no longer read by the application. The optimiser is part of EngineAI and gates on flag_access_enginegpt (lib/permissions.ts hasOptimizerAccess). Retained because /api/admin/restrict-access still zeroes it, so the data stays truthful if the gate is ever split per-feature again. Granting it alone gives nobody access.';
 
 -- ── 1b. users_access.data_pinned_articles ─────────────────────────────────
 -- Article pins, alongside the conversation and client pins already here.

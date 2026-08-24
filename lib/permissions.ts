@@ -144,38 +144,36 @@ export async function hasEngineAiAccess(
 /**
  * May this user use the Content Optimizer in this workspace?
  *
- * Deliberately NOT folded into the hasEngineAiAccess select, for two reasons.
+ * ONE GATE: the optimiser is part of EngineAI, so this IS hasEngineAiAccess.
  *
- * The mechanical one: PostgREST fails the WHOLE select when any named column
- * is unknown, so a select combining an established flag with a not-yet-migrated
- * one returns nothing and silently revokes the established feature too. Every
- * newer flag in this codebase is read in its own query for exactly that reason
- * (see the split reads in the messages route).
+ * It used to read its own optimizer flag, which was right while the feature
+ * shipped dark to a handful of accounts and wrong the moment it became
+ * standard. A second flag that must be granted alongside the first is a
+ * synchronisation job nobody is assigned: whoever onboards the next hire grants
+ * EngineAI, and three months later one person mysteriously lacks the optimiser.
+ * Chris made the call on 2026-08-24 — default on for every EngineAI user.
  *
- * The semantic one: this tool generates billable AI content in a client's name
- * and writes it into their pipeline. hasEngineAiAccess reads a truthy flag;
- * this reads `=== 1` explicitly, matching the Gmail precedent — an absent row,
- * a zero, a null and a query error all deny.
+ * DELEGATING rather than copying the query is the point. A duplicated select on
+ * the enginegpt flag would be two code paths obliged to agree forever; a call
+ * cannot drift. It also inherits the front-door semantics documented above —
+ * absent row denied, zero denied, query error denied — instead of restating
+ * them and risking a copy that says something subtly different.
+ *
+ * The old strict `=== 1` versus this truthy read makes no difference on a
+ * `smallint NOT NULL DEFAULT 0` column, and matching the browser's source of
+ * truth exactly (/api/me/workspaces) matters more than the strictness did.
+ *
+ * The old per-feature column is now UNREAD. It stays in the table and
+ * /api/admin/restrict-access keeps zeroing it, so the data stays truthful if
+ * the gate is ever split again — but nothing gates on it, and revocation now
+ * runs through the enginegpt flag, which that route already clears in its main
+ * update. Verified before shipping: the lockdown still locks the optimiser out.
  */
 export async function hasOptimizerAccess(
   userId: number,
   workspaceId: string
 ): Promise<boolean> {
-  try {
-    const { data, error } = await intelligenceDb
-      .from("users_access")
-      .select("flag_access_optimizer")
-      .eq("id_workspace", workspaceId)
-      .eq("user_target", userId)
-      .maybeSingle();
-    if (error) {
-      console.error("[access] optimizer check failed:", error.message);
-      return false;
-    }
-    return (data as any)?.flag_access_optimizer === 1;
-  } catch {
-    return false;
-  }
+  return hasEngineAiAccess(userId, workspaceId);
 }
 
 // ── Apply client scoping to a Supabase query builder ──

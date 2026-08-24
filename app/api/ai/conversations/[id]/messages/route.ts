@@ -1848,6 +1848,19 @@ export async function POST(
               type_source: conversation.id_content ? "engine" : "enginegpt",
               units_input: inputTokens,
               units_output: outputTokens,
+              // PERSIST WHAT WE PRICE. These two were measured, passed to
+              // calculateCostTenths above, printed to the console and then
+              // dropped — so units_cost_tenths was right while the columns
+              // beside it could not reconstruct it. On the enginegpt/sonnet-5
+              // line that was $45.53 of $110.93 invisible: 41% of the largest
+              // item on the bill.
+              //
+              // It is not bookkeeping. A cache write costs 1.25x input and a
+              // read 0.1x, so a prefix rewritten every turn and never read back
+              // is worse than no caching at all — and without these columns that
+              // failure and a healthy cache produce an identical row.
+              units_cache_read: cacheReadTokens || 0,
+              units_cache_write: cacheWriteTokens || 0,
               units_cost_tenths: costTenths,
               id_conversation: conversationId,
             });

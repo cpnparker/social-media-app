@@ -768,15 +768,14 @@ function OptimizerStudio() {
     return shell(
       <div className="flex-1 min-h-0 flex items-center justify-center p-8">
         <div className="max-w-md flex flex-col gap-3 text-center">
-          <h1 className="text-lg font-semibold">The Content Optimiser is not switched on yet</h1>
+          <h1 className="text-lg font-semibold">You don&apos;t have EngineAI access in this workspace</h1>
           <p className="text-sm text-muted-foreground leading-relaxed">
-            The code is deployed, but the feature is still dark: its database tables have not been
-            created and no account has been granted access. Both are deliberate, one-time steps —
-            see <span className="font-mono text-[12px]">supabase/migrations/20260821_content_optimizer.sql</span>.
+            The Content Optimiser is part of EngineAI, and it uses the same access as the rest of it —
+            there is no separate switch to turn on. If you can use EngineAI chat but not this, the
+            workspace selector at the top left is probably on a workspace you are not a member of.
           </p>
           <p className="text-xs text-muted-foreground">
-            Run that migration in the Supabase SQL Editor, then set{" "}
-            <span className="font-mono">flag_access_optimizer = 1</span> for your user.
+            Otherwise ask a workspace admin to grant you EngineAI access.
           </p>
         </div>
       </div>

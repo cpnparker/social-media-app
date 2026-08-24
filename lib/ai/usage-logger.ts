@@ -34,6 +34,10 @@ export function logAiUsage(opts: {
       type_source: opts.source,
       units_input: opts.inputTokens,
       units_output: opts.outputTokens,
+      // Same reason as the chat insert: these already reach calculateCostTenths,
+      // so not storing them made the cost unreconstructable from its own row.
+      units_cache_read: opts.cacheReadTokens || 0,
+      units_cache_write: opts.cacheWriteTokens || 0,
       units_cost_tenths: costTenths,
       id_conversation: null,
     })

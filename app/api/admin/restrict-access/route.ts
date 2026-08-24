@@ -68,6 +68,12 @@ export async function POST() {
     // small gap (one flag not revoked) into a total failure to revoke anything.
     // Errors here are logged, not thrown, for the same reason: a partial
     // lockdown must still complete.
+    //
+    // NOTE (2026-08-24): the optimiser no longer GATES on this column — it now
+    // follows flag_access_enginegpt, which the update above already zeroes, so
+    // the lockdown revokes it either way. This write is kept so the stored data
+    // stays truthful if the gate is ever split per-feature again; if it fails
+    // on an unmigrated deploy, nothing is left unrevoked.
     const { error: newFlagsError } = await intelligenceDb
       .from("users_access")
       .update({ flag_access_optimizer: 0 })
