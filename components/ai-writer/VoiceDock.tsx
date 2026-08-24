@@ -449,6 +449,22 @@ export default function VoiceDock({
         audioCtxRef.current = ctx;
         playCursorRef.current = ctx.currentTime;
 
+        // WHICH VOICE IS ACTUALLY LIVE, said out loud in the console.
+        //
+        // XAI_VOICE_NAME is stored in Vercel as a Sensitive variable, which
+        // cannot be read back — so "which voice is running?" is otherwise
+        // unanswerable, and the session route ALSO falls back to a different
+        // voice if xAI rejects the configured one. The client is told the voice
+        // that was actually minted, so this is the honest answer rather than
+        // the configured one.
+        //
+        // rate matters too: the AudioContext can refuse the rate it is asked
+        // for, and everything downstream assumes the one it got.
+        console.log(
+          "[V] SESSION voice=", cfg.voice, "model=", cfg.model,
+          "rate_asked=", cfg.sampleRate, "rate_got=", ctx.sampleRate
+        );
+
         // Echo-cancellable playback path (see refs above). If autoplay is
         // blocked we fall back to direct WebAudio output — audible, but AEC
         // won't cancel it (headphones recommended in that case).
