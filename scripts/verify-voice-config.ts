@@ -166,13 +166,47 @@ XAI_VOICES.indexOf(VOICE_NAME_FALLBACK) >= 0
   ? pass(`fallback "${VOICE_NAME_FALLBACK}" is a known voice`)
   : fail(`fallback "${VOICE_NAME_FALLBACK}" is not a known voice`);
 
+console.log("\n6. The session knows what its own thread already said");
+// Voice started amnesiac: the builder took no messages at all, so twenty
+// minutes into a client brief it had never heard of the client — and when told
+// "the handover list in this thread" it replied "I can't pull up that specific
+// thread; it looks like I'm not a member of the conversation", from inside
+// that conversation.
+const DIGEST = "They said: what is still left off Rob's handover list\nYou said: three items remain — the SOW, the PO and the transition note";
+const withDigest = buildVoiceInstructions({ ...CTX, threadDigest: DIGEST } as any);
+const noDigest = buildVoiceInstructions({ ...CTX } as any);
+
+/This conversation so far/.test(withDigest)
+  ? pass("the recent turns reach the prompt")
+  : fail("the thread digest never reaches the prompt — voice stays amnesiac inside its own thread");
+withDigest.indexOf("Rob") >= 0
+  ? pass("the actual content is present, not just a heading")
+  : fail("the digest heading rendered without the turns");
+/do not say you cannot see the conversation/i.test(withDigest)
+  ? pass("it is told it IS in the conversation")
+  : fail("nothing stops it claiming it cannot see the thread it is in");
+/<<<UNTRUSTED:[a-z0-9]+>>>/.test(withDigest)
+  ? pass("the digest is fenced — a thread can quote email and meeting text written by other people")
+  : fail("thread content is replayed RAW into the instructions, round the fencing the text pipeline does");
+!/This conversation so far/.test(noDigest)
+  ? pass("a fresh thread carries no digest section")
+  : fail("an empty digest still renders its heading");
+
+// Latency is the thing people forgive least in a spoken interface, and the
+// voice prompt is short on purpose. Assert the digest stays a budget, not a
+// blank cheque.
+const added = withDigest.length - noDigest.length;
+added > 0 && added < 6000
+  ? pass(`digest adds ${added} chars (~${Math.round(added / 3.6)} tokens) — bounded`)
+  : fail(`digest adds ${added} chars — that delays first audio`);
+
 // ── Self-test ───────────────────────────────────────────────────────────
 // The detectors are regexes over prose, which is exactly the kind of check
 // that silently matches nothing after an innocuous rewording. Fixture-only:
 // no repo file is mutated, because this tree is shared with other sessions
 // and also deploys.
 if (process.argv.indexOf("--self-test") >= 0) {
-  console.log("\n6. Self-test — the detectors fire on the shapes they exist for");
+  console.log("\n7. Self-test — the detectors fire on the shapes they exist for");
   let selfFails = 0;
   const detects = (name: string, caught: boolean) => {
     if (caught) console.log(`  ok    detects ${name}`);

@@ -841,6 +841,25 @@ export default function VoiceDock({
                 }, 6000);
                 break;
               }
+              // DISCARD ANYTHING SPOKEN BEFORE THE TOOL CALL.
+              //
+              // The instruction not to speak first is a request, not a
+              // guarantee, and the model still does it. When it does, the reply
+              // is split across TWO responses — filler in the first, the answer
+              // in the second — and the model renders its voice per response,
+              // so the second can come back as a noticeably different speaker.
+              // Audio from every response is queued onto ONE cursor back to
+              // back, which is why it is heard as the voice changing
+              // mid-sentence rather than as two people.
+              //
+              // Removing the instruction reduced it. This removes the
+              // mechanism: anything already playing when a tool call arrives is
+              // filler BY POLICY — we asked for silence — so dropping it costs
+              // nothing and leaves exactly one audible render per reply.
+              //
+              // Not applied to end_conversation, which is handled above and
+              // whose whole purpose is to speak a sign-off.
+              flushPlayback();
               pendingToolsRef.current += 1;
               setTools((t) => t.concat([{ id: String(call_id), name, args: toolArgsPhrase(msg.arguments), at: Date.now() }]));
               // Both captured BEFORE the await: which turn asked for this, and

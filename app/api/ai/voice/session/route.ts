@@ -205,7 +205,50 @@ export async function POST(req: NextRequest) {
     // is deliberately NOT visibility-gated — capacity is a team conversation.
     const voiceFinance = financeAccess && !isTeamThread;
 
+    /**
+     * What the thread already said.
+     *
+     * Voice started AMNESIAC. buildVoiceInstructions took no messages at all,
+     * so twenty minutes into a client brief you could press the mic and it had
+     * never heard of the client — and when told "the handover list in this
+     * thread" it answered "I can't pull up that specific thread; it looks like
+     * I'm not a member of the conversation", from inside that conversation.
+     *
+     * Loaded HERE, server-side, after the access check above — never passed in
+     * by the client, which could otherwise nominate a thread it cannot read.
+     *
+     * DELIBERATELY TIGHT. The voice prompt is short on purpose: every token
+     * delays the first audio, and latency is the thing people forgive least in
+     * a spoken interface. Last ten turns, each clipped, whole thing capped —
+     * enough to know what "it" and "that" refer to, which is what was missing,
+     * without turning a 2-second start into a 5-second one.
+     */
+    let threadDigest: string | null = null;
+    try {
+      const { data: recent } = await intelligenceDb
+        .from("ai_messages")
+        .select("role_message, document_message, date_created")
+        .eq("id_conversation", conversation.id_conversation)
+        .order("date_created", { ascending: false })
+        .limit(10);
+      const rows = ((recent || []) as any[]).slice().reverse();
+      const lines: string[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        const text = String(rows[i].document_message || "").replace(/\s+/g, " ").trim();
+        if (!text) continue;
+        lines.push(`${rows[i].role_message === "user" ? "They said" : "You said"}: ${text.slice(0, 400)}`);
+      }
+      const joined = lines.join("\n");
+      if (joined) threadDigest = joined.slice(0, 4000);
+    } catch (e: any) {
+      // A digest is an improvement, not a precondition. If this fails the
+      // session still starts — amnesiac, as it was before, rather than not at
+      // all. Logged so it is not silent.
+      console.error("[Voice] Thread digest unavailable:", e?.message || e);
+    }
+
     const instructions = buildVoiceInstructions({
+      threadDigest,
       userName: session.user?.name || null,
       workspaceName: null,
       clientName,
