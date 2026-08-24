@@ -7,6 +7,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { checkConversationAccess } from "@/lib/ai/access";
 import { hasEngineAiAccess } from "@/lib/permissions";
 import { VOICE_TOOL_NAMES, VOICE_GATED_TOOLS } from "@/lib/ai/voice";
+import { calculateCostTenths } from "@/lib/ai/model-costs";
 import {
   queryEngine,
   lookupClientContext,
@@ -392,6 +393,11 @@ export async function POST(req: NextRequest) {
           { name: "lookup_client_context", description: "A client's profile, brand background, contracts and recent meetings.", input_schema: { type: "object" as const, properties: { client_name: { type: "string" } }, required: ["client_name"] } },
         ];
 
+        // One constant for the model that is CALLED, the model that is NAMED in
+        // the ledger, and the model that is PRICED. Three literals is how the
+        // sibling insert below ended up billing Sonnet 5 at the Sonnet 4.6 rate.
+        const ESCALATION_MODEL = "claude-sonnet-5";
+        let escIn = 0, escOut = 0, escCacheRead = 0, escCacheWrite = 0;
         const anthropicEsc = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
         const convo: any[] = [{ role: "user", content: question }];
         let answer = "";
@@ -400,9 +406,9 @@ export async function POST(req: NextRequest) {
         // or three sources and reconcile them.
         for (let round = 0; round < 4; round++) {
           const res: any = await anthropicEsc.messages.create({
-            model: "claude-sonnet-5",
+            model: ESCALATION_MODEL,
             max_tokens: 1600,
-            ...anthropicCallParams("claude-sonnet-5", 0.2),
+            ...anthropicCallParams(ESCALATION_MODEL, 0.2),
             system:
               "You are EngineAI answering a question escalated from a live VOICE conversation. You have tools — USE THEM before answering, and never answer a factual question about this workspace from memory.\n\n" +
               "THE ERROR YOU EXIST TO PREVENT: reporting something as done, absent or nonexistent on the strength of ONE source that did not mention it. A task missing from an open-task list is not evidence it was completed — it may never have been tracked. A search returning nothing means that SEARCH found nothing. When you cannot establish something, say which sources you checked and what you could not confirm.\n\n" +
@@ -411,6 +417,13 @@ export async function POST(req: NextRequest) {
             tools: ESCALATION_TOOLS as any,
             messages: convo,
           });
+          // Every round is a billable call. Accumulated rather than logged per
+          // round so the ledger shows one row per escalation, matching how the
+          // rest of the app records a single answer.
+          escIn += res.usage?.input_tokens || 0;
+          escOut += res.usage?.output_tokens || 0;
+          escCacheRead += res.usage?.cache_read_input_tokens || 0;
+          escCacheWrite += res.usage?.cache_creation_input_tokens || 0;
           const toolUses = (res.content || []).filter((c: any) => c.type === "tool_use");
           const text = (res.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
           if (!toolUses.length) { answer = text; break; }
@@ -421,6 +434,27 @@ export async function POST(req: NextRequest) {
           }
           convo.push({ role: "user", content: results });
           answer = text || answer;
+        }
+
+        // Logged before the early return below. ask_engine runs up to four
+        // Sonnet 5 calls with tool results of up to 20,000 characters each, and
+        // logged NOTHING — the most expensive tool on the voice surface was the
+        // only one absent from the ledger. A failed escalation costs the same as
+        // a successful one, so a row is written even when no answer came back.
+        if (escIn || escOut) {
+          const { error: escUsageErr } = await intelligenceDb.from("ai_usage").insert({
+            id_workspace: workspaceId,
+            user_usage: userId,
+            name_model: ESCALATION_MODEL,
+            type_source: "engineai-voice",
+            units_input: escIn,
+            units_output: escOut,
+            units_cache_read: escCacheRead,
+            units_cache_write: escCacheWrite,
+            units_cost_tenths: calculateCostTenths(ESCALATION_MODEL, escIn, escOut, escCacheRead, escCacheWrite),
+            id_conversation: conversationId,
+          });
+          if (escUsageErr) console.error("[Voice] ask_engine usage log failed:", escUsageErr.message);
         }
 
         if (!answer.trim()) {
@@ -501,7 +535,18 @@ export async function POST(req: NextRequest) {
           type_source: "engineai-voice",
           units_input: msg.usage?.input_tokens || 0,
           units_output: msg.usage?.output_tokens || 0,
-          units_cost_tenths: Math.round(((msg.usage?.input_tokens || 0) / 1e6 * 300 + (msg.usage?.output_tokens || 0) / 1e6 * 1500) * 10),
+          // Was inline arithmetic at $3/$15 — the Sonnet 4.6 rate — while
+          // model-costs.ts has had claude-sonnet-5 at $2/$10 since the price
+          // cliff was cancelled. Billed 50% over, silently, for the same reason
+          // the voice minutes billed 37.5% under: a rate copied next to a model
+          // id stops matching it, and nothing announces the day it does.
+          units_cost_tenths: calculateCostTenths(
+            "claude-sonnet-5",
+            msg.usage?.input_tokens || 0,
+            msg.usage?.output_tokens || 0,
+            (msg.usage as any)?.cache_read_input_tokens || 0,
+            (msg.usage as any)?.cache_creation_input_tokens || 0
+          ),
           id_conversation: conversationId,
         });
         break;
