@@ -26,7 +26,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { ArrowLeft, ArrowRight, Check, Copy, Loader2, Menu, Sparkles, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Copy, Loader2, Menu, PenLine, Sparkles, X } from "lucide-react";
 import { htmlToMarkdown, htmlToPlainText } from "@/lib/optimizer/export";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -73,7 +73,7 @@ function OptimizerStudio() {
   const searchParams = useSearchParams();
   const urlSession = searchParams.get("session");
 
-  const [phase, setPhase] = useState<"start" | "brief" | "studio">("start");
+  const [phase, setPhase] = useState<"start" | "brief" | "studio" | "all">("start");
   const [title, setTitle] = useState("");
   const [queries, setQueries] = useState<string[]>([]);
   const [queryDraft, setQueryDraft] = useState("");
@@ -402,6 +402,9 @@ function OptimizerStudio() {
    * this, `?new=` plus that id would be a way to create it on purpose, which is
    * exactly the door the registry closes everywhere else.
    */
+  /** Full list for the "all" phase. Null = still loading. */
+  const [allPieces, setAllPieces] = useState<any[] | null>(null);
+  const allParam = searchParams.get("all");
   const newParam = searchParams.get("new");
   const setupParam = searchParams.get("setup");
   const claimedNewRef = useRef<string | null>(null);
@@ -427,6 +430,30 @@ function OptimizerStudio() {
     }
     void startBlank(wanted.id);
   }, [newParam, setupParam, workspaceId, startBlank]);
+
+  /**
+   * `?all=1` — the full list.
+   *
+   * The rail shows five pieces and then "N more…", which pointed at the start
+   * screen: a link promising the rest of your work and delivering a create
+   * form. Beyond the fifth piece there was no route to your own documents
+   * except a saved URL, and the list route caps at 50, so piece 51 is
+   * unreachable full stop.
+   */
+  useEffect(() => {
+    if (allParam === "1" && !urlSession) setPhase("all");
+  }, [allParam, urlSession]);
+
+  useEffect(() => {
+    if (phase !== "all" || !workspaceId) return;
+    let cancelled = false;
+    setAllPieces(null);
+    fetch(`/api/optimizer/sessions?workspaceId=${encodeURIComponent(workspaceId)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled) setAllPieces(Array.isArray(d?.sessions) ? d.sessions : []); })
+      .catch(() => { if (!cancelled) setAllPieces([]); });
+    return () => { cancelled = true; };
+  }, [phase, workspaceId, piecesRefreshKey]);
 
   /**
    * Persist the title.
@@ -942,6 +969,66 @@ function OptimizerStudio() {
           <p className="text-xs text-muted-foreground">
             Otherwise ask a workspace admin to grant you EngineAI access.
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── All pieces ──
+  //
+  // The rail lists five and then "N more…". That link used to land on the start
+  // screen — a promise of the rest of your work, delivering a create form.
+  if (phase === "all") {
+    return shell(
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className="mx-auto w-full max-w-[52rem] px-6 py-10 flex flex-col gap-5">
+          <div className="flex items-baseline justify-between gap-3">
+            <div className="flex flex-col gap-1">
+              <h1 className="text-2xl font-bold tracking-tight">All pieces</h1>
+              <p className="text-sm text-muted-foreground">
+                Everything you can see in this workspace — yours, and anything shared with the team.
+              </p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => { setPhase("start"); router.push("/engineai/optimizer"); }}>
+              Start a piece
+            </Button>
+          </div>
+          {allPieces === null ? (
+            <div className="flex justify-center py-12"><Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /></div>
+          ) : allPieces.length === 0 ? (
+            <p className="text-[13px] text-muted-foreground py-8">
+              Nothing here yet. Start one and it will appear in the rail as you work.
+            </p>
+          ) : (
+            <div className="flex flex-col rounded-xl border divide-y overflow-hidden">
+              {allPieces.map((a) => (
+                <button
+                  key={a.id_session}
+                  onClick={() => openSession(a.id_session)}
+                  className="flex items-center gap-3 px-4 py-3 text-left hover:bg-muted/50 transition-colors"
+                >
+                  <PenLine className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  <span className="flex-1 min-w-0 truncate text-[13.5px] font-medium">
+                    {a.name_title || "Untitled piece"}
+                  </span>
+                  {/* Rendered from labelOf, which returns null for the type the
+                      product does not name — so that row simply shows no kind,
+                      exactly as the header chip does. */}
+                  {labelOf(a.type_content) && (
+                    <span className="shrink-0 text-[11px] text-muted-foreground rounded-full border px-2 py-0.5">
+                      {labelOf(a.type_content)}
+                    </span>
+                  )}
+                  {a.type_visibility === "team" && (
+                    <span className="shrink-0 text-[11px] text-muted-foreground">Team</span>
+                  )}
+                  <span className="shrink-0 text-[11.5px] text-muted-foreground tabular-nums w-20 text-right">
+                    {a.date_updated ? new Date(a.date_updated).toLocaleDateString() : ""}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );

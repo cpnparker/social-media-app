@@ -767,7 +767,7 @@ export default function EngineAISidebar({
                       ))}
                       {visibleArticles.length > (searchQuery ? 8 : 5) && (
                         <button
-                          onClick={() => router.push("/engineai/optimizer")}
+                          onClick={() => router.push("/engineai/optimizer?all=1")}
                           className="w-full text-left px-2.5 py-1.5 text-[12px] text-white/55 hover:text-white/80 transition-colors"
                         >
                           {visibleArticles.length - (searchQuery ? 8 : 5)} more...
