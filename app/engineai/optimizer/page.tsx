@@ -26,7 +26,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { ArrowLeft, ArrowRight, Check, Copy, Loader2, Menu, PenLine, Sparkles, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Copy, Loader2, Menu, MessageSquare, PenLine, Sparkles, X } from "lucide-react";
 import { htmlToMarkdown, htmlToPlainText } from "@/lib/optimizer/export";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -485,6 +485,67 @@ function OptimizerStudio() {
       toast.error("Could not save the title");
     }
   }, [sessionId, workspaceId, title]);
+
+  /**
+   * Ask about this draft, in chat.
+   *
+   * SEEDED, NEVER SENT — the notebook's "ask about this" precedent
+   * (app/engineai/page.tsx onAskAbout), and for its reason: the writer decides
+   * what to ask. Auto-sending would guess the question and spend a model call
+   * on the guess.
+   *
+   * The excerpt is the SELECTION when there is one, the opening otherwise. A
+   * whole draft in the composer is unreadable and, on a long piece, is the
+   * entire document in a text box the writer then has to scroll past to type.
+   *
+   * Handed over through sessionStorage rather than the URL: a draft excerpt in
+   * a query string is a 2,000-character URL that lands in history and in any
+   * log that records paths. Read once and cleared by the chat page.
+   */
+  const askInChat = useCallback(async () => {
+    if (!workspaceId) { toast.error("Select a workspace first"); return; }
+    const ed = editorRef.current;
+    let excerpt = "";
+    if (ed) {
+      const { from, to } = ed.state.selection;
+      if (to > from) excerpt = ed.state.doc.textBetween(from, to, "\n").trim();
+    }
+    if (!excerpt) {
+      excerpt = (body || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 1200);
+    }
+    if (!excerpt) { toast.error("There is nothing to ask about yet"); return; }
+
+    setBusy(true);
+    try {
+      const res = await fetch("/api/ai/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          title: title.trim() ? `About: ${title.trim()}`.slice(0, 120) : "About a draft",
+          customerId: selectedCustomer ? Number(selectedCustomer.id) : undefined,
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      const convId = j?.conversation?.id_conversation || j?.id_conversation || j?.conversationId;
+      if (!res.ok || !convId) {
+        toast.error(j?.error || "Could not open a chat about this");
+        return;
+      }
+      sessionStorage.setItem(
+        "engineai:ask",
+        JSON.stringify({
+          conversationId: convId,
+          text: `About this draft${title.trim() ? ` — ${title.trim()}` : ""}:\n\n> ${excerpt.slice(0, 1200)}\n\n`,
+        })
+      );
+      router.push(`/?thread=${encodeURIComponent(convId)}`);
+    } catch {
+      toast.error("Could not open a chat about this");
+    } finally {
+      setBusy(false);
+    }
+  }, [workspaceId, body, title, selectedCustomer, router]);
 
   // ── Generate ──
   const generate = useCallback(async () => {
@@ -1319,6 +1380,12 @@ function OptimizerStudio() {
           {/* No Assess where there is no judge. Hiding it is not cosmetic: the
               route refuses this type with 400 before any spend, so an offered
               button would be a button that always fails. */}
+          {!streaming && sessionId && (
+            <Button size="sm" variant="ghost" onClick={askInChat} disabled={busy}>
+              <MessageSquare className="h-3.5 w-3.5" />
+              Ask
+            </Button>
+          )}
           {!streaming && sessionId && chrome.showAssessAction && (
             <Button size="sm" variant="outline" onClick={runAssess} disabled={assessing}>
               {assessing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}

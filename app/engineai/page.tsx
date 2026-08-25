@@ -178,6 +178,33 @@ function EngineAIContent() {
   const wakeRef = useRef<WakeModeHandle>(null);
   const [wakeUi, setWakeUi] = useState({ armed: false, listening: false, loading: false });
   const [seedText, setSeedText] = useState<{ text: string; nonce: number } | null>(null);
+
+  /**
+   * Handoff from the Writing Studio's "Ask" button.
+   *
+   * Read ONCE and cleared, so a refresh does not re-seed a question the writer
+   * has already asked or already dismissed. sessionStorage rather than a query
+   * parameter because the payload is a draft excerpt: in a URL it would be a
+   * two-thousand-character address sitting in browser history and in any log
+   * that records paths.
+   *
+   * Only seeds when the thread it names is the one now open — a stale handoff
+   * from a piece the writer navigated away from must not appear in an
+   * unrelated conversation.
+   */
+  useEffect(() => {
+    let raw: string | null = null;
+    try { raw = sessionStorage.getItem("engineai:ask"); } catch { return; }
+    if (!raw) return;
+    try { sessionStorage.removeItem("engineai:ask"); } catch { /* cleared either way */ }
+    try {
+      const h = JSON.parse(raw) as { conversationId?: string; text?: string };
+      if (!h?.text || !h.conversationId) return;
+      if (selectedId && h.conversationId !== selectedId) return;
+      setSeedText({ text: h.text, nonce: Date.now() });
+      toast.info("Added to the message box — finish your question");
+    } catch { /* a malformed handoff is not worth an error to the writer */ }
+  }, [selectedId]);
   const { canInstall, promptInstall } = useInstallPrompt();
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
