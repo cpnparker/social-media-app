@@ -205,9 +205,23 @@ export default function ChatPanel({
   const seededNonce = useRef<number | null>(null);
   useEffect(() => {
     if (!seedText || seedText.nonce === seededNonce.current) return;
+    // THE NONCE IS CONSUMED ONLY ON SUCCESS.
+    //
+    // This read `chatInputRef.current?.seedText(...)` with the nonce marked
+    // first, so a null ref was swallowed by the optional chain and the seed was
+    // gone — marked as delivered, never delivered. That is unreachable when a
+    // panel is already on screen, which is why the notebook never showed it,
+    // and guaranteed on a FRESH LOAD: this component returns a spinner until
+    // the conversation resolves, so ChatInput is not mounted when a seed
+    // arriving with the page runs.
+    //
+    // The Writing Studio's "Ask" lands in exactly that state every time — it
+    // navigates to a brand-new thread and seeds it on arrival.
+    const input = chatInputRef.current;
+    if (!input) return; // not mounted yet; the deps below re-run this when it is
     seededNonce.current = seedText.nonce;
-    chatInputRef.current?.seedText(seedText.text);
-  }, [seedText]);
+    input.seedText(seedText.text);
+  }, [seedText, loading, conversation]);
   const [isDragging, setIsDragging] = useState(false);
   const dragCounterRef = useRef(0);
 
