@@ -428,6 +428,37 @@ function OptimizerStudio() {
     void startBlank(wanted.id);
   }, [newParam, setupParam, workspaceId, startBlank]);
 
+  /**
+   * Persist the title.
+   *
+   * Fire-and-forget on the happy path but NOT silent on failure: a title that
+   * looks saved and is not means the writer's own name for their document is
+   * gone at the next reload, and they will not find out until then.
+   */
+  const savedTitleRef = useRef<string>("");
+  const saveTitle = useCallback(async () => {
+    if (!sessionId || !workspaceId) return;
+    const next = title.trim();
+    if (next === savedTitleRef.current) return;
+    savedTitleRef.current = next;
+    try {
+      const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, title: next || "Untitled piece" }),
+      });
+      if (!res.ok) {
+        savedTitleRef.current = "";
+        toast.error("Could not save the title");
+        return;
+      }
+      setPiecesRefreshKey((k) => k + 1);
+    } catch {
+      savedTitleRef.current = "";
+      toast.error("Could not save the title");
+    }
+  }, [sessionId, workspaceId, title]);
+
   // ── Generate ──
   const generate = useCallback(async () => {
     if (!workspaceId) { toast.error("Select a workspace first"); return; }
@@ -1252,6 +1283,25 @@ function OptimizerStudio() {
             activeCount={issues.filter((i) => i.status === "active").length}
           />
           <div className="mx-auto w-full max-w-[46rem] px-6 py-6">
+            {/* THE TITLE, in the editor rather than only in the brief form.
+                A blank piece is created as "Untitled piece" and the brief's
+                title input is on a screen the write-it-yourself path never
+                visits — so every blank piece stayed Untitled unless the writer
+                found the double-click rename in the sidebar. A document you
+                cannot name from inside it is not finished being made.
+
+                Saved on blur, not per keystroke: the title is also a sidebar
+                row and a PATCH per character would rewrite that list
+                constantly. */}
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              onBlur={() => { void saveTitle(); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
+              placeholder="Untitled piece"
+              aria-label="Title"
+              className="w-full mb-3 bg-transparent border-0 px-0 text-[26px] font-bold tracking-tight placeholder:text-muted-foreground/40 focus:outline-none"
+            />
             <TiptapEditor
               content={streaming ? "" : body}
               onChange={(html) => { saveBody(html); syncIssues(); repaintLive(); }}
