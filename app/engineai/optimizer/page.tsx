@@ -85,6 +85,8 @@ function OptimizerStudio() {
   const [canon, setCanon] = useState<ClientCanon | null>(null);
   const [canonLoading, setCanonLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  /** Bumped after creating a piece so the rail lists it without a reload. */
+  const [piecesRefreshKey, setPiecesRefreshKey] = useState(0);
   /**
    * The KIND of document. Drives which analyses may run and — the half that
    * matters here — what the cockpit is allowed to render at all. Everything
@@ -378,6 +380,7 @@ function OptimizerStudio() {
       // empty editor with the server's idea of it — same reason generate() marks
       // it before changing the URL.
       hydratedRef.current = created.sessionId;
+      setPiecesRefreshKey((k) => k + 1);
       setPhase("studio");
       openSession(created.sessionId);
     } catch {
@@ -451,6 +454,7 @@ function OptimizerStudio() {
       // and the hydration effect would otherwise fetch it back mid-stream and
       // overwrite the tokens as they arrive.
       hydratedRef.current = created.sessionId;
+      setPiecesRefreshKey((k) => k + 1);
       openSession(created.sessionId);
       setPhase("studio");
       setBody("");
@@ -858,6 +862,7 @@ function OptimizerStudio() {
   const shell = (inner: React.ReactNode) => (
     <>
       <EngineAISidebar
+        piecesRefreshKey={piecesRefreshKey}
         sidebarOpen={sidebarOpen}
         onCloseSidebar={() => setSidebarOpen(false)}
         searchQuery={navSearch}
@@ -1082,7 +1087,7 @@ function OptimizerStudio() {
             <Menu className="h-4 w-4" />
           </button>
           <button onClick={closeSession} className="text-[13px] text-muted-foreground hover:text-foreground shrink-0">
-            ← All content
+            ← All pieces
           </button>
           <span className="w-px h-4 bg-border shrink-0" />
           <span className="text-[13px] font-semibold truncate flex-1 min-w-0">{title}</span>

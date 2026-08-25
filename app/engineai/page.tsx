@@ -1245,7 +1245,7 @@ const ORAC_ENABLED = false;
                     <div key={group.key}>
                       {/* Group heading */}
                       <div className="flex items-center justify-between px-2.5 pt-3 pb-1">
-                        <p className="text-[11px] font-semibold text-white/55 uppercase tracking-wider truncate">
+                        <p className="text-[10.5px] font-medium text-white/40 pl-1 truncate">
                           {group.clientName}
                         </p>
                         {group.clientId !== null && (

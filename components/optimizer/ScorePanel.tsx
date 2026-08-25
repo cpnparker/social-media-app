@@ -39,6 +39,14 @@ interface Props {
   onAddQuery?: (query: string) => void;
 }
 
+/**
+ * Below this, the deterministic engine is measuring absences in a document that
+ * has not been written yet. Chosen as roughly a paragraph: enough for
+ * answer-position, statistic density and entity consistency to mean something,
+ * and low enough that a real short piece is still scored.
+ */
+const MIN_SCORABLE_WORDS = 60;
+
 function gradeTone(score: number): string {
   if (score >= 80) return "text-emerald-600 dark:text-emerald-400";
   if (score >= 65) return "text-blue-600 dark:text-blue-400";
@@ -71,6 +79,32 @@ export default function ScorePanel({ input, muted, onAddQuery }: Props) {
     return (
       <div className="p-4 text-[13px] text-muted-foreground">
         Could not score this draft.
+      </div>
+    );
+  }
+
+  // TOO LITTLE TO SCORE IS NOT A BAD SCORE.
+  //
+  // The blank-page path made this reachable and it is indefensible: an empty
+  // editor scored 34, graded E, and listed "13 to address" — every one of them
+  // an absence criterion firing because there is no text yet. A writer who has
+  // just clicked "Article" to start writing is told their blank page is a
+  // failure with thirteen problems.
+  //
+  // That is the dishonesty this studio's own doctrine names: a number printed
+  // over something it cannot measure. A thin thing must LOOK thin, so below the
+  // threshold the panel says what is true — nothing has been measured yet — and
+  // names what it will measure when there is something to read.
+  const wordCount = (String(input.body || "").replace(/<[^>]*>/g, " ").match(/\S+/g) || []).length;
+  if (wordCount < MIN_SCORABLE_WORDS) {
+    return (
+      <div className="p-4 flex flex-col gap-2">
+        <p className="text-[13px] font-medium">Not enough to score yet</p>
+        <p className="text-[12px] text-muted-foreground leading-relaxed">
+          The score reads structure, evidence and clarity — it needs about{" "}
+          {MIN_SCORABLE_WORDS} words before any of that means anything. The instant
+          checks are already running as you type.
+        </p>
       </div>
     );
   }

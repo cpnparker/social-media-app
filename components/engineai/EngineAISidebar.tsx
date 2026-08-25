@@ -86,6 +86,16 @@ interface Props {
    * count is the smallest possible coupling that keeps those correct.
    */
   conversationCount?: number;
+  /**
+   * Bumped by the host when it creates a piece, so the rail lists it without a
+   * reload.
+   *
+   * The fetch keyed on workspaceId alone, which never changes while you work —
+   * so a piece created from the start screen did not appear until the next
+   * navigation, and the writer's own new document was missing from the list of
+   * their documents. QA caught it on the first blank page ever created.
+   */
+  piecesRefreshKey?: number;
   /** The conversation list. Chat passes its grouped one; the optimiser a plain list. */
   children?: React.ReactNode;
   /** The profile block at the bottom of the panel. */
@@ -110,7 +120,7 @@ function timeAgo(dateStr: string): string {
 export default function EngineAISidebar({
   sidebarOpen, onCloseSidebar, onNewChat,
   searchQuery, onSearchChange, tab, onTabChange,
-  selectedArticleId, conversationsLoading, conversationCount = 0, children, footer, railFooter,
+  selectedArticleId, conversationsLoading, conversationCount = 0, piecesRefreshKey = 0, children, footer, railFooter,
 }: Props) {
   const router = useRouter();
   const pathname = usePathname();
@@ -770,12 +780,20 @@ export default function EngineAISidebar({
                   and each needs to say what it is. Unsearched, the chat list
                   keeps its own client groupings and a second heading above them
                   would just be noise. */}
-              {searchQuery && conversationCount > 0 && visibleArticles.length > 0 && (
-                <div className="flex items-center justify-between px-2.5 pt-3 pb-1">
+              {/* UNCONDITIONAL. With Pieces now always headed, a headed list
+                  above an unheaded one reads as one list whose second half lost
+                  its label — which is exactly what QA saw.
+
+                  NO COUNT, deliberately. conversationCount is every conversation
+                  that passed the filter, while the rows below are capped per
+                  client group, so the number and the list disagree the moment a
+                  workspace has more than a handful. Pieces keeps its count
+                  because this component owns that list and the number is true. */}
+              {conversationCount > 0 && (
+                <div className="flex items-center px-2.5 pt-3 pb-1">
                   <p className="text-[11px] font-semibold text-white/55 uppercase tracking-wider">
                     Conversations
                   </p>
-                  <span className="text-[11px] text-white/35 tabular-nums">{conversationCount}</span>
                 </div>
               )}
               {searchQuery && conversationCount === 0 && visibleArticles.length > 0 && (
