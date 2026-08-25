@@ -7145,6 +7145,30 @@ export function createStreamingResponse(
       // what actually ran, including after a fallback.
       let result: StreamResult = { fullText: "", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: modelInfo.apiModel, toolsUsed: [] };
 
+      /**
+       * Adopt a fallback leg's text WITHOUT discarding what the failed leg
+       * already cost.
+       *
+       * Every fallback here reassigns `result` outright, so the tokens the
+       * first leg had already been billed for vanished with the assignment.
+       * The clearest case needs no exception at all: xAI returns a complete but
+       * EMPTY response — billed, by definition, since it consumed the prompt —
+       * and the empty-response branch replaces `result` with Claude's. Those
+       * xAI tokens were charged by the provider and recorded by nobody.
+       *
+       * Token counts add; `modelUsed` becomes the model that produced the TEXT,
+       * which is what attribution should say. The row then reads as one turn
+       * costing what the turn actually cost, which is the truth a ledger owes.
+       */
+      const adoptFallback = (prev: StreamResult, next: StreamResult): StreamResult => ({
+        ...next,
+        inputTokens: (prev.inputTokens || 0) + (next.inputTokens || 0),
+        outputTokens: (prev.outputTokens || 0) + (next.outputTokens || 0),
+        cacheReadTokens: (prev.cacheReadTokens || 0) + (next.cacheReadTokens || 0),
+        cacheWriteTokens: (prev.cacheWriteTokens || 0) + (next.cacheWriteTokens || 0),
+        toolsUsed: [...(prev.toolsUsed || []), ...(next.toolsUsed || [])],
+      });
+
       // Control Centre model override + global provider cap.
       // - Override > registry-resolved model.
       // - Provider cap is checked AFTER override, against whatever provider
@@ -7236,7 +7260,10 @@ export function createStreamingResponse(
             if (!result.fullText.trim()) {
               console.warn(`[AI] xAI returned empty response, falling back to Claude`);
               controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: "Grok returned empty — using Claude" })}\n\n`));
-              result = await streamAnthropic(messages, config, "claude-sonnet-5", controller, encoder);
+              // An empty response is a COMPLETED one — the prompt was read and
+              // billed. Merging keeps those tokens on the row instead of
+              // dropping them with the assignment.
+              result = adoptFallback(result, await streamAnthropic(messages, config, "claude-sonnet-5", controller, encoder));
             }
           } catch (xaiErr: any) {
             const errMsg = xaiErr?.message || String(xaiErr);

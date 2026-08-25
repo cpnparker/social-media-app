@@ -105,6 +105,31 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const owned = await loadSessionForCaller(id, guard.caller);
   if (!owned.ok) return NextResponse.json({ error: owned.error }, { status: owned.status });
 
+  // A CEILING ON WHAT CAN BE STORED, because everything downstream has one.
+  //
+  // The import path caps at MAX_IMPORT_CHARS, but this paste/save path had no
+  // length check on either branch — so the unbounded way in was the one a
+  // writer uses by hand. Assess then refuses the draft at 40k, and coverage
+  // (which sends the whole thing to a model twice) had no ceiling at all until
+  // today. A draft that cannot be assessed or analysed is not a draft the
+  // studio can do anything with, so refusing it here is kinder than storing it
+  // and failing at every press afterwards.
+  //
+  // Generous relative to the 40k analysis cap: the writer may legitimately be
+  // holding a long source document they intend to cut down.
+  const MAX_DRAFT_CHARS = 200000;
+  if (body.body.length > MAX_DRAFT_CHARS) {
+    return NextResponse.json(
+      {
+        error:
+          `This draft is ${Math.round(body.body.length / 1000)}k characters, over the ${MAX_DRAFT_CHARS / 1000}k limit. ` +
+          `Assessment caps at 40k and coverage analysis sends the whole draft to a model twice, so a piece this long ` +
+          `cannot be scored — split it into sections and work on one at a time.`,
+      },
+      { status: 413 }
+    );
+  }
+
   const words = (body.body.match(/\S+/g) || []).length;
   const current = await latestDraft(id);
 

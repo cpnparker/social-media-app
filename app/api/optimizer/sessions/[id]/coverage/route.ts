@@ -35,6 +35,21 @@ import type { CoverageInput, CoverageResult } from "@/lib/optimizer/coverage";
 
 export const maxDuration = 120;
 
+/**
+ * Input ceiling, matching assess's MAX_ASSESS_CHARS exactly.
+ *
+ * Coverage had only a FLOOR (wordCount < 150). The full draft goes to fan-out
+ * and again to novelty, so a draft that assess REFUSES at 40k chars was being
+ * sent to the most expensive press in the studio twice over — and coverage is
+ * the one route with two sequential round trips inside a 120s ceiling, so an
+ * oversized input does not just cost more, it is the input most likely to time
+ * out after it has already been billed.
+ */
+const MAX_COVERAGE_CHARS = 40000;
+
+/** Same staleness window as assess: a platform timeout must not strand a session. */
+const COVERAGE_LOCK_STALE_MS = 6 * 60 * 1000;
+
 const MODELS = { fanout: FANOUT_MODEL, parametric: PARAMETRIC_MODEL, novelty: NOVELTY_MODEL };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -86,6 +101,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // THE CEILING. Checked on the PARSED text, which is what actually gets sent.
+  if (parsed.text.length > MAX_COVERAGE_CHARS) {
+    return NextResponse.json(
+      {
+        error:
+          `This draft is ${Math.round(parsed.text.length / 1000)}k characters and coverage analysis is capped at ` +
+          `${MAX_COVERAGE_CHARS / 1000}k. Analyse a section at a time — the whole draft goes to the model twice here, ` +
+          `and beyond this size the run tends to time out after it has already been paid for.`,
+      },
+      { status: 413 }
+    );
+  }
+
   const brief = session.config_brief || {};
   const canon = session.config_canon || {};
   const input: CoverageInput = {
@@ -111,9 +139,61 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .limit(1);
     if (!error && cached && cached.length > 0) {
       const hit = (cached[0] as any).config_coverage;
+      // A memoised FAILURE is served as a failure, not replayed as a result.
+      // Only success was cached before, so the one input that reliably fails —
+      // the one that costs three calls and returns nothing — was precisely the
+      // input never cached, and every re-press paid for all three again.
+      if (hit && hit.failed) {
+        return NextResponse.json(
+          { error: "Neither analysis completed for this draft.", notAssessable: hit.notAssessable || [], cached: true },
+          { status: 502 }
+        );
+      }
       if (hit && hit.generatedAt) return NextResponse.json({ ...hit, cached: true });
     }
   } catch { /* a cache miss must never fail the request */ }
+
+  // THE CLAIM IS THE TEST — the same shape assess uses, and for the same
+  // reason: its comment records that two concurrent clicks both passed every
+  // guard and both billed. Coverage had only the client's disabled={loading},
+  // which is per component instance — a second tab, a reload mid-run or a
+  // direct POST all billed three calls in full.
+  //
+  // It reuses assess's `assessing` status deliberately. type_status carries a
+  // CHECK constraint listing its allowed values, so inventing "covering" would
+  // fail every claim with 23514 and lock the feature shut permanently. Sharing
+  // the lock also happens to be correct: assess and coverage both read the same
+  // draft, and running them together bills two presses of overlapping work.
+  const priorStatus = String(session.type_status || "draft_ready");
+  const staleBefore = new Date(Date.now() - COVERAGE_LOCK_STALE_MS).toISOString();
+  const { data: claimed } = await intelligenceDb
+    .from("optimizer_sessions")
+    .update({ type_status: "assessing", date_assessing: new Date().toISOString(), date_updated: new Date().toISOString() })
+    .eq("id_session", id)
+    .or(`type_status.neq.assessing,date_assessing.lt.${staleBefore}`)
+    .select("id_session");
+  if (!claimed || claimed.length === 0) {
+    return NextResponse.json({ error: "This draft is already being analysed" }, { status: 409 });
+  }
+
+  // Released on EVERY path out of here, including the 502 and any throw.
+  // A lock that leaks leaves the writer unable to press again until the
+  // staleness window expires, which is a worse failure than the double-bill
+  // it prevents. Restores the status the session actually had — except when
+  // that was itself `assessing` (a stale takeover), where draft_ready is the
+  // only safe value that satisfies the CHECK constraint.
+  const releaseClaim = async () => {
+    try {
+      await intelligenceDb
+        .from("optimizer_sessions")
+        .update({
+          type_status: priorStatus === "assessing" ? "draft_ready" : priorStatus,
+          date_assessing: null,
+          date_updated: new Date().toISOString(),
+        })
+        .eq("id_session", id);
+    } catch { /* never fail the response on lock release */ }
+  };
 
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const notAssessable: string[] = [];
@@ -192,6 +272,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   if (!fanout && !novelty) {
+    // MEMOISE THE FAILURE. This path returns before the memo write below, so a
+    // draft that reliably fails was billed three calls on every single press,
+    // forever. Best-effort: if the migration adding config_coverage has not
+    // run this insert fails, and the writer is no worse off than before.
+    try {
+      await intelligenceDb.from("optimizer_assessments").insert({
+        id_session: id,
+        id_draft: draft.id_draft,
+        type_kind: "coverage",
+        name_memo_key: memoKey,
+        name_rubric_version: COVERAGE_PROMPT_VERSION,
+        config_coverage: { failed: true, notAssessable, models: MODELS, generatedAt: new Date().toISOString() },
+      });
+    } catch { /* a failed memo must not mask the failure it describes */ }
+    await releaseClaim();
     return NextResponse.json(
       { error: "Neither analysis completed.", notAssessable },
       { status: 502 }
@@ -230,5 +325,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     console.warn("[optimizer] coverage not cached:", e?.message);
   }
 
+  // Released on the success path too. Without this the writer would be locked
+  // out of their own draft for the whole staleness window after a run that
+  // WORKED — a 409 with nothing wrong. The window is the backstop for an
+  // unexpected throw, not the normal release.
+  await releaseClaim();
   return NextResponse.json({ ...result, notAssessable, cached: false });
 }

@@ -26,11 +26,24 @@ import {
   parseNoveltyResponse, coverageKey, COVERAGE_PROMPT_VERSION,
   FANOUT_MODEL, PARAMETRIC_MODEL, NOVELTY_MODEL,
 } from "../lib/optimizer/coverage";
+import { GENERATE_MODEL, JUDGE_MODEL } from "../lib/optimizer/models";
+import { MODEL_REGISTRY } from "../lib/ai/providers";
 import type { CoverageInput } from "../lib/optimizer/coverage";
 
 let failures = 0;
 const pass = (m: string) => console.log(`  ok    ${m}`);
 const fail = (m: string, d?: string) => { failures++; console.log(`  FAIL  ${m}${d ? "\n        " + d : ""}`); };
+/**
+ * Loud, and deliberately NOT a failure.
+ *
+ * The model-separation pairings in section 5 are genuinely violated today, but
+ * the resolution is a product decision — which model scores the customer's
+ * draft — not one a check may make on its own. A hard failure would wedge every
+ * run on an unmade decision, and the predictable end of a permanently-red check
+ * is that somebody weakens the check. So this reports every time and blocks
+ * nothing; the call site says exactly when it should be promoted to fail().
+ */
+const warn = (m: string) => console.log(`  WARN  ${m}`);
 
 const DRAFT = [
   "Payment orchestration routes a card transaction across several acquirers rather than one.",
@@ -208,16 +221,63 @@ console.log(`\n4. Every input that changes the result reaches the memo key`);
 // ── 5. Nothing marks its own homework ────────────────────────────────────
 console.log(`\n5. Model separation`);
 {
-  // Compared as STRINGS, deliberately. TypeScript narrows both to their literal
-  // types, so `NOVELTY_MODEL !== PARAMETRIC_MODEL` is a compile-time tautology
-  // it will happily tell you can never be false — which means the assertion
-  // tests nothing and would keep passing after someone pointed them at the
-  // same model. The widening is what makes it a real runtime check.
-  const nov: string = NOVELTY_MODEL;
-  const par: string = PARAMETRIC_MODEL;
-  nov !== par
-    ? pass(`the novelty comparison (${NOVELTY_MODEL.split("-").slice(0, 2).join("-")}) is not the model that wrote the answer (${PARAMETRIC_MODEL})`)
-    : fail("the same model produces the parametric answer AND grades it — the circularity the research names as the highest risk");
+  // Compared by PROVIDER, not by id.
+  //
+  // The previous version widened both ids to `string` and tested nov !== par.
+  // The widening was right — as literal types TypeScript proves the comparison
+  // can never be false, so the assertion would have tested nothing — but the
+  // PROPERTY was wrong. It passed on claude-sonnet-5 vs claude-haiku-4-5:
+  // two visibly different names, which is exactly why it read as reassuring,
+  // and two models from one vendor trained on one corpus by one lab. That is
+  // not an independent second opinion; it is the same opinion in a smaller
+  // model. Self-preference bias is a property of the FAMILY.
+  //
+  // It also checked only one of the two pairings that matter. The louder one —
+  // the model that WRITES the draft versus the model that SCORES it — was not
+  // asserted anywhere, and both were claude-sonnet-5.
+  const family = (id: string): string => {
+    // Resolved through the registry so an unknown id is caught rather than
+    // silently answered: getModelInfo falls back to claude-sonnet-5 for ids it
+    // does not know, which would report a typo'd model as "anthropic" and let
+    // a real separation failure pass as one.
+    // A slot may name either a REGISTRY KEY or the apiModel behind it: coverage
+    // calls the Anthropic SDK directly, so NOVELTY_MODEL is the wire id
+    // "claude-haiku-4-5-20251001" whose registry key is "claude-haiku-4-5".
+    // The first version of this check only looked up keys and reported that as
+    // an unpriced model — a false alarm on a slot that is priced correctly
+    // ($1/$5, model-costs.ts:94). Resolve both ways before calling it unknown.
+    if (Object.prototype.hasOwnProperty.call(MODEL_REGISTRY, id)) {
+      return String((MODEL_REGISTRY as any)[id].provider);
+    }
+    const keys = Object.keys(MODEL_REGISTRY);
+    for (let k = 0; k < keys.length; k++) {
+      if (String((MODEL_REGISTRY as any)[keys[k]].apiModel) === id) {
+        return String((MODEL_REGISTRY as any)[keys[k]].provider);
+      }
+    }
+    return `UNKNOWN(${id})`;
+  };
+
+  const pairs: [string, string, string, string][] = [
+    ["parametric", PARAMETRIC_MODEL, "novelty", NOVELTY_MODEL],
+    ["generate", GENERATE_MODEL, "judge", JUDGE_MODEL],
+  ];
+  for (let i = 0; i < pairs.length; i++) {
+    const [aName, aId, bName, bId] = pairs[i];
+    const fa = family(aId);
+    const fb = family(bId);
+    if (fa.indexOf("UNKNOWN") === 0 || fb.indexOf("UNKNOWN") === 0) {
+      fail(`${aName}/${bName}: ${fa.indexOf("UNKNOWN") === 0 ? fa : fb} is not in MODEL_REGISTRY — it would resolve to the silent claude-sonnet-5 fallback`);
+      continue;
+    }
+    fa !== fb
+      ? pass(`${aName} (${fa}) and ${bName} (${fb}) are different vendors`)
+      : warn(
+          `${aName} and ${bName} are BOTH ${fa} (${aId} / ${bId}) — one vendor grading its own output. ` +
+          `OPEN DECISION: moving either changes what the score MEANS, so it needs a bake-off against drafts ` +
+          `with known verdicts, not a price table. Make this a hard failure once a slot moves.`
+        );
+  }
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

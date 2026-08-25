@@ -19,6 +19,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { createStreamingResponse } from "@/lib/ai/providers";
 import { assertServiceAllowed } from "@/lib/admin/service-control";
 import { logAiUsage } from "@/lib/ai/usage-logger";
+import { GENERATE_MODEL } from "@/lib/optimizer/models";
 import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
 import { buildGenerationPrompt } from "@/lib/optimizer/briefs";
 
@@ -89,7 +90,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const stream = createStreamingResponse(
       [{ role: "user", content: `Write the piece.` }],
       {
-        model: "claude-sonnet-5",
+        model: GENERATE_MODEL,
         systemPrompt,
         maxTokens: 8000,
         webSearch: false,
