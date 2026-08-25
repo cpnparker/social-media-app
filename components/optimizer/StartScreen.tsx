@@ -248,11 +248,10 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
       <div className="mx-auto w-full max-w-[48rem] px-6 py-10 flex flex-col gap-6">
 
         <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-bold tracking-tight">Start a piece</h1>
+          <h1 className="text-2xl font-bold tracking-tight">New content</h1>
           <p className="text-sm text-muted-foreground">
-            Write it yourself, brief the AI, or bring in something that already exists.
-            Everything lands in the same editor, with the same checks.
-            {clientName ? ` Grounded in what we know about ${clientName}.` : ""}
+            Write it yourself, brief the AI, or bring in something you already have.
+            {clientName ? ` Client: ${clientName}.` : ""}
           </p>
         </div>
 
@@ -271,8 +270,7 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             <span className="text-base font-semibold tracking-tight">Write it yourself</span>
           </div>
           <p className="text-[13px] text-muted-foreground leading-relaxed mb-4">
-            A blank page, with the instant checks running as you type. Nothing is sent
-            to a model until you ask.
+            A blank page. Nothing is sent to a model until you ask.
           </p>
           <div className="flex flex-wrap gap-1.5">
             {offeredTypes().map((t) => (
@@ -290,7 +288,7 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
         {/* Bring content in. No longer the primary card — see above. */}
         <div className="rounded-2xl border p-5">
           <div className="flex items-baseline gap-2 mb-1">
-            <span className="text-base font-semibold tracking-tight">Bring one in</span>
+            <span className="text-base font-semibold tracking-tight">Bring something in</span>
           </div>
           {/* "with a score" was false for one registered type, whose panel
               renders no score and whose detection is deliberately silent — so
@@ -298,8 +296,7 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
               checks are true for all three, and name nothing. The "Most common"
               badge went with it: there is no longer a hierarchy to signal. */}
           <p className="text-[13px] text-muted-foreground leading-relaxed mb-4">
-            It goes straight to the editor with the instant checks already running.
-            Everything imported is a copy — editing here never touches the original.
+            Imported as a copy. Editing here does not change the original.
           </p>
 
           <div className="flex flex-wrap gap-1.5 mb-3">
@@ -566,9 +563,9 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             <PenLine className="h-4 w-4 text-foreground/70" />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-[15px] font-semibold tracking-tight">Write something new</div>
+            <div className="text-[15px] font-semibold tracking-tight">Draft it with AI</div>
             <p className="text-[12.5px] text-muted-foreground">
-              Brief it and EngineAI drafts it answer-optimised from the first line.
+              Give it a brief and EngineAI writes the first version.
             </p>
           </div>
           <Button variant="outline" size="sm" onClick={onWriteNew} className="shrink-0">

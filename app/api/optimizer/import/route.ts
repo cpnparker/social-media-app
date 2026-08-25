@@ -479,7 +479,7 @@ export async function POST(req: NextRequest) {
       id_workspace: caller.workspaceId,
       user_created: caller.userId,
       id_client: clientId != null && !Number.isNaN(clientId) ? clientId : null,
-      name_title: title || "Untitled piece",
+      name_title: title || "Untitled",
       // Straight to refining: there is nothing to generate, and a status of
       // "brief" would send the writer to a form they do not need.
       type_status: "refining",

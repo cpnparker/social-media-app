@@ -251,7 +251,7 @@ function OptimizerStudio() {
         if (!res.ok) {
           if (cancelled) return;
           hydratedRef.current = null;
-          toast.error(res.status === 404 ? "That piece no longer exists" : "Could not open that piece");
+          toast.error(res.status === 404 ? "That no longer exists" : "Could not open that");
           router.replace("/engineai/optimizer", { scroll: false });
           return;
         }
@@ -294,7 +294,7 @@ function OptimizerStudio() {
       } catch {
         if (cancelled) return;
         hydratedRef.current = null;
-        toast.error("Could not open that piece");
+        toast.error("Could not open that");
       }
     })();
     return () => { cancelled = true; };
@@ -355,7 +355,7 @@ function OptimizerStudio() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           workspaceId,
-          title: "Untitled piece",
+          title: "Untitled",
           targetQueries: [],
           format: "explainer",
           platform: "balanced",
@@ -366,7 +366,7 @@ function OptimizerStudio() {
         }),
       });
       const created = await res.json();
-      if (!res.ok) { toast.error(created.error || "Could not start that piece"); return; }
+      if (!res.ok) { toast.error(created.error || "Could not start that"); return; }
       setContentTypeId(type);
       setTitle("");
       setBody("");
@@ -384,7 +384,7 @@ function OptimizerStudio() {
       setPhase("studio");
       openSession(created.sessionId);
     } catch {
-      toast.error("Could not start that piece");
+      toast.error("Could not start that");
     } finally {
       setBusy(false);
     }
@@ -472,7 +472,7 @@ function OptimizerStudio() {
       const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspaceId, title: next || "Untitled piece" }),
+        body: JSON.stringify({ workspaceId, title: next || "Untitled" }),
       });
       if (!res.ok) {
         savedTitleRef.current = "";
@@ -489,7 +489,7 @@ function OptimizerStudio() {
   // ── Generate ──
   const generate = useCallback(async () => {
     if (!workspaceId) { toast.error("Select a workspace first"); return; }
-    if (!title.trim()) { toast.error("Give the piece a working title"); return; }
+    if (!title.trim()) { toast.error("Give it a working title"); return; }
 
     setBusy(true);
     try {
@@ -502,7 +502,7 @@ function OptimizerStudio() {
         }),
       });
       const created = await createRes.json();
-      if (!createRes.ok) { toast.error(created.error || "Could not start that piece"); return; }
+      if (!createRes.ok) { toast.error(created.error || "Could not start that"); return; }
 
       setSessionId(created.sessionId);
       setStudioView("optimise");
@@ -974,7 +974,7 @@ function OptimizerStudio() {
     );
   }
 
-  // ── All pieces ──
+  // ── All content ──
   //
   // The rail lists five and then "N more…". That link used to land on the start
   // screen — a promise of the rest of your work, delivering a create form.
@@ -984,20 +984,20 @@ function OptimizerStudio() {
         <div className="mx-auto w-full max-w-[52rem] px-6 py-10 flex flex-col gap-5">
           <div className="flex items-baseline justify-between gap-3">
             <div className="flex flex-col gap-1">
-              <h1 className="text-2xl font-bold tracking-tight">All pieces</h1>
+              <h1 className="text-2xl font-bold tracking-tight">All content</h1>
               <p className="text-sm text-muted-foreground">
-                Everything you can see in this workspace — yours, and anything shared with the team.
+                Yours, plus anything shared with the team.
               </p>
             </div>
             <Button size="sm" variant="outline" onClick={() => { setPhase("start"); router.push("/engineai/optimizer"); }}>
-              Start a piece
+              Start writing
             </Button>
           </div>
           {allPieces === null ? (
             <div className="flex justify-center py-12"><Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /></div>
           ) : allPieces.length === 0 ? (
             <p className="text-[13px] text-muted-foreground py-8">
-              Nothing here yet. Start one and it will appear in the rail as you work.
+              Nothing here yet.
             </p>
           ) : (
             <div className="flex flex-col rounded-xl border divide-y overflow-hidden">
@@ -1009,7 +1009,7 @@ function OptimizerStudio() {
                 >
                   <PenLine className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                   <span className="flex-1 min-w-0 truncate text-[13.5px] font-medium">
-                    {a.name_title || "Untitled piece"}
+                    {a.name_title || "Untitled"}
                   </span>
                   {/* Rendered from labelOf, which returns null for the type the
                       product does not name — so that row simply shows no kind,
@@ -1060,7 +1060,7 @@ function OptimizerStudio() {
             ← Back
           </button>
           <div className="flex flex-col gap-1">
-            <h1 className="text-2xl font-bold tracking-tight">New piece</h1>
+            <h1 className="text-2xl font-bold tracking-tight">New</h1>
             <p className="text-sm text-muted-foreground">
               Brief it, and EngineAI drafts it answer-optimised from the first line.
               {selectedCustomer ? ` Grounded in what we know about ${selectedCustomer.name}.` : ""}
@@ -1205,7 +1205,7 @@ function OptimizerStudio() {
             <Menu className="h-4 w-4" />
           </button>
           <button onClick={closeSession} className="text-[13px] text-muted-foreground hover:text-foreground shrink-0">
-            ← All pieces
+            ← All content
           </button>
           <span className="w-px h-4 bg-border shrink-0" />
           <span className="text-[13px] font-semibold truncate flex-1 min-w-0">{title}</span>
@@ -1371,7 +1371,7 @@ function OptimizerStudio() {
           />
           <div className="mx-auto w-full max-w-[46rem] px-6 py-6">
             {/* THE TITLE, in the editor rather than only in the brief form.
-                A blank piece is created as "Untitled piece" and the brief's
+                A blank piece is created as "Untitled" and the brief's
                 title input is on a screen the write-it-yourself path never
                 visits — so every blank piece stayed Untitled unless the writer
                 found the double-click rename in the sidebar. A document you
@@ -1385,7 +1385,7 @@ function OptimizerStudio() {
               onChange={(e) => setTitle(e.target.value)}
               onBlur={() => { void saveTitle(); }}
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
-              placeholder="Untitled piece"
+              placeholder="Untitled"
               aria-label="Title"
               className="w-full mb-3 bg-transparent border-0 px-0 text-[26px] font-bold tracking-tight placeholder:text-muted-foreground/40 focus:outline-none"
             />

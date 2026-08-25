@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
   if (!guard.ok) return guard.response;
   const { caller } = guard;
 
-  const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : "Untitled piece";
+  const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : "Untitled";
   const clientId = body.clientId != null ? Number(body.clientId) : null;
 
   // A client-scoped session must pass the same client gate as everything else

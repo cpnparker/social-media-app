@@ -584,7 +584,7 @@ export default function MessageBubble({
                 <span>Retry</span>
               </button>
             )}
-            {/* Start a piece from this answer.
+            {/* Start writing from this answer.
                 Sends TWO IDS and nothing else — the route re-reads the
                 conversation and the message itself and makes its own access,
                 incognito and privacy decisions. The browser supplying the text
@@ -606,19 +606,19 @@ export default function MessageBubble({
                     });
                     const j = await res.json().catch(() => ({}));
                     if (!res.ok) {
-                      toast.error(j.error || "Could not start a piece from this");
+                      toast.error(j.error || "Could not start content from this");
                       return;
                     }
                     window.location.href = `/engineai/optimizer?session=${encodeURIComponent(j.sessionId)}`;
                   } catch {
-                    toast.error("Could not start a piece from this");
+                    toast.error("Could not start content from this");
                   }
                 }}
                 className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50"
-                title="Open this answer in the Writing Studio as a new piece"
+                title="Open this answer in the Writing Studio"
               >
                 <PenLine className="h-3 w-3" />
-                <span>Start a piece</span>
+                <span>Start writing</span>
               </button>
             )}
             {onFactCheck && !isFactCheck && (

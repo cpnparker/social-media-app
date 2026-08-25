@@ -174,7 +174,7 @@ export default function EngineAISidebar({
         setArticles(
           d.sessions.map((row: any) => ({
             id: row.id_session,
-            title: row.name_title || "Untitled piece",
+            title: row.name_title || "Untitled",
             status: row.type_status || "",
             // Default to private on a null. A row with no visibility is
             // invisible in BOTH tabs under strict equality, which reads as data
@@ -528,7 +528,7 @@ export default function EngineAISidebar({
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/40" />
               <input
-                placeholder="Search pieces and chats"
+                placeholder="Search content and chats"
                 value={searchQuery}
                 onChange={(e) => onSearchChange(e.target.value)}
                 className="w-full h-8 rounded-lg bg-white/[0.06] border border-white/[0.08] pl-8 pr-3 text-[13px] text-white placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-white/20"
@@ -605,7 +605,7 @@ export default function EngineAISidebar({
                     <div className="mb-1">
                       <div className="flex items-center justify-between px-2.5 pt-3 pb-1">
                         <p className="text-[11px] font-semibold text-white/55 uppercase tracking-wider">
-                          Pieces
+                          Content
                         </p>
                         <div className="flex items-center gap-1.5">
                           {visibleArticles.length > 0 && (
@@ -620,7 +620,7 @@ export default function EngineAISidebar({
                             <DropdownMenuTrigger asChild>
                               <button
                                 className="text-[11px] font-semibold text-white/55 hover:text-white transition-colors px-1"
-                                title="Start a piece"
+                                title="Start writing"
                               >
                                 New
                               </button>
@@ -632,7 +632,7 @@ export default function EngineAISidebar({
                                   onClick={() => router.push(`/engineai/optimizer?new=${encodeURIComponent(t.id)}`)}
                                 >
                                   <PenLine className="h-3.5 w-3.5 mr-2 opacity-60" />
-                                  Blank {String(t.label).toLowerCase()}
+                                  {String(t.label)}
                                 </DropdownMenuItem>
                               ))}
                               <DropdownMenuSeparator />
@@ -654,8 +654,8 @@ export default function EngineAISidebar({
                           exists to fix. */}
                       {piecesState === "ok" && visibleArticles.length === 0 && (
                         <p className="px-2.5 pb-2 text-[11.5px] leading-snug text-white/40">
-                          Long-form writing lives here — drafts, reports, anything you
-                          want checked as you write. Start one with <span className="text-white/60">New</span>.
+                          Documents you write or bring in. Start one with{" "}
+                          <span className="text-white/60">New</span>.
                         </p>
                       )}
                       {visibleArticles.slice(0, searchQuery ? 8 : 5).map((a) => (
