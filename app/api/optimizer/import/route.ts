@@ -254,7 +254,22 @@ export async function POST(req: NextRequest) {
    *  dropped figure is how an import stops being trustworthy. */
   let importWarnings: string[] = [];
 
-  if (source === "pasted") {
+  if (source === "chat") {
+    // Already acquired, server-side, above. It gets a branch of its own rather
+    // than nothing because this chain ENDS in an `else` that means "from the
+    // Engine pipeline" and demands a numeric content id — so a source with no
+    // branch does not fall through harmlessly, it falls into a different
+    // importer and fails with that importer's error. Which is exactly what
+    // happened: "Start a piece" returned "Which piece?".
+    content = chatText || "";
+    if (!title) {
+      // Named from the answer's own first line, trimmed of markdown furniture,
+      // so the piece arrives with something better than "Untitled piece".
+      const firstLine = content.split(/\n/).map((l) => l.replace(/^#+\s*/, "").trim()).filter(Boolean)[0] || "";
+      title = firstLine.slice(0, 80) || "From a chat";
+    }
+    sourceRef = String(body.conversationId || "");
+  } else if (source === "pasted") {
     content = typeof body.content === "string" ? body.content : "";
     if (!content.trim()) return NextResponse.json({ error: "Nothing to import" }, { status: 400 });
   } else if (source === "url") {

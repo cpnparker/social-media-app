@@ -90,6 +90,49 @@ console.log("\n1. The server lifts the text; the browser never supplies it");
     : fail("any message role would do — 'start a piece from this answer' must mean an answer");
 }
 
+console.log("\n1b. Every source has a branch in the content chain");
+{
+  // THE BUG THIS EXISTS FOR, found by QA in a real browser: the chain that
+  // acquires content ends in a bare `else` meaning "from the Engine pipeline".
+  // A source with no branch therefore does not fall through harmlessly — it
+  // falls into a DIFFERENT importer and fails with that importer's error.
+  // "Start a piece" returned "Which piece?", which is the Engine branch asking
+  // for a content id. A missing branch is invisible to a typechecker and to
+  // every assertion about the chat branch itself.
+  const chainStart = importSrc.indexOf('if (source === "pasted")');
+  const head = chainStart >= 0 ? importSrc.slice(0, chainStart) : "";
+  const chain = chainStart >= 0 ? importSrc.slice(chainStart) : "";
+  const branchesFor = (src: string) => {
+    const out: string[] = [];
+    const re = /source === "([a-z-]+)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src)) !== null) if (out.indexOf(m[1]) < 0) out.push(m[1]);
+    return out;
+  };
+  const allowed = (() => {
+    const m = importSrc.match(/\[([^\]]*)\]\.indexOf\(source\)/);
+    return m ? m[1].split(",").map((v) => v.trim().replace(/"/g, "")) : [];
+  })();
+  const covered = branchesFor(chain).concat(branchesFor(head));
+  const orphans = allowed.filter((v) => covered.indexOf(v) < 0);
+  chainStart >= 0
+    ? pass("the content chain was found")
+    : fail("could not locate the content chain — this check is testing nothing");
+  // Exactly ONE source may be uncovered: the one the terminal `else` is FOR.
+  // That is "engine", and naming it here is the point — it turns "the last
+  // branch catches whatever is left" into "the last branch is the Engine
+  // importer, and nothing else may land in it". Any second orphan is a source
+  // that will fail with a stranger's error message.
+  const TERMINAL = "engine";
+  const unexpected = orphans.filter((v) => v !== TERMINAL);
+  unexpected.length === 0
+    ? pass(`every accepted source has a branch, or is the terminal else (${allowed.length} checked)`)
+    : fail(`${unexpected.join(", ")} would fall into the chain's final else — the Engine importer — and fail with its error`);
+  orphans.indexOf(TERMINAL) >= 0
+    ? pass(`the terminal else is still the ${TERMINAL} importer`)
+    : fail(`${TERMINAL} gained its own branch — the terminal else now catches something unnamed`);
+}
+
 console.log("\n2. Access, workspace and incognito are decided here");
 {
   const gate = branch.indexOf("checkConversationAccess(");
@@ -193,6 +236,14 @@ if (process.argv.indexOf("--self-test") >= 0) {
     const src = 'if (source === "chat") { const a = { b: 1 }; }\nconst after = 2;';
     const b = chatBranch(src);
     return b.indexOf("const a") > 0 && b.indexOf("after") < 0;
+  })());
+  detects("a source with no branch in the chain", (() => {
+    const allowed = ["pasted", "chat"];
+    const chain = 'if (source === "pasted") {} else { engine }';
+    const covered: string[] = [];
+    const re = /source === "([a-z-]+)"/g; let m: RegExpExecArray | null;
+    while ((m = re.exec(chain)) !== null) covered.push(m[1]);
+    return allowed.filter((v) => covered.indexOf(v) < 0).length === 1;
   })());
   detects("a route/CHECK mismatch", (() => {
     const mig = ["a", "b"].sort();
