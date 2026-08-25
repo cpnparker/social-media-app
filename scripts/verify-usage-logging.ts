@@ -313,6 +313,45 @@ for (let i = 0; i < FILES.length; i++) {
 }
 if (!gated) fail("no optimizer route appears to spend — check 4b is testing nothing");
 
+// ── 4c. Every streaming caller records what it spent, by the right name ─
+// Two faults this catches that check 4 could NOT, both live on 2026-08-25:
+//
+//   fact-check ran Sonnet 5 at 4,096 output tokens with webSearch ON — and
+//   Anthropic bills the web_search tool PER SEARCH on top of tokens — and
+//   called no usage logger AT ALL. A check that inspects existing log calls is
+//   blind to a route that makes none; the absence has to be the assertion.
+//
+//   meeting-prep passed the bare literal `model: "claude-sonnet-5"` to
+//   logAiUsage from inside the callback that had `result.modelUsed` on it. A
+//   bare literal is not a `||` fallback, so check 4's shape test passed it.
+//
+// The rule: if a file calls createStreamingResponse it has spent money, so it
+// must write a row — and where the answering model is knowable, the row must
+// use it. `modelUsed` exists precisely because the model that ANSWERS differs
+// from the one requested on four separate fallback paths.
+console.log("\n4c. Streaming callers log their spend, under the answering model");
+
+let streamers = 0;
+for (let i = 0; i < FILES.length; i++) {
+  const raw = fs.readFileSync(FILES[i], "utf8");
+  if (rel(FILES[i]).indexOf("lib/ai/providers.ts") === 0) continue; // the implementation itself
+  const src = stripComments(raw);
+  if (src.indexOf("createStreamingResponse(") < 0) continue;
+  streamers++;
+  const logs = src.indexOf("logAiUsage(") >= 0 || src.indexOf('from("ai_usage")') >= 0;
+  logs
+    ? pass(`${rel(FILES[i])} records its spend`)
+    : fail(`${rel(FILES[i])} calls createStreamingResponse but writes NO usage row — invisible spend, counts toward no cap`);
+  if (!logs) continue;
+  const exprs = loggedModelExprs(src).filter((e) => e);
+  for (let j = 0; j < exprs.length; j++) {
+    /modelUsed/.test(exprs[j])
+      ? pass(`${rel(FILES[i])} names the answering model`)
+      : fail(`${rel(FILES[i])} logs model \`${exprs[j].slice(0, 40)}\` — a streaming caller must use modelUsed, or a fallback answer is billed under the wrong model`);
+  }
+}
+if (!streamers) fail("no streaming caller found — check 4c is testing nothing");
+
 // ── Self-test ──────────────────────────────────────────────────────────
 // Fixture-only. This tree is shared with other sessions and also deploys, so
 // nothing here mutates a repo file to prove a detector fires.
@@ -363,6 +402,16 @@ if (process.argv.indexOf("--self-test") >= 0) {
     !/\bresult\.model\b(?!Used)/.test(stripComments('// `result.model` was undefined\nconst x = result.modelUsed;')));
   detects("a real result.model read IS caught",
     /\bresult\.model\b(?!Used)/.test(stripComments('const m = result.model || "claude-sonnet-5";')));
+    detects("a streaming caller with NO usage row at all",
+    (() => {
+      const blob = 'const s = createStreamingResponse(m, o, async ({fullText}) => { save(fullText); });';
+      return blob.indexOf("createStreamingResponse(") >= 0 &&
+        blob.indexOf("logAiUsage(") < 0 && blob.indexOf('from("ai_usage")') < 0;
+    })());
+  detects("the exact meeting-prep bare-literal shape",
+    !/modelUsed/.test(loggedModelExprs('logAiUsage({ model: "claude-sonnet-5", source: "meeting-prep" });')[0] || ""));
+  detects("a modelUsed expression is NOT flagged",
+    /modelUsed/.test(loggedModelExprs('logAiUsage({ model: result.modelUsed, source: "x" });')[0] || ""));
     detects("the model expression is extracted from a logAiUsage call",
     loggedModelExprs('logAiUsage({ workspaceId: w, model: result.modelUsed, source: "optimizer" });')[0] === "result.modelUsed");
 

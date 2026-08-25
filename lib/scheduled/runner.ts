@@ -197,7 +197,9 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
     const messages: AIMessage[] = [{ role: "user", content: task.document_prompt }];
 
     // Drain the stream server-side; capture the completion via onComplete.
-    let completion: { fullText: string; inputTokens: number; outputTokens: number } | null = null;
+    let completion:
+      | { fullText: string; inputTokens: number; outputTokens: number; modelUsed: string; cacheReadTokens?: number; cacheWriteTokens?: number }
+      | null = null;
     const done = new Promise<void>((resolve) => {
       const stream = createStreamingResponse(
         messages,
@@ -233,16 +235,28 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
     const fullText = completion ? (completion as any).fullText?.trim() || "" : "";
     const inputTokens = completion ? (completion as any).inputTokens || 0 : 0;
     const outputTokens = completion ? (completion as any).outputTokens || 0 : 0;
-    if (!fullText) throw new Error("Run produced no output");
 
+    // LOGGED BEFORE THE EMPTY-OUTPUT THROW. A headless run that consumed its
+    // whole prompt and every tool round and then returned nothing is the most
+    // expensive kind of run there is, and it was the one kind that recorded
+    // nothing: the throw below fired first and the log line was never reached.
+    //
+    // modelUsed, not `model` — `model` is what the runner CHOSE at selection
+    // time, and four paths make the answering model differ from it. And cache
+    // tokens are passed: Anthropic bills cache WRITES above base input, so
+    // omitting them under-reported every cached run.
     logAiUsage({
       workspaceId: task.id_workspace,
       userId: task.user_created,
-      model,
+      model: (completion as any)?.modelUsed || model,
       source: "scheduled-prompt",
       inputTokens,
       outputTokens,
+      cacheReadTokens: (completion as any)?.cacheReadTokens || 0,
+      cacheWriteTokens: (completion as any)?.cacheWriteTokens || 0,
     });
+
+    if (!fullText) throw new Error("Run produced no output");
 
     // Monitor gate: compare this run's state block against the stored snapshot
     // and stay QUIET when nothing changed (the whole point of a monitor).

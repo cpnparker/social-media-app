@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { logAiUsage } from "@/lib/ai/usage-logger";
 import { checkConversationAccess } from "@/lib/ai/access";
 import { createStreamingResponse, type AIMessage } from "@/lib/ai/providers";
 
@@ -120,14 +121,40 @@ export async function POST(
         temperature: 0.2,
         preserveLinks: true,
       },
-      async ({ fullText }) => {
+      async ({ fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, modelUsed }) => {
+        // LOG THE SPEND, FIRST AND UNCONDITIONALLY.
+        //
+        // This route called no usage logger at all. It runs Sonnet 5 at 4,096
+        // output tokens with webSearch ON — and Anthropic bills the web_search
+        // tool PER SEARCH, on top of tokens — so fact-check was billable spend
+        // on the live chat surface that appeared nowhere in intelligence.ai_usage
+        // and counted toward no cap. Same shape as the voice faults fixed on
+        // 2026-08-24: the guard existed, the data it needed was never produced.
+        //
+        // Before the incognito branch on purpose: incognito suppresses storing
+        // the user's WORDS, which is a privacy promise. It was never a promise
+        // not to bill, and an unlogged cost is not a privacy feature. Nothing
+        // here carries conversation text — model id, token counts, ids.
+        logAiUsage({
+          workspaceId: conversation.id_workspace,
+          userId,
+          // modelUsed, not the literal below: an Anthropic failure falls back
+          // to grok-4.3, and pricing that at Sonnet's rate is a 4x output error.
+          model: modelUsed,
+          source: "fact-check",
+          inputTokens: inputTokens || 0,
+          outputTokens: outputTokens || 0,
+          cacheReadTokens: cacheReadTokens || 0,
+          cacheWriteTokens: cacheWriteTokens || 0,
+        });
+
         // Save as assistant message (unless incognito)
         if (!conversation.flag_incognito && fullText.trim()) {
           await intelligenceDb.from("ai_messages").insert({
             id_conversation: conversationId,
             role_message: "assistant",
             document_message: fullText,
-            name_model: "claude-sonnet-5",
+            name_model: modelUsed,
           });
 
           await intelligenceDb

@@ -222,7 +222,12 @@ export async function POST(req: NextRequest) {
           logAiUsage({
             workspaceId,
             userId: user.id_user,
-            model: "claude-sonnet-5",
+            // modelUsed, not the literal. The literal restated what this
+            // route CHOSE; an Anthropic failure falling back to grok-4.3 was
+            // then priced at $2/$10 instead of $1.25/$2.50 and charged to the
+            // claude provider bucket. `result` was already in scope with the
+            // right answer on it.
+            model: result.modelUsed,
             source: "meeting-prep",
             inputTokens: result.inputTokens || 0,
             outputTokens: result.outputTokens || 0,
