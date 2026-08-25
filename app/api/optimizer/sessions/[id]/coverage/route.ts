@@ -26,6 +26,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { assertServiceAllowed } from "@/lib/admin/service-control";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import { parseDraft } from "@/lib/optimizer/parse";
+import { analysisAllowed, DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
 import {
   buildFanoutPrompt, parseFanoutResponse, buildParametricPrompt, buildNoveltyPrompt,
   parseNoveltyResponse, coverageKey, COVERAGE_PROMPT_VERSION,
@@ -62,6 +63,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const owned = await loadSessionForCaller(id, guard.caller);
   if (!owned.ok) return NextResponse.json({ error: owned.error }, { status: owned.status });
   const session = owned.session as any;
+
+  // THE TYPE GATE, before the kill switch and before any spend. "What would an
+  // AI already say about this topic" is not a question about a document written
+  // for one named audience about their own quarter, so coverage is off for
+  // every type but the article — and an analysis a type turns off must cost
+  // nothing to refuse.
+  if (!analysisAllowed(String((session as any).type_content || DEFAULT_CONTENT_TYPE), "coverage")) {
+    return NextResponse.json({ error: "Coverage analysis does not apply to this kind of document." }, { status: 400 });
+  }
 
   // THE KILL SWITCH. This route had none, while assess, suggest and generate
   // all had it — and coverage is the most expensive press in the studio: three

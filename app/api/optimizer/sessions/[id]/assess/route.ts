@@ -25,6 +25,7 @@ import { assertServiceAllowed } from "@/lib/admin/service-control";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
 import { parseDraft } from "@/lib/optimizer/parse";
+import { analysisAllowed, bandCopy, contentTypeKeyPart, DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
 import { computeDraftScores } from "@/lib/optimizer/engine";
 import {
   buildJudgePrompt, parseJudgeResponse, scoreJudgeResponse,
@@ -108,9 +109,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (draft.document_body.length > MAX_ASSESS_CHARS) {
     return NextResponse.json(
       {
-        error: `This draft is too long to assess (${Math.round(draft.document_body.length / 1000)}k characters). Assess it in sections — the rubric is calibrated for 800-2,500 words.`,
+        // Band from the content type, not a constant. A report writer being
+        // told their 6,000-word quarterly should be 800-2,500 words is the tool
+        // being confidently wrong about its own subject.
+        error:
+          `This draft is too long to assess (${Math.round(draft.document_body.length / 1000)}k characters). ` +
+          `Assess it in sections — the rubric is calibrated for ${bandCopy(String((session as any).type_content || DEFAULT_CONTENT_TYPE))}.`,
       },
       { status: 413 }
+    );
+  }
+
+  // THE TYPE GATE, before assertServiceAllowed and before the claim.
+  //
+  // A type that does not carry a judge has no score to produce, so this is not
+  // a budget question and must not consume one: an analysis a type turns off is
+  // refused outright rather than paid for and discarded. The UI already hides
+  // the button (chromeFor().showAssessAction), so reaching here means a direct
+  // POST or a stale tab — both of which should cost nothing.
+  const contentTypeId = String((session as any).type_content || DEFAULT_CONTENT_TYPE);
+  if (!analysisAllowed(contentTypeId, "judge")) {
+    return NextResponse.json(
+      { error: "This document is not scored." },
+      { status: 400 }
     );
   }
 
@@ -131,7 +152,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Fetching the last N and matching in the application misses a valid entry
   // older than N, so an identical input that was already paid for is judged and
   // billed again. Equality on an indexed column cannot miss.
-  const memoKey = assessmentKey(judgeInput, RUBRIC_VERSION);
+  // The type reaches the memo key, or re-typing a session serves a cached
+  // assessment scored under the OLD type's weights and criteria — the exact
+  // failure the rubric version constant exists to prevent, one field along.
+  const memoKey = assessmentKey(judgeInput, `${RUBRIC_VERSION}|${contentTypeKeyPart(contentTypeId)}`);
   const { data: cached } = await intelligenceDb
     .from("optimizer_assessments")
     .select("id_assessment, units_overall, units_retrievability, units_citability, name_grade, config_pillars")

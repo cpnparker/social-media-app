@@ -10,6 +10,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { CONTENT_TYPE_IDS, DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
 import { requireOptimizer } from "../_lib/access";
 import { getClientCanon } from "@/lib/optimizer/client-canon";
 import { canAccessClient, requireAuth } from "@/lib/permissions";
@@ -29,7 +30,7 @@ export async function GET(req: NextRequest) {
   const { data, error } = await intelligenceDb
     .from("optimizer_sessions")
     .select(
-      "id_session, name_title, type_status, type_format, type_visibility, type_source, id_client, user_created, date_updated"
+      "id_session, name_title, type_status, type_format, type_content, type_visibility, type_source, id_client, user_created, date_updated"
     )
     .eq("id_workspace", guard.caller.workspaceId)
     .or(`and(type_visibility.eq.private,user_created.eq.${guard.caller.userId}),type_visibility.eq.team`)
@@ -107,6 +108,11 @@ export async function POST(req: NextRequest) {
       name_title: title,
       type_status: "brief",
       type_format: typeof body.format === "string" ? body.format : "explainer",
+      // The KIND of document, distinct from type_format (its sub-shape within a
+      // kind: explainer, listicle...). Defaulted rather than required so every
+      // existing caller keeps working and every pre-existing row reads as an
+      // article, which is what they all are.
+      type_content: CONTENT_TYPE_IDS.indexOf(body.contentType) >= 0 ? body.contentType : DEFAULT_CONTENT_TYPE,
       type_platform: typeof body.platform === "string" ? body.platform : "balanced",
       config_brief: brief,
       config_canon: canon,
