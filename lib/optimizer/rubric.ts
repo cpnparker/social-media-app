@@ -38,7 +38,7 @@ import type { EvidenceGrade, RollUp, Tier } from "./types";
 // (employees, sites, plants, tons, megawatts...). Detection change, not a
 // weight change — but scores move on figure-heavy corporate content, so the
 // version moves with them and every memo re-keys.
-export const RUBRIC_VERSION = "1.1.0";
+export const RUBRIC_VERSION = "1.2.0";
 
 // ── Pillars ──────────────────────────────────────────────────────────────
 
@@ -108,6 +108,13 @@ export const CRITERIA: CriterionMeta[] = [
   // Pillar 4 — Entity clarity & consistency (max 40)
   { key: "pronoun-opening-chunks", name: "No section opens on a bare pronoun", pillar: 4, maxPoints: 15, kind: "guard", rollUp: "citability", evidence: "C" },
   { key: "canonical-name-consistency", name: "Brand named consistently", pillar: 4, maxPoints: 10, kind: "guard", rollUp: "both", evidence: "C" },
+  // The same PERSON spelled two ways — "Alexander Kitchin" in the body,
+  // "Alexander Kitchn" in his own credits heading, one keystroke apart on the
+  // founder's own draft. A model deciding whether two mentions are one entity
+  // has exactly the evidence the page gives it; a misspelled expert is a
+  // fractured entity AND an embarrassment. Distance one, surnames of five or
+  // more letters, so Bird/Bond stay two people.
+  { key: "person-name-consistency", name: "People are spelled one way", pillar: 4, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "D" },
   { key: "chunk-entity-naming", name: "Sections name their subject explicitly", pillar: 4, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "C" },
   { key: "entity-defined-once", name: "One definition of the main entity, not several", pillar: 4, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "C" },
   // Thomas Cremese's "single most expensive mistake" (Amrize audit, Aug 2026):
@@ -141,6 +148,12 @@ export const CRITERIA: CriterionMeta[] = [
   { key: "comparative-format-match", name: "Ranked list or table for comparative intent", pillar: 6, maxPoints: 10, kind: "reward", rollUp: "both", evidence: "B" },
   { key: "heading-hierarchy", name: "Heading hierarchy clean", pillar: 6, maxPoints: 15, kind: "reward", rollUp: "both", evidence: "C" },
   { key: "heading-density", name: "Section headings at a healthy density", pillar: 6, maxPoints: 5, kind: "reward", rollUp: "both", evidence: "C" },
+  // A bracketed production note — "[Professional headshot image]", "[TK]",
+  // "[insert chart]" — is a defect no reader should ever meet, and the
+  // founder's own draft shipped FIVE of them into the scorer with nothing
+  // noticing. Grade D: no research needed to know a placeholder in published
+  // copy is wrong.
+  { key: "placeholder-guard", name: "No production placeholders left in the copy", pillar: 6, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "D" },
   { key: "keyword-stuffing-guard", name: "No keyword stuffing", pillar: 6, maxPoints: 10, kind: "guard", rollUp: "retrievability", evidence: "A" },
   { key: "ai-tell-guard", name: "No AI-tell vocabulary", pillar: 6, maxPoints: 10, kind: "guard", rollUp: "citability", evidence: "D" },
 ];
@@ -372,6 +385,34 @@ export const TRANSFORMATION_NOUNS = [
  *  Same reasoning as NAKED_STAT_TIERS' tolerance. */
 export const PROMO_CLAIM_TIERS: Tier[] = [
   { min: 0, points: 5 }, { min: 0.9, points: 3 }, { min: 2, points: 1 }, { min: 4, points: 0 },
+];
+
+
+/** The inner text of a bracket that marks a PRODUCTION NOTE rather than prose.
+ *  Keyword-gated so "[sic]", numeric citations "[1]" and markdown links (the
+ *  bracket-then-paren shape) never fire. */
+export const PLACEHOLDER_RE =
+  /\[(?![0-9]+\])([^\]]{0,60}?(?:image|photo|headshot|caption|insert|chart|graphic|logo|video|embed|placeholder|alt text|tk|tbd|coming soon|to come|xx)[^\]]{0,60}?)\](?!\()/gi;
+
+
+/** A record claim — superlative plus verifiable scope. "The tallest and
+ *  longest span of UHPC in North America" is the strongest marketing sentence
+ *  a piece can carry and PRECISELY the sentence an engine will not repeat
+ *  without a source; on the founder's own draft it was the one claim no
+ *  detector could see. Sourced sentences are exempt: a record WITH a verifier
+ *  is exactly what the rubric wants more of. */
+export const RECORD_CLAIM_RE =
+  /\b(?:tallest|largest|longest|biggest|highest|first|oldest|fastest|heaviest)\b[^.!?]{0,80}?\b(?:in\s+(?:the\s+)?(?:world|North America|America|Europe|Asia|the\s+country|the\s+region|the\s+industry)|on\s+record|ever\s+(?:built|made|cast|installed|attempted))\b/i;
+
+
+/** A short, unpunctuated production note standing as its own block — "Web
+ *  photo slideshow" sat mid-article on the founder's draft, three words that
+ *  are instructions to a designer, not prose, and being unbracketed it slipped
+ *  the bracket rule. Gated three ways (own block, four words or fewer, no
+ *  terminal punctuation) so a legitimate kicker like "A new era." never fires. */
+export const PRODUCTION_NOTE_WORDS = [
+  "slideshow", "gallery", "placeholder", "headshot", "embed", "carousel",
+  "lorem", "wireframe", "mockup", "hero image", "infographic here", "chart here",
 ];
 
 export const SUPERLATIVE_TERMS = [

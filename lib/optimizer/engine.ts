@@ -24,6 +24,7 @@ import {
   SUMMARY_MARKERS, CREDENTIAL_KEYWORDS, ROLE_TITLE_PATTERN, YEARS_EXPERIENCE_PATTERN,
   EXPERIENCE_MARKERS, WORKED_EXAMPLE_STRONG, WORKED_EXAMPLE_WEAK,
   BENEFIT_VERBS, GENERIC_BENEFICIARIES, TRANSFORMATION_NOUNS, PROMO_CLAIM_TIERS,
+  PLACEHOLDER_RE, RECORD_CLAIM_RE, PRODUCTION_NOTE_WORDS,
   CURRENCY_PHRASES, AI_TELL_TERMS, NOT_JUST_PATTERN,
   AUTHOR_LINE_PATTERN, COMPARATIVE_QUERY_PATTERN, STOPWORDS,
 } from "./rubric";
@@ -201,8 +202,24 @@ function pillar2(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   // criterion counting the same thing from the other end. Scoring "sourced
   // ratio" as a reward AND "naked count" as a penalty would be AuthorityOn's
   // FAQ double-count wearing a different hat.
-  if (p.stats.length === 0) {
-    out.push(skip("stat-source-adjacency", "No statistics to source"));
+  // The sourcing demand applies to EVIDENTIAL statistics — percentages,
+  // multipliers, currency, ratios, large counts — the figures that support an
+  // answer. It does not apply to:
+  //
+  //  - countWithUnit measurements. "Each letter over 4 feet tall", "a 103-word
+  //    excerpt", "14,000 pounds": dimensions of the subject being reported,
+  //    where the article IS the primary source. On the founder's own draft the
+  //    old rule flagged eight of these and zero of them needed a citation —
+  //    while "10 times the compressive strength", the one claim that did, was
+  //    not detected at all. They still count toward statistic DENSITY, because
+  //    specificity is real; what they never carry is a sourcing debt.
+  //  - stats inside quotations: the parser marks those sourced when the quote
+  //    is attributed (the named speaker is the source), and an UNattributed
+  //    quote's figure is the quote's problem, not the figure's — flagged once
+  //    by attributed-quotes, not twice.
+  const sourceable = p.stats.filter(function (st) { return st.kind !== "countWithUnit" && !st.inQuote; });
+  if (sourceable.length === 0) {
+    out.push(skip("stat-source-adjacency", "No evidential statistics to source"));
   } else {
     let naked = 0;
     // Highlight the STATISTIC, but describe the sentence — the fix is adding a
@@ -210,23 +227,30 @@ function pillar2(p: ParsedDraft, input: DraftInput): CriterionResult[] {
     // thing to change. This is the single most valuable free annotation the
     // tool has: an unsourced figure is what an engine refuses to cite.
     const nakedSpans: CriterionSpan[] = [];
-    for (let i = 0; i < p.stats.length; i++) {
-      if (p.stats[i].sourced) continue;
+    for (let i = 0; i < sourceable.length; i++) {
+      if (sourceable[i].sourced) continue;
       naked++;
-      nakedSpans.push({ start: p.stats[i].start, end: p.stats[i].end, note: "no source in this sentence" });
+      nakedSpans.push({ start: sourceable[i].start, end: sourceable[i].end, note: "no source in this sentence" });
     }
-    const nakedPct = (naked / p.stats.length) * 100;
+    const nakedPct = (naked / sourceable.length) * 100;
     const pts = tieredScore(nakedPct, NAKED_STAT_TIERS);
     out.push(score("stat-source-adjacency", pts, naked === 0,
-      naked === 0 ? "all " + p.stats.length + " sourced" : naked + " of " + p.stats.length + " statistics have no source in the sentence",
+      naked === 0 ? "all " + sourceable.length + " sourced" : naked + " of " + sourceable.length + " evidential statistics have no source in the sentence",
       nakedSpans));
   }
 
   let attributed = 0;
   const unattributedQuotes: CriterionSpan[] = [];
   for (let i = 0; i < p.quotes.length; i++) {
-    if (p.quotes[i].attributed) attributed++;
-    else unattributedQuotes.push({ start: p.quotes[i].start, end: p.quotes[i].end, note: "no speaker named" });
+    if (p.quotes[i].attributed) { attributed++; continue; }
+    // Short quotes embedded mid-sentence — "with their refusal to stop at
+    // 'Let's see if we can solve it,' and push to…" — are rhetorical
+    // fragments, not evidence quotations. "Name who said it" is the wrong
+    // advice there: the sentence around them already carries the actor, and
+    // bolting a speaker onto a seven-word flourish makes the prose worse.
+    // They still EARN credit when attributed; they are never flagged.
+    if (p.quotes[i].wordCount < 10) continue;
+    unattributedQuotes.push({ start: p.quotes[i].start, end: p.quotes[i].end, note: "no speaker named" });
   }
   const qPts = attributed >= 2 ? 10 : attributed === 1 ? 6 : 0;
   out.push(score("attributed-quotes", qPts, attributed > 0,
@@ -244,6 +268,22 @@ function pillar2(p: ParsedDraft, input: DraftInput): CriterionResult[] {
       while ((m = re.exec(p.text)) !== null) {
         sup++;
         if (supSpans.length < 8) supSpans.push({ start: m.index, end: m.index + m[0].length, note: "unverifiable superlative" });
+      }
+    }
+    // Record claims: a superlative with a verifiable scope, unsourced. "The
+    // tallest and longest span of UHPC in North America" was the founder's
+    // draft's strongest marketing sentence and the one claim no detector could
+    // see — an engine will not repeat a record without a source. Sourced
+    // record sentences are exempt: a verified record is what the rubric WANTS.
+    for (let si = 0; si < p.sentences.length; si++) {
+      const sent = p.sentences[si];
+      if (sent.kind === "heading") continue;
+      const rm = RECORD_CLAIM_RE.exec(sent.text);
+      if (!rm) continue;
+      if (sentenceIsSourced(sent.text)) continue;
+      sup++;
+      if (supSpans.length < 8) {
+        supSpans.push({ start: sent.start + rm.index, end: sent.start + rm.index + rm[0].length, note: "a record claim with no one behind it — name who verified it" });
       }
     }
     out.push(score("unverifiable-superlatives", tieredScore(sup, SUPERLATIVE_TIERS), sup === 0,
@@ -397,8 +437,13 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   const qHeads = sectionHeads.filter(function (h) { return h.isInterrogativeShaped; });
   const ratio = sectionHeads.length > 0 ? qHeads.length / sectionHeads.length : 0;
   const qhPts = (qHeads.length >= 3 || (qHeads.length >= 2 && ratio >= 0.3)) ? 10 : qHeads.length === 2 ? 7 : qHeads.length === 1 ? 4 : 0;
-  const flatHeads = sectionHeads
-    .filter(function (h) { return !h.isInterrogativeShaped; })
+  // Advisory spans only when the criterion is short of full marks. At 10/10
+  // the remaining label headings are FINE — "Meet the experts" should stay a
+  // label, and flagging it anyway put three pieces of noise on a draft that
+  // had already earned the points. Under full marks, the spans show the
+  // writer which headings could convert.
+  const flatHeads = (qhPts >= 10 ? [] : sectionHeads
+    .filter(function (h) { return !h.isInterrogativeShaped; }))
     .map(function (h): CriterionSpan {
       return { start: h.start, end: h.end, note: "not question-shaped" };
     });
@@ -505,10 +550,76 @@ function pillar4(p: ParsedDraft, input: DraftInput): CriterionResult[] {
     }
   }
 
+
+  // The same person spelled two ways. OUTSIDE the canonical-brand branch,
+  // deliberately: the first version sat inside its double-else and silently
+  // vanished for every draft with no brand configured — people have names
+  // whether or not a brand does. Caught by a brandless fixture returning
+  // null for the criterion, not by the set-equality check, whose own fixture
+  // happens to carry a brand.
+  // The same person spelled two ways. Capitalised bigrams sharing a first
+  // name whose surnames sit ONE edit apart (and run five letters or longer,
+  // so Bird and Bond remain two people) are one person with a typo — the
+  // founder's own draft carried "Alexander Kitchin" in the body and
+  // "Alexander Kitchn" in the man's own credits heading. The RARER spelling
+  // is the flagged one: the majority is presumed correct.
+  {
+    const nameRe = /\b([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/g;
+    const byFirst: { [first: string]: { [last: string]: { count: number; spans: { start: number; end: number }[] } } } = {};
+    let nm: RegExpExecArray | null;
+    while ((nm = nameRe.exec(p.text)) !== null) {
+      const fam = byFirst[nm[1]] || (byFirst[nm[1]] = {});
+      const entry = fam[nm[2]] || (fam[nm[2]] = { count: 0, spans: [] });
+      entry.count++;
+      if (entry.spans.length < 4) entry.spans.push({ start: nm.index, end: nm.index + nm[0].length });
+    }
+    const editDistanceOne = function (a: string, b: string): boolean {
+      if (a === b) return false;
+      const la = a.length, lb = b.length;
+      if (Math.abs(la - lb) > 1) return false;
+      let i = 0, j = 0, edits = 0;
+      while (i < la && j < lb) {
+        if (a.charAt(i) === b.charAt(j)) { i++; j++; continue; }
+        if (++edits > 1) return false;
+        if (la > lb) i++;
+        else if (lb > la) j++;
+        else { i++; j++; }
+      }
+      return edits + (la - i) + (lb - j) === 1;
+    };
+    const nameSpans: CriterionSpan[] = [];
+    let variants = 0;
+    for (const first in byFirst) {
+      const lasts = Object.keys(byFirst[first]);
+      for (let a = 0; a < lasts.length; a++) {
+        for (let b = a + 1; b < lasts.length; b++) {
+          if (lasts[a].length < 5 || lasts[b].length < 5) continue;
+          if (!editDistanceOne(lasts[a], lasts[b])) continue;
+          variants++;
+          const ea = byFirst[first][lasts[a]], eb = byFirst[first][lasts[b]];
+          const rare = ea.count <= eb.count ? ea : eb;
+          const common = ea.count <= eb.count ? lasts[b] : lasts[a];
+          for (let si = 0; si < rare.spans.length && nameSpans.length < 8; si++) {
+            nameSpans.push({ start: rare.spans[si].start, end: rare.spans[si].end, note: 'spelled "' + first + " " + common + '" everywhere else' });
+          }
+        }
+      }
+    }
+    out.push(score("person-name-consistency", variants === 0 ? 5 : 0, variants === 0,
+      variants === 0 ? "every name spelled one way" : variants + " name" + (variants === 1 ? "" : "s") + " spelled two ways",
+      nameSpans));
+  }
+
   if (candidates.length === 0) {
     out.push(skip("chunk-entity-naming", "No brand or target query to name"));
   } else {
     let named = 0;
+    // The failing sections carry SPANS on their openers. This criterion sat at
+    // 0/10 on the founder's draft — "2 of 7 sections name their subject" —
+    // while pointing at nothing, so the writer knew a number and not one place
+    // to act on it. The span is the first sentence: naming the subject there
+    // is the fix.
+    const unnamedSpans: CriterionSpan[] = [];
     for (let i = 0; i < scored.length; i++) {
       const first2 = scored[i].firstTwoSentences.map(function (s) { return s.text; }).join(" ").toLowerCase();
       let hit = false;
@@ -519,11 +630,16 @@ function pillar4(p: ParsedDraft, input: DraftInput): CriterionResult[] {
         }
         if (hit) break;
       }
-      if (hit) named++;
+      if (hit) { named++; continue; }
+      const fs = scored[i].firstSentence;
+      if (fs && unnamedSpans.length < 8) {
+        unnamedSpans.push({ start: fs.start, end: fs.end, note: "this section opens without naming its subject — a lifted passage starts here with no anchor" });
+      }
     }
     const pct = scored.length > 0 ? (named / scored.length) * 100 : 0;
     out.push(score("chunk-entity-naming", tieredScore(pct, CHUNK_NAMING_TIERS), pct >= 80,
-      named + " of " + scored.length + " sections name their subject"));
+      named + " of " + scored.length + " sections name their subject",
+      pct >= 80 ? [] : unnamedSpans));
   }
 
   // Anonymous first-person facts: a statistic whose sentence says "we/our/us"
@@ -784,19 +900,25 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
   out.push(score("stale-year-guard", tieredScore(staleClaims, STALE_YEAR_TIERS), staleClaims === 0,
     staleClaims === 0 ? "no stale currency claims" : staleClaims + " stale 'as of' claim" + (staleClaims === 1 ? "" : "s")));
 
-  if (p.stats.length === 0) {
-    out.push(skip("current-year-stats", "No statistics to date"));
+  // Dating applies to figures with a VINTAGE — percentages, multipliers,
+  // currency, counts presented as evidence. A dimension does not decay: the
+  // old rule's spans told the founder to date "4 feet" ("as of August 2026"),
+  // which is advice nobody should ever see. Quoted figures are also out —
+  // dating someone's spoken words is rewriting them.
+  const datable = p.stats.filter(function (st) { return st.kind !== "countWithUnit" && !st.inQuote; });
+  if (datable.length === 0) {
+    out.push(skip("current-year-stats", "No datable statistics"));
   } else {
     let dated = false;
-    for (let i = 0; i < p.stats.length; i++) {
-      const sent = p.sentences[p.stats[i].sentenceIndex];
+    for (let i = 0; i < datable.length; i++) {
+      const sent = p.sentences[datable[i].sentenceIndex];
       if (!sent) continue;
       if (sent.text.indexOf(String(currentYear)) >= 0 || sent.text.indexOf(String(currentYear - 1)) >= 0) { dated = true; break; }
     }
     const undatedStats: CriterionSpan[] = [];
     if (!dated) {
-      for (let i = 0; i < p.stats.length && undatedStats.length < 8; i++) {
-        undatedStats.push({ start: p.stats[i].start, end: p.stats[i].end, note: "no year anywhere near it — engines discount undatable figures" });
+      for (let i = 0; i < datable.length && undatedStats.length < 8; i++) {
+        undatedStats.push({ start: datable[i].start, end: datable[i].end, note: "no year anywhere near it — engines discount undatable figures" });
       }
     }
     out.push(score("current-year-stats", dated ? 5 : 0, dated,
@@ -811,8 +933,20 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
   // The criterion scores the MEAN, but a writer cannot edit a mean. Point at
   // the individual sentences pulling it up — sorted longest first, so the ones
   // worth splitting come before the ones that are merely long.
+  // A sentence inside a quotation is someone's spoken words: "split this into
+  // two" is an instruction to misquote a named interviewee, and three of the
+  // six spans on the founder's draft pointed at exactly that. Quoted sentences
+  // still count toward the mean — the score describes the text as an engine
+  // chunks it — but the ACTIONABLE spans are the writer's own prose only.
+  const inAnyQuote = function (x: { start: number; end: number }): boolean {
+    for (let qi = 0; qi < p.quotes.length; qi++) {
+      const q = p.quotes[qi];
+      if (x.start < q.end && q.start < x.end) return true;
+    }
+    return false;
+  };
   const longSentences = prose
-    .filter(function (x) { return x.wordCount > 28; })
+    .filter(function (x) { return x.wordCount > 28 && !inAnyQuote(x); })
     .sort(function (a, b) { return b.wordCount - a.wordCount; })
     .map(function (x): CriterionSpan {
       return { start: x.start, end: x.end, note: x.wordCount + " words" };
@@ -852,6 +986,35 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
   const density = sectionHeads.length * per1k;
   const hdPts = (density >= 2 && density <= 8) ? 5 : ((density >= 1 && density < 2) || (density > 8 && density <= 12)) ? 3 : 0;
   out.push(score("heading-density", hdPts, hdPts === 5, density.toFixed(1) + " headings per 1,000 words"));
+
+  // Production placeholders. Five "[Professional headshot image]" notes rode
+  // the founder's own draft into the scorer, scored as ordinary prose, and
+  // would have been published verbatim. The regex is keyword-gated: "[sic]",
+  // "[1]" and markdown's bracket-paren link shape never fire.
+  {
+    const phSpans: CriterionSpan[] = [];
+    const phRe = new RegExp(PLACEHOLDER_RE.source, PLACEHOLDER_RE.flags);
+    let ph: RegExpExecArray | null;
+    while ((ph = phRe.exec(p.text)) !== null && phSpans.length < 8) {
+      phSpans.push({ start: ph.index, end: ph.index + ph[0].length, note: "a production note, not prose — this publishes verbatim" });
+    }
+    // The unbracketed form: a tiny prose block that is a designer instruction
+    // — "Web photo slideshow" stood as its own paragraph mid-article. Gated
+    // three ways (own block, four words or fewer, no terminal punctuation) so
+    // a legitimate kicker like "A new era." never fires.
+    for (let bi = 0; bi < p.blocks.length && phSpans.length < 8; bi++) {
+      const b = p.blocks[bi];
+      if (b.kind !== "prose") continue;
+      const bw = (b.text.match(/\S+/g) || []).length;
+      if (bw === 0 || bw > 4) continue;
+      if (/[.!?…]\s*$/.test(b.text.trim())) continue;
+      if (containsAny(b.text.toLowerCase(), PRODUCTION_NOTE_WORDS) === 0) continue;
+      phSpans.push({ start: b.start, end: b.end, note: "a production note standing as its own paragraph — this publishes verbatim" });
+    }
+    out.push(score("placeholder-guard", phSpans.length === 0 ? 5 : 0, phSpans.length === 0,
+      phSpans.length === 0 ? "none found" : phSpans.length + " placeholder" + (phSpans.length === 1 ? "" : "s") + " left in the copy",
+      phSpans));
+  }
 
   // Stuffing. Brand tokens are excluded: entity naming is REWARDED in pillar 4,
   // and a rubric that rewards a signal in one place and punishes it in another

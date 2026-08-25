@@ -104,6 +104,10 @@ export interface StatMention extends Range {
   sentenceIndex: number;
   /** A source signal sits in the SAME sentence — the extraction unit an engine quotes. */
   sourced: boolean;
+  /** Inside a direct quotation. An ATTRIBUTED quote's stats are sourced — the
+   *  named speaker IS the source — and asking the writer to add a citation
+   *  inside someone's spoken words is asking them to misquote. */
+  inQuote: boolean;
 }
 
 export interface LinkRef {
@@ -379,7 +383,12 @@ const STAT_PATTERNS: { re: RegExp; kind: StatKind }[] = [
   // truncated "EUR 5 million" to "EUR 5 m" and left the rest of the word
   // dangling in the sentence.
   { re: /[$£€¥]\s?\d[\d,.]*(?:\s?(?:trillion|billion|million|bn|k|m))?|\b(?:usd|eur|gbp|chf)\s?\d[\d,.]*(?:\s?(?:trillion|billion|million|bn|k|m))?|\b\d[\d,.]*\s?(?:usd|eur|gbp|chf)\b/gi, kind: "currency" },
-  { re: /\b\d+(?:\.\d+)?\s?(?:x|×)\b/gi, kind: "multiplier" },
+  // "10x" AND "10 times" AND "five times" — the spelled forms are how prose
+  // actually states a multiplier, and the x-only pattern left "10 times the
+  // compressive strength of traditional concrete" invisible to every statistic
+  // criterion: the strongest material claim in a real client draft was the one
+  // figure nothing asked a source for.
+  { re: /\b\d+(?:\.\d+)?\s?(?:x|×)\b|\b(?:\d+(?:\.\d+)?|two|three|four|five|six|seven|eight|nine|ten|twelve|twenty|fifty|hundred)\s+times\b/gi, kind: "multiplier" },
   { re: /\b\d[\d,.]*\s?(?:trillion|billion|million|bn|k|m)\b/gi, kind: "largeNumber" },
   { re: /\b\d+\s+(?:out\s+of|of)\s+\d+\b/gi, kind: "ratio" },
   // The unit list was fintech-flavoured (merchants, transactions, migrations)
@@ -422,6 +431,16 @@ function hasNonInitialProperNoun(sentence: string): boolean {
   const trimmed = sentence.replace(/^[^A-Za-z]*[A-Za-z][a-zA-Z']*\s*/, "");
   return CAPITALISED_NAME.test(trimmed);
 }
+
+
+/**
+ * Verbs that attribute speech. Exported so the verify fixture asserts against
+ * the SAME list the parser uses — a copy would drift, and the original list
+ * (said/says/explains/notes/according to) drifted from real editorial usage
+ * badly enough to miss "recalls" twice in one document.
+ */
+export const ATTRIBUTION_VERB_RE =
+  /\b(?:said|says|saying|explains?|explained|notes?|noted|according to|recalls?|recalled|adds?|added|describes?|described|argues?|argued|tells?|told|continues?|continued|warns?|warned|asks?|asked|remembers?|remembered|observes?|observed|puts? it)\b/i;
 
 export function sentenceIsSourced(text: string): boolean {
   if (EXPLICIT_ATTRIBUTION.test(text)) return true;
@@ -595,7 +614,7 @@ export function parseDraft(input: ParseInput): ParsedDraft {
         if (dup) continue;
         stats.push({
           text: sm[0], kind: STAT_PATTERNS[p].kind, sentenceIndex: s,
-          sourced: sourced, start: abs, end: abs + sm[0].length,
+          sourced: sourced, start: abs, end: abs + sm[0].length, inQuote: false,
         });
       }
     }
@@ -610,9 +629,41 @@ export function parseDraft(input: ParseInput): ParsedDraft {
     const wc = (inner.match(/\S+/g) || []).length;
     if (wc < 5) continue;
     const around = text.slice(Math.max(0, qm.index - 160), Math.min(text.length, qm.index + qm[0].length + 160));
-    const attributed = /\b(?:said|says|explains|explained|notes|noted|according to)\b/i.test(around)
-      || /\b[A-Z][a-z]+\s+[A-Z][a-z]+,\s+(?:CEO|CTO|founder|director|head|analyst|professor|Dr\.?)/.test(around);
+    const after = text.slice(qm.index + qm[0].length, Math.min(text.length, qm.index + qm[0].length + 90));
+    // Three attribution shapes, each learned from a real miss on the founder's
+    // own draft, where ALL SIX flagged quotes turned out to be attributed and
+    // the panel said "0 attributed quotations" about a piece with ten:
+    //
+    //  - the VERB list had said/says/explains/notes/according-to and nothing
+    //    else, so "recalls Alexander Kitchin" and "recalls how they refined…"
+    //    both read as no speaker;
+    //  - PULL QUOTES attribute with an em dash — "— Chris Bird, Senior
+    //    Structural Engineer, TYLin" — a shape the detector did not know at
+    //    all. Anchored to the text IMMEDIATELY after the closing quote and
+    //    requiring a capital, because an em dash with a lowercase continuation
+    //    ("…letters," — a 103-word excerpt) is prose, not a byline;
+    //  - the Name-comma-title pattern demanded the title word right after the
+    //    comma, so "Fine Concrete's founding partner" and "senior structural
+    //    engineer" never matched. It now tolerates up to 60 characters of
+    //    modifier between the comma and the title word, within one sentence.
+    const attributed = ATTRIBUTION_VERB_RE.test(around)
+      || /^\s*[—–]\s*[A-Z]/.test(after)
+      || /\b[A-Z][a-z]+\s+[A-Z][a-z]+\s*,[^.!?]{0,60}?\b(?:CEO|CTO|CFO|COO|founder|co-founder|director|head|analyst|professor|Dr\.?|president|principal|partner|engineer|consultant|architect|strategist|officer|manager|lead)\b/i.test(around);
     quotes.push({ text: inner, wordCount: wc, attributed: attributed, start: qm.index, end: qm.index + qm[0].length });
+  }
+
+  // Stats inside quotations, marked AFTER quotes exist. An attributed quote's
+  // figures are sourced — "going to last 100 years or more," with Finnegan
+  // named, needs no second citation, and demanding one tells the writer to
+  // rewrite the man's own sentence.
+  for (let si = 0; si < stats.length; si++) {
+    for (let qi = 0; qi < quotes.length; qi++) {
+      if (stats[si].start >= quotes[qi].start && stats[si].end <= quotes[qi].end) {
+        stats[si].inQuote = true;
+        if (quotes[qi].attributed) stats[si].sourced = true;
+        break;
+      }
+    }
   }
 
   let hasOrderedList = false, hasUnorderedList = false, hasTable = false, listItemCount = 0;

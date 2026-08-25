@@ -49,6 +49,8 @@ const SEVERITY: { [key: string]: "high" | "medium" | "low" } = {
   "anonymous-first-person-facts": "high",
   "unverifiable-superlatives": "medium",
   "promotional-claims": "medium",
+  "placeholder-guard": "high",
+  "person-name-consistency": "high",
   "attributed-quotes": "high",
   "current-year-stats": "medium",
   "answer-first-position": "high",
@@ -79,6 +81,10 @@ const REMEDY: { [key: string]: string } = {
   // citation in the one end-to-end test that exists.
   "promotional-claims":
     "Say what you did, not what you offer. Replace the claim with the engagement behind it — who, what changed, over what period — using a figure you already hold; if you do not hold one, find and cite a source rather than asserting it. Keep the sentence and its terms: cutting it costs you the query words that get the page retrieved at all.",
+  "placeholder-guard":
+    "Replace this with the real asset or cut the line. It is a production note, and it will be published exactly as written.",
+  "person-name-consistency":
+    "One of these spellings is a typo. Pick the correct one and use it everywhere — a model treats each spelling as a different person.",
   "current-year-stats":
     "Date the figure — \"in 2026\" or \"as of August 2026\". Engines discount statistics they cannot date, and freshness is scored directly.",
   "answer-first-position":

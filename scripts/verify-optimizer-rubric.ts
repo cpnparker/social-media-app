@@ -101,6 +101,30 @@
  * duplicates, nothing undeclared, nothing missing — while misreporting TWO
  * pillars at once: the one that gained the points and the one that lost them.
  * Counting was never enough.
+ *
+ * MUTATION LOG — the founder's-draft regressions (2026-08-25), throwaway tree.
+ *   'recalls' dropped from the verb list             -> caught
+ *   the em-dash byline rule deleted                  -> caught
+ *   title modifier tolerance reverted                -> caught
+ *   fragment silence removed (flag everything)       -> caught
+ *   em-dash rule loosened to ANY dash anywhere       -> caught
+ *   countWithUnit/inQuote sourcing exemption removed -> caught
+ *   attributed-quote sourcing of figures removed     -> SURVIVED, then caught
+ *   quote-split exemption removed                    -> caught
+ *   placeholder keyword gate emptied                 -> caught
+ *   person-name matching loosened                    -> caught
+ *   'N times' multiplier reverted to x-only          -> caught
+ *   record-claim scan deleted entirely               -> caught
+ *   sourced exemption removed from record claims     -> caught
+ *   production-note gates removed                    -> caught
+ *
+ * Two process notes worth keeping. THREE attribution fixtures first survived
+ * their mutations because each tripped two attribution paths at once — the
+ * draft's own sentences attribute redundantly, so fixtures must be built
+ * artificial and single-shaped. And the attributed-quote sourcing mutation
+ * survived every SCORE-level fixture because the inQuote filter masks the
+ * sourced flag entirely at that layer; it is pinned at the PARSE level, the
+ * only place it is observable.
  */
 import { computeDraftScores } from "../lib/optimizer/engine";
 import { sectionLevels, parseDraft } from "../lib/optimizer/parse";
@@ -500,6 +524,19 @@ D.push({ key: "experience-markers", label: "first-hand markers removed", input: 
 // distinction the criterion measures. The mutation deliberately keeps the
 // first person, because "we" is not the defect and a detector that thought so
 // would flag every honest sentence in a brand's own article.
+// Placeholders: the clean draft has none; the defect leaves one production
+// note in the copy, the way five reached the founder's real draft.
+D.push({ key: "placeholder-guard", label: "a production note left in the copy", input: withBody(
+  mutate(CLEAN_BODY,
+    "In our experience that single point causes",
+    "[Professional headshot image] In our experience that single point causes")) });
+
+// One person, two spellings, one keystroke apart — the Kitchin/Kitchn shape.
+D.push({ key: "person-name-consistency", label: "a surname loses a letter in one mention", input: withBody(
+  mutate(CLEAN_BODY,
+    "By Dr. Ilse Brandt",
+    "By Dr. Ilse Brandt\n\nIlse Brandt led the routing work, and colleagues credit Ilse Brant with the acquirer scoring model.")) });
+
 D.push({ key: "promotional-claims", label: "an evidence-free benefit claim replaces a sourced one", input: withBody(
   mutate(CLEAN_BODY,
     "We worked with one of those retailers for a full year, and the case study is instructive: for example, its cross-border share never rose above a tenth of total volume.",
@@ -973,6 +1010,180 @@ console.log(`\nPromotional load — the exemptions, not just the trigger`);
       ? pass(`exempt: ${why}`)
       : fail(`FALSE POSITIVE (${why}): "${sentence}" was flagged — a brand cannot use its own voice`);
   }
+}
+
+
+// ── Quote attribution recognises how editors actually attribute ───────────
+//
+// All SIX flagged quotes on the founder's own draft turned out to be
+// attributed, and the panel said "0 attributed quotations" about a piece with
+// ten. Three real shapes the detector did not know, each now a fixture; and
+// the fragment rule, which is about not giving WRONG advice: a seven-word
+// rhetorical fragment mid-sentence must not be told to "name who said it".
+console.log(`\nQuote attribution shapes`);
+{
+  const quoteOf = (body: string) => {
+    const sc: any = computeDraftScores({ body: body + `<p>${"filler word ".repeat(160)}</p>`, title: "T", targetQueries: [], format: "explainer" });
+    for (const pl of sc.pillars) for (const c of pl.criteria) if (c.key === "attributed-quotes") return c;
+    return null;
+  };
+
+  // EACH FIXTURE ISOLATES ONE RULE. The first versions used the draft's own
+  // sentences, which attribute two or three ways at once — "recalls Alexander
+  // Kitchin, Fine Concrete's founding partner and DIRECTOR of design" carries
+  // the verb AND the Name-comma-title shape, so deleting the verb was masked
+  // by the title match and three mutations survived. A fixture that passes for
+  // a reason unrelated to its label is indistinguishable from one that works.
+  const recalls = quoteOf(`<p>“We had looked at a lot of different materials and found no solution for the problem,” recalls Alexander Kitchin of Fine Concrete.</p>`);
+  recalls && recalls.earned > 0 && (recalls.spans || []).length === 0
+    ? pass(`"recalls Name" attributes (${recalls.earned} pts, no flag)`)
+    : fail(`"recalls" still not an attribution verb: earned=${recalls && recalls.earned}, spans=${recalls && (recalls.spans||[]).length}`);
+
+  const emdash = quoteOf(`<p>“When we present this material to architects you can almost see a light switch go on for them.”</p><p>— Chris Bird</p>`);
+  emdash && emdash.earned > 0 && (emdash.spans || []).length === 0
+    ? pass("an em-dash pull-quote byline attributes")
+    : fail(`the em-dash byline is still unrecognised: earned=${emdash && emdash.earned}, spans=${emdash && (emdash.spans||[]).length}`);
+
+  const modTitle = quoteOf(`<p>“The relationship was closer to a field-testing partnership than a traditional supplier arrangement.” The words belonged to Nicole Sherman, a strategic consultant for the firm.</p>`);
+  modTitle && modTitle.earned > 0
+    ? pass("a title with modifiers before the keyword attributes")
+    : fail("Name, <modifiers> consultant still unmatched");
+
+  // The em dash must be a BYLINE, not prose. Lowercase continuation is prose.
+  // The quote here is TWELVE words on purpose: the first version used nine,
+  // which the fragment rule silences before the em-dash question is even
+  // asked, so the fixture passed and failed for reasons unrelated to what it
+  // claimed to test.
+  const prose = quoteOf(`<p>The speech was set as “letters cast in solid concrete high on the face of the building” — a hundred-word excerpt held with no visible connections, mounted over two years.</p>`);
+  prose && prose.earned === 0 && (prose.spans || []).length > 0
+    ? pass("an em dash into lowercase prose does NOT attribute — the quote is still flagged")
+    : fail(`prose after an em dash counted as a byline (earned=${prose && prose.earned}, spans=${prose && (prose.spans||[]).length})`);
+
+  // Fragments: never flagged, and never counted as attributed either.
+  const frag = quoteOf(`<p>With their refusal to stop at “Let us see if we can solve it,” and push instead to “Let us use materials to enhance the design,” the pair won the bid decisively that spring.</p>`);
+  frag && (frag.spans || []).length === 0
+    ? pass("seven-word rhetorical fragments are not told to name a speaker")
+    : fail(`a mid-sentence fragment was flagged (spans=${frag && (frag.spans||[]).length})`);
+  frag && frag.earned === 0
+    ? pass("...and earn nothing either — silence, not credit")
+    : fail(`fragments counted as attributed quotations (earned=${frag && frag.earned})`);
+
+  // The original defect direction must still fire: a real, long, genuinely
+  // unattributed quote is still flagged.
+  const naked = quoteOf(`<p>“The panels were heavier than anything the team had lifted before and the crane plan had to change three times before the first one moved an inch.”</p>`);
+  naked && (naked.spans || []).length === 1
+    ? pass("a long quote with genuinely no speaker is still flagged")
+    : fail(`the true positive stopped firing (spans=${naked && (naked.spans||[]).length}) — the fix over-corrected`);
+}
+
+
+// ── The founder's-draft regressions: measurements, quotes, placeholders ───
+//
+// Every case here is a wrong verdict the tool actually delivered on a real
+// imported .docx (2026-08-25): eight dimensional measurements told to cite a
+// source, "4 feet" told to date itself "as of 2026", interviewees' spoken
+// sentences told to split in two, five production placeholders invisible, and
+// the one material claim that genuinely needed a source not detected at all.
+console.log(`\nMeasurements, quoted figures and placeholders`);
+{
+  const spansOf = (body: string, key: string) => {
+    // Padding is SHORT SENTENCES, not one run-on: 160 repetitions of a
+    // three-word sentence. The first version repeated "filler word " with no
+    // full stops, which is a single 320-word prose sentence — and the
+    // sentence-length fixture then failed on its own padding rather than on
+    // the case it stated.
+    const sc: any = computeDraftScores({ body: body + `<p>${"Padding goes here. ".repeat(160)}</p>`, title: "T", targetQueries: [], format: "explainer" });
+    for (const pl of sc.pillars) for (const c of pl.criteria) if (c.key === key) return c.spans || [];
+    return null;
+  };
+
+  // A dimension of the subject is not a sourcing debt…
+  const dim = spansOf(`<p>Each letter stands over 4 feet tall and weighs 320 pounds on the finished facade.</p>`, "stat-source-adjacency");
+  dim && dim.length === 0
+    ? pass("dimensional measurements are not asked for a citation")
+    : fail(`"4 feet tall" asked for a source again (spans=${dim && dim.length})`);
+  // …but an evidential claim still is.
+  const ev = spansOf(`<p>The new routing lifted authorisation rates 24% across the cohort in the first quarter.</p>`, "stat-source-adjacency");
+  ev && ev.length === 1
+    ? pass("an unsourced evidential percentage is still flagged")
+    : fail(`the evidential direction broke (spans=${ev && ev.length})`);
+  // The spelled multiplier is a statistic now.
+  const times = spansOf(`<p>The material has 10 times the compressive strength and five times the tensile strength of standard mixes.</p>`, "stat-source-adjacency");
+  times && times.length >= 2
+    ? pass('"10 times" and "five times" are detected and asked for a source')
+    : fail(`spelled multipliers still invisible (spans=${times && times.length})`);
+
+  // A figure inside an ATTRIBUTED quote is sourced by its speaker.
+  const qstat = spansOf(`<p>“This is something that is going to last 100 years or more under the weather it faces,” says Michael Finnegan, the company president.</p>`, "stat-source-adjacency");
+  qstat && qstat.length === 0
+    ? pass("a figure inside an attributed quotation is sourced by the speaker")
+    : fail(`a quoted figure was asked for a citation (spans=${qstat && qstat.length})`);
+  // And nothing asks anyone to DATE a quoted or dimensional figure.
+  const qdate = spansOf(`<p>Each letter stands over 4 feet tall on the facade.</p><p>“It will last 100 years,” says Michael Finnegan, the company president.</p>`, "current-year-stats");
+  (qdate === null || qdate.length === 0)
+    ? pass("no one is told to date a dimension or someone's spoken words")
+    : fail(`current-year-stats still spans measurements/quotes (spans=${qdate.length})`);
+
+  // A long sentence inside a quotation is never told to split.
+  const qsplit = spansOf(`<p>“We would send some of our technical team members down to the lab to run extensive trials on color consistency and fiber dispersion, and week after week the results kept improving until the mix was right,” says Michael Finnegan, the company president.</p>`, "sentence-length-norm");
+  qsplit && qsplit.length === 0
+    ? pass("a 40-word quoted sentence is not told to split — that is misquoting")
+    : fail(`split advice on spoken words is back (spans=${qsplit && qsplit.length})`);
+
+  // Placeholders: the three shapes that must NOT fire.
+  const phSafe = spansOf(`<p>The panels [sic] were mounted in sequence [1] as described in [the 2024 report](https://example.com/r).</p>`, "placeholder-guard");
+  phSafe && phSafe.length === 0
+    ? pass("[sic], numeric citations and markdown links do not read as placeholders")
+    : fail(`the placeholder gate over-fires (spans=${phSafe && phSafe.length})`);
+
+  // The parse-level contract: a figure inside an ATTRIBUTED quote is marked
+  // sourced. The scoring path cannot observe this (the inQuote filter removes
+  // quoted stats before the naked check ever looks), so the assertion has to
+  // read the parse output directly — a mutation deleting the sourced=true
+  // line survived every score-level fixture precisely because of that mask.
+  {
+    const pd: any = parseDraft({ body: `<p>“Authorisation improved 24% after the routing change went live,” says Michael Finnegan, the company president.</p>`, title: "T" });
+    const inQ = pd.stats.filter((st: any) => st.inQuote);
+    inQ.length === 1 && inQ[0].sourced === true
+      ? pass("parse marks a figure in an attributed quote as sourced by its speaker")
+      : fail(`parse-level sourcing broken: inQuote=${inQ.length}, sourced=${inQ[0] && inQ[0].sourced}`);
+    // "claimed" is itself a source verb at sentence level, which made the
+    // first version of this fixture fail against correct code — the sentence
+    // was sourced before the quote logic ever ran. The banner wording carries
+    // no attribution signal of any kind.
+    const pd2: any = parseDraft({ body: `<p>One slide read “authorisation improved 24% after the routing change went live in every market” and nothing more.</p>`, title: "T" });
+    const inQ2 = pd2.stats.filter((st: any) => st.inQuote);
+    inQ2.length === 1 && inQ2[0].sourced === false
+      ? pass("...and an UNattributed quote's figure stays unsourced")
+      : fail(`unattributed quote's figure wrongly sourced (inQuote=${inQ2.length}, sourced=${inQ2[0] && inQ2[0].sourced})`);
+  }
+
+  // A record claim is an unverifiable superlative until someone stands behind
+  // it — and with a source it is exactly what the rubric wants more of.
+  const rec = spansOf(`<p>The screens represent the tallest and longest span of UHPC in North America and were installed over two years.</p>`, "unverifiable-superlatives");
+  rec && rec.length === 1
+    ? pass("an unsourced record claim is flagged")
+    : fail(`the record claim went unseen again (spans=${rec && rec.length})`);
+  const recSourced = spansOf(`<p>According to the Council on Tall Buildings, the screens represent the tallest and longest span of UHPC in North America.</p>`, "unverifiable-superlatives");
+  recSourced && recSourced.length === 0
+    ? pass("...and a SOURCED record claim is not — a verified record is the goal, not a defect")
+    : fail(`a sourced record claim was flagged (spans=${recSourced && recSourced.length})`);
+
+  // The unbracketed production note: its own tiny block, no full stop.
+  const note = spansOf(`<p>The facade rose panel by panel through the spring.</p><p>Web photo slideshow</p><p>Each panel locked to the next.</p>`, "placeholder-guard");
+  note && note.length === 1
+    ? pass('"Web photo slideshow" standing as its own paragraph is caught')
+    : fail(`the unbracketed production note slipped through (spans=${note && note.length})`);
+  const kicker = spansOf(`<p>The facade rose panel by panel through the spring.</p><p>A new era.</p><p>Each panel locked to the next.</p>`, "placeholder-guard");
+  kicker && kicker.length === 0
+    ? pass("...while a legitimate short kicker is left alone")
+    : fail(`a kicker was read as a production note (spans=${kicker && kicker.length})`);
+
+  // Person names: Bird and Bond stay two people; short surnames stay out.
+  const twoPeople = spansOf(`<p>Chris Bird runs the structural team while Chris Bond manages the site logistics for the project.</p>`, "person-name-consistency");
+  twoPeople && twoPeople.length === 0
+    ? pass("Bird and Bond remain two different people")
+    : fail(`distance-2/short surnames are being merged (spans=${twoPeople && twoPeople.length})`);
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
