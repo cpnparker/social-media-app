@@ -408,6 +408,10 @@ cc.sends === cc.counts && cc.sends >= 4
   ? pass("server errors reach the trace verbatim")
   : fail("server errors are invisible again — the previous mechanism died of exactly this");
 
+/CREATES-RESET after-error/.test(dockSrc)
+  ? pass("a rejected create reconciles the counter — a stuck counter would leak filler every turn")
+  : fail("clientCreatesRef has no recovery path; one swallowed rejection disables cancelling for the session");
+
 // ── Self-test ───────────────────────────────────────────────────────────
 // The detectors are regexes over prose, which is exactly the kind of check
 // that silently matches nothing after an innocuous rewording. Fixture-only:

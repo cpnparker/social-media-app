@@ -1308,6 +1308,27 @@ export default function VoiceDock({
                 String(msg.error?.type || "?"),
                 String(msg.error?.code || ""),
                 String(msg.error?.message || "").slice(0, 120));
+              // RECONCILE THE CREATE COUNTER. A create that never yields a
+              // response.created — rejected, or sent on a closing socket —
+              // would leave clientCreatesRef high for the rest of the session,
+              // and a high counter makes the NEXT auto response pass as ours
+              // and speak its filler uncancelled, every turn, forever.
+              //
+              // Zero is the safe direction. Its cost is bounded: if a create
+              // of ours was genuinely in flight, its response gets treated as
+              // an auto and cancelled, and the replacement round-1 still
+              // answers the turn — one extra round trip. The other direction
+              // costs every remaining turn. Skipped while audio is playing so
+              // an unrelated error cannot cut off a reply mid-sentence.
+              if (
+                clientCreatesRef.current > 0 &&
+                activeSourcesRef.current.size === 0 &&
+                !/Cancellation failed/i.test(String(msg.error?.message || ""))
+              ) {
+                clientCreatesRef.current = 0;
+                nextCreateRound1Ref.current = false;
+                vlog("CREATES-RESET after-error");
+              }
               // "Cancellation failed: no active response found" — the benign
               // race where the auto response finished before our cancel
               // landed. Probed; harmless; the round-1 create still follows.
