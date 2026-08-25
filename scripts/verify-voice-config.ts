@@ -28,7 +28,9 @@
  * render and is a known cause of the same symptom (fixed c03d4fc). British
  * spelling in TEXT is fine; a British accent must come from the VOICE.
  */
-import { buildVoiceInstructions, getVoiceTools, VOICE_MODEL, VOICE_NAME, VOICE_NAME_FALLBACK, VOICE_TOOL_NAMES, voiceCostTenthsPerMin } from "../lib/ai/voice";
+import { buildVoiceInstructions, getVoiceTools, ROUND1_SUFFIX, VOICE_MODEL, VOICE_NAME, VOICE_NAME_FALLBACK, VOICE_TOOL_NAMES, voiceCostTenthsPerMin } from "../lib/ai/voice";
+import * as fs from "fs";
+import * as path from "path";
 import { toolBudgetFor } from "../lib/ai/tool-loop-guard";
 
 let failures = 0;
@@ -326,13 +328,93 @@ process.env.XAI_VOICE_MODEL && rate === dearestKnown && VOICE_MODEL !== "grok-vo
   ? fail(`XAI_VOICE_MODEL=${VOICE_MODEL} has no rate row — it is billing at the fallback`)
   : pass("the model in use has an explicit rate row");
 
+// ── 8. Single-render turns: the cancel-and-recreate wiring ──────────────
+// The mechanism that finally holds (live-probed 2026-08-25): the server's
+// auto-created response is cancelled at response.created, and its replacement
+// carries per-response instructions = FULL prompt + ROUND1_SUFFIX, under which
+// the model calls tools silently (six probe trials, zero round-1 audio) and
+// answers chat aloud. Asserted here because every piece fails silently: xAI
+// ACCEPTS unknown fields without error, so miswiring reports nothing.
+console.log("\n8. Single-render turns — cancel-and-recreate is wired, not just written");
+
+/** Count non-overlapping occurrences of a pattern in source text. */
+export function countOf(src: string, re: RegExp): number {
+  const m = src.match(new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g"));
+  return m ? m.length : 0;
+}
+
+/^\s*$/.test(ROUND1_SUFFIX)
+  ? fail("ROUND1_SUFFIX is empty")
+  : /NO other output whatsoever/.test(ROUND1_SUFFIX) && /answer normally, aloud/i.test(ROUND1_SUFFIX)
+    ? pass("ROUND1_SUFFIX carries both branches: silent tool call, audible chat answer")
+    : fail("ROUND1_SUFFIX lost a branch — silent tools or audible chat answers break");
+
+const sessionSrc = fs.readFileSync(path.join(__dirname, "../app/api/ai/voice/session/route.ts"), "utf8");
+/round1Instructions:\s*instructions \+ ROUND1_SUFFIX/.test(sessionSrc)
+  ? pass("the session route composes round1Instructions = full prompt + suffix")
+  : fail("session route no longer composes round1Instructions — round-1 creates go out with no instructions");
+
+const dockSrc = fs.readFileSync(path.join(__dirname, "../components/ai-writer/VoiceDock.tsx"), "utf8");
+
+// Every response.create the client sends must be COUNTED, or the discriminator
+// in response.created reads our own create as the server's and cancels it —
+// the opening greeting was one uncounted send away from cancelling itself.
+export function createSendsVsCounts(src: string): { sends: number; counts: number } {
+  return {
+    sends: countOf(src, /type: "response\.create"/) - countOf(src, /\? \{ type: "response\.create"/),
+    counts: countOf(src, /clientCreatesRef\.current \+= 1/),
+  };
+}
+const cc = createSendsVsCounts(dockSrc);
+cc.sends === cc.counts && cc.sends >= 4
+  ? pass(`every response.create send is counted (${cc.sends} sites)`)
+  : fail(`create sends (${cc.sends}) != clientCreates increments (${cc.counts}) — an uncounted send gets cancelled as an auto`);
+
+/cancelledRespRef\.current\.add\(createdId\);\s*\n\s*wsRef\.current\?\.send\(JSON\.stringify\(\{ type: "response\.cancel", response_id: createdId \}\)\)/.test(dockSrc)
+  ? pass("an auto is cancelled BY ID and marked for audio drop — a bare cancel can kill the wrong response")
+  : fail("the targeted auto-cancel or its audio-drop marking is gone");
+
+// The replacement must be QUEUED, never sent inline: a create issued while any
+// response is active is silently DROPPED by xAI (probed — no event, no error).
+(() => {
+  const branch = dockSrc.split('auto->cancelled')[1]?.slice(0, 400) || "";
+  return /pendingResponseCreateRef\.current = true;\s*\n\s*pendingCreateRound1Ref\.current = true;/.test(branch) &&
+    !/requestResponse\(/.test(branch.split("break")[0] || branch);
+})()
+  ? pass("the round-1 replacement is queued to fire at the cancelled done, not sent inline")
+  : fail("the replacement create is sent while the cancelled response is active — xAI drops it silently");
+
+/cancelledRespRef\.current\.has\(String\(msg\.response_id/.test(dockSrc)
+  ? pass("cancelled responses' in-flight audio is dropped before playback")
+  : fail("cancelled-response audio is played — the truncation bug returns");
+
+/toolEpoch === turnEpochRef\.current[\s\S]{0,600}?requestResponse\(\{ round1: true \}\)/.test(dockSrc)
+  ? pass("tool continuations carry round-1 instructions — chained tools stay silent")
+  : fail("the tool continuation is a plain create — chained tools narrate filler again");
+
+/wasCancelledAuto\) break;/.test(dockSrc)
+  ? pass("a cancelled auto's done never reaches the status machine")
+  : fail("a cancelled done flips the dock to listening mid-turn and arms the wake follow-up deadline");
+
+/TOOL-SKIP cancelled-response/.test(dockSrc)
+  ? pass("a cancelled auto's tool calls are skipped, not executed twice")
+  : fail("a cancelled response's tool calls still execute");
+
+/round1IdsRef\.current\.has\(String\(msg\.response_id[\s\S]{0,200}?R1-LEAK/.test(dockSrc) && /singleRenderRef\.current = false/.test(dockSrc)
+  ? pass("leak detector is SCOPED to round-1 ids, and two leaks turn the mechanism off")
+  : fail("the leak detector is unscoped or gone — audible multi-hop answers would disable the mechanism");
+
+/vlog\("SERVER-ERROR"/.test(dockSrc)
+  ? pass("server errors reach the trace verbatim")
+  : fail("server errors are invisible again — the previous mechanism died of exactly this");
+
 // ── Self-test ───────────────────────────────────────────────────────────
 // The detectors are regexes over prose, which is exactly the kind of check
 // that silently matches nothing after an innocuous rewording. Fixture-only:
 // no repo file is mutated, because this tree is shared with other sessions
 // and also deploys.
 if (process.argv.indexOf("--self-test") >= 0) {
-  console.log("\n8. Self-test — the detectors fire on the shapes they exist for");
+  console.log("\n9. Self-test — the detectors fire on the shapes they exist for");
   let selfFails = 0;
   const detects = (name: string, caught: boolean) => {
     if (caught) console.log(`  ok    detects ${name}`);
@@ -353,6 +435,16 @@ if (process.argv.indexOf("--self-test") >= 0) {
 
   const accentRe = /\b(speak|talk|use|adopt|with)\s+(a|an|in)?\s*(british|american)\s+accent\b/i;
   detects("an accent instruction", accentRe.test("Please speak with a British accent."));
+
+  // Section 8's counters must actually count. Feed them synthetic sources.
+  const fakeGood = 'clientCreatesRef.current += 1;\nws.send(JSON.stringify({ type: "response.create" }));';
+  const fakeBad = fakeGood + '\nws.send(JSON.stringify({ type: "response.create" }));';
+  detects("a counted create passes the send/count balance", (() => {
+    const r = createSendsVsCounts(fakeGood); return r.sends === r.counts;
+  })());
+  detects("an UNcounted create fails the balance", (() => {
+    const r = createSendsVsCounts(fakeBad); return r.sends !== r.counts;
+  })());
   detects("the negated accent line is NOT a violation",
     (() => {
       const line = "Use British spelling and vocabulary, but do NOT attempt a British accent.";

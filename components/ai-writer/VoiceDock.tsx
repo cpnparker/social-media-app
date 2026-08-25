@@ -157,6 +157,7 @@ export default function VoiceDock({
   // bug). Track the active response and queue creates until response.done.
   const responseActiveRef = useRef(false);
   const pendingResponseCreateRef = useRef(false);
+  const pendingCreateRound1Ref = useRef(false);
   const pausedRef = useRef(false);
   const statusRef = useRef<VoiceStatus>("connecting");
   const prePauseStatusRef = useRef<VoiceStatus>("listening");
@@ -187,39 +188,63 @@ export default function VoiceDock({
    */
   const mintedModelRef = useRef("");
   /**
-   * SINGLE-RENDER TURNS.
+   * SINGLE-RENDER TURNS — the probe-proven design (2026-08-25).
    *
-   * xAI renders the voice fresh PER RESPONSE and offers no per-response voice
-   * field, and a tool turn is structurally two responses: the model narrates,
-   * calls the tool, that response ends, and the answer speaks in a second one.
-   * Both carry audio, so both are rendered, and the second can come back as a
-   * different speaker. Measured 2026-08-25: 2.8s of filler before
-   * query_meetingbrain, 3.9s before search_thread, and a second AUDIO-START
-   * queued at lead_s= 0.102 — seamless, which is why it is heard as one reply
-   * changing voice rather than as two.
+   * xAI renders the voice fresh PER RESPONSE with no per-response voice field,
+   * and a tool turn is structurally two responses: filler speech + the call,
+   * then the answer. Both carried audio, both rendered, and the second could
+   * come back as a different speaker. Measured live: 2.8-3.9s of narrated
+   * filler before every tool call, despite a CRITICAL instruction forbidding
+   * it.
    *
-   * The instruction lever is exhausted: lib/ai/voice.ts already says "Never
-   * speak before a tool call — CRITICAL" and the model narrates anyway. The
-   * audio lever is exhausted too: flushing the filler only truncated it
-   * mid-word.
+   * Every previous mechanism was a guess about an undocumented protocol, and a
+   * live probe of wss://api.x.ai/v1/realtime finally replaced guessing
+   * (scratchpad probes, 2026-08-25). What the probe established:
    *
-   * So make the first round carry no audio. We turn OFF the server's automatic
-   * response, create the tool round ourselves with modalities ["text"], and
-   * create the ANSWER round with audio. Still two responses — but only one
-   * render exists, so there is nothing to drift between.
+   *   - `turn_detection.create_response: false` — silently IGNORED.
+   *   - `modalities: ["text"]` at response level, GA spelling, session level —
+   *     all silently IGNORED; audio streams regardless. Yesterday's fix could
+   *     never have worked, and no error would ever have said so: xAI accepts
+   *     unknown fields without comment.
+   *   - `response.cancel` WORKS (status "cancelled"), leaks zero audio deltas
+   *     when sent immediately at response.created, and leaves the conversation
+   *     coherent.
+   *   - Per-response `instructions` (which REPLACE the session prompt) DO hold
+   *     the model silent through a tool call: with the full production prompt
+   *     plus a "THIS RESPONSE ONLY" suffix, six trials across two probes
+   *     produced zero round-1 audio deltas while chat turns still spoke.
    *
-   * SELF-DISABLING. Every assumption here is about a protocol xAI documents
-   * only by compatibility. If create_response or modalities is rejected,
-   * driveTurnsRef goes false and the session falls back to exactly today's
-   * behaviour rather than going mute. That is also why create_response is sent
-   * as its OWN session.update: session.update is the only carrier of the
-   * instructions, and a strict validator rejecting one unknown key would drop
-   * the entire prompt with it.
+   * So the flow is: the server's auto-created response is cancelled the moment
+   * it appears (we cannot stop it existing, but we can stop it rendering), and
+   * a replacement "round 1" is created whose instructions are the full session
+   * prompt + the silent-tool suffix (built server-side, delivered in cfg). If
+   * round 1 calls a tool it says nothing, the existing tool flow submits the
+   * result, and the answer response is the ONE audible render. If round 1
+   * needs no tool, it answers aloud and is itself the one render.
+   *
+   * SELF-HEALING, keyed on observation rather than on error events that never
+   * come: a round-1 response that both starts audio AND calls a tool is a
+   * LEAK; two leaks in one session turn the mechanism off, restoring today's
+   * behaviour (filler + seam) rather than risking anything worse.
    */
-  const driveTurnsRef = useRef(false);
-  const silentPendingRef = useRef(false);
-  const silentActiveIdRef = useRef("");
-  const turnArmedRef = useRef(false);
+  /** response.creates WE sent, not yet matched by response.created. */
+  const clientCreatesRef = useRef(0);
+  /** Response ids we cancelled — any audio they leak is dropped, never played. */
+  const cancelledRespRef = useRef<Set<string>>(new Set());
+  /** The full round-1 instructions (session prompt + suffix), from cfg. */
+  const round1InstrRef = useRef("");
+  /** Whether the NEXT create we send is a round-1 (labels the trace). */
+  const nextCreateRound1Ref = useRef(false);
+  /** Response ids created as round-1s — scopes the leak detector to them.
+   *  Without this, a legitimate audible answer that chains a second tool was
+   *  booked as a round-1 leak and two such turns disabled the mechanism. */
+  const round1IdsRef = useRef<Set<string>>(new Set());
+  /** Last response id that started audio — leak detection. */
+  const audioRespRef = useRef("");
+  /** Round-1 leaks observed; at 2 the mechanism turns itself off. */
+  const r1LeaksRef = useRef(0);
+  /** Probe-proven mechanism on/off (off after repeated leaks). */
+  const singleRenderRef = useRef(true);
   const pendingToolsRef = useRef(0);
   const closingRef = useRef(false);
   /** Latest teardown, so the pagehide listener — registered once — always
@@ -350,39 +375,27 @@ export default function VoiceDock({
    *  responses are what split one spoken reply across two per-response voice
    *  renders (the mid-reply voice change). Confirmed active by
    *  response.created; flushed by response.done. */
-  const requestResponse = useCallback((opts?: { silent?: boolean }) => {
+  const requestResponse = useCallback((opts?: { round1?: boolean }) => {
     if (responseActiveRef.current) {
       pendingResponseCreateRef.current = true;
+      // The queue must remember WHAT was queued — and never DOWNGRADE it. Two
+      // intents can land while a response is active (a queued round-1 and a
+      // plain continuation); one create serves both, and it must carry the
+      // round-1 instructions if either asked for them, or filler returns.
+      pendingCreateRound1Ref.current = pendingCreateRound1Ref.current || !!opts?.round1;
       return;
     }
     responseActiveRef.current = true; // optimistic — closes the double-create race
-    // A silent round may call tools and think out loud in TEXT; it just does
-    // not render. Anything queued while it runs is created as a normal audible
-    // response, which is correct — the queue only ever holds the answer.
-    silentPendingRef.current = !!opts?.silent;
+    clientCreatesRef.current += 1;
+    nextCreateRound1Ref.current = !!opts?.round1;
     wsRef.current?.send(
       JSON.stringify(
-        opts?.silent
-          ? { type: "response.create", response: { modalities: ["text"] } }
+        opts?.round1 && round1InstrRef.current
+          ? { type: "response.create", response: { instructions: round1InstrRef.current } }
           : { type: "response.create" }
       )
     );
   }, []);
-
-  /**
-   * Create this turn's response once, silently.
-   *
-   * Armed from input_audio_buffer.committed, with a timer behind it: if xAI
-   * never emits that event the turn would simply never be answered, which is a
-   * far worse failure than a duplicate. turnArmedRef makes whichever arrives
-   * first the only one that acts.
-   */
-  const armTurn = useCallback(() => {
-    if (!driveTurnsRef.current || closingRef.current) return;
-    if (turnArmedRef.current || responseActiveRef.current) return;
-    turnArmedRef.current = true;
-    requestResponse({ silent: true });
-  }, [requestResponse]);
 
   /** Upsert a transcript item. User items also merge prefix-refinements in
    *  case the API assigns a fresh id to a re-emission of the same utterance. */
@@ -578,6 +591,7 @@ export default function VoiceDock({
         // for, and everything downstream assumes the one it got.
         diagSessionRef.current = `${Date.now().toString(36)}`;
         mintedModelRef.current = String(cfg.model || "");
+        round1InstrRef.current = String(cfg.round1Instructions || "");
         vlog("SESSION voice=", cfg.voice, "model=", cfg.model,
           "rate_asked=", cfg.sampleRate, "rate_got=", ctx.sampleRate
         );
@@ -664,11 +678,24 @@ export default function VoiceDock({
             // response.create. Two overlapping responses = two renders = the
             // voice changing mid-reply.
             responseActiveRef.current = true;
-            ws.send(JSON.stringify({ type: "response.create" }));
+            // Counted, or the discriminator in response.created reads our own
+            // create as the server's and cancels the opening reply.
+            clientCreatesRef.current += 1;
+            nextCreateRound1Ref.current = true;
+            // Round-1: the wake command is usually a data question ("what
+            // meetings have I got today"), which is exactly the filler case.
+            ws.send(
+              JSON.stringify(
+                round1InstrRef.current
+                  ? { type: "response.create", response: { instructions: round1InstrRef.current } }
+                  : { type: "response.create" }
+              )
+            );
             setStatusBoth("thinking");
           } else if (wakeSession) {
             // Same reason as above — armed before the send, not on the ack.
             responseActiveRef.current = true;
+            clientCreatesRef.current += 1;
             ws.send(
               JSON.stringify({
                 type: "response.create",
@@ -716,28 +743,23 @@ export default function VoiceDock({
             })
           );
 
-          // SEPARATE update, deliberately. If xAI's validator rejects
-          // create_response it rejects only this message; the instructions
-          // above are already applied. Sending them together would risk a
-          // session with no prompt at all.
-          ws.send(
-            JSON.stringify({
-              type: "session.update",
-              session: {
-                turn_detection: {
-                  type: "server_vad",
-                  threshold: 0.6,
-                  silence_duration_ms: 600,
-                  prefix_padding_ms: 333,
-                  create_response: false,
-                },
-              },
-            })
-          );
-          driveTurnsRef.current = true;
-          silentPendingRef.current = false;
-          silentActiveIdRef.current = "";
-          turnArmedRef.current = false;
+          // Per-session reset of the single-render machinery. Probed live:
+          // create_response:false and text modalities are silently ignored by
+          // xAI, so there is nothing to negotiate here — the mechanism is
+          // cancel-and-recreate, and it needs only clean counters.
+          clientCreatesRef.current = 0;
+          cancelledRespRef.current = new Set();
+          round1IdsRef.current = new Set();
+          nextCreateRound1Ref.current = false;
+          pendingCreateRound1Ref.current = false;
+          audioRespRef.current = "";
+          r1LeaksRef.current = 0;
+          singleRenderRef.current = true;
+          // These two outlive a session if it ends mid-response: a queued
+          // continuation from session 1 fired a phantom create at session 2's
+          // first response.done. Reset beside their siblings.
+          responseActiveRef.current = false;
+          pendingResponseCreateRef.current = false;
 
           // Arm the hold BEFORE the processor exists, so not a single live
           // frame can reach the server ahead of the flushed wake command.
@@ -855,6 +877,12 @@ export default function VoiceDock({
             case "response.audio.delta": {
               // Drop assistant audio entirely while paused
               if (pausedRef.current) break;
+              // A cancelled response's in-flight deltas are not played. The
+              // probe measured zero leakage when cancel is sent at created,
+              // but a delta already on the wire costs nothing to drop and a
+              // played syllable from a dead response is the truncation bug
+              // all over again.
+              if (cancelledRespRef.current.has(String(msg.response_id ?? ""))) break;
               followUpDeadlineRef.current = null; // Orac is speaking
               const audioCtx = audioCtxRef.current;
               if (!audioCtx || !msg.delta) break;
@@ -875,6 +903,7 @@ export default function VoiceDock({
                   "lead_s=", (playCursorRef.current - audioCtx.currentTime).toFixed(3)
                 );
                 lastAudioKeyRef.current = audioKey;
+                audioRespRef.current = String(msg.response_id ?? "");
               }
               const i16 = base64ToInt16(msg.delta);
               const f32 = new Float32Array(i16.length);
@@ -920,7 +949,6 @@ export default function VoiceDock({
 
             case "input_audio_buffer.speech_started":
             case "conversation.interrupted": {
-              turnArmedRef.current = false;
               if (pausedRef.current) break;
               lastUserSpeechRef.current = Date.now();
               followUpDeadlineRef.current = null; // follow-up arrived — stay engaged
@@ -929,6 +957,15 @@ export default function VoiceDock({
               // tool output on its next (VAD-triggered) turn.
               responseActiveRef.current = false;
               pendingResponseCreateRef.current = false;
+              pendingCreateRound1Ref.current = false;
+              // A create still outstanding belongs to the interrupted turn.
+              // Forgetting it means its response.created (if it ever arrives)
+              // is treated as an auto and cancelled — which is exactly right
+              // for a stale response after a barge-in. Leaving the counter
+              // high is the dangerous direction: the NEXT auto would be
+              // mistaken for ours and speak filler uncancelled.
+              clientCreatesRef.current = 0;
+              nextCreateRound1Ref.current = false;
               // Retire this turn: any tool still in flight belongs to it, and
               // its result must not create a response over the new utterance.
               turnEpochRef.current += 1;
@@ -947,22 +984,8 @@ export default function VoiceDock({
               break;
             }
 
-            case "input_audio_buffer.committed": {
-              // The user's turn is now in the model's context. Nothing will
-              // respond on its own any more, so we create the round — silent,
-              // so a tool call costs no render.
-              armTurn();
-              break;
-            }
             case "input_audio_buffer.speech_stopped": {
               if (statusRef.current === "listening") setStatusBoth("thinking");
-              // WATCHDOG. `committed` is the event that should arm the turn,
-              // but nothing in xAI's docs promises it, and a turn that is never
-              // armed is a turn that is never answered — the session appears to
-              // hang. 700ms is comfortably past the commit that server VAD does
-              // at end-of-speech, and turnArmedRef means whichever fires first
-              // is the only one that acts, so the cost of both arriving is nil.
-              if (driveTurnsRef.current) setTimeout(armTurn, 700);
               break;
             }
 
@@ -1067,7 +1090,30 @@ export default function VoiceDock({
               // badly" and "the tool came back empty" were indistinguishable.
               // A name, a duration and an output SIZE separate them without
               // putting a single word of anyone's data in a log line.
+              // A cancelled auto occasionally completes before the cancel
+              // lands (the benign "no active response" race). Its audio was
+              // suppressed; its TOOL CALLS must be too, or the tool runs twice
+              // — once for the dead response, once for the round-1 — and the
+              // dead one's continuation races the live one's.
+              if (cancelledRespRef.current.has(String(msg.response_id ?? ""))) {
+                vlog("TOOL-SKIP cancelled-response", name);
+                break;
+              }
               vlog("TOOL-CALL", name);
+              // LEAK DETECTOR. A response that both started audio and calls a
+              // tool means the round-1 silence was disobeyed — the one failure
+              // mode the probes could not rule out forever, since the model is
+              // stochastic. Two leaks in a session and the mechanism turns
+              // itself off: at worst that restores the filler-and-seam
+              // behaviour, never anything new.
+              if (
+                round1IdsRef.current.has(String(msg.response_id ?? "")) &&
+                audioRespRef.current === String(msg.response_id ?? "")
+              ) {
+                r1LeaksRef.current += 1;
+                vlog("R1-LEAK", r1LeaksRef.current, "of 2 tolerated");
+                if (r1LeaksRef.current >= 2) singleRenderRef.current = false;
+              }
               setTools((t) => t.concat([{ id: String(call_id), name, args: toolArgsPhrase(msg.arguments), at: Date.now() }]));
               // Both captured BEFORE the await: which turn asked for this, and
               // which session. Everything after the await is checked against
@@ -1134,19 +1180,53 @@ export default function VoiceDock({
               // as the barge-in handler intends — but must not create a
               // response over the new utterance.
               if (toolEpoch === turnEpochRef.current && !pendingByEpochRef.current.has(toolEpoch)) {
-                requestResponse();
+                // Round-1 instructions on the CONTINUATION too. With results
+                // in hand the model answers aloud (probed 3/3, zero re-calls);
+                // if it genuinely needs a second tool, that call is silent
+                // instead of narrated — a plain create here was the one place
+                // filler could still return.
+                requestResponse({ round1: true });
               }
               break;
             }
 
             case "response.created": {
               const createdId = String(msg.response?.id ?? msg.response_id ?? "");
-              if (silentPendingRef.current) {
-                silentPendingRef.current = false;
-                silentActiveIdRef.current = createdId;
+              if (clientCreatesRef.current > 0) {
+                // One of ours. FAIL-OPEN accounting: when in doubt a response
+                // is treated as ours, because wrongly cancelling a real answer
+                // is worse than wrongly letting an auto response speak.
+                clientCreatesRef.current -= 1;
+                if (nextCreateRound1Ref.current) round1IdsRef.current.add(createdId);
+                vlog("RESP-CREATED", createdId, nextCreateRound1Ref.current ? "round1" : "ours");
+                nextCreateRound1Ref.current = false;
+              } else if (singleRenderRef.current && !closingRef.current && !endingRef.current) {
+                // The server's auto-created response. It cannot be prevented
+                // (create_response:false is silently ignored — probed live),
+                // but it CAN be cancelled before it renders: cancel sent at
+                // response.created leaked zero audio deltas in the probe.
+                //
+                // Cancelled BY ID: a bare cancel kills whichever response the
+                // server considers active, which under a double VAD commit can
+                // be the wrong one. A targeted cancel of a stale id is
+                // rejected with a benign error and touches nothing (probed).
+                //
+                // The replacement round-1 is QUEUED, not sent: a create issued
+                // while any response is active is silently DROPPED by xAI —
+                // no event, no error (probed) — and an immediate send races
+                // the dying response. The queue fires at this response's done.
+                //
+                // Skipped while ending: the goodbye flow owns its own creates,
+                // and cancelling the model's reaction to "that's all, thanks"
+                // would eat the sign-off.
+                cancelledRespRef.current.add(createdId);
+                wsRef.current?.send(JSON.stringify({ type: "response.cancel", response_id: createdId }));
+                vlog("RESP-CREATED", createdId, "auto->cancelled");
+                pendingResponseCreateRef.current = true;
+                pendingCreateRound1Ref.current = true;
+              } else {
+                vlog("RESP-CREATED", createdId, "auto");
               }
-              vlog("RESP-CREATED", createdId,
-                silentActiveIdRef.current === createdId ? "silent" : "audible");
               responseActiveRef.current = true;
               break;
             }
@@ -1170,26 +1250,41 @@ export default function VoiceDock({
               // Holding the flag until the turn's tools are done costs nothing —
               // the tool handler calls requestResponse() when the last one
               // resolves, so the continuation still happens, just in order.
-              if (pendingResponseCreateRef.current && !closingRef.current && pendingToolsRef.current === 0) {
+              const doneId = String(msg.response?.id ?? msg.response_id ?? "");
+              // Deleted BEFORE the queued-create early-return below, or the
+              // normal every-turn path leaks one id per turn forever. `delete`
+              // returning true is also the signal that this done is a
+              // cancelled auto's, which must not touch the status machine.
+              const wasCancelledAuto = cancelledRespRef.current.delete(doneId);
+              round1IdsRef.current.delete(doneId);
+              // Held only for tools of the CURRENT epoch. A pending tool from
+              // a barged-in turn will never call requestResponse (its epoch
+              // check fails), so gating on the raw counter left the queued
+              // round-1 waiting for a continuation that cannot come — the
+              // user's question died silently until they spoke again.
+              if (pendingResponseCreateRef.current && !closingRef.current && !pendingByEpochRef.current.has(turnEpochRef.current)) {
                 pendingResponseCreateRef.current = false;
+                const r1 = pendingCreateRound1Ref.current;
+                pendingCreateRound1Ref.current = false;
                 responseActiveRef.current = true;
-                vlog("CREATE-SENT queued-at-done");
-                wsRef.current?.send(JSON.stringify({ type: "response.create" }));
+                clientCreatesRef.current += 1;
+                nextCreateRound1Ref.current = r1;
+                vlog("CREATE-SENT queued-at-done", r1 ? "round1" : "plain");
+                wsRef.current?.send(
+                  JSON.stringify(
+                    r1 && round1InstrRef.current
+                      ? { type: "response.create", response: { instructions: round1InstrRef.current } }
+                      : { type: "response.create" }
+                  )
+                );
                 break; // stay in "thinking" — more speech incoming
               }
-              // The silent round is over. If it called a tool, the tool
-              // handler creates the audible answer when the last result lands
-              // (and the queued-create branch above covers the racing case).
-              // If it called nothing, the answer has to be asked for here, or
-              // the turn ends in silence.
-              if (silentActiveIdRef.current === String(msg.response?.id ?? msg.response_id ?? "")) {
-                silentActiveIdRef.current = "";
-                if (!closingRef.current && pendingToolsRef.current === 0) {
-                  vlog("CREATE-SENT after-silent");
-                  requestResponse();
-                  break;
-                }
-              }
+              // A cancelled auto's done ends HERE. Letting it fall through
+              // flipped the dock to "listening" and, in wake sessions, armed
+              // the 8s follow-up deadline while the replacement round-1 was
+              // still thinking — a wake session whose answer took longer than
+              // the window closed itself mid-turn.
+              if (wasCancelledAuto) break;
               if (
                 activeSourcesRef.current.size === 0 &&
                 pendingToolsRef.current === 0 &&
@@ -1204,35 +1299,18 @@ export default function VoiceDock({
 
             case "error": {
               console.error("[Voice] Server error:", msg.error);
-              // If the single-render path is what xAI objected to, stop driving
-              // turns and let the server auto-respond again. Restoring
-              // create_response is what actually re-enables that; without it
-              // the session would go permanently mute, which is the one outcome
-              // worse than the bug being fixed.
-              const em = `${msg.error?.message || ""} ${msg.error?.param || ""}`;
-              if (driveTurnsRef.current && /create_response|turn_detection|modalit/i.test(em)) {
-                driveTurnsRef.current = false;
-                silentPendingRef.current = false;
-                silentActiveIdRef.current = "";
-                vlog("DRIVE-OFF", String(msg.error?.message || "rejected").slice(0, 80));
-                wsRef.current?.send(
-                  JSON.stringify({
-                    type: "session.update",
-                    session: {
-                      turn_detection: {
-                        type: "server_vad",
-                        threshold: 0.6,
-                        silence_duration_ms: 600,
-                        prefix_padding_ms: 333,
-                        create_response: true,
-                      },
-                    },
-                  })
-                );
-                // Rescue the turn that was just lost, if nothing is speaking.
-                if (!responseActiveRef.current && !closingRef.current) requestResponse();
-                break;
-              }
+              // Every server error goes in the trace VERBATIM (type, code,
+              // message — no user content in these). The previous mechanism
+              // died invisibly because a possible rejection was swallowed
+              // here; and the probes showed xAI silently ACCEPTS unknown
+              // fields, so an error that does arrive is always worth reading.
+              vlog("SERVER-ERROR",
+                String(msg.error?.type || "?"),
+                String(msg.error?.code || ""),
+                String(msg.error?.message || "").slice(0, 120));
+              // "Cancellation failed: no active response found" — the benign
+              // race where the auto response finished before our cancel
+              // landed. Probed; harmless; the round-1 create still follows.
               if (msg.error?.type === "invalid_request_error") break;
               toast.error(msg.error?.message || "Voice session error");
               break;

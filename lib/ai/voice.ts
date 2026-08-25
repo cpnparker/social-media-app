@@ -56,6 +56,26 @@ export const VOICE_NAME = (process.env.XAI_VOICE_NAME || "leo").trim();
 export const VOICE_MODEL_FALLBACK = "grok-voice-latest";
 export const VOICE_NAME_FALLBACK = "eve"; // xAI's documented default
 export const VOICE_SAMPLE_RATE = 24000;
+
+/**
+ * Appended to the FULL session prompt to form the round-1 instructions —
+ * the per-response instructions the client attaches when it replaces a
+ * cancelled auto response (see VoiceDock's single-render machinery).
+ *
+ * Why per-response when the session-level version of this rule is disobeyed:
+ * per-response instructions REPLACE the prompt for that one response, and the
+ * live probe (2026-08-25) showed the model obeys the rule in that position —
+ * six trials, zero round-1 audio deltas, with this exact suffix on the full
+ * production prompt. The suffix must ride on the WHOLE prompt, not stand
+ * alone: a no-tool turn answers aloud under these instructions, and a bare
+ * suffix would strip the persona and every data rule from those answers.
+ */
+export const ROUND1_SUFFIX =
+  "\n\n# THIS RESPONSE ONLY — read first\n" +
+  "Decide silently whether answering the user's LAST message requires one of your tools.\n" +
+  "If YES: call the tool immediately and produce NO other output whatsoever — no speech, no text, " +
+  "not a single word before or alongside the call.\n" +
+  "If NO: answer normally, aloud.";
 /**
  * Voice is billed per MINUTE of audio, and the rate belongs to the MODEL —
  * which is what the constant this replaces forgot.

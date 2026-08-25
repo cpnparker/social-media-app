@@ -6,6 +6,7 @@ import { verifyWorkspaceMembership, hasEngineAiAccess } from "@/lib/permissions"
 import { checkConversationAccess } from "@/lib/ai/access";
 import {
   buildVoiceInstructions,
+  ROUND1_SUFFIX,
   getVoiceTools,
   VOICE_MODEL,
   VOICE_NAME,
@@ -308,6 +309,10 @@ export async function POST(req: NextRequest) {
       voice: activeVoice,
       sampleRate: VOICE_SAMPLE_RATE,
       instructions,
+      // Round-1 instructions: the SAME prompt plus the silent-tool suffix.
+      // Composed here rather than in the client so the prompt exists in one
+      // place, and so the verify script can assert the assembled text.
+      round1Instructions: instructions + ROUND1_SUFFIX,
       tools: getVoiceTools({ finance: voiceFinance, resourcing: resourcingAccess }),
       isTeamThread,
       clientId,
