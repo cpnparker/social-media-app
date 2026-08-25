@@ -510,8 +510,16 @@ function OptimizerStudio() {
       const { from, to } = ed.state.selection;
       if (to > from) excerpt = ed.state.doc.textBetween(from, to, "\n").trim();
     }
+    let truncated = false;
     if (!excerpt) {
-      excerpt = (body || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 1200);
+      // SHORTER than a selection, deliberately. A selection is what the writer
+      // pointed at, so it earns its length; the opening is a fallback nobody
+      // chose, and at 1,200 characters it fills the composer completely and
+      // pushes the conversation off screen — the writer then has to scroll
+      // past their own draft to type the question it was supposed to set up.
+      const plain = (body || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      excerpt = plain.slice(0, 500);
+      truncated = plain.length > excerpt.length;
     }
     if (!excerpt) { toast.error("There is nothing to ask about yet"); return; }
 
@@ -541,7 +549,9 @@ function OptimizerStudio() {
         "engineai:ask",
         JSON.stringify({
           conversationId: convId,
-          text: `About this draft${title.trim() ? ` — ${title.trim()}` : ""}:\n\n> ${excerpt.slice(0, 1200)}\n\n`,
+          text:
+            `About this draft${title.trim() ? ` — ${title.trim()}` : ""}:\n\n` +
+            `> ${excerpt.slice(0, 1200)}${truncated ? "…" : ""}\n\n`,
         })
       );
       // A HARD navigation, matching the chat→document crossing rather than
