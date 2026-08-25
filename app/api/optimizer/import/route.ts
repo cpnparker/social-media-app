@@ -18,6 +18,8 @@ import { supabase } from "@/lib/supabase";
 import { requireOptimizer } from "../_lib/access";
 import { getClientCanon } from "@/lib/optimizer/client-canon";
 import { canAccessClient, requireAuth } from "@/lib/permissions";
+import { checkConversationAccess } from "@/lib/ai/access";
+import { detectContentType, DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
 import { RUBRIC_VERSION } from "@/lib/optimizer/rubric";
 import { toEditorHtml } from "@/lib/optimizer/import-html";
 
@@ -124,8 +126,117 @@ export async function POST(req: NextRequest) {
   const { caller } = guard;
 
   const source: string = body.source;
-  if (["pasted", "gdoc", "gdoc-link", "url", "engine", "file"].indexOf(source) < 0) {
+  // Kept in step with the CHECK in the NEWEST migration
+  // (20260825_writing_studio_chat_origin.sql), not the three older copies in
+  // 20260821 — verify-optimizer-chat-origin asserts the two agree.
+  if (["pasted", "gdoc", "gdoc-link", "url", "engine", "file", "chat"].indexOf(source) < 0) {
     return NextResponse.json({ error: "Unknown import source" }, { status: 400 });
+  }
+
+  /**
+   * CHAT ORIGIN — the text is lifted here, never accepted from the browser.
+   *
+   * The obvious design sends the rendered answer up with the request. It is
+   * also indefensible: the browser would be supplying the content, the
+   * provenance AND the privacy decision, so a crafted POST could mint a piece
+   * containing anything, attributed to a conversation it never came from, with
+   * the private-source flag conveniently unset.
+   *
+   * So the client sends two ids. The server re-reads the conversation, decides
+   * for itself whether the caller may see it, decides for itself whether its
+   * privacy must survive the copy, and takes the text from the message row.
+   *
+   * Refusals, in order, each for its own reason:
+   *   - no access to the conversation            → the piece cannot exist
+   *   - view-only share                          → a view recipient may not
+   *                                                create workspace content
+   *                                                from someone else's thread
+   *   - incognito                                → the thread is deliberately
+   *                                                unstored; copying it into a
+   *                                                stored document defeats the
+   *                                                only promise incognito makes
+   *   - not an assistant message                 → "start a piece from this
+   *                                                answer" means an answer
+   */
+  let chatText: string | null = null;
+  let chatPrivateSource = false;
+  if (source === "chat") {
+    const conversationId = String(body.conversationId || "");
+    const messageId = String(body.messageId || "");
+    if (!conversationId || !messageId) {
+      return NextResponse.json({ error: "conversationId and messageId are required" }, { status: 400 });
+    }
+
+    const { data: conv } = await intelligenceDb
+      .from("ai_conversations")
+      .select("id_conversation, type_visibility, user_created, id_workspace, flag_incognito")
+      .eq("id_conversation", conversationId)
+      .maybeSingle();
+    if (!conv) {
+      return NextResponse.json({ error: "That conversation no longer exists" }, { status: 404 });
+    }
+    // Workspace isolation before anything else: a conversation in another
+    // workspace is not merely forbidden, it is not found.
+    if ((conv as any).id_workspace && (conv as any).id_workspace !== caller.workspaceId) {
+      return NextResponse.json({ error: "That conversation no longer exists" }, { status: 404 });
+    }
+
+    const access = await checkConversationAccess(conversationId, caller.userId, {
+      visibility: (conv as any).type_visibility,
+      userCreated: (conv as any).user_created,
+      workspaceId: (conv as any).id_workspace,
+    });
+    if (!access.allowed) {
+      return NextResponse.json({ error: "That conversation no longer exists" }, { status: 404 });
+    }
+    if (access.permission === "view") {
+      return NextResponse.json(
+        { error: "You have read-only access to that conversation." },
+        { status: 403 }
+      );
+    }
+    if ((conv as any).flag_incognito) {
+      return NextResponse.json(
+        {
+          error:
+            "This chat is incognito — it is not stored, and a piece made from it would be. Copy the text across yourself if you want to keep it.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const { data: msg } = await intelligenceDb
+      .from("ai_messages")
+      .select("id_message, role_message, document_message")
+      .eq("id_message", messageId)
+      .eq("id_conversation", conversationId)
+      .maybeSingle();
+    if (!msg || (msg as any).role_message !== "assistant") {
+      return NextResponse.json({ error: "That answer is no longer available" }, { status: 404 });
+    }
+    const raw = String((msg as any).document_message || "").trim();
+    if (!raw) {
+      return NextResponse.json({ error: "That answer has no text to start from" }, { status: 400 });
+    }
+
+    // Two strips, both because the studio is not the chat surface.
+    //   Citation tokens are a chat rendering convention and mean nothing here.
+    //   Image markdown points at /api/media, which the editor cannot resolve and
+    //   the export path deliberately skips — leaving it would put broken images
+    //   in an exported document.
+    chatText = raw
+      .replace(/\[__CITE_\d+__\]/g, "")
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    if (!chatText) {
+      return NextResponse.json({ error: "That answer has no text to start from" }, { status: 400 });
+    }
+
+    // THE FLOOR. Anything not positively confirmed as a team thread is treated
+    // as private — the safe direction, and the only one that survives a new
+    // visibility value being added later.
+    chatPrivateSource = (conv as any).type_visibility !== "team";
   }
 
   const clientId = body.clientId != null ? Number(body.clientId) : null;
@@ -308,9 +419,25 @@ export async function POST(req: NextRequest) {
   //
   // `contentIsHtml` is passed explicitly where the source knows: a paste can
   // carry real clipboard HTML, and guessing from the content is guessing.
+  // The chat branch supplies its own text, lifted from the message row rather
+  // than sent by the browser. It is markdown-ish prose, so it takes the same
+  // conversion every other plain-text source takes.
+  if (source === "chat" && chatText) {
+    content = chatText;
+  }
   if (source !== "gdoc-link" && source !== "file") {
     content = toEditorHtml(content, source === "pasted" ? body.contentIsHtml === true : undefined);
   }
+
+  // Detected on the text that will be STORED — after conversion, so the
+  // detector sees the same structure the editor and the rubric will.
+  const detectedType = (() => {
+    try {
+      return detectContentType(content.replace(/<[^>]+>/g, " "), title);
+    } catch {
+      return { type: DEFAULT_CONTENT_TYPE } as any;
+    }
+  })().type;
 
   const proseWords = (content.replace(/<[^>]+>/g, " ").match(/\S+/g) || []).length;
   if (proseWords > MAX_IMPORT_WORDS) {
@@ -345,6 +472,13 @@ export async function POST(req: NextRequest) {
       type_platform: "balanced",
       type_source: source,
       document_source_ref: sourceRef,
+      // Detected from the text that will actually be stored, so a pasted report
+      // is a report from the first render rather than after a round trip. The
+      // detector is deterministic and free — no model call on an import.
+      type_content: detectedType,
+      // The privacy floor. Set only by the chat branch, which is the only path
+      // that copies from a container with its own privacy.
+      flag_private_source: chatPrivateSource ? 1 : 0,
       // Imported content is scored, not generated — target queries are the only
       // brief field that still matters, and the writer adds them in the panel
       // where the unscored pillar is visible.

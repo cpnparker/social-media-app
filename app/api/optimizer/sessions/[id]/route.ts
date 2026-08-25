@@ -98,6 +98,22 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         { status: 403 }
       );
     }
+    // THE PRIVACY FLOOR, enforced here rather than by hiding a control.
+    //
+    // A piece created from a private or incognito-adjacent conversation carries
+    // flag_private_source. The thread's privacy is not the piece's to spend: a
+    // one-click "start a piece from this answer" must not become a one-click
+    // route from a private thread to a team-visible document. The UI hides the
+    // Team option for these, but a hidden control is not a guard — this is.
+    if (body.visibility === "team" && (owned.session as any).flag_private_source) {
+      return NextResponse.json(
+        {
+          error:
+            "This piece came from a private conversation, so it cannot be shared with the team. Copy what you need into a new piece if you want to share it.",
+        },
+        { status: 403 }
+      );
+    }
     patch.type_visibility = body.visibility;
   }
 

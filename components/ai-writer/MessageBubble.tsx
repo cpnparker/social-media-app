@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import SlideLightbox from "./SlideLightbox";
 import SlideCommentBox from "./SlideCommentBox";
-import { User, Bot, FileText, ExternalLink, ChevronDown, ChevronUp, ShieldCheck, Copy, Check, RotateCcw, Pencil, X, ThumbsUp, ThumbsDown, CalendarClock, NotebookPen, Loader2 } from "lucide-react";
+import { User, Bot, FileText, ExternalLink, ChevronDown, ChevronUp, ShieldCheck, Copy, Check, RotateCcw, Pencil, PenLine, X, ThumbsUp, ThumbsDown, CalendarClock, NotebookPen, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import DOMPurify from "dompurify";
@@ -546,7 +546,7 @@ export default function MessageBubble({
         )}
 
         {!isUser && !isStreaming && (
-          <div className="flex items-center gap-1 mt-2">
+          <div className="flex flex-wrap items-center gap-1 mt-2">
             {model && (
               <p className="text-[11px] text-muted-foreground mr-2">
                 {getModelLabel(model)}
@@ -582,6 +582,43 @@ export default function MessageBubble({
               >
                 <RotateCcw className="h-3 w-3" />
                 <span>Retry</span>
+              </button>
+            )}
+            {/* Start a piece from this answer.
+                Sends TWO IDS and nothing else — the route re-reads the
+                conversation and the message itself and makes its own access,
+                incognito and privacy decisions. The browser supplying the text
+                would mean the browser supplying the provenance and the privacy
+                flag with it. */}
+            {conversationId && messageId && !isFactCheck && (
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await fetch("/api/optimizer/import", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        workspaceId,
+                        source: "chat",
+                        conversationId,
+                        messageId,
+                      }),
+                    });
+                    const j = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                      toast.error(j.error || "Could not start a piece from this");
+                      return;
+                    }
+                    window.location.href = `/engineai/optimizer?session=${encodeURIComponent(j.sessionId)}`;
+                  } catch {
+                    toast.error("Could not start a piece from this");
+                  }
+                }}
+                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors rounded px-1.5 py-0.5 hover:bg-muted/50"
+                title="Open this answer in the Writing Studio as a new piece"
+              >
+                <PenLine className="h-3 w-3" />
+                <span>Start a piece</span>
               </button>
             )}
             {onFactCheck && !isFactCheck && (
