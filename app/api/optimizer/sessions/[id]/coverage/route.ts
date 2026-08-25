@@ -23,6 +23,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { assertServiceAllowed } from "@/lib/admin/service-control";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import { parseDraft } from "@/lib/optimizer/parse";
 import {
@@ -46,6 +47,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const owned = await loadSessionForCaller(id, guard.caller);
   if (!owned.ok) return NextResponse.json({ error: owned.error }, { status: owned.status });
   const session = owned.session as any;
+
+  // THE KILL SWITCH. This route had none, while assess, suggest and generate
+  // all had it — and coverage is the most expensive press in the studio: three
+  // calls (fan-out @4000, parametric @1200, novelty @4000). Its spend counts
+  // toward the engine/optimizer bucket, so it could push the OTHER three over
+  // the cap while remaining itself unstoppable; flipping `killed` stopped
+  // generation, assessment and rewrites and left the priciest calls running.
+  //
+  // requireOptimizer above is access control, not a spend control — revoking it
+  // takes the user's whole EngineAI access with it.
+  //
+  // Note this route talks to the Anthropic SDK directly rather than through
+  // createStreamingResponse, so it is ALSO outside the global provider cap
+  // (isOverProviderCap). This gate is the only spend control it has.
+  try {
+    await assertServiceAllowed("engine", "optimizer");
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || "The optimizer is temporarily unavailable" }, { status: 503 });
+  }
 
   const { data: drafts } = await intelligenceDb
     .from("optimizer_drafts")

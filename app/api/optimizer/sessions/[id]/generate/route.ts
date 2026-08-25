@@ -97,7 +97,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         preserveLinks: true,
         source: "optimizer",
       } as any,
-      async (result: { fullText: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; model?: string }) => {
+      // NO inline type annotation, deliberately. This callback used to declare
+      // its own permissive shape ending `model?: string` — which kept tsc green
+      // while `result.model` was undefined on EVERY run, because StreamResult's
+      // field is `modelUsed`. The `|| "claude-sonnet-5"` below then won every
+      // time, so every generate row named Sonnet: a grok-4.3 fallback was
+      // priced at Sonnet's $10/MTok output instead of $2.50 and charged to the
+      // wrong provider cap, and a Control Centre override was invisible.
+      // Inference from createStreamingResponse gives the real StreamResult,
+      // where modelUsed is REQUIRED — so this cannot silently reopen.
+      async (result) => {
         const fullText = result.fullText;
 
         // Log the spend BEFORE the early return, and before anything that can
@@ -112,7 +121,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         logAiUsage({
           workspaceId: guard.caller.workspaceId,
           userId: guard.caller.userId,
-          model: result.model || "claude-sonnet-5",
+          model: result.modelUsed,
           source: "optimizer",
           inputTokens: result.inputTokens || 0,
           outputTokens: result.outputTokens || 0,

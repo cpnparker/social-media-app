@@ -48,6 +48,10 @@
  *    insert and the model would have been reported as unpriced-by-neither. Every
  *    real insert in the repo is multi-line, so the scan was green and wrong.
  *    Now balances brackets instead.
+ *  - FOUND BY ITS OWN FIRST RUN: the `result.model` detector matched the
+ *    COMMENT explaining the bug, so documenting a fix reported it as unfixed.
+ *    Comments are stripped now. The general lesson is that a source-text
+ *    detector must read code, not prose about code.
  *  - SURVIVED, and worth knowing: check 3 asserts a usage insert exists in the
  *    same FILE as the model call, not that it is reachable from it or that it
  *    counts the right tokens. A logging call placed inside an unreachable
@@ -219,11 +223,101 @@ for (let i = 0; i < voiceFiles.length; i++) {
 }
 if (!checkedVoice) fail("no voice file calls a model — check 3 is testing nothing");
 
+// ── 4. logAiUsage names the model that ANSWERED, and spenders are gated ─
+// Two faults of one family, both found in the optimizer on 2026-08-25 and both
+// invisible to tsc and to a grep for "logAiUsage":
+//
+//   The generate route read `result.model` from a StreamResult whose field is
+//   `modelUsed`, under an inline callback type declaring `model?: string`. The
+//   structural type still matched, so it compiled, and `result.model` was
+//   undefined on EVERY run — the `|| "claude-sonnet-5"` fallback won every
+//   time. A grok-4.3 fallback answer was therefore billed at Sonnet's output
+//   rate and charged to the wrong provider cap, and nothing anywhere said so.
+//
+//   The coverage route — three calls per press, the most expensive path in the
+//   product — called no spend guard at all, while its three sibling routes all
+//   did. Its spend still counted toward the shared bucket, so it could push the
+//   others over the cap while remaining itself unstoppable.
+//
+// The rule that generalises: a model name written to the ledger must be DERIVED
+// from what answered, never defaulted to a literal; and a route that spends must
+// be gated. Both are asserted on USE.
+console.log("\n4. Model names are derived, and every spending route is gated");
+
+/** The `model:` expression of each logAiUsage call in a source file. */
+export function loggedModelExprs(src: string): string[] {
+  const out: string[] = [];
+  const re = /logAiUsage\(\{/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    let depth = 1;
+    let i = m.index + m[0].length;
+    while (i < src.length && depth > 0) {
+      const ch = src[i];
+      if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+      i++;
+    }
+    out.push(fieldExpr(src.slice(m.index, i), "model"));
+  }
+  return out;
+}
+
+/**
+ * Source with comments removed.
+ *
+ * Needed because the `result.model` detector below matched the COMMENT that
+ * explains the bug it looks for — the fix and its own explanation were
+ * indistinguishable to it. A detector that reads prose as code reports the
+ * documentation of a closed bug as the bug.
+ */
+export function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
+/** A ledger model name defaulted to a hardcoded id hides an undefined read. */
+export function hasLiteralModelFallback(expr: string): boolean {
+  return /\|\|\s*["'`]/.test(expr) || /\?\?\s*["'`]/.test(expr);
+}
+
+let modelExprs = 0;
+for (let i = 0; i < FILES.length; i++) {
+  const src = fs.readFileSync(FILES[i], "utf8");
+  if (src.indexOf("logAiUsage({") < 0) continue;
+  const exprs = loggedModelExprs(src);
+  for (let j = 0; j < exprs.length; j++) {
+    modelExprs++;
+    hasLiteralModelFallback(exprs[j])
+      ? fail(`${rel(FILES[i])} defaults a ledger model name to a literal: ${exprs[j].slice(0, 70)}`)
+      : pass(`${rel(FILES[i])} logs a derived model name`);
+  }
+  // A StreamResult callback has `modelUsed`; `.model` on one is always undefined.
+  /\bresult\.model\b(?!Used)/.test(stripComments(src))
+    ? fail(`${rel(FILES[i])} reads result.model — StreamResult's field is modelUsed, so this is always undefined`)
+    : null;
+}
+if (!modelExprs) fail("no logAiUsage model expression found — this check is testing nothing");
+
+// Every optimizer route that spends must carry the kill switch.
+const OPT_DIR = path.join(ROOT, "app", "api", "optimizer");
+let gated = 0;
+for (let i = 0; i < FILES.length; i++) {
+  if (FILES[i].indexOf(OPT_DIR) !== 0) continue;
+  const src = fs.readFileSync(FILES[i], "utf8");
+  // Spends = logs usage. A route that logs is a route that paid.
+  if (src.indexOf("logAiUsage(") < 0) continue;
+  gated++;
+  src.indexOf("assertServiceAllowed(") >= 0
+    ? pass(`${rel(FILES[i])} is behind the kill switch`)
+    : fail(`${rel(FILES[i])} spends but calls no assertServiceAllowed — unstoppable, and it shares the cap`);
+}
+if (!gated) fail("no optimizer route appears to spend — check 4b is testing nothing");
+
 // ── Self-test ──────────────────────────────────────────────────────────
 // Fixture-only. This tree is shared with other sessions and also deploys, so
 // nothing here mutates a repo file to prove a detector fires.
 if (process.argv.indexOf("--self-test") >= 0) {
-  console.log("\n4. Self-test — the detectors fire on the shapes they exist for");
+  console.log("\n5. Self-test — the detectors fire on the shapes they exist for");
   let selfFails = 0;
   const detects = (name: string, caught: boolean) => {
     caught ? console.log(`  ok    catches ${name}`) : (selfFails++, console.log(`  BROKEN  misses ${name}`));
@@ -258,6 +352,19 @@ if (process.argv.indexOf("--self-test") >= 0) {
   );
   detects("a per-minute rate is recognised as priced",
     perMin.length === 1 && /PER_MIN/.test(perMin[0].cost));
+
+  detects("the exact pre-fix optimizer fallback shape",
+    hasLiteralModelFallback('result.model || "claude-sonnet-5"'));
+  detects("a nullish-coalesced literal too",
+    hasLiteralModelFallback('result.modelUsed ?? "claude-sonnet-5"'));
+  detects("a derived model name is NOT flagged",
+    !hasLiteralModelFallback("result.modelUsed") && !hasLiteralModelFallback("JUDGE_MODEL"));
+  detects("a result.model in a COMMENT is not mistaken for code",
+    !/\bresult\.model\b(?!Used)/.test(stripComments('// `result.model` was undefined\nconst x = result.modelUsed;')));
+  detects("a real result.model read IS caught",
+    /\bresult\.model\b(?!Used)/.test(stripComments('const m = result.model || "claude-sonnet-5";')));
+    detects("the model expression is extracted from a logAiUsage call",
+    loggedModelExprs('logAiUsage({ workspaceId: w, model: result.modelUsed, source: "optimizer" });')[0] === "result.modelUsed");
 
   detects("an unpriced model id", !Object.prototype.hasOwnProperty.call(MODEL_COSTS, "gpt-5-6-not-a-model"));
 
