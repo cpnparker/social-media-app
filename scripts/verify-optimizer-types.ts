@@ -108,9 +108,29 @@ console.log("\n2. The unnamed type is never rendered");
       ? pass("no type chip renders for it")
       : fail("a type chip would render for the unnamed type");
 
+    // A UNIQUE GLYPH NAMES IT BY ELIMINATION. If every named type has its own
+    // icon and this one has a third, the row is legible as "the other kind"
+    // even with no words — which is the decision defeated by other means.
+    contentType(id).offered === false && offeredTypes().every((t) => t.id !== id)
+      ? pass("it never appears in a menu built from offeredTypes()")
+      : fail("the unnamed type is reachable from an offered-types menu");
+
     // THE ABSENCE ASSERTION. Any UI source that contains the id as a literal is
     // one string interpolation away from printing it.
-    const UI = ["app/engineai/optimizer/page.tsx", "components/optimizer"];
+    // Extended to the sidebar and the chat page, because a piece row, a New
+    // menu and a section heading are all places the id could be printed.
+    //
+    // BASELINE: the exact regex below was run against all five files on
+    // 2026-08-25 and returned ZERO hits. That matters — a two-letter
+    // word-boundary match inside quoted strings could plausibly collide with
+    // ordinary copy, and without a recorded baseline a future red would be
+    // indistinguishable from pre-existing noise. It is not noise: it is new.
+    const UI = [
+      "app/engineai/optimizer/page.tsx",
+      "components/optimizer",
+      "components/engineai/EngineAISidebar.tsx",
+      "app/engineai/page.tsx",
+    ];
     const files: string[] = [];
     for (const u of UI) {
       const full = path.join(ROOT, u);
@@ -132,6 +152,33 @@ console.log("\n2. The unnamed type is never rendered");
   offeredTypes().every((t) => t.label)
     ? pass("every offered type has a name to show")
     : fail("an offered type has no label — the start screen would render a blank chip");
+}
+
+console.log("\n2b. The create path cannot be talked into the unnamed type");
+{
+  // A URL is user input. `?new=cv` must not create one, and the guard is
+  // offeredTypes() rather than CONTENT_TYPE_IDS — asserted by running the same
+  // predicate the page runs, not by grepping for the identifier, because a
+  // grep would pass on a page that imports it and never calls it.
+  const resolvable = (param: string) => offeredTypes().filter((t) => t.id === param)[0];
+  const quiet = CONTENT_TYPE_IDS.filter((id) => contentType(id).label === null)[0];
+  resolvable(quiet) === undefined
+    ? pass(`?new=${"<unnamed>"} resolves to nothing, so it cannot be created from a URL`)
+    : fail("the unnamed type can be created by hand-editing the URL");
+  resolvable("article") !== undefined && resolvable("report") !== undefined
+    ? pass("?new=article and ?new=report both resolve")
+    : fail("an offered type is not creatable from the URL");
+  resolvable("not-a-type") === undefined
+    ? pass("an unknown ?new= resolves to nothing rather than defaulting")
+    : fail("an unknown ?new= silently creates something");
+
+  const pageSrc = stripComments(read("app/engineai/optimizer/page.tsx"));
+  /offeredTypes\(\)\.filter\(/.test(pageSrc)
+    ? pass("the page validates ?new= against offeredTypes(), not the full id list")
+    : fail("the page does not narrow ?new= to offered types — the unnamed type would be creatable");
+  /startBlank/.test(pageSrc)
+    ? pass("a blank-page path exists")
+    : fail("there is no way to open an empty editor — the studio cannot be written in");
 }
 
 console.log("\n3. Analysis gates are CALLED, and called before spend");

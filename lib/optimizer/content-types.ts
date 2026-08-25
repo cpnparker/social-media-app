@@ -205,6 +205,23 @@ export interface ChromeContract {
   showScore: boolean;
   /** The page-audit entry point. */
   showAudit: boolean;
+  /**
+   * The target-query editor in the brief and header.
+   *
+   * Derived from whether the type still carries any query-coverage criterion —
+   * asking a writer for the queries a piece should rank for, and then scoring
+   * it against criteria that no longer include them, is a form asking for
+   * something nothing reads.
+   */
+  showTargetQueries: boolean;
+  /**
+   * The "Optimise for" platform lens (ChatGPT / Perplexity / AI Overviews).
+   *
+   * Tied to coverage rather than to the judge: the lens shifts pillar weights
+   * for RETRIEVAL by an answer engine, which is the same question coverage
+   * asks. A document nobody is trying to get retrieved has no use for it.
+   */
+  showPlatform: boolean;
 }
 
 export function chromeFor(id: string | null | undefined): ChromeContract {
@@ -216,6 +233,10 @@ export function chromeFor(id: string | null | undefined): ChromeContract {
     showCoverageTab: t.analyses.coverage,
     showScore: t.analyses.judge,
     showAudit: t.analyses.audit,
+    // Derived, never declared. A hand-set flag is a second place for the truth
+    // to live, and the pair drift the first time a type is re-weighted.
+    showTargetQueries: criteriaFor(t.id).some((c) => c.pillar === 1),
+    showPlatform: t.analyses.coverage,
   };
 }
 

@@ -30,17 +30,21 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { cn } from "@/lib/utils";
+import { offeredTypes } from "@/lib/optimizer/content-types";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { getSubdomainUrl } from "@/lib/subdomain";
 import { SectionRailDesktop, SectionRailMobile, useRailItems } from "@/components/layout/SectionRail";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import {
-  Building2, Check, ChevronDown, ChevronsUpDown, Loader2, Lock, Pencil, PenLine, PenSquare, Pin, Plus, Search, Trash2, Users, X,
+  Building2, Check, ChevronDown, ChevronsUpDown, Download, Loader2, Lock, Pencil, PenLine, PenSquare, Pin, Plus, Search, Sparkles, Trash2, Users, X,
 } from "lucide-react";
 
 /** Kept in step with the shape app/engineai/page.tsx builds. */
@@ -50,6 +54,8 @@ export interface OptimizerArticle {
   status: string;
   visibility: string;
   source: string;
+  /** The KIND of piece. Rendered as an icon only — never as a name. */
+  contentType: string;
   clientId: number | null;
   updatedAt: string;
   /** Decided by the server, never inferred here. Rename and delete are the
@@ -107,6 +113,8 @@ export default function EngineAISidebar({
   selectedArticleId, conversationsLoading, conversationCount = 0, children, footer, railFooter,
 }: Props) {
   const router = useRouter();
+  const pathname = usePathname();
+  const inStudio = (pathname || "").startsWith("/engineai/optimizer");
   const customerCtx = useCustomerSafe();
   const customers = customerCtx?.customers || [];
   const selectedCustomer = customerCtx?.selectedCustomer;
@@ -134,16 +142,25 @@ export default function EngineAISidebar({
    * does not render. A console error on every page load would be noise.
    */
   const [articles, setArticles] = useState<OptimizerArticle[]>([]);
+  const [piecesState, setPiecesState] = useState<"loading" | "ok" | "error">("loading");
   const wsCtx = useWorkspaceSafe();
   const workspaceId = wsCtx?.selectedWorkspace?.id || null;
 
   useEffect(() => {
     if (!workspaceId) { setArticles([]); return; }
     let cancelled = false;
+    setPiecesState("loading");
     fetch(`/api/optimizer/sessions?workspaceId=${encodeURIComponent(workspaceId)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (cancelled || !d || !Array.isArray(d.sessions)) return;
+        if (cancelled) return;
+        // THREE states, not two. The previous shape threw the status away and
+        // rendered nothing on any failure, so "you have no pieces" and "the
+        // query failed" were the same picture. This list returns 500 on any
+        // Supabase error, and conflating an outage with an empty shelf is the
+        // .single() bug this workspace has already paid for once.
+        if (!d || !Array.isArray(d.sessions)) { setPiecesState("error"); return; }
+        setPiecesState("ok");
         setArticles(
           d.sessions.map((row: any) => ({
             id: row.id_session,
@@ -154,13 +171,17 @@ export default function EngineAISidebar({
             // loss; private is the safe direction to resolve it in.
             visibility: row.type_visibility || "private",
             source: row.type_source || "generated",
+            // Carried so a row can show what KIND it is. Rendered as an icon
+            // only, and the unnamed type shares the default icon with a named
+            // one — a unique glyph would name it by elimination.
+            contentType: row.type_content || "article",
             clientId: row.id_client ?? null,
             updatedAt: row.date_updated,
             isOwner: row.isOwner === true,
           }))
         );
       })
-      .catch(() => { /* the optimiser being off is not an error in this view */ });
+      .catch(() => { if (!cancelled) setPiecesState("error"); });
     return () => { cancelled = true; };
   }, [workspaceId]);
 
@@ -272,7 +293,7 @@ export default function EngineAISidebar({
       // If the deleted piece is the one on screen, leave it — the studio would
       // otherwise sit on a session that no longer exists and 404 on next save.
       if (selectedArticleId === a.id) router.push("/engineai/optimizer");
-      toast.success("Article deleted");
+      toast.success("Deleted");
     } catch (err: any) {
       toast.error(err?.message || "Could not delete that");
     }
@@ -477,18 +498,27 @@ export default function EngineAISidebar({
                 can navigate to is a feature that does not exist. */}
             <button
               onClick={() => router.push("/engineai/optimizer")}
-              className="w-full flex items-center gap-2 rounded-lg bg-white/[0.06] hover:bg-white/10 px-2.5 py-2 transition-colors text-left text-white/80 hover:text-white"
-              title="Write content optimised to be cited by AI assistants"
+              className={cn(
+                "w-full flex items-center gap-2 rounded-lg px-2.5 py-2 transition-colors text-left",
+                inStudio
+                  ? "bg-white/15 text-white"
+                  : "bg-white/[0.06] hover:bg-white/10 text-white/80 hover:text-white"
+              )}
             >
-              <PenLine className="h-3.5 w-3.5 text-white/40 shrink-0" />
-              <span className="flex-1 truncate text-[13px] font-medium">Content Optimiser</span>
+              {/* PenSquare for the TOOL, PenLine for the things it makes, so the
+                  surface and its rows are not the same glyph. The rail also
+                  finally says which surface you are on: without the active
+                  state, the studio and the chat page were indistinguishable
+                  from the sidebar. */}
+              <PenSquare className={cn("h-3.5 w-3.5 shrink-0", inStudio ? "text-white/80" : "text-white/40")} />
+              <span className="flex-1 truncate text-[13px] font-medium">Writing Studio</span>
             </button>
 
             {/* Search chats */}
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/40" />
               <input
-                placeholder="Search chats..."
+                placeholder="Search pieces and chats"
                 value={searchQuery}
                 onChange={(e) => onSearchChange(e.target.value)}
                 className="w-full h-8 rounded-lg bg-white/[0.06] border border-white/[0.08] pl-8 pr-3 text-[13px] text-white placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-white/20"
@@ -548,23 +578,76 @@ export default function EngineAISidebar({
               </div>
             ) : (
             <div className="space-y-0.5">
-  {/* ─── Articles ───
+  {/* ─── Pieces ───
                       Its own section rather than rows mixed into the chat list.
                       Two kinds of thing in one list is harder to scan than two
                       short lists, and when searching it is the difference
-                      between "did it find my article?" and having to read every
-                      row to find out. The heading carries the count so an empty
-                      result under a heading never reads as a hung fetch. */}
-                  {visibleArticles.length > 0 && (
+                      between "did it find my piece?" and having to read every
+                      row to find out.
+
+                      ALWAYS RENDERED (except on a failed fetch). It used to
+                      appear only when a piece existed, so a workspace with none
+                      saw no evidence that pieces were possible — the capability
+                      was invisible until you already used it, which is the same
+                      defect as a feature with no inbound link, one level in.
+                      The heading now carries the way to make one. */}
+                  {piecesState !== "error" && (
                     <div className="mb-1">
                       <div className="flex items-center justify-between px-2.5 pt-3 pb-1">
                         <p className="text-[11px] font-semibold text-white/55 uppercase tracking-wider">
-                          Articles
+                          Pieces
                         </p>
-                        <span className="text-[11px] text-white/35 tabular-nums">
-                          {visibleArticles.length}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {visibleArticles.length > 0 && (
+                            <span className="text-[11px] text-white/35 tabular-nums">
+                              {visibleArticles.length}
+                            </span>
+                          )}
+                          {/* Built from offeredTypes(), never a literal list —
+                              that is what keeps the unnamed type out of this
+                              menu structurally rather than by memory. */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                className="text-[11px] font-semibold text-white/55 hover:text-white transition-colors px-1"
+                                title="Start a piece"
+                              >
+                                New
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-56">
+                              {offeredTypes().map((t) => (
+                                <DropdownMenuItem
+                                  key={t.id}
+                                  onClick={() => router.push(`/engineai/optimizer?new=${encodeURIComponent(t.id)}`)}
+                                >
+                                  <PenLine className="h-3.5 w-3.5 mr-2 opacity-60" />
+                                  Blank {String(t.label).toLowerCase()}
+                                </DropdownMenuItem>
+                              ))}
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onClick={() => router.push("/engineai/optimizer?new=article&setup=1")}>
+                                <Sparkles className="h-3.5 w-3.5 mr-2 opacity-60" />
+                                Draft it with AI
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => router.push("/engineai/optimizer")}>
+                                <Download className="h-3.5 w-3.5 mr-2 opacity-60" />
+                                Bring one in
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
                       </div>
+                      {/* The zero state teaches, rather than rendering nothing.
+                          One sentence on-screen, not in a title attribute —
+                          invisible on touch is the defect this whole section
+                          exists to fix. */}
+                      {piecesState === "ok" && visibleArticles.length === 0 && (
+                        <p className="px-2.5 pb-2 text-[11.5px] leading-snug text-white/40">
+                          Long-form writing lives here — drafts, reports, anything you
+                          want checked as you write. Start one with <span className="text-white/60">New</span>.
+                        </p>
+                      )}
                       {visibleArticles.slice(0, searchQuery ? 8 : 5).map((a) => (
                         <button
                           key={a.id}

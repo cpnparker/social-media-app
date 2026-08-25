@@ -16,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { offeredTypes } from "@/lib/optimizer/content-types";
 import { ArrowRight, ClipboardPaste, FileText, Building2, Globe, Loader2, PenLine, Info, Upload, FileUp } from "lucide-react";
 
 export interface ImportSources {
@@ -31,6 +32,8 @@ interface Props {
   clientName: string | null;
   onImported: (sessionId: string) => void;
   onWriteNew: () => void;
+  /** Start an empty piece of this type and open the editor. No model call. */
+  onStartBlank: (contentType: string) => void;
 }
 
 /** The tab a writer clicks and the `source` the server records are named
@@ -69,7 +72,7 @@ const CONTENT_TYPE_FOR: { [ext: string]: string } = {
   md: "text/markdown", markdown: "text/markdown", txt: "text/plain",
 };
 
-export default function StartScreen({ workspaceId, clientId, clientName, onImported, onWriteNew }: Props) {
+export default function StartScreen({ workspaceId, clientId, clientName, onImported, onWriteNew, onStartBlank }: Props) {
   const [tab, setTab] = useState<Tab>("paste");
   const [sources, setSources] = useState<ImportSources | null>(null);
   const [loading, setLoading] = useState(false);
@@ -245,27 +248,61 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
       <div className="mx-auto w-full max-w-[48rem] px-6 py-10 flex flex-col gap-6">
 
         <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-bold tracking-tight">Optimise a piece of content</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Start a piece</h1>
           <p className="text-sm text-muted-foreground">
-            Score and improve something that already exists, or write a new piece from a brief.
+            Write it yourself, brief the AI, or bring in something that already exists.
+            Everything lands in the same editor, with the same checks.
             {clientName ? ` Grounded in what we know about ${clientName}.` : ""}
           </p>
         </div>
 
-        {/* Primary: bring content in */}
+        {/* WRITE FIRST. The door that did not exist: every previous route into
+            the editor either spent a model call or required text that already
+            existed, while the editor's placeholder invited you to write. It
+            leads because "write" is the verb this surface is named for.
+
+            Type chips are the same SourceTab component the import card uses, so
+            "pick a kind" and "pick a source" read as one grammar — and they are
+            built from offeredTypes(), never a literal list, which is what keeps
+            an unoffered type out of this menu structurally. */}
         <div className="rounded-2xl border border-primary/30 bg-primary/[0.025] p-5">
           <div className="flex items-baseline gap-2 mb-1">
-            <span className="text-base font-semibold tracking-tight">Bring content in</span>
-            <span className="text-[11px] font-semibold text-primary bg-primary/10 rounded px-1.5 py-0.5">
-              Most common
-            </span>
+            <PenLine className="h-4 w-4 text-primary shrink-0 self-center" />
+            <span className="text-base font-semibold tracking-tight">Write it yourself</span>
           </div>
           <p className="text-[13px] text-muted-foreground leading-relaxed mb-4">
-            It goes straight to the editor with a score. Everything imported is a copy — editing here
-            never touches the original.
+            A blank page, with the instant checks running as you type. Nothing is sent
+            to a model until you ask.
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {offeredTypes().map((t) => (
+              <SourceTab
+                key={t.id}
+                active={false}
+                onClick={() => onStartBlank(t.id)}
+                icon={<PenLine className="h-3.5 w-3.5" />}
+                label={String(t.label)}
+              />
+            ))}
+          </div>
+        </div>
+
+        {/* Bring content in. No longer the primary card — see above. */}
+        <div className="rounded-2xl border p-5">
+          <div className="flex items-baseline gap-2 mb-1">
+            <span className="text-base font-semibold tracking-tight">Bring one in</span>
+          </div>
+          {/* "with a score" was false for one registered type, whose panel
+              renders no score and whose detection is deliberately silent — so
+              nothing on screen would have explained the absence. The instant
+              checks are true for all three, and name nothing. The "Most common"
+              badge went with it: there is no longer a hierarchy to signal. */}
+          <p className="text-[13px] text-muted-foreground leading-relaxed mb-4">
+            It goes straight to the editor with the instant checks already running.
+            Everything imported is a copy — editing here never touches the original.
           </p>
 
-          <div className="flex gap-1.5 mb-3">
+          <div className="flex flex-wrap gap-1.5 mb-3">
             <SourceTab active={tab === "paste"} onClick={() => setTab("paste")} icon={<ClipboardPaste className="h-3.5 w-3.5" />} label="Paste it" />
             <SourceTab active={tab === "upload"} onClick={() => setTab("upload")} icon={<FileUp className="h-3.5 w-3.5" />} label="Upload a file" />
             <SourceTab active={tab === "url"} onClick={() => setTab("url")} icon={<Globe className="h-3.5 w-3.5" />} label="A published page" />

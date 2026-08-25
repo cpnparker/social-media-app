@@ -37,7 +37,7 @@ import type { ClientCanon } from "@/lib/optimizer/client-canon";
 import IssueList from "@/components/optimizer/IssueList";
 import CoveragePanel from "@/components/optimizer/CoveragePanel";
 import IssuePopover from "@/components/optimizer/IssuePopover";
-import { chromeFor, labelOf, DEFAULT_CONTENT_TYPE, detectContentType, shouldAnnounce } from "@/lib/optimizer/content-types";
+import { chromeFor, labelOf, offeredTypes, DEFAULT_CONTENT_TYPE, detectContentType, shouldAnnounce } from "@/lib/optimizer/content-types";
 import PageAudit from "@/components/optimizer/PageAudit";
 import StartScreen from "@/components/optimizer/StartScreen";
 import EngineAISidebar from "@/components/engineai/EngineAISidebar";
@@ -333,6 +333,98 @@ function OptimizerStudio() {
     setQueryDraft("");
   };
 
+  /**
+   * Start an empty piece and open the editor.
+   *
+   * THE DOOR THAT DID NOT EXIST. Every route into the editor either spent a
+   * model call (generate) or required text that already existed (import, and a
+   * paste button disabled while empty) — while the editor's own placeholder
+   * read "Paste or write your content here", advertising a state nothing could
+   * reach. A writing studio you cannot start writing in is not one.
+   *
+   * No model call, no brief. A row, a cursor, and the free instant checks.
+   */
+  const startBlank = useCallback(async (type: string) => {
+    if (!workspaceId) { toast.error("Select a workspace first"); return; }
+    setBusy(true);
+    try {
+      const res = await fetch("/api/optimizer/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          title: "Untitled piece",
+          targetQueries: [],
+          format: "explainer",
+          platform: "balanced",
+          contentType: type,
+          audience: "",
+          goal: "",
+          clientId: selectedCustomer ? Number(selectedCustomer.id) : null,
+        }),
+      });
+      const created = await res.json();
+      if (!res.ok) { toast.error(created.error || "Could not start that piece"); return; }
+      setContentTypeId(type);
+      setTitle("");
+      setBody("");
+      setIssues([]);
+      setDiagnostics(null);
+      setStudioView("optimise");
+      setSourceInfo({ source: "generated", ref: null });
+      if (created.canon?.clientName) setCanon(created.canon);
+      setSessionId(created.sessionId);
+      // Hydration would otherwise fetch this straight back and overwrite the
+      // empty editor with the server's idea of it — same reason generate() marks
+      // it before changing the URL.
+      hydratedRef.current = created.sessionId;
+      setPhase("studio");
+      openSession(created.sessionId);
+    } catch {
+      toast.error("Could not start that piece");
+    } finally {
+      setBusy(false);
+    }
+  }, [workspaceId, selectedCustomer, openSession]);
+
+  /**
+   * `?new=` — the sidebar's New menu, and the only way to reach a blank page.
+   *
+   * Guarded by a ref rather than by state: the effect re-runs whenever
+   * searchParams changes identity, and creating a piece changes the URL, so an
+   * unguarded version would create a second piece with the first still opening.
+   *
+   * The type is validated against offeredTypes(), NOT against every registered
+   * id. One type is deliberately not offered, and a URL is user input: without
+   * this, `?new=` plus that id would be a way to create it on purpose, which is
+   * exactly the door the registry closes everywhere else.
+   */
+  const newParam = searchParams.get("new");
+  const setupParam = searchParams.get("setup");
+  const claimedNewRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!newParam || !workspaceId) return;
+    const claimKey = `${newParam}:${setupParam || ""}`;
+    if (claimedNewRef.current === claimKey) return;
+    claimedNewRef.current = claimKey;
+
+    const wanted = offeredTypes().filter((t) => t.id === newParam)[0];
+    if (!wanted) {
+      // Unknown or not-offered: land on the start screen rather than erroring.
+      // A bad URL should not be a dead end, and it must not name what it failed
+      // to match.
+      setPhase("start");
+      return;
+    }
+    if (setupParam === "1") {
+      // "Draft it with AI" — the brief step, where generate() spends.
+      setContentTypeId(wanted.id);
+      setPhase("brief");
+      return;
+    }
+    void startBlank(wanted.id);
+  }, [newParam, setupParam, workspaceId, startBlank]);
+
   // ── Generate ──
   const generate = useCallback(async () => {
     if (!workspaceId) { toast.error("Select a workspace first"); return; }
@@ -344,7 +436,7 @@ function OptimizerStudio() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          workspaceId, title, targetQueries: queries, format, platform,
+          workspaceId, title, targetQueries: queries, format, platform, contentType: contentTypeId,
           audience, goal, clientId: selectedCustomer ? Number(selectedCustomer.id) : null,
         }),
       });
@@ -827,6 +919,7 @@ function OptimizerStudio() {
         clientId={selectedCustomer ? Number(selectedCustomer.id) : null}
         clientName={selectedCustomer ? selectedCustomer.name : null}
         onImported={openSession}
+        onStartBlank={startBlank}
         onWriteNew={() => setPhase("brief")}
       />
     );
