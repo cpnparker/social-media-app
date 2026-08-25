@@ -47,6 +47,10 @@ export const DEFAULT_MODEL: AIModelId = "auto";
  * opposite line for routing, where the point is which model answers next.)
  */
 const LEGACY_MODEL_LABELS: Record<string, string> = {
+  // Gemini's WIRE slug. The API's model list calls it gemini-3-flash-preview
+  // while the picker offers "gemini-3-flash", and a row recording what actually
+  // ran holds the wire name — without this it renders as a raw id.
+  "gemini-3-flash-preview": "Gemini 3 Flash",
   "gpt-4o": "GPT-4o",
   "gpt-4o-mini": "GPT-4o Mini",
   // Both spellings for each GPT-5.6 model: getModelLabel falls back to the raw

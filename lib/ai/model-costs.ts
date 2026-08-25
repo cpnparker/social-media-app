@@ -103,6 +103,11 @@ export const MODEL_COSTS: Record<
   // $0.75/$3.75 promotional through 2026-12-31, DOUBLING to $1.50/$7.50 on
   // 2027-01-01. Was recorded at $0.50/$3, understating it.
   "gemini-3-flash": { inputPer1M: 75, outputPer1M: 375, cachedInputPer1M: 7.5 },   // cache $0.075
+  // The WIRE slug as well as the registry id. calculateCostTenths is called
+  // with whichever string the caller holds, and an unknown one prices at the
+  // claude-sonnet-4-6 fallback without a word — so a row keyed only by the
+  // dashed id leaves every actual Gemini call mispriced.
+  "gemini-3-flash-preview": { inputPer1M: 75, outputPer1M: 375, cachedInputPer1M: 7.5 },
   "gemini-3.1-flash-lite": { inputPer1M: 25, outputPer1M: 150, cachedInputPer1M: 2.5 }, // $0.25/$1.50, cache $0.025
   "deepseek-chat": { inputPer1M: 27, outputPer1M: 110 },             // $0.27/$1.10
   "sonar": { inputPer1M: 100, outputPer1M: 100 },                    // $1/$1

@@ -701,7 +701,10 @@ export const MODEL_REGISTRY: Record<string, ModelInfo> = {
   },
   "gemini-3-flash": {
     provider: "gemini",
-    apiModel: "gemini-3-flash",
+    // The API's own model list calls it gemini-3-flash-preview; the bare name
+    // 404s. Verified against the live endpoint 2026-08-25 — the registry id
+    // stays stable so saved preferences and historic labels keep resolving.
+    apiModel: "gemini-3-flash-preview",
     label: "Gemini 3 Flash",
     description: "Fast, large context window",
   },
@@ -930,11 +933,19 @@ function getPerplexityClient() {
 }
 
 function getGeminiClient() {
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY environment variable is not set. Add it to use Gemini models.");
+  // BOTH NAMES. Production has GOOGLE_GEMINI_API_KEY set and nothing reading
+  // it, while this code read GEMINI_API_KEY, which is not set — so all four
+  // registered Gemini models threw on first use. They are offered, priced in
+  // model-costs.ts, and gemini-3-flash even has a RATE_EXPIRIES entry tracking
+  // a price change on 2027-01-01: a model that cannot be called had a calendar
+  // reminder about its rate. Half-wired is worse than absent, because
+  // everything downstream reports it as available.
+  const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GEMINI_API_KEY;
+  if (!geminiKey) {
+    throw new Error("Neither GEMINI_API_KEY nor GOOGLE_GEMINI_API_KEY is set. Add one to use Gemini models.");
   }
   return new OpenAI({
-    apiKey: process.env.GEMINI_API_KEY,
+    apiKey: geminiKey,
     baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
   });
 }
