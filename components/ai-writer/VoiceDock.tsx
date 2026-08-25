@@ -186,6 +186,40 @@ export default function VoiceDock({
    * what made the billing history ambiguous after the fact.
    */
   const mintedModelRef = useRef("");
+  /**
+   * SINGLE-RENDER TURNS.
+   *
+   * xAI renders the voice fresh PER RESPONSE and offers no per-response voice
+   * field, and a tool turn is structurally two responses: the model narrates,
+   * calls the tool, that response ends, and the answer speaks in a second one.
+   * Both carry audio, so both are rendered, and the second can come back as a
+   * different speaker. Measured 2026-08-25: 2.8s of filler before
+   * query_meetingbrain, 3.9s before search_thread, and a second AUDIO-START
+   * queued at lead_s= 0.102 — seamless, which is why it is heard as one reply
+   * changing voice rather than as two.
+   *
+   * The instruction lever is exhausted: lib/ai/voice.ts already says "Never
+   * speak before a tool call — CRITICAL" and the model narrates anyway. The
+   * audio lever is exhausted too: flushing the filler only truncated it
+   * mid-word.
+   *
+   * So make the first round carry no audio. We turn OFF the server's automatic
+   * response, create the tool round ourselves with modalities ["text"], and
+   * create the ANSWER round with audio. Still two responses — but only one
+   * render exists, so there is nothing to drift between.
+   *
+   * SELF-DISABLING. Every assumption here is about a protocol xAI documents
+   * only by compatibility. If create_response or modalities is rejected,
+   * driveTurnsRef goes false and the session falls back to exactly today's
+   * behaviour rather than going mute. That is also why create_response is sent
+   * as its OWN session.update: session.update is the only carrier of the
+   * instructions, and a strict validator rejecting one unknown key would drop
+   * the entire prompt with it.
+   */
+  const driveTurnsRef = useRef(false);
+  const silentPendingRef = useRef(false);
+  const silentActiveIdRef = useRef("");
+  const turnArmedRef = useRef(false);
   const pendingToolsRef = useRef(0);
   const closingRef = useRef(false);
   /** Latest teardown, so the pagehide listener — registered once — always
@@ -316,14 +350,39 @@ export default function VoiceDock({
    *  responses are what split one spoken reply across two per-response voice
    *  renders (the mid-reply voice change). Confirmed active by
    *  response.created; flushed by response.done. */
-  const requestResponse = useCallback(() => {
+  const requestResponse = useCallback((opts?: { silent?: boolean }) => {
     if (responseActiveRef.current) {
       pendingResponseCreateRef.current = true;
       return;
     }
     responseActiveRef.current = true; // optimistic — closes the double-create race
-    wsRef.current?.send(JSON.stringify({ type: "response.create" }));
+    // A silent round may call tools and think out loud in TEXT; it just does
+    // not render. Anything queued while it runs is created as a normal audible
+    // response, which is correct — the queue only ever holds the answer.
+    silentPendingRef.current = !!opts?.silent;
+    wsRef.current?.send(
+      JSON.stringify(
+        opts?.silent
+          ? { type: "response.create", response: { modalities: ["text"] } }
+          : { type: "response.create" }
+      )
+    );
   }, []);
+
+  /**
+   * Create this turn's response once, silently.
+   *
+   * Armed from input_audio_buffer.committed, with a timer behind it: if xAI
+   * never emits that event the turn would simply never be answered, which is a
+   * far worse failure than a duplicate. turnArmedRef makes whichever arrives
+   * first the only one that acts.
+   */
+  const armTurn = useCallback(() => {
+    if (!driveTurnsRef.current || closingRef.current) return;
+    if (turnArmedRef.current || responseActiveRef.current) return;
+    turnArmedRef.current = true;
+    requestResponse({ silent: true });
+  }, [requestResponse]);
 
   /** Upsert a transcript item. User items also merge prefix-refinements in
    *  case the API assigns a fresh id to a re-emission of the same utterance. */
@@ -657,6 +716,29 @@ export default function VoiceDock({
             })
           );
 
+          // SEPARATE update, deliberately. If xAI's validator rejects
+          // create_response it rejects only this message; the instructions
+          // above are already applied. Sending them together would risk a
+          // session with no prompt at all.
+          ws.send(
+            JSON.stringify({
+              type: "session.update",
+              session: {
+                turn_detection: {
+                  type: "server_vad",
+                  threshold: 0.6,
+                  silence_duration_ms: 600,
+                  prefix_padding_ms: 333,
+                  create_response: false,
+                },
+              },
+            })
+          );
+          driveTurnsRef.current = true;
+          silentPendingRef.current = false;
+          silentActiveIdRef.current = "";
+          turnArmedRef.current = false;
+
           // Arm the hold BEFORE the processor exists, so not a single live
           // frame can reach the server ahead of the flushed wake command.
           micHoldRef.current = !!initialAudioPromise;
@@ -838,6 +920,7 @@ export default function VoiceDock({
 
             case "input_audio_buffer.speech_started":
             case "conversation.interrupted": {
+              turnArmedRef.current = false;
               if (pausedRef.current) break;
               lastUserSpeechRef.current = Date.now();
               followUpDeadlineRef.current = null; // follow-up arrived — stay engaged
@@ -864,8 +947,22 @@ export default function VoiceDock({
               break;
             }
 
+            case "input_audio_buffer.committed": {
+              // The user's turn is now in the model's context. Nothing will
+              // respond on its own any more, so we create the round — silent,
+              // so a tool call costs no render.
+              armTurn();
+              break;
+            }
             case "input_audio_buffer.speech_stopped": {
               if (statusRef.current === "listening") setStatusBoth("thinking");
+              // WATCHDOG. `committed` is the event that should arm the turn,
+              // but nothing in xAI's docs promises it, and a turn that is never
+              // armed is a turn that is never answered — the session appears to
+              // hang. 700ms is comfortably past the commit that server VAD does
+              // at end-of-speech, and turnArmedRef means whichever fires first
+              // is the only one that acts, so the cost of both arriving is nil.
+              if (driveTurnsRef.current) setTimeout(armTurn, 700);
               break;
             }
 
@@ -1043,7 +1140,13 @@ export default function VoiceDock({
             }
 
             case "response.created": {
-              vlog("RESP-CREATED", msg.response?.id ?? msg.response_id);
+              const createdId = String(msg.response?.id ?? msg.response_id ?? "");
+              if (silentPendingRef.current) {
+                silentPendingRef.current = false;
+                silentActiveIdRef.current = createdId;
+              }
+              vlog("RESP-CREATED", createdId,
+                silentActiveIdRef.current === createdId ? "silent" : "audible");
               responseActiveRef.current = true;
               break;
             }
@@ -1074,6 +1177,19 @@ export default function VoiceDock({
                 wsRef.current?.send(JSON.stringify({ type: "response.create" }));
                 break; // stay in "thinking" — more speech incoming
               }
+              // The silent round is over. If it called a tool, the tool
+              // handler creates the audible answer when the last result lands
+              // (and the queued-create branch above covers the racing case).
+              // If it called nothing, the answer has to be asked for here, or
+              // the turn ends in silence.
+              if (silentActiveIdRef.current === String(msg.response?.id ?? msg.response_id ?? "")) {
+                silentActiveIdRef.current = "";
+                if (!closingRef.current && pendingToolsRef.current === 0) {
+                  vlog("CREATE-SENT after-silent");
+                  requestResponse();
+                  break;
+                }
+              }
               if (
                 activeSourcesRef.current.size === 0 &&
                 pendingToolsRef.current === 0 &&
@@ -1088,6 +1204,35 @@ export default function VoiceDock({
 
             case "error": {
               console.error("[Voice] Server error:", msg.error);
+              // If the single-render path is what xAI objected to, stop driving
+              // turns and let the server auto-respond again. Restoring
+              // create_response is what actually re-enables that; without it
+              // the session would go permanently mute, which is the one outcome
+              // worse than the bug being fixed.
+              const em = `${msg.error?.message || ""} ${msg.error?.param || ""}`;
+              if (driveTurnsRef.current && /create_response|turn_detection|modalit/i.test(em)) {
+                driveTurnsRef.current = false;
+                silentPendingRef.current = false;
+                silentActiveIdRef.current = "";
+                vlog("DRIVE-OFF", String(msg.error?.message || "rejected").slice(0, 80));
+                wsRef.current?.send(
+                  JSON.stringify({
+                    type: "session.update",
+                    session: {
+                      turn_detection: {
+                        type: "server_vad",
+                        threshold: 0.6,
+                        silence_duration_ms: 600,
+                        prefix_padding_ms: 333,
+                        create_response: true,
+                      },
+                    },
+                  })
+                );
+                // Rescue the turn that was just lost, if nothing is speaking.
+                if (!responseActiveRef.current && !closingRef.current) requestResponse();
+                break;
+              }
               if (msg.error?.type === "invalid_request_error") break;
               toast.error(msg.error?.message || "Voice session error");
               break;
