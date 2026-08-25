@@ -774,6 +774,14 @@ export const MODEL_REGISTRY: Record<string, ModelInfo> = {
   "grok-4-3": {
     provider: "xai",
     apiModel: "grok-4.3",
+    // EXPLICIT, and it must stay that way. This shares apiModel "grok-4.3"
+    // with grok-4-1-fast above, and the resolver picks the FIRST registry
+    // entry matching an apiModel — so grok-4-3 was inheriting "none" from its
+    // neighbour by insertion order alone. Reordering the registry, or
+    // retiring grok-4-1-fast, would have silently switched reasoning ON here,
+    // and reasoning tokens bill as OUTPUT ($2.50/MTok). Nothing would have
+    // surfaced it but the invoice.
+    reasoningEffort: "none",
     label: "Grok 4.3",
     description: "Strong and cheaper — half the input cost of 4.6",
   },

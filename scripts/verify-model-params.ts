@@ -8,7 +8,7 @@
  * Adding a Claude model without touching this file is the easy mistake.
  */
 import { anthropicCallParams, anthropicMaxTokens, ANTHROPIC_ADAPTIVE_ONLY } from "../lib/ai/anthropic-params";
-import { getAvailableModels, getModelInfo } from "../lib/ai/providers";
+import { getAvailableModels, getModelInfo, MODEL_REGISTRY } from "../lib/ai/providers";
 import { AI_MODELS, getModelLabel } from "../lib/ai/models";
 
 let failures = 0;
@@ -80,6 +80,43 @@ check("sonnet-4-6", getModelLabel("claude-sonnet-4-6"), "Claude Sonnet 4.6");
 check("sonnet-4-20250514", getModelLabel("claude-sonnet-4-20250514"), "Claude Sonnet 4");
 check("opus-5 (current)", getModelLabel("claude-opus-5"), "Claude Opus 5");
 check("genuinely unknown id falls through to raw", getModelLabel("claude-made-up-9"), "claude-made-up-9");
+
+// ── reasoning_effort must not be decided by registry ORDER ──────────────
+// providers.ts resolves effort with
+//   Object.values(MODEL_REGISTRY).find(m => m.apiModel === apiModel)?.reasoningEffort
+// so when two registry ids share one apiModel, the FIRST entry silently
+// decides for both. grok-4-1-fast and grok-4-3 both map to "grok-4.3", and
+// only the former set "none" — so grok-4-3 was getting it by insertion order.
+// Retiring or reordering that neighbour would have switched reasoning ON, and
+// reasoning tokens bill as OUTPUT. Nothing would have surfaced it but the bill.
+//
+// The assertion is on the RESOLUTION, not on the field: every id sharing an
+// apiModel must agree about effort, so no ordering can change an answer.
+console.log("\nreasoning_effort — shared apiModels agree, so order cannot decide");
+const byApi: Record<string, { id: string; effort: string }[]> = {};
+const regIds = Object.keys(MODEL_REGISTRY);
+for (let i = 0; i < regIds.length; i++) {
+  const id = regIds[i];
+  const entry = (MODEL_REGISTRY as any)[id];
+  if (!entry || entry.provider !== "xai") continue;
+  const api = String(entry.apiModel);
+  if (!byApi[api]) byApi[api] = [];
+  byApi[api].push({ id, effort: String(entry.reasoningEffort ?? "UNSET") });
+}
+const apis = Object.keys(byApi);
+for (let i = 0; i < apis.length; i++) {
+  const group = byApi[apis[i]];
+  if (group.length < 2) continue;
+  const efforts: string[] = [];
+  for (let j = 0; j < group.length; j++) {
+    if (efforts.indexOf(group[j].effort) < 0) efforts.push(group[j].effort);
+  }
+  check(
+    `apiModel ${apis[i]} — ${group.map((g) => g.id + "=" + g.effort).join(", ")}`,
+    efforts.length,
+    1
+  );
+}
 
 console.log(failures === 0 ? "\nAll assertions passed.\n" : `\n${failures} FAILURE(S).\n`);
 process.exit(failures === 0 ? 0 : 1);
