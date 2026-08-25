@@ -33,6 +33,8 @@ interface Props {
    *  things — the exact error the diagnostics footer exists to prevent one
    *  level down. */
   hasAssessed?: boolean;
+  /** False when this kind of document is not scored — changes the empty state. */
+  scored?: boolean;
   onAssess?: () => void;
   /** On-demand rewrite for a finding that arrived without one. */
   onAiFix?: (id: string) => void;
@@ -47,7 +49,7 @@ const SEVERITY_DOT: { [k: string]: string } = {
 };
 
 export default function IssueList({
-  issues, selectedId, onSelect, onApply, onDismiss, diagnostics, degraded, hasAssessed, onAssess,
+  issues, selectedId, onSelect, onApply, onDismiss, diagnostics, degraded, hasAssessed, scored, onAssess,
   onAiFix, aiEdits, aiFixingId,
 }: Props) {
   // The two layers are shown apart, because they answer different questions and

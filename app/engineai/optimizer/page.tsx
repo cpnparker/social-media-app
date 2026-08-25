@@ -37,6 +37,7 @@ import type { ClientCanon } from "@/lib/optimizer/client-canon";
 import IssueList from "@/components/optimizer/IssueList";
 import CoveragePanel from "@/components/optimizer/CoveragePanel";
 import IssuePopover from "@/components/optimizer/IssuePopover";
+import { chromeFor, labelOf, DEFAULT_CONTENT_TYPE, detectContentType, shouldAnnounce } from "@/lib/optimizer/content-types";
 import PageAudit from "@/components/optimizer/PageAudit";
 import StartScreen from "@/components/optimizer/StartScreen";
 import EngineAISidebar from "@/components/engineai/EngineAISidebar";
@@ -84,6 +85,16 @@ function OptimizerStudio() {
   const [canon, setCanon] = useState<ClientCanon | null>(null);
   const [canonLoading, setCanonLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  /**
+   * The KIND of document. Drives which analyses may run and — the half that
+   * matters here — what the cockpit is allowed to render at all. Everything
+   * below reads `chrome`, never the id: one type is deliberately unnamed and a
+   * component that tests the id directly is one interpolation away from
+   * printing it. verify-optimizer-types asserts no UI file contains it.
+   */
+  const [contentTypeId, setContentTypeId] = useState<string>(DEFAULT_CONTENT_TYPE);
+  const chrome = chromeFor(contentTypeId);
+  const typeLabel = labelOf(contentTypeId);
   const [body, setBody] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -197,6 +208,7 @@ function OptimizerStudio() {
   const closeSession = useCallback(() => {
     router.replace("/engineai/optimizer", { scroll: false });
     setSessionId(null);
+    setContentTypeId(DEFAULT_CONTENT_TYPE);
     setPhase("start");
     setBody("");
     setTitle("");
@@ -249,6 +261,7 @@ function OptimizerStudio() {
         setSourceInfo({ source: sess.source || "generated", ref: sess.sourceRef || null });
         setStudioView("optimise");
         setFormat(sess.format || "explainer");
+        setContentTypeId(sess.contentType || DEFAULT_CONTENT_TYPE);
         setPlatform(sess.platform || "balanced");
         if (sess.canon && sess.canon.clientName) setCanon(sess.canon);
         const brief = sess.brief || {};
@@ -1009,7 +1022,7 @@ function OptimizerStudio() {
               matters — marks anchored to text that has since been edited are
               stale, and a confident tick over them is the same dishonesty as a
               score printed over a skipped pillar. */}
-          {(() => {
+          {chrome.showAssessmentChip && (() => {
             const currentBody = editorRef.current ? editorRef.current.getHTML() : body;
             const state = assessing
               ? "running"
@@ -1043,6 +1056,15 @@ function OptimizerStudio() {
               </span>
             );
           })()}
+          {/* The kind of document. Rendered only when the product NAMES this
+              type — labelOf returns null for the one it does not, and this
+              reads the label rather than the id so the decision holds without
+              anyone remembering it. */}
+          {chrome.showTypeChip && typeLabel && (
+            <span className="hidden sm:inline-flex items-center gap-1.5 shrink-0 rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 text-[11.5px] font-medium text-primary">
+              {typeLabel}
+            </span>
+          )}
           {selectedCustomer && (
             <span className="hidden lg:inline-flex items-center gap-1.5 shrink-0 rounded-full border bg-muted/60 px-2.5 py-1 text-[11.5px] font-medium text-muted-foreground">
               <span className="h-1.5 w-1.5 rounded-full bg-primary" />
@@ -1078,7 +1100,10 @@ function OptimizerStudio() {
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          {!streaming && sessionId && (
+          {/* No Assess where there is no judge. Hiding it is not cosmetic: the
+              route refuses this type with 400 before any spend, so an offered
+              button would be a button that always fails. */}
+          {!streaming && sessionId && chrome.showAssessAction && (
             <Button size="sm" variant="outline" onClick={runAssess} disabled={assessing}>
               {assessing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
               {assessing ? "Assessing" : "Assess"}
@@ -1154,13 +1179,20 @@ function OptimizerStudio() {
         studioView === "audit" ? "lg:hidden" : "lg:flex"
       )}>
         <div className="shrink-0 flex items-center gap-1 px-3 pt-2 border-b">
-          <button
-            onClick={() => setPanelTab("score")}
-            className={cn("text-[12.5px] font-medium px-2.5 py-2 border-b-2 -mb-px",
-              panelTab === "score" ? "border-primary text-foreground" : "border-transparent text-muted-foreground")}
-          >
-            Score
-          </button>
+          {/* A graded score over a document nobody is scoring is a number
+              pretending to mean something — the dishonesty this page's own
+              doctrine warns about. Where there is no judge there is no tab, and
+              the deterministic marks still appear under Suggestions, which is
+              the honest home for them. */}
+          {chrome.showScore && (
+            <button
+              onClick={() => setPanelTab("score")}
+              className={cn("text-[12.5px] font-medium px-2.5 py-2 border-b-2 -mb-px",
+                panelTab === "score" ? "border-primary text-foreground" : "border-transparent text-muted-foreground")}
+            >
+              Score
+            </button>
+          )}
           <button
             onClick={() => setPanelTab("issues")}
             className={cn("text-[12.5px] font-medium px-2.5 py-2 border-b-2 -mb-px",
@@ -1173,22 +1205,28 @@ function OptimizerStudio() {
               </span>
             )}
           </button>
-          <button
-            onClick={() => setPanelTab("coverage")}
-            className={cn("text-[12.5px] font-medium px-2.5 py-2 border-b-2 -mb-px",
-              panelTab === "coverage" ? "border-primary text-foreground" : "border-transparent text-muted-foreground")}
-          >
-            Coverage
-          </button>
+          {chrome.showCoverageTab && (
+            <button
+              onClick={() => setPanelTab("coverage")}
+              className={cn("text-[12.5px] font-medium px-2.5 py-2 border-b-2 -mb-px",
+                panelTab === "coverage" ? "border-primary text-foreground" : "border-transparent text-muted-foreground")}
+            >
+              Coverage
+            </button>
+          )}
         </div>
         <div className="flex-1 min-h-0">
-          {panelTab === "coverage" ? (
+          {/* `&& chrome.showCoverageTab`, not just the tab state. Hiding a tab
+              does not change which one is SELECTED, so a session whose type
+              switches while Coverage is open would keep rendering a panel for
+              an analysis the route now refuses. */}
+          {panelTab === "coverage" && chrome.showCoverageTab ? (
             <CoveragePanel
               sessionId={sessionId || ""}
               workspaceId={workspaceId}
               onReveal={revealTextRange}
             />
-          ) : panelTab === "score" ? (
+          ) : panelTab === "score" && chrome.showScore ? (
             <ScorePanel
               input={scoreInput}
               muted={streaming}
@@ -1203,7 +1241,8 @@ function OptimizerStudio() {
               onDismiss={handleDismiss}
               diagnostics={diagnostics}
               hasAssessed={diagnostics !== null}
-              onAssess={runAssess}
+              scored={chrome.showScore}
+              onAssess={chrome.showAssessAction ? runAssess : undefined}
               onAiFix={handleAiFix}
               aiEdits={aiEdits}
               aiFixingId={aiFixing}

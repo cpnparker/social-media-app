@@ -9,6 +9,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
 
@@ -74,6 +75,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       title: owned.session.name_title,
       status: owned.session.type_status,
       format: owned.session.type_format,
+      // The KIND of document. The studio needs it to decide what chrome may
+      // render at all, so it travels with the session rather than being fetched
+      // separately — a second round trip would leave the cockpit showing an
+      // Assess button for a beat before hiding it.
+      contentType: (owned.session as any).type_content || DEFAULT_CONTENT_TYPE,
       platform: owned.session.type_platform,
       clientId: owned.session.id_client,
       source: owned.session.type_source,
