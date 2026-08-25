@@ -544,7 +544,13 @@ function OptimizerStudio() {
           text: `About this draft${title.trim() ? ` — ${title.trim()}` : ""}:\n\n> ${excerpt.slice(0, 1200)}\n\n`,
         })
       );
-      router.push(`/?thread=${encodeURIComponent(convId)}`);
+      // A HARD navigation, matching the chat→document crossing rather than
+      // differing from it. router.push left the studio mounted and the URL
+      // unchanged: these are two heavy surfaces with their own providers, and a
+      // soft transition between them is where this kind of push quietly does
+      // nothing. It also guarantees the chat page MOUNTS fresh, which is when
+      // the sessionStorage handoff is read.
+      window.location.href = `/?thread=${encodeURIComponent(convId)}`;
     } catch {
       toast.error("Could not open a chat about this");
     } finally {
