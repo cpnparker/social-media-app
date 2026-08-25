@@ -527,7 +527,12 @@ function OptimizerStudio() {
         }),
       });
       const j = await res.json().catch(() => ({}));
-      const convId = j?.conversation?.id_conversation || j?.id_conversation || j?.conversationId;
+      // `conversation.id`, camelCase — the create route maps the row before
+      // returning it. Guessing at id_conversation (the COLUMN name) failed
+      // silently into the error toast, which is what a chain of `||` fallbacks
+      // over invented shapes buys you: no error, just the last one being
+      // undefined too.
+      const convId = j?.conversation?.id;
       if (!res.ok || !convId) {
         toast.error(j?.error || "Could not open a chat about this");
         return;
