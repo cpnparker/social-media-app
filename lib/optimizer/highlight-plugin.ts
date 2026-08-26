@@ -107,7 +107,51 @@ function decorationsFor(doc: PMNode, issues: Issue[], selectedId: string | null)
  * characters here. Anything unresolvable becomes an orphan — visible in the
  * panel, no highlight, no Apply. Never a guess.
  */
-export function anchorFindings(doc: PMNode, findings: HighlightFinding[]): Issue[] {
+/**
+ * Which statuses a re-anchor must carry forward, keyed by finding id.
+ *
+ * Split out as a pure function so it can be asserted without constructing a
+ * ProseMirror document — the reason the behaviour it encodes went unverified
+ * for as long as it did.
+ *
+ * DISMISSED and RESOLVED carry; ACTIVE and ORPHANED do not. That asymmetry is
+ * the point: the first two are decisions a PERSON made about a finding, and
+ * re-running a deterministic checker must not overturn them. The last two are
+ * facts about the current text, and recomputing them is exactly what a repaint
+ * is for — an orphan whose passage the writer restored should light up again.
+ */
+export function settledStatuses(previous?: Issue[]): { [id: string]: IssueStatus } {
+  const out: { [id: string]: IssueStatus } = {};
+  if (!previous) return out;
+  for (let i = 0; i < previous.length; i++) {
+    const st = previous[i].status;
+    if (st === "dismissed" || st === "resolved") out[previous[i].finding.id] = st;
+  }
+  return out;
+}
+
+export function anchorFindings(
+  doc: PMNode,
+  findings: HighlightFinding[],
+  previous?: Issue[]
+): Issue[] {
+  // ── DISMISSAL SURVIVES RE-ANCHORING ──────────────────────────────────────
+  //
+  // `set` fires on every repaint, and repaintLive fires on every edit, so this
+  // function ran fresh on each keystroke and returned "active" for everything —
+  // silently resurrecting anything the writer had dismissed one character
+  // earlier. live-issues.ts states the opposite in a comment beside the id it
+  // builds: "same criterion, same offsets, same id, SO A DISMISSED ISSUE STAYS
+  // DISMISSED while the writer edits elsewhere". The id was designed to carry
+  // exactly this, and nothing was carrying it: the promise was made in a
+  // comment and kept nowhere.
+  //
+  // Carried by finding ID, which is what makes the design work. A live finding
+  // whose text changed gets a NEW id and correctly comes back — the writer
+  // changed the thing they dismissed. One whose offsets are untouched keeps its
+  // id, and stays dismissed.
+  const wasSettled = settledStatuses(previous);
+
   const index = buildDocIndex(doc);
   const issues: Issue[] = [];
   const claimed: { from: number; to: number }[] = [];
@@ -121,6 +165,14 @@ export function anchorFindings(doc: PMNode, findings: HighlightFinding[]): Issue
 
   for (let k = 0; k < order.length; k++) {
     const { f, i } = order[k];
+    // A dismissed finding takes no range. It paints nothing, so holding one
+    // would let a mark the writer has already waved away block a live mark over
+    // the same sentence — the second mark orphaning for a reason invisible on
+    // screen.
+    if (wasSettled[f.id]) {
+      out[i] = { finding: f, from: 0, to: 0, status: wasSettled[f.id] };
+      continue;
+    }
     const match = findAnchor(index.text, { quote: f.quote, prefix: f.prefix, suffix: f.suffix });
     if (!match.ok) {
       out[i] = { finding: f, from: 0, to: 0, status: "orphaned" };
@@ -140,7 +192,13 @@ export function anchorFindings(doc: PMNode, findings: HighlightFinding[]): Issue
       continue;
     }
     claimed.push(range);
-    out[i] = { finding: f, from: range.from, to: range.to, status: "active" };
+    const settled = wasSettled[f.id];
+    out[i] = {
+      finding: f,
+      from: range.from,
+      to: range.to,
+      status: settled ? settled : "active",
+    };
   }
 
   for (let i = 0; i < out.length; i++) if (out[i]) issues.push(out[i] as Issue);
@@ -164,7 +222,7 @@ export const OptimizerHighlight = Extension.create({
             const action = tr.getMeta(optimizerHighlightKey) as HighlightAction | undefined;
 
             if (action && action.type === "set") {
-              const issues = anchorFindings(next.doc, action.findings);
+              const issues = anchorFindings(next.doc, action.findings, prev.issues);
               return { issues, decorations: decorationsFor(next.doc, issues, prev.selectedId), selectedId: prev.selectedId };
             }
             if (action && action.type === "clear") {

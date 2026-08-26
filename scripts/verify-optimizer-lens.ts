@@ -42,6 +42,7 @@ import {
   mergeFindingSets, MIN_MARKABLE_WORDS, type Lens,
 } from "../lib/optimizer/mark-policy";
 import { CONTENT_TYPE_IDS, criteriaFor, analysisAllowed } from "../lib/optimizer/content-types";
+import { settledStatuses } from "../lib/optimizer/highlight-plugin";
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -252,6 +253,39 @@ console.log("\n8. What a mark says under each lens");
   assert(!!long && /\d+ words/.test(long.explanation), "and still says how long the sentence is");
 }
 
+// ── 8b. A person's decision survives a repaint ─────────────────────────────
+//
+// `set` fires on every repaint and repaintLive fires on every edit, so
+// anchorFindings ran fresh on each keystroke and returned "active" for
+// everything — silently resurrecting anything the writer had dismissed one
+// character earlier. live-issues.ts states the opposite in a comment beside the
+// id it builds ("so a dismissed issue stays dismissed while the writer edits
+// elsewhere"). The id was designed to carry it; nothing carried it.
+console.log("\n8b. Dismissal survives a repaint");
+{
+  const mk = (id: string, status: any) => ({ finding: { id } as any, from: 1, to: 2, status });
+  const carried = settledStatuses([
+    mk("live:a:1-2", "dismissed"),
+    mk("live:b:3-4", "active"),
+    mk("j1", "resolved"),
+    mk("live:c:5-6", "orphaned"),
+  ] as any);
+  assert(carried["live:a:1-2"] === "dismissed", "a dismissal a person made carries forward");
+  assert(carried["j1"] === "resolved", "so does a resolution");
+  assert(carried["live:b:3-4"] === undefined,
+    "an ACTIVE issue does not carry — it is recomputed from the current text, which is what a repaint is for");
+  assert(carried["live:c:5-6"] === undefined,
+    "nor does an ORPHAN — a passage the writer restored should light up again");
+  assert(Object.keys(settledStatuses(undefined)).length === 0, "no previous state carries nothing");
+
+  // USED, not merely present.
+  const plugin = stripComments(read("lib/optimizer/highlight-plugin.ts"));
+  assert(/anchorFindings\(next\.doc, action\.findings, prev\.issues\)/.test(plugin),
+    "the set reducer actually passes the previous issues — the promise lives or dies here");
+  assert(/if \(wasSettled\[f\.id\]\)/.test(plugin),
+    "a settled finding claims no range, so it cannot block a live mark over the same sentence");
+}
+
 // ── 9. Merging the producers ───────────────────────────────────────────────
 console.log("\n9. Merge");
 {
@@ -329,6 +363,13 @@ function selfTest() {
     const oldStyle = (name: string, note: string, remedy: string) => `${name}: ${note}. ${remedy}`;
     detects("the criterion NAME leaking engine vocabulary into a plain mark",
       /cited/i.test(oldStyle("Mean sentence length near the cited norm", "45 words", "Split this into two.")));
+  }
+  {
+    const mk = (id: string, status: any) => ({ finding: { id } as any, from: 1, to: 2, status });
+    detects("a repaint resurrecting a dismissed finding",
+      settledStatuses([mk("x", "dismissed")] as any)["x"] === "dismissed");
+    detects("an active issue being frozen instead of recomputed",
+      settledStatuses([mk("y", "active")] as any)["y"] === undefined);
   }
   detects("the word floor drifting from the score's",
     MIN_MARKABLE_WORDS === 60);
