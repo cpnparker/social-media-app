@@ -564,16 +564,27 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             brief they carry. Most have no body yet — that is the normal state
             of a commission, and the reason this belongs to the Writer: you are
             here to produce the text, not to score the absence of it. */}
-        {surface === "writer" && clientId && (
+        {/* Rendered WITHOUT a client too, saying what it needs.
+            Gating the whole card on clientId hid the door until you already
+            knew it was there — the same failure as the sidebar section that
+            only appeared once you had content. A capability you cannot see is
+            one you cannot use. */}
+        {surface === "writer" && (
           <div className="rounded-2xl border p-5">
             <div className="flex items-baseline gap-2 mb-1">
               <Building2 className="h-4 w-4 text-muted-foreground shrink-0 self-center" />
               <span className="text-base font-semibold tracking-tight">Pick up a commission</span>
             </div>
             <p className="text-[13px] text-muted-foreground leading-relaxed mb-4">
-              Commissioned for {clientName || "this client"} in the Engine. The brief comes with it.
+              {clientName
+                ? `Commissioned for ${clientName} in the Engine. The brief comes with it.`
+                : "Work commissioned in the Engine, with the brief attached."}
             </p>
-            {loading ? (
+            {!clientId ? (
+              <p className="text-[12.5px] text-muted-foreground">
+                Select a client to see what is commissioned for them.
+              </p>
+            ) : loading ? (
               <div className="flex justify-center py-4"><Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /></div>
             ) : items.length === 0 ? (
               <p className="text-[12.5px] text-muted-foreground">Nothing commissioned for this client yet.</p>
