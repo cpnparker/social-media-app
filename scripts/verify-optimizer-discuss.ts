@@ -319,6 +319,19 @@ console.log("\n5. The draft is not stored in the conversation");
   assert(/promptTurns\.push\(\s*\{[\s\S]{0,200}buildDiscussTurn/.test(src),
     "the built turn IS what gets sent, on the current turn only");
   assert(/logAiUsage\(/.test(src), "the call is logged — an unlogged call is invisible to the spend cap");
+
+  // ── A failed re-read must not read as "there was no conversation" ────────
+  //
+  // The re-read added to close the snapshot race destructured its error away
+  // and fell through to readTurns(null), which is []. A transient read failure
+  // therefore did not lose one exchange — it replaced the WHOLE conversation
+  // with the exchange that had just happened, and returned 200.
+  assert(/error: reReadError/.test(src),
+    "the re-read captures its error rather than destructuring it away");
+  assert(/reReadError \|\| !fresh/.test(src) && /\bhistory\)?\s*:\s*readTurns/.test(src.replace(/\s+/g, " ")),
+    "and falls back to the pre-call snapshot — stale is recoverable, empty is not");
+  assert(!/readTurns\(fresh \? /.test(src),
+    "no path treats a missing row as an empty conversation");
   assert(/assertServiceAllowed\(/.test(src), "the spend gate is applied");
   assert(src.indexOf("systemPrompt") > 0 && /buildGroundingBlock\(/.test(src),
     "grounding comes from the SHARED builder, not a second description of the client");

@@ -270,12 +270,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         // made both failures ordinary rather than rare. A true fix needs the
         // append pushed into the database; this is deliberately the smaller
         // change, and the residual race is recorded rather than implied away.
-        const { data: fresh } = await intelligenceDb
+        const { data: fresh, error: reReadError } = await intelligenceDb
           .from("optimizer_sessions")
           .select("config_chat")
           .eq("id_session", id)
           .maybeSingle();
-        const current = readTurns(fresh ? (fresh as any).config_chat : null);
+
+        // ── A FAILED READ IS NOT AN EMPTY CONVERSATION ────────────────────
+        //
+        // This destructured the error away and fell through to readTurns(null),
+        // which is []. So a transient read failure did not lose ONE exchange —
+        // it replaced the entire conversation with the exchange that had just
+        // happened, and reported success. The version of this code it replaced
+        // used a stale snapshot, which is wrong in a small way; ignoring the
+        // error made it wrong in a way that destroys the thing being written.
+        //
+        // The fallback is the pre-call snapshot: seconds out of date at worst,
+        // and never empty when the conversation was not. A concurrent clear can
+        // still be undone by it, which is the race documented above — losing a
+        // clear is recoverable, losing the conversation is not.
+        const current =
+          reReadError || !fresh
+            ? (console.error(
+                "[optimizer] discuss: could not re-read the conversation, falling back to the pre-call snapshot:",
+                reReadError?.message || "no row returned"
+              ),
+              history)
+            : readTurns((fresh as any).config_chat);
 
         const next: DiscussTurn[] = trimForStorage(
           current.concat([
