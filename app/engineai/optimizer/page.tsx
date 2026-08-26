@@ -49,7 +49,7 @@ import PageAudit from "@/components/optimizer/PageAudit";
 import StartScreen from "@/components/optimizer/StartScreen";
 import DiscussPanel from "@/components/optimizer/DiscussPanel";
 import SourcesPanel from "@/components/optimizer/SourcesPanel";
-import { draftBlockToHtml } from "@/lib/optimizer/discuss";
+import { draftBlockToHtml, draftBlockToInlineHtml } from "@/lib/optimizer/discuss";
 import { railTabsFor, defaultRailTab, type RailTabKey } from "@/lib/optimizer/rail-tabs";
 import EngineAISidebar from "@/components/engineai/EngineAISidebar";
 import {
@@ -1029,6 +1029,47 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
   }, []);
 
   /**
+   * Replace a range, without breaking the paragraph it sits in.
+   *
+   * draftBlockToHtml wraps its output in <p>, which Tiptap parses as a BLOCK —
+   * so inserting it over a sentence inside a paragraph split that paragraph in
+   * three and left a blank line either side of the replacement. Reported on a
+   * live cover letter.
+   *
+   * A replacement goes in INLINE when it belongs inline: the range sits inside
+   * one text block and the replacement has no paragraph breaks of its own.
+   * Anything else — a range spanning blocks, or a multi-paragraph rewrite —
+   * keeps the block form, because there the paragraph structure is the point.
+   *
+   * The replaced range is then selected and flashed, so the writer can see what
+   * moved. A silent substitution in the middle of a long document is a change
+   * you have to go hunting for.
+   */
+  const replaceRange = useCallback((editor: Editor, from: number, to: number, text: string) => {
+    const multiParagraph = /\n{2,}/.test(text.trim());
+    let inline = false;
+    try {
+      inline = !multiParagraph && editor.state.doc.resolve(from).sameParent(editor.state.doc.resolve(to));
+    } catch {
+      inline = false;
+    }
+    const content = inline ? draftBlockToInlineHtml(text) : draftBlockToHtml(text);
+    if (!content) return;
+
+    // Measured, not estimated. The inserted span is (what was there) plus (how
+    // much the document grew) — html length is not a position count, and
+    // guessing from it puts the highlight over the wrong words.
+    const sizeBefore = editor.state.doc.content.size;
+    editor.chain().focus().insertContentAt({ from, to }, content).run();
+    const grew = editor.state.doc.content.size - sizeBefore;
+    const end = Math.max(from, Math.min(from + (to - from) + grew, editor.state.doc.content.size));
+
+    editor.view.dispatch(
+      editor.state.tr.setMeta(optimizerHighlightKey, { type: "flash", from, to: end })
+    );
+  }, []);
+
+  /**
    * Put text from the discussion into the document.
    *
    * Replaces the selection when there is one, appends otherwise, and SAYS WHICH
@@ -1057,7 +1098,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
         const index = buildDocIndex(editor.state.doc);
         const range = textRangeToPos(index, at.start, at.end);
         if (range) {
-          editor.chain().focus().insertContentAt({ from: range.from, to: range.to }, html).run();
+          replaceRange(editor, range.from, range.to, text);
           return "replaced";
         }
       }
@@ -1069,7 +1110,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
 
     const { from, to } = editor.state.selection;
     if (from !== to) {
-      editor.chain().focus().insertContentAt({ from, to }, html).run();
+      replaceRange(editor, from, to, text);
       return "replaced";
     }
     editor.chain().focus().insertContentAt(editor.state.doc.content.size, html).run();

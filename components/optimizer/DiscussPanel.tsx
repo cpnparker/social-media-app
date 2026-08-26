@@ -155,6 +155,45 @@ function AnchorChip({
   );
 }
 
+/**
+ * One point of prose, with an action.
+ *
+ * The most useful criticism in a reply is often the kind with NOTHING to
+ * underline — "the structure follows your CV, not the job", "the AuthorityOn.ai
+ * paragraph is buried sixth", "you never say what you think their challenge
+ * is". Those carry no anchor by design: inventing a passage for a point about
+ * the shape of the whole piece would send the writer somewhere confidently
+ * wrong. But having no anchor was leaving them with no action either, which
+ * left the best observations in the reply as the only ones you could not do
+ * anything about.
+ *
+ * So the action is offered per POINT rather than per anchor. Asking for a fix
+ * routes back through the anchored path, so whatever comes back is applicable
+ * even though the point that prompted it was not.
+ *
+ * Hover-revealed, and only on substantial paragraphs: a button under every line
+ * of a six-point reply is clutter, and clutter is what the owner objected to in
+ * the first place.
+ */
+const MIN_ACTIONABLE_POINT = 60;
+
+function PointParagraph({ text, onFix }: { text: string; onFix?: (point: string) => void }) {
+  const actionable = !!onFix && text.trim().length >= MIN_ACTIONABLE_POINT && !/\?\s*$/.test(text.trim());
+  return (
+    <div className="group/point">
+      <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{text}</p>
+      {actionable && (
+        <button
+          onClick={() => onFix!(text)}
+          className="mt-0.5 text-[10.5px] font-medium text-muted-foreground opacity-0 group-hover/point:opacity-100 focus:opacity-100 hover:text-foreground hover:underline underline-offset-2"
+        >
+          Suggest a fix
+        </button>
+      )}
+    </div>
+  );
+}
+
 function DraftBlock({
   text,
   hasSelection,
@@ -469,6 +508,25 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
     [ask]
   );
 
+  /**
+   * Act on a point that has no passage to point at.
+   *
+   * Routed back through the anchored path on purpose: the point may be about
+   * the shape of the whole piece, but whatever comes back should still land in
+   * the document at one click rather than being another paragraph of advice.
+   */
+  const askForPointFix = useCallback(
+    (point: string) => {
+      ask(
+        `Act on this point:\n\n${point}\n\n` +
+          `Show me the concrete change in the draft. Where it replaces something that is already ` +
+          `there, quote that in an anchor block and put the replacement in a draft block so I can ` +
+          `apply it in place. If it is something to add, say exactly where it goes.`
+      );
+    },
+    [ask]
+  );
+
   const clear = useCallback(async () => {
     if (!workspaceId) return;
     try {
@@ -526,7 +584,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
               </p>
             </div>
           ) : (
-            <AssistantTurn key={i} turnIndex={i} content={t.content} hasSelection={hasSelection} onApply={onApply} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} onFix={askForFix} />
+            <AssistantTurn key={i} turnIndex={i} content={t.content} hasSelection={hasSelection} onApply={onApply} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} onFix={askForFix} onPointFix={askForPointFix} />
           )
         )}
 
@@ -624,6 +682,7 @@ function AssistantTurn({
   resolveQuote,
   onRevealQuote,
   onFix,
+  onPointFix,
 }: {
   turnIndex: number;
   content: string;
@@ -632,6 +691,7 @@ function AssistantTurn({
   resolveQuote: (q: string) => boolean;
   onRevealQuote: (q: string) => boolean;
   onFix: (q: string) => void;
+  onPointFix: (point: string) => void;
 }) {
   // Rendered from SEGMENTS, in the order the model wrote them. Rendering the
   // prose and then the blocks — which is what the flat shape invited — put a
@@ -670,7 +730,19 @@ function AssistantTurn({
               anchorFound={!!seg.anchor && resolveQuote(seg.anchor)}
             />
           ) : (
-            <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{seg.text}</p>
+            // Split into paragraphs so each POINT carries its own action. One
+            // action for a six-point reply would be an action for none of them.
+            <div className="space-y-1.5">
+              {seg.text.split(/\n{2,}/).map((para, k) =>
+                para.trim() ? (
+                  <PointParagraph
+                    key={k}
+                    text={para.trim()}
+                    onFix={seg.anchor ? undefined : onPointFix}
+                  />
+                ) : null
+              )}
+            </div>
           )}
         </div>
       ))}

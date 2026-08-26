@@ -52,7 +52,20 @@ const ICON = {
   url: Globe,
 };
 
-type AddTab = "paste" | "upload" | "url" | "gdoc";
+type AddTab = "paste" | "upload" | "link";
+
+/**
+ * Which route a pasted link takes.
+ *
+ * ONE field, not a "Web" tab beside a "Doc" tab. A person with a Google Doc
+ * link does not think of it as a different KIND of thing from a URL — it is a
+ * link — and asking them to classify it first is asking them to know which of
+ * two code paths we happen to have. Detected here so picking wrong is not
+ * possible.
+ */
+function kindForLink(ref: string): "gdoc-link" | "url" {
+  return /docs\.google\.com\/document\//i.test(ref) ? "gdoc-link" : "url";
+}
 
 export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Props) {
   const [sources, setSources] = useState<SourceRow[]>([]);
@@ -274,7 +287,7 @@ export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Prop
             <div className="rounded-xl border bg-card p-3">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex gap-1">
-                  {(["paste", "upload", "url", "gdoc"] as AddTab[]).map((t) => (
+                  {(["paste", "upload", "link"] as AddTab[]).map((t) => (
                     <button
                       key={t}
                       onClick={() => setTab(t)}
@@ -283,7 +296,7 @@ export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Prop
                         tab === t ? "bg-muted font-medium" : "text-muted-foreground hover:text-foreground"
                       )}
                     >
-                      {t === "paste" ? "Paste" : t === "upload" ? "File" : t === "url" ? "Web" : "Doc"}
+                      {t === "paste" ? "Paste" : t === "upload" ? "File" : "Link"}
                     </button>
                   ))}
                 </div>
@@ -337,25 +350,24 @@ export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Prop
                 </label>
               )}
 
-              {(tab === "url" || tab === "gdoc") && (
+              {tab === "link" && (
                 <>
                   <input
                     value={ref}
                     onChange={(e) => setRef(e.target.value)}
-                    placeholder={tab === "url" ? "https://…" : "docs.google.com/document/d/…"}
+                    placeholder="A web page, or a Google Doc link"
                     className="w-full text-[12.5px] bg-transparent border rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring"
                   />
-                  {tab === "url" && (
-                    <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
-                      Quoted and checked against — never followed. Instructions on a fetched page are
-                      treated as text, not as orders.
-                    </p>
-                  )}
+                  <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
+                    {kindForLink(ref) === "gdoc-link" && ref.trim()
+                      ? "A Google Doc. It needs to be shared with anyone who has the link."
+                      : "Quoted and checked against — never followed. Instructions on a fetched page are treated as text, not as orders."}
+                  </p>
                   <Button
                     size="sm"
                     className="w-full mt-2"
                     disabled={busy || !ref.trim()}
-                    onClick={() => attach({ kind: tab === "url" ? "url" : "gdoc-link", ref, title })}
+                    onClick={() => attach({ kind: kindForLink(ref), ref, title })}
                   >
                     {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Attach"}
                   </Button>

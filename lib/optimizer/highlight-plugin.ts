@@ -83,6 +83,16 @@ export interface ResolvedNote {
 export interface HighlightState {
   issues: Issue[];
   notes: ResolvedNote[];
+  /**
+   * What was just replaced from the conversation.
+   *
+   * A substitution in the middle of a long document is a change you would
+   * otherwise have to go hunting for — the writer clicked a button in a panel
+   * and something moved several paragraphs away. Mapped through edits like
+   * everything else, and cleared the moment the writer types, because by then
+   * they have found it.
+   */
+  flash: { from: number; to: number } | null;
   decorations: DecorationSet;
   selectedId: string | null;
 }
@@ -92,6 +102,7 @@ export const optimizerHighlightKey = new PluginKey<HighlightState>("optimizerHig
 export type HighlightAction =
   | { type: "set"; findings: HighlightFinding[] }
   | { type: "notes"; notes: NoteMark[] }
+  | { type: "flash"; from: number; to: number }
   | { type: "resolve"; ids: string[] }
   | { type: "dismiss"; ids: string[] }
   | { type: "select"; id: string | null }
@@ -178,7 +189,8 @@ function decorationsFor(
   doc: PMNode,
   issues: Issue[],
   selectedId: string | null,
-  notes: ResolvedNote[]
+  notes: ResolvedNote[],
+  flash?: { from: number; to: number } | null
 ): DecorationSet {
   const decos: Decoration[] = [];
   for (let i = 0; i < issues.length; i++) {
@@ -219,6 +231,10 @@ function decorationsFor(
         { side: -1, key: `note-${n.id}`, ignoreSelection: true }
       )
     );
+  }
+
+  if (flash && flash.to > flash.from) {
+    decos.push(Decoration.inline(flash.from, flash.to, { class: "ai-just-changed" }));
   }
 
   return DecorationSet.create(doc, decos);
@@ -340,7 +356,7 @@ export const OptimizerHighlight = Extension.create({
 
         state: {
           init(): HighlightState {
-            return { issues: [], notes: [], decorations: DecorationSet.empty, selectedId: null };
+            return { issues: [], notes: [], flash: null, decorations: DecorationSet.empty, selectedId: null };
           },
 
           apply(tr: Transaction, prev: HighlightState, _old: EditorState, next: EditorState): HighlightState {
@@ -355,8 +371,19 @@ export const OptimizerHighlight = Extension.create({
               return {
                 issues,
                 notes: prev.notes,
-                decorations: decorationsFor(next.doc, issues, prev.selectedId, prev.notes),
+                decorations: decorationsFor(next.doc, issues, prev.selectedId, prev.notes, prev.flash),
                 selectedId: prev.selectedId,
+                flash: prev.flash,
+              };
+            }
+            if (action && action.type === "flash") {
+              const flash = { from: action.from, to: action.to };
+              return {
+                issues: prev.issues,
+                notes: prev.notes,
+                decorations: decorationsFor(next.doc, prev.issues, prev.selectedId, prev.notes, flash),
+                selectedId: prev.selectedId,
+                flash,
               };
             }
             if (action && action.type === "notes") {
@@ -364,17 +391,22 @@ export const OptimizerHighlight = Extension.create({
               return {
                 issues: prev.issues,
                 notes,
-                decorations: decorationsFor(next.doc, prev.issues, prev.selectedId, notes),
+                decorations: decorationsFor(next.doc, prev.issues, prev.selectedId, notes, prev.flash),
                 selectedId: prev.selectedId,
+                flash: prev.flash,
               };
             }
             if (action && action.type === "clear") {
-              return { issues: [], notes: [], decorations: DecorationSet.empty, selectedId: null };
+              return { issues: [], notes: [], flash: null, decorations: DecorationSet.empty, selectedId: null };
             }
 
             let issues = prev.issues;
             let notes = prev.notes;
             let selectedId = prev.selectedId;
+            // Cleared as soon as the writer types: by then they have found it,
+            // and a highlight that outstays its welcome becomes a mark they
+            // have to work out how to remove.
+            const flash = tr.docChanged ? null : prev.flash;
 
             if (action && (action.type === "resolve" || action.type === "dismiss")) {
               const status: IssueStatus = action.type === "resolve" ? "resolved" : "dismissed";
@@ -418,10 +450,10 @@ export const OptimizerHighlight = Extension.create({
               });
             }
 
-            if (issues === prev.issues && notes === prev.notes && selectedId === prev.selectedId && !tr.docChanged) {
+            if (issues === prev.issues && notes === prev.notes && flash === prev.flash && selectedId === prev.selectedId && !tr.docChanged) {
               return prev;
             }
-            return { issues, notes, decorations: decorationsFor(next.doc, issues, selectedId, notes), selectedId };
+            return { issues, notes, flash, decorations: decorationsFor(next.doc, issues, selectedId, notes, flash), selectedId };
           },
         },
 

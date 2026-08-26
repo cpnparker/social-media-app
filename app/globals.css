@@ -522,6 +522,24 @@
   border-bottom-color: hsl(var(--primary) / 0.6);
   background-color: hsl(var(--primary) / 0.06);
 }
+/* Text just replaced from the conversation. Subtle and temporary: the writer
+   clicked a button in a panel and something changed several paragraphs away,
+   and a change you have to hunt for is one you cannot check. Cleared the
+   moment they type. */
+.ai-just-changed {
+  background-color: hsl(var(--primary) / 0.13);
+  border-radius: 2px;
+  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.13);
+  animation: ai-just-changed-in 0.25s ease-out;
+}
+@keyframes ai-just-changed-in {
+  from { background-color: hsl(var(--primary) / 0.32); }
+  to { background-color: hsl(var(--primary) / 0.13); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-just-changed { animation: none; }
+}
+
 /* ── Conversation notes ───────────────────────────────────────────────
    A margin marker, not an underline, and that is a claim about meaning as
    much as about layout. The rubric marks say "this is wrong"; a note says

@@ -357,3 +357,25 @@ export function draftBlockToHtml(block: string): string {
   if (!paras.length) return "";
   return paras.map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`).join("");
 }
+
+/**
+ * A draft block as INLINE html, for replacing a range inside one paragraph.
+ *
+ * draftBlockToHtml wraps everything in <p>, which is right when the replacement
+ * is its own paragraph and wrong when it is a sentence inside one: Tiptap parses
+ * the block-level tag as a block, SPLITS the host paragraph around it, and the
+ * writer gets a line break before and after their replaced sentence. Reported
+ * on a live cover letter, where replacing one clause broke the paragraph into
+ * three.
+ *
+ * Same escaping discipline as its sibling — escape first, then structure — so a
+ * quoted "<10%" cannot reach the editor as markup.
+ */
+export function draftBlockToInlineHtml(block: string): string {
+  return String(block || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .trim()
+    .replace(/\n/g, "<br>");
+}

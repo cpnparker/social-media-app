@@ -49,6 +49,7 @@ import {
   trimForStorage,
   parseDiscussReply,
   draftBlockToHtml,
+  draftBlockToInlineHtml,
   buildDiscussSystem,
   buildDiscussTurn,
   linkAnchors,
@@ -279,6 +280,24 @@ console.log("\n4. Text into the editor");
   // so the writer gets literal "&lt;p&gt;" in their article.
   assert(html.indexOf("&lt;p&gt;") < 0, "the paragraph tags are NOT themselves escaped");
   assert(draftBlockToHtml("   ") === "", "an empty block produces nothing to insert");
+
+  // ── Replacing INSIDE a paragraph must not break the paragraph ────────────
+  //
+  // draftBlockToHtml wraps in <p>, which Tiptap parses as a BLOCK — so
+  // inserting it over a sentence inside a paragraph split that paragraph in
+  // three and left a blank line either side. Reported on a live cover letter.
+  const inline = draftBlockToInlineHtml("Margins under <10% are thin.\nSecond line.");
+  assert(inline.indexOf("<p>") < 0, "the inline form emits NO block tag — that is the paragraph break");
+  assert(inline.indexOf("&lt;10%") >= 0, "it escapes before it structures, like its sibling");
+  assert(inline.indexOf("<br>") >= 0, "a single newline stays a line break");
+  assert(draftBlockToHtml("a\n\nb").indexOf("<p>") >= 0,
+    "the block form is still there for replacements that ARE paragraphs");
+
+  const page = stripComments(read("app/engineai/optimizer/page.tsx"));
+  assert(/sameParent\(/.test(page),
+    "the page chooses inline vs block by whether the range sits inside ONE text block");
+  assert(/type: "flash"/.test(page),
+    "a replacement announces itself — a change several paragraphs away is one you would have to hunt for");
 }
 
 // ── 5. The draft rides on the current turn, never in history ───────────────
@@ -391,6 +410,15 @@ console.log("\n7. The two rails stay different");
     "getDraftHtml reads the editor rather than the debounced state");
   assert(/onApply=\{applyDraftText\}/.test(page), "the Apply button is wired to the editor");
   assert(/onRevealQuote=\{revealQuote\}/.test(page), "Show me is wired to the document");
+  const dp = stripComments(read("components/optimizer/DiscussPanel.tsx"));
+  assert(/askForFix/.test(dp) && /askForPointFix/.test(dp),
+    "a fix is offered for BOTH an anchored passage and a whole-piece point — the best criticism often has nothing to underline");
+  assert(/onFix=\{answered\[seg\.anchor\] \? undefined : onFix\}/.test(dp),
+    "and NOT offered where the point already carries a rewrite");
+  assert(/split\(\/\\n\{2,\}\/\)/.test(dp),
+    "prose is split per POINT, so a six-point reply gets six actions rather than one");
+  assert(/onClick=\{\(\) => ask\(\)\}/.test(dp),
+    "the send button calls ask() with no argument — onClick={ask} would pass the MouseEvent as the question");
   assert(/findAnchor\(/.test(page),
     "quotes resolve through the SAME anchor resolver the judge's findings use");
   assert(/anchorQuote/.test(page),
