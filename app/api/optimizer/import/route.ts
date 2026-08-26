@@ -508,13 +508,13 @@ export async function POST(req: NextRequest) {
       config_brief: {
         targetQueries: [],
         audience: "",
-        // The commissioning brief, where there is one. `goal` is the brief
-        // field a writer reads as "what this is for", which is what a
-        // commission is. A dedicated assignment layer is the right long-term
-        // home; discarding it in the meantime is not.
-        goal: engineBrief,
+        goal: "",
         lengthBand: "",
         voice: "",
+        // The assignment layer now exists, so the commission lives in the field
+        // that means it rather than borrowing `goal`, which is what the READER
+        // should take away — a different thing that happened to be free.
+        commission: engineBrief,
       },
       config_canon: canon,
       name_rubric_version: RUBRIC_VERSION,

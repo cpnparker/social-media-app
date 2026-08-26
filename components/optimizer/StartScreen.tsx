@@ -322,7 +322,11 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             <SourceTab active={tab === "upload"} onClick={() => setTab("upload")} icon={<FileUp className="h-3.5 w-3.5" />} label="Upload a file" />
             <SourceTab active={tab === "url"} onClick={() => setTab("url")} icon={<Globe className="h-3.5 w-3.5" />} label="A published page" />
             <SourceTab active={tab === "gdoc"} onClick={() => setTab("gdoc")} icon={<FileText className="h-3.5 w-3.5" />} label="A Google Doc" />
-            <SourceTab active={tab === "engine"} onClick={() => setTab("engine")} icon={<Building2 className="h-3.5 w-3.5" />} label="From the Engine" />
+            {/* "From the Engine" is NOT here any more. A commissioned content
+                unit is an assignment, not content: its body usually does not
+                exist yet, so importing one into a SCORING surface hands the
+                writer a score panel over an empty document. It is a Writer
+                door, and it is above. */}
           </div>
 
           {tab === "upload" && (
@@ -535,28 +539,6 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
                   </button>
                 ))}
 
-                {!loading && tab === "engine" && !clientId && (
-                  <p className="text-[12.5px] text-muted-foreground px-2 py-3">
-                    Select a client to see their commissioned pieces.
-                  </p>
-                )}
-                {!loading && tab === "engine" && clientId && items.length === 0 && (
-                  <p className="text-[12.5px] text-muted-foreground px-2 py-3">
-                    Nothing commissioned for this client yet.
-                  </p>
-                )}
-                {!loading && tab === "engine" && items.map((i) => (
-                  <button
-                    key={i.id}
-                    onClick={() => doImport("engine", String(i.id), i.title)}
-                    disabled={busy}
-                    className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-muted text-left"
-                  >
-                    <Building2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                    <span className="flex-1 min-w-0 truncate text-[13.5px] font-medium">{i.title}</span>
-                    <span className="text-[11.5px] text-muted-foreground shrink-0">{i.status}</span>
-                  </button>
-                ))}
               </div>
 
               {tab === "gdoc" && sources?.serviceAccount && (
@@ -575,6 +557,43 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
           )}
         </div>
 
+        )}
+
+        {/* PICK UP A COMMISSION.
+            Content units commissioned for this client in the Engine, with the
+            brief they carry. Most have no body yet — that is the normal state
+            of a commission, and the reason this belongs to the Writer: you are
+            here to produce the text, not to score the absence of it. */}
+        {surface === "writer" && clientId && (
+          <div className="rounded-2xl border p-5">
+            <div className="flex items-baseline gap-2 mb-1">
+              <Building2 className="h-4 w-4 text-muted-foreground shrink-0 self-center" />
+              <span className="text-base font-semibold tracking-tight">Pick up a commission</span>
+            </div>
+            <p className="text-[13px] text-muted-foreground leading-relaxed mb-4">
+              Commissioned for {clientName || "this client"} in the Engine. The brief comes with it.
+            </p>
+            {loading ? (
+              <div className="flex justify-center py-4"><Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /></div>
+            ) : items.length === 0 ? (
+              <p className="text-[12.5px] text-muted-foreground">Nothing commissioned for this client yet.</p>
+            ) : (
+              <div className="flex flex-col gap-0.5 max-h-64 overflow-y-auto">
+                {items.map((i) => (
+                  <button
+                    key={i.id}
+                    onClick={() => doImport("engine", String(i.id), i.title)}
+                    disabled={busy}
+                    className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-muted text-left"
+                  >
+                    <Building2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <span className="flex-1 min-w-0 truncate text-[13.5px] font-medium">{i.title}</span>
+                    <span className="text-[11.5px] text-muted-foreground shrink-0">{i.status}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
         {/* Briefing the AI is Writer work. */}

@@ -426,7 +426,71 @@ console.log("\n7. Client style: shape-stable, keyed, and edits are protected");
 // Fixture-only: this tree is shared with other sessions and also deploys, so
 // nothing here mutates a repo file to prove a detector fires.
 if (process.argv.indexOf("--self-test") >= 0) {
-  console.log("\n8. Self-test — the detectors fire on the shapes they exist for");
+  console.log("\n7b. The brief carries the assignment, and it reaches the prompt");
+{
+  // config_brief was a GEO optimiser's brief — which queries, how long, roughly
+  // what tone — and silent on what a commissioning editor hands a writer.
+  // mustAvoid is the one that matters: a compliance line or a refused claim is
+  // not recoverable after publication, and a model that is not told will
+  // cheerfully write the forbidden sentence.
+  const withConstraints = buildGenerationPrompt({
+    title: "T", format: "explainer", platform: "balanced",
+    brief: {
+      targetQueries: [], audience: "", goal: "", lengthBand: "800-1500", voice: "",
+      commission: "Explain the new pricing to existing customers.",
+      mustInclude: ["the migration date"],
+      mustAvoid: ["any comparison with Competitor X"],
+    },
+    canon: null, style: null,
+  } as any);
+
+  withConstraints.indexOf("Explain the new pricing to existing customers.") > 0
+    ? pass("the commission reaches the prompt")
+    : fail("the commission is stored and never sent");
+  withConstraints.indexOf("the migration date") > 0
+    ? pass("must-cover points reach the prompt")
+    : fail("mustInclude is stored and never sent");
+  withConstraints.indexOf("any comparison with Competitor X") > 0
+    ? pass("prohibitions reach the prompt")
+    : fail("mustAvoid is stored and never sent — the model would write the forbidden sentence");
+
+  // Last among the constraints, so it is the most recent instruction read.
+  withConstraints.indexOf("must NOT say") > withConstraints.indexOf("MUST cover")
+    ? pass("prohibitions are emitted after requirements")
+    : fail("the prohibition is buried above the requirements");
+
+  // A brief written before these fields existed must still work.
+  (() => {
+    try {
+      const legacy = buildGenerationPrompt({
+        title: "T", format: "explainer", platform: "balanced",
+        brief: { targetQueries: [], audience: "", goal: "", lengthBand: "800-1500", voice: "" },
+        canon: null, style: null,
+      } as any);
+      return legacy.length > 0 && legacy.indexOf("must NOT say") < 0;
+    } catch { return false; }
+  })()
+    ? pass("a brief with no assignment layer still builds, and emits no empty sections")
+    : fail("a pre-existing brief breaks generation or emits hollow headings");
+
+  // The whole brief must be PATCHable, or it can be set at create and never corrected.
+  const sessSrc = stripComments(read("app/api/optimizer/sessions/[id]/route.ts"));
+  /mustAvoid/.test(sessSrc) && /briefPatch/.test(sessSrc)
+    ? pass("the assignment layer is patchable, not create-only")
+    : fail("the brief cannot be corrected after creation — you would start a new document instead");
+
+  // The Engine commission belongs to the Writer, and to its own field.
+  const importSrc2 = stripComments(read("app/api/optimizer/import/route.ts"));
+  /commission:\s*engineBrief/.test(importSrc2)
+    ? pass("an Engine commission lands in the commission field, not borrowed from goal")
+    : fail("the Engine brief is discarded or squatting in another field");
+  const startSrc = stripComments(read("components/optimizer/StartScreen.tsx"));
+  /Pick up a commission/.test(startSrc) && !/label="From the Engine"/.test(startSrc)
+    ? pass("commissions are a Writer door and no longer an Optimiser import tab")
+    : fail("the Engine tab is still an import source — a commission with no body would open a scoring surface");
+}
+
+console.log("\n8. Self-test — the detectors fire on the shapes they exist for");
   let selfFails = 0;
   const detects = (name: string, caught: boolean) => {
     caught ? console.log(`  ok    catches ${name}`) : (selfFails++, console.log(`  BROKEN  misses ${name}`));

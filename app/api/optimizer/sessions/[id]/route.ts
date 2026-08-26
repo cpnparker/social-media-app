@@ -135,6 +135,45 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     patch.config_brief = { ...(owned.session.config_brief || {}), targetQueries: seen };
   }
 
+  /**
+   * The rest of the brief.
+   *
+   * Only targetQueries was patchable, so everything else — the audience, the
+   * takeaway, the length, the voice, and now the whole assignment layer — could
+   * be set at CREATE and never changed. A brief you cannot correct is a brief
+   * you rewrite by starting a new document.
+   *
+   * Collaborator-writable, not owner-only: a brief is the shared instruction
+   * for the work, unlike the title and the visibility, which are the owner's
+   * because they decide what this thing IS and who sees it.
+   *
+   * Spreads the existing object for the same reason the block above does —
+   * config_brief is one jsonb column, and writing a fresh object would erase
+   * every field absent from this request.
+   */
+  const TEXT_FIELDS = ["audience", "goal", "lengthBand", "voice", "commission"] as const;
+  const LIST_FIELDS = ["mustInclude", "mustAvoid"] as const;
+  const briefPatch: Record<string, unknown> = {};
+  for (let i = 0; i < TEXT_FIELDS.length; i++) {
+    const k = TEXT_FIELDS[i];
+    if (typeof body[k] === "string") briefPatch[k] = body[k].slice(0, 4000);
+  }
+  for (let i = 0; i < LIST_FIELDS.length; i++) {
+    const k = LIST_FIELDS[i];
+    if (!Array.isArray(body[k])) continue;
+    const out: string[] = [];
+    for (let j = 0; j < body[k].length && out.length < 20; j++) {
+      const v = body[k][j];
+      if (typeof v !== "string") continue;
+      const t = v.trim().slice(0, 400);
+      if (t && out.indexOf(t) < 0) out.push(t);
+    }
+    briefPatch[k] = out;
+  }
+  if (Object.keys(briefPatch).length > 0) {
+    patch.config_brief = { ...(owned.session.config_brief || {}), ...(patch.config_brief || {}), ...briefPatch };
+  }
+
   // Nothing but the timestamp: refuse rather than writing a no-op row that
   // reorders the session list for no reason.
   if (Object.keys(patch).length === 1) {

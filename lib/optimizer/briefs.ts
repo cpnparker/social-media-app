@@ -24,6 +24,31 @@ export interface OptimizerBrief {
   goal: string;
   lengthBand: string;
   voice: string;
+  /**
+   * THE ASSIGNMENT LAYER.
+   *
+   * Everything above is a GEO optimiser's idea of a brief: which queries to
+   * rank for, how long, roughly what tone. That is what to aim at, and it is
+   * silent on what a commissioning editor actually hands a writer — what this
+   * piece is FOR, what it must cover, and what it must not say.
+   *
+   * All three are optional so every existing session keeps working: a brief
+   * written before these existed reads as one with no assignment, which is
+   * exactly what it is.
+   */
+  /** The commission as given — an Engine content unit's brief, or a note. */
+  commission?: string;
+  /** Points the piece must make. Rendered as requirements, not suggestions. */
+  mustInclude?: string[];
+  /**
+   * Claims, terms or comparisons this piece may not make.
+   *
+   * The half that matters most and is hardest to recover from: a compliance
+   * line, a competitor that may not be named, a claim legal has refused. A
+   * writer who does not know is not careless, and a model that is not told
+   * will cheerfully produce the forbidden sentence.
+   */
+  mustAvoid?: string[];
 }
 
 export interface GenerationContext {
@@ -66,6 +91,27 @@ export function buildGenerationPrompt(ctx: GenerationContext): string {
     parts.push(
       `## The questions this must answer\n\nThese are the queries a buyer types into an AI assistant before they know the brand exists. The piece has to be the best available answer to them:\n` +
         ctx.brief.targetQueries.map((q) => `- ${q}`).join("\n")
+    );
+  }
+
+  if (ctx.brief.commission) {
+    parts.push(`## The commission\n\nThis is what was asked for. Where it and the notes below disagree, this wins:\n\n${ctx.brief.commission}`);
+  }
+
+  if (ctx.brief.mustInclude && ctx.brief.mustInclude.length > 0) {
+    parts.push(
+      `## This piece MUST cover\n\nEvery one of these. A draft missing any of them is not finished:\n` +
+        ctx.brief.mustInclude.map((x) => `- ${x}`).join("\n")
+    );
+  }
+
+  if (ctx.brief.mustAvoid && ctx.brief.mustAvoid.length > 0) {
+    // Emitted as a prohibition rather than a preference, and last among the
+    // constraints so it is the most recent instruction the model read. These
+    // are the lines somebody will have to retract if they appear.
+    parts.push(
+      `## This piece must NOT say\n\nThese are prohibitions, not preferences. Do not state them, imply them, or work around them with a synonym:\n` +
+        ctx.brief.mustAvoid.map((x) => `- ${x}`).join("\n")
     );
   }
 
