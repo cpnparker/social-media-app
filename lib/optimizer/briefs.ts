@@ -88,14 +88,20 @@ const PLATFORM_NOTES: { [k: string]: string } = {
   balanced: "Target platform: balanced across ChatGPT, AI Overviews and Perplexity.",
 };
 
-export function buildGenerationPrompt(ctx: GenerationContext): string {
+/**
+ * Everything the model needs to know about WHO this is for and WHAT was asked
+ * for — the brief, the client's facts, their house style, the background
+ * material — with none of the instructions about writing a piece.
+ *
+ * Split out so the Writer's discussion panel can be grounded by the SAME
+ * builder that produced the draft. A second, hand-written description of the
+ * client would drift from this one, and the writer would find themselves
+ * discussing their article with something that had been told a different story
+ * about the audience. The join is unchanged, so the generation prompt this was
+ * extracted from is byte-for-byte what it was.
+ */
+export function buildGroundingBlock(ctx: GenerationContext): string {
   const parts: string[] = [];
-
-  parts.push(
-    `You are writing a piece of content for The Content Engine that is optimised to be retrieved and cited by AI assistants — ChatGPT, Perplexity, Google's AI Overviews — as well as read by a person.`
-  );
-
-  parts.push(`## The piece\n\nWorking title: ${ctx.title}\nFormat: ${ctx.format}\nLength: roughly ${ctx.brief.lengthBand} words.`);
 
   if (ctx.brief.targetQueries.length > 0) {
     parts.push(
@@ -152,6 +158,20 @@ export function buildGenerationPrompt(ctx: GenerationContext): string {
   parts.push(styleBlock(ctx.style || null));
   parts.push(sourcesBlock(ctx.sources || []));
   if (ctx.brief.voice) parts.push(`## Voice for this piece\n\n${ctx.brief.voice}`);
+
+  return parts.join("\n\n");
+}
+
+export function buildGenerationPrompt(ctx: GenerationContext): string {
+  const parts: string[] = [];
+
+  parts.push(
+    `You are writing a piece of content for The Content Engine that is optimised to be retrieved and cited by AI assistants — ChatGPT, Perplexity, Google's AI Overviews — as well as read by a person.`
+  );
+
+  parts.push(`## The piece\n\nWorking title: ${ctx.title}\nFormat: ${ctx.format}\nLength: roughly ${ctx.brief.lengthBand} words.`);
+
+  parts.push(buildGroundingBlock(ctx));
 
   // ── The doctrine. Each rule maps to a criterion in lib/optimizer/rubric.ts ──
   parts.push(`## How to write it

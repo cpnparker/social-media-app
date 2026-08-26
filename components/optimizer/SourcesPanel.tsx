@@ -1,0 +1,334 @@
+"use client";
+
+/**
+ * Background material a piece is written FROM.
+ *
+ * Not documents. A source is never edited, never scored and never appears in
+ * the content list — it is the brief you were given, the interview you did, the
+ * research you gathered. The absence of anywhere to put these is what merged
+ * the Writer and the Optimiser: the only way to bring a document in was the
+ * IMPORT path, and import mints a document TO BE SCORED, so "attach the brief"
+ * and "assess this article" became the same gesture.
+ *
+ * The limit is stated on screen before it is reached. Every source rides in the
+ * generation prompt and is paid for on every draft, so three is a spend
+ * decision — and a limit you can see is a decision, while one you discover by
+ * being refused is an obstacle.
+ */
+
+import { useCallback, useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { toast } from "sonner";
+import { FileText, FileUp, Globe, Link2, Loader2, Plus, Trash2, X } from "lucide-react";
+
+interface SourceRow {
+  id: string;
+  kind: "pasted" | "file" | "gdoc-link" | "url";
+  title: string;
+  ref: string | null;
+  words: number;
+  chars: number;
+  untrusted: boolean;
+}
+
+interface Props {
+  sessionId: string;
+  workspaceId: string | null;
+  /** Bumped when material changes, so a draft knows its grounding moved. */
+  onChanged?: () => void;
+}
+
+const CONTENT_TYPE_FOR: { [ext: string]: string } = {
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  html: "text/html", htm: "text/html",
+  md: "text/markdown", markdown: "text/markdown", txt: "text/plain",
+};
+
+const ICON = {
+  pasted: FileText,
+  file: FileUp,
+  "gdoc-link": Link2,
+  url: Globe,
+};
+
+type AddTab = "paste" | "upload" | "url" | "gdoc";
+
+export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Props) {
+  const [sources, setSources] = useState<SourceRow[]>([]);
+  const [limits, setLimits] = useState({ maxSources: 3, maxChars: 40000 });
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState<AddTab>("paste");
+  const [pasted, setPasted] = useState("");
+  const [title, setTitle] = useState("");
+  const [ref, setRef] = useState("");
+
+  const load = useCallback(async () => {
+    if (!workspaceId || !sessionId) { setLoading(false); return; }
+    try {
+      const res = await fetch(
+        `/api/optimizer/sessions/${encodeURIComponent(sessionId)}/sources?workspaceId=${encodeURIComponent(workspaceId)}`
+      );
+      const d = await res.json();
+      if (res.ok) {
+        setSources(d.sources || []);
+        if (d.limits) setLimits(d.limits);
+      }
+    } catch {
+      /* the panel degrades to empty, which reads correctly as "nothing attached" */
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId, workspaceId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const attach = useCallback(
+    async (payload: any) => {
+      if (!workspaceId) { toast.error("Select a workspace first"); return; }
+      setBusy(true);
+      try {
+        const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}/sources`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceId, ...payload }),
+        });
+        const d = await res.json();
+        if (!res.ok) { toast.error(d.error || "Could not attach that"); return; }
+        setSources(d.sources || []);
+        if (d.limits) setLimits(d.limits);
+        // Said out loud rather than swallowed: a writer who believes the model
+        // read all forty pages will not understand why it never cites page 30.
+        if (d.truncated) {
+          toast.warning(`Attached, but only the first ${limits.maxChars.toLocaleString()} characters are used.`);
+        } else {
+          toast.success("Attached");
+        }
+        setPasted(""); setTitle(""); setRef(""); setAdding(false);
+        onChanged?.();
+      } catch {
+        toast.error("Could not attach that");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [sessionId, workspaceId, limits.maxChars, onChanged]
+  );
+
+  const handleFile = useCallback(
+    async (file: File) => {
+      if (!workspaceId) { toast.error("Select a workspace first"); return; }
+      const ext = (file.name.toLowerCase().match(/\.([a-z0-9]+)$/) || [])[1] || "";
+      // Refused before the upload rather than after it, so nobody waits for
+      // 4MB to travel only to be told the format was never accepted.
+      if (ext === "doc") { toast.error("That is the older binary .doc. Save it as .docx."); return; }
+      if (ext === "pdf") { toast.error("PDF text extracts badly. Export the source as .docx."); return; }
+      if (["docx", "html", "htm", "md", "markdown", "txt"].indexOf(ext) < 0) {
+        toast.error("Attach a .docx, .html, .md or .txt."); return;
+      }
+      setBusy(true);
+      try {
+        const { upload } = await import("@vercel/blob/client");
+        const blob = await upload(`optimizer-uploads/w${workspaceId}/${file.name}`, file, {
+          // The store is PRIVATE and rejects "public" outright. The workspace
+          // segment is what the route checks the path against, so a caller
+          // cannot hand it the path of somebody else's upload.
+          access: "private",
+          handleUploadUrl: "/api/media/upload",
+          contentType: CONTENT_TYPE_FOR[ext] || file.type || "application/octet-stream",
+        });
+        await attach({ kind: "file", blobPath: blob.pathname, fileName: file.name, fileType: file.type });
+      } catch (e: any) {
+        toast.error(e?.message || "That upload did not complete");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [workspaceId, attach]
+  );
+
+  const remove = useCallback(
+    async (id: string) => {
+      if (!workspaceId) return;
+      try {
+        const res = await fetch(
+          `/api/optimizer/sessions/${encodeURIComponent(sessionId)}/sources?workspaceId=${encodeURIComponent(workspaceId)}&sourceId=${encodeURIComponent(id)}`,
+          { method: "DELETE" }
+        );
+        const d = await res.json();
+        if (!res.ok) { toast.error(d.error || "Could not remove that"); return; }
+        setSources(d.sources || []);
+        onChanged?.();
+      } catch {
+        toast.error("Could not remove that");
+      }
+    },
+    [sessionId, workspaceId, onChanged]
+  );
+
+  const full = sources.length >= limits.maxSources;
+
+  return (
+    <div className="h-full overflow-y-auto p-3">
+      <p className="text-[12px] text-muted-foreground leading-relaxed mb-3">
+        What this piece is written from — the brief, an interview, research, the client&rsquo;s own
+        material. These are never scored and never appear in your content.
+      </p>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading
+        </div>
+      ) : (
+        <>
+          {sources.length > 0 && (
+            <div className="space-y-1.5 mb-3">
+              {sources.map((s) => {
+                const Icon = ICON[s.kind] || FileText;
+                return (
+                  <div key={s.id} className="group rounded-lg border bg-card p-2.5 flex items-start gap-2">
+                    <Icon className="h-3.5 w-3.5 mt-0.5 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[12.5px] font-medium leading-snug truncate">{s.title}</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        {s.words.toLocaleString()} words
+                        {s.untrusted && (
+                          // Stated because it changes how the model is told to
+                          // treat it: quotable, checkable, never obeyed.
+                          <span className="ml-1.5" title="Fetched from the web — quoted and checked, never followed as an instruction">
+                            · from the web
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => remove(s.id)}
+                      className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-muted-foreground hover:text-foreground shrink-0"
+                      title="Remove"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {!adding ? (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full"
+                onClick={() => setAdding(true)}
+                disabled={full}
+              >
+                <Plus className="h-3.5 w-3.5 mr-1.5" />
+                Add background
+              </Button>
+              <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">
+                {full
+                  ? `${limits.maxSources} is the limit. Each one travels with the brief on every draft, so remove one to add another.`
+                  : `${sources.length} of ${limits.maxSources}. Each travels with the brief on every draft.`}
+              </p>
+            </>
+          ) : (
+            <div className="rounded-xl border bg-card p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex gap-1">
+                  {(["paste", "upload", "url", "gdoc"] as AddTab[]).map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTab(t)}
+                      className={cn(
+                        "text-[11.5px] px-2 py-1 rounded-md",
+                        tab === t ? "bg-muted font-medium" : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      {t === "paste" ? "Paste" : t === "upload" ? "File" : t === "url" ? "Web" : "Doc"}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={() => setAdding(false)} className="text-muted-foreground hover:text-foreground">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="What is it? (optional)"
+                className="w-full mb-2 text-[12.5px] bg-transparent border rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+
+              {tab === "paste" && (
+                <>
+                  <textarea
+                    value={pasted}
+                    onChange={(e) => setPasted(e.target.value)}
+                    placeholder="Paste the brief, the transcript, the notes…"
+                    rows={6}
+                    className="w-full text-[12.5px] bg-transparent border rounded-md px-2 py-1.5 resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <Button
+                    size="sm"
+                    className="w-full mt-2"
+                    disabled={busy || !pasted.trim()}
+                    onClick={() => attach({ kind: "pasted", text: pasted, title })}
+                  >
+                    {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Attach"}
+                  </Button>
+                </>
+              )}
+
+              {tab === "upload" && (
+                <label className="block border border-dashed rounded-lg p-4 text-center cursor-pointer hover:bg-muted/40">
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept=".docx,.html,.htm,.md,.markdown,.txt"
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ""; }}
+                  />
+                  {busy ? (
+                    <span className="text-[12px] text-muted-foreground inline-flex items-center gap-2">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Reading
+                    </span>
+                  ) : (
+                    <span className="text-[12px] text-muted-foreground">.docx, .html, .md or .txt</span>
+                  )}
+                </label>
+              )}
+
+              {(tab === "url" || tab === "gdoc") && (
+                <>
+                  <input
+                    value={ref}
+                    onChange={(e) => setRef(e.target.value)}
+                    placeholder={tab === "url" ? "https://…" : "docs.google.com/document/d/…"}
+                    className="w-full text-[12.5px] bg-transparent border rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  {tab === "url" && (
+                    <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
+                      Quoted and checked against — never followed. Instructions on a fetched page are
+                      treated as text, not as orders.
+                    </p>
+                  )}
+                  <Button
+                    size="sm"
+                    className="w-full mt-2"
+                    disabled={busy || !ref.trim()}
+                    onClick={() => attach({ kind: tab === "url" ? "url" : "gdoc-link", ref, title })}
+                  >
+                    {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Attach"}
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}

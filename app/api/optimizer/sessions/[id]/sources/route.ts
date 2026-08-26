@@ -7,6 +7,13 @@
  * assertServiceAllowed below: a route that cannot spend does not need a spend
  * gate, and adding one would imply it might.
  *
+ * That reasoning is about SPEND ONLY. It said nothing about safety, and reading
+ * it as though it did is how this route shipped with `fetch(body.fileUrl)` in
+ * the upload branch — an unguarded server-side fetch of a caller-supplied
+ * address. Everything that reaches out from here is guarded: the url branch
+ * through the shared safe fetch, the file branch through a workspace-scoped
+ * blob path.
+ *
  * The cost these DO carry is the prompt they ride in later, which is bounded by
  * MAX_SOURCES and MAX_SOURCE_CHARS rather than by anything here.
  */
@@ -113,32 +120,76 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!title) title = "Google Doc";
     ref = (typeof body?.ref === "string" ? body.ref : "").trim().slice(0, 500);
   } else {
-    // Uploaded file. The bytes reach Blob first and this receives the URL, for
-    // the reason the import route documents: a serverless request body caps at
-    // 4.5MB and a Word document with photographs passes that routinely.
-    const fileUrl = String(body?.fileUrl || "");
-    if (!fileUrl) return NextResponse.json({ error: "No file to attach" }, { status: 400 });
+    // ── Uploaded file ────────────────────────────────────────────────────
+    //
+    // Takes a BLOB PATH, not a URL, and this is a correction rather than a
+    // preference. As first written this branch did `fetch(body.fileUrl)` — a
+    // server-side request to any address a caller cared to name, whose response
+    // was then stored. That is an SSRF primitive with no safe-fetch guard on
+    // it, and it sat in the one route that had reasoned itself out of needing
+    // guards ("a route that cannot spend does not need a spend gate") — a
+    // conclusion about SPEND that quietly read as a conclusion about safety.
+    //
+    // It would also never have worked: the store is configured PRIVATE, so an
+    // unauthenticated GET of a blob URL is refused. The bug that made it
+    // useless is the same bug that made it dangerous.
+    //
+    // So: the same two steps the import route uses. The path must sit under
+    // this caller's own workspace prefix — which is what stops one workspace
+    // naming another's upload — and the bytes are read through the blob client
+    // with credentials rather than fetched.
+    const blobPath = typeof body?.blobPath === "string" ? body.blobPath : "";
+    const expectedPrefix = `optimizer-uploads/w${guard.caller.workspaceId}/`;
+    if (!blobPath.startsWith(expectedPrefix) || blobPath.indexOf("..") >= 0) {
+      return NextResponse.json({ error: "That upload could not be located." }, { status: 400 });
+    }
+
+    let buffer: Buffer;
+    try {
+      const { get } = await import("@vercel/blob");
+      const stored = await get(blobPath, { access: "private" });
+      if (!stored || stored.statusCode !== 200 || !stored.stream) {
+        throw new Error("the stored file could not be read back");
+      }
+      buffer = Buffer.from(await new Response(stored.stream as ReadableStream).arrayBuffer());
+    } catch (e: any) {
+      return NextResponse.json(
+        { error: `The uploaded file could not be read back: ${String(e?.message || e).slice(0, 120)}` },
+        { status: 502 }
+      );
+    }
+
+    const fileName = String(body?.fileName || "document");
     try {
       const { importFile } = await import("@/lib/optimizer/file-import");
-      const res = await fetch(fileUrl);
-      if (!res.ok) return NextResponse.json({ error: "Could not read that file" }, { status: 502 });
-      const buffer = Buffer.from(await res.arrayBuffer());
       const result = await importFile(
-        { name: String(body?.fileName || "document"), type: String(body?.fileType || ""), buffer },
+        { name: fileName, type: String(body?.fileType || ""), buffer },
         { workspaceId: guard.caller.workspaceId, maxChars: MAX_SOURCE_CHARS }
       );
       if (!result.ok) {
         return NextResponse.json({ error: result.error || "Could not read that file" }, { status: 400 });
       }
-      // extractRawText, not convertToHtml: a source is read for its WORDS. The
-      // optimiser converts to html because it scores STRUCTURE — headings,
-      // lists, hierarchy — which is the one thing background material is never
-      // judged on. importFile already makes that distinction internally.
-      text = String((result as any).text || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-      if (!title) title = String(body?.fileName || "Uploaded document").slice(0, 200);
-      ref = fileUrl.slice(0, 500);
+      // A source is read for its WORDS. The optimiser converts to html because
+      // it scores STRUCTURE — headings, lists, hierarchy — which is the one
+      // thing background material is never judged on.
+      text = String((result as any).html || (result as any).text || "")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!title) title = fileName.slice(0, 200);
+      ref = fileName.slice(0, 500);
     } catch {
       return NextResponse.json({ error: "Could not read that file" }, { status: 502 });
+    } finally {
+      // Deleted either way: it was only ever a transport for the bytes, and
+      // leaving it behind keeps a second copy of a client document in storage
+      // that nothing reads and nobody remembers to remove.
+      try {
+        const { del } = await import("@vercel/blob");
+        await del(blobPath);
+      } catch {
+        /* a failed cleanup must not fail the attach the writer is waiting on */
+      }
     }
   }
 
@@ -184,6 +235,44 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   return NextResponse.json({
     sources: sources.map((s) => ({ ...s, text: undefined, chars: s.text.length })),
     truncated,
+    limits: { maxSources: MAX_SOURCES, maxChars: MAX_SOURCE_CHARS },
+  });
+}
+
+/**
+ * Detach a background document.
+ *
+ * Scoped by BOTH the source id and the session id. Deleting on the id alone
+ * would let anyone holding a source id remove material from a piece they cannot
+ * open — the row carries no workspace column of its own, so the session is
+ * where the entitlement lives, and loadSessionForCaller has just checked it.
+ *
+ * A hard delete, deliberately. A source is transient working material rather
+ * than a record: it was attached to shape a draft, the draft keeps whatever it
+ * took from it, and keeping detached client documents around indefinitely is a
+ * liability rather than a feature.
+ */
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const guard = await requireOptimizer(req.nextUrl.searchParams.get("workspaceId"));
+  if (!guard.ok) return guard.response;
+  const owned = await loadSessionForCaller(id, guard.caller);
+  if (!owned.ok) return NextResponse.json({ error: owned.error }, { status: owned.status });
+
+  const sourceId = req.nextUrl.searchParams.get("sourceId") || "";
+  if (!sourceId) return NextResponse.json({ error: "Which source?" }, { status: 400 });
+
+  const { error } = await intelligenceDb
+    .from("optimizer_sources")
+    .delete()
+    .eq("id_source", sourceId)
+    .eq("id_session", id);
+
+  if (error) return NextResponse.json({ error: "Could not remove that" }, { status: 500 });
+
+  const sources = await listSources(id);
+  return NextResponse.json({
+    sources: sources.map((s) => ({ ...s, text: undefined, chars: s.text.length })),
     limits: { maxSources: MAX_SOURCES, maxChars: MAX_SOURCE_CHARS },
   });
 }

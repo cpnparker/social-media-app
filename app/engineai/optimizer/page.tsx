@@ -40,6 +40,9 @@ import IssuePopover from "@/components/optimizer/IssuePopover";
 import { chromeFor, labelOf, offeredTypes, DEFAULT_CONTENT_TYPE, detectContentType, shouldAnnounce } from "@/lib/optimizer/content-types";
 import PageAudit from "@/components/optimizer/PageAudit";
 import StartScreen from "@/components/optimizer/StartScreen";
+import DiscussPanel from "@/components/optimizer/DiscussPanel";
+import SourcesPanel from "@/components/optimizer/SourcesPanel";
+import { draftBlockToHtml } from "@/lib/optimizer/discuss";
 import EngineAISidebar from "@/components/engineai/EngineAISidebar";
 import {
   OptimizerHighlight, optimizerHighlightKey, applyFinding,
@@ -125,7 +128,33 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
   const [issues, setIssues] = useState<Issue[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<{ dropped: number; orphaned: number; gateRejected: number } | null>(null);
-  const [panelTab, setPanelTab] = useState<"score" | "issues" | "coverage">("score");
+  /**
+   * The rail's tabs, which are NOT the same on both surfaces.
+   *
+   * This is the separation made visible. The Writer's rail is Discuss,
+   * Background and Suggestions: the tools for producing text. The Optimiser's
+   * is Score, Suggestions and Coverage: the tools for judging it. There is
+   * deliberately no Score in the Writer — a scoring panel over a draft being
+   * written is what merged the two products in the first place, and a writer
+   * who wants a verdict sends the piece to the Optimiser, which is the whole
+   * shape of the pair.
+   *
+   * The default differs for the same reason: the Writer opens on the
+   * conversation, the Optimiser on the number.
+   */
+  const [panelTab, setPanelTab] = useState<"score" | "issues" | "coverage" | "discuss" | "sources">(
+    surface === "writer" ? "discuss" : "score"
+  );
+  /**
+   * The selected passage, mirrored into React.
+   *
+   * Kept here rather than read on demand because two things depend on it
+   * reactively: the Discuss panel shows the writer WHAT they are asking about
+   * before they send, and the Apply button's label has to say whether it will
+   * replace that passage or append. A label reading "Replace selection" that
+   * appends instead is a small lie caught only after it has moved their text.
+   */
+  const [selText, setSelText] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   /**
    * The body as it stood when the last assessment ran.
@@ -244,7 +273,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     setQueries([]);
     setIssues([]);
     setDiagnostics(null);
-    setPanelTab("score");
+    setPanelTab(surface === "writer" ? "discuss" : "score");
     // A generated piece must not inherit the previous article's audit view or
     // source: stale sourceInfo kept the Page audit tab alive for a session
     // with no page, and the streaming draft wrote into a hidden editor.
@@ -812,6 +841,41 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
       setIssues(st.issues.slice());
       setSelectedId(st.selectedId);
     });
+
+    // A SEPARATE listener, not another branch of the one above: that one
+    // returns early on any transaction without the highlight plugin's meta,
+    // which is every ordinary selection change. Folding this into it would mean
+    // the selection only updated when a mark happened to be involved.
+    editor.on("selectionUpdate", () => {
+      const { from, to } = editor.state.selection;
+      setSelText(from === to ? "" : editor.state.doc.textBetween(from, to, "\n").trim());
+    });
+  }, []);
+
+  /**
+   * Put text from the discussion into the document.
+   *
+   * Replaces the selection when there is one, appends otherwise, and SAYS WHICH
+   * — the panel's toast is written from this return value rather than from an
+   * assumption made before the click. The editor may be absent (the panel is
+   * mounted beside a piece that has not finished loading), and that returns
+   * "failed" rather than a cheerful lie about text that went nowhere.
+   *
+   * Goes through draftBlockToHtml, which escapes before it paragraphs. The
+   * model's output is text: an unescaped "<10%" in a rewritten sentence would
+   * reach the editor as markup and silently eat the rest of the line.
+   */
+  const applyDraftText = useCallback((text: string): "replaced" | "appended" | "failed" => {
+    const editor = editorRef.current;
+    const html = draftBlockToHtml(text);
+    if (!editor || !html) return "failed";
+    const { from, to } = editor.state.selection;
+    if (from !== to) {
+      editor.chain().focus().insertContentAt({ from, to }, html).run();
+      return "replaced";
+    }
+    editor.chain().focus().insertContentAt(editor.state.doc.content.size, html).run();
+    return "appended";
   }, []);
 
   const syncIssues = useCallback(() => {
@@ -1042,6 +1106,58 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     const next = active[(at + 1) % active.length];
     handleSelect(next.finding.id);
   }, [selectedId]);
+
+  /**
+   * The rail's tabs for THIS surface.
+   *
+   * Derived rather than written out twice, so "which tabs does the Writer have"
+   * has one answer. The count on Suggestions is the active findings, which is
+   * the only number in the rail that changes as you type.
+   */
+  const panelTabs = useMemo(() => {
+    const activeIssues = issues.filter((i) => i.status === "active").length;
+    const t: { key: "score" | "issues" | "coverage" | "discuss" | "sources"; label: string; count?: number }[] = [];
+    if (surface === "writer") {
+      t.push({ key: "discuss", label: "Discuss" });
+      t.push({ key: "sources", label: "Background" });
+      t.push({ key: "issues", label: "Suggestions", count: activeIssues });
+      return t;
+    }
+    // A graded score over a document nobody is scoring is a number pretending
+    // to mean something. Where there is no judge there is no tab, and the
+    // deterministic marks still appear under Suggestions.
+    if (chrome.showScore) t.push({ key: "score", label: "Score" });
+    t.push({ key: "issues", label: "Suggestions", count: activeIssues });
+    if (chrome.showCoverageTab) t.push({ key: "coverage", label: "Coverage" });
+    return t;
+  }, [surface, chrome.showScore, chrome.showCoverageTab, issues]);
+
+  /**
+   * Correct a selection that this surface does not offer.
+   *
+   * Hiding a tab does not deselect it. Without this, a piece opened in the
+   * Optimiser on Coverage and then opened in the Writer would render the rail
+   * with no tab highlighted and the fallback panel below it — the page quietly
+   * disagreeing with itself about what is on screen.
+   */
+  useEffect(() => {
+    if (panelTabs.length === 0) return;
+    let found = false;
+    for (let i = 0; i < panelTabs.length; i++) if (panelTabs[i].key === panelTab) found = true;
+    if (!found) setPanelTab(panelTabs[0].key);
+  }, [panelTabs, panelTab]);
+
+  /**
+   * What is on screen right now, for a question asked about it.
+   *
+   * Reads the EDITOR rather than `body`, which lags by the autosave debounce.
+   * A writer who rewrites a paragraph and immediately asks "is that better?"
+   * must be answered about the rewrite, not the version before it.
+   */
+  const getDraftHtml = useCallback(
+    () => (editorRef.current ? editorRef.current.getHTML() : body),
+    [body]
+  );
 
   const scoreInput: DraftInput = useMemo(
     () => ({
@@ -1563,49 +1679,58 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
         // for "this piece" on screen with nothing saying which was which.
         studioView === "audit" ? "lg:hidden" : "lg:flex"
       )}>
+        {/* The rail's tabs are the separation made visible. The Writer gets the
+            tools for PRODUCING text — the conversation, the material it draws
+            on, the marks on the prose. The Optimiser gets the tools for JUDGING
+            it. There is deliberately no Score here on the Writer: a scoring
+            panel over a draft in progress is precisely what merged the two
+            products, and it turned writing into chasing a number before there
+            was anything to score. */}
         <div className="shrink-0 flex items-center gap-1 px-3 pt-2 border-b">
-          {/* A graded score over a document nobody is scoring is a number
-              pretending to mean something — the dishonesty this page's own
-              doctrine warns about. Where there is no judge there is no tab, and
-              the deterministic marks still appear under Suggestions, which is
-              the honest home for them. */}
-          {chrome.showScore && (
+          {panelTabs.map((t) => (
             <button
-              onClick={() => setPanelTab("score")}
+              key={t.key}
+              onClick={() => setPanelTab(t.key)}
               className={cn("text-[12.5px] font-medium px-2.5 py-2 border-b-2 -mb-px",
-                panelTab === "score" ? "border-primary text-foreground" : "border-transparent text-muted-foreground")}
+                panelTab === t.key ? "border-primary text-foreground" : "border-transparent text-muted-foreground")}
             >
-              Score
+              {t.label}
+              {t.count ? <span className="ml-1.5 text-[11px] text-muted-foreground">{t.count}</span> : null}
             </button>
-          )}
-          <button
-            onClick={() => setPanelTab("issues")}
-            className={cn("text-[12.5px] font-medium px-2.5 py-2 border-b-2 -mb-px",
-              panelTab === "issues" ? "border-primary text-foreground" : "border-transparent text-muted-foreground")}
-          >
-            Suggestions
-            {issues.filter((i) => i.status === "active").length > 0 && (
-              <span className="ml-1.5 text-[11px] text-muted-foreground">
-                {issues.filter((i) => i.status === "active").length}
-              </span>
-            )}
-          </button>
-          {chrome.showCoverageTab && (
-            <button
-              onClick={() => setPanelTab("coverage")}
-              className={cn("text-[12.5px] font-medium px-2.5 py-2 border-b-2 -mb-px",
-                panelTab === "coverage" ? "border-primary text-foreground" : "border-transparent text-muted-foreground")}
-            >
-              Coverage
-            </button>
-          )}
+          ))}
         </div>
         <div className="flex-1 min-h-0">
-          {/* `&& chrome.showCoverageTab`, not just the tab state. Hiding a tab
-              does not change which one is SELECTED, so a session whose type
-              switches while Coverage is open would keep rendering a panel for
-              an analysis the route now refuses. */}
-          {panelTab === "coverage" && chrome.showCoverageTab ? (
+          {/* Every branch tests the CAPABILITY as well as the tab state. Hiding
+              a tab does not change which one is selected, so a session whose
+              type or surface changes while a tab is open would keep rendering a
+              panel for something no longer offered. */}
+          {panelTab === "discuss" && surface === "writer" ? (
+            sessionId ? (
+              <DiscussPanel
+                sessionId={sessionId}
+                workspaceId={workspaceId}
+                getDraftHtml={getDraftHtml}
+                selection={selText}
+                onApply={applyDraftText}
+              />
+            ) : (
+              <p className="p-4 text-[12px] text-muted-foreground leading-relaxed">
+                Start or open a piece and you can talk it through here.
+              </p>
+            )
+          ) : panelTab === "sources" && surface === "writer" ? (
+            sessionId ? (
+              <SourcesPanel
+                sessionId={sessionId}
+                workspaceId={workspaceId}
+                onChanged={() => setPiecesRefreshKey((k) => k + 1)}
+              />
+            ) : (
+              <p className="p-4 text-[12px] text-muted-foreground leading-relaxed">
+                Open a piece to attach the brief and anything else it is written from.
+              </p>
+            )
+          ) : panelTab === "coverage" && chrome.showCoverageTab ? (
             <CoveragePanel
               sessionId={sessionId || ""}
               workspaceId={workspaceId}

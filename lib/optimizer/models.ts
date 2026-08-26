@@ -52,3 +52,22 @@ export const GENERATE_MODEL = "claude-sonnet-5";
  * cheapest slot to move and the highest volume.
  */
 export const SUGGEST_MODEL = JUDGE_MODEL;
+
+/**
+ * Talking to the writer about their draft, in the Writer's Discuss panel.
+ *
+ * Pinned to GENERATE_MODEL, and that is a correctness choice rather than a
+ * convenience one. This slot hands the writer text that goes straight into the
+ * piece at one click, so it is doing the same job as the drafting slot and is
+ * chosen on the same grounds — writing quality. Splitting them would give a
+ * piece two voices: one for the paragraphs that were generated and another for
+ * every paragraph that came out of a conversation about them, with nothing on
+ * screen explaining why the seams read oddly.
+ *
+ * Note what this deliberately is NOT: the judge. The discussion happily says a
+ * paragraph is weak, but the SCORE comes from the Optimiser, on a different
+ * model, precisely so nothing marks its own homework — the constraint at the
+ * top of this file. A writer wanting a verdict sends the piece to the
+ * Optimiser; that is the whole shape of the two tools.
+ */
+export const DISCUSS_MODEL = GENERATE_MODEL;
