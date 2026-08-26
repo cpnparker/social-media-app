@@ -1115,7 +1115,12 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
                 Yours, plus anything shared with the team.
               </p>
             </div>
-            <Button size="sm" variant="outline" onClick={() => { setPhase("start"); router.push("/engineai/optimizer"); }}>
+            {/* Says "Start writing", so it goes to the WRITER. It pointed at
+                the Optimiser because everything did — and on this surface
+                setPhase("start") is also a no-op, since the list effect forces
+                the phase back to "all". A button that names a job must go to
+                the tool that does it. */}
+            <Button size="sm" variant="outline" onClick={() => router.push("/engineai/writer")}>
               Start writing
             </Button>
           </div>
