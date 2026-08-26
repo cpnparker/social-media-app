@@ -84,6 +84,12 @@ function DraftBlock({
   onApply: (text: string) => "replaced" | "appended" | "failed";
   pending?: boolean;
 }) {
+  // Confirmed ON the block rather than in a toast. The rail's composer is
+  // bottom-right and so is sonner, so a toast fired from here covers the input
+  // the writer is about to type in — proven by elementFromPoint, not guessed.
+  // It also reads better: the confirmation sits on the thing that was applied.
+  const [applied, setApplied] = useState<null | "replaced" | "appended">(null);
+
   return (
     <div className="mt-2 rounded-lg border border-primary/30 bg-primary/[0.04] overflow-hidden">
       <div className="px-2.5 py-1.5 border-b border-primary/20 flex items-center gap-1.5">
@@ -101,11 +107,12 @@ function DraftBlock({
             className="h-7 text-[11.5px]"
             onClick={() => {
               const what = onApply(text);
-              // Reported from what actually happened. A success toast fired
-              // before the fact is how a writer comes to believe text landed
-              // in a document it never reached.
+              // Reported from what actually happened. A confirmation shown
+              // before the fact is how a writer comes to believe text landed in
+              // a document it never reached. An outright failure still toasts:
+              // that one is not redundant, and it is worth interrupting for.
               if (what === "failed") toast.error("Could not place that — the editor is not ready");
-              else toast.success(what === "replaced" ? "Replaced your selection" : "Added to the end");
+              else setApplied(what);
             }}
           >
             {/* The label says what will happen, which depends on whether
@@ -114,6 +121,11 @@ function DraftBlock({
                 catches after it has moved their text. */}
             {hasSelection ? "Replace selection" : "Add to the end"}
           </Button>
+          {applied && (
+            <span className="ml-2 text-[11px] text-muted-foreground">
+              {applied === "replaced" ? "Replaced your selection" : "Added to the end"}
+            </span>
+          )}
         </div>
       )}
     </div>

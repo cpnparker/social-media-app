@@ -61,6 +61,18 @@ export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Prop
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<AddTab>("paste");
+  /**
+   * Said in the panel, not in a toast.
+   *
+   * The rail's composer sits bottom-right and so does sonner, so a toast fired
+   * from here lands ON the Discuss input and swallows clicks for as long as it
+   * is up — measured, not guessed: elementFromPoint at the composer's centre
+   * returned the toast. Confirmation of something the panel already shows is
+   * redundant anyway; the row appearing IS the confirmation. What is NOT
+   * redundant is truncation, so that stays — inline, where it persists instead
+   * of expiring after four seconds and where it cannot cover anything.
+   */
+  const [notice, setNotice] = useState<string | null>(null);
   const [pasted, setPasted] = useState("");
   const [title, setTitle] = useState("");
   const [ref, setRef] = useState("");
@@ -109,11 +121,15 @@ export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Prop
         if (d.limits) setLimits(d.limits);
         // Said out loud rather than swallowed: a writer who believes the model
         // read all forty pages will not understand why it never cites page 30.
-        if (d.truncated) {
-          toast.warning(`Attached, but only the first ${limits.maxChars.toLocaleString()} characters are used.`);
-        } else {
-          toast.success("Attached");
-        }
+        // A silently clipped research document would leave the writer believing
+        // the model read something it never saw, so truncation is stated and
+        // stays stated. A plain success is not stated at all: the new row is
+        // already on screen.
+        setNotice(
+          d.truncated
+            ? `Attached — but only the first ${limits.maxChars.toLocaleString()} characters are used. The rest is not sent to the model.`
+            : null
+        );
         setPasted(""); setTitle(""); setRef(""); setAdding(false);
         onChanged?.();
       } catch {
@@ -184,6 +200,18 @@ export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Prop
         What this piece is written from — the brief, an interview, research, the client&rsquo;s own
         material. These are never scored and never appear in your content.
       </p>
+
+      {notice && (
+        <div className="mb-3 rounded-lg border border-[hsl(var(--ai-warning,38_92%_50%))]/40 bg-[hsl(var(--ai-warning,38_92%_50%))]/[0.07] p-2.5">
+          <p className="text-[11.5px] leading-relaxed">{notice}</p>
+          <button
+            onClick={() => setNotice(null)}
+            className="mt-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {loading ? (
         <div className="flex items-center gap-2 text-[12px] text-muted-foreground">

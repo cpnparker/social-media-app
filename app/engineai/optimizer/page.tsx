@@ -1744,7 +1744,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
               workspaceId={workspaceId}
               onReveal={revealTextRange}
             />
-          ) : panelTab === "score" && chrome.showScore ? (
+          ) : panelTab === "score" && chrome.showScore && surface !== "writer" ? (
             <ScorePanel
               input={scoreInput}
               muted={streaming}

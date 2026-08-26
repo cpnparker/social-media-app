@@ -279,6 +279,13 @@ console.log("\n7. The two rails stay different");
   // And the page must actually USE it, or the function is a decoration and the
   // page keeps its own list.
   assert(/railTabsFor\(/.test(page), "the page calls railTabsFor rather than building its own list");
+  // Defence in depth. railTabsFor already makes a score tab unreachable on the
+  // Writer, and check 7 proves that by EXECUTION — so this is a second lock on
+  // a door that is already shut, not the lock. Worth having because the render
+  // branch is the thing a future refactor reaches for first, and it was the
+  // only one of the three that read the tab alone.
+  assert(/panelTab === "score" && chrome\.showScore && surface !== "writer"/.test(page),
+    "the score panel's render branch ALSO tests the surface, not just the tab");
   assert(!/key: "score", label: "Score"/.test(page),
     "no tab list survives inline in the page — one definition, not two");
 
@@ -304,6 +311,24 @@ console.log("\n7. The two rails stay different");
     "no render path maps over the flat drafts list — that is the prose-then-blocks bug");
   assert((panel.match(/\.segments\.map\(/g) || []).length >= 2,
     "BOTH the settled and the streaming views render in order, not just one");
+
+  // ── Nothing in the rail may fire a non-error toast ────────────────────────
+  //
+  // sonner renders bottom-right and so does the rail's composer, so a toast
+  // fired from a rail panel lands ON the input the writer is about to type in
+  // and swallows their clicks for its lifetime. Measured, not guessed:
+  // elementFromPoint at the composer's centre returned the toast element.
+  // Confirmation of a state the panel already shows is redundant; errors are
+  // not, and are worth interrupting for — so only those may toast.
+  const sources = stripComments(read("components/optimizer/SourcesPanel.tsx"));
+  const railPanels: [string, string][] = [["DiscussPanel", panel], ["SourcesPanel", sources]];
+  for (let i = 0; i < railPanels.length; i++) {
+    const [name, src] = railPanels[i];
+    const noisy = src.match(/toast\.(success|warning|info|message)\(/g) || [];
+    assert(noisy.length === 0,
+      `${name} fires no non-error toast over the rail's composer (found ${noisy.length})`);
+    assert(/toast\.error\(/.test(src), `${name} still reports genuine errors`);
+  }
 }
 
 // ── 8. Nothing fetches a caller-supplied address ───────────────────────────
@@ -448,6 +473,11 @@ function selfTest() {
     // the flat fields alone cannot distinguish the two orders — which is why
     // the old shape could not catch this
     (flat.commentary === "A:\n\nB." && flat.drafts.length === 1));
+
+  detects("a success toast fired from a rail panel",
+    (("toast.success(\"Attached\");").match(/toast\.(success|warning|info|message)\(/g) || []).length === 1);
+  detects("an error toast being wrongly flagged as noisy",
+    (("toast.error(\"nope\");").match(/toast\.(success|warning|info|message)\(/g) || []).length === 0);
 
   detects("a truncated draft that does not say so",
     /TRUNCATED/.test(buildDiscussTurn({ draftText: "x".repeat(40000), selection: null, question: "q" })));
