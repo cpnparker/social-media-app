@@ -375,6 +375,23 @@ console.log("\n11. The studio actually uses it");
     "the dead detection import is gone — it was never called and implied typing happened in the studio");
   assert(/surface !== "writer" && chrome\.showAssessAction/.test(page),
     "Assess is the Optimiser's, not the Writer's");
+
+  // ── The control must be reachable ────────────────────────────────────────
+  //
+  // It lived inside the Suggestions panel, so the one control that answers
+  // "why is my cover letter being graded like an article" sat on a tab you had
+  // to already suspect the answer to go and open — and on the Writer, where the
+  // piece is already plain, the "doesn't fit" wording never rendered at all.
+  // Reported by the owner as "I don't see where to click it". It is in the
+  // header now, beside the chip, visible whatever the rail shows.
+  const header = page.slice(page.indexOf("chrome.showTypeChip"), page.indexOf("chrome.showTypeChip") + 2600);
+  assert(/setLens\(policy\.lens === "engine" \? "plain" : "engine"\)/.test(header),
+    "the lens control lives in the header and toggles BOTH directions from one place");
+  assert(/AI checks on/.test(header) && /AI checks off/.test(header),
+    "it states which way round it currently is, rather than only offering a change");
+  const list = stripComments(read("components/optimizer/IssueList.tsx"));
+  assert(!/onSetLens\(/.test(list),
+    "the rail does NOT carry a second copy of the control — two buttons doing one job is how one gets wired to something else");
   const suggest = stripComments(read("app/api/optimizer/sessions/[id]/suggest/route.ts"));
   const gateAt = suggest.indexOf("analysisAllowed(");
   const spendAt = suggest.indexOf("assertServiceAllowed(");

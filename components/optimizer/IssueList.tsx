@@ -91,13 +91,13 @@ export default function IssueList({
           <p className="text-[11.5px] leading-snug text-muted-foreground">
             {lensDisclosure()}
           </p>
-          {canRaiseLens && onSetLens && (
-            <button
-              onClick={() => onSetLens("engine")}
-              className="mt-1.5 text-[11px] font-medium text-foreground underline underline-offset-2"
-            >
-              Turn them on for this piece
-            </button>
+          {canRaiseLens && (
+            // Points at the control rather than being a second copy of it. Two
+            // buttons doing the same thing in two places is how one of them
+            // ends up wired to something slightly different.
+            <p className="mt-1 text-[11px] text-muted-foreground/80">
+              Change it with <span className="font-medium text-foreground">AI checks off</span> at the top.
+            </p>
           )}
         </div>
       )}
@@ -108,14 +108,13 @@ export default function IssueList({
           construction: the wrong marks appear once, then a person corrects them
           — which is the trade taken over guessing the document's kind from a
           salutation regex. */}
-      {lens === "engine" && canRaiseLens && onSetLens && !belowFloor && liveOpen.length > 0 && (
+      {lens === "engine" && canRaiseLens && !belowFloor && liveOpen.length > 0 && (
         <div className="shrink-0 mx-3 mt-2">
-          <button
-            onClick={() => onSetLens("plain")}
-            className="text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2"
-          >
-            These checks don&apos;t fit this piece
-          </button>
+          <p className="text-[11px] text-muted-foreground/80">
+            These check whether an assistant would cite this page. If that is not what this
+            piece is for, switch <span className="font-medium text-foreground">AI checks on</span> off
+            at the top.
+          </p>
         </div>
       )}
       {degraded && (

@@ -1735,6 +1735,34 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
               {typeLabel}
             </span>
           )}
+          {/* ── Which checks are running, and the control to change it ──────
+              In the HEADER, beside the chip that says what this piece is,
+              because that is the only place it is visible whatever the rail is
+              showing. It lived inside the Suggestions panel, which meant the
+              one control that answers "why is my cover letter being graded like
+              an article" was on a tab you had to already suspect the answer to
+              go and find. Both directions from one control: engine-lens pieces
+              can turn the answer-engine checks off, plain-lens pieces can turn
+              them on. */}
+          {sessionId && policy.canRaise && wordCount >= MIN_MARKABLE_WORDS && (
+            <button
+              onClick={() => setLens(policy.lens === "engine" ? "plain" : "engine")}
+              title={
+                policy.lens === "engine"
+                  ? "These checks judge whether an AI assistant would cite this page. Turn them off for this piece."
+                  : "Only the checks that apply to any writing are running. Turn on the answer-engine checks for this piece."
+              }
+              className={cn(
+                "hidden md:inline-flex items-center gap-1.5 shrink-0 rounded-full border px-2.5 py-1 text-[11.5px] font-medium transition-colors",
+                policy.lens === "engine"
+                  ? "border-primary/25 bg-primary/10 text-primary hover:bg-primary/15"
+                  : "border-border bg-muted/60 text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <span className={cn("h-1.5 w-1.5 rounded-full", policy.lens === "engine" ? "bg-primary" : "bg-muted-foreground/50")} />
+              {policy.lens === "engine" ? "AI checks on" : "AI checks off"}
+            </button>
+          )}
           {selectedCustomer && (
             <span className="hidden lg:inline-flex items-center gap-1.5 shrink-0 rounded-full border bg-muted/60 px-2.5 py-1 text-[11.5px] font-medium text-muted-foreground">
               <span className="h-1.5 w-1.5 rounded-full bg-primary" />

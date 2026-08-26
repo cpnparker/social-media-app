@@ -102,13 +102,17 @@ function AnchorChip({
   quote,
   resolveQuote,
   onRevealQuote,
+  onFix,
 }: {
   quote: string;
   resolveQuote: (q: string) => boolean;
   onRevealQuote: (q: string) => boolean;
+  /** Absent when this point already carries a rewrite of its own. */
+  onFix?: (quote: string) => void;
 }) {
   const found = resolveQuote(quote);
   const short = quote.length > 90 ? `${quote.slice(0, 90)}…` : quote;
+
   if (!found) {
     return (
       <p className="text-[11px] text-muted-foreground/70 italic leading-snug mb-1">
@@ -116,17 +120,38 @@ function AnchorChip({
       </p>
     );
   }
+
   return (
-    <button
-      onClick={() => onRevealQuote(quote)}
-      className="group/anchor block w-full text-left mb-1 rounded-md border-l-2 border-primary/40 bg-muted/40 pl-2 pr-2 py-1 hover:bg-muted"
-      title="Show me this passage"
-    >
-      <span className="text-[11px] text-muted-foreground leading-snug">&ldquo;{short}&rdquo;</span>
-      <span className="ml-1.5 text-[10.5px] font-medium text-primary opacity-0 group-hover/anchor:opacity-100">
-        Show me
-      </span>
-    </button>
+    <div className="group/anchor mb-1 rounded-md border-l-2 border-primary/40 bg-muted/40 pl-2 pr-2 py-1">
+      <button
+        onClick={() => onRevealQuote(quote)}
+        className="block w-full text-left"
+        title="Show me this passage"
+      >
+        <span className="text-[11px] text-muted-foreground leading-snug">&ldquo;{short}&rdquo;</span>
+      </button>
+      <div className="mt-1 flex items-center gap-2.5">
+        <button
+          onClick={() => onRevealQuote(quote)}
+          className="text-[10.5px] font-medium text-primary hover:underline underline-offset-2"
+        >
+          Show me
+        </button>
+        {onFix && (
+          // Only where the point does NOT already carry a rewrite. A reply that
+          // identifies six problems is not made to write six replacements
+          // nobody asked for — that is six times the output tokens, and it
+          // presumes the writer wants the model's words rather than their own.
+          // The button is the offer; the click is the request.
+          <button
+            onClick={() => onFix(quote)}
+            className="text-[10.5px] font-medium text-muted-foreground hover:text-foreground hover:underline underline-offset-2"
+          >
+            Suggest a fix
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -319,8 +344,11 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
     return () => clearTimeout(t);
   }, [focusTurn, turns]);
 
-  const ask = useCallback(async () => {
-    const q = question.trim();
+  const ask = useCallback(async (explicit?: string) => {
+    // An explicit question comes from a button, not the box. Passed as an
+    // argument rather than via setQuestion-then-send: state is not readable in
+    // the same tick, so that shape sends the PREVIOUS question every time.
+    const q = (typeof explicit === "string" ? explicit : question).trim();
     if (!q || busy) return;
     if (!workspaceId) { toast.error("Select a workspace first"); return; }
 
@@ -422,6 +450,25 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
     }
   }, [question, busy, workspaceId, sessionId, getDraftHtml, selection]);
 
+  /**
+   * Ask for a rewrite of one passage.
+   *
+   * Offered as a BUTTON rather than baked into the prompt, so a reply that
+   * identifies six problems is not forced to write six rewrites nobody asked
+   * for — six rewrites is six times the output tokens and presumes the writer
+   * wants the model's words rather than their own. The button is the offer; the
+   * click is the request.
+   */
+  const askForFix = useCallback(
+    (quote: string) => {
+      ask(
+        `Rewrite this passage to fix what you just said about it:\n\n"${quote}"\n\n` +
+          `Put the passage in an anchor block and the replacement in a draft block, so I can apply it in place.`
+      );
+    },
+    [ask]
+  );
+
   const clear = useCallback(async () => {
     if (!workspaceId) return;
     try {
@@ -479,7 +526,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
               </p>
             </div>
           ) : (
-            <AssistantTurn key={i} turnIndex={i} content={t.content} hasSelection={hasSelection} onApply={onApply} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} />
+            <AssistantTurn key={i} turnIndex={i} content={t.content} hasSelection={hasSelection} onApply={onApply} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} onFix={askForFix} />
           )
         )}
 
@@ -541,7 +588,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
             className="w-full text-[12.5px] bg-transparent border rounded-lg pl-2.5 pr-9 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
           />
           <button
-            onClick={ask}
+            onClick={() => ask()}
             disabled={busy || !question.trim()}
             className="absolute right-2 bottom-2 text-muted-foreground hover:text-foreground disabled:opacity-40"
             title="Ask"
@@ -576,6 +623,7 @@ function AssistantTurn({
   onApply,
   resolveQuote,
   onRevealQuote,
+  onFix,
 }: {
   turnIndex: number;
   content: string;
@@ -583,12 +631,21 @@ function AssistantTurn({
   onApply: (text: string, anchor?: string) => "replaced" | "appended" | "failed";
   resolveQuote: (q: string) => boolean;
   onRevealQuote: (q: string) => boolean;
+  onFix: (q: string) => void;
 }) {
   // Rendered from SEGMENTS, in the order the model wrote them. Rendering the
   // prose and then the blocks — which is what the flat shape invited — put a
   // sentence ending "delete the setup and you lose nothing:" above nothing, and
   // the sentence that followed the block above the block it referred back to.
   const parsed = parseDiscussReply(content);
+  // Which anchors already have a rewrite. An anchor scopes a RUN, so a draft
+  // block anywhere in that run means the point is already answered and the
+  // offer would duplicate it.
+  const answered: { [quote: string]: true } = {};
+  for (let i = 0; i < parsed.segments.length; i++) {
+    const seg = parsed.segments[i];
+    if (seg.type === "draft" && seg.anchor) answered[seg.anchor] = true;
+  }
   return (
     <div className="space-y-1.5 transition-shadow" data-turn={turnIndex}>
       {parsed.segments.map((seg, i) => (
@@ -597,7 +654,12 @@ function AssistantTurn({
               so showing it above each would repeat the writer's own sentence
               back at them two or three times in a row. */}
           {seg.anchor && seg.anchor !== parsed.segments[i - 1]?.anchor && (
-            <AnchorChip quote={seg.anchor} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} />
+            <AnchorChip
+              quote={seg.anchor}
+              resolveQuote={resolveQuote}
+              onRevealQuote={onRevealQuote}
+              onFix={answered[seg.anchor] ? undefined : onFix}
+            />
           )}
           {seg.type === "draft" ? (
             <DraftBlock
