@@ -51,6 +51,7 @@ import {
   draftBlockToHtml,
   buildDiscussSystem,
   buildDiscussTurn,
+  linkAnchors,
   readTurns,
   DISCUSS_PROMPT_TURNS,
   DISCUSS_STORED_TURNS,
@@ -177,6 +178,67 @@ console.log("\n3. Parsing what is offered for the piece");
     "the derived flat fields still behave, but they are not the rendering order");
 }
 
+// ── 3b. Anchors: the conversation pointing at the draft ───────────────────
+console.log("\n3b. Anchors");
+{
+  const r = parseDiscussReply(
+    "Two things.\n```anchor\nIOE speaks for business across the multilateral system.\n```\nYou never say what they should do differently.\n```anchor\nWe are the best in the market.\n```\n```draft\nWe grew thirty accounts in four years.\n```"
+  );
+  assert(r.segments.length === 3, "an anchor is folded into what it introduces, not left as a segment");
+  assert(r.segments[1].anchor === "IOE speaks for business across the multilateral system.",
+    "the anchor binds FORWARD, to the point it introduces");
+  assert(r.segments[2].type === "draft" && r.segments[2].anchor === "We are the best in the market.",
+    "a rewrite carries the passage it was written for");
+  assert(r.commentary.indexOf("IOE speaks for business") < 0,
+    "the quoted passage is NOT rendered as prose — it is the writer's own sentence, shown back to them");
+
+  // Binding backwards is the dangerous mutation: the reply still reads
+  // correctly while every Show me points one paragraph off.
+  const backwards = (segs: any[]) => {
+    const out: any[] = []; let last: any = null;
+    for (const seg of segs) { if (seg.type === "anchor") { if (last) last.anchor = seg.text; continue; } out.push(seg); last = seg; }
+    return out;
+  };
+  const raw = [
+    { type: "text", text: "Two things." },
+    { type: "anchor", text: "A." },
+    { type: "text", text: "The point about A." },
+  ] as any[];
+  assert(linkAnchors(raw)[1].anchor === "A.", "linkAnchors binds to the FOLLOWING segment");
+  assert(backwards(raw.slice())[0].anchor === "A.", "(the backwards mutation is distinguishable)");
+
+  const trailing = parseDiscussReply("A point.\n```anchor\nDangling quote.\n```");
+  assert(trailing.segments.length === 1 && !trailing.segments[0].anchor,
+    "a trailing anchor with nothing after it is dropped, not shown as commentary");
+
+  const unclosed = parseDiscussReply("Look at\n```anchor\nhalf a quo");
+  assert(!unclosed.segments.some((x) => x.type === "anchor"),
+    "an unclosed anchor fence yields no anchor — that is every reply mid-stream");
+
+  const mixed = parseDiscussReply("```draft\nX\n```\n```anchor\nY\n```\nAbout Y.");
+  assert(mixed.drafts.length === 1 && mixed.drafts[0] === "X",
+    "an anchor is never mistaken for insertable text");
+}
+
+// ── 3c. The instruction the anchors depend on ─────────────────────────────
+console.log("\n3c. The assembled prompt");
+{
+  const sys = buildDiscussSystem({ title: "T", format: "article", grounding: "# Background material\nNone." });
+  assert(sys.indexOf("```anchor") >= 0, "the anchor fence is named in the prompt");
+  assert(/verbatim from the draft/i.test(sys), "it must be copied verbatim, or it cannot be found");
+  // The rule sits INSIDE the block that governs fences, not appended elsewhere.
+  // CLAUDE.md: a new rule beside a contradicting old one changes nothing, which
+  // is why the voice check reads the ASSEMBLED prompt rather than the diff.
+  const anchorAt = sys.indexOf("```anchor");
+  const draftAt = sys.indexOf("# Text meant FOR the draft");
+  const pieceAt = sys.indexOf("# The piece");
+  assert(anchorAt > 0 && draftAt > 0 && anchorAt < draftAt,
+    "the anchor rule sits beside the draft-fence contract, before it");
+  assert(pieceAt > draftAt, "both fence rules precede the grounding, in one block");
+  assert(/whole[\s\S]{0,80}nothing to underline/i.test(sys) || /piece as a whole/i.test(sys),
+    "whole-piece criticism is told to stay prose — inventing an anchor for it sends the writer somewhere wrong with a confident label");
+}
+
 // ── 4. Escaping happens BEFORE paragraphing ────────────────────────────────
 console.log("\n4. Text into the editor");
 {
@@ -299,6 +361,14 @@ console.log("\n7. The two rails stay different");
   assert(/editorRef\.current\.getHTML\(\)/.test(page.slice(page.indexOf("const getDraftHtml"), page.indexOf("const getDraftHtml") + 400)),
     "getDraftHtml reads the editor rather than the debounced state");
   assert(/onApply=\{applyDraftText\}/.test(page), "the Apply button is wired to the editor");
+  assert(/onRevealQuote=\{revealQuote\}/.test(page), "Show me is wired to the document");
+  assert(/findAnchor\(/.test(page),
+    "quotes resolve through the SAME anchor resolver the judge's findings use");
+  assert(/anchorQuote/.test(page),
+    "an anchored rewrite replaces the passage it was written for, not the selection");
+  const route = stripComments(read("app/api/optimizer/sessions/[id]/discuss/route.ts"));
+  assert(/parseDraft\(/.test(route) && !/function htmlToText/.test(route),
+    "the route sends ParsedDraft.text — one derivation of the document's text, so a returned quote is a quote of the string we search");
 
   // USED, not merely available. parseDiscussReply still exposes the flat
   // {commentary, drafts} fields, so a panel can go on rendering in the wrong

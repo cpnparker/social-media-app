@@ -44,6 +44,10 @@ interface Props {
   workspaceId: string | null;
   /** Read at submit time, so the model sees what is on screen — not the last save. */
   getDraftHtml: () => string;
+  /** Can this quoted passage still be found in the draft as it stands? */
+  resolveQuote: (quote: string) => boolean;
+  /** Jump to it. Returns false if it could not be found. */
+  onRevealQuote: (quote: string) => boolean;
   /** The selected passage, for showing the writer what they are asking about. */
   selection: string;
   /**
@@ -52,8 +56,8 @@ interface Props {
    * from the text made it promise "Add to the end" while the editor replaced.
    */
   hasSelection: boolean;
-  /** Put text into the document. Returns what it actually did, so the toast is true. */
-  onApply: (text: string) => "replaced" | "appended" | "failed";
+  /** Put text into the document. Returns what it actually did, so the report is true. */
+  onApply: (text: string, anchor?: string) => "replaced" | "appended" | "failed";
 }
 
 /**
@@ -73,16 +77,61 @@ function splitLive(text: string): { settled: string; partial: string | null } {
   return { settled: text.slice(0, open), partial: text.slice(open + 8).replace(/^\n/, "") };
 }
 
+/**
+ * The passage a point is about, as a link into the document.
+ *
+ * Resolution is attempted up front rather than on click, so a passage the
+ * writer has since rewritten reads as unavailable instead of inviting a click
+ * that does nothing. That distinction is the whole point: a dead link that
+ * looks live is worse than a link that says it is dead.
+ */
+function AnchorChip({
+  quote,
+  resolveQuote,
+  onRevealQuote,
+}: {
+  quote: string;
+  resolveQuote: (q: string) => boolean;
+  onRevealQuote: (q: string) => boolean;
+}) {
+  const found = resolveQuote(quote);
+  const short = quote.length > 90 ? `${quote.slice(0, 90)}…` : quote;
+  if (!found) {
+    return (
+      <p className="text-[11px] text-muted-foreground/70 italic leading-snug mb-1">
+        &ldquo;{short}&rdquo; — couldn&rsquo;t find that passage in the draft as it stands.
+      </p>
+    );
+  }
+  return (
+    <button
+      onClick={() => onRevealQuote(quote)}
+      className="group/anchor block w-full text-left mb-1 rounded-md border-l-2 border-primary/40 bg-muted/40 pl-2 pr-2 py-1 hover:bg-muted"
+      title="Show me this passage"
+    >
+      <span className="text-[11px] text-muted-foreground leading-snug">&ldquo;{short}&rdquo;</span>
+      <span className="ml-1.5 text-[10.5px] font-medium text-primary opacity-0 group-hover/anchor:opacity-100">
+        Show me
+      </span>
+    </button>
+  );
+}
+
 function DraftBlock({
   text,
   hasSelection,
   onApply,
   pending,
+  anchor,
+  anchorFound,
 }: {
   text: string;
   hasSelection: boolean;
-  onApply: (text: string) => "replaced" | "appended" | "failed";
+  onApply: (text: string, anchor?: string) => "replaced" | "appended" | "failed";
   pending?: boolean;
+  /** The passage this rewrite was written for, if the model named one. */
+  anchor?: string;
+  anchorFound?: boolean;
 }) {
   // Confirmed ON the block rather than in a toast. The rail's composer is
   // bottom-right and so is sonner, so a toast fired from here covers the input
@@ -106,7 +155,7 @@ function DraftBlock({
             variant="outline"
             className="h-7 text-[11.5px]"
             onClick={() => {
-              const what = onApply(text);
+              const what = onApply(text, anchorFound ? anchor : undefined);
               // Reported from what actually happened. A confirmation shown
               // before the fact is how a writer comes to believe text landed in
               // a document it never reached. An outright failure still toasts:
@@ -119,11 +168,16 @@ function DraftBlock({
                 anything is selected RIGHT NOW. A button reading "Replace
                 selection" that appends instead is a small lie the writer only
                 catches after it has moved their text. */}
-            {hasSelection ? "Replace selection" : "Add to the end"}
+            {/* A rewrite the model wrote FOR a passage replaces that passage,
+                whatever happens to be selected — the writer clicked Show me,
+                read it, and came back; their cursor is not the instruction. */}
+            {anchorFound ? "Replace that passage" : hasSelection ? "Replace selection" : "Add to the end"}
           </Button>
           {applied && (
             <span className="ml-2 text-[11px] text-muted-foreground">
-              {applied === "replaced" ? "Replaced your selection" : "Added to the end"}
+              {applied === "replaced"
+                ? anchorFound ? "Replaced that passage" : "Replaced your selection"
+                : "Added to the end"}
             </span>
           )}
         </div>
@@ -132,7 +186,7 @@ function DraftBlock({
   );
 }
 
-export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, selection, hasSelection, onApply }: Props) {
+export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, resolveQuote, onRevealQuote, selection, hasSelection, onApply }: Props) {
   const [turns, setTurns] = useState<DiscussTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [streamed, setStreamed] = useState<string | null>(null);
@@ -352,19 +406,30 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, sel
               </p>
             </div>
           ) : (
-            <AssistantTurn key={i} content={t.content} hasSelection={hasSelection} onApply={onApply} />
+            <AssistantTurn key={i} content={t.content} hasSelection={hasSelection} onApply={onApply} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} />
           )
         )}
 
         {live && (
           <div className="space-y-1.5">
-            {liveParsed && liveParsed.segments.map((seg, i) =>
-              seg.type === "draft" ? (
-                <DraftBlock key={i} text={seg.text} hasSelection={hasSelection} onApply={onApply} />
-              ) : (
-                <p key={i} className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{seg.text}</p>
-              )
-            )}
+            {liveParsed && liveParsed.segments.map((seg, i) => (
+              <div key={i}>
+                {seg.anchor && (
+                  <AnchorChip quote={seg.anchor} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} />
+                )}
+                {seg.type === "draft" ? (
+                  <DraftBlock
+                    text={seg.text}
+                    hasSelection={hasSelection}
+                    onApply={onApply}
+                    anchor={seg.anchor}
+                    anchorFound={!!seg.anchor && resolveQuote(seg.anchor)}
+                  />
+                ) : (
+                  <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{seg.text}</p>
+                )}
+              </div>
+            ))}
             {live.partial !== null && (
               <DraftBlock text={live.partial} hasSelection={hasSelection} onApply={onApply} pending />
             )}
@@ -435,10 +500,14 @@ function AssistantTurn({
   content,
   hasSelection,
   onApply,
+  resolveQuote,
+  onRevealQuote,
 }: {
   content: string;
   hasSelection: boolean;
-  onApply: (text: string) => "replaced" | "appended" | "failed";
+  onApply: (text: string, anchor?: string) => "replaced" | "appended" | "failed";
+  resolveQuote: (q: string) => boolean;
+  onRevealQuote: (q: string) => boolean;
 }) {
   // Rendered from SEGMENTS, in the order the model wrote them. Rendering the
   // prose and then the blocks — which is what the flat shape invited — put a
@@ -447,13 +516,24 @@ function AssistantTurn({
   const parsed = parseDiscussReply(content);
   return (
     <div className="space-y-1.5">
-      {parsed.segments.map((seg, i) =>
-        seg.type === "draft" ? (
-          <DraftBlock key={i} text={seg.text} hasSelection={hasSelection} onApply={onApply} />
-        ) : (
-          <p key={i} className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{seg.text}</p>
-        )
-      )}
+      {parsed.segments.map((seg, i) => (
+        <div key={i}>
+          {seg.anchor && (
+            <AnchorChip quote={seg.anchor} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} />
+          )}
+          {seg.type === "draft" ? (
+            <DraftBlock
+              text={seg.text}
+              hasSelection={hasSelection}
+              onApply={onApply}
+              anchor={seg.anchor}
+              anchorFound={!!seg.anchor && resolveQuote(seg.anchor)}
+            />
+          ) : (
+            <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{seg.text}</p>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

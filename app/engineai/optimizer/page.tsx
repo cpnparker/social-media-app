@@ -56,6 +56,7 @@ import {
   OptimizerHighlight, optimizerHighlightKey, applyFinding,
 } from "@/lib/optimizer/highlight-plugin";
 import { buildDocIndex, textRangeToPos } from "@/lib/optimizer/doc-index";
+import { findAnchor, MAX_QUOTE_LENGTH } from "@/lib/optimizer/anchors";
 import type { Issue, HighlightFinding } from "@/lib/optimizer/highlight-plugin";
 import { buildLiveFindings } from "@/lib/optimizer/live-issues";
 import { parseDraft } from "@/lib/optimizer/parse";
@@ -931,6 +932,59 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     });
   }, []);
 
+  const revealTextRange = useCallback((start: number, end: number) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    try {
+      const index = buildDocIndex(editor.state.doc);
+      const range = textRangeToPos(index, start, end);
+      if (!range) return;
+      editor.chain().focus().setTextSelection({ from: range.from, to: range.to }).run();
+      const dom = editor.view.domAtPos(range.from);
+      const node = (dom.node as any).nodeType === 1 ? (dom.node as Element) : (dom.node as any).parentElement;
+      if (node && node.scrollIntoView) node.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch {
+      /* a passage that cannot be located is not worth an error to the writer */
+    }
+  }, []);
+
+  /**
+   * Resolve a passage the conversation quoted back to a place in the document.
+   *
+   * Through findAnchor, the SAME resolver the judge's findings use, against
+   * DocIndex.text — which is documented byte-identical to ParsedDraft.text, the
+   * string the route now sends the model. One derivation of "the text of this
+   * document" end to end, so a quote that came back is a quote of the string we
+   * are searching.
+   *
+   * Returns null rather than guessing. findAnchor answers `ambiguous` when a
+   * quote appears twice with no distinguishing context, and taking the first
+   * match there would send the writer confidently to the wrong paragraph — the
+   * failure that is worse than no link, because nothing on screen says it
+   * happened.
+   */
+  const resolveQuote = useCallback((quote: string): { start: number; end: number } | null => {
+    const editor = editorRef.current;
+    if (!editor || !quote || !quote.trim()) return null;
+    try {
+      const index = buildDocIndex(editor.state.doc);
+      const m = findAnchor(index.text, { quote: quote.slice(0, MAX_QUOTE_LENGTH) });
+      return m.ok ? { start: m.start, end: m.end } : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const revealQuote = useCallback(
+    (quote: string): boolean => {
+      const at = resolveQuote(quote);
+      if (!at) return false;
+      revealTextRange(at.start, at.end);
+      return true;
+    },
+    [resolveQuote, revealTextRange]
+  );
+
   /**
    * Put text from the discussion into the document.
    *
@@ -944,10 +998,32 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
    * model's output is text: an unescaped "<10%" in a rewritten sentence would
    * reach the editor as markup and silently eat the rest of the line.
    */
-  const applyDraftText = useCallback((text: string): "replaced" | "appended" | "failed" => {
+  const applyDraftText = useCallback((text: string, anchorQuote?: string): "replaced" | "appended" | "failed" => {
     const editor = editorRef.current;
     const html = draftBlockToHtml(text);
     if (!editor || !html) return "failed";
+
+    // An anchored rewrite replaces the passage it was WRITTEN FOR, in
+    // preference to the selection. The writer clicked Show me, read the
+    // paragraph and came back to the panel; wherever their cursor ended up is
+    // not the instruction, and honouring it would drop a rewrite of paragraph
+    // six into paragraph one.
+    if (anchorQuote) {
+      const at = resolveQuote(anchorQuote);
+      if (at) {
+        const index = buildDocIndex(editor.state.doc);
+        const range = textRangeToPos(index, at.start, at.end);
+        if (range) {
+          editor.chain().focus().insertContentAt({ from: range.from, to: range.to }, html).run();
+          return "replaced";
+        }
+      }
+      // Resolvable when the panel drew the button, gone by the time it was
+      // pressed. Falling through to append would silently put a replacement
+      // paragraph at the end of the document, so refuse and say so.
+      return "failed";
+    }
+
     const { from, to } = editor.state.selection;
     if (from !== to) {
       editor.chain().focus().insertContentAt({ from, to }, html).run();
@@ -955,7 +1031,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     }
     editor.chain().focus().insertContentAt(editor.state.doc.content.size, html).run();
     return "appended";
-  }, []);
+  }, [resolveQuote]);
 
   const syncIssues = useCallback(() => {
     const editor = editorRef.current;
@@ -1045,21 +1121,8 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
    * panel has — it carries quotes verified against ParsedDraft.text, not
    * issue ids, so handleSelect cannot serve it.
    */
-  const revealTextRange = useCallback((start: number, end: number) => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    try {
-      const index = buildDocIndex(editor.state.doc);
-      const range = textRangeToPos(index, start, end);
-      if (!range) return;
-      editor.chain().focus().setTextSelection({ from: range.from, to: range.to }).run();
-      const dom = editor.view.domAtPos(range.from);
-      const node = (dom.node as any).nodeType === 1 ? (dom.node as Element) : (dom.node as any).parentElement;
-      if (node && node.scrollIntoView) node.scrollIntoView({ behavior: "smooth", block: "center" });
-    } catch {
-      /* a passage that cannot be located is not worth an error to the writer */
-    }
-  }, []);
+
+
 
   const handleSelect = useCallback((id: string | null) => {
     const editor = editorRef.current;
@@ -1799,6 +1862,8 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
                 sessionId={sessionId}
                 workspaceId={workspaceId}
                 getDraftHtml={getDraftHtml}
+                resolveQuote={(q) => resolveQuote(q) !== null}
+                onRevealQuote={revealQuote}
                 selection={selText}
                 hasSelection={hasSel}
                 onApply={applyDraftText}

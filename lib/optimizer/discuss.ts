@@ -131,6 +131,14 @@ export function buildDiscussSystem(opts: {
     `Disagree when you disagree. A writer asking "is this opening any good?" is better served by "no, and ` +
     `here is why" than by encouragement.\n` +
     `Keep commentary short. You are a voice beside the page, not an essay about it.\n\n` +
+    `# Pointing at a passage\n` +
+    `When a point you make is ABOUT a particular passage, put that passage — verbatim from the draft, ` +
+    `nothing else, no ellipsis, one or two sentences at most — in a fenced block marked \`\`\`anchor, ` +
+    `immediately BEFORE the point it concerns. It becomes a link the writer can click to jump straight there.\n` +
+    `Copy it exactly as it appears in the draft. A near-miss cannot be found and the link is dropped.\n` +
+    `Only where you mean a specific passage. A point about the piece as a whole — its shape, what it is ` +
+    `missing, the order of its argument — has nothing to underline, and inventing a passage for it would ` +
+    `send the writer to the wrong place with a confident label on it. Say those as ordinary prose.\n\n` +
     `# Text meant FOR the draft\n` +
     `When you offer words to go INTO the piece — a rewritten sentence, a new paragraph, a better heading — ` +
     `put exactly those words inside a fenced block marked \`\`\`draft, and nothing else inside it. ` +
@@ -188,8 +196,22 @@ export function buildDiscussTurn(opts: {
 
 /** One piece of a reply, in the order the model wrote it. */
 export interface DiscussSegment {
-  type: "text" | "draft";
+  type: "text" | "draft" | "anchor";
   text: string;
+  /**
+   * The passage this segment is about, verbatim from the draft.
+   *
+   * The model already quotes the line it means — the system prompt tells it to,
+   * and it does. What it could not do was give that quote an ADDRESS: a reply
+   * saying "the AuthorityOn.ai paragraph is buried sixth" is a precise,
+   * actionable observation with no way to act on it. This carries the quote so
+   * the panel can offer to jump to it, and so a rewrite can replace THAT
+   * passage rather than whatever happens to be selected.
+   *
+   * Structured from what the model already writes — not generated. An anchor it
+   * had to invent would be an anchor that points somewhere plausible and wrong.
+   */
+  anchor?: string;
 }
 
 export interface DiscussReply {
@@ -236,13 +258,20 @@ export function parseDiscussReply(text: string): DiscussReply {
   };
 
   while (i < src.length) {
-    const open = src.indexOf("```draft", i);
+    // Whichever fence comes first. Two kinds now, and scanning for one at a
+    // time would silently swallow the other into commentary.
+    const dOpen = src.indexOf("```draft", i);
+    const aOpen = src.indexOf("```anchor", i);
+    const open =
+      dOpen < 0 ? aOpen : aOpen < 0 ? dOpen : Math.min(dOpen, aOpen);
     if (open < 0) {
       pushText(src.slice(i));
       break;
     }
+    const isAnchor = open === aOpen && (dOpen < 0 || aOpen < dOpen);
+    const marker = isAnchor ? "```anchor" : "```draft";
     pushText(src.slice(i, open));
-    let bodyStart = open + "```draft".length;
+    let bodyStart = open + marker.length;
     const nl = src.indexOf("\n", bodyStart);
     if (nl < 0) {
       // "```draft" with nothing after it: an unclosed fence at the very edge of
@@ -257,18 +286,49 @@ export function parseDiscussReply(text: string): DiscussReply {
       break;
     }
     const body = src.slice(bodyStart, close).trim();
-    if (body) segments.push({ type: "draft", text: body });
+    if (body) segments.push({ type: isAnchor ? "anchor" : "draft", text: body });
     i = close + 3;
   }
 
+  const linked = linkAnchors(segments);
+
   const drafts: string[] = [];
   const proseParts: string[] = [];
-  for (let j = 0; j < segments.length; j++) {
-    if (segments[j].type === "draft") drafts.push(segments[j].text);
-    else proseParts.push(segments[j].text);
+  for (let j = 0; j < linked.length; j++) {
+    if (linked[j].type === "draft") drafts.push(linked[j].text);
+    else proseParts.push(linked[j].text);
   }
 
-  return { segments, commentary: proseParts.join("\n\n"), drafts };
+  return { segments: linked, commentary: proseParts.join("\n\n"), drafts };
+}
+
+/**
+ * Fold each anchor into the segment it introduces.
+ *
+ * An anchor binds FORWARD — to the comment or the rewrite that FOLLOWS it —
+ * because that is how the instruction is written and how a person reads it:
+ * here is the passage, and here is what I think about it. Binding backwards
+ * would attach every anchor to the wrong point and, worse, would do it
+ * plausibly: the reply would still read correctly while every Show me and every
+ * replacement pointed one paragraph off.
+ *
+ * A trailing anchor with nothing after it is DROPPED rather than kept as text.
+ * It is a quote of the writer's own draft; rendering it as commentary shows
+ * them their own sentence back with no observation attached to it.
+ */
+export function linkAnchors(segments: DiscussSegment[]): DiscussSegment[] {
+  const out: DiscussSegment[] = [];
+  let pending: string | null = null;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (seg.type === "anchor") {
+      pending = seg.text;
+      continue;
+    }
+    out.push(pending ? { ...seg, anchor: pending } : seg);
+    pending = null;
+  }
+  return out;
 }
 
 /**

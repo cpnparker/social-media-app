@@ -32,6 +32,7 @@ import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
 import { buildGroundingBlock } from "@/lib/optimizer/briefs";
 import { loadClientStyle } from "@/lib/optimizer/client-style";
 import { listSources } from "@/lib/optimizer/sources";
+import { parseDraft } from "@/lib/optimizer/parse";
 import {
   readTurns,
   trimForPrompt,
@@ -46,26 +47,28 @@ import {
 export const maxDuration = 120;
 
 /**
- * The editor's HTML as the text a reader would see.
+ * The draft as ONE string, shared with everything that anchors into it.
  *
- * Block tags become breaks BEFORE the tags are stripped. Stripping first would
- * run every heading into the paragraph beneath it, and a model asked about
- * "the second heading" would be looking at prose with no headings in it.
+ * This was a private htmlToText regex chain — a THIRD reconstruction of "the
+ * plain text of this document", distinct from both ParsedDraft.text and
+ * DocIndex.text. Harmless while the model only read the draft; not harmless now
+ * that it quotes it. Every quote it returned was a quote of a string nothing
+ * else in the system uses, so re-anchoring in the browser was matching against
+ * text derived a different way — a class of missed anchor with no symptom
+ * except quotes that mysteriously fail to resolve.
+ *
+ * parseDraft is what the score, the marks and the doc index all read, and
+ * DocIndex.text is documented byte-identical to it. One string, one set of
+ * offsets, one thing to be wrong about.
  */
-function htmlToText(html: string): string {
-  return String(html || "")
-    .replace(/<\s*br\s*\/?>/gi, "\n")
-    .replace(/<\/\s*(p|div|li|h[1-6]|blockquote|tr)\s*>/gi, "\n\n")
-    .replace(/<\s*li[^>]*>/gi, "- ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+function draftText_(html: string, title: string): string {
+  try {
+    return parseDraft({ body: html, title }).text;
+  } catch {
+    // A parse failure must not cost the writer their question. Degrades to the
+    // crude strip, which is worse for anchoring and fine for reading.
+    return String(html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  }
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -156,7 +159,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // What is on the writer's screen, falling back to what was last saved.
   let draftText = "";
   if (typeof body.draftHtml === "string" && body.draftHtml.trim()) {
-    draftText = htmlToText(body.draftHtml).slice(0, DISCUSS_MAX_DRAFT_CHARS * 2);
+    draftText = draftText_(body.draftHtml, session.name_title || "").slice(0, DISCUSS_MAX_DRAFT_CHARS * 2);
   } else {
     const { data: drafts } = await intelligenceDb
       .from("optimizer_drafts")
@@ -164,7 +167,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .eq("id_session", id)
       .order("units_version", { ascending: false })
       .limit(1);
-    if (drafts && drafts.length > 0) draftText = htmlToText((drafts[0] as any).document_body || "");
+    if (drafts && drafts.length > 0) draftText = draftText_((drafts[0] as any).document_body || "", session.name_title || "");
   }
 
   const clientStyle = session.id_client
