@@ -253,6 +253,8 @@ export async function POST(req: NextRequest) {
   /** Surfaced to the writer — what did not survive the import. Silence about a
    *  dropped figure is how an import stops being trustworthy. */
   let importWarnings: string[] = [];
+  /** The commissioning brief from an Engine content unit, where the import carries one. */
+  let engineBrief = "";
 
   if (source === "chat") {
     // Already acquired, server-side, above. It gets a branch of its own rather
@@ -418,10 +420,16 @@ export async function POST(req: NextRequest) {
     sourceRef = String(contentId);
     if (!content.trim()) {
       // The unit exists but its text is not in the Engine — a real and common
-      // state. Open the article anyway with the brief attached rather than
-      // refusing: the writer can paste the body in and keep the grounding.
+      // state. Open it anyway with the brief attached rather than refusing: the
+      // writer can paste the body in and keep the grounding.
       content = "";
     }
+    // ...and the brief is now ACTUALLY attached. It was selected on the line
+    // above and then dropped on the floor: config_brief was written as a fixed
+    // empty object, so the comment promising "with the brief attached"
+    // described something that never happened. An Engine unit with no body is
+    // a COMMISSION, and its brief is the only thing it carries.
+    engineBrief = String((data as any)?.information_brief || "").trim().slice(0, 4000);
   }
 
   // THE CONVERSION, for every source that did not already do its own.
@@ -497,7 +505,17 @@ export async function POST(req: NextRequest) {
       // Imported content is scored, not generated — target queries are the only
       // brief field that still matters, and the writer adds them in the panel
       // where the unscored pillar is visible.
-      config_brief: { targetQueries: [], audience: "", goal: "", lengthBand: "", voice: "" },
+      config_brief: {
+        targetQueries: [],
+        audience: "",
+        // The commissioning brief, where there is one. `goal` is the brief
+        // field a writer reads as "what this is for", which is what a
+        // commission is. A dedicated assignment layer is the right long-term
+        // home; discarding it in the meantime is not.
+        goal: engineBrief,
+        lengthBand: "",
+        voice: "",
+      },
       config_canon: canon,
       name_rubric_version: RUBRIC_VERSION,
     })

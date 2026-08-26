@@ -10,7 +10,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
-import { CONTENT_TYPE_IDS, DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
+import { DEFAULT_CONTENT_TYPE, offeredTypes } from "@/lib/optimizer/content-types";
 import { requireOptimizer } from "../_lib/access";
 import { getClientCanon } from "@/lib/optimizer/client-canon";
 import { canAccessClient, requireAuth } from "@/lib/permissions";
@@ -112,7 +112,18 @@ export async function POST(req: NextRequest) {
       // kind: explainer, listicle...). Defaulted rather than required so every
       // existing caller keeps working and every pre-existing row reads as an
       // article, which is what they all are.
-      type_content: CONTENT_TYPE_IDS.indexOf(body.contentType) >= 0 ? body.contentType : DEFAULT_CONTENT_TYPE,
+      // OFFERED types only, not every registered id.
+      //
+      // I claimed the unnamed type "can only ever arrive by detection, never be
+      // chosen" and called that structural. It was not: both guards were in the
+      // BROWSER — the ?new= reader and the sidebar menu — and a hand-formed
+      // POST to this route created one happily. A promise enforced only by the
+      // client is not enforced.
+      //
+      // Detection is unaffected: the import path writes type_content directly
+      // after reading the text, which is the one way this type is meant to
+      // appear.
+      type_content: offeredTypes().some((t) => t.id === body.contentType) ? body.contentType : DEFAULT_CONTENT_TYPE,
       type_platform: typeof body.platform === "string" ? body.platform : "balanced",
       config_brief: brief,
       config_canon: canon,

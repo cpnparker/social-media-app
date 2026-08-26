@@ -172,6 +172,22 @@ console.log("\n2b. The create path cannot be talked into the unnamed type");
     ? pass("an unknown ?new= resolves to nothing rather than defaulting")
     : fail("an unknown ?new= silently creates something");
 
+  // THE SERVER GUARD, which is the only one that counts.
+  //
+  // This section previously asserted the CLIENT narrowing and called the
+  // decision structural. It was not: both guards lived in the browser, and a
+  // hand-formed POST to /api/optimizer/sessions created the unnamed type
+  // happily. A check that only inspects the client can certify a promise the
+  // server does not keep — which is this repo's oldest failure mode wearing a
+  // new hat.
+  const createSrc = stripComments(read("app/api/optimizer/sessions/route.ts"));
+  /type_content:\s*offeredTypes\(\)/.test(createSrc)
+    ? pass("the create ROUTE narrows type_content to offered types")
+    : fail("the create route accepts any registered id — the unnamed type is creatable by a hand-formed POST");
+  /CONTENT_TYPE_IDS\.indexOf\(body\.contentType\)/.test(createSrc)
+    ? fail("the create route still tests against every registered id")
+    : pass("the create route no longer tests against the full id list");
+
   const pageSrc = stripComments(read("app/engineai/optimizer/page.tsx"));
   /offeredTypes\(\)\.filter\(/.test(pageSrc)
     ? pass("the page validates ?new= against offeredTypes(), not the full id list")
@@ -352,6 +368,14 @@ if (process.argv.indexOf("--self-test") >= 0) {
   detects("an unrelated word containing the letters is NOT flagged", !idRe("cv").test('const x = "coverage";'));
   detects("a comment mentioning it is NOT code", !idRe("cv").test(stripComments('// the cv type\nconst a = 1;')));
 
+  detects("a create route testing the full id list", (() => {
+    const bad = 'type_content: CONTENT_TYPE_IDS.indexOf(body.contentType) >= 0 ? body.contentType : "article",';
+    return /CONTENT_TYPE_IDS\.indexOf\(body\.contentType\)/.test(bad) && !/type_content:\s*offeredTypes\(\)/.test(bad);
+  })());
+  detects("a narrowed create route is NOT flagged", (() => {
+    const good = 'type_content: offeredTypes().some((t) => t.id === body.contentType) ? body.contentType : "article",';
+    return /type_content:\s*offeredTypes\(\)/.test(good);
+  })());
   detects("a gate placed after the spend gate", (() => {
     const bad = "await assertServiceAllowed('engine','optimizer');\nif (!analysisAllowed(t,'judge')) return;";
     return bad.indexOf("analysisAllowed(") > bad.indexOf("assertServiceAllowed(");
