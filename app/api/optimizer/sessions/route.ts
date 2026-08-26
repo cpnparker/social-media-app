@@ -30,7 +30,7 @@ export async function GET(req: NextRequest) {
   const { data, error } = await intelligenceDb
     .from("optimizer_sessions")
     .select(
-      "id_session, name_title, type_status, type_format, type_content, type_visibility, type_source, id_client, user_created, date_updated"
+      "id_session, name_title, type_status, type_format, type_content, type_visibility, type_source, type_surface, id_client, user_created, date_updated"
     )
     .eq("id_workspace", guard.caller.workspaceId)
     .or(`and(type_visibility.eq.private,user_created.eq.${guard.caller.userId}),type_visibility.eq.team`)
@@ -106,6 +106,9 @@ export async function POST(req: NextRequest) {
       user_created: caller.userId,
       id_client: clientId != null && !Number.isNaN(clientId) ? clientId : null,
       name_title: title,
+      // Which tool made it. Recorded rather than inferred: the sidebar used to
+      // guess from type_source, which is right until somebody moves a piece.
+      type_surface: body.surface === "optimizer" ? "optimizer" : "writer",
       type_status: "brief",
       type_format: typeof body.format === "string" ? body.format : "explainer",
       // The KIND of document, distinct from type_format (its sub-shape within a

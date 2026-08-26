@@ -494,6 +494,11 @@ export async function POST(req: NextRequest) {
       type_format: typeof body.format === "string" ? body.format : "explainer",
       type_platform: "balanced",
       type_source: source,
+      // An Engine commission and a chat answer are things to WRITE; a pasted
+      // article, an uploaded file, a fetched page and a Google Doc are things
+      // to ASSESS. That is the distinction the two tools exist for, so it is
+      // stored rather than re-derived from provenance at every render.
+      type_surface: source === "chat" || source === "engine" ? "writer" : "optimizer",
       document_source_ref: sourceRef,
       // Detected from the text that will actually be stored, so a pasted report
       // is a report from the first render rather than after a round trip. The

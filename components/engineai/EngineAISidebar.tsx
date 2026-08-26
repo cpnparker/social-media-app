@@ -56,6 +56,8 @@ export interface OptimizerArticle {
   source: string;
   /** The KIND of piece. Rendered as an icon only — never as a name. */
   contentType: string;
+  /** Which tool it belongs to. Decides where the row opens. */
+  surface?: string;
   clientId: number | null;
   updatedAt: string;
   /** Decided by the server, never inferred here. Rename and delete are the
@@ -127,18 +129,21 @@ export default function EngineAISidebar({
   const inWriter = (pathname || "").startsWith("/engineai/writer");
   const inOptimiser = (pathname || "").startsWith("/engineai/optimizer");
   /**
-   * Where a row opens.
+   * Where a row opens — from what the document SAYS it is, not a guess.
    *
-   * By PROVENANCE, until a piece carries its own surface: something generated
-   * or started from a chat was written here, everything else arrived to be
-   * assessed. A known and stated cost — an imported page you have since moved
-   * into the Writer still opens in the Optimiser from this rail.
+   * This read type_source and inferred: generated or chat-born meant the
+   * Writer, everything else the Optimiser. Right for a row nobody had moved,
+   * and wrong the moment anyone did. type_surface is recorded at creation and
+   * at every crossing, so the answer is a fact rather than an inference.
    *
-   * type_status cannot serve: every autosave writes "refining", in both
-   * surfaces, so it says when a document was last touched and never by whom.
+   * The fallback covers rows written before the column existed, which the
+   * migration backfilled from provenance — the same guess, made once, in the
+   * one place where it was the best information available.
    */
-  const routeFor = (contentSource: string) =>
-    contentSource === "generated" || contentSource === "chat" ? "/engineai/writer" : "/engineai/optimizer";
+  const routeFor = (a: { surface?: string; source: string }) =>
+    (a.surface || (a.source === "generated" || a.source === "chat" ? "writer" : "optimizer")) === "writer"
+      ? "/engineai/writer"
+      : "/engineai/optimizer";
   const customerCtx = useCustomerSafe();
   const customers = customerCtx?.customers || [];
   const selectedCustomer = customerCtx?.selectedCustomer;
@@ -199,6 +204,7 @@ export default function EngineAISidebar({
             // only, and the unnamed type shares the default icon with a named
             // one — a unique glyph would name it by elimination.
             contentType: row.type_content || "article",
+            surface: row.type_surface || undefined,
             clientId: row.id_client ?? null,
             updatedAt: row.date_updated,
             isOwner: row.isOwner === true,
@@ -316,7 +322,7 @@ export default function EngineAISidebar({
       setArticles((prev) => prev.filter((x) => x.id !== a.id));
       // If the deleted piece is the one on screen, leave it — the studio would
       // otherwise sit on a session that no longer exists and 404 on next save.
-      if (selectedArticleId === a.id) router.push(routeFor(a.source));
+      if (selectedArticleId === a.id) router.push(routeFor(a));
       toast.success("Deleted");
     } catch (err: any) {
       toast.error(err?.message || "Could not delete that");
@@ -690,7 +696,7 @@ export default function EngineAISidebar({
                       {visibleArticles.slice(0, searchQuery ? 8 : 5).map((a) => (
                         <button
                           key={a.id}
-                          onClick={() => editingId !== a.id && router.push(`${routeFor(a.source)}?session=${encodeURIComponent(a.id)}`)}
+                          onClick={() => editingId !== a.id && router.push(`${routeFor(a)}?session=${encodeURIComponent(a.id)}`)}
                           onDoubleClick={(e) => a.isOwner && startRenamingArticle(e, a)}
                           className={cn(
                             "w-full text-left rounded-lg px-2.5 py-2 transition-colors group/art",

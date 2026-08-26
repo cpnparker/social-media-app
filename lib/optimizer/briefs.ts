@@ -16,6 +16,8 @@
 
 import type { ClientCanon } from "./client-canon";
 import { styleBlock } from "./client-style";
+import { sourcesBlock } from "./sources";
+import type { OptimizerSource } from "./sources";
 import type { ClientStyle } from "./client-style";
 
 export interface OptimizerBrief {
@@ -67,6 +69,14 @@ export interface GenerationContext {
    * first and the brief's voice line after it.
    */
   style?: ClientStyle | null;
+  /**
+   * Background material this piece is written FROM.
+   *
+   * Emitted AFTER the canon and the style, and before the structural rules:
+   * the canon says what may be asserted about the client, the style says how
+   * they sound, and these are the specifics this particular piece draws on.
+   */
+  sources?: OptimizerSource[];
 }
 
 const PLATFORM_NOTES: { [k: string]: string } = {
@@ -140,6 +150,7 @@ export function buildGenerationPrompt(ctx: GenerationContext): string {
   // length and moves the cache breakpoint, costing a full cache write on every
   // client switch. Shape stable, content variable.
   parts.push(styleBlock(ctx.style || null));
+  parts.push(sourcesBlock(ctx.sources || []));
   if (ctx.brief.voice) parts.push(`## Voice for this piece\n\n${ctx.brief.voice}`);
 
   // ── The doctrine. Each rule maps to a criterion in lib/optimizer/rubric.ts ──

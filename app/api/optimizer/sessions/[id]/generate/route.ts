@@ -23,6 +23,7 @@ import { GENERATE_MODEL } from "@/lib/optimizer/models";
 import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
 import { buildGenerationPrompt } from "@/lib/optimizer/briefs";
 import { loadClientStyle } from "@/lib/optimizer/client-style";
+import { listSources } from "@/lib/optimizer/sources";
 
 export const maxDuration = 300;
 
@@ -100,6 +101,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         )
       : null;
 
+  // Background material. Loaded on the server and never round-tripped through
+  // the browser: the writer attached it, the model needs it, and the client has
+  // no use for 120,000 characters of it.
+  const sources = await listSources(id);
+
   const systemPrompt = buildGenerationPrompt({
     title: session.name_title,
     format: session.type_format,
@@ -107,6 +113,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     brief: session.config_brief || { targetQueries: [], audience: "", goal: "", lengthBand: "800-1500", voice: "" },
     canon: session.config_canon && session.config_canon.clientName ? session.config_canon : null,
     style: clientStyle,
+    sources,
   });
 
   await intelligenceDb
