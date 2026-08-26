@@ -169,8 +169,20 @@ const RATIONALE: { [key: string]: string } = {
  * their page — that is what the surface is for.
  */
 function explain(key: string, name: string, note: string | undefined, lens: Lens): string {
-  const head = note ? `${name.split(" — ")[0]}: ${note}.` : `${name.split(" — ")[0]}.`;
-  const parts = [head, REMEDY[key] || ""];
+  // THE CRITERION NAME IS DROPPED ON THE PLAIN LENS.
+  //
+  // Not tidying: the names are written for the rubric, and several of them are
+  // answer-engine sentences in their own right. "Mean sentence length near the
+  // CITED norm" reached a cover letter with its remedy correctly stripped and
+  // leaked the vocabulary anyway, through the half nobody thought of as copy.
+  // The card already carries a plain title ("Sentence runs long"), so the name
+  // was duplicating it — and duplicating it in the wrong register.
+  //
+  // The engine lens keeps it: there the rubric's own language is the point.
+  const parts: string[] = [];
+  if (lens === "engine") parts.push(note ? `${name.split(" — ")[0]}: ${note}.` : `${name.split(" — ")[0]}.`);
+  else if (note) parts.push(`${note.charAt(0).toUpperCase()}${note.slice(1)}.`);
+  parts.push(REMEDY[key] || "");
   if (lens === "engine" && RATIONALE[key]) parts.push(RATIONALE[key]);
   return parts.filter(Boolean).join(" ").trim();
 }

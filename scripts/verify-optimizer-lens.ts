@@ -216,10 +216,30 @@ console.log("\n8. What a mark says under each lens");
   const engine = buildLiveFindings(s, text, "engine");
 
   const ENGINE_WORDS = /engine|model|cited|citation|retriev|chunk|quotab/i;
+
+  // BOTH fixtures, and the precondition FIRST.
+  //
+  // This section previously ran on the article fixture alone, which trips no
+  // long sentence — so it printed "(no long sentence in this fixture to check)"
+  // and certified nothing about the one criterion that actually leaked. The
+  // criterion NAME "Mean sentence length near the cited norm" reached a live
+  // cover letter with its remedy correctly stripped, because the name was never
+  // treated as copy. A check whose fixture cannot trip the defect is a check
+  // that silently tests nothing.
+  const letterScores = scoresFor(COVER_LETTER, "test cover letter");
+  const letterText = COVER_LETTER.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  const letterPlain = buildLiveFindings(letterScores, letterText, "plain");
+  assert(letterPlain.filter((f) => f.criterion === "sentence-length-norm").length > 0,
+    "the letter fixture DOES trip the criterion whose name leaked — the precondition this section lacked");
+
+  const everyPlain = plain.concat(letterPlain);
   let leaky = 0;
-  for (let i = 0; i < plain.length; i++) if (ENGINE_WORDS.test(plain[i].explanation)) leaky++;
+  let example = "";
+  for (let i = 0; i < everyPlain.length; i++) {
+    if (ENGINE_WORDS.test(everyPlain[i].explanation)) { leaky++; if (!example) example = everyPlain[i].explanation; }
+  }
   assert(leaky === 0,
-    "NO plain-lens mark explains itself in answer-engine terms — a right mark with a reason the reader cannot accept is one they learn to ignore");
+    `NO plain-lens mark explains itself in answer-engine terms — including through the criterion NAME${example ? ` (leaked: "${example.slice(0, 70)}…")` : ""}`);
 
   // Moved, not deleted.
   let withRationale = 0;
@@ -227,9 +247,9 @@ console.log("\n8. What a mark says under each lens");
   assert(withRationale > 0, "the engine lens DOES give the answer-engine rationale — it was moved, not deleted");
 
   // The action survives on both.
-  const long = plain.filter((f) => f.criterion === "sentence-length-norm")[0];
-  if (long) assert(/split/i.test(long.explanation), "a plain-lens long-sentence mark still says what to do");
-  else pass("(no long sentence in this fixture to check)");
+  const long = letterPlain.filter((f) => f.criterion === "sentence-length-norm")[0];
+  assert(!!long && /split/i.test(long.explanation), "a plain-lens long-sentence mark still says what to do");
+  assert(!!long && /\d+ words/.test(long.explanation), "and still says how long the sentence is");
 }
 
 // ── 9. Merging the producers ───────────────────────────────────────────────
@@ -304,6 +324,12 @@ function selfTest() {
   detects("the engine lens being silenced",
     keysFrom(COVER_LETTER, "test cover letter", "engine").length >
       keysFrom(COVER_LETTER, "test cover letter", "plain").length);
+  {
+    // The leak, reproduced: the old composition prefixed the criterion name.
+    const oldStyle = (name: string, note: string, remedy: string) => `${name}: ${note}. ${remedy}`;
+    detects("the criterion NAME leaking engine vocabulary into a plain mark",
+      /cited/i.test(oldStyle("Mean sentence length near the cited norm", "45 words", "Split this into two.")));
+  }
   detects("the word floor drifting from the score's",
     MIN_MARKABLE_WORDS === 60);
 
