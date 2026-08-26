@@ -259,7 +259,7 @@ if (process.argv.indexOf("--self-test") >= 0) {
     const expr = 'type_surface: source === "chat" || source === "engine" ? "writer" : "optimizer",';
     return heads(expr).length === 0;
   })());
-  detects("an else-if head IS counted", () => heads('} else if (source === "url") {').length === 1 ? true : false);
+  detects("an else-if head IS counted", heads('} else if (source === "url") {').length === 1);
   detects("a route/CHECK mismatch", (() => {
     const mig = ["a", "b"].sort();
     const route = ["a", "b", "chat"].sort();
