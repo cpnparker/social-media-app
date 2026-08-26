@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { findingSource } from "@/lib/optimizer/highlight-plugin";
 import type { Editor } from "@tiptap/react";
 import { Button } from "@/components/ui/button";
 import { Check, ChevronRight, Loader2, Pencil, Sparkles, X } from "lucide-react";
@@ -121,7 +122,8 @@ export default function IssuePopover({
 
   if (!issue || issue.status !== "active" || !pos) return null;
   const f = issue.finding;
-  const isLive = f.id.indexOf("live:") === 0;
+  const source = findingSource(f.id);
+  const isLive = source === "live";
 
   return (
     <div

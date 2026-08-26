@@ -32,6 +32,7 @@
 
 import type { DraftScores } from "./types";
 import type { HighlightFinding } from "./highlight-plugin";
+import { criterionInLens, type Lens } from "./mark-policy";
 
 /** Context either side of a quote, matching the anchors.ts convention. */
 const CONTEXT_CHARS = 24;
@@ -62,48 +63,117 @@ const SEVERITY: { [key: string]: "high" | "medium" | "low" } = {
   "sentence-length-norm": "low",
 };
 
-/** What to tell the writer to DO. The criterion name says what is wrong; this
- *  says what the fix is, because a highlight with no remedy is just criticism. */
+/**
+ * What to tell the writer to DO.
+ *
+ * The ACTION only. Every one of these must make sense to a person who has never
+ * heard of an answer engine, because under the plain lens that is exactly who
+ * is reading it — a cover letter's forty-five-word sentence is worth splitting
+ * on its own merits, and telling its author that "long sentences dilute the
+ * chunk an engine would lift" is answering a question they did not ask.
+ *
+ * The engine-facing half of each of these strings moved to RATIONALE below and
+ * is appended only under the engine lens. The check asserts that no string here
+ * mentions engines, models, citation, retrieval or chunks — so the split cannot
+ * quietly erode back.
+ */
 const REMEDY: { [key: string]: string } = {
   "stat-source-adjacency":
-    "Name the source in the same sentence as the figure. Engines quote a sentence, not a paragraph, so a citation one sentence away is not attached to the number.",
+    "Name the source in the same sentence as the figure, not the one after it.",
   "ai-tell-guard":
-    "Rewrite in your own register. These constructions are the ones models over-produce, and readers — and increasingly engines — discount them.",
+    "Rewrite in your own register. These are the constructions that read as machine-written.",
   "question-headings":
-    "Phrase the heading as the question a reader would actually ask. Question-shaped headings match how people prompt, and the answer beneath becomes the extractable unit.",
+    "Phrase the heading as the question a reader would actually ask.",
   "sentence-length-norm":
-    "Split this into two. Long sentences dilute the chunk an engine would lift, and the answer inside gets averaged away.",
+    "Split this into two.",
   "attributed-quotes":
-    "Name who said it. A quotation with no speaker is decoration; a named, credentialed speaker is what makes the passage citable as evidence.",
+    "Name who said it. A quotation with no speaker is decoration.",
   // Bound by the research's recommendation guardrails: never ask for a figure
   // without a source, and never propose a rewrite that strips the terms which
   // get the page retrieved — body-only optimisation measurably REDUCED
   // citation in the one end-to-end test that exists.
   "promotional-claims":
-    "Say what you did, not what you offer. Replace the claim with the engagement behind it — who, what changed, over what period — using a figure you already hold; if you do not hold one, find and cite a source rather than asserting it. Keep the sentence and its terms: cutting it costs you the query words that get the page retrieved at all.",
+    "Say what you did, not what you offer. Replace the claim with the engagement behind it — who, what changed, over what period — using a figure you already hold; if you do not hold one, find and cite a source rather than asserting it.",
   "placeholder-guard":
     "Replace this with the real asset or cut the line. It is a production note, and it will be published exactly as written.",
   "person-name-consistency":
-    "One of these spellings is a typo. Pick the correct one and use it everywhere — a model treats each spelling as a different person.",
+    "One of these spellings is a typo. Pick the correct one and use it everywhere.",
   "current-year-stats":
-    "Date the figure — \"in 2026\" or \"as of August 2026\". Engines discount statistics they cannot date, and freshness is scored directly.",
+    "Date the figure — \"in 2026\" or \"as of August 2026\".",
   "answer-first-position":
-    "Put a one-or-two-sentence direct answer here, before the scene-setting. Engines lift openings; an opening that defers the answer is an opening that never gets quoted.",
+    "Put a one-or-two-sentence direct answer here, before the scene-setting.",
   "keyword-stuffing-guard":
-    "Vary the phrasing or cut repetitions. Past a threshold, repetition reads as manipulation and is penalised rather than rewarded.",
+    "Vary the phrasing or cut repetitions. Past a threshold it reads as manipulation.",
   "pronoun-opening-chunks":
-    "Name the subject in the first sentence. Sections are extracted alone — a reader landing here from a citation cannot resolve \"this\" or \"it\".",
+    "Name the subject in the first sentence.",
   "heading-answer-adjacency":
-    "Answer the heading's question in the first sentence or two beneath it. The heading + immediate answer is the unit engines extract.",
+    "Answer the heading's question in the first sentence or two beneath it.",
   "anonymous-first-person-facts":
-    "Name the brand in this sentence instead of \"we\". A model lifts the sentence, not the page — the fact travels, and whoever \"we\" is does not.",
+    "Name the brand in this sentence instead of \"we\".",
   "unverifiable-superlatives":
-    "Cut it or substantiate it. Models decline to repeat unsourced superlatives, and every one of them weakens the sentences around it.",
+    "Cut it or substantiate it. Every unsupported superlative weakens the sentences around it.",
   "tldr-block":
-    "Make each bullet a complete sentence carrying a figure or the brand name — a bullet a model can lift and quote alone.",
+    "Make each bullet a complete sentence carrying a figure or the brand name.",
   "dateline-recency":
-    "Add a visible \"Updated\" date. Freshness is the strongest single signal in the rubric, and an engine cannot reward a date it cannot find.",
+    "Add a visible \"Updated\" date.",
 };
+
+/**
+ * WHY it matters to an answer engine. Appended only under the engine lens.
+ *
+ * This is the half that was wrong on a cover letter. The finding "this sentence
+ * is forty-five words" was correct there; "long sentences dilute the chunk an
+ * engine would lift" was not, and a mark that is right for a reason the reader
+ * cannot accept is a mark they learn to ignore.
+ */
+const RATIONALE: { [key: string]: string } = {
+  "stat-source-adjacency":
+    "Engines quote a sentence, not a paragraph, so a citation one sentence away is not attached to the number.",
+  "ai-tell-guard":
+    "They are the constructions models over-produce, and readers — and increasingly engines — discount them.",
+  "question-headings":
+    "Question-shaped headings match how people prompt, and the answer beneath becomes the extractable unit.",
+  "sentence-length-norm":
+    "Long sentences dilute the chunk an engine would lift, and the answer inside gets averaged away.",
+  "attributed-quotes":
+    "A named, credentialed speaker is what makes the passage citable as evidence.",
+  "promotional-claims":
+    "Keep the sentence and its terms: cutting it costs you the query words that get the page retrieved at all.",
+  "person-name-consistency":
+    "A model treats each spelling as a different person.",
+  "current-year-stats":
+    "Engines discount statistics they cannot date, and freshness is scored directly.",
+  "answer-first-position":
+    "Engines lift openings; an opening that defers the answer is an opening that never gets quoted.",
+  "keyword-stuffing-guard":
+    "Past a threshold, repetition is penalised rather than rewarded.",
+  "pronoun-opening-chunks":
+    "Sections are extracted alone — a reader landing here from a citation cannot resolve \"this\" or \"it\".",
+  "heading-answer-adjacency":
+    "The heading plus its immediate answer is the unit engines extract.",
+  "anonymous-first-person-facts":
+    "A model lifts the sentence, not the page — the fact travels, and whoever \"we\" is does not.",
+  "unverifiable-superlatives":
+    "Models decline to repeat unsourced superlatives.",
+  "tldr-block":
+    "A bullet a model can lift and quote alone is worth more than a teaser.",
+  "dateline-recency":
+    "Freshness is the strongest single signal in the rubric, and an engine cannot reward a date it cannot find.",
+};
+
+/**
+ * The sentence a writer reads on a mark.
+ *
+ * Under the plain lens it stops at the action. Under the engine lens the
+ * rationale follows it, because there the reader HAS asked how a machine reads
+ * their page — that is what the surface is for.
+ */
+function explain(key: string, name: string, note: string | undefined, lens: Lens): string {
+  const head = note ? `${name.split(" — ")[0]}: ${note}.` : `${name.split(" — ")[0]}.`;
+  const parts = [head, REMEDY[key] || ""];
+  if (lens === "engine" && RATIONALE[key]) parts.push(RATIONALE[key]);
+  return parts.filter(Boolean).join(" ").trim();
+}
 
 /**
  * Turn the engine's spans into findings the highlight plugin can anchor.
@@ -113,7 +183,11 @@ const REMEDY: { [key: string]: string } = {
  * failure looks like "anchoring is broken" rather than "the wrong string was
  * passed".
  */
-export function buildLiveFindings(scores: DraftScores, text: string): HighlightFinding[] {
+export function buildLiveFindings(
+  scores: DraftScores,
+  text: string,
+  lens: Lens
+): HighlightFinding[] {
   const out: HighlightFinding[] = [];
   if (!text) return out;
 
@@ -122,6 +196,12 @@ export function buildLiveFindings(scores: DraftScores, text: string): HighlightF
     for (let ci = 0; ci < criteria.length; ci++) {
       const c = criteria[ci];
       if (!c.spans || !c.spans.length) continue;
+      // The lens gate. criterionInLens fails CLOSED on an unregistered key —
+      // an unclassified criterion is one nobody has decided about, and showing
+      // it on the plain lens is how an engine mark finds its way back onto a
+      // cover letter. The check asserts every span-emitting key is registered,
+      // so failing closed can never quietly hide a real mark.
+      if (!criterionInLens(c.key, lens)) continue;
 
       for (let si = 0; si < c.spans.length; si++) {
         const sp = c.spans[si];
@@ -141,9 +221,7 @@ export function buildLiveFindings(scores: DraftScores, text: string): HighlightF
           quote,
           prefix: text.slice(Math.max(0, sp.start - CONTEXT_CHARS), sp.start),
           suffix: text.slice(sp.end, Math.min(text.length, sp.end + CONTEXT_CHARS)),
-          explanation: sp.note
-            ? `${c.name.split(" — ")[0]}: ${sp.note}. ${REMEDY[c.key] || ""}`.trim()
-            : `${c.name.split(" — ")[0]}. ${REMEDY[c.key] || ""}`.trim(),
+          explanation: explain(c.key, c.name, sp.note, lens),
           // Deterministic checks NEVER propose replacement prose. They know a
           // sentence is 40 words; they do not know what it should say. Offering
           // a one-click rewrite here would mean generating it, which is exactly

@@ -54,6 +54,12 @@
  * stops a draft with fifty long sentences turning the editor into wallpaper —
  * and it is recorded as untested rather than papered over with a fixture built
  * only to satisfy it.
+
+ * LENS PARAMETER (2026-08-26). Every call here passes "engine" deliberately:
+ * these assertions were earned against the full criterion set, and running them
+ * on the plain lens would silently narrow what they cover while staying green.
+ * The lens's own behaviour is asserted in verify-optimizer-lens.ts, including
+ * that the engine lens still emits everything this file expects.
  */
 import { parseDraft } from "../lib/optimizer/parse";
 import { computeDraftScores } from "../lib/optimizer/engine";
@@ -78,7 +84,7 @@ const parsed = parseDraft({ body: DRAFT, title: "Payment orchestration" });
 const scores = computeDraftScores({
   body: DRAFT, title: "Payment orchestration", targetQueries: ["payment orchestration"], format: "explainer",
 });
-const findings = buildLiveFindings(scores, parsed.text);
+const findings = buildLiveFindings(scores, parsed.text, "engine");
 
 // ── 1. The fixture exercises the thing ───────────────────────────────────
 console.log(`\n1. Preconditions`);
@@ -144,7 +150,7 @@ console.log(`\n3. The wrong string is refused, not silently mis-anchored`);
   // The realistic mistake: handing it the raw HTML instead of the parsed text.
   // Offsets computed against one and sliced from the other produce quotes that
   // are real strings, type-check fine, and mean nothing.
-  const wrong = buildLiveFindings(scores, DRAFT);
+  const wrong = buildLiveFindings(scores, DRAFT, "engine");
   let bogus = 0;
   for (let i = 0; i < wrong.length; i++) if (parsed.text.indexOf(wrong[i].quote) < 0) bogus++;
 
@@ -184,7 +190,7 @@ console.log(`\n3. The wrong string is refused, not silently mis-anchored`);
       ? pass(`the truncation at ${cut} genuinely straddles a span (${firstSpan.start}-${firstSpan.end})`)
       : fail("the truncation does not straddle the span — the range guard is not reached");
 
-    const out = buildLiveFindings(scores, straddled);
+    const out = buildLiveFindings(scores, straddled, "engine");
     // Every surviving finding must be exactly as long as its span claimed. A
     // clamped one is shorter, and that is the whole defect.
     let clamped = 0;
@@ -211,7 +217,7 @@ console.log(`\n3. The wrong string is refused, not silently mis-anchored`);
 // ── 4. Ids are stable, so a dismissal survives an edit elsewhere ─────────
 console.log(`\n4. Identity`);
 {
-  const again = buildLiveFindings(scores, parsed.text);
+  const again = buildLiveFindings(scores, parsed.text, "engine");
   let sameIds = true;
   if (again.length !== findings.length) sameIds = false;
   else for (let i = 0; i < again.length; i++) if (again[i].id !== findings[i].id) sameIds = false;
@@ -252,7 +258,7 @@ console.log(`\n4. Identity`);
     body: withEarlier, title: "Payment orchestration",
     targetQueries: ["payment orchestration"], format: "explainer",
   });
-  const f2 = buildLiveFindings(s2, p2.text);
+  const f2 = buildLiveFindings(s2, p2.text, "engine");
   // Precondition: the edit must actually add a finding ahead of the others.
   f2.length > findings.length
     ? pass(`inserting text earlier adds ${f2.length - findings.length} finding(s), so renumbering is possible`)

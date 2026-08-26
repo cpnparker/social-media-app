@@ -21,6 +21,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { analysisAllowed, DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
 import Anthropic from "@anthropic-ai/sdk";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
@@ -56,6 +57,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const explanation = typeof body.explanation === "string" ? body.explanation.slice(0, 500) : "";
   if (!quote.trim() || !criterion) {
     return NextResponse.json({ error: "Nothing to rewrite" }, { status: 400 });
+  }
+
+  // BEFORE the spend gate, and before the model call it guards.
+  //
+  // "Fix with AI" spent a JUDGE_MODEL call on documents whose registry entry has
+  // every analysis switched off — the assess and coverage routes both refuse
+  // those outright, and this one did not, so the one path that reached a model
+  // per finding was the one path nobody had gated. Refusing here costs nothing
+  // and is the same answer the sibling routes already give.
+  if (!analysisAllowed(String((owned.session as any).type_content || DEFAULT_CONTENT_TYPE), "judge")) {
+    return NextResponse.json({ error: "Rewrites are not available for this piece" }, { status: 400 });
   }
 
   try {

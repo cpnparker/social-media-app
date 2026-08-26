@@ -15,6 +15,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { normaliseLens } from "@/lib/optimizer/mark-policy";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { requireOptimizer, loadSessionForCaller } from "../../_lib/access";
 
@@ -170,6 +171,28 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     }
     briefPatch[k] = out;
   }
+  /**
+   * The mark lens for this piece — a person's decision, kept with the piece.
+   *
+   * In config_brief and not a new column, deliberately: this repo has already
+   * left an optimizer feature dark waiting on a hand-run migration, and a lens
+   * is exactly the kind of thing the brief is for. Collaborator-writable for
+   * the same reason the rest of the brief is.
+   *
+   * NOTHING TYPE-SHAPED IS ACCEPTED HERE, and that is not an omission. The
+   * content type carries a deliberately unnamed value; letting a browser write
+   * one would make "set this piece to the quiet type" expressible from the
+   * client, which is precisely what verify-optimizer-types check 2 exists to
+   * prevent. The lens is two literals, narrowed by a function a script can run.
+   */
+  if ("lens" in body) {
+    const lens = normaliseLens(body.lens);
+    if (lens === null && body.lens !== null) {
+      return NextResponse.json({ error: "Unknown lens" }, { status: 400 });
+    }
+    briefPatch.lens = lens;
+  }
+
   if (Object.keys(briefPatch).length > 0) {
     patch.config_brief = { ...(owned.session.config_brief || {}), ...(patch.config_brief || {}), ...briefPatch };
   }

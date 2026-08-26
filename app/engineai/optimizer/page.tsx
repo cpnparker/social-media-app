@@ -37,7 +37,14 @@ import type { ClientCanon } from "@/lib/optimizer/client-canon";
 import IssueList from "@/components/optimizer/IssueList";
 import CoveragePanel from "@/components/optimizer/CoveragePanel";
 import IssuePopover from "@/components/optimizer/IssuePopover";
-import { chromeFor, labelOf, offeredTypes, DEFAULT_CONTENT_TYPE, detectContentType, shouldAnnounce } from "@/lib/optimizer/content-types";
+// detectContentType / shouldAnnounce were imported here and NEVER CALLED. Dead
+// detection imports sitting beside a silence-critical registry read tell the
+// next reader that typing happens in the studio; it does not. Removed rather
+// than wired up: continuous first-person prose scores at most 0.1 against the
+// quiet branch, so calling it here would silently reclassify documents to fix a
+// case it cannot see.
+import { chromeFor, labelOf, offeredTypes, DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
+import { markPolicyFor, lensDisclosure, normaliseLens, MIN_MARKABLE_WORDS, mergeFindingSets, type Lens } from "@/lib/optimizer/mark-policy";
 import PageAudit from "@/components/optimizer/PageAudit";
 import StartScreen from "@/components/optimizer/StartScreen";
 import DiscussPanel from "@/components/optimizer/DiscussPanel";
@@ -116,6 +123,35 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
   const [contentTypeId, setContentTypeId] = useState<string>(DEFAULT_CONTENT_TYPE);
   const chrome = chromeFor(contentTypeId);
   const typeLabel = labelOf(contentTypeId);
+  /**
+   * A person's decision about this piece, or null if nobody has made one.
+   * Rides in config_brief — no new column, no hand-run migration.
+   */
+  const [lensOverride, setLensOverride] = useState<Lens | null>(null);
+
+  /**
+   * Which marks this piece gets.
+   *
+   * Read through markPolicyFor rather than decided here, for the reason
+   * rail-tabs.ts is a module: a condition living in this file can only be
+   * checked by grepping its text, and a guard that passed while blind has
+   * already shipped from this repo. The check RUNS this across every surface,
+   * type and override.
+   */
+  const policy = useMemo(
+    () =>
+      markPolicyFor({
+        surface,
+        contentTypeId,
+        override: lensOverride,
+        // A DECLARATION, not an inference: naming the questions this piece
+        // should answer is the writer saying it is meant to be retrieved, so
+        // the retrieval marks run while they draft it.
+        hasTargetQueries: queries.length > 0,
+      }),
+    [surface, contentTypeId, lensOverride, queries.length]
+  );
+
   const [body, setBody] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -281,6 +317,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     setBody("");
     setTitle("");
     setQueries([]);
+    setLensOverride(null);
     setIssues([]);
     setDiagnostics(null);
     setPanelTab(defaultRailTab(surface, { showScore: chrome.showScore, showCoverageTab: chrome.showCoverageTab }));
@@ -334,6 +371,9 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
         if (sess.canon && sess.canon.clientName) setCanon(sess.canon);
         const brief = sess.brief || {};
         setQueries(Array.isArray(brief.targetQueries) ? brief.targetQueries : []);
+        // Narrowed through the same function the route uses, so a hand-edited
+        // jsonb value cannot put an unknown lens into the policy.
+        setLensOverride(normaliseLens(brief.lens));
         setAudience(brief.audience || "");
         setGoal(brief.goal || "");
         // streamBufferRef feeds the live score while streaming; keep it in step
@@ -782,6 +822,32 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     [sessionId, workspaceId, streaming]
   );
 
+  /**
+   * A person deciding which marks this piece gets.
+   *
+   * Written to the row before state so a reload agrees with the screen — the
+   * override is the whole point, and one that evaporates is worse than none.
+   */
+  const setLens = useCallback(
+    async (next: Lens | null) => {
+      if (!sessionId || !workspaceId) return;
+      const previous = lensOverride;
+      setLensOverride(next);
+      try {
+        const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceId, lens: next }),
+        });
+        if (!res.ok) throw new Error("patch failed");
+      } catch {
+        setLensOverride(previous);
+        toast.error("Could not save that");
+      }
+    },
+    [sessionId, workspaceId, lensOverride]
+  );
+
   // ── Assess ──
   const runAssess = useCallback(async () => {
     if (!sessionId || !workspaceId || assessing) return;
@@ -1093,11 +1159,15 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
       // parsed.text is passed explicitly because the spans index into it. A
       // differently-derived string produces quotes that never match, and the
       // failure looks like broken anchoring rather than a wrong argument.
-      const live = buildLiveFindings(scores, parsed.text);
+      // One floor for the whole live layer, shared with the score — so the
+      // Score tab saying "not enough to score yet" and the document underneath
+      // it can no longer tell different stories about one draft.
+      const enough = (parsed.text.match(/\S+/g) || []).length >= MIN_MARKABLE_WORDS;
+      const live = enough ? buildLiveFindings(scores, parsed.text, policy.lens) : [];
       editor.view.dispatch(
         editor.state.tr.setMeta(optimizerHighlightKey, {
           type: "set",
-          findings: [...judgeFindingsRef.current, ...live],
+          findings: mergeFindingSets({ judge: judgeFindingsRef.current, live }),
         })
       );
       const st = optimizerHighlightKey.getState(editor.state);
@@ -1106,7 +1176,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
       // A parse failure must not take the editor down with it. The score panel
       // shows the same failure through its own try/catch.
     }
-  }, [streaming, title, queries, format, canon]);
+  }, [streaming, title, queries, format, canon, policy.lens]);
 
   const selectNext = useCallback(() => {
     const editor = editorRef.current;
@@ -1127,6 +1197,16 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
    * has one answer. The count on Suggestions is the active findings, which is
    * the only number in the rail that changes as you type.
    */
+  /**
+   * Words in the draft, for the shared floor.
+   *
+   * Derived from `body` rather than the editor because it only feeds a
+   * threshold: 600ms of lag either side of sixty words changes nothing a writer
+   * can perceive, and reading the editor here would re-render the rail on every
+   * keystroke.
+   */
+  const wordCount = useMemo(() => (htmlToPlainText(body).match(/\S+/g) || []).length, [body]);
+
   const panelTabs = useMemo(
     () =>
       railTabsFor(
@@ -1503,7 +1583,10 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
               matters — marks anchored to text that has since been edited are
               stale, and a confident tick over them is the same dishonesty as a
               score printed over a skipped pillar. */}
-          {chrome.showAssessmentChip && (() => {
+          {/* The assessment verdict belongs to the Optimiser. Rendering it on
+              the Writer is the merge in miniature: a grade on a piece you are
+              still writing. */}
+          {surface !== "writer" && chrome.showAssessmentChip && (() => {
             const currentBody = editorRef.current ? editorRef.current.getHTML() : body;
             const state = assessing
               ? "running"
@@ -1590,7 +1673,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
               Ask
             </Button>
           )}
-          {!streaming && sessionId && chrome.showAssessAction && (
+          {!streaming && sessionId && surface !== "writer" && chrome.showAssessAction && (
             <Button size="sm" variant="outline" onClick={runAssess} disabled={assessing}>
               {assessing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
               {assessing ? "Assessing" : "Assess"}
@@ -1760,10 +1843,19 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
               diagnostics={diagnostics}
               hasAssessed={diagnostics !== null}
               scored={chrome.showScore}
-              onAssess={chrome.showAssessAction ? runAssess : undefined}
+              onAssess={surface !== "writer" && chrome.showAssessAction ? runAssess : undefined}
               onAiFix={handleAiFix}
               aiEdits={aiEdits}
               aiFixingId={aiFixing}
+              lens={policy.lens}
+              canRaiseLens={policy.canRaise}
+              onSetLens={setLens}
+              belowFloor={wordCount < MIN_MARKABLE_WORDS}
+              onHandOff={
+                surface === "writer" && sessionId
+                  ? () => { window.location.href = `/engineai/optimizer?session=${encodeURIComponent(sessionId)}`; }
+                  : undefined
+              }
             />
           )}
         </div>

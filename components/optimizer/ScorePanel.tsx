@@ -23,6 +23,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { MIN_MARKABLE_WORDS } from "@/lib/optimizer/mark-policy";
 import { computeDraftScores } from "@/lib/optimizer/engine";
 import type { DraftInput } from "@/lib/optimizer/engine";
 import type { CriterionResult } from "@/lib/optimizer/types";
@@ -45,7 +46,10 @@ interface Props {
  * answer-position, statistic density and entity consistency to mean something,
  * and low enough that a real short piece is still scored.
  */
-const MIN_SCORABLE_WORDS = 60;
+// Imported, not declared. It used to live here alone, which is how the Score
+// tab came to read "not enough to score yet" while the document underneath it
+// was covered in underlines — one number, two panels, two different stories.
+const MIN_SCORABLE_WORDS = MIN_MARKABLE_WORDS;
 
 function gradeTone(score: number): string {
   if (score >= 80) return "text-emerald-600 dark:text-emerald-400";

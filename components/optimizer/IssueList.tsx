@@ -15,6 +15,8 @@
  */
 
 import { cn } from "@/lib/utils";
+import { findingSource } from "@/lib/optimizer/highlight-plugin";
+import { lensDisclosure } from "@/lib/optimizer/mark-policy";
 import { Check, X, Pencil, AlertCircle , Loader2, Sparkles } from "lucide-react";
 import type { Issue } from "@/lib/optimizer/highlight-plugin";
 import { criterionLabel } from "@/components/optimizer/IssuePopover";
@@ -40,6 +42,14 @@ interface Props {
   onAiFix?: (id: string) => void;
   aiEdits?: { [id: string]: string };
   aiFixingId?: string | null;
+  /** What is running, and whether a person may change it. */
+  lens?: "engine" | "plain";
+  canRaiseLens?: boolean;
+  onSetLens?: (next: "engine" | "plain" | null) => void;
+  /** Hand the finished piece to the Optimiser. Writer only. */
+  onHandOff?: () => void;
+  /** Below the shared word floor: nothing is being checked YET. */
+  belowFloor?: boolean;
 }
 
 const SEVERITY_DOT: { [k: string]: string } = {
@@ -50,7 +60,7 @@ const SEVERITY_DOT: { [k: string]: string } = {
 
 export default function IssueList({
   issues, selectedId, onSelect, onApply, onDismiss, diagnostics, degraded, hasAssessed, scored, onAssess,
-  onAiFix, aiEdits, aiFixingId,
+  onAiFix, aiEdits, aiFixingId, lens, canRaiseLens, onSetLens, onHandOff, belowFloor,
 }: Props) {
   // The two layers are shown apart, because they answer different questions and
   // cost different things. The instant ones are mechanical and always on — a
@@ -59,14 +69,55 @@ export default function IssueList({
   // "score vs suggestions is confusing" complaint: two lists of problems with
   // no way to tell which had actually been run.
   const active = issues.filter((i) => i.status === "active");
-  const liveOpen = active.filter((i) => i.finding.id.indexOf("live:") === 0);
-  const judgeOpen = active.filter((i) => i.finding.id.indexOf("live:") !== 0);
+  // Source-tested through one function rather than two copies of the same
+  // prefix test, so a third producer cannot be silently misfiled as a judge
+  // finding by whichever copy nobody updated.
+  const liveOpen = active.filter((i) => findingSource(i.finding.id) === "live");
+  const judgeOpen = active.filter((i) => findingSource(i.finding.id) === "judge");
   const open = active;
   const orphaned = issues.filter((i) => i.status === "orphaned");
   const done = issues.filter((i) => i.status === "resolved" || i.status === "dismissed");
 
   return (
     <div className="flex flex-col min-h-0 h-full">
+      {/* WHAT IS AND IS NOT RUNNING. Not looking and finding nothing are
+          different claims; a clean panel that says nothing lets a writer read
+          "no issues" off a document nobody checked. The string is fixed —
+          lensDisclosure takes no arguments — because the reason a piece is on
+          the plain lens can be that it was silently recognised as the unnamed
+          type, and a message that varied by reason would eventually say so. */}
+      {lens === "plain" && !belowFloor && (
+        <div className="shrink-0 mx-3 mt-2 rounded-lg border bg-muted/40 px-2.5 py-2">
+          <p className="text-[11.5px] leading-snug text-muted-foreground">
+            {lensDisclosure()}
+          </p>
+          {canRaiseLens && onSetLens && (
+            <button
+              onClick={() => onSetLens("engine")}
+              className="mt-1.5 text-[11px] font-medium text-foreground underline underline-offset-2"
+            >
+              Turn them on for this piece
+            </button>
+          )}
+        </div>
+      )}
+      {/* The escape. It sits here rather than in the popover because this is the
+          list a writer is reading when the advice stops making sense — a cover
+          letter told its salutation should "carry the answer, quotably". One
+          click, permanent for this piece, on both surfaces. Retroactive by
+          construction: the wrong marks appear once, then a person corrects them
+          — which is the trade taken over guessing the document's kind from a
+          salutation regex. */}
+      {lens === "engine" && canRaiseLens && onSetLens && !belowFloor && liveOpen.length > 0 && (
+        <div className="shrink-0 mx-3 mt-2">
+          <button
+            onClick={() => onSetLens("plain")}
+            className="text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2"
+          >
+            These checks don&apos;t fit this piece
+          </button>
+        </div>
+      )}
       {degraded && (
         <div className="shrink-0 mx-3 mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2">
           <p className="text-[11.5px] leading-snug text-amber-700 dark:text-amber-400">
@@ -101,12 +152,22 @@ export default function IssueList({
             </p>
           </div>
         )}
-        {open.length === 0 && orphaned.length === 0 && !hasAssessed && (
+        {/* Below the floor nothing has been checked, and it says so. It used to
+            show a clean list, which reads as "no problems found" on a document
+            no check had looked at. */}
+        {belowFloor && (
+          <p className="text-[12.5px] text-muted-foreground px-1 py-3 leading-snug">
+            Nothing is being checked yet — there isn&apos;t enough written to check.
+          </p>
+        )}
+        {!belowFloor && open.length === 0 && orphaned.length === 0 && !hasAssessed && (
           <div className="px-1 py-3 flex flex-col gap-2 items-start">
             <p className="text-[12.5px] text-muted-foreground leading-snug">
-              This draft hasn&apos;t been assessed yet. The live score on the other tab is the
-              deterministic half; an assessment adds the judgement half and anchors suggestions
-              to specific sentences.
+              {/* `scored` was destructured and never read, so this pointed a
+                  Writer at a Score tab that surface does not have. */}
+              {scored
+                ? "This draft hasn\u2019t been assessed yet. The live score on the other tab is the deterministic half; an assessment adds the judgement half and anchors suggestions to specific sentences."
+                : "Nothing outstanding in the instant checks."}
             </p>
             {onAssess && (
               <button
@@ -118,7 +179,20 @@ export default function IssueList({
             )}
           </div>
         )}
-        {open.length === 0 && orphaned.length === 0 && hasAssessed && done.length === 0 && (
+        {onHandOff && !belowFloor && (
+          <div className="mt-3 pt-3 border-t">
+            <button
+              onClick={onHandOff}
+              className="text-[12px] font-medium text-foreground hover:underline underline-offset-2"
+            >
+              Check this for AI citability &rarr;
+            </button>
+            <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+              Opens it in the Optimiser, which scores it the way an assistant reads it.
+            </p>
+          </div>
+        )}
+        {!belowFloor && open.length === 0 && orphaned.length === 0 && hasAssessed && done.length === 0 && (
           <p className="text-[12.5px] text-muted-foreground px-1 py-3 leading-snug">
             Assessed — nothing outstanding. The judge found no anchored issues in this draft.
           </p>

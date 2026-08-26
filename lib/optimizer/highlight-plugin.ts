@@ -294,3 +294,22 @@ export function applyFinding(
 
   return { ok: true, from: issue.from, to: issue.from + replacement.length };
 }
+
+/**
+ * Which producer a finding came from, from its id.
+ *
+ * ONE function, because the same prefix test was written out in three places —
+ * IssueList counted with it twice and IssuePopover labelled with it once — and
+ * each copy said "live, or else judge". That binary was fine while there were
+ * two producers. The moment a third exists, every copy silently files it as a
+ * judge finding, and only the copy somebody remembered to update disagrees.
+ *
+ * `talk:` is the conversation's own findings. Nothing emits them yet; the
+ * branch exists so the classification is total from the start rather than
+ * being retrofitted into three call sites later.
+ */
+export function findingSource(id: string): "live" | "judge" | "talk" {
+  if (id.indexOf("live:") === 0) return "live";
+  if (id.indexOf("talk:") === 0) return "talk";
+  return "judge";
+}

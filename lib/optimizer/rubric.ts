@@ -71,6 +71,27 @@ export interface CriterionMeta {
   kind: "reward" | "guard";
   rollUp: RollUp;
   evidence: EvidenceGrade;
+  /**
+   * Which lens this criterion belongs to.
+   *
+   * `engine` is answer-engine doctrine: it is only true of a page that wants to
+   * be retrieved and quoted by a machine. `plain` is true of any prose a human
+   * wrote for a human.
+   *
+   * The distinction did not exist, and its absence is why a cover letter was
+   * told its salutation should "carry the answer, quotably" — sixteen
+   * mark-emitting criteria painted identically on a letter, a blank page and a
+   * briefed article, because nothing recorded which of them were about writing
+   * well and which were about being cited.
+   *
+   * METADATA ONLY. `computeDraftScores` must never read this: scoring stays
+   * byte-identical and RUBRIC_VERSION does not move. It decides which marks are
+   * SHOWN, never what anything is worth. Kept here, beside the criterion,
+   * rather than in a second table — a parallel register free to drift from
+   * CRITERIA is how `anonymous-first-person-facts` came to be emitted from two
+   * pillars at once.
+   */
+  lens: "engine" | "plain";
 }
 
 /**
@@ -83,40 +104,40 @@ export interface CriterionMeta {
  */
 export const CRITERIA: CriterionMeta[] = [
   // Pillar 1 — Relevance & query coverage (max 40)
-  { key: "title-query-alignment", name: "Title matches a target query", pillar: 1, maxPoints: 20, kind: "reward", rollUp: "retrievability", evidence: "A" },
-  { key: "query-terms-in-headings", name: "Target-query terms appear in headings", pillar: 1, maxPoints: 10, kind: "reward", rollUp: "retrievability", evidence: "B/C" },
-  { key: "query-terms-in-body", name: "Query vocabulary present in the body", pillar: 1, maxPoints: 10, kind: "reward", rollUp: "retrievability", evidence: "C" },
+  { key: "title-query-alignment", name: "Title matches a target query", pillar: 1, maxPoints: 20, kind: "reward", rollUp: "retrievability", evidence: "A" , lens: "engine" },
+  { key: "query-terms-in-headings", name: "Target-query terms appear in headings", pillar: 1, maxPoints: 10, kind: "reward", rollUp: "retrievability", evidence: "B/C" , lens: "engine" },
+  { key: "query-terms-in-body", name: "Query vocabulary present in the body", pillar: 1, maxPoints: 10, kind: "reward", rollUp: "retrievability", evidence: "C" , lens: "engine" },
 
   // Pillar 2 — Evidence & quotability (max 50)
-  { key: "statistic-density", name: "Statistics per 1,000 words", pillar: 2, maxPoints: 15, kind: "reward", rollUp: "citability", evidence: "A-" },
-  { key: "stat-source-adjacency", name: "Statistics carry a source in the same sentence", pillar: 2, maxPoints: 15, kind: "guard", rollUp: "citability", evidence: "A-" },
-  { key: "attributed-quotes", name: "Contains a directly attributed quotation", pillar: 2, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "A-" },
+  { key: "statistic-density", name: "Statistics per 1,000 words", pillar: 2, maxPoints: 15, kind: "reward", rollUp: "citability", evidence: "A-" , lens: "engine" },
+  { key: "stat-source-adjacency", name: "Statistics carry a source in the same sentence", pillar: 2, maxPoints: 15, kind: "guard", rollUp: "citability", evidence: "A-" , lens: "plain" },
+  { key: "attributed-quotes", name: "Contains a directly attributed quotation", pillar: 2, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "A-" , lens: "plain" },
   // The adjective form of an unsourced absolute claim. The judge guards the
   // CLAUSE form ("the only platform that...") at grade B; this guards the
   // mechanical lexicon — models decline to repeat unsourced superlatives, and
   // an SEC-reporting client cannot substantiate "best-in-class" anyway.
-  { key: "unverifiable-superlatives", name: "No unverifiable superlatives", pillar: 2, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "C" },
-  { key: "external-reference-links", name: "Cites external sources by link", pillar: 2, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "A-" },
+  { key: "unverifiable-superlatives", name: "No unverifiable superlatives", pillar: 2, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "C" , lens: "plain" },
+  { key: "external-reference-links", name: "Cites external sources by link", pillar: 2, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "A-" , lens: "engine" },
 
   // Pillar 3 — Answer-first structure & extractability (max 60)
-  { key: "answer-first-position", name: "The answer appears in the first 10%", pillar: 3, maxPoints: 20, kind: "reward", rollUp: "citability", evidence: "B" },
-  { key: "tldr-block", name: "TL;DR / key-takeaways block near the top", pillar: 3, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "B" },
-  { key: "question-headings", name: "Question-shaped section headings", pillar: 3, maxPoints: 10, kind: "reward", rollUp: "both", evidence: "B/C" },
-  { key: "heading-answer-adjacency", name: "Question headings are answered immediately", pillar: 3, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "B/C" },
-  { key: "extractable-definition", name: "Main entity gets a definition, early", pillar: 3, maxPoints: 10, kind: "reward", rollUp: "both", evidence: "B/C" },
+  { key: "answer-first-position", name: "The answer appears in the first 10%", pillar: 3, maxPoints: 20, kind: "reward", rollUp: "citability", evidence: "B" , lens: "engine" },
+  { key: "tldr-block", name: "TL;DR / key-takeaways block near the top", pillar: 3, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "B" , lens: "engine" },
+  { key: "question-headings", name: "Question-shaped section headings", pillar: 3, maxPoints: 10, kind: "reward", rollUp: "both", evidence: "B/C" , lens: "engine" },
+  { key: "heading-answer-adjacency", name: "Question headings are answered immediately", pillar: 3, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "B/C" , lens: "engine" },
+  { key: "extractable-definition", name: "Main entity gets a definition, early", pillar: 3, maxPoints: 10, kind: "reward", rollUp: "both", evidence: "B/C" , lens: "engine" },
 
   // Pillar 4 — Entity clarity & consistency (max 40)
-  { key: "pronoun-opening-chunks", name: "No section opens on a bare pronoun", pillar: 4, maxPoints: 15, kind: "guard", rollUp: "citability", evidence: "C" },
-  { key: "canonical-name-consistency", name: "Brand named consistently", pillar: 4, maxPoints: 10, kind: "guard", rollUp: "both", evidence: "C" },
+  { key: "pronoun-opening-chunks", name: "No section opens on a bare pronoun", pillar: 4, maxPoints: 15, kind: "guard", rollUp: "citability", evidence: "C" , lens: "engine" },
+  { key: "canonical-name-consistency", name: "Brand named consistently", pillar: 4, maxPoints: 10, kind: "guard", rollUp: "both", evidence: "C" , lens: "plain" },
   // The same PERSON spelled two ways — "Alexander Kitchin" in the body,
   // "Alexander Kitchn" in his own credits heading, one keystroke apart on the
   // founder's own draft. A model deciding whether two mentions are one entity
   // has exactly the evidence the page gives it; a misspelled expert is a
   // fractured entity AND an embarrassment. Distance one, surnames of five or
   // more letters, so Bird/Bond stay two people.
-  { key: "person-name-consistency", name: "People are spelled one way", pillar: 4, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "D" },
-  { key: "chunk-entity-naming", name: "Sections name their subject explicitly", pillar: 4, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "C" },
-  { key: "entity-defined-once", name: "One definition of the main entity, not several", pillar: 4, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "C" },
+  { key: "person-name-consistency", name: "People are spelled one way", pillar: 4, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "D" , lens: "plain" },
+  { key: "chunk-entity-naming", name: "Sections name their subject explicitly", pillar: 4, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "C" , lens: "engine" },
+  { key: "entity-defined-once", name: "One definition of the main entity, not several", pillar: 4, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "C" , lens: "engine" },
   // Thomas Cremese's "single most expensive mistake" (Amrize audit, Aug 2026):
   // a model extracts the fact and cites the page WITHOUT the brand, because
   // the sentence carrying the fact said "we". The entity must live inside the
@@ -124,13 +145,13 @@ export const CRITERIA: CriterionMeta[] = [
   // Sentences carrying an EXPERIENCE_MARKER are exempt: pillar 5 rewards
   // first-person experience voice, and a criterion must not punish what
   // another rewards.
-  { key: "anonymous-first-person-facts", name: "Fact-bearing sentences name the brand, not \"we\"", pillar: 4, maxPoints: 10, kind: "guard", rollUp: "citability", evidence: "C" },
+  { key: "anonymous-first-person-facts", name: "Fact-bearing sentences name the brand, not \"we\"", pillar: 4, maxPoints: 10, kind: "guard", rollUp: "citability", evidence: "C" , lens: "engine" },
 
   // Pillar 5 — Authority & experience signals (max 40)
-  { key: "byline-present", name: "Byline near the top", pillar: 5, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "C" },
-  { key: "credential-line", name: "Author credentials shown", pillar: 5, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "C" },
-  { key: "experience-markers", name: "First-hand experience evidence", pillar: 5, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "D" },
-  { key: "worked-example", name: "Named customer story or worked example", pillar: 5, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "D" },
+  { key: "byline-present", name: "Byline near the top", pillar: 5, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "C" , lens: "engine" },
+  { key: "credential-line", name: "Author credentials shown", pillar: 5, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "C" , lens: "engine" },
+  { key: "experience-markers", name: "First-hand experience evidence", pillar: 5, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "D" , lens: "engine" },
+  { key: "worked-example", name: "Named customer story or worked example", pillar: 5, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "D" , lens: "engine" },
   // Promotional load. The research reports the LARGEST measured effect in the
   // whole document behind this — promotional language cutting citation rates
   // by 26.19%, and an article on its own domain cited 7.6% of the time versus
@@ -138,24 +159,24 @@ export const CRITERIA: CriterionMeta[] = [
   // control. Both facts have to reach the writer, so it carries the big claim
   // at the weakest grade and a small weight, reported as a flag rather than a
   // heavy penalty. That is the research's own instruction, verbatim.
-  { key: "promotional-claims", name: "First-person claims carry evidence", pillar: 5, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "X" },
+  { key: "promotional-claims", name: "First-person claims carry evidence", pillar: 5, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "X" , lens: "plain" },
 
   // Pillar 6 — Freshness & format hygiene (max 75)
-  { key: "dateline-recency", name: "Dateline present and recent", pillar: 6, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "A" },
-  { key: "stale-year-guard", name: "No stale 'as of' year claims", pillar: 6, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "B" },
-  { key: "current-year-stats", name: "Statistics dated to the current year", pillar: 6, maxPoints: 5, kind: "reward", rollUp: "citability", evidence: "B" },
-  { key: "sentence-length-norm", name: "Mean sentence length near the cited norm", pillar: 6, maxPoints: 5, kind: "reward", rollUp: "citability", evidence: "B" },
-  { key: "comparative-format-match", name: "Ranked list or table for comparative intent", pillar: 6, maxPoints: 10, kind: "reward", rollUp: "both", evidence: "B" },
-  { key: "heading-hierarchy", name: "Heading hierarchy clean", pillar: 6, maxPoints: 15, kind: "reward", rollUp: "both", evidence: "C" },
-  { key: "heading-density", name: "Section headings at a healthy density", pillar: 6, maxPoints: 5, kind: "reward", rollUp: "both", evidence: "C" },
+  { key: "dateline-recency", name: "Dateline present and recent", pillar: 6, maxPoints: 10, kind: "reward", rollUp: "citability", evidence: "A" , lens: "engine" },
+  { key: "stale-year-guard", name: "No stale 'as of' year claims", pillar: 6, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "B" , lens: "plain" },
+  { key: "current-year-stats", name: "Statistics dated to the current year", pillar: 6, maxPoints: 5, kind: "reward", rollUp: "citability", evidence: "B" , lens: "engine" },
+  { key: "sentence-length-norm", name: "Mean sentence length near the cited norm", pillar: 6, maxPoints: 5, kind: "reward", rollUp: "citability", evidence: "B" , lens: "plain" },
+  { key: "comparative-format-match", name: "Ranked list or table for comparative intent", pillar: 6, maxPoints: 10, kind: "reward", rollUp: "both", evidence: "B" , lens: "engine" },
+  { key: "heading-hierarchy", name: "Heading hierarchy clean", pillar: 6, maxPoints: 15, kind: "reward", rollUp: "both", evidence: "C" , lens: "plain" },
+  { key: "heading-density", name: "Section headings at a healthy density", pillar: 6, maxPoints: 5, kind: "reward", rollUp: "both", evidence: "C" , lens: "engine" },
   // A bracketed production note — "[Professional headshot image]", "[TK]",
   // "[insert chart]" — is a defect no reader should ever meet, and the
   // founder's own draft shipped FIVE of them into the scorer with nothing
   // noticing. Grade D: no research needed to know a placeholder in published
   // copy is wrong.
-  { key: "placeholder-guard", name: "No production placeholders left in the copy", pillar: 6, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "D" },
-  { key: "keyword-stuffing-guard", name: "No keyword stuffing", pillar: 6, maxPoints: 10, kind: "guard", rollUp: "retrievability", evidence: "A" },
-  { key: "ai-tell-guard", name: "No AI-tell vocabulary", pillar: 6, maxPoints: 10, kind: "guard", rollUp: "citability", evidence: "D" },
+  { key: "placeholder-guard", name: "No production placeholders left in the copy", pillar: 6, maxPoints: 5, kind: "guard", rollUp: "citability", evidence: "D" , lens: "plain" },
+  { key: "keyword-stuffing-guard", name: "No keyword stuffing", pillar: 6, maxPoints: 10, kind: "guard", rollUp: "retrievability", evidence: "A" , lens: "engine" },
+  { key: "ai-tell-guard", name: "No AI-tell vocabulary", pillar: 6, maxPoints: 10, kind: "guard", rollUp: "citability", evidence: "D" , lens: "plain" },
 ];
 
 /**
