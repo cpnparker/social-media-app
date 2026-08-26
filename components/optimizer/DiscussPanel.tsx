@@ -222,6 +222,8 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
    * ask — so a superseded run finishes quietly and writes nothing.
    */
   const runRef = useRef(0);
+  /** The last marker click acted on, so a new reply cannot re-trigger an old one. */
+  const handledNonce = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // Abandon anything in flight when the piece changes or the panel goes away.
@@ -286,22 +288,36 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
   /**
    * Scroll to the reply a margin marker points at, and flash it.
    *
-   * The flash matters: the writer clicked something in the document and the
+   * The flash matters: the writer clicked something in the DOCUMENT and the
    * answer arrives in a panel they may not have been looking at, several
-   * paragraphs of prose long. Landing them next to it silently would leave
-   * them hunting for what just changed.
+   * paragraphs of prose long. Landing them beside it silently leaves them
+   * hunting for what changed.
+   *
+   * DEPENDS ON `turns`, and that is the whole correctness of it. The panel is
+   * unmounted whenever the rail is on Background or Suggestions — which is
+   * exactly when a margin marker is most useful — so a click mounts it fresh
+   * and this effect first runs before the conversation has been fetched. The
+   * turn element does not exist yet, the effect bails, and with `focusTurn`
+   * alone in the dependencies it would never run again: the scroll silently
+   * did nothing in the main case. Re-running when the turns arrive is the
+   * retry.
+   *
+   * The nonce is then recorded as handled so a later reply landing in `turns`
+   * cannot drag the writer back to an old marker they clicked minutes ago.
    */
   useEffect(() => {
     if (!focusTurn) return;
+    if (handledNonce.current === focusTurn.nonce) return;
     const root = scrollRef.current;
     if (!root) return;
     const el = root.querySelector(`[data-turn="${focusTurn.turn}"]`) as HTMLElement | null;
-    if (!el) return;
+    if (!el) return; // not loaded yet — `turns` will bring us back
+    handledNonce.current = focusTurn.nonce;
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     el.classList.add("ring-2", "ring-primary/40", "rounded-lg");
     const t = setTimeout(() => el.classList.remove("ring-2", "ring-primary/40", "rounded-lg"), 1400);
     return () => clearTimeout(t);
-  }, [focusTurn]);
+  }, [focusTurn, turns]);
 
   const ask = useCallback(async () => {
     const q = question.trim();

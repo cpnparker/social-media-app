@@ -325,6 +325,16 @@ console.log("\n8c. Notes claim no range");
     "clicking a marker is handled, delegated on the editor root");
   const panel = stripComments(read("components/optimizer/DiscussPanel.tsx"));
   assert(/onAnchorsChanged\(out\)/.test(panel), "the panel publishes its anchors upward");
+  // The scroll must survive the panel being MOUNTED BY the click. The rail is
+  // on Suggestions, the panel is unmounted, the marker click mounts it — and the
+  // effect runs before the conversation has been fetched. With focusTurn alone
+  // in the dependencies it bails and never retries, so the scroll silently does
+  // nothing in exactly the case a margin marker is for. Measured in the
+  // browser: turn present, flash never applied.
+  assert(/\}, \[focusTurn, turns\]\);/.test(panel),
+    "the marker scroll retries when the conversation arrives, not only when the click happens");
+  assert(/handledNonce/.test(panel),
+    "and it fires once per click, so a later reply cannot drag the writer back to an old marker");
   assert(!/streamed[\s\S]{0,120}onAnchorsChanged/.test(panel),
     "anchors come from STORED turns, never the streaming buffer — a half-arrived quote resolves to nothing and would flicker");
 }
