@@ -48,6 +48,7 @@ import { markPolicyFor, lensDisclosure, normaliseLens, MIN_MARKABLE_WORDS, merge
 import PageAudit from "@/components/optimizer/PageAudit";
 import StartScreen from "@/components/optimizer/StartScreen";
 import DiscussPanel from "@/components/optimizer/DiscussPanel";
+import VersionHistory from "@/components/optimizer/VersionHistory";
 import SourcesPanel from "@/components/optimizer/SourcesPanel";
 import { draftBlockToHtml, draftBlockToInlineHtml } from "@/lib/optimizer/discuss";
 import { railTabsFor, defaultRailTab, type RailTabKey } from "@/lib/optimizer/rail-tabs";
@@ -1028,6 +1029,67 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     editor.view.dispatch(editor.state.tr.setMeta(optimizerHighlightKey, { type: "notes", notes }));
   }, []);
 
+  /** Bumped whenever a version is cut, so an open history list refreshes. */
+  const [versionsKey, setVersionsKey] = useState(0);
+
+  /**
+   * Record a version: what was there, and what replaced it.
+   *
+   * Fire-and-forget on purpose. The writer's edit has already landed in the
+   * editor and the autosave owns the draft itself, so a failed history entry
+   * must never block or undo their change — losing a row from the history is a
+   * far smaller harm than refusing an edit they asked for.
+   *
+   * Both bodies are sent because the autosave debounce can fire either side of
+   * this call. Only the client knows both states with certainty; the server
+   * pins the old one and inserts the new above it, whichever order they arrive.
+   */
+  const cutVersion = useCallback(
+    (previous: string, next: string) => {
+      if (!sessionId || !workspaceId || previous === next) return;
+      fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}/versions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, previous, next }),
+      })
+        .then(() => setVersionsKey((k) => k + 1))
+        .catch(() => { /* history is a convenience; the draft is already safe */ });
+    },
+    [sessionId, workspaceId]
+  );
+
+  /**
+   * Go back to a version.
+   *
+   * Cuts a version FIRST, so the restore is itself undoable. A history that can
+   * only move backwards is a trapdoor: a writer who restores the wrong one has
+   * no way back to the work they just lost, which makes the whole feature
+   * frightening to use.
+   */
+  const restoreVersion = useCallback(
+    async (version: number) => {
+      const editor = editorRef.current;
+      if (!editor || !sessionId || !workspaceId) return;
+      try {
+        const res = await fetch(
+          `/api/optimizer/sessions/${encodeURIComponent(sessionId)}/versions?workspaceId=${encodeURIComponent(workspaceId)}&version=${version}`
+        );
+        const d = await res.json();
+        if (!res.ok || !d.version) { toast.error(d.error || "Could not read that version"); return; }
+        const beforeHtml = editor.getHTML();
+        const restored = String(d.version.document_body || "");
+        if (restored === beforeHtml) { toast.info("That version is what you already have"); return; }
+        editor.commands.setContent(restored);
+        saveBody(restored);
+        cutVersion(beforeHtml, restored);
+        toast.success(`Restored version ${version}`);
+      } catch {
+        toast.error("Could not read that version");
+      }
+    },
+    [sessionId, workspaceId, saveBody, cutVersion]
+  );
+
   /**
    * Replace a range, without breaking the paragraph it sits in.
    *
@@ -1087,6 +1149,10 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     const html = draftBlockToHtml(text);
     if (!editor || !html) return "failed";
 
+    // Captured BEFORE anything moves. This is the version a writer would want
+    // to go back to — the state before a change they did not type themselves.
+    const beforeHtml = editor.getHTML();
+
     // An anchored rewrite replaces the passage it was WRITTEN FOR, in
     // preference to the selection. The writer clicked Show me, read the
     // paragraph and came back to the panel; wherever their cursor ended up is
@@ -1099,6 +1165,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
         const range = textRangeToPos(index, at.start, at.end);
         if (range) {
           replaceRange(editor, range.from, range.to, text);
+          cutVersion(beforeHtml, editor.getHTML());
           return "replaced";
         }
       }
@@ -1111,11 +1178,13 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     const { from, to } = editor.state.selection;
     if (from !== to) {
       replaceRange(editor, from, to, text);
+      cutVersion(beforeHtml, editor.getHTML());
       return "replaced";
     }
     editor.chain().focus().insertContentAt(editor.state.doc.content.size, html).run();
+    cutVersion(beforeHtml, editor.getHTML());
     return "appended";
-  }, [resolveQuote]);
+  }, [resolveQuote, cutVersion]);
 
   const syncIssues = useCallback(() => {
     const editor = editorRef.current;
@@ -1803,6 +1872,14 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
               <span className={cn("h-1.5 w-1.5 rounded-full", policy.lens === "engine" ? "bg-primary" : "bg-muted-foreground/50")} />
               {policy.lens === "engine" ? "AI checks on" : "AI checks off"}
             </button>
+          )}
+          {sessionId && (
+            <VersionHistory
+              sessionId={sessionId}
+              workspaceId={workspaceId}
+              refreshKey={versionsKey}
+              onRestore={restoreVersion}
+            />
           )}
           {selectedCustomer && (
             <span className="hidden lg:inline-flex items-center gap-1.5 shrink-0 rounded-full border bg-muted/60 px-2.5 py-1 text-[11.5px] font-medium text-muted-foreground">

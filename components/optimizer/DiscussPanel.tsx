@@ -36,7 +36,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { CornerDownLeft, Eraser, Loader2, Quote, Sparkles } from "lucide-react";
+import { CornerDownLeft, Eraser, Loader2, Quote, RefreshCw, Sparkles } from "lucide-react";
 import { parseDiscussReply, type DiscussTurn } from "@/lib/optimizer/discuss";
 
 interface Props {
@@ -527,6 +527,24 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
     [ask]
   );
 
+  /**
+   * Read the whole piece again, as it stands now.
+   *
+   * The conversation sees the live draft on every question, but only answers
+   * the question it was asked — so after applying three fixes there is nothing
+   * that says "and now?". This is that. Phrased to acknowledge the earlier
+   * pass, because a fresh review that repeats four points the writer has
+   * already dealt with reads as not having looked.
+   */
+  const reanalyse = useCallback(() => {
+    ask(
+      "Read the whole piece again as it now stands and tell me what is still wrong. " +
+        "Take account of what has already changed since your earlier notes — do not repeat points " +
+        "that no longer apply, and say so if something you raised before has been fixed. " +
+        "Quote each passage you mean in an anchor block."
+    );
+  }, [ask]);
+
   const clear = useCallback(async () => {
     if (!workspaceId) return;
     try {
@@ -654,11 +672,22 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
             {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CornerDownLeft className="h-3.5 w-3.5" />}
           </button>
         </div>
-        <div className="mt-1.5 flex items-center justify-between">
-          <span className="text-[10.5px] text-muted-foreground inline-flex items-center gap-1">
-            <Sparkles className="h-2.5 w-2.5" />
-            Sees the draft, the brief and your background
+        <div className="mt-1.5 flex items-center justify-between gap-2">
+          <span className="text-[10.5px] text-muted-foreground inline-flex items-center gap-1 min-w-0">
+            <Sparkles className="h-2.5 w-2.5 shrink-0" />
+            <span className="truncate">Sees the draft, the brief and your background</span>
           </span>
+          <span className="inline-flex items-center gap-2.5 shrink-0">
+          {turns.length > 0 && (
+            <button
+              onClick={reanalyse}
+              disabled={busy}
+              className="text-[10.5px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1 disabled:opacity-40"
+              title="Read the whole piece again as it now stands"
+            >
+              <RefreshCw className="h-2.5 w-2.5" /> Re-analyse
+            </button>
+          )}
           {turns.length > 0 && (
             <button
               onClick={clear}
@@ -668,6 +697,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
               <Eraser className="h-2.5 w-2.5" /> Clear
             </button>
           )}
+          </span>
         </div>
       </div>
     </div>

@@ -417,6 +417,35 @@ console.log("\n7. The two rails stay different");
     "and NOT offered where the point already carries a rewrite");
   assert(/split\(\/\\n\{2,\}\/\)/.test(dp),
     "prose is split per POINT, so a six-point reply gets six actions rather than one");
+  assert(/reanalyse/.test(dp),
+    "the conversation can be asked to read the whole piece again as it now stands");
+  assert(/do not repeat points\s*"?\s*\+?\s*"?\s*that no longer apply|do not repeat points/.test(dp),
+    "and is told what has changed, so a fresh pass does not re-raise what the writer already fixed");
+
+  // ── Version history ─────────────────────────────────────────────────────
+  //
+  // The autosave PATCH updates the latest draft row IN PLACE, so before this
+  // nothing recorded a writer's editing history at all — the version column
+  // counted generations. A version is now cut where someone would want to go
+  // back to: before a change they did not type, and before a restore.
+  const versions = stripComments(read("app/api/optimizer/sessions/[id]/versions/route.ts"));
+  assert(/previous === next/.test(versions),
+    "a no-op change cuts no version — a row identical to the one below it tells the reader nothing");
+  assert(/\.update\(\{ document_body: previous/.test(versions),
+    "the OLD body is pinned to the existing row, so the autosave debounce cannot land first and destroy it");
+  assert(/loadSessionForCaller\(/.test(versions), "history is entitlement-checked like everything else");
+  assert(/MAX_VERSIONS/.test(versions), "the history is bounded");
+  assert(!/select\("units_version, units_words, date_created, document_body/.test(versions),
+    "the LIST does not carry every body — forty drafts of an article is megabytes to render a list of dates");
+
+  assert(/cutVersion\(beforeHtml, editor\.getHTML\(\)\)/.test(page),
+    "a version is cut around every change applied from the conversation");
+  assert(/const beforeHtml = editor\.getHTML\(\);/.test(page),
+    "captured BEFORE anything moves");
+  const restore = page.slice(page.indexOf("const restoreVersion"), page.indexOf("const restoreVersion") + 1400);
+  assert(/cutVersion\(beforeHtml, restored\)/.test(restore),
+    "restoring is itself undoable — a history that only moves backwards is a trapdoor");
+
   assert(/onClick=\{\(\) => ask\(\)\}/.test(dp),
     "the send button calls ask() with no argument — onClick={ask} would pass the MouseEvent as the question");
   assert(/findAnchor\(/.test(page),
