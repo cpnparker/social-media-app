@@ -103,12 +103,14 @@ function AnchorChip({
   resolveQuote,
   onRevealQuote,
   onFix,
+  superseded,
 }: {
   quote: string;
   resolveQuote: (q: string) => boolean;
   onRevealQuote: (q: string) => boolean;
   /** Absent when this point already carries a rewrite of its own. */
   onFix?: (quote: string) => void;
+  superseded?: boolean;
 }) {
   const found = resolveQuote(quote);
   const short = quote.length > 90 ? `${quote.slice(0, 90)}…` : quote;
@@ -116,7 +118,14 @@ function AnchorChip({
   if (!found) {
     return (
       <p className="text-[11px] text-muted-foreground/70 italic leading-snug mb-1">
-        &ldquo;{short}&rdquo; — couldn&rsquo;t find that passage in the draft as it stands.
+        &ldquo;{short}&rdquo; —{" "}
+        {/* On an earlier pass, a passage that no longer exists is USUALLY one
+            the writer has since dealt with, and saying "already changed" is
+            both more likely and more useful than reporting a lookup failure.
+            On the current pass it really is a miss, and says so. */}
+        {superseded
+          ? "this has already changed since."
+          : "couldn\u2019t find that passage in the draft as it stands."}
       </p>
     );
   }
@@ -566,6 +575,20 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
     }
   }, [sessionId, workspaceId]);
 
+  /**
+   * Where the current reading starts: the last question asked, and everything
+   * after it.
+   *
+   * Not "the last assistant turn" — the question that prompted it belongs with
+   * it, and separating them would put a heading between a question and its
+   * answer. While a reply is streaming there is no completed exchange below, so
+   * the marker sits on the question being answered right now.
+   */
+  const latestStart = (() => {
+    for (let i = turns.length - 1; i >= 0; i--) if (turns[i].role === "user") return i;
+    return turns.length > 0 ? turns.length - 1 : 0;
+  })();
+
   const live = streamed !== null ? splitLive(streamed) : null;
   const liveParsed = live ? parseDiscussReply(live.settled) : null;
 
@@ -594,17 +617,63 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
           </div>
         )}
 
-        {turns.map((t, i) =>
-          t.role === "user" ? (
-            <div key={i} className="flex justify-end">
-              <p className="max-w-[85%] rounded-xl rounded-br-sm bg-muted px-2.5 py-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap">
-                {t.content}
-              </p>
+        {turns.map((t, i) => {
+          const superseded = i < latestStart;
+          const opensLatest = i === latestStart && turns.length > 2;
+          return (
+            <div key={i}>
+              {opensLatest && (
+                // ── WHERE THE CURRENT READING STARTS ──────────────────────
+                //
+                // A re-analysis lands at the bottom of one continuous scroll,
+                // so a point from three passes ago looked exactly like one made
+                // thirty seconds ago — and the writer had no way to tell which
+                // recommendations still stood. The rule says where the current
+                // pass begins; everything above it is dimmed rather than
+                // hidden, because an earlier point can still be right and
+                // deleting the record of what was said would be worse than
+                // leaving it ambiguous.
+                <div className="flex items-center gap-2 pt-2 pb-1">
+                  <span className="h-px flex-1 bg-primary/30" />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-primary/80">
+                    Latest
+                  </span>
+                  <span className="h-px flex-1 bg-primary/30" />
+                </div>
+              )}
+              {i === 0 && latestStart > 0 && turns.length > 2 && (
+                <div className="flex items-center gap-2 pb-1">
+                  <span className="h-px flex-1 bg-border" />
+                  <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+                    Earlier
+                  </span>
+                  <span className="h-px flex-1 bg-border" />
+                </div>
+              )}
+              <div className={cn(superseded && "opacity-55 hover:opacity-100 transition-opacity")}>
+                {t.role === "user" ? (
+                  <div className="flex justify-end">
+                    <p className="max-w-[85%] rounded-xl rounded-br-sm bg-muted px-2.5 py-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap">
+                      {t.content}
+                    </p>
+                  </div>
+                ) : (
+                  <AssistantTurn
+                    turnIndex={i}
+                    content={t.content}
+                    hasSelection={hasSelection}
+                    onApply={onApply}
+                    resolveQuote={resolveQuote}
+                    onRevealQuote={onRevealQuote}
+                    onFix={askForFix}
+                    onPointFix={askForPointFix}
+                    superseded={superseded}
+                  />
+                )}
+              </div>
             </div>
-          ) : (
-            <AssistantTurn key={i} turnIndex={i} content={t.content} hasSelection={hasSelection} onApply={onApply} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} onFix={askForFix} onPointFix={askForPointFix} />
-          )
-        )}
+          );
+        })}
 
         {live && (
           <div className="space-y-1.5">
@@ -713,6 +782,7 @@ function AssistantTurn({
   onRevealQuote,
   onFix,
   onPointFix,
+  superseded,
 }: {
   turnIndex: number;
   content: string;
@@ -722,6 +792,8 @@ function AssistantTurn({
   onRevealQuote: (q: string) => boolean;
   onFix: (q: string) => void;
   onPointFix: (point: string) => void;
+  /** From an earlier pass. Its points may already have been acted on. */
+  superseded?: boolean;
 }) {
   // Rendered from SEGMENTS, in the order the model wrote them. Rendering the
   // prose and then the blocks — which is what the flat shape invited — put a
@@ -749,6 +821,7 @@ function AssistantTurn({
               resolveQuote={resolveQuote}
               onRevealQuote={onRevealQuote}
               onFix={answered[seg.anchor] ? undefined : onFix}
+              superseded={superseded}
             />
           )}
           {seg.type === "draft" ? (

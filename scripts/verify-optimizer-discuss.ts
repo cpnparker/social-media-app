@@ -417,6 +417,24 @@ console.log("\n7. The two rails stay different");
     "and NOT offered where the point already carries a rewrite");
   assert(/split\(\/\\n\{2,\}\/\)/.test(dp),
     "prose is split per POINT, so a six-point reply gets six actions rather than one");
+  // ── Current vs legacy ───────────────────────────────────────────────────
+  //
+  // A re-analysis lands at the bottom of one continuous scroll, so a point from
+  // three passes ago looked exactly like one made thirty seconds ago and the
+  // writer could not tell which recommendations still stood. Reported as "it is
+  // hard to see what are current recommendations and what are legacy".
+  assert(/latestStart/.test(dp), "the panel knows where the current pass begins");
+  assert(/role === "user"\) return i;/.test(dp),
+    "the boundary is the last QUESTION, so a heading never lands between a question and its answer");
+  assert(/Latest/.test(dp) && /Earlier/.test(dp),
+    "both sides of the boundary are labelled — one label leaves the other side ambiguous");
+  assert(/opacity-55 hover:opacity-100/.test(dp),
+    "earlier passes are dimmed, not hidden: an earlier point can still be right, and deleting the record would be worse than leaving it ambiguous");
+  assert(/this has already changed since\./.test(dp),
+    "on an earlier pass a vanished passage reads as already dealt with, which is both likelier and more useful than reporting a lookup failure");
+  assert(/couldn\\u2019t find that passage/.test(dp),
+    "on the CURRENT pass it still reports the miss honestly");
+
   assert(/reanalyse/.test(dp),
     "the conversation can be asked to read the whole piece again as it now stands");
   assert(/do not repeat points\s*"?\s*\+?\s*"?\s*that no longer apply|do not repeat points/.test(dp),
