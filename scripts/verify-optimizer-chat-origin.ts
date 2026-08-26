@@ -102,9 +102,15 @@ console.log("\n1b. Every source has a branch in the content chain");
   const chainStart = importSrc.indexOf('if (source === "pasted")');
   const head = chainStart >= 0 ? importSrc.slice(0, chainStart) : "";
   const chain = chainStart >= 0 ? importSrc.slice(chainStart) : "";
+  // A BRANCH HEAD, not any comparison. The first version matched every
+  // `source === "x"` anywhere in the file, so when the insert gained
+  // `type_surface: source === "chat" || source === "engine" ? ...` the checker
+  // decided "engine" had grown its own branch and reported the terminal else as
+  // catching something unnamed. The code was right and the detector was loose:
+  // a branch is `if (...)` or `} else if (...)`, and an expression is not one.
   const branchesFor = (src: string) => {
     const out: string[] = [];
-    const re = /source === "([a-z-]+)"/g;
+    const re = /(?:^\s*|\}\s*else\s+)if \(source === "([a-z-]+)"\)/gm;
     let m: RegExpExecArray | null;
     while ((m = re.exec(src)) !== null) if (out.indexOf(m[1]) < 0) out.push(m[1]);
     return out;
@@ -237,14 +243,23 @@ if (process.argv.indexOf("--self-test") >= 0) {
     const b = chatBranch(src);
     return b.indexOf("const a") > 0 && b.indexOf("after") < 0;
   })());
+  const heads = (src: string) => {
+    const out: string[] = [];
+    const re = /(?:^\s*|\}\s*else\s+)if \(source === "([a-z-]+)"\)/gm;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src)) !== null) out.push(m[1]);
+    return out;
+  };
   detects("a source with no branch in the chain", (() => {
-    const allowed = ["pasted", "chat"];
-    const chain = 'if (source === "pasted") {} else { engine }';
-    const covered: string[] = [];
-    const re = /source === "([a-z-]+)"/g; let m: RegExpExecArray | null;
-    while ((m = re.exec(chain)) !== null) covered.push(m[1]);
-    return allowed.filter((v) => covered.indexOf(v) < 0).length === 1;
+    const chain = 'if (source === "pasted") {\n} else {\n  engine\n}';
+    return ["pasted", "chat"].filter((v) => heads(chain).indexOf(v) < 0).length === 1;
   })());
+  detects("a comparison in an EXPRESSION is not counted as a branch", (() => {
+    // The exact shape that produced the false positive.
+    const expr = 'type_surface: source === "chat" || source === "engine" ? "writer" : "optimizer",';
+    return heads(expr).length === 0;
+  })());
+  detects("an else-if head IS counted", () => heads('} else if (source === "url") {').length === 1 ? true : false);
   detects("a route/CHECK mismatch", (() => {
     const mig = ["a", "b"].sort();
     const route = ["a", "b", "chat"].sort();
