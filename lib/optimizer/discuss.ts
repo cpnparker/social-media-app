@@ -186,10 +186,31 @@ export function buildDiscussTurn(opts: {
   return `${draftPart}${selPart}\n\n# Their question\n${String(opts.question || "").trim()}`;
 }
 
+/** One piece of a reply, in the order the model wrote it. */
+export interface DiscussSegment {
+  type: "text" | "draft";
+  text: string;
+}
+
 export interface DiscussReply {
-  /** Prose, with the fences removed. */
+  /**
+   * The reply IN ORDER. This is what a panel must render.
+   *
+   * The flat {commentary, drafts} shape below came first and was wrong on
+   * screen in a way no assertion caught: a reply shaped
+   * prose → block → prose rendered as all-prose-then-all-blocks, so a sentence
+   * ending "delete the setup and you lose nothing:" pointed at nothing, and the
+   * sentence after the block ("that's still a soft landing") referred back to
+   * something the reader had not reached yet. Both of the obvious properties
+   * held — the block was not duplicated in the prose, and the prose after it
+   * survived — while the ORDER, which is the only thing that made the reply
+   * readable, was silently destroyed. Found by reading the screen, not by a
+   * check.
+   */
+  segments: DiscussSegment[];
+  /** Prose only, fences removed. Derived — never a rendering order. */
   commentary: string;
-  /** Text offered for the document, in order. */
+  /** Text offered for the document, in order. Derived. */
   drafts: string[];
 }
 
@@ -207,38 +228,47 @@ export interface DiscussReply {
  */
 export function parseDiscussReply(text: string): DiscussReply {
   const src = String(text || "");
-  const drafts: string[] = [];
-  let commentary = "";
+  const segments: DiscussSegment[] = [];
   let i = 0;
+
+  const pushText = (t: string) => {
+    if (t.trim()) segments.push({ type: "text", text: t.trim() });
+  };
 
   while (i < src.length) {
     const open = src.indexOf("```draft", i);
     if (open < 0) {
-      commentary += src.slice(i);
+      pushText(src.slice(i));
       break;
     }
-    commentary += src.slice(i, open);
-    // Past the fence word and its line break.
+    pushText(src.slice(i, open));
     let bodyStart = open + "```draft".length;
     const nl = src.indexOf("\n", bodyStart);
     if (nl < 0) {
       // "```draft" with nothing after it: an unclosed fence at the very edge of
       // the stream. Commentary, for now.
-      commentary += src.slice(open);
+      pushText(src.slice(open));
       break;
     }
     bodyStart = nl + 1;
     const close = src.indexOf("```", bodyStart);
     if (close < 0) {
-      commentary += src.slice(open);
+      pushText(src.slice(open));
       break;
     }
     const body = src.slice(bodyStart, close).trim();
-    if (body) drafts.push(body);
+    if (body) segments.push({ type: "draft", text: body });
     i = close + 3;
   }
 
-  return { commentary: commentary.trim(), drafts };
+  const drafts: string[] = [];
+  const proseParts: string[] = [];
+  for (let j = 0; j < segments.length; j++) {
+    if (segments[j].type === "draft") drafts.push(segments[j].text);
+    else proseParts.push(segments[j].text);
+  }
+
+  return { segments, commentary: proseParts.join("\n\n"), drafts };
 }
 
 /**

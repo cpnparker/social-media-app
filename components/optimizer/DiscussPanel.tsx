@@ -44,8 +44,14 @@ interface Props {
   workspaceId: string | null;
   /** Read at submit time, so the model sees what is on screen — not the last save. */
   getDraftHtml: () => string;
-  /** The selected passage, reactive so the Apply button can say what it will do. */
+  /** The selected passage, for showing the writer what they are asking about. */
   selection: string;
+  /**
+   * Whether ANYTHING is selected. Separate from `selection` on purpose: a
+   * selection over an image yields no text, and deciding the button's label
+   * from the text made it promise "Add to the end" while the editor replaced.
+   */
+  hasSelection: boolean;
   /** Put text into the document. Returns what it actually did, so the toast is true. */
   onApply: (text: string) => "replaced" | "appended" | "failed";
 }
@@ -69,12 +75,12 @@ function splitLive(text: string): { settled: string; partial: string | null } {
 
 function DraftBlock({
   text,
-  selection,
+  hasSelection,
   onApply,
   pending,
 }: {
   text: string;
-  selection: string;
+  hasSelection: boolean;
   onApply: (text: string) => "replaced" | "appended" | "failed";
   pending?: boolean;
 }) {
@@ -106,7 +112,7 @@ function DraftBlock({
                 anything is selected RIGHT NOW. A button reading "Replace
                 selection" that appends instead is a small lie the writer only
                 catches after it has moved their text. */}
-            {selection ? "Replace selection" : "Add to the end"}
+            {hasSelection ? "Replace selection" : "Add to the end"}
           </Button>
         </div>
       )}
@@ -114,7 +120,7 @@ function DraftBlock({
   );
 }
 
-export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, selection, onApply }: Props) {
+export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, selection, hasSelection, onApply }: Props) {
   const [turns, setTurns] = useState<DiscussTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [streamed, setStreamed] = useState<string | null>(null);
@@ -122,10 +128,44 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, sel
   const [loaded, setLoaded] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  /**
+   * Which run's tokens are allowed to reach the screen.
+   *
+   * A stream takes seconds, and three things can happen inside that window —
+   * the writer opens a different piece, clears the conversation, or asks again.
+   * With nothing tracking WHICH run is current, all three end badly: piece A's
+   * reply is appended to piece B's conversation (and Apply then inserts A's
+   * text into B's document), a Clear the writer watched succeed silently fills
+   * back up, and a second question's tokens interleave with the first's.
+   *
+   * Every commit below is gated on this token still being the live one. It is
+   * bumped on unmount, on a session change, on Clear, and at the start of each
+   * ask — so a superseded run finishes quietly and writes nothing.
+   */
+  const runRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Abandon anything in flight when the piece changes or the panel goes away.
+  // Without the abort the request keeps running to completion, which also means
+  // the SERVER still writes the answer to the row it belongs to — correct, and
+  // the reason this only has to silence the CLIENT.
+  useEffect(() => {
+    return () => {
+      runRef.current++;
+      if (abortRef.current) abortRef.current.abort();
+    };
+  }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId || !workspaceId) { setLoaded(true); return; }
     let cancelled = false;
+    // Cleared FIRST, not when the fetch resolves: otherwise the previous
+    // piece's conversation stays on screen against the new document for as
+    // long as the round trip takes, and anything applied from it during that
+    // window lands in the wrong article.
+    setTurns([]);
+    setStreamed(null);
+    setLoaded(false);
     fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}/discuss?workspaceId=${encodeURIComponent(workspaceId)}`)
       .then((r) => r.json())
       .then((d) => { if (!cancelled && d.turns) setTurns(d.turns); })
@@ -153,10 +193,17 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, sel
     setStreamed("");
     setBusy(true);
 
+    // This run's ticket. Every write below checks it is still the live one.
+    const myRun = ++runRef.current;
+    const live = () => runRef.current === myRun;
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}/discuss`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           workspaceId,
           question: q,
@@ -165,6 +212,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, sel
         }),
       });
 
+      if (!live()) return;
       if (!res.ok || !res.body) {
         const err = await res.json().catch(() => ({}));
         toast.error(err.error || "Could not answer just now");
@@ -186,6 +234,9 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, sel
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        // Superseded mid-stream: stop reading and write nothing. The server
+        // still finishes and stores the answer against its own piece.
+        if (!live()) return;
         buffer += decoder.decode(value, { stream: true });
         let nl: number;
         while ((nl = buffer.indexOf("\n\n")) !== -1) {
@@ -199,7 +250,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, sel
               const data = JSON.parse(payload);
               if (typeof data.token === "string") {
                 full += data.token;
-                setStreamed(full);
+                if (live()) setStreamed(full);
               } else if (data.error) {
                 toast.error(String(data.error));
               }
@@ -208,6 +259,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, sel
         }
       }
 
+      if (!live()) return;
       if (full.trim()) {
         setTurns((t) => t.concat([{ role: "assistant", content: full, at: new Date().toISOString() }]));
       } else {
@@ -215,13 +267,19 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, sel
         setTurns((t) => t.filter((x) => x !== asked));
         setQuestion(q);
       }
-    } catch {
+    } catch (e: any) {
+      // An abort is this component tidying up after itself, not a failure the
+      // writer needs to be told about.
+      if (e && e.name === "AbortError") return;
+      if (!live()) return;
       toast.error("Could not answer just now");
       setTurns((t) => t.filter((x) => x !== asked));
       setQuestion(q);
     } finally {
-      setStreamed(null);
-      setBusy(false);
+      if (live()) {
+        setStreamed(null);
+        setBusy(false);
+      }
     }
   }, [question, busy, workspaceId, sessionId, getDraftHtml, selection]);
 
@@ -233,7 +291,14 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, sel
         { method: "DELETE" }
       );
       if (!res.ok) { toast.error("Could not clear that"); return; }
+      // Bumped so an answer already in flight cannot fill the conversation back
+      // up the moment it lands — which is exactly what a Clear during a stream
+      // used to do, silently, after the writer had watched it succeed.
+      runRef.current++;
+      if (abortRef.current) abortRef.current.abort();
       setTurns([]);
+      setStreamed(null);
+      setBusy(false);
     } catch {
       toast.error("Could not clear that");
     }
@@ -275,20 +340,21 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, sel
               </p>
             </div>
           ) : (
-            <AssistantTurn key={i} content={t.content} selection={selection} onApply={onApply} />
+            <AssistantTurn key={i} content={t.content} hasSelection={hasSelection} onApply={onApply} />
           )
         )}
 
         {live && (
-          <div>
-            {liveParsed && liveParsed.commentary && (
-              <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{liveParsed.commentary}</p>
+          <div className="space-y-1.5">
+            {liveParsed && liveParsed.segments.map((seg, i) =>
+              seg.type === "draft" ? (
+                <DraftBlock key={i} text={seg.text} hasSelection={hasSelection} onApply={onApply} />
+              ) : (
+                <p key={i} className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{seg.text}</p>
+              )
             )}
-            {liveParsed && liveParsed.drafts.map((d, i) => (
-              <DraftBlock key={i} text={d} selection={selection} onApply={onApply} />
-            ))}
             {live.partial !== null && (
-              <DraftBlock text={live.partial} selection={selection} onApply={onApply} pending />
+              <DraftBlock text={live.partial} hasSelection={hasSelection} onApply={onApply} pending />
             )}
             {!streamed && (
               <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
@@ -355,22 +421,27 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, sel
 
 function AssistantTurn({
   content,
-  selection,
+  hasSelection,
   onApply,
 }: {
   content: string;
-  selection: string;
+  hasSelection: boolean;
   onApply: (text: string) => "replaced" | "appended" | "failed";
 }) {
+  // Rendered from SEGMENTS, in the order the model wrote them. Rendering the
+  // prose and then the blocks — which is what the flat shape invited — put a
+  // sentence ending "delete the setup and you lose nothing:" above nothing, and
+  // the sentence that followed the block above the block it referred back to.
   const parsed = parseDiscussReply(content);
   return (
-    <div>
-      {parsed.commentary && (
-        <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{parsed.commentary}</p>
+    <div className="space-y-1.5">
+      {parsed.segments.map((seg, i) =>
+        seg.type === "draft" ? (
+          <DraftBlock key={i} text={seg.text} hasSelection={hasSelection} onApply={onApply} />
+        ) : (
+          <p key={i} className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{seg.text}</p>
+        )
       )}
-      {parsed.drafts.map((d, i) => (
-        <DraftBlock key={i} text={d} selection={selection} onApply={onApply} />
-      ))}
     </div>
   );
 }

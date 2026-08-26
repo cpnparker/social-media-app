@@ -28,12 +28,22 @@
  * KILLED  matching /```/ instead of /```draft/ in parseDiscussReply           → check 3
  * KILLED  escaping AFTER paragraphing in draftBlockToHtml                     → check 4
  * KILLED  adding {key:"score"} to the writer's tab list                       → check 7
- * KILLED  restoring `fetch(body.fileUrl)` in the sources upload branch        → check 8
+ * KILLED  restoring `await fetch(fileUrl)` in the sources upload branch       → check 8
+ * WIDENED  the kill above was genuine — the code that shipped was
+ *           `await fetch(fileUrl)`, which the old /fetch\(\s*fileUrl/ detector
+ *           did match. But it pinned ONE SPELLING, and the most natural way to
+ *           reintroduce the bug, `fetch(body.fileUrl)`, escaped it, as did any
+ *           rename. Check 8 now asserts the PROPERTY — no bare fetch() anywhere
+ *           in the route — which holds however the bug is written. The
+ *           distinction is worth the words: the log was accurate, the detector
+ *           was narrow, and only one of those needed fixing.
+ * KILLED  a Score tab pushed BEFORE the writer branch (the section-7 blind spot) → check 7
  * SURVIVED  deleting the `.trim()` in buildDiscussTurn's question — the model
  *           is unaffected by trailing whitespace on a question, and no
  *           assertion depends on it. Recorded rather than tidied away: it is a
  *           finding about the check, not an omission.
  */
+import { railTabsFor, defaultRailTab } from "../lib/optimizer/rail-tabs";
 import {
   trimForPrompt,
   trimForStorage,
@@ -142,6 +152,29 @@ console.log("\n3. Parsing what is offered for the piece");
 
   const e = parseDiscussReply("Just commentary, no fence.");
   assert(e.drafts.length === 0 && e.commentary === "Just commentary, no fence.", "commentary alone offers no button");
+
+  // ── ORDER. The assertion this check did not have. ────────────────────────
+  //
+  // The flat {commentary, drafts} shape passed every assertion above while
+  // rendering prose-then-blocks on screen, so a reply shaped
+  // prose → block → prose showed a sentence ending ":" above nothing, and the
+  // sentence that referred BACK to the block printed above it. Both obvious
+  // properties held; the only thing that made the reply readable did not.
+  // Found by reading the screen. Pinned here so it cannot come back.
+  const ordered = parseDiscussReply(
+    "Delete the setup and you lose nothing:\n```draft\nFundamentally, it is useful.\n```\nThough that is still a soft landing."
+  );
+  assert(ordered.segments.length === 3, "a prose→block→prose reply yields three segments");
+  assert(
+    ordered.segments[0].type === "text" &&
+      ordered.segments[1].type === "draft" &&
+      ordered.segments[2].type === "text",
+    "the segments are IN THE ORDER the model wrote them"
+  );
+  assert(/lose nothing:$/.test(ordered.segments[0].text), "the lead-in stays above the block it introduces");
+  assert(/^Though that/.test(ordered.segments[2].text), "the follow-on stays below the block it refers back to");
+  assert(ordered.drafts.length === 1 && ordered.commentary.indexOf("Fundamentally") < 0,
+    "the derived flat fields still behave, but they are not the rendering order");
 }
 
 // ── 4. Escaping happens BEFORE paragraphing ────────────────────────────────
@@ -207,15 +240,48 @@ console.log("\n6. Clearing the conversation");
 console.log("\n7. The two rails stay different");
 {
   const page = stripComments(read("app/engineai/optimizer/page.tsx"));
-  const m = page.match(/if \(surface === "writer"\) \{([\s\S]*?)return t;/);
-  assert(!!m, "the writer's tab list is identifiable");
-  if (m) {
-    const writerTabs = m[1];
-    assert(writerTabs.indexOf('key: "score"') < 0, "the Writer's rail offers NO Score tab");
-    assert(writerTabs.indexOf('key: "coverage"') < 0, "the Writer's rail offers no Coverage tab");
-    assert(writerTabs.indexOf('key: "discuss"') >= 0, "the Writer's rail offers Discuss");
-    assert(writerTabs.indexOf('key: "sources"') >= 0, "the Writer's rail offers Background");
+  // ── CALLED, not grepped ──────────────────────────────────────────────
+  //
+  // This was a regex that carved the writer's branch out of the file's text,
+  // and it was blind: a t.push({key:"score"}) placed BEFORE the
+  // `if (surface === "writer")` gives the Writer a Score tab and never enters
+  // the window the regex read. The re-merge this section exists to prevent
+  // could ship green. Proven, not theorised — the mutation is in the self-test.
+  //
+  // Running the function admits no such arrangement.
+  const chromes = [
+    { showScore: true, showCoverageTab: true },
+    { showScore: true, showCoverageTab: false },
+    { showScore: false, showCoverageTab: true },
+    { showScore: false, showCoverageTab: false },
+  ];
+  let writerScore = 0;
+  let writerCoverage = 0;
+  for (let i = 0; i < chromes.length; i++) {
+    const keys = railTabsFor("writer", chromes[i], 3).map((t) => t.key);
+    if (keys.indexOf("score") >= 0) writerScore++;
+    if (keys.indexOf("coverage") >= 0) writerCoverage++;
   }
+  assert(writerScore === 0, "the Writer's rail offers NO Score tab, under EVERY chrome combination");
+  assert(writerCoverage === 0, "the Writer's rail offers no Coverage tab, under every chrome combination");
+
+  const w = railTabsFor("writer", chromes[0], 3).map((t) => t.key);
+  assert(w.indexOf("discuss") >= 0 && w.indexOf("sources") >= 0, "the Writer's rail offers Discuss and Background");
+  assert(defaultRailTab("writer", chromes[0]) === "discuss", "the Writer OPENS on the conversation");
+  assert(defaultRailTab("optimiser", chromes[0]) === "score", "the Optimiser opens on the number");
+
+  const o = railTabsFor("optimiser", chromes[0], 3).map((t) => t.key);
+  assert(o.indexOf("discuss") < 0 && o.indexOf("sources") < 0,
+    "the Optimiser's rail does NOT grow the Writer's tabs — the separation cuts both ways");
+  assert(railTabsFor("optimiser", chromes[3], 0).map((t) => t.key).join(",") === "issues",
+    "with no judge and no coverage the Optimiser is left with Suggestions alone, not an empty rail");
+
+  // And the page must actually USE it, or the function is a decoration and the
+  // page keeps its own list.
+  assert(/railTabsFor\(/.test(page), "the page calls railTabsFor rather than building its own list");
+  assert(!/key: "score", label: "Score"/.test(page),
+    "no tab list survives inline in the page — one definition, not two");
+
   assert(/key === panelTab/.test(page) && /setPanelTab\(panelTabs\[0\]\.key\)/.test(page),
     "a tab this surface does not offer is corrected, not left selected under a fallback panel");
   // USED, not merely present. This repo has closed a live hole on the strength
@@ -226,6 +292,18 @@ console.log("\n7. The two rails stay different");
   assert(/editorRef\.current\.getHTML\(\)/.test(page.slice(page.indexOf("const getDraftHtml"), page.indexOf("const getDraftHtml") + 400)),
     "getDraftHtml reads the editor rather than the debounced state");
   assert(/onApply=\{applyDraftText\}/.test(page), "the Apply button is wired to the editor");
+
+  // USED, not merely available. parseDiscussReply still exposes the flat
+  // {commentary, drafts} fields, so a panel can go on rendering in the wrong
+  // order while the parser is perfectly correct — the ordering bug lived
+  // exactly there. Assert the panel reads SEGMENTS, and that neither render
+  // path maps over .drafts.
+  const panel = stripComments(read("components/optimizer/DiscussPanel.tsx"));
+  assert(/\.segments\.map\(/.test(panel), "the panel renders from segments");
+  assert(!/\.drafts\.map\(/.test(panel),
+    "no render path maps over the flat drafts list — that is the prose-then-blocks bug");
+  assert((panel.match(/\.segments\.map\(/g) || []).length >= 2,
+    "BOTH the settled and the streaming views render in order, not just one");
 }
 
 // ── 8. Nothing fetches a caller-supplied address ───────────────────────────
@@ -235,8 +313,16 @@ console.log("\n7. The two rails stay different");
 console.log("\n8. Background material reaches out safely");
 {
   const src = stripComments(read("app/api/optimizer/sessions/[id]/sources/route.ts"));
-  assert(!/fetch\(\s*fileUrl/.test(src) && !/body\?\.fileUrl/.test(src),
-    "no unguarded fetch of a caller-supplied URL");
+  // The detector this replaces looked for /fetch\(\s*fileUrl/ — which does NOT
+  // match `fetch(body.fileUrl)`, the most natural way to write the very bug,
+  // nor any renamed variable. The mutation log claimed that kill; the claim was
+  // false, and is corrected in the header. Assert the PROPERTY instead: this
+  // route makes no bare outbound fetch at all. Its two legitimate reach-outs go
+  // through importFromUrl (guarded) and the blob client (credentialed), neither
+  // of which is a bare `fetch(`.
+  const bareFetch = src.match(/(?<![.\w])fetch\s*\(/g) || [];
+  assert(bareFetch.length === 0,
+    `no bare fetch() anywhere in the sources route — found ${bareFetch.length}`);
   assert(/expectedPrefix\s*=\s*`optimizer-uploads\/w\$\{guard\.caller\.workspaceId\}/.test(src),
     "an uploaded file must sit under the CALLER's own workspace prefix");
   assert(/startsWith\(expectedPrefix\)/.test(src) && /indexOf\("\.\."\)/.test(src),
@@ -299,10 +385,38 @@ function selfTest() {
     /content:\s*buildDiscussTurn/.test("      content: buildDiscussTurn({ draftText, selection, question }),"));
   detects("a clear flag hidden behind the question guard",
     /body\.clear/.test("  if (body.clear === true) {"));
-  detects("a Score tab added to the writer's rail",
-    '  t.push({ key: "score", label: "Score" });'.indexOf('key: "score"') >= 0);
-  detects("an unguarded fetch of a caller-supplied URL",
-    /fetch\(\s*fileUrl/.test("      const res = await fetch(fileUrl);"));
+  // Section 7 — behavioural now, so the mutation is applied to the FUNCTION's
+  // contract rather than to a string. The blind spot that motivated the change
+  // is recorded alongside, so nobody reintroduces the regex thinking it was
+  // equivalent.
+  detects("a Score tab reaching the writer under any chrome",
+    railTabsFor("writer", { showScore: true, showCoverageTab: true }, 0)
+      .map((t) => t.key).indexOf("score") < 0);
+  {
+    const oldWindow = /if \(surface === "writer"\) \{([\s\S]*?)return t;/;
+    const bypass =
+      '  t.push({ key: "score", label: "Score" });\n' +
+      '  if (surface === "writer") {\n    t.push({ key: "discuss" });\n    return t;\n  }';
+    const seen = (bypass.match(oldWindow) || [])[1] || "";
+    // The old detector was BLIND to this: the Writer gets Score, the window
+    // never sees it. Recorded as a live demonstration, not a memory.
+    detects("the retired regex being blind to a Score tab pushed before the branch",
+      seen.indexOf('key: "score"') < 0);
+  }
+
+  // Section 8 — the property, against every spelling the old regex missed.
+  {
+    const bare = (src: string) => (src.match(/(?<![.\w])fetch\s*\(/g) || []).length > 0;
+    detects("fetch(fileUrl)", bare("const res = await fetch(fileUrl);"));
+    detects("fetch(body.fileUrl) — the spelling the retired regex MISSED",
+      bare("const res = await fetch(body.fileUrl);"));
+    detects("fetch(body.sourceUrl) — a renamed variable", bare("await fetch(body.sourceUrl)"));
+    // And it must NOT fire on the legitimate reach-outs, or check 8 is unusable.
+    detects("no false alarm on the guarded url import",
+      !bare("const result = await importFromUrl(ref);"));
+    detects("no false alarm on a method named fetch on an object",
+      !bare("await client.fetch(thing);"));
+  }
   detects("a comment being read as code",
     stripComments('// const x = fetch(fileUrl);\nconst y = 1;').indexOf("fileUrl") < 0);
   // The narrowing itself, in BOTH directions. Over-narrowing turns a false
@@ -326,6 +440,14 @@ function selfTest() {
   const badRoute = fakeRoute.replace("content: question", "content: buildDiscussTurn({ d })");
   detects("a route that really does store the built turn",
     /buildDiscussTurn/.test(storageRegion(badRoute)));
+
+  // The flat shape, simulated: it satisfies every OTHER assertion in section 3.
+  const flat = parseDiscussReply("A:\n```draft\nX\n```\nB.");
+  detects("a renderer that would emit prose-then-blocks instead of segment order",
+    flat.segments.length === 3 && flat.segments[1].type === "draft" &&
+    // the flat fields alone cannot distinguish the two orders — which is why
+    // the old shape could not catch this
+    (flat.commentary === "A:\n\nB." && flat.drafts.length === 1));
 
   detects("a truncated draft that does not say so",
     /TRUNCATED/.test(buildDiscussTurn({ draftText: "x".repeat(40000), selection: null, question: "q" })));

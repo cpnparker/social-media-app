@@ -43,6 +43,7 @@ import StartScreen from "@/components/optimizer/StartScreen";
 import DiscussPanel from "@/components/optimizer/DiscussPanel";
 import SourcesPanel from "@/components/optimizer/SourcesPanel";
 import { draftBlockToHtml } from "@/lib/optimizer/discuss";
+import { railTabsFor, defaultRailTab, type RailTabKey } from "@/lib/optimizer/rail-tabs";
 import EngineAISidebar from "@/components/engineai/EngineAISidebar";
 import {
   OptimizerHighlight, optimizerHighlightKey, applyFinding,
@@ -142,9 +143,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
    * The default differs for the same reason: the Writer opens on the
    * conversation, the Optimiser on the number.
    */
-  const [panelTab, setPanelTab] = useState<"score" | "issues" | "coverage" | "discuss" | "sources">(
-    surface === "writer" ? "discuss" : "score"
-  );
+  const [panelTab, setPanelTab] = useState<RailTabKey>(surface === "writer" ? "discuss" : "score");
   /**
    * The selected passage, mirrored into React.
    *
@@ -155,6 +154,17 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
    * appends instead is a small lie caught only after it has moved their text.
    */
   const [selText, setSelText] = useState("");
+  /**
+   * Whether anything is selected AT ALL — which is not the same question as
+   * whether any TEXT is selected, and the difference was a lie on a button.
+   *
+   * A selection over an image or a horizontal rule has from !== to while
+   * textBetween returns "", so selText was empty, the button read "Add to the
+   * end", and applyDraftText — which tests from !== to — replaced the selection
+   * instead. The label promised one thing and the code did the other, which is
+   * precisely the failure the label was written to prevent. Both now read this.
+   */
+  const [hasSel, setHasSel] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   /**
    * The body as it stood when the last assessment ran.
@@ -273,7 +283,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     setQueries([]);
     setIssues([]);
     setDiagnostics(null);
-    setPanelTab(surface === "writer" ? "discuss" : "score");
+    setPanelTab(defaultRailTab(surface, { showScore: chrome.showScore, showCoverageTab: chrome.showCoverageTab }));
     // A generated piece must not inherit the previous article's audit view or
     // source: stale sourceInfo kept the Page audit tab alive for a session
     // with no page, and the streaming draft wrote into a hidden editor.
@@ -848,6 +858,9 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     // the selection only updated when a mark happened to be involved.
     editor.on("selectionUpdate", () => {
       const { from, to } = editor.state.selection;
+      // ONE predicate, mirrored to both consumers, so the button's promise and
+      // applyDraftText's behaviour cannot disagree.
+      setHasSel(from !== to);
       setSelText(from === to ? "" : editor.state.doc.textBetween(from, to, "\n").trim());
     });
   }, []);
@@ -1114,23 +1127,15 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
    * has one answer. The count on Suggestions is the active findings, which is
    * the only number in the rail that changes as you type.
    */
-  const panelTabs = useMemo(() => {
-    const activeIssues = issues.filter((i) => i.status === "active").length;
-    const t: { key: "score" | "issues" | "coverage" | "discuss" | "sources"; label: string; count?: number }[] = [];
-    if (surface === "writer") {
-      t.push({ key: "discuss", label: "Discuss" });
-      t.push({ key: "sources", label: "Background" });
-      t.push({ key: "issues", label: "Suggestions", count: activeIssues });
-      return t;
-    }
-    // A graded score over a document nobody is scoring is a number pretending
-    // to mean something. Where there is no judge there is no tab, and the
-    // deterministic marks still appear under Suggestions.
-    if (chrome.showScore) t.push({ key: "score", label: "Score" });
-    t.push({ key: "issues", label: "Suggestions", count: activeIssues });
-    if (chrome.showCoverageTab) t.push({ key: "coverage", label: "Coverage" });
-    return t;
-  }, [surface, chrome.showScore, chrome.showCoverageTab, issues]);
+  const panelTabs = useMemo(
+    () =>
+      railTabsFor(
+        surface,
+        { showScore: chrome.showScore, showCoverageTab: chrome.showCoverageTab },
+        issues.filter((i) => i.status === "active").length
+      ),
+    [surface, chrome.showScore, chrome.showCoverageTab, issues]
+  );
 
   /**
    * Correct a selection that this surface does not offer.
@@ -1707,10 +1712,12 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
           {panelTab === "discuss" && surface === "writer" ? (
             sessionId ? (
               <DiscussPanel
+                key={sessionId}
                 sessionId={sessionId}
                 workspaceId={workspaceId}
                 getDraftHtml={getDraftHtml}
                 selection={selText}
+                hasSelection={hasSel}
                 onApply={applyDraftText}
               />
             ) : (
@@ -1721,6 +1728,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
           ) : panelTab === "sources" && surface === "writer" ? (
             sessionId ? (
               <SourcesPanel
+                key={sessionId}
                 sessionId={sessionId}
                 workspaceId={workspaceId}
                 onChanged={() => setPiecesRefreshKey((k) => k + 1)}

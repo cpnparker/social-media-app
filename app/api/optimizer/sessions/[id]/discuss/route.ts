@@ -213,7 +213,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       {
         model: DISCUSS_MODEL,
         systemPrompt,
-        maxTokens: 2000,
+        // 2000 truncated a requested rewrite mid-fence: the reply stops inside
+        // a ```draft block, the parser correctly refuses to offer an unclosed
+        // fence as insertable, and the writer is left looking at a literal
+        // marker with no button — having paid for the whole call. 4000 is
+        // roughly 3000 words of prose, comfortably past any single passage a
+        // discussion rewrites.
+        maxTokens: 4000,
         webSearch: false,
         imageGeneration: false,
         preserveLinks: true,
@@ -240,16 +246,52 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         // be sent back as context on every later turn.
         if (!reply) return;
 
+        // ── RE-READ, do not reuse the snapshot ────────────────────────────
+        //
+        // `history` was read BEFORE the model was called, and a stream takes
+        // seconds. Writing snapshot+new is a read-modify-write across that
+        // whole window, and it loses every change made inside it:
+        //
+        //   Clear the conversation while an answer is arriving, and the
+        //   completion writes the pre-clear history straight back. Forty turns
+        //   the writer deliberately deleted reappear, and the DELETE they
+        //   watched succeed is silently undone.
+        //
+        //   Ask two questions in quick succession and the second completion
+        //   overwrites the first exchange, which vanishes from a conversation
+        //   the writer watched arrive.
+        //
+        // Re-reading here narrows the window to the write itself. It is not a
+        // transaction — Postgres could still interleave two completions landing
+        // in the same instant — but it removes the seconds-long window that
+        // made both failures ordinary rather than rare. A true fix needs the
+        // append pushed into the database; this is deliberately the smaller
+        // change, and the residual race is recorded rather than implied away.
+        const { data: fresh } = await intelligenceDb
+          .from("optimizer_sessions")
+          .select("config_chat")
+          .eq("id_session", id)
+          .maybeSingle();
+        const current = readTurns(fresh ? (fresh as any).config_chat : null);
+
         const next: DiscussTurn[] = trimForStorage(
-          history.concat([
+          current.concat([
             { role: "user", content: question, at: now },
             { role: "assistant", content: reply, at: new Date().toISOString() },
           ])
         );
-        await intelligenceDb
+        const { error: writeError } = await intelligenceDb
           .from("optimizer_sessions")
           .update({ config_chat: next })
           .eq("id_session", id);
+        // Logged rather than discarded. This runs after the response has been
+        // handed back, so there is no way left to tell the writer — which is
+        // exactly why it must reach the server log. A dropped error here means
+        // an answer that was paid for, read, and then gone on reload, with
+        // nothing anywhere saying why.
+        if (writeError) {
+          console.error("[optimizer] discuss: storing the conversation failed:", writeError.message);
+        }
       }
     );
 

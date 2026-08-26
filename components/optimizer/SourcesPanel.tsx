@@ -83,7 +83,15 @@ export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Prop
     }
   }, [sessionId, workspaceId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    // Cleared before the fetch, not after it. Otherwise the previous piece's
+    // background sits on screen against the new document for the length of a
+    // round trip, and "1 of 3 attached" describes something else entirely.
+    setSources([]);
+    setLoading(true);
+    setAdding(false);
+    load();
+  }, [sessionId, load]);
 
   const attach = useCallback(
     async (payload: any) => {
