@@ -218,12 +218,24 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
    * which is what makes an article shareable and what lets the sidebar and the
    * search results point at one.
    */
+  /**
+   * The route a document opens at is the surface you are ON.
+   *
+   * This hardcoded the Optimiser, because everything did. After the split it
+   * meant creating a Report in the Writer dropped you into the Optimiser with
+   * the wrong rail entry lit — the tool you were using swapped underneath you
+   * at the moment of creation. The content list is not a place a document can
+   * open, so it sends you to the Writer, which is where a document you clicked
+   * from a list is most likely to be worked on.
+   */
+  const surfaceRoute = surface === "optimiser" ? "/engineai/optimizer" : "/engineai/writer";
+
   const openSession = useCallback((id: string) => {
-    router.replace(`/engineai/optimizer?session=${encodeURIComponent(id)}`, { scroll: false });
-  }, [router]);
+    router.replace(`${surfaceRoute}?session=${encodeURIComponent(id)}`, { scroll: false });
+  }, [router, surfaceRoute]);
 
   const closeSession = useCallback(() => {
-    router.replace("/engineai/optimizer", { scroll: false });
+    router.replace(surfaceRoute, { scroll: false });
     setSessionId(null);
     setContentTypeId(DEFAULT_CONTENT_TYPE);
     setPhase("start");
@@ -238,7 +250,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     // with no page, and the streaming draft wrote into a hidden editor.
     setStudioView("optimise");
     setSourceInfo({ source: "generated", ref: null });
-  }, [router]);
+  }, [router, surfaceRoute]);
 
   // Hydrate whatever the URL names. Runs on mount and on every change of the
   // session parameter, so back/forward through the browser history works
