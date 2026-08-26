@@ -44,7 +44,7 @@ import { SectionRailDesktop, SectionRailMobile, useRailItems } from "@/component
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import {
-  Building2, Check, ChevronDown, ChevronsUpDown, Download, Loader2, Lock, Pencil, PenLine, PenSquare, Pin, Plus, Search, Sparkles, Trash2, Users, X,
+  Building2, Check, ChevronDown, ChevronsUpDown, Download, Gauge, Loader2, Lock, Pencil, PenLine, PenSquare, Pin, Plus, Search, Sparkles, Trash2, Users, X,
 } from "lucide-react";
 
 /** Kept in step with the shape app/engineai/page.tsx builds. */
@@ -124,7 +124,21 @@ export default function EngineAISidebar({
 }: Props) {
   const router = useRouter();
   const pathname = usePathname();
-  const inStudio = (pathname || "").startsWith("/engineai/optimizer");
+  const inWriter = (pathname || "").startsWith("/engineai/writer");
+  const inOptimiser = (pathname || "").startsWith("/engineai/optimizer");
+  /**
+   * Where a row opens.
+   *
+   * By PROVENANCE, until a piece carries its own surface: something generated
+   * or started from a chat was written here, everything else arrived to be
+   * assessed. A known and stated cost — an imported page you have since moved
+   * into the Writer still opens in the Optimiser from this rail.
+   *
+   * type_status cannot serve: every autosave writes "refining", in both
+   * surfaces, so it says when a document was last touched and never by whom.
+   */
+  const routeFor = (contentSource: string) =>
+    contentSource === "generated" || contentSource === "chat" ? "/engineai/writer" : "/engineai/optimizer";
   const customerCtx = useCustomerSafe();
   const customers = customerCtx?.customers || [];
   const selectedCustomer = customerCtx?.selectedCustomer;
@@ -302,7 +316,7 @@ export default function EngineAISidebar({
       setArticles((prev) => prev.filter((x) => x.id !== a.id));
       // If the deleted piece is the one on screen, leave it — the studio would
       // otherwise sit on a session that no longer exists and 404 on next save.
-      if (selectedArticleId === a.id) router.push("/engineai/optimizer");
+      if (selectedArticleId === a.id) router.push(routeFor(a.source));
       toast.success("Deleted");
     } catch (err: any) {
       toast.error(err?.message || "Could not delete that");
@@ -506,11 +520,26 @@ export default function EngineAISidebar({
                 anywhere in the product — they were reachable only by typing the
                 URL, which in practice means nobody found them. A feature nobody
                 can navigate to is a feature that does not exist. */}
+            {/* TWO TOOLS, not one with modes. The Writer produces text; the
+                Optimiser assesses text that already exists. They were one
+                entry until 2026-08-26, which is what merged the jobs. */}
+            <button
+              onClick={() => router.push("/engineai/writer")}
+              className={cn(
+                "w-full flex items-center gap-2 rounded-lg px-2.5 py-2 transition-colors text-left",
+                inWriter
+                  ? "bg-white/15 text-white"
+                  : "bg-white/[0.06] hover:bg-white/10 text-white/80 hover:text-white"
+              )}
+            >
+              <PenSquare className={cn("h-3.5 w-3.5 shrink-0", inWriter ? "text-white/80" : "text-white/40")} />
+              <span className="flex-1 truncate text-[13px] font-medium">Writer</span>
+            </button>
             <button
               onClick={() => router.push("/engineai/optimizer")}
               className={cn(
                 "w-full flex items-center gap-2 rounded-lg px-2.5 py-2 transition-colors text-left",
-                inStudio
+                inOptimiser
                   ? "bg-white/15 text-white"
                   : "bg-white/[0.06] hover:bg-white/10 text-white/80 hover:text-white"
               )}
@@ -520,8 +549,8 @@ export default function EngineAISidebar({
                   finally says which surface you are on: without the active
                   state, the studio and the chat page were indistinguishable
                   from the sidebar. */}
-              <PenSquare className={cn("h-3.5 w-3.5 shrink-0", inStudio ? "text-white/80" : "text-white/40")} />
-              <span className="flex-1 truncate text-[13px] font-medium">Writing Studio</span>
+              <Gauge className={cn("h-3.5 w-3.5 shrink-0", inOptimiser ? "text-white/80" : "text-white/40")} />
+              <span className="flex-1 truncate text-[13px] font-medium">Optimiser</span>
             </button>
 
             {/* Search chats */}
@@ -629,14 +658,14 @@ export default function EngineAISidebar({
                               {offeredTypes().map((t) => (
                                 <DropdownMenuItem
                                   key={t.id}
-                                  onClick={() => router.push(`/engineai/optimizer?new=${encodeURIComponent(t.id)}`)}
+                                  onClick={() => router.push(`/engineai/writer?new=${encodeURIComponent(t.id)}`)}
                                 >
                                   <PenLine className="h-3.5 w-3.5 mr-2 opacity-60" />
                                   {String(t.label)}
                                 </DropdownMenuItem>
                               ))}
                               <DropdownMenuSeparator />
-                              <DropdownMenuItem onClick={() => router.push("/engineai/optimizer?new=article&setup=1")}>
+                              <DropdownMenuItem onClick={() => router.push("/engineai/writer?new=article&setup=1")}>
                                 <Sparkles className="h-3.5 w-3.5 mr-2 opacity-60" />
                                 Draft it with AI
                               </DropdownMenuItem>
@@ -661,7 +690,7 @@ export default function EngineAISidebar({
                       {visibleArticles.slice(0, searchQuery ? 8 : 5).map((a) => (
                         <button
                           key={a.id}
-                          onClick={() => editingId !== a.id && router.push(`/engineai/optimizer?session=${encodeURIComponent(a.id)}`)}
+                          onClick={() => editingId !== a.id && router.push(`${routeFor(a.source)}?session=${encodeURIComponent(a.id)}`)}
                           onDoubleClick={(e) => a.isOwner && startRenamingArticle(e, a)}
                           className={cn(
                             "w-full text-left rounded-lg px-2.5 py-2 transition-colors group/art",
@@ -767,7 +796,7 @@ export default function EngineAISidebar({
                       ))}
                       {visibleArticles.length > (searchQuery ? 8 : 5) && (
                         <button
-                          onClick={() => router.push("/engineai/optimizer?all=1")}
+                          onClick={() => router.push("/engineai/content")}
                           className="w-full text-left px-2.5 py-1.5 text-[12px] text-white/55 hover:text-white/80 transition-colors"
                         >
                           {visibleArticles.length - (searchQuery ? 8 : 5)} more...

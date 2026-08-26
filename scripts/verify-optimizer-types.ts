@@ -127,6 +127,8 @@ console.log("\n2. The unnamed type is never rendered");
     // indistinguishable from pre-existing noise. It is not noise: it is new.
     const UI = [
       "app/engineai/optimizer/page.tsx",
+      "app/engineai/writer/page.tsx",
+      "app/engineai/content/page.tsx",
       "components/optimizer",
       "components/engineai/EngineAISidebar.tsx",
       "app/engineai/page.tsx",
@@ -134,7 +136,15 @@ console.log("\n2. The unnamed type is never rendered");
     const files: string[] = [];
     for (const u of UI) {
       const full = path.join(ROOT, u);
-      if (!fs.existsSync(full)) continue;
+      // A NAMED PATH THAT STOPS EXISTING GOES RED.
+      //
+      // This used to `continue`, so a file renamed or moved dropped silently
+      // out of coverage while the section kept printing "ok". Only the
+      // aggregate "no files found" would ever have fired, and only if EVERY
+      // path vanished at once. That is the check-that-tests-nothing failure,
+      // and splitting the studio across new routes is exactly the kind of move
+      // that would have triggered it.
+      if (!fs.existsSync(full)) { fail(`${u} is in the absence-check list but does not exist — coverage silently dropped`); continue; }
       if (fs.statSync(full).isDirectory()) {
         for (const f of fs.readdirSync(full)) if (/\.tsx?$/.test(f)) files.push(path.join(full, f));
       } else files.push(full);

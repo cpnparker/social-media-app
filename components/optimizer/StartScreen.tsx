@@ -34,6 +34,15 @@ interface Props {
   onWriteNew: () => void;
   /** Start an empty piece of this type and open the editor. No model call. */
   onStartBlank: (contentType: string) => void;
+  /**
+   * Which job this screen is for.
+   *
+   * "writer" offers the ways to PRODUCE text; "optimiser" the ways to bring in
+   * text that already exists and have it ASSESSED. One component because the
+   * container, the client line and the card grammar are identical; two card
+   * sets because the intents are not, and offering both was the merge.
+   */
+  surface: "writer" | "optimiser";
 }
 
 /** The tab a writer clicks and the `source` the server records are named
@@ -72,7 +81,7 @@ const CONTENT_TYPE_FOR: { [ext: string]: string } = {
   md: "text/markdown", markdown: "text/markdown", txt: "text/plain",
 };
 
-export default function StartScreen({ workspaceId, clientId, clientName, onImported, onWriteNew, onStartBlank }: Props) {
+export default function StartScreen({ workspaceId, clientId, clientName, onImported, onWriteNew, onStartBlank, surface }: Props) {
   const [tab, setTab] = useState<Tab>("paste");
   const [sources, setSources] = useState<ImportSources | null>(null);
   const [loading, setLoading] = useState(false);
@@ -248,9 +257,13 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
       <div className="mx-auto w-full max-w-[48rem] px-6 py-10 flex flex-col gap-6">
 
         <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-bold tracking-tight">New content</h1>
+          <h1 className="text-2xl font-bold tracking-tight">
+            {surface === "writer" ? "Write something" : "Assess content"}
+          </h1>
           <p className="text-sm text-muted-foreground">
-            Write it yourself, brief the AI, or bring in something you already have.
+            {surface === "writer"
+              ? "A brief, or a blank page. Nothing is sent to a model until you ask."
+              : "Bring in content that already exists and see how it performs for AI answers."}
             {clientName ? ` Client: ${clientName}.` : ""}
           </p>
         </div>
@@ -264,13 +277,14 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             "pick a kind" and "pick a source" read as one grammar — and they are
             built from offeredTypes(), never a literal list, which is what keeps
             an unoffered type out of this menu structurally. */}
+        {surface === "writer" && (
         <div className="rounded-2xl border border-primary/30 bg-primary/[0.025] p-5">
           <div className="flex items-baseline gap-2 mb-1">
             <PenLine className="h-4 w-4 text-primary shrink-0 self-center" />
-            <span className="text-base font-semibold tracking-tight">Write it yourself</span>
+            <span className="text-base font-semibold tracking-tight">Start from a blank page</span>
           </div>
           <p className="text-[13px] text-muted-foreground leading-relaxed mb-4">
-            A blank page. Nothing is sent to a model until you ask.
+            The instant checks run as you type. No model call.
           </p>
           <div className="flex flex-wrap gap-1.5">
             {offeredTypes().map((t) => (
@@ -284,9 +298,13 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             ))}
           </div>
         </div>
+        )}
 
-        {/* Bring content in. No longer the primary card — see above. */}
-        <div className="rounded-2xl border p-5">
+        {/* Bringing content in belongs to the Optimiser: this path mints a
+            document TO BE SCORED, which is a different intent from producing
+            one. Offering both on one screen is what merged the two tools. */}
+        {surface === "optimiser" && (
+        <div className="rounded-2xl border border-primary/30 bg-primary/[0.025] p-5">
           <div className="flex items-baseline gap-2 mb-1">
             <span className="text-base font-semibold tracking-tight">Bring something in</span>
           </div>
@@ -557,7 +575,10 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
           )}
         </div>
 
-        {/* Secondary: write new */}
+        )}
+
+        {/* Briefing the AI is Writer work. */}
+        {surface === "writer" && (
         <div className="rounded-2xl border p-4 flex items-center gap-3.5">
           <div className="h-9 w-9 rounded-lg bg-muted flex items-center justify-center shrink-0">
             <PenLine className="h-4 w-4 text-foreground/70" />
@@ -569,10 +590,11 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             </p>
           </div>
           <Button variant="outline" size="sm" onClick={onWriteNew} className="shrink-0">
-            Start a brief
+            Write the brief
             <ArrowRight className="h-4 w-4" />
           </Button>
         </div>
+        )}
       </div>
     </div>
   );

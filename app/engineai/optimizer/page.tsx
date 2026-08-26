@@ -65,7 +65,22 @@ const PLATFORMS: { id: string; label: string }[] = [
   { id: "perplexity", label: "Perplexity" },
 ];
 
-function OptimizerStudio() {
+/**
+ * Which JOB this mounting is doing.
+ *
+ * The two surfaces are different tools that happen to share a document, an
+ * editor and one anchoring path. The Writer PRODUCES text — a brief, a blank
+ * page, a commission, and generation. The Optimiser ASSESSES text that already
+ * exists — import, judge, findings, coverage. "content" is neither: it is the
+ * full list both of them link to.
+ *
+ * They were one surface until 2026-08-26, which put a scoring panel over a
+ * blank page and offered "write something" beside "bring something in to be
+ * scored" as though they were the same intent.
+ */
+export type Surface = "writer" | "optimiser" | "content";
+
+function OptimizerStudio({ surface }: { surface: Surface }) {
   const { selectedWorkspace } = useWorkspace();
   const { selectedCustomer } = useCustomer();
   const workspaceId = selectedWorkspace?.id || null;
@@ -409,6 +424,10 @@ function OptimizerStudio() {
   const setupParam = searchParams.get("setup");
   const claimedNewRef = useRef<string | null>(null);
   useEffect(() => {
+    // Only the Writer creates. On the Optimiser this effect must not fire at
+    // all: the redirect above is already sending the browser to /writer, and
+    // creating here as well would mint a document the writer never sees.
+    if (surface !== "writer") return;
     if (!newParam || !workspaceId) return;
     const claimKey = `${newParam}:${setupParam || ""}`;
     if (claimedNewRef.current === claimKey) return;
@@ -429,7 +448,7 @@ function OptimizerStudio() {
       return;
     }
     void startBlank(wanted.id);
-  }, [newParam, setupParam, workspaceId, startBlank]);
+  }, [surface, newParam, setupParam, workspaceId, startBlank]);
 
   /**
    * `?all=1` — the full list.
@@ -441,8 +460,33 @@ function OptimizerStudio() {
    * unreachable full stop.
    */
   useEffect(() => {
+    // The list is what /engineai/content IS, not a mode it can be put into.
+    if (surface === "content" && !urlSession) { setPhase("all"); return; }
     if (allParam === "1" && !urlSession) setPhase("all");
-  }, [allParam, urlSession]);
+  }, [surface, allParam, urlSession]);
+
+  /**
+   * The doors moved; the old addresses still work.
+   *
+   * `?new=` and `?all=1` were the Optimiser's because everything was. They now
+   * belong to the Writer and to the content list, and a saved link, a
+   * bookmark or a stale tab must land where the thing it asked for actually
+   * lives rather than on a screen that no longer offers it.
+   *
+   * `?session=` is deliberately NOT redirected: a document opens wherever you
+   * open it, which is the whole point of the two surfaces sharing one row.
+   */
+  useEffect(() => {
+    if (surface !== "optimiser" || urlSession) return;
+    if (newParam) {
+      const qs = new URLSearchParams();
+      qs.set("new", newParam);
+      if (setupParam) qs.set("setup", setupParam);
+      window.location.replace(`/engineai/writer?${qs.toString()}`);
+      return;
+    }
+    if (allParam === "1") window.location.replace("/engineai/content");
+  }, [surface, urlSession, newParam, setupParam, allParam]);
 
   useEffect(() => {
     if (phase !== "all" || !workspaceId) return;
@@ -1126,6 +1170,7 @@ function OptimizerStudio() {
         onImported={openSession}
         onStartBlank={startBlank}
         onWriteNew={() => setPhase("brief")}
+        surface={surface === "writer" ? "writer" : "optimiser"}
       />
     );
   }
@@ -1583,10 +1628,20 @@ function OptimizerStudio() {
  * than a spinner: the boundary resolves in the same tick client-side, so a
  * spinner would only ever flash.
  */
-export default function OptimizerPage() {
+/**
+ * Mounted by all three routes. The component is shared because the DOCUMENT is
+ * shared — one row, one editor, one set of highlights — and forking it would
+ * fork the anchoring path, which lib/optimizer/live-issues.ts warns is the copy
+ * that rots.
+ */
+export function OptimizerSurface({ surface }: { surface: Surface }) {
   return (
     <Suspense fallback={<div className="flex-1 min-h-0" />}>
-      <OptimizerStudio />
+      <OptimizerStudio surface={surface} />
     </Suspense>
   );
+}
+
+export default function OptimizerPage() {
+  return <OptimizerSurface surface="optimiser" />;
 }
