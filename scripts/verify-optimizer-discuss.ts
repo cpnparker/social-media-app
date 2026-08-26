@@ -185,6 +185,7 @@ console.log("\n3b. Anchors");
     "Two things.\n```anchor\nIOE speaks for business across the multilateral system.\n```\nYou never say what they should do differently.\n```anchor\nWe are the best in the market.\n```\n```draft\nWe grew thirty accounts in four years.\n```"
   );
   assert(r.segments.length === 3, "an anchor is folded into what it introduces, not left as a segment");
+  assert(r.segments[0].anchor === undefined, "prose before any anchor carries none");
   assert(r.segments[1].anchor === "IOE speaks for business across the multilateral system.",
     "the anchor binds FORWARD, to the point it introduces");
   assert(r.segments[2].type === "draft" && r.segments[2].anchor === "We are the best in the market.",
@@ -206,6 +207,34 @@ console.log("\n3b. Anchors");
   ] as any[];
   assert(linkAnchors(raw)[1].anchor === "A.", "linkAnchors binds to the FOLLOWING segment");
   assert(backwards(raw.slice())[0].anchor === "A.", "(the backwards mutation is distinguishable)");
+
+  // ── THE SHAPE THE MODEL ACTUALLY WRITES ─────────────────────────────────
+  //
+  // Observed live, not imagined: asked to quote a sentence and improve it, the
+  // model wrote [anchor][reasoning][rewrite]. Binding to the immediately
+  // following segment gave the anchor to the REASONING and left the rewrite
+  // unanchored, so the button read "Add to the end" and would have appended a
+  // replacement paragraph to the foot of the document. The original fixture put
+  // the anchor directly before the draft block, which the model had no reason
+  // to do — a fixture written to match the implementation rather than reality.
+  const realShape = parseDiscussReply(
+    "```anchor\nIn our experience, the companies that win answer real questions.\n```\n" +
+    "\"In our experience\" is the tell — it signals opinion where you have data.\n" +
+    "```draft\nOur 2026 study of 412 B2B pages found they were cited 3.4x more often.\n```\n" +
+    "That replaces the claim with evidence."
+  );
+  const rewrite = realShape.segments.filter((x) => x.type === "draft")[0];
+  assert(!!rewrite && rewrite.anchor === "In our experience, the companies that win answer real questions.",
+    "an anchor reaches the REWRITE even when reasoning sits between them");
+  assert(realShape.segments.every((x) => !!x.anchor),
+    "an anchor scopes every point that follows it, until the next anchor");
+
+  const twoSubjects = parseDiscussReply(
+    "```anchor\nFirst passage.\n```\nAbout the first.\n```anchor\nSecond passage.\n```\nAbout the second."
+  );
+  assert(twoSubjects.segments[0].anchor === "First passage." &&
+         twoSubjects.segments[1].anchor === "Second passage.",
+    "a second anchor changes the subject rather than accumulating");
 
   const trailing = parseDiscussReply("A point.\n```anchor\nDangling quote.\n```");
   assert(trailing.segments.length === 1 && !trailing.segments[0].anchor,
@@ -549,6 +578,26 @@ function selfTest() {
   detects("an error toast being wrongly flagged as noisy",
     (("toast.error(\"nope\");").match(/toast\.(success|warning|info|message)\(/g) || []).length === 0);
 
+  {
+    // The bug, reproduced: bind-to-next-segment-only.
+    const nextOnly = (segs: any[]) => {
+      const out: any[] = []; let pending: string | null = null;
+      for (const seg of segs) {
+        if (seg.type === "anchor") { pending = seg.text; continue; }
+        out.push(pending ? { ...seg, anchor: pending } : seg);
+        pending = null;
+      }
+      return out;
+    };
+    const shape = [
+      { type: "anchor", text: "Q." },
+      { type: "text", text: "reasoning" },
+      { type: "draft", text: "rewrite" },
+    ] as any[];
+    detects("an anchor that stops before the rewrite it was written for",
+      !nextOnly(shape).filter((x: any) => x.type === "draft")[0].anchor &&
+      !!linkAnchors(shape).filter((x) => x.type === "draft")[0].anchor);
+  }
   detects("a truncated draft that does not say so",
     /TRUNCATED/.test(buildDiscussTurn({ draftText: "x".repeat(40000), selection: null, question: "q" })));
 

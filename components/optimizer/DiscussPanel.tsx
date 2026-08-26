@@ -414,7 +414,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
           <div className="space-y-1.5">
             {liveParsed && liveParsed.segments.map((seg, i) => (
               <div key={i}>
-                {seg.anchor && (
+                {seg.anchor && seg.anchor !== liveParsed.segments[i - 1]?.anchor && (
                   <AnchorChip quote={seg.anchor} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} />
                 )}
                 {seg.type === "draft" ? (
@@ -518,7 +518,10 @@ function AssistantTurn({
     <div className="space-y-1.5">
       {parsed.segments.map((seg, i) => (
         <div key={i}>
-          {seg.anchor && (
+          {/* Once per RUN. An anchor now scopes every point until the next one,
+              so showing it above each would repeat the writer's own sentence
+              back at them two or three times in a row. */}
+          {seg.anchor && seg.anchor !== parsed.segments[i - 1]?.anchor && (
             <AnchorChip quote={seg.anchor} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} />
           )}
           {seg.type === "draft" ? (

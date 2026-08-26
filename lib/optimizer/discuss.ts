@@ -303,30 +303,40 @@ export function parseDiscussReply(text: string): DiscussReply {
 }
 
 /**
- * Fold each anchor into the segment it introduces.
+ * Fold each anchor into everything it introduces, until the next anchor.
  *
- * An anchor binds FORWARD — to the comment or the rewrite that FOLLOWS it —
- * because that is how the instruction is written and how a person reads it:
- * here is the passage, and here is what I think about it. Binding backwards
- * would attach every anchor to the wrong point and, worse, would do it
- * plausibly: the reply would still read correctly while every Show me and every
- * replacement pointed one paragraph off.
+ * An anchor binds FORWARD, because that is how the instruction is written and
+ * how a person reads it: here is the passage, here is what I think about it.
+ * Binding backwards would attach every anchor to the wrong point and do it
+ * PLAUSIBLY — the reply still reads correctly while every Show me and every
+ * replacement points one paragraph off.
+ *
+ * It binds to a RUN, not to one segment, and that is a correction made by
+ * watching a real reply. Asked to quote a sentence and improve it, the model
+ * wrote three segments: the anchor, its reasoning, then the rewrite. Binding to
+ * the immediately-following segment alone gave the anchor to the REASONING and
+ * left the rewrite unanchored — so the button offered "Add to the end" and
+ * would have appended a replacement paragraph to the foot of the document. The
+ * fixture missed it because I wrote the anchor directly before the draft block;
+ * the model does not, and had no reason to.
+ *
+ * An anchor is therefore the SUBJECT of the points that follow it, and it holds
+ * until another anchor changes the subject.
  *
  * A trailing anchor with nothing after it is DROPPED rather than kept as text.
- * It is a quote of the writer's own draft; rendering it as commentary shows
- * them their own sentence back with no observation attached to it.
+ * It is a quote of the writer's own draft; rendering it as commentary shows them
+ * their own sentence back with no observation attached to it.
  */
 export function linkAnchors(segments: DiscussSegment[]): DiscussSegment[] {
   const out: DiscussSegment[] = [];
-  let pending: string | null = null;
+  let current: string | null = null;
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     if (seg.type === "anchor") {
-      pending = seg.text;
+      current = seg.text;
       continue;
     }
-    out.push(pending ? { ...seg, anchor: pending } : seg);
-    pending = null;
+    out.push(current ? { ...seg, anchor: current } : seg);
   }
   return out;
 }
