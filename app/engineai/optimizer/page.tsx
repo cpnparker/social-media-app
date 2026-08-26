@@ -49,6 +49,7 @@ import PageAudit from "@/components/optimizer/PageAudit";
 import StartScreen from "@/components/optimizer/StartScreen";
 import DiscussPanel from "@/components/optimizer/DiscussPanel";
 import VersionHistory from "@/components/optimizer/VersionHistory";
+import SelectionActions from "@/components/optimizer/SelectionActions";
 import SourcesPanel from "@/components/optimizer/SourcesPanel";
 import { draftBlockToHtml, draftBlockToInlineHtml } from "@/lib/optimizer/discuss";
 import { railTabsFor, defaultRailTab, type RailTabKey } from "@/lib/optimizer/rail-tabs";
@@ -195,6 +196,17 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
   /** Which reply a margin marker asked us to scroll to, bumped so repeat
    *  clicks on the same marker still scroll. */
   const [focusTurn, setFocusTurn] = useState<{ turn: number; nonce: number } | null>(null);
+  /** A request sent from the editor's selection toolbar. */
+  const [pendingAsk, setPendingAsk] = useState<{ text: string; nonce: number } | null>(null);
+  /**
+   * The editor as STATE as well as a ref.
+   *
+   * The ref is what every imperative path uses, but the selection toolbar is a
+   * rendered component that must appear the moment the editor exists — and a
+   * ref does not re-render when it is set, so a toolbar reading editorRef would
+   * mount with null and never come back.
+   */
+  const [editorInstance, setEditorInstance] = useState<Editor | null>(null);
   /**
    * Whether anything is selected AT ALL — which is not the same question as
    * whether any TEXT is selected, and the difference was a lie on a button.
@@ -1018,6 +1030,20 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
    * that already carries a rubric mark would silently delete one of the two,
    * with nothing on screen saying which.
    */
+  /**
+   * Send a request from the editor to the conversation.
+   *
+   * Everything the selection toolbar offers goes through here rather than
+   * calling a model directly. A rewrite fired off on its own would be a second,
+   * silent path to the same work — its own spend, its own prompt, no record —
+   * and the writer would have no way to argue with the answer. In the thread it
+   * is visible, arguable, and comes back anchored, so Replace already works.
+   */
+  const askFromEditor = useCallback((text: string) => {
+    setPanelTab("discuss");
+    setPendingAsk((prev) => ({ text, nonce: (prev?.nonce || 0) + 1 }));
+  }, []);
+
   const setTalkAnchors = useCallback((anchors: { quote: string; turn: number }[]) => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -1995,10 +2021,19 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
               aria-label="Title"
               className="w-full mb-3 bg-transparent border-0 px-0 text-[26px] font-bold tracking-tight placeholder:text-muted-foreground/40 focus:outline-none"
             />
+            {/* Actions at the passage, not only in the rail. Rendered beside the
+                editor rather than inside the shared TiptapEditor, which serves
+                other surfaces that should not grow a writing toolbar. */}
+            <SelectionActions
+              editor={editorInstance}
+              enabled={!streaming}
+              onAsk={askFromEditor}
+              onDiscuss={() => setPanelTab("discuss")}
+            />
             <TiptapEditor
               content={streaming ? "" : body}
               onChange={(html) => { saveBody(html); syncIssues(); repaintLive(); }}
-              onReady={(e) => { editorRef.current = e; wireSelectionSync(e); setTimeout(repaintLive, 0); }}
+              onReady={(e) => { editorRef.current = e; setEditorInstance(e); wireSelectionSync(e); setTimeout(repaintLive, 0); }}
               editable={!streaming}
               debounceMs={600}
               extraExtensions={OPTIMIZER_EXTENSIONS}
@@ -2055,6 +2090,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
                 onRevealQuote={revealQuote}
                 onAnchorsChanged={setTalkAnchors}
                 focusTurn={focusTurn}
+                pendingAsk={pendingAsk}
                 selection={selText}
                 hasSelection={hasSel}
                 onApply={applyDraftText}

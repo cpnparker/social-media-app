@@ -435,6 +435,23 @@ console.log("\n7. The two rails stay different");
   assert(/couldn\\u2019t find that passage/.test(dp),
     "on the CURRENT pass it still reports the miss honestly");
 
+  // ── Actions at the passage ──────────────────────────────────────────────
+  const sel = stripComments(read("components/optimizer/SelectionActions.tsx"));
+  assert(/from === to\) return false/.test(sel),
+    "the toolbar does not appear without a selection");
+  assert(/textBetween\(from, to, "\\n"\)\.trim\(\)\.length > 0/.test(sel),
+    "nor over a selection with no words in it — an image has nothing to rewrite");
+  assert(/if \(!enabled\) return false/.test(sel),
+    "nor while a draft streams, when the text is moving under the cursor");
+  assert(!/fetch\(/.test(sel),
+    "NO action calls a model directly — every one goes through the conversation, so it is visible, arguable and comes back anchored");
+  assert(/anchor block/.test(sel) && /draft block/.test(sel),
+    "each action asks for an anchored replacement, so what comes back is applicable in place");
+  assert(/do not invent a figure|Do NOT invent a figure/i.test(sel),
+    "Make specific refuses to fabricate a number rather than filling the gap with one");
+  assert(/handledAsk/.test(dp),
+    "an ask from the editor fires once — this panel remounts whenever the rail changes tab");
+
   assert(/reanalyse/.test(dp),
     "the conversation can be asked to read the whole piece again as it now stands");
   assert(/do not repeat points\s*"?\s*\+?\s*"?\s*that no longer apply|do not repeat points/.test(dp),
@@ -526,7 +543,26 @@ console.log("\n8. Background material reaches out safely");
     "an uploaded file must sit under the CALLER's own workspace prefix");
   assert(/startsWith\(expectedPrefix\)/.test(src) && /indexOf\("\.\."\)/.test(src),
     "the prefix is checked, and traversal refused");
-  assert(/importFromUrl\(/.test(src), "the url branch goes through the shared guarded fetch");
+  // Asserted as a PROPERTY, not by naming a function. This assertion said
+  // /importFromUrl\(/ and went red the moment the url branch moved to
+  // fetchSourceFromUrl — which routes through the same guard. A check that
+  // names one implementation reports a rename as a security regression, and
+  // the next person "fixes" it by loosening the check.
+  assert(!/(?<![.\w])fetch\s*\(/.test(src),
+    "the sources route itself makes no unguarded outbound request");
+  const urlImport = stripComments(read("lib/optimizer/url-import.ts"));
+  const exported = urlImport.match(/export async function (\w+)/g) || [];
+  let unguarded = 0;
+  for (let i = 0; i < exported.length; i++) {
+    const name = exported[i].replace("export async function ", "");
+    const at = urlImport.indexOf(`export async function ${name}`);
+    const next = urlImport.indexOf("\nexport ", at + 1);
+    const bodyText = next < 0 ? urlImport.slice(at) : urlImport.slice(at, next);
+    if (/(?<![.\w])fetch\s*\(/.test(bodyText) && !/safeFetch\(/.test(bodyText)) unguarded++;
+  }
+  assert(exported.length > 0, "url-import exports fetchers to check");
+  assert(unguarded === 0,
+    `every exported fetcher in url-import goes through safeFetch (${exported.length} checked)`);
   assert(/get\(blobPath,\s*\{\s*access:\s*"private"\s*\}\)/.test(src),
     "blob bytes are read with credentials — the store is private and a plain GET is refused");
 }

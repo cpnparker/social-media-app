@@ -79,7 +79,14 @@ export async function fetchPageForAudit(rawUrl: string): Promise<
       timeoutMs: 20_000,
       headers: {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml",
+        // BROADER THAN WHAT WE WANT, on purpose. A narrow Accept of
+        // "text/html,application/xhtml+xml" was getting 403 from servers that
+        // hold a non-HTML file at that address — measured against a live TYPO3
+        // dumpFile URL, where the identical request with */* returned 200.
+        // Being refused before we can even look at the content type is worse
+        // than fetching and then declining: the content-type check below still
+        // rejects anything that is not a page, so nothing downstream changes.
+        Accept: "text/html,application/xhtml+xml,application/pdf,*/*;q=0.8",
       },
     });
     const page = await res.text();
@@ -103,7 +110,14 @@ export async function importFromUrl(rawUrl: string): Promise<UrlImportResult> {
       headers: {
         // Some CDNs serve bots an interstitial; a browserish UA gets the page.
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml",
+        // BROADER THAN WHAT WE WANT, on purpose. A narrow Accept of
+        // "text/html,application/xhtml+xml" was getting 403 from servers that
+        // hold a non-HTML file at that address — measured against a live TYPO3
+        // dumpFile URL, where the identical request with */* returned 200.
+        // Being refused before we can even look at the content type is worse
+        // than fetching and then declining: the content-type check below still
+        // rejects anything that is not a page, so nothing downstream changes.
+        Accept: "text/html,application/xhtml+xml,application/pdf,*/*;q=0.8",
       },
     });
   } catch (e: any) {
@@ -131,4 +145,111 @@ export async function importFromUrl(rawUrl: string): Promise<UrlImportResult> {
     return { ok: false, error: "Could not find any article text on that page." };
   }
   return { ok: true, title: extractTitle(page), html };
+}
+
+/**
+ * Fetch a URL as BACKGROUND MATERIAL, which is a different job from importing.
+ *
+ * importFromUrl exists to mint a document that will be SCORED, so it refuses
+ * anything that is not a page: the rubric measures structure, and a PDF's
+ * headings and lists do not survive extraction. Background material is read for
+ * its WORDS — it is never edited, never scored, never listed as content — so
+ * the same refusal there is a rule enforced for a reason that does not apply.
+ *
+ * The owner hit this with a real document: an IOE position paper served from a
+ * TYPO3 dumpFile URL. It failed twice over — 403 from a narrow Accept header,
+ * and then "not an article page" once that was fixed.
+ *
+ * Returns plain text either way, because that is all a source ever needs to be.
+ */
+export async function fetchSourceFromUrl(
+  rawUrl: string,
+  maxChars: number
+): Promise<{ ok: true; title: string; text: string; kind: "page" | "pdf" } | { ok: false; error: string }> {
+  const url = (rawUrl || "").trim();
+  if (!/^https?:\/\//i.test(url)) {
+    return { ok: false, error: "That is not a web address — it should start with https://" };
+  }
+
+  let res: Response;
+  try {
+    res = await safeFetch(url, {
+      timeoutMs: 25_000,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/pdf,*/*;q=0.8",
+      },
+    });
+  } catch (e: any) {
+    const msg = String(e?.message || "");
+    if (msg.indexOf("not a public address") >= 0) {
+      return { ok: false, error: "That address is not reachable from here." };
+    }
+    return { ok: false, error: "Could not reach that page." };
+  }
+  if (!res.ok) {
+    // A 401/403 is the SITE refusing us, not us refusing the writer, and the
+    // difference decides what they should do next. Measured on a live TYPO3
+    // dumpFile link that served the PDF happily to a browser and blocked this
+    // server — no header combination changed it. Telling them to download and
+    // attach it is the actual way through; "may need a sign-in" was a guess
+    // dressed as a diagnosis.
+    if (res.status === 401 || res.status === 403) {
+      return {
+        ok: false,
+        error:
+          "That site refused the request. Some sites block servers while serving the same file to a browser — open the link yourself, save the file, and attach it with File.",
+      };
+    }
+    if (res.status === 404) {
+      return { ok: false, error: "That address answered 404 — the link may have expired." };
+    }
+    return { ok: false, error: `That address answered ${res.status}.` };
+  }
+
+  const ctype = (res.headers.get("content-type") || "").toLowerCase();
+
+  if (ctype.indexOf("pdf") >= 0) {
+    try {
+      const buffer = Buffer.from(await res.arrayBuffer());
+      // The lib entry, not the package root: pdf-parse's index runs a demo
+      // against a bundled test file on import, which throws in a serverless
+      // filesystem and has nothing to do with the caller's document.
+      // @ts-expect-error - pdf-parse ships types for its package root only,
+      // and the root is the entry that must be avoided (see above).
+      const mod = await import("pdf-parse/lib/pdf-parse.js");
+      const pdfParse = (mod.default || mod) as (b: Buffer) => Promise<any>;
+      const parsed = await pdfParse(buffer);
+      const text = String(parsed?.text || "").replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+      if (!text) {
+        // A scanned PDF is images of words. Said plainly, because "no text
+        // found" reads as a bug when it is an accurate description of the file.
+        return { ok: false, error: "That PDF has no selectable text — it looks like a scan. Attach the source document instead." };
+      }
+      return { ok: true, title: extractPdfTitle(parsed, url), text: text.slice(0, maxChars), kind: "pdf" };
+    } catch {
+      return { ok: false, error: "That PDF could not be read." };
+    }
+  }
+
+  const page = await res.text();
+  if (page.length > MAX_HTML_BYTES) return { ok: false, error: "That page is too large to read." };
+  const region = extractArticleRegion(page);
+  const text = toEditorHtml(region, true).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  if (!text) return { ok: false, error: "Could not find any text on that page." };
+  return { ok: true, title: extractTitle(page), text: text.slice(0, maxChars), kind: "page" };
+}
+
+/** A PDF's own title if it has one, else the filename, else the host. */
+function extractPdfTitle(parsed: any, url: string): string {
+  const meta = String(parsed?.info?.Title || "").trim();
+  if (meta) return meta.slice(0, 200);
+  try {
+    const u = new URL(url);
+    const name = (u.pathname.split("/").pop() || "").replace(/\.pdf$/i, "").replace(/[-_]+/g, " ").trim();
+    return (name || u.hostname).slice(0, 200);
+  } catch {
+    return "PDF document";
+  }
 }

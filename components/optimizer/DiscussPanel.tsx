@@ -61,6 +61,16 @@ interface Props {
   /** A margin marker was clicked: scroll to what was said about that passage.
    *  Carries a nonce so clicking the same marker twice still scrolls. */
   focusTurn: { turn: number; nonce: number } | null;
+  /**
+   * A question asked from somewhere else in the studio — the selection toolbar
+   * in the editor. Carries a nonce so the same action twice still fires.
+   *
+   * Routed through here rather than given its own request path so a rewrite
+   * started from the document lands in the SAME conversation as everything
+   * else: the writer can see what was asked, argue with the answer, and the
+   * next question still has the thread behind it.
+   */
+  pendingAsk: { text: string; nonce: number } | null;
   /** The selected passage, for showing the writer what they are asking about. */
   selection: string;
   /**
@@ -272,7 +282,7 @@ function DraftBlock({
   );
 }
 
-export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, resolveQuote, onRevealQuote, onAnchorsChanged, focusTurn, selection, hasSelection, onApply }: Props) {
+export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, resolveQuote, onRevealQuote, onAnchorsChanged, focusTurn, pendingAsk, selection, hasSelection, onApply }: Props) {
   const [turns, setTurns] = useState<DiscussTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [streamed, setStreamed] = useState<string | null>(null);
@@ -297,6 +307,8 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
   const runRef = useRef(0);
   /** The last marker click acted on, so a new reply cannot re-trigger an old one. */
   const handledNonce = useRef<number | null>(null);
+  /** Same guard for asks arriving from the editor's selection toolbar. */
+  const handledAsk = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // Abandon anything in flight when the piece changes or the panel goes away.
@@ -553,6 +565,17 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
         "Quote each passage you mean in an anchor block."
     );
   }, [ask]);
+
+  // An ask from the editor. Guarded by nonce for the reason the marker scroll
+  // is: this panel unmounts whenever the rail shows another tab, so the effect
+  // re-runs on mount and would otherwise re-send the last request every time
+  // the writer came back to the conversation.
+  useEffect(() => {
+    if (!pendingAsk) return;
+    if (handledAsk.current === pendingAsk.nonce) return;
+    handledAsk.current = pendingAsk.nonce;
+    ask(pendingAsk.text);
+  }, [pendingAsk, ask]);
 
   const clear = useCallback(async () => {
     if (!workspaceId) return;

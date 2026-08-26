@@ -91,14 +91,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     text = typeof body?.text === "string" ? body.text : "";
     if (!text.trim()) return NextResponse.json({ error: "Nothing to attach" }, { status: 400 });
   } else if (kind === "url") {
-    // The SAME guarded fetch the import path uses. A second implementation
-    // would be a second SSRF surface, and only one of them would be covered by
-    // scripts/verify-safe-fetch.ts.
-    const { importFromUrl } = await import("@/lib/optimizer/url-import");
-    const result = await importFromUrl(typeof body?.ref === "string" ? body.ref : "");
+    // The SAME guarded fetch the import path uses — one SSRF surface, and only
+    // one of two implementations would ever be covered by verify-safe-fetch.
+    // But read as a SOURCE, not as an import: background material is read for
+    // its words, so a PDF is perfectly good here even though the import path
+    // rightly refuses one. The owner hit exactly this with an IOE position
+    // paper served from a TYPO3 dumpFile URL.
+    const { fetchSourceFromUrl } = await import("@/lib/optimizer/url-import");
+    const result = await fetchSourceFromUrl(
+      typeof body?.ref === "string" ? body.ref : "",
+      MAX_SOURCE_CHARS
+    );
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 });
-    text = String(result.html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-    if (!title) title = (result.title || "Fetched page").slice(0, 200);
+    text = result.text;
+    if (!title) title = result.title.slice(0, 200);
     ref = (typeof body?.ref === "string" ? body.ref : "").trim().slice(0, 500);
     // Third-party text of unknown authorship. Quotable and checkable; never an
     // instruction. sourcesBlock frames it accordingly.
