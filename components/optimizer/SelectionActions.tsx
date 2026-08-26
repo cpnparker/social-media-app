@@ -27,7 +27,7 @@
  * drafts. A menu of eight would be a menu nobody reads.
  */
 
-import { BubbleMenu } from "@tiptap/react/menus";
+import { useCallback, useEffect, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { MessageSquare, PenLine, Scissors, Target } from "lucide-react";
 
@@ -67,8 +67,56 @@ function instruction(kind: "rewrite" | "tighten" | "specific", passage: string):
   return `Rewrite this passage so it is stronger, and tell me what you changed and why.${tail}`;
 }
 
+/**
+ * Positioned by hand rather than through Tiptap's BubbleMenu.
+ *
+ * BubbleMenu did not mount at all here — no element, hidden or otherwise — and
+ * two rounds of guessing at a v3 API that is barely documented is worse value
+ * than forty lines that do exactly what is needed. coordsAtPos returns VIEWPORT
+ * coordinates, so the toolbar is position:fixed and needs no assumptions about
+ * which ancestor is the offset parent.
+ */
 export default function SelectionActions({ editor, onAsk, onDiscuss, enabled }: Props) {
-  if (!editor) return null;
+  const [box, setBox] = useState<{ top: number; left: number } | null>(null);
+
+  const recompute = useCallback(() => {
+    if (!editor || !enabled) { setBox(null); return; }
+    const { from, to, empty } = editor.state.selection;
+    if (empty || from === to) { setBox(null); return; }
+    // A selection with no words in it — an image, a rule — has nothing to
+    // rewrite. The same predicate the Apply button had to learn.
+    if (!editor.state.doc.textBetween(from, to, "\n").trim()) { setBox(null); return; }
+    try {
+      const start = editor.view.coordsAtPos(from);
+      const end = editor.view.coordsAtPos(to);
+      const left = (Math.min(start.left, end.left) + Math.max(start.right, end.right)) / 2;
+      setBox({ top: Math.min(start.top, end.top), left });
+    } catch {
+      setBox(null);
+    }
+  }, [editor, enabled]);
+
+  useEffect(() => {
+    if (!editor) return;
+    // selectionUpdate covers keyboard and programmatic changes; transaction
+    // covers the rest, since a drag ends without necessarily firing the first.
+    editor.on("selectionUpdate", recompute);
+    editor.on("transaction", recompute);
+    editor.on("blur", recompute);
+    const onScroll = () => recompute();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
+    recompute();
+    return () => {
+      editor.off("selectionUpdate", recompute);
+      editor.off("transaction", recompute);
+      editor.off("blur", recompute);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, [editor, recompute]);
+
+  if (!editor || !box) return null;
 
   const passage = () => {
     const { from, to } = editor.state.selection;
@@ -81,54 +129,41 @@ export default function SelectionActions({ editor, onAsk, onDiscuss, enabled }: 
     onAsk(instruction(kind, p));
   };
 
-  return (
-    <BubbleMenu
-      editor={editor}
-      shouldShow={({ editor: ed, from, to }) => {
-        // Not while a draft is streaming: the text is moving under the cursor,
-        // and a toolbar over words about to be replaced invites acting on
-        // something that will not be there.
-        if (!enabled) return false;
-        if (from === to) return false;
-        // A selection with no words in it — an image, a rule — has nothing to
-        // rewrite. Same predicate the Apply button learned to respect.
-        return ed.state.doc.textBetween(from, to, "\n").trim().length > 0;
-      }}
-      className="flex items-center gap-0.5 rounded-lg border bg-popover p-1 shadow-lg"
+  const Item = ({
+    onClick,
+    title,
+    icon,
+    label,
+    muted,
+  }: { onClick: () => void; title: string; icon: React.ReactNode; label: string; muted?: boolean }) => (
+    <button
+      // onMouseDown, not onClick: a click steals focus from the editor first,
+      // which collapses the selection — and every action here is about the
+      // selection. preventDefault keeps it intact.
+      onMouseDown={(e) => { e.preventDefault(); onClick(); }}
+      title={title}
+      className={
+        "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium hover:bg-muted " +
+        (muted ? "text-muted-foreground hover:text-foreground" : "")
+      }
     >
-      <button
-        onClick={() => act("rewrite")}
-        title="Rewrite this passage with AI"
-        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium hover:bg-muted"
-      >
-        <PenLine className="h-3 w-3" />
-        Rewrite
-      </button>
-      <button
-        onClick={() => act("tighten")}
-        title="Same meaning, fewer words"
-        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium hover:bg-muted"
-      >
-        <Scissors className="h-3 w-3" />
-        Tighten
-      </button>
-      <button
-        onClick={() => act("specific")}
-        title="Replace what is asserted with something verifiable"
-        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium hover:bg-muted"
-      >
-        <Target className="h-3 w-3" />
-        Make specific
-      </button>
+      {icon}
+      {label}
+    </button>
+  );
+
+  return (
+    <div
+      className="fixed z-50 flex items-center gap-0.5 rounded-lg border bg-popover p-1 shadow-lg"
+      style={{ top: Math.max(8, box.top - 44), left: box.left, transform: "translateX(-50%)" }}
+      role="toolbar"
+      aria-label="Actions for the selected passage"
+    >
+      <Item onClick={() => act("rewrite")} title="Rewrite this passage with AI" icon={<PenLine className="h-3 w-3" />} label="Rewrite" />
+      <Item onClick={() => act("tighten")} title="Same meaning, fewer words" icon={<Scissors className="h-3 w-3" />} label="Tighten" />
+      <Item onClick={() => act("specific")} title="Replace what is asserted with something verifiable" icon={<Target className="h-3 w-3" />} label="Make specific" />
       <span className="mx-0.5 h-4 w-px bg-border" />
-      <button
-        onClick={onDiscuss}
-        title="Open the conversation with this passage"
-        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-      >
-        <MessageSquare className="h-3 w-3" />
-        Ask
-      </button>
-    </BubbleMenu>
+      <Item onClick={onDiscuss} title="Open the conversation with this passage" icon={<MessageSquare className="h-3 w-3" />} label="Ask" muted />
+    </div>
   );
 }

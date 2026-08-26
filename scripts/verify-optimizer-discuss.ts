@@ -450,12 +450,22 @@ console.log("\n7. The two rails stay different");
 
   // ── Actions at the passage ──────────────────────────────────────────────
   const sel = stripComments(read("components/optimizer/SelectionActions.tsx"));
-  assert(/from === to\) return false/.test(sel),
+  assert(/empty \|\| from === to/.test(sel),
     "the toolbar does not appear without a selection");
-  assert(/textBetween\(from, to, "\\n"\)\.trim\(\)\.length > 0/.test(sel),
+  assert(/textBetween\(from, to, "\\n"\)\.trim\(\)\)/.test(sel),
     "nor over a selection with no words in it — an image has nothing to rewrite");
-  assert(/if \(!enabled\) return false/.test(sel),
+  assert(/!editor \|\| !enabled/.test(sel),
     "nor while a draft streams, when the text is moving under the cursor");
+  // Found in the browser: BubbleMenu never mounted — no element at all. Replaced
+  // with hand positioning off coordsAtPos, which returns viewport coordinates,
+  // so position:fixed needs no assumption about the offset parent.
+  assert(!/BubbleMenu/.test(sel), "no dependency on a menu component that did not mount");
+  assert(/coordsAtPos\(/.test(sel) && /fixed z-50/.test(sel),
+    "positioned from the selection itself, in viewport coordinates");
+  assert(/onMouseDown=/.test(sel) && !/onClick=\{\(e\)/.test(sel),
+    "actions fire on mousedown with preventDefault — a click would steal focus and collapse the selection every action depends on");
+  assert(/editor\.off\("selectionUpdate"/.test(sel),
+    "listeners are removed — the editor outlives this component when the rail changes");
   assert(!/fetch\(/.test(sel),
     "NO action calls a model directly — every one goes through the conversation, so it is visible, arguable and comes back anchored");
   assert(/anchor block/.test(sel) && /draft block/.test(sel),
