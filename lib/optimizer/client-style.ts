@@ -93,14 +93,40 @@ const SAMPLE_LIMIT = 5;
 const SAMPLE_CHARS = 6000;
 
 /**
- * Gather the client's own finished drafts as derivation input.
+ * Gather the client's own substantive drafts as derivation input.
  *
- * Finalised sessions only — a half-written draft is not evidence of voice, and
- * including one would teach the model the client sounds unfinished.
+ * ── WHAT THE CALLER MAY SEE, NOT WHAT THE WORKSPACE CONTAINS ────────────────
+ *
+ * `intelligenceDb` is a SERVICE-ROLE client and bypasses RLS, so an unfiltered
+ * query here reads every document in the workspace for this client — including
+ * private drafts belonging to other people. The derived card is then shown to
+ * the caller and enters the prompt of everything they write. That is a read of
+ * other people's work laundered through a style description, and it is exactly
+ * the kind of leak a service-role client makes easy: nothing errors, and the
+ * output looks like an observation rather than a quotation.
+ *
+ * So the same visibility rule the session list uses applies here: team
+ * documents, plus the caller's own private ones. `userId` is required rather
+ * than optional for that reason — an optional caller is an unfiltered query
+ * waiting for a call site that forgets.
+ *
+ * `flag_private_source` is excluded outright. A document born in a private
+ * conversation carries a floor that says it may never be made team-visible;
+ * letting it shape a card that every colleague's writing then inherits routes
+ * around that floor by another path.
+ *
+ * ── WHICH DRAFTS COUNT ──────────────────────────────────────────────────────
+ *
+ * finalised, refining and draft_ready — work with a body somebody has shaped.
+ * NOT brief, drafting, assessing or generating: those are documents mid-flight,
+ * and a half-written one would teach the model the client sounds unfinished.
+ * (This comment previously said "finalised only" while the code read all three,
+ * which is the sort of contradiction that makes a reader trust the wrong one.)
  */
 export async function gatherStyleSamples(
   workspaceId: string,
-  clientId: number
+  clientId: number,
+  userId: number
 ): Promise<{ samples: string[]; gap: string | null }> {
   try {
     const { data: sessions, error } = await intelligenceDb
@@ -108,6 +134,8 @@ export async function gatherStyleSamples(
       .select("id_session, name_title, type_status, date_updated")
       .eq("id_workspace", workspaceId)
       .eq("id_client", clientId)
+      .eq("flag_private_source", 0)
+      .or(`and(type_visibility.eq.private,user_created.eq.${userId}),type_visibility.eq.team`)
       .in("type_status", ["finalised", "refining", "draft_ready"])
       .order("date_updated", { ascending: false })
       .limit(SAMPLE_LIMIT);

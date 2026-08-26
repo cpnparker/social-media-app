@@ -15,6 +15,8 @@
  */
 
 import type { ClientCanon } from "./client-canon";
+import { styleBlock } from "./client-style";
+import type { ClientStyle } from "./client-style";
 
 export interface OptimizerBrief {
   targetQueries: string[];
@@ -30,6 +32,16 @@ export interface GenerationContext {
   platform: string;
   brief: OptimizerBrief;
   canon: ClientCanon | null;
+  /**
+   * How this client SOUNDS, derived from their own published work.
+   *
+   * Distinct from `brief.voice`, which is what the writer asked for on THIS
+   * piece. The card is the client's standing register; the brief is this
+   * assignment. Both can be present, and where they disagree the brief wins
+   * because somebody typed it deliberately — which is why the card is emitted
+   * first and the brief's voice line after it.
+   */
+  style?: ClientStyle | null;
 }
 
 const PLATFORM_NOTES: { [k: string]: string } = {
@@ -73,7 +85,16 @@ export function buildGenerationPrompt(ctx: GenerationContext): string {
     );
   }
 
-  if (ctx.brief.voice) parts.push(`## Voice\n\n${ctx.brief.voice}`);
+  // The client's standing register, then this assignment's voice note. Order
+  // matters: the brief is the later instruction and should read as the
+  // adjustment to the house style, not be buried under it.
+  //
+  // styleBlock ALWAYS returns a block, including when there is no card — a
+  // section that appears and disappears between clients changes the prefix
+  // length and moves the cache breakpoint, costing a full cache write on every
+  // client switch. Shape stable, content variable.
+  parts.push(styleBlock(ctx.style || null));
+  if (ctx.brief.voice) parts.push(`## Voice for this piece\n\n${ctx.brief.voice}`);
 
   // ── The doctrine. Each rule maps to a criterion in lib/optimizer/rubric.ts ──
   parts.push(`## How to write it

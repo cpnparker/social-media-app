@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: e?.message || "The optimizer is temporarily unavailable" }, { status: 503 });
   }
 
-  const { samples, gap } = await gatherStyleSamples(workspaceId, clientId);
+  const { samples, gap } = await gatherStyleSamples(workspaceId, clientId, guard.caller.userId);
   if (!samples.length) {
     // Nothing to read. Recorded as a gap rather than an invented voice — the
     // canon's own rule: a thin style must LOOK thin, not look complete.

@@ -22,6 +22,7 @@ import { logAiUsage } from "@/lib/ai/usage-logger";
 import { GENERATE_MODEL } from "@/lib/optimizer/models";
 import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
 import { buildGenerationPrompt } from "@/lib/optimizer/briefs";
+import { loadClientStyle } from "@/lib/optimizer/client-style";
 
 export const maxDuration = 300;
 
@@ -73,12 +74,39 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: e?.message || "The optimizer is temporarily unavailable" }, { status: 503 });
   }
 
+  /**
+   * The client's house style, read LIVE — unlike the canon, which is
+   * snapshotted onto the session at create.
+   *
+   * The canon is snapshotted because ASSESSMENTS re-run against it, and a score
+   * that silently re-grounds itself on facts the writer never saw is not
+   * reproducible. Style never reaches the judge (deliberately — it is not in
+   * the assess memo key), so it has no score to make irreproducible. It feeds
+   * generation, which happens once, at this moment, and what persists
+   * afterwards is the DRAFT rather than the prompt.
+   *
+   * So a live read is right here, and it also means a style card corrected
+   * today improves the next thing written rather than only the next session
+   * created. No access gate of its own: the card is workspace-and-client
+   * scoped, the caller already holds this session, and the sensitive half —
+   * WHICH DOCUMENTS the card was derived from — is filtered at derivation.
+   */
+  const clientStyle =
+    session.id_client != null
+      ? await loadClientStyle(
+          guard.caller.workspaceId,
+          Number(session.id_client),
+          (session.config_canon && session.config_canon.clientName) || `Client ${session.id_client}`
+        )
+      : null;
+
   const systemPrompt = buildGenerationPrompt({
     title: session.name_title,
     format: session.type_format,
     platform: session.type_platform,
     brief: session.config_brief || { targetQueries: [], audience: "", goal: "", lengthBand: "800-1500", voice: "" },
     canon: session.config_canon && session.config_canon.clientName ? session.config_canon : null,
+    style: clientStyle,
   });
 
   await intelligenceDb

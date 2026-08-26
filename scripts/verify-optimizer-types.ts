@@ -55,7 +55,8 @@ import {
   shouldAnnounce,
 } from "../lib/optimizer/content-types";
 import { CRITERIA } from "../lib/optimizer/rubric";
-import { styleBlock, styleKeyPart, encodeStored, stripControl, EMPTY_STYLE } from "../lib/optimizer/client-style";
+import { styleBlock, encodeStored, stripControl, EMPTY_STYLE } from "../lib/optimizer/client-style";
+import { buildGenerationPrompt } from "../lib/optimizer/briefs";
 
 let failures = 0;
 const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
@@ -319,9 +320,51 @@ console.log("\n7. Client style: shape-stable, keyed, and edits are protected");
     ? pass("a derived card reaches the prompt")
     : fail("the style text never reaches the prompt");
 
-  styleKeyPart(null) !== styleKeyPart({ clientId: 1, clientName: "A", text: "x", edited: false, refreshedAt: null, gap: null })
-    ? pass("style reaches the memo key, so changing a voice invalidates cached output")
-    : fail("two different styles produce the same key part");
+  // THE ASSEMBLED PROMPT, not a call on a helper.
+  //
+  // The previous assertion here was `styleKeyPart(a) !== styleKeyPart(b)` — a
+  // property of a pure function with NO LIVE CALLER, which proves the helper
+  // works and nothing about whether a style ever reaches a model. Worse, it
+  // invited someone to wire styleKeyPart into the assess memo to "make the
+  // check meaningful", which would be wrong: style must not key an assessment,
+  // because a score that moves when a voice card is edited is a score that
+  // cannot be compared with last week's.
+  //
+  // What matters is the string generation actually sends, and WHERE in it the
+  // style sits: the cached prefix is byte-stable only if the block is always
+  // present and always in the same place.
+  {
+    const withStyle = buildGenerationPrompt({
+      title: "T", format: "explainer", platform: "balanced",
+      brief: { targetQueries: [], audience: "", goal: "", lengthBand: "800-1500", voice: "Sharper than usual." },
+      canon: null,
+      style: { clientId: 1, clientName: "Acme", text: "Third person throughout.", edited: false, refreshedAt: null, gap: null },
+    } as any);
+    const withoutStyle = buildGenerationPrompt({
+      title: "T", format: "explainer", platform: "balanced",
+      brief: { targetQueries: [], audience: "", goal: "", lengthBand: "800-1500", voice: "Sharper than usual." },
+      canon: null, style: null,
+    } as any);
+
+    withStyle.indexOf("Third person throughout.") > 0
+      ? pass("a derived style card reaches the assembled generation prompt")
+      : fail("the style card never reaches the prompt — the card is decorative");
+
+    withStyle.indexOf("# House style") > 0 && withoutStyle.indexOf("# House style") > 0
+      ? pass("the house-style section is present with or without a card — the prefix keeps its shape")
+      : fail("the style section appears only sometimes, moving the cache breakpoint on every client switch");
+
+    // The brief is the later, deliberate instruction; it must read as the
+    // adjustment TO the house style rather than be buried under it.
+    withStyle.indexOf("# House style") < withStyle.indexOf("Voice for this piece")
+      ? pass("the standing style precedes this assignment's voice note")
+      : fail("the brief's voice is emitted before the house style — the wrong one reads as the override");
+
+    const genSrc = stripComments(read("app/api/optimizer/sessions/[id]/generate/route.ts"));
+    /style:\s*clientStyle/.test(genSrc) && /loadClientStyle\(/.test(genSrc)
+      ? pass("the generate route loads a style and passes it")
+      : fail("the generate route builds its prompt without a style");
+  }
 
   // Asserted on the ROUND TRIP, not on a prefix. The first version tested
   // `startsWith("edited")` against a sentinel constant that had silently
@@ -342,6 +385,23 @@ console.log("\n7. Client style: shape-stable, keyed, and edits are protected");
   !new RegExp("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]").test(encodeStored(String.fromCharCode(7) + "x", false))
     ? pass("control bytes never reach the column, in or out")
     : fail("a control byte survives encoding — it would be written to document_voice");
+
+  // THE LEAK. gatherStyleSamples reads through a SERVICE-ROLE client, which
+  // bypasses RLS — so without these filters it derived a style card from every
+  // document in the workspace for that client, including other people's private
+  // drafts, and handed the result to the caller as an observation.
+  {
+    const styleLib = stripComments(read("lib/optimizer/client-style.ts"));
+    /user_created\.eq\.\$\{userId\}/.test(styleLib)
+      ? pass("style samples are filtered to what the caller may see")
+      : fail("gatherStyleSamples has no visibility filter — a card can be derived from other people's private drafts");
+    /flag_private_source/.test(styleLib)
+      ? pass("documents born in a private conversation never feed a style card")
+      : fail("a private-source document could shape a card every colleague's writing inherits");
+    /userId: number/.test(styleLib)
+      ? pass("the caller is REQUIRED, so no call site can omit the filter")
+      : fail("the caller is optional — an unfiltered query is one forgetful call site away");
+  }
 
   const styleSrc = stripComments(read("app/api/optimizer/style/route.ts"));
   /needsConfirm/.test(styleSrc) && /existing\.edited/.test(styleSrc)
