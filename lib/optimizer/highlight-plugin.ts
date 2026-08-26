@@ -48,8 +48,41 @@ export interface Issue {
   status: IssueStatus;
 }
 
+/**
+ * A place in the draft the CONVERSATION had something to say about.
+ *
+ * Deliberately not an Issue, and this is the whole design of Ship 3.
+ * anchorFindings resolves range collisions by ORPHANING the loser, longest
+ * quote first — so a conversation anchor (typically a whole sentence) and a
+ * "sentence runs long" mark over that same sentence would fight, and one would
+ * silently disappear with nothing on screen saying which or why. Feeding these
+ * through the same list would delete rubric marks at random.
+ *
+ * So a note claims no inline range at all. It is drawn as a WIDGET in the
+ * margin, which is a different visual channel and cannot collide — and which
+ * also happens to be the honest rendering: an opinion about a paragraph is not
+ * a defect in it, and underlining the prose would say it was.
+ */
+export interface NoteMark {
+  /** talk:<turn>:<n> — stable per reply, so dismissal and identity survive. */
+  id: string;
+  /** Verbatim passage, resolved the same way every other anchor is. */
+  quote: string;
+  /** Which reply it came from, so a click can scroll to that point. */
+  turn: number;
+}
+
+export interface ResolvedNote {
+  id: string;
+  turn: number;
+  /** Start of the block the passage lives in. Mapped through every edit. */
+  pos: number;
+  status: "active" | "orphaned";
+}
+
 export interface HighlightState {
   issues: Issue[];
+  notes: ResolvedNote[];
   decorations: DecorationSet;
   selectedId: string | null;
 }
@@ -58,6 +91,7 @@ export const optimizerHighlightKey = new PluginKey<HighlightState>("optimizerHig
 
 export type HighlightAction =
   | { type: "set"; findings: HighlightFinding[] }
+  | { type: "notes"; notes: NoteMark[] }
   | { type: "resolve"; ids: string[] }
   | { type: "dismiss"; ids: string[] }
   | { type: "select"; id: string | null }
@@ -80,7 +114,72 @@ const SEVERITY_CLASS: { [k: string]: string } = {
   low: "ai-issue-low",
 };
 
-function decorationsFor(doc: PMNode, issues: Issue[], selectedId: string | null): DecorationSet {
+/**
+ * Resolve conversation notes to the block each passage sits in.
+ *
+ * Same resolver as everything else — findAnchor against the doc index — so a
+ * quote that resolves in the panel resolves here, and one that does not orphans
+ * in both places rather than appearing in one and not the other.
+ */
+export function resolveNotes(doc: PMNode, notes: NoteMark[]): ResolvedNote[] {
+  const index = buildDocIndex(doc);
+  const out: ResolvedNote[] = [];
+  for (let i = 0; i < notes.length; i++) {
+    const n = notes[i];
+    const match = findAnchor(index.text, { quote: n.quote });
+    if (!match.ok) {
+      out.push({ id: n.id, turn: n.turn, pos: 0, status: "orphaned" });
+      continue;
+    }
+    const range = textRangeToPos(index, match.start, match.end);
+    if (!range) {
+      out.push({ id: n.id, turn: n.turn, pos: 0, status: "orphaned" });
+      continue;
+    }
+    try {
+      const $p = doc.resolve(range.from);
+      out.push({ id: n.id, turn: n.turn, pos: $p.start($p.depth), status: "active" });
+    } catch {
+      out.push({ id: n.id, turn: n.turn, pos: 0, status: "orphaned" });
+    }
+  }
+  return out;
+}
+
+/**
+ * Which notes actually get a marker drawn.
+ *
+ * ONE per block, however many points the conversation made about it: three dots
+ * stacked on one paragraph is clutter, and the click goes to the conversation
+ * anyway, where all of them are visible in order. The FIRST note on a block
+ * wins, so the marker leads to the earliest thing said about it rather than the
+ * most recent — which is the order a reader of the thread expects.
+ *
+ * Orphans draw nothing. A passage the writer has rewritten no longer exists to
+ * point at, and a marker parked at position 0 would sit on the first paragraph
+ * pointing at a comment about a different one.
+ *
+ * Pure, and separate from decorationsFor, so this is assertable without
+ * constructing a ProseMirror document.
+ */
+export function markersFor(notes: ResolvedNote[]): ResolvedNote[] {
+  const out: ResolvedNote[] = [];
+  const seen: { [pos: number]: true } = {};
+  for (let i = 0; i < notes.length; i++) {
+    const n = notes[i];
+    if (n.status !== "active" || n.pos <= 0 || seen[n.pos]) continue;
+    seen[n.pos] = true;
+    out.push(n);
+  }
+  return out;
+}
+
+function decorationsFor(
+  doc: PMNode,
+  issues: Issue[],
+  selectedId: string | null,
+  notes: ResolvedNote[]
+): DecorationSet {
   const decos: Decoration[] = [];
   for (let i = 0; i < issues.length; i++) {
     const issue = issues[i];
@@ -96,6 +195,32 @@ function decorationsFor(doc: PMNode, issues: Issue[], selectedId: string | null)
       })
     );
   }
+  // ── Margin markers ────────────────────────────────────────────────────
+  const markers = markersFor(notes);
+  for (let i = 0; i < markers.length; i++) {
+    const n = markers[i];
+    const turn = n.turn;
+    decos.push(
+      Decoration.widget(
+        n.pos,
+        () => {
+          const el = document.createElement("button");
+          el.type = "button";
+          el.className = "ai-note-marker";
+          el.setAttribute("data-note-turn", String(turn));
+          el.setAttribute("aria-label", "Engine AI commented on this passage");
+          el.title = "Engine AI commented on this passage";
+          return el;
+        },
+        // side -1 keeps it before the block's first character, so typing at the
+        // start of the paragraph does not land inside the widget. `key` stops
+        // ProseMirror rebuilding the DOM node on every unrelated redraw, which
+        // would drop a click mid-press.
+        { side: -1, key: `note-${n.id}`, ignoreSelection: true }
+      )
+    );
+  }
+
   return DecorationSet.create(doc, decos);
 }
 
@@ -215,21 +340,40 @@ export const OptimizerHighlight = Extension.create({
 
         state: {
           init(): HighlightState {
-            return { issues: [], decorations: DecorationSet.empty, selectedId: null };
+            return { issues: [], notes: [], decorations: DecorationSet.empty, selectedId: null };
           },
 
           apply(tr: Transaction, prev: HighlightState, _old: EditorState, next: EditorState): HighlightState {
             const action = tr.getMeta(optimizerHighlightKey) as HighlightAction | undefined;
 
             if (action && action.type === "set") {
+              // Notes are CARRIED, not rebuilt. `set` fires on every repaint;
+              // dropping them here would make the margin markers flicker out on
+              // every keystroke and only return when the writer asked another
+              // question.
               const issues = anchorFindings(next.doc, action.findings, prev.issues);
-              return { issues, decorations: decorationsFor(next.doc, issues, prev.selectedId), selectedId: prev.selectedId };
+              return {
+                issues,
+                notes: prev.notes,
+                decorations: decorationsFor(next.doc, issues, prev.selectedId, prev.notes),
+                selectedId: prev.selectedId,
+              };
+            }
+            if (action && action.type === "notes") {
+              const notes = resolveNotes(next.doc, action.notes);
+              return {
+                issues: prev.issues,
+                notes,
+                decorations: decorationsFor(next.doc, prev.issues, prev.selectedId, notes),
+                selectedId: prev.selectedId,
+              };
             }
             if (action && action.type === "clear") {
-              return { issues: [], decorations: DecorationSet.empty, selectedId: null };
+              return { issues: [], notes: [], decorations: DecorationSet.empty, selectedId: null };
             }
 
             let issues = prev.issues;
+            let notes = prev.notes;
             let selectedId = prev.selectedId;
 
             if (action && (action.type === "resolve" || action.type === "dismiss")) {
@@ -260,12 +404,24 @@ export const OptimizerHighlight = Extension.create({
                 }
                 return { ...issue, from: from.pos, to: to.pos };
               });
+
+              // Markers move with their paragraph. Mapped rather than
+              // re-resolved, for the reason the issue reducer above documents:
+              // a mapped position follows the text through the edit, while
+              // re-resolving mid-keystroke would search a half-typed word and
+              // orphan a marker whose paragraph never went anywhere.
+              notes = notes.map((n) => {
+                if (n.status !== "active") return n;
+                const mapped = tr.mapping.mapResult(n.pos, -1);
+                if (mapped.deleted) return { ...n, pos: 0, status: "orphaned" as const };
+                return { ...n, pos: mapped.pos };
+              });
             }
 
-            if (issues === prev.issues && selectedId === prev.selectedId && !tr.docChanged) {
+            if (issues === prev.issues && notes === prev.notes && selectedId === prev.selectedId && !tr.docChanged) {
               return prev;
             }
-            return { issues, decorations: decorationsFor(next.doc, issues, selectedId), selectedId };
+            return { issues, notes, decorations: decorationsFor(next.doc, issues, selectedId, notes), selectedId };
           },
         },
 

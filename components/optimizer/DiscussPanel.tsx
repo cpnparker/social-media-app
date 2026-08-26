@@ -48,6 +48,19 @@ interface Props {
   resolveQuote: (quote: string) => boolean;
   /** Jump to it. Returns false if it could not be found. */
   onRevealQuote: (quote: string) => boolean;
+  /**
+   * Every passage the conversation has pointed at, in order, so the page can
+   * draw a margin marker beside each.
+   *
+   * Lifted rather than drawn here because the marks live in the DOCUMENT and
+   * the conversation lives in the panel — and the panel is unmounted whenever
+   * the writer switches to Background or Suggestions, which would take the
+   * markers with it.
+   */
+  onAnchorsChanged: (anchors: { quote: string; turn: number }[]) => void;
+  /** A margin marker was clicked: scroll to what was said about that passage.
+   *  Carries a nonce so clicking the same marker twice still scrolls. */
+  focusTurn: { turn: number; nonce: number } | null;
   /** The selected passage, for showing the writer what they are asking about. */
   selection: string;
   /**
@@ -186,7 +199,7 @@ function DraftBlock({
   );
 }
 
-export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, resolveQuote, onRevealQuote, selection, hasSelection, onApply }: Props) {
+export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, resolveQuote, onRevealQuote, onAnchorsChanged, focusTurn, selection, hasSelection, onApply }: Props) {
   const [turns, setTurns] = useState<DiscussTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [streamed, setStreamed] = useState<string | null>(null);
@@ -240,11 +253,55 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
     return () => { cancelled = true; };
   }, [sessionId, workspaceId]);
 
+  /**
+   * Publish the conversation's anchors upward whenever the thread changes.
+   *
+   * Derived from the STORED turns only, never from the streaming buffer: a
+   * half-arrived quote resolves to nothing, and a marker that appears, moves
+   * and vanishes while tokens land is worse than one that appears when the
+   * reply is finished.
+   */
+  useEffect(() => {
+    const out: { quote: string; turn: number }[] = [];
+    for (let i = 0; i < turns.length; i++) {
+      if (turns[i].role !== "assistant") continue;
+      const segs = parseDiscussReply(turns[i].content).segments;
+      const seen: { [q: string]: true } = {};
+      for (let j = 0; j < segs.length; j++) {
+        const a = segs[j].anchor;
+        if (!a || seen[a]) continue;
+        seen[a] = true;
+        out.push({ quote: a, turn: i });
+      }
+    }
+    onAnchorsChanged(out);
+  }, [turns, onAnchorsChanged]);
+
   // Pinned to the newest message, including as tokens arrive.
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [turns, streamed]);
+
+  /**
+   * Scroll to the reply a margin marker points at, and flash it.
+   *
+   * The flash matters: the writer clicked something in the document and the
+   * answer arrives in a panel they may not have been looking at, several
+   * paragraphs of prose long. Landing them next to it silently would leave
+   * them hunting for what just changed.
+   */
+  useEffect(() => {
+    if (!focusTurn) return;
+    const root = scrollRef.current;
+    if (!root) return;
+    const el = root.querySelector(`[data-turn="${focusTurn.turn}"]`) as HTMLElement | null;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("ring-2", "ring-primary/40", "rounded-lg");
+    const t = setTimeout(() => el.classList.remove("ring-2", "ring-primary/40", "rounded-lg"), 1400);
+    return () => clearTimeout(t);
+  }, [focusTurn]);
 
   const ask = useCallback(async () => {
     const q = question.trim();
@@ -406,7 +463,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
               </p>
             </div>
           ) : (
-            <AssistantTurn key={i} content={t.content} hasSelection={hasSelection} onApply={onApply} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} />
+            <AssistantTurn key={i} turnIndex={i} content={t.content} hasSelection={hasSelection} onApply={onApply} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} />
           )
         )}
 
@@ -497,12 +554,14 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
 }
 
 function AssistantTurn({
+  turnIndex,
   content,
   hasSelection,
   onApply,
   resolveQuote,
   onRevealQuote,
 }: {
+  turnIndex: number;
   content: string;
   hasSelection: boolean;
   onApply: (text: string, anchor?: string) => "replaced" | "appended" | "failed";
@@ -515,7 +574,7 @@ function AssistantTurn({
   // the sentence that followed the block above the block it referred back to.
   const parsed = parseDiscussReply(content);
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1.5 transition-shadow" data-turn={turnIndex}>
       {parsed.segments.map((seg, i) => (
         <div key={i}>
           {/* Once per RUN. An anchor now scopes every point until the next one,

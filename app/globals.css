@@ -522,6 +522,41 @@
   border-bottom-color: hsl(var(--primary) / 0.6);
   background-color: hsl(var(--primary) / 0.06);
 }
+/* ── Conversation notes ───────────────────────────────────────────────
+   A margin marker, not an underline, and that is a claim about meaning as
+   much as about layout. The rubric marks say "this is wrong"; a note says
+   "we talked about this" — an opinion about a paragraph is not a defect in
+   it, and underlining the prose would assert that it was.
+
+   It is also the only rendering that cannot collide. anchorFindings resolves
+   overlapping ranges by orphaning the loser, so a conversation anchor over a
+   sentence that already carries a rubric mark would silently delete one of
+   the two. A widget in the margin claims no range at all. */
+.ai-note-marker {
+  position: absolute;
+  left: -0.9rem;
+  top: 0.45em;
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background-color: hsl(var(--primary) / 0.55);
+  cursor: pointer;
+  transition: transform 0.12s ease, background-color 0.12s ease;
+}
+.ai-note-marker:hover,
+.ai-note-marker:focus-visible {
+  background-color: hsl(var(--primary));
+  transform: scale(1.35);
+  outline: none;
+}
+/* Only blocks that actually carry a marker become positioning contexts, so
+   nothing about the editor's layout changes for a document with no notes. */
+.ProseMirror :is(p, h1, h2, h3, h4, li, blockquote):has(> .ai-note-marker) {
+  position: relative;
+}
+
 /* The selected finding gets weight, not a different hue — the severity
    colour still has to read while it is selected. */
 .ai-issue-selected {

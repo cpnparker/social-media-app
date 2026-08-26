@@ -191,6 +191,9 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
    * appends instead is a small lie caught only after it has moved their text.
    */
   const [selText, setSelText] = useState("");
+  /** Which reply a margin marker asked us to scroll to, bumped so repeat
+   *  clicks on the same marker still scroll. */
+  const [focusTurn, setFocusTurn] = useState<{ turn: number; nonce: number } | null>(null);
   /**
    * Whether anything is selected AT ALL — which is not the same question as
    * whether any TEXT is selected, and the difference was a lie on a button.
@@ -923,6 +926,21 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     // returns early on any transaction without the highlight plugin's meta,
     // which is every ordinary selection change. Folding this into it would mean
     // the selection only updated when a mark happened to be involved.
+    // ── Margin markers ──────────────────────────────────────────────────
+    //
+    // Delegated on the editor root rather than bound per widget: the widget DOM
+    // is rebuilt whenever its decoration is redrawn, and a listener attached to
+    // the element would go with it. Not preventDefault — letting the caret land
+    // in the paragraph is right, since the writer is about to edit it.
+    editor.view.dom.addEventListener("click", (e) => {
+      const el = (e.target as HTMLElement | null)?.closest?.(".ai-note-marker");
+      if (!el) return;
+      const turn = Number(el.getAttribute("data-note-turn"));
+      if (Number.isNaN(turn)) return;
+      setPanelTab("discuss");
+      setFocusTurn((prev) => ({ turn, nonce: (prev?.nonce || 0) + 1 }));
+    });
+
     editor.on("selectionUpdate", () => {
       const { from, to } = editor.state.selection;
       // ONE predicate, mirrored to both consumers, so the button's promise and
@@ -984,6 +1002,31 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     },
     [resolveQuote, revealTextRange]
   );
+
+  /**
+   * The passages the conversation has pointed at, as margin markers.
+   *
+   * Held HERE and not in the panel because the marks belong to the document:
+   * the panel unmounts the moment the writer opens Background or Suggestions,
+   * and markers that vanished with it would be a feature you could only see
+   * while looking at the thing it duplicates.
+   *
+   * Dispatched as `notes`, a separate action from `set`. They are deliberately
+   * NOT merged into the findings list — anchorFindings resolves overlapping
+   * ranges by orphaning the loser, so a conversation anchor over a sentence
+   * that already carries a rubric mark would silently delete one of the two,
+   * with nothing on screen saying which.
+   */
+  const setTalkAnchors = useCallback((anchors: { quote: string; turn: number }[]) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const notes = anchors.map((a, i) => ({
+      id: `talk:${a.turn}:${i}`,
+      quote: a.quote,
+      turn: a.turn,
+    }));
+    editor.view.dispatch(editor.state.tr.setMeta(optimizerHighlightKey, { type: "notes", notes }));
+  }, []);
 
   /**
    * Put text from the discussion into the document.
@@ -1864,6 +1907,8 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
                 getDraftHtml={getDraftHtml}
                 resolveQuote={(q) => resolveQuote(q) !== null}
                 onRevealQuote={revealQuote}
+                onAnchorsChanged={setTalkAnchors}
+                focusTurn={focusTurn}
                 selection={selText}
                 hasSelection={hasSel}
                 onApply={applyDraftText}

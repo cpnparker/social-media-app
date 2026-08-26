@@ -42,7 +42,7 @@ import {
   mergeFindingSets, MIN_MARKABLE_WORDS, type Lens,
 } from "../lib/optimizer/mark-policy";
 import { CONTENT_TYPE_IDS, criteriaFor, analysisAllowed } from "../lib/optimizer/content-types";
-import { settledStatuses } from "../lib/optimizer/highlight-plugin";
+import { settledStatuses, markersFor, type ResolvedNote } from "../lib/optimizer/highlight-plugin";
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -286,6 +286,49 @@ console.log("\n8b. Dismissal survives a repaint");
     "a settled finding claims no range, so it cannot block a live mark over the same sentence");
 }
 
+// ── 8c. Conversation notes are a separate channel ─────────────────────────
+//
+// The design decision of Ship 3, and it is a correctness one rather than a
+// visual preference. anchorFindings resolves overlapping ranges by ORPHANING
+// the loser, longest quote first. A conversation anchor is typically a whole
+// sentence and so is a "sentence runs long" mark — so merging notes into the
+// findings list would have made one of the two silently vanish, with nothing on
+// screen saying which or why. A margin widget claims no inline range.
+console.log("\n8c. Notes claim no range");
+{
+  const n = (id: string, pos: number, status: any, turn = 0): ResolvedNote => ({ id, turn, pos, status });
+
+  const one = markersFor([n("talk:0:0", 12, "active"), n("talk:0:1", 12, "active"), n("talk:1:0", 40, "active")]);
+  assert(one.length === 2, "one marker per block, however many points were made about it");
+  assert(one[0].id === "talk:0:0",
+    "the FIRST note on a block wins, so the marker leads to the earliest thing said about it");
+
+  assert(markersFor([n("talk:0:0", 0, "orphaned")]).length === 0,
+    "an orphan draws nothing — a marker at position 0 would sit on the first paragraph pointing at a comment about another");
+  assert(markersFor([n("talk:0:0", 0, "active")]).length === 0, "a zero position never draws");
+  assert(markersFor([]).length === 0, "no notes, no markers");
+
+  const plugin = stripComments(read("lib/optimizer/highlight-plugin.ts"));
+  // The separation, asserted structurally rather than hoped for.
+  assert(/notes: ResolvedNote\[\]/.test(plugin), "notes are their own state, not Issues");
+  assert(/Decoration\.widget\(/.test(plugin), "they are drawn as widgets, which claim no inline range");
+  assert(!/anchorFindings\([^)]*notes/.test(plugin),
+    "notes NEVER go through anchorFindings — that is the function that would orphan a rubric mark");
+  assert(/notes: prev\.notes/.test(plugin),
+    "a `set` CARRIES notes forward — rebuilding them there would flicker every marker out on each keystroke");
+  assert(/tr\.mapping\.mapResult\(n\.pos, -1\)/.test(plugin),
+    "markers are MAPPED through edits, not re-resolved mid-keystroke against half-typed words");
+
+  const page = stripComments(read("app/engineai/optimizer/page.tsx"));
+  assert(/type: "notes", notes/.test(page), "the page dispatches notes as their own action");
+  assert(/data-note-turn/.test(page) && /ai-note-marker/.test(page),
+    "clicking a marker is handled, delegated on the editor root");
+  const panel = stripComments(read("components/optimizer/DiscussPanel.tsx"));
+  assert(/onAnchorsChanged\(out\)/.test(panel), "the panel publishes its anchors upward");
+  assert(!/streamed[\s\S]{0,120}onAnchorsChanged/.test(panel),
+    "anchors come from STORED turns, never the streaming buffer — a half-arrived quote resolves to nothing and would flicker");
+}
+
 // ── 9. Merging the producers ───────────────────────────────────────────────
 console.log("\n9. Merge");
 {
@@ -370,6 +413,13 @@ function selfTest() {
       settledStatuses([mk("x", "dismissed")] as any)["x"] === "dismissed");
     detects("an active issue being frozen instead of recomputed",
       settledStatuses([mk("y", "active")] as any)["y"] === undefined);
+  }
+  {
+    const n = (id: string, pos: number, status: any): ResolvedNote => ({ id, turn: 0, pos, status });
+    detects("two markers stacked on one paragraph",
+      markersFor([n("a", 5, "active"), n("b", 5, "active")]).length === 1);
+    detects("an orphaned note drawn at position 0",
+      markersFor([n("a", 0, "orphaned")]).length === 0);
   }
   detects("the word floor drifting from the score's",
     MIN_MARKABLE_WORDS === 60);
