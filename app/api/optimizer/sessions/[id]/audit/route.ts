@@ -24,6 +24,7 @@ import { fetchPageForAudit, extractArticleRegion } from "@/lib/optimizer/url-imp
 import { toEditorHtml } from "@/lib/optimizer/import-html";
 import { auditPage } from "@/lib/optimizer/page-audit";
 import { renderPage } from "@/lib/optimizer/render";
+import { safeFetch } from "@/lib/net/safe-fetch";
 import { parseDraft } from "@/lib/optimizer/parse";
 import { computeDraftScores } from "@/lib/optimizer/engine";
 
@@ -70,6 +71,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
              headings: { h1: 0, h2: 0, h3: 0 }, jsonLdBlocks: 0, renderMs: 0 };
   });
 
+  // ── robots.txt and llms.txt ─────────────────────────────────────────────
+  //
+  // Fetched here, parsed in page-audit, which stays pure and fixture-driven.
+  // Both are allowed to fail and BOTH FAIL TO NULL, never to "allowed": a 404,
+  // a timeout or a refusal all mean we did not look, and the check renders that
+  // differently from a clean bill of health.
+  //
+  // Through safeFetch like every other outbound request in this app — the host
+  // comes from a caller-supplied URL, and a second unguarded fetch path is a
+  // second SSRF surface only one of which any check would cover.
+  const siteFile = async (path: string): Promise<string | null> => {
+    try {
+      const u = new URL(fetched.finalUrl);
+      const res = await safeFetch(`${u.protocol}//${u.host}${path}`, { timeoutMs: 8000 });
+      if (!res.ok) return null;
+      const text = await res.text();
+      // A site that serves its 404 page as 200 would otherwise be parsed as a
+      // robots file; anything with markup in it is not one.
+      if (/<html|<!doctype/i.test(text.slice(0, 400))) return null;
+      return text.slice(0, 100_000);
+    } catch {
+      return null;
+    }
+  };
+  const [robotsTxt, llmsTxt] = await Promise.all([siteFile("/robots.txt"), siteFile("/llms.txt")]);
+
   const canon = session.config_canon || {};
   const brief = session.config_brief || {};
   const brandNames = [canon.brandName].concat(canon.brandAliases || []).filter(Boolean);
@@ -82,6 +109,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       brandNames,
       targetQueries: brief.targetQueries || [],
       render,
+      robotsTxt,
+      llmsTxt,
     },
     new Date()
   );

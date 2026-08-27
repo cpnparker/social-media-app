@@ -29,6 +29,7 @@
  */
 
 import type { RenderOutcome } from "./render";
+import { crawlerAccess } from "./crawler-access";
 
 export type AuditStatus = "pass" | "warn" | "fail" | "info";
 
@@ -58,6 +59,16 @@ export interface PageAuditInput {
    *  JavaScript gap found". Not looking and finding nothing are different
    *  claims, and only one of them is honest. */
   render?: RenderOutcome | null;
+  /**
+   * The site's robots.txt, or null when it was NOT READ.
+   *
+   * Null is not "allowed". A 404, a timeout or a refusal all mean we did not
+   * look, and the check reports that rather than counting a pass — the same
+   * contract `render` already carries, for the same reason.
+   */
+  robotsTxt?: string | null;
+  /** The site's llms.txt, or null when it was not read. */
+  llmsTxt?: string | null;
 }
 
 export interface PageAuditResult {
@@ -222,6 +233,46 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     canonicalStatus = same ? "pass" : "warn";
     canonicalDetail = same ? `self-referencing: ${canonical}` : `points elsewhere: ${resolved}`;
   }
+  // ── AI crawler access ───────────────────────────────────────────────────
+  //
+  // The loudest thing this panel can say. Every other check measures how well
+  // a page would be quoted; this one asks whether the crawler is allowed
+  // through the door at all. The audit has always read the robots META tag,
+  // which governs Google's index, and never the robots FILE, which is where
+  // AI crawlers are turned away.
+  const crawlerPath = (() => {
+    try { return new URL(finalUrl).pathname || "/"; } catch { return "/"; }
+  })();
+  const verdicts = crawlerAccess(input.robotsTxt === undefined ? null : input.robotsTxt, crawlerPath);
+  if (!verdicts) {
+    push({
+      id: "ai-crawler-access", section: "indexability", name: "AI crawlers allowed",
+      status: "info",
+      detail: "Not checked — this site's robots.txt could not be read. That is not the same as being open to AI crawlers.",
+      remedy: "Fetch https://<domain>/robots.txt by hand and look for GPTBot, ClaudeBot, PerplexityBot, Google-Extended, OAI-SearchBot and CCBot.",
+    });
+  } else {
+    const blocked = verdicts.filter((v) => !v.allowed);
+    push({
+      id: "ai-crawler-access", section: "indexability", name: "AI crawlers allowed",
+      status: blocked.length === 0 ? "pass" : "fail",
+      detail: blocked.length === 0
+        ? `robots.txt allows all ${verdicts.length} AI crawlers checked on this path.`
+        : `robots.txt BLOCKS ${blocked.map((b) => `${b.label} (${b.who})`).join(", ")} on this path.`,
+      remedy: blocked.length === 0
+        ? undefined
+        : "Everything else on this page is worth nothing to those assistants until this changes. Allow them in robots.txt, or accept that this page cannot be cited there.",
+    });
+  }
+
+  push({
+    id: "llms-txt", section: "indexability", name: "llms.txt",
+    status: "info",
+    detail: input.llmsTxt === undefined || input.llmsTxt === null
+      ? "Not checked, or not present. llms.txt is a proposed convention, not a standard, and no major assistant is known to require it."
+      : `Present, ${(input.llmsTxt.match(/\S+/g) || []).length} words. It is a proposed convention, not a standard.`,
+  });
+
   push({
     id: "canonical", section: "indexability", name: "Canonical URL",
     status: canonicalStatus, detail: canonicalDetail,
@@ -503,6 +554,55 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: !dateMatch ? "Freshness is a grade-A signal in the rubric — roughly double the citation rate for recently-updated content — and an engine cannot reward a date it cannot find." : undefined,
   });
 
+  // ── Schema against the visible copy ─────────────────────────────────────
+  //
+  // The playbook's sharpest line, and the one thing here nothing else checks:
+  // "a mismatch is worse than no schema at all". Schema that disagrees with the
+  // page asserts a machine-readable fact the page contradicts, and the page is
+  // what a human will be shown.
+  //
+  // GRADED CONSERVATIVELY, and deliberately never `fail`. Every comparison here
+  // has a legitimate exception — a syndicated author, a schema date that leads
+  // a visible one by a day, a legal name that differs from the trading name —
+  // and a check that cries wolf on those is one people learn to skip. `headline`
+  // versus H1 is reported as DETAIL ONLY, with no bearing on the status,
+  // because an SEO headline differing from the H1 is normal practice.
+  const ldJoined = ldBlocks.join(" ");
+  const mismatches: string[] = [];
+  const notes: string[] = [];
+
+  const schemaDateRaw = (ldJoined.match(/"date(?:Modified|Published)"\s*:\s*"((?:19|20)\d{2})-(\d{2})-\d{2}/) || []);
+  if (schemaDateRaw.length > 0 && dateMatch) {
+    const schemaYear = schemaDateRaw[1];
+    const visibleYear = (dateMatch[0].match(/(?:19|20)\d{2}/) || [])[0];
+    if (visibleYear && schemaYear !== visibleYear) {
+      mismatches.push(`schema says ${schemaYear}, the visible date says ${visibleYear}`);
+    }
+  }
+
+  const schemaAuthor = (ldJoined.match(/"author"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]{2,60})"/) || [])[1];
+  if (schemaAuthor && visibleText.indexOf(schemaAuthor) < 0) {
+    mismatches.push(`schema names the author "${schemaAuthor}", who does not appear in the page text`);
+  }
+
+  const schemaHeadline = (ldJoined.match(/"headline"\s*:\s*"([^"]{4,150})"/) || [])[1];
+  if (schemaHeadline && h1s.length === 1 && schemaHeadline.trim() !== h1s[0].trim()) {
+    notes.push("schema headline differs from the H1, which is normal and not counted against this check");
+  }
+
+  push({
+    id: "schema-copy-consistency", section: "schema", name: "Schema agrees with the visible copy",
+    status: ldBlocks.length === 0 ? "info" : mismatches.length === 0 ? "pass" : "warn",
+    detail: ldBlocks.length === 0
+      ? "Not checked — there is no schema on this page to compare."
+      : mismatches.length === 0
+        ? `The dates, author and organisation in the schema match what the page shows.${notes.length ? " " + notes.join(" ") : ""}`
+        : `${mismatches.join("; ")}.${notes.length ? " " + notes.join(" ") : ""}`,
+    remedy: mismatches.length > 0
+      ? "A machine-readable claim the page contradicts is worse than no claim: it asserts something a reader can see is untrue. Make the schema follow the copy, or fix the copy."
+      : undefined,
+  });
+
   // ── Links ───────────────────────────────────────────────────────────────
   const anchors = dom.match(/<a\b[^>]*>[\s\S]*?<\/a>/gi) || [];
   let clickHere = 0;
@@ -515,6 +615,66 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     status: clickHere === 0 ? "pass" : "warn",
     detail: clickHere === 0 ? `${anchors.length} links, none with empty-calorie anchors` : `${clickHere} link${clickHere === 1 ? "" : "s"} with "click here"-style anchors`,
     remedy: clickHere > 0 ? 'Anchor text tells machines what the destination is. "Click here" tells them nothing.' : undefined,
+  });
+
+  // ── Internal link density ───────────────────────────────────────────────
+  //
+  // Counted inside the ARTICLE, not the page: a megamenu and a footer carry
+  // dozens of internal links and would drown any signal from the body — the
+  // same measurement that scoped the image checks.
+  //
+  // NOTE what this does NOT know, and says so: the cluster model is about
+  // DIRECTION — up to the pillar, sideways to siblings, down to the product —
+  // and that needs the site tree. Classifying by path depth would be right on
+  // conventionally-structured sites and confidently wrong on the rest.
+  const articleAnchors = (contentDom.match(/<a\b[^>]*href=["']([^"']+)["'][^>]*>/gi) || []);
+  let internal = 0;
+  let host = "";
+  try { host = new URL(finalUrl).host; } catch { host = ""; }
+  for (let i = 0; i < articleAnchors.length; i++) {
+    const href = (articleAnchors[i].match(/href=["']([^"']+)["']/i) || [])[1] || "";
+    if (!href || href.charAt(0) === "#" || /^(mailto|tel|javascript):/i.test(href)) continue;
+    if (/^https?:\/\//i.test(href)) {
+      // An absolute link to the site's own domain IS internal. parse.ts marks
+      // anything with a host as external, which is right for a draft with no
+      // URL and wrong here, where the page's own host is known.
+      try { if (new URL(href).host === host) internal++; } catch { /* not a URL */ }
+    } else {
+      internal++;
+    }
+  }
+  const bodyWords = (strip(contentDom).match(/\S+/g) || []).length;
+  const per1000 = bodyWords > 0 ? (internal / bodyWords) * 1000 : 0;
+  push({
+    id: "internal-link-density", section: "links", name: "Internal links through the body",
+    status: bodyWords < 300 ? "info" : per1000 >= 5 ? "pass" : "warn",
+    detail: bodyWords < 300
+      ? `${internal} internal link${internal === 1 ? "" : "s"} in the article — too short to judge a rate against.`
+      : `${internal} internal link${internal === 1 ? "" : "s"} in ${bodyWords.toLocaleString()} words of article, about ${per1000.toFixed(1)} per 1,000. Counts links only — not whether they point up to a pillar, sideways to siblings or down to a product, which needs the site tree.`,
+    remedy: bodyWords >= 300 && per1000 < 5
+      ? "One internal link every 150-200 words, in the body text with a descriptive anchor. Links in the body distribute authority and give a retrieval system the cluster's shape; navigation links do not."
+      : undefined,
+  });
+
+  // ── URL hygiene ─────────────────────────────────────────────────────────
+  const urlProblems: string[] = [];
+  try {
+    const u = new URL(finalUrl);
+    const path = u.pathname;
+    if (/[A-Z]/.test(path)) urlProblems.push("mixed case");
+    if (/\/(19|20)\d{2}\/(\d{2})\//.test(path)) urlProblems.push("a date in the path, which dates the URL when the content is refreshed");
+    if (/%[0-9a-f]{2}/i.test(path)) urlProblems.push("escaped characters");
+    if (u.search && /(^|[?&])(id|p|page_id)=\d+/i.test(u.search)) urlProblems.push("a numeric id rather than a descriptive slug");
+  } catch { /* a URL that does not parse is already reported by http-status */ }
+  push({
+    id: "url-hygiene", section: "identity", name: "URL shape",
+    status: urlProblems.length === 0 ? "pass" : "warn",
+    detail: urlProblems.length === 0
+      ? "lower case, descriptive, no dates or ids"
+      : `carries ${urlProblems.join(", ")}`,
+    remedy: urlProblems.length > 0
+      ? "A descriptive, stable, lower-case URL survives a content refresh. Whether THIS url is stable enough to survive one is a judgement only you can make — it is not checked here."
+      : undefined,
   });
 
   const counts = { pass: 0, warn: 0, fail: 0 };
