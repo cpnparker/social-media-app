@@ -30,6 +30,18 @@ import {
 
 export const maxDuration = 60;
 
+/** Is this a Docs/Drive link? Mirrors classifyGoogleLink's host test so the
+ *  branch condition can be synchronous; the real classification still happens
+ *  inside the branch, from the one implementation. */
+function classifyGoogleLinkSync(ref: string): boolean {
+  try {
+    const h = new URL((ref || "").trim()).hostname.toLowerCase();
+    return h === "docs.google.com" || h === "drive.google.com";
+  } catch {
+    return false;
+  }
+}
+
 const KINDS: SourceKind[] = ["pasted", "file", "gdoc-link", "url"];
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -90,6 +102,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (kind === "pasted") {
     text = typeof body?.text === "string" ? body.text : "";
     if (!text.trim()) return NextResponse.json({ error: "Nothing to attach" }, { status: 400 });
+  } else if (kind === "url" && classifyGoogleLinkSync(typeof body?.ref === "string" ? body.ref : "")) {
+    // A GOOGLE LINK SENT AS A PLAIN URL IS STILL A GOOGLE LINK.
+    //
+    // The client classifies before it posts, but the client is not the
+    // authority — an older tab, a scripted call or a future caller can send
+    // `url` with a Docs link in it, and the generic fetch would return Google's
+    // viewer shell and attach its menu chrome as research. Deciding here means
+    // the answer does not depend on who is asking.
+    const { classifyGoogleLink, fetchGoogleSourceText } = await import("@/lib/gdrive/doc-link");
+    const target = classifyGoogleLink(typeof body?.ref === "string" ? body.ref : "")!;
+    const result = await fetchGoogleSourceText(target);
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: result.permission ? 403 : 400 });
+    }
+    text = result.text;
+    if (!title) title = result.title;
+    ref = (typeof body?.ref === "string" ? body.ref : "").trim().slice(0, 500);
   } else if (kind === "url") {
     // The SAME guarded fetch the import path uses — one SSRF surface, and only
     // one of two implementations would ever be covered by verify-safe-fetch.
@@ -113,17 +142,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // Same two-step the import route uses: resolve the id from whatever shape
     // of link was pasted, then fetch. A 403 here means the document is not
     // shared, which is a different problem from a bad link and says so.
-    const { extractDocId, fetchDocText } = await import("@/lib/gdrive/doc-link");
-    const docId = extractDocId(typeof body?.ref === "string" ? body.ref : "");
-    if (!docId) {
-      return NextResponse.json({ error: "That does not look like a Google Doc link" }, { status: 400 });
+    // Every Google shape, not only a native Doc. Sheets, Slides and files
+    // uploaded to Drive each have their own export; classifyGoogleLink says
+    // which was pasted and fetchGoogleSourceText returns prose from any of
+    // them. A Drive-hosted PDF — the shape Drive's share dialog produces, and
+    // the one a shared report arrives as — is read rather than refused.
+    const { classifyGoogleLink, fetchGoogleSourceText } = await import("@/lib/gdrive/doc-link");
+    const target = classifyGoogleLink(typeof body?.ref === "string" ? body.ref : "");
+    if (!target) {
+      return NextResponse.json({ error: "That does not look like a Google Docs or Drive link" }, { status: 400 });
     }
-    const result = await fetchDocText(docId, MAX_SOURCE_CHARS);
+    const result = await fetchGoogleSourceText(target);
     if (!result.ok) {
-      return NextResponse.json({ error: result.error }, { status: (result as any).permission ? 403 : 400 });
+      return NextResponse.json({ error: result.error }, { status: result.permission ? 403 : 400 });
     }
-    text = String(result.text || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-    if (!title) title = "Google Doc";
+    text = result.text;
+    if (!title) title = result.title;
     ref = (typeof body?.ref === "string" ? body.ref : "").trim().slice(0, 500);
   } else {
     // ── Uploaded file ────────────────────────────────────────────────────

@@ -63,8 +63,30 @@ type AddTab = "paste" | "upload" | "link";
  * two code paths we happen to have. Detected here so picking wrong is not
  * possible.
  */
+/**
+ * Google links all go down the gdoc path — not only native Docs.
+ *
+ * Sheets, Slides and drive.google.com/file/d/... used to fall through to the
+ * generic page fetch, which returned Google's viewer shell and attached its
+ * menu chrome as research. The server now classifies and exports each kind, so
+ * the client's job is only to stop sending them the wrong way.
+ *
+ * "gdoc-link" stays the stored kind because the database CHECK constraint
+ * allows four values and a fifth would need a migration for no gain — the
+ * distinction that matters is which export to call, and the server derives that
+ * from the link itself.
+ */
 function kindForLink(ref: string): "gdoc-link" | "url" {
-  return /docs\.google\.com\/document\//i.test(ref) ? "gdoc-link" : "url";
+  return /^https?:\/\/(docs|drive)\.google\.com\//i.test(ref.trim()) ? "gdoc-link" : "url";
+}
+
+/** What the writer is told a Google link is, before they press Attach. */
+function googleHint(ref: string): string {
+  const r = ref.trim();
+  if (/\/spreadsheets\//i.test(r)) return "A Google Sheet. Its first tab is read as text — it needs to be shared with anyone who has the link.";
+  if (/\/presentation\//i.test(r)) return "Google Slides. The text on the slides is read — it needs to be shared with anyone who has the link.";
+  if (/^https?:\/\/drive\.google\.com\//i.test(r)) return "A file in Drive. PDFs, Word documents and text files are read — it needs to be shared with anyone who has the link.";
+  return "A Google Doc. It needs to be shared with anyone who has the link.";
 }
 
 export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Props) {
@@ -357,12 +379,12 @@ export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Prop
                   <input
                     value={ref}
                     onChange={(e) => setRef(e.target.value)}
-                    placeholder="A web page, or a Google Doc link"
+                    placeholder="A web page, or a Google Docs or Drive link"
                     className="w-full text-[12.5px] bg-transparent border rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring"
                   />
                   <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
                     {kindForLink(ref) === "gdoc-link" && ref.trim()
-                      ? "A Google Doc. It needs to be shared with anyone who has the link."
+                      ? googleHint(ref)
                       : "Quoted and checked against — never followed. Instructions on a fetched page are treated as text, not as orders."}
                   </p>
                   <Button

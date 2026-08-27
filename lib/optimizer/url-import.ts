@@ -64,12 +64,17 @@ export function extractArticleRegion(page: string): string {
 }
 
 /**
- * Is this a Google link the generic page fetch cannot read, and what should the
- * writer do about it?
+ * A Google link that reached the GENERIC page fetch — which now means one we
+ * cannot export.
  *
- * Returns null for anything else, INCLUDING a native Doc — those are routed to
- * the gdoc-link path before they reach the fetch, and refusing a link that
- * works elsewhere in the product would be worse than the bug this prevents.
+ * Docs, Sheets, Slides and Drive-hosted files are all handled before this
+ * point, by the sources route, from the link itself rather than from what the
+ * client claimed. What is left is the rest of Google — Forms, Calendar, a
+ * folder — and for those the old advice ("download it") is the right advice.
+ *
+ * It still matters, because the fetch below refuses only on `if (!text)` and a
+ * Google viewer shell HAS text: menu labels, a filename, "Sign in". Without
+ * this the attach succeeds and stores Google's chrome as the writer's research.
  *
  * Exported so the check can run it rather than grep for its strings.
  */
@@ -85,18 +90,14 @@ export function googleLinkKind(rawUrl: string): string | null {
   // Exact hosts, not a substring: "docs.google.com.evil.test" is a different
   // registrable domain and must not be treated as Google at all.
   if (host !== "docs.google.com" && host !== "drive.google.com") return null;
-  if (/^\/document\//.test(path)) return null;
 
-  if (/^\/spreadsheets\//.test(path)) {
-    return "That is a Google Sheet. Background material is read as prose — download it as .csv and attach the file.";
-  }
-  if (/^\/presentation\//.test(path)) {
-    return "That is a Google Slides deck. Download it as .txt or .docx and attach the file.";
-  }
-  if (host === "drive.google.com") {
-    return "That is a Drive link to a file rather than a Google Doc. Open it, download it, and attach the file — a PDF works.";
-  }
-  return "That Google link is not a Google Doc. Open the document and copy the link from its address bar, or download the file and attach it.";
+  // The four exportable shapes are handled upstream. If one reaches here the
+  // caller bypassed that path, and refusing a link the product supports would
+  // be worse than the junk this guards against — so let it through.
+  if (/^\/(document|spreadsheets|presentation)\//.test(path)) return null;
+  if (host === "drive.google.com") return null;
+
+  return "That Google link is not a document, sheet, deck or file. Open it, export what you need, and attach that.";
 }
 
 /**

@@ -37,7 +37,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { extractSourceText, importFile } from "../lib/optimizer/file-import";
 import { googleLinkKind } from "../lib/optimizer/url-import";
-import { extractDocId } from "../lib/gdrive/doc-link";
+import { extractDocId, classifyGoogleLink, fetchGoogleSourceText } from "../lib/gdrive/doc-link";
 import { readPdf, pdfTitle, tidyPdfText, PDFJS_VERSION } from "../lib/optimizer/pdf";
 
 const read = (p: string) => readFileSync(join(__dirname, "..", p), "utf8");
@@ -209,48 +209,93 @@ const BODY_MARKER = /skills shortages rose 43 percent/;
       : fail(`pdf-parse ships no ${PDFJS_VERSION} build — the tracing rule matches nothing`);
   }
 
-  // ── 9. Google links land somewhere sensible ─────────────────────────────
-  // A native Doc has its own path (export?format=txt). Everything else on those
-  // hosts used to reach the generic page fetch, which returns the viewer's HTML
-  // shell — and since that shell HAS text, the attach SUCCEEDED and stored
-  // Google's menu chrome as the writer's research.
-  console.log("\n9. A Google link is read, refused with a reason, or neither — never junk");
+  // ── 9. Every Google shape is classified, and read ────────────────────────
+  // Sheets, Slides and drive.google.com/file/d/... used to fall through to the
+  // generic page fetch, which returns the viewer's HTML shell — and since that
+  // shell HAS text, the attach SUCCEEDED and stored Google's menu chrome as the
+  // writer's research. Each now has its own export.
+  console.log("\n9. A Google link is classified by what it points at");
   {
-    const doc = "https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit?usp=sharing";
-    googleLinkKind(doc) === null
-      ? pass("a native Google Doc is NOT refused — it has its own export path")
-      : fail("the guard now blocks working Google Doc links");
-    extractDocId(doc)
-      ? pass("and its id still resolves, so that path can fetch it")
-      : fail("extractDocId stopped resolving a normal Doc link");
-
-    const shapes: Array<[string, RegExp]> = [
-      ["https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit", /Sheet/],
-      ["https://docs.google.com/presentation/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit", /Slides/],
-      ["https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/view", /Drive link/],
+    const ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz012345";
+    const shapes: Array<[string, string]> = [
+      [`https://docs.google.com/document/d/${ID}/edit?usp=sharing`, "document"],
+      [`https://docs.google.com/spreadsheets/d/${ID}/edit#gid=0`, "spreadsheet"],
+      [`https://docs.google.com/presentation/d/${ID}/edit`, "presentation"],
+      [`https://drive.google.com/file/d/${ID}/view?usp=drive_link`, "drive-file"],
+      [`https://drive.google.com/open?id=${ID}`, "drive-file"],
     ];
-    for (const [u, expect] of shapes) {
-      const msg = googleLinkKind(u);
-      msg && expect.test(msg)
-        ? pass(`${u.replace("https://", "").split("/")[1]} is refused with an instruction, not fetched`)
-        : fail(`${u} gave ${JSON.stringify(msg)}`);
+    for (const [url, want] of shapes) {
+      const t = classifyGoogleLink(url);
+      t && t.kind === want && t.id === ID
+        ? pass(`${want.padEnd(12)} ← ${url.replace("https://", "").slice(0, 46)}`)
+        : fail(`${url} classified as ${JSON.stringify(t)}, expected ${want}`);
     }
-
-    // The lookalike host must not be treated as Google in either direction —
-    // neither refused with Google wording nor trusted as a Doc.
-    googleLinkKind("https://docs.google.com.evil.test/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit") === null
-      && extractDocId("https://docs.google.com.evil.test/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit") === null
-      ? pass("a lookalike host is not Google to either the guard or the id parser")
+    classifyGoogleLink(`https://docs.google.com.evil.test/document/d/${ID}/edit`) === null
+      ? pass("a lookalike host classifies as nothing at all")
       : fail("docs.google.com.evil.test was treated as Google");
+    classifyGoogleLink("https://example.com/report") === null
+      ? pass("an ordinary page is not a Google link")
+      : fail("a non-Google URL was classified as Google");
+    const bare = classifyGoogleLink(ID);
+    bare && bare.kind === "document"
+      ? pass("a bare id is still read as a Doc, as it always was")
+      : fail("a bare document id stopped resolving");
+  }
 
-    googleLinkKind("https://example.com/report") === null
-      ? pass("an ordinary page is untouched by the guard")
-      : fail("the guard fires on non-Google URLs");
+  // ── 10. The bytes become prose, or a stated reason ───────────────────────
+  // Driven through fetchGoogleSourceText with an injected fetch, so the
+  // dispatch is exercised without the network — the same seam fetchDocText
+  // already uses for its sign-in branch.
+  console.log("\n10. Each kind turns into words, and a refusal is named");
+  {
+    const ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz012345";
+    const reply = (body: Buffer | string, ctype: string, url = "https://docs.google.com/x", status = 200) =>
+      (async () => new Response(typeof body === "string" ? body : new Uint8Array(body), {
+        status, headers: { "content-type": ctype },
+      })) as unknown as typeof fetch;
+    // Response.url is read-only, so the host check is exercised via the
+    // sign-in BODY backstop rather than by faking a redirect.
+
+    const sheet = await fetchGoogleSourceText({ kind: "spreadsheet", id: ID },
+      reply("quarter,revenue\nQ1,120\nQ2,148", "text/csv"));
+    sheet.ok && /Q2,148/.test(sheet.text) && /first tab/.test(sheet.note || "")
+      ? pass("a Sheet becomes CSV prose, and says it took only the first tab")
+      : fail(`sheet gave ${JSON.stringify(sheet).slice(0, 110)}`);
+
+    const deck = await fetchGoogleSourceText({ kind: "presentation", id: ID },
+      reply("Title slide\n\n\n\nSecond slide", "text/plain"));
+    deck.ok && /Second slide/.test(deck.text) && !/\n{3}/.test(deck.text)
+      ? pass("Slides become the text on the slides, with the blank runs collapsed")
+      : fail(`deck gave ${JSON.stringify(deck).slice(0, 110)}`);
+
+    const pdf = await fetchGoogleSourceText({ kind: "drive-file", id: ID },
+      reply(withText(), "application/pdf"));
+    pdf.ok && BODY_MARKER.test(pdf.text)
+      ? pass("a Drive-hosted PDF is READ — the case that prompted this")
+      : fail(`drive pdf gave ${JSON.stringify(pdf).slice(0, 110)}`);
+
+    const signin = await fetchGoogleSourceText({ kind: "drive-file", id: ID },
+      reply("<html><title>Sign in - Google Accounts</title><input id=\"identifierId\"></html>", "text/html"));
+    !signin.ok && signin.permission
+      ? pass("a sign-in page served at 200 is a permission problem, not a document")
+      : fail(`sign-in page gave ${JSON.stringify(signin).slice(0, 110)}`);
+
+    const big = await fetchGoogleSourceText({ kind: "drive-file", id: ID },
+      reply("<html>Google Drive can't scan this file for viruses. confirm=t</html>", "text/html"));
+    !big.ok && /too large/.test(big.error)
+      ? pass("Drive's virus-scan interstitial is named, not attached")
+      : fail(`interstitial gave ${JSON.stringify(big).slice(0, 110)}`);
+
+    const image = await fetchGoogleSourceText({ kind: "drive-file", id: ID },
+      reply(Buffer.from([0x89, 0x50, 0x4e, 0x47]), "image/png"));
+    !image.ok && /image\/png/.test(image.error)
+      ? pass("an unreadable Drive file NAMES its type rather than saying unsupported")
+      : fail(`png gave ${JSON.stringify(image).slice(0, 110)}`);
   }
 
   // ── Self-test ────────────────────────────────────────────────────────────
   if (process.argv.indexOf("--self-test") >= 0) {
-    console.log("\n10. self-test — every detector driven against input built to break it");
+    console.log("\n11. self-test — every detector driven against input built to break it");
     const probes: Array<[string, () => Promise<boolean> | boolean]> = [
       ["the committed fixture is something pdf-parse accepts", async () => (await readPdf(withText(), "a.pdf")).ok],
       ["a text-free PDF IS distinguishable from a corrupt one", async () => {
