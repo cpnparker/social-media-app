@@ -1281,5 +1281,45 @@ console.log("\nTakeaways blocks are recognised by shape");
     "removing only the LABEL does not move the score — the bullets are the block");
 }
 
+// ── A numbered question heading is a question heading ──────────────────────
+//
+// Found by auditing a real published article whose ten headings are all
+// numbered questions — "1. Who is Amrize? The partner of choice for
+// professional builders." It scored ZERO of ten. Two independent reasons, and
+// it needed both to fail: the anchored [a-z'] class cannot start on "1", so the
+// interrogative lookup got an empty first word; and the question-mark test was
+// anchored to the END, which a question carrying its own answer never reaches.
+//
+// The source method holds that article up as the one whose headings are ALREADY
+// correct. It was right, and the tool disagreed with it ten times.
+console.log("\nQuestion headings survive numbering and trailing answers");
+{
+  const shaped = (h: string) => {
+    const d = parseDraft({ body: `# T\n\n### ${h}\n\nBody words here to make a block.`, title: "T" } as any);
+    const head: any = d.headings.filter((x: any) => x.level > 1)[0];
+    return !!head && head.isInterrogativeShaped;
+  };
+  const say = (ok: boolean, m: string) => (ok ? pass(m) : fail(m));
+
+  say(shaped("1. Who is Amrize? The partner of choice for professional builders."),
+    "a NUMBERED question that answers itself in the same heading is question-shaped");
+  say(shaped("What does Amrize make?"), "a bare question still is");
+  say(shaped("2. How Amrize builds"), "and numbering no longer hides an interrogative first word");
+  say(shaped("How AI mixes concrete"), "an interrogative first word with no question mark still counts");
+
+  // The two the source method names as BAD headings must stay bad, or the
+  // loosening has simply made the criterion say yes to everything.
+  say(!shaped("Empowering the digital economy from the ground up"),
+    "a slogan is NOT question-shaped — the loosening did not turn this into a pass-everything check");
+  say(!shaped("Meet the Experts"), "nor is a label");
+
+  // isQuestion stays STRICT: answer-adjacency keys on it, and a heading that
+  // carries its own answer is a different shape from a bare question.
+  const d: any = parseDraft({ body: `# T\n\n### 1. Who is Amrize? The partner of choice.\n\nBody words.`, title: "T" } as any);
+  const h: any = d.headings.filter((x: any) => x.level > 1)[0];
+  say(h.isInterrogativeShaped && !h.isQuestion,
+    "question-SHAPED and IS-a-question stay different tests — only the looser one moved");
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
 process.exit(failures ? 1 : 0);

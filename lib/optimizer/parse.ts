@@ -511,12 +511,28 @@ export function parseDraft(input: ParseInput): ParsedDraft {
     const b = blocks[i];
     if (b.kind !== "heading") continue;
     const lower = b.text.toLowerCase();
-    const firstWord = (lower.match(/^([a-z']+)/) || ["", ""])[1];
+    // ── LEADING NUMBERING IS NOT THE FIRST WORD ──────────────────────────
+    //
+    // "1. Who is Amrize? The partner of choice." matched NOTHING here: the
+    // anchored [a-z'] class cannot start on "1", so firstWord came back empty
+    // and the interrogative lookup failed. An article of ten numbered question
+    // headings — the exact shape a listicle takes, and the one the source
+    // method holds up as already correct — scored zero of ten.
+    const unnumbered = lower.replace(/^\s*(?:\d+\s*[.)\]:-]\s*|[•·▪‣◦*]\s*|[-–—]\s+)/, "");
+    const firstWord = (unnumbered.match(/^([a-z']+)/) || ["", ""])[1];
     headings.push({
       level: b.level || 2, text: b.text, textLower: lower,
       blockIndex: i, start: b.start, end: b.end,
+      // isQuestion stays STRICT — ends with a question mark. It is what the
+      // answer-adjacency logic keys on, and a heading whose question is
+      // followed by its own answer is a different shape from a bare question.
       isQuestion: /\?\s*$/.test(b.text),
-      isInterrogativeShaped: /\?\s*$/.test(b.text) || INTERROGATIVES[firstWord] === true,
+      // Question-SHAPED is looser on purpose, and now matches a question mark
+      // ANYWHERE rather than only at the end. "Who is Amrize? The partner of
+      // choice for professional builders." is a question heading carrying its
+      // own answer — which is better for extraction than a bare question, not
+      // worse, and was being scored as though it were not a question at all.
+      isInterrogativeShaped: /\?/.test(b.text) || INTERROGATIVES[firstWord] === true,
     });
   }
 
