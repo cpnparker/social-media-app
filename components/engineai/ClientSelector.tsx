@@ -81,9 +81,14 @@ export default function ClientSelector({
           type="button"
           className={cn(
             "w-full flex items-center gap-2 rounded-lg px-2.5 py-2 transition-colors text-left",
+            // Both tones are a translucent FILL rather than an outline. The
+            // surface variant first used `border bg-background`, which sits
+            // inside a bordered card and reads as border-on-border with no
+            // affordance until you hover it. A filled control looks like a
+            // control on either ground.
             sidebar
               ? "bg-white/[0.06] hover:bg-white/10"
-              : "border bg-background hover:bg-muted",
+              : "bg-muted/60 hover:bg-muted",
             className
           )}
         >

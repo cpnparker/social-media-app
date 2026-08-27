@@ -18,6 +18,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { offeredTypes } from "@/lib/optimizer/content-types";
 import ClientSelector from "@/components/engineai/ClientSelector";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { ArrowRight, ClipboardPaste, FileText, Building2, Globe, Loader2, PenLine, Info, Upload, FileUp } from "lucide-react";
 
 export interface ImportSources {
@@ -83,6 +84,9 @@ const CONTENT_TYPE_FOR: { [ext: string]: string } = {
 };
 
 export default function StartScreen({ workspaceId, clientId, clientName, onImported, onWriteNew, onStartBlank, surface }: Props) {
+  // Same context the selector reads, consulted here only to decide whether the
+  // card that WRAPS it should exist at all.
+  const hasClients = (useCustomerSafe()?.customers || []).length > 0;
   const [tab, setTab] = useState<Tab>("paste");
   const [sources, setSources] = useState<ImportSources | null>(null);
   const [loading, setLoading] = useState(false);
@@ -281,6 +285,11 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             So the control belongs where the piece is created, not one surface away.
 
             Same component as the nav's, not a copy — see ClientSelector. */}
+        {/* Rendered only when there is something to choose. ClientSelector
+            returns null with no clients, and a "Client" label sitting over an
+            empty space is worse than no card at all — the wrapper lives here,
+            so the guard has to live here too. */}
+        {hasClients && (
         <div className="flex flex-col gap-2 rounded-2xl border p-4">
           <div className="flex items-center gap-3">
             <span className="text-[13px] font-semibold tracking-tight shrink-0">Client</span>
@@ -294,6 +303,7 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
               : "Without a client, the piece has no brand names, so its own figures read as unsourced."}
           </p>
         </div>
+        )}
 
         {/* WRITE FIRST. The door that did not exist: every previous route into
             the editor either spent a model call or required text that already
