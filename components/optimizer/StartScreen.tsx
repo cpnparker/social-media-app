@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { offeredTypes } from "@/lib/optimizer/content-types";
+import ClientSelector from "@/components/engineai/ClientSelector";
 import { ArrowRight, ClipboardPaste, FileText, Building2, Globe, Loader2, PenLine, Info, Upload, FileUp } from "lucide-react";
 
 export interface ImportSources {
@@ -264,7 +265,33 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             {surface === "writer"
               ? "A brief, or a blank page. Nothing is sent to a model until you ask."
               : "Bring in content that already exists and see how it performs for AI answers."}
-            {clientName ? ` Client: ${clientName}.` : ""}
+          </p>
+        </div>
+
+        {/* THE CLIENT, CHOOSABLE HERE.
+            It was a fragment at the end of the sentence above — "Client: Amrize." —
+            which stated the setting without offering it, so the only way to change
+            it was to notice the control in the left nav and go back there.
+
+            It is not decoration. The client's canon supplies the BRAND NAMES, and
+            a piece imported without them has no first party: on a real Amrize
+            document the sentence "the Amrize mix was 35% less carbon intensive"
+            was marked "Figure with no source", because nothing had told the tool
+            that Amrize was the source. Choosing the client removes that finding.
+            So the control belongs where the piece is created, not one surface away.
+
+            Same component as the nav's, not a copy — see ClientSelector. */}
+        <div className="flex flex-col gap-2 rounded-2xl border p-4">
+          <div className="flex items-center gap-3">
+            <span className="text-[13px] font-semibold tracking-tight shrink-0">Client</span>
+            <div className="w-[248px] shrink-0">
+              <ClientSelector tone="surface" />
+            </div>
+          </div>
+          <p className="text-[12.5px] text-muted-foreground leading-relaxed">
+            {clientName
+              ? `Scored against ${clientName}'s canon — their own figures and names count as sourced.`
+              : "Without a client, the piece has no brand names, so its own figures read as unsourced."}
           </p>
         </div>
 

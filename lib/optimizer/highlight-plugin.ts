@@ -333,14 +333,33 @@ export function anchorFindings(
       out[i] = { finding: f, from: 0, to: 0, status: "orphaned" };
       continue;
     }
+    // A CONTESTED RANGE IS NOT A VANISHED PASSAGE.
+    //
+    // This used to mark the loser "orphaned", which the rail renders as
+    // "Couldn't find this passage any more — the text has changed since it was
+    // assessed." For a range collision every word of that is false: the quote
+    // matched, the passage is on screen, and nothing changed.
+    //
+    // It reached production. stat-source-adjacency and current-year-stats both
+    // emit a span on the exact same "43%" token, so on a real document with
+    // three figures repeated twice, SIX cards told the writer their text had
+    // moved out from under six figures that were still sitting there. The
+    // owner's reasonable reading was "what are these?".
+    //
+    // So the loser is DROPPED rather than mislabelled. Nothing is lost that the
+    // reader needs: spans never affect the score, this function already shows
+    // only "the worst few" per criterion by design, and the score panel keeps
+    // reporting the true count — the criterion still says how many undated
+    // figures there are, it just does not draw a second underline under a
+    // figure that already has one.
+    //
+    // Orphaning stays for the case it was written for: a quote that genuinely
+    // is not in the text any more. There the message is true.
     let overlaps = false;
     for (let c = 0; c < claimed.length; c++) {
       if (range.from < claimed[c].to && claimed[c].from < range.to) { overlaps = true; break; }
     }
-    if (overlaps) {
-      out[i] = { finding: f, from: 0, to: 0, status: "orphaned" };
-      continue;
-    }
+    if (overlaps) continue;
     claimed.push(range);
     const settled = wasSettled[f.id];
     out[i] = {

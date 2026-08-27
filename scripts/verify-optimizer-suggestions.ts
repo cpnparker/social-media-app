@@ -69,6 +69,10 @@ import { computeDraftScores } from "../lib/optimizer/engine";
 import { buildLiveFindings } from "../lib/optimizer/live-issues";
 import { extractArticleRegion, extractSiteBrand, publisherFor } from "../lib/optimizer/url-import";
 
+import { readFileSync } from "fs";
+import { join } from "path";
+const read = (p: string) => readFileSync(join(__dirname, "..", p), "utf8");
+
 let failures = 0;
 const pass = (m: string) => console.log(`  ok    ${m}`);
 const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
@@ -274,6 +278,81 @@ console.log("\n8. publisherFor resolves at read time, not only at import");
   publisherFor({}, "4821") === "" && publisherFor({}, null) === ""
     ? pass("a non-URL source ref yields no publisher, rather than a guess")
     : fail("invented a publisher from a source ref that was never a URL");
+}
+
+// ── 9. The client is what makes a first party ────────────────────────────
+console.log("\n9. naming the client makes its own figures read as sourced");
+{
+  // The live complaint: "lots of inaccurate 'figure with no source'". Three
+  // sentences carried the figures; two name nobody and are correctly flagged,
+  // and the third — "On Meta's Rosemount, Minnesota data center, the Amrize mix
+  // was 35% less carbon intensive ... while gaining early strength 43% faster" —
+  // names the company in the same breath as the number and was flagged anyway,
+  // because the session had no client attached and therefore no brand names.
+  //
+  // This asserts the CONSEQUENCE rather than the wiring: with the client named,
+  // that sentence stops being marked, and the two that genuinely name nobody
+  // keep theirs. Both halves matter — a fix that silenced all three would pass
+  // a one-sided check and would be worse than the bug.
+  const body = [
+    "<h2>AI-optimized concrete</h2>",
+    "<p>Result: 43% faster early strength gain, 35% lower carbon intensity, at similar cost.</p>",
+    "<p>The mix reached early strength 43% faster than the conventional mix and was 35% less carbon intensive, all at comparable cost.</p>",
+    "<p>On Meta's Rosemount, Minnesota data center, the Amrize mix was 35% less carbon intensive than the conventional equivalent while gaining early strength 43% faster, at comparable cost.</p>",
+  ].join("");
+  const without = criterion(body, "stat-source-adjacency");
+  const withClient = criterion(body, "stat-source-adjacency", { brandName: "Amrize" });
+  if (!without || !withClient) fail("stat-source-adjacency did not run — the section proves nothing");
+  else {
+    const n0 = (without.spans || []).length, n1 = (withClient.spans || []).length;
+    n0 === 6
+      ? pass(`with no client the fixture really does produce ${n0} marks — the defect is present to fix`)
+      : fail(`expected 6 marks with no client, got ${n0} — the fixture no longer reproduces the report`);
+    n1 === 4
+      ? pass("naming the client drops the two marks on the sentence that names it")
+      : fail(`expected 4 marks with the client named, got ${n1}`);
+    const doc: any = parseDraft({ body, title: "t", brandNames: ["Amrize"] });
+    let onNamedSentence = 0;
+    for (const sp of withClient.spans || []) {
+      const sen = doc.sentences.find((x: any) => sp.start >= x.start && sp.start < x.end);
+      if (sen && /the Amrize mix/.test(sen.text)) onNamedSentence++;
+    }
+    onNamedSentence === 0
+      ? pass("no mark survives on the sentence that names the brand alongside the figure")
+      : fail(`${onNamedSentence} mark(s) still sit on the sentence naming the brand`);
+    (withClient.spans || []).length > 0
+      ? pass("and the sentences that name nobody are STILL flagged — the fix did not silence the criterion")
+      : fail("naming a client silenced every unsourced figure, which is worse than the bug");
+  }
+}
+
+// ── 10. Both surfaces use the SAME client selector ───────────────────────
+console.log("\n10. one selector, not two that look alike");
+{
+  const sel = read("components/engineai/ClientSelector.tsx");
+  const sidebar = read("components/engineai/EngineAISidebar.tsx");
+  const start = read("components/optimizer/StartScreen.tsx");
+  /useCustomerSafe\(\)/.test(sel)
+    ? pass("the shared selector reads the same customer context the nav always did")
+    : fail("the shared selector does not use CustomerContext");
+  /<ClientSelector\s+tone="sidebar"/.test(sidebar)
+    ? pass("the left nav renders the shared component")
+    : fail("the left nav no longer renders the shared selector");
+  /<ClientSelector\s+tone="surface"/.test(start)
+    ? pass("the Writer/Optimiser first screen renders the same component")
+    : fail("the first screen does not render the shared selector");
+  // The NEGATIVE is the assertion that matters: a copy left behind in the nav
+  // is exactly the divergence the extraction exists to prevent.
+  // MARKUP, not the identifier. The first version of this assertion matched the
+  // bare word and fired on a dead `import { Popover... }` line the extraction
+  // had left behind — a true finding reported as the wrong thing. The import is
+  // gone now, but the assertion is about a second SELECTOR, so it looks for one.
+  !/<PopoverTrigger/.test(sidebar)
+    ? pass("no second copy of the popover markup survives in the nav")
+    : fail("the nav still renders its own client popover — two selectors again");
+  /localeCompare/.test(sel)
+    ? pass("the shared list is still sorted by name, as the nav's was")
+    : fail("the extraction dropped the alphabetical sort");
 }
 
 // ── Self-test ────────────────────────────────────────────────────────────

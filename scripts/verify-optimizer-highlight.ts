@@ -247,10 +247,35 @@ console.log("\n6. Overlapping and unanchorable findings");
   const issues = anchorFindings(schema.nodeFromJSON(DOC_JSON), [FINDING, nested]);
   const long = issues.filter((i) => i.finding.id === "f1")[0];
   const short = issues.filter((i) => i.finding.id === "f-short")[0];
-  long.status === "active" && short.status === "orphaned"
-    ? pass("a nested shorter quote yields to the longer finding it sits inside")
-    : fail(`long=${long.status} short=${short.status}`,
+  // The loser is DROPPED, not orphaned. It used to be returned as an orphan,
+  // which the rail renders as "Couldn't find this passage any more — the text
+  // has changed since it was assessed", and for a contested range every word of
+  // that is false. This assertion previously REQUIRED the mislabelling.
+  long && long.status === "active" && short === undefined
+    ? pass("a nested shorter quote yields to the longer finding, and is dropped rather than reported as vanished")
+    : fail(`long=${long && long.status} short=${short && short.status}`,
            "Two highlights over one sentence means one Apply edits what the other described.");
+
+  // THE PRODUCTION SYMPTOM, reproduced. Two criteria emit a span on the SAME
+  // token — stat-source-adjacency and current-year-stats both mark "43%" — and
+  // six such collisions told a writer their text had moved out from under six
+  // figures that were still on screen.
+  {
+    const a: HighlightFinding = { ...FINDING, id: "same-a", criterion: "stat-source-adjacency", quote: "rarely recover" };
+    const b: HighlightFinding = { ...FINDING, id: "same-b", criterion: "current-year-stats", quote: "rarely recover" };
+    const both = anchorFindings(schema.nodeFromJSON(DOC_JSON), [a, b]);
+    // PRECONDITION: the quote must really resolve, or "no orphans" is true for
+    // the wrong reason and this fixture certifies nothing.
+    both.length >= 1 && both[0].to > both[0].from
+      ? pass("the identical-span fixture really does anchor — there was a collision to resolve")
+      : fail("the fixture never anchored; the assertion below would pass over nothing");
+    both.filter((i) => i.status === "orphaned").length === 0
+      ? pass("two criteria marking the identical span produce NO false 'passage has vanished' card")
+      : fail("a contested identical span is still reported as a vanished passage");
+    both.length === 1
+      ? pass("and exactly one of them keeps the underline")
+      : fail(`expected 1 surviving mark on the shared span, got ${both.length}`);
+  }
 
   const missing: HighlightFinding = { ...FINDING, id: "f-gone", quote: "a sentence that is not in this document" };
   const gone = anchorFindings(schema.nodeFromJSON(DOC_JSON), [missing]);

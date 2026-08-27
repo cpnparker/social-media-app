@@ -32,6 +32,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import ClientSelector from "./ClientSelector";
 import { useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { cn } from "@/lib/utils";
 import { offeredTypes } from "@/lib/optimizer/content-types";
@@ -41,10 +42,23 @@ import {
 import { toast } from "sonner";
 import { getSubdomainUrl } from "@/lib/subdomain";
 import { SectionRailDesktop, SectionRailMobile, useRailItems } from "@/components/layout/SectionRail";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import {
-  Building2, Check, ChevronDown, ChevronsUpDown, Download, Gauge, Loader2, Lock, Pencil, PenLine, PenSquare, Pin, Plus, Search, Sparkles, Trash2, Users, X,
+  Building2,
+  Download,
+  Gauge,
+  Loader2,
+  Lock,
+  Pencil,
+  PenLine,
+  PenSquare,
+  Pin,
+  Plus,
+  Search,
+  Sparkles,
+  Trash2,
+  Users,
+  X,
 } from "lucide-react";
 
 /** Kept in step with the shape app/engineai/page.tsx builds. */
@@ -329,14 +343,7 @@ export default function EngineAISidebar({
     }
   };
 
-  const [clientSearchQuery, setClientSearchQuery] = useState("");
-  const [clientPopoverOpen, setClientPopoverOpen] = useState(false);
 
-  const filteredClients = (
-    clientSearchQuery
-      ? customers.filter((c) => c.name.toLowerCase().includes(clientSearchQuery.toLowerCase()))
-      : customers
-  ).sort((a, b) => a.name.localeCompare(b.name));
 
 
   const handleNewChat = () => {
@@ -425,100 +432,11 @@ export default function EngineAISidebar({
               </button>
             </div>
 
-            {/* Client selector (searchable popover) */}
-            {customers.length > 0 && (
-              <Popover
-                open={clientPopoverOpen}
-                onOpenChange={(open) => {
-                  setClientPopoverOpen(open);
-                  if (!open) setClientSearchQuery("");
-                }}
-              >
-                <PopoverTrigger asChild>
-                  <button className="w-full flex items-center gap-2 rounded-lg bg-white/[0.06] hover:bg-white/10 px-2.5 py-2 transition-colors text-left">
-                    <Building2 className="h-3.5 w-3.5 text-white/40 shrink-0" />
-                    <span className="flex-1 truncate text-white/80 text-[13px] font-medium">
-                      {selectedCustomer?.name || "General"}
-                    </span>
-                    <ChevronsUpDown className="h-3 w-3 text-white/40 shrink-0" />
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent align="start" side="bottom" className="w-[256px] p-0">
-                  <div className="flex items-center border-b px-3">
-                    <Search className="mr-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <input
-                      placeholder="Search clients..."
-                      value={clientSearchQuery}
-                      onChange={(e) => setClientSearchQuery(e.target.value)}
-                      className="flex h-9 w-full bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
-                    />
-                    {clientSearchQuery && (
-                      <button
-                        onClick={() => setClientSearchQuery("")}
-                        className="ml-1 h-4 w-4 shrink-0 text-muted-foreground hover:text-foreground"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    )}
-                  </div>
-                  <div className="max-h-[240px] overflow-y-auto p-1">
-                    {canViewAll && !clientSearchQuery && (
-                      <button
-                        onClick={() => {
-                          customerCtx?.setSelectedCustomerId(null);
-                          setClientPopoverOpen(false);
-                          setClientSearchQuery("");
-                        }}
-                        className={cn(
-                          "w-full flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent transition-colors text-left",
-                          !selectedCustomer && "bg-accent"
-                        )}
-                      >
-                        <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                        <span className="flex-1">General</span>
-                        {!selectedCustomer && (
-                          <Check className="h-4 w-4 text-primary shrink-0" />
-                        )}
-                      </button>
-                    )}
-                    {filteredClients.length === 0 ? (
-                      <p className="py-4 text-center text-sm text-muted-foreground">
-                        No clients found
-                      </p>
-                    ) : (
-                      filteredClients.map((c) => (
-                        <button
-                          key={c.id}
-                          onClick={() => {
-                            customerCtx?.setSelectedCustomerId(c.id);
-                            setClientPopoverOpen(false);
-                            setClientSearchQuery("");
-                          }}
-                          className={cn(
-                            "w-full flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent transition-colors text-left",
-                            selectedCustomer?.id === c.id && "bg-accent"
-                          )}
-                        >
-                          {c.logoUrl ? (
-                            <img
-                              src={c.logoUrl}
-                              alt=""
-                              className="h-4 w-4 rounded object-cover shrink-0"
-                            />
-                          ) : (
-                            <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                          )}
-                          <span className="flex-1 truncate">{c.name}</span>
-                          {selectedCustomer?.id === c.id && (
-                            <Check className="h-4 w-4 text-primary shrink-0" />
-                          )}
-                        </button>
-                      ))
-                    )}
-                  </div>
-                </PopoverContent>
-              </Popover>
-            )}
+            {/* Client selector — now shared with the Writer's and Optimiser's
+                first screen. Extracted rather than copied: two controls that
+                must look and behave the same are one component, or they
+                diverge the first time one of them is touched. */}
+            <ClientSelector tone="sidebar" />
 
             {/* Tools.
                 EngineAI's sub-surfaces (/engineai/design, /engineai/optimizer)
