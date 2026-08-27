@@ -408,9 +408,8 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
         if (blk.kind !== "listItem") { if (bullets > 0) break; else continue; }
         bullets++;
         followed = true;
-        const words = (blk.text.match(/\S+/g) || []).length;
-        if (words >= 8) strong++;
-        else if (tldrSpans.length < 6) tldrSpans.push({ start: blk.start, end: blk.end, note: "fragment — a bullet a model can quote is a complete, self-contained sentence" });
+        if (bulletStandsAlone(blk.text)) strong++;
+        else if (tldrSpans.length < 6) tldrSpans.push({ start: blk.start, end: blk.end, note: "not a self-contained sentence — a bullet a model can quote reads alone" });
       }
       if (!followed) {
         for (let j = i + 1; j <= Math.min(i + 3, p.blocks.length - 1); j++) {
@@ -421,6 +420,50 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
       break;
     }
   }
+  // ── RECOGNISED BY SHAPE, NOT BY ITS LABEL ─────────────────────────────
+  //
+  // The loop above requires a heading from SUMMARY_MARKERS — "tl;dr", "key
+  // takeaways", "at a glance". A real article opening with a five-bullet
+  // summary under the heading "Bullets:" therefore scored ZERO, "none found",
+  // while the block sat at the top of the page carrying two figures and the
+  // client name. Reported by the owner, who read it against a judge finding
+  // about the same paragraph and quite reasonably called it contradictory
+  // advice. It was not contradictory: one layer was right and this one was
+  // blind.
+  //
+  // A takeaways block is a STRUCTURE — a short run of self-contained bullets
+  // near the top — and the words above it are a label, not the thing. The
+  // marker list stays as a supporting signal, because it is what recognises a
+  // summary written as PROSE, which has no shape to detect.
+  //
+  // The discriminator against a table of contents is the one already used
+  // above: TOC entries are three-word fragments, and a bullet a model can
+  // quote is a complete sentence. A run that is mostly fragments does not
+  // qualify here at all rather than scoring badly — a TOC is not a weak
+  // summary, it is a different thing.
+  if (tldr === 0) {
+    for (let i = 0; i < Math.min(earlyBlocks, p.blocks.length); i++) {
+      if (p.blocks[i].kind !== "listItem") continue;
+      let bullets = 0, strong = 0;
+      const runSpans: CriterionSpan[] = [];
+      for (let j = i; j < Math.min(i + 8, p.blocks.length); j++) {
+        const blk = p.blocks[j];
+        if (blk.kind !== "listItem") break;
+        bullets++;
+        if (bulletStandsAlone(blk.text)) strong++;
+        else if (runSpans.length < 6) runSpans.push({ start: blk.start, end: blk.end, note: "not a self-contained sentence — a bullet a model can quote reads alone" });
+      }
+      // Three bullets and a clear majority carrying a sentence. Two bullets is
+      // as often a pair of links as a summary, and a bare majority of
+      // sentence-shaped items is not a block anyone would call a takeaway.
+      if (bullets >= 3 && strong / bullets >= 0.6) {
+        tldr = strong === bullets ? 10 : 7;
+        for (let k = 0; k < runSpans.length; k++) tldrSpans.push(runSpans[k]);
+      }
+      break;
+    }
+  }
+
   if (tldr === 0) {
     const anyMarker = containsAny(p.text.toLowerCase(), SUMMARY_MARKERS) > 0;
     if (anyMarker) tldr = 5;
@@ -1101,6 +1144,25 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
  * so a perfect draft in its Clarity category could only ever reach 85. That is
  * fix (c) in the spec's porting note, and the verify script asserts it directly.
  */
+/**
+ * Is this bullet one a model could lift and quote on its own?
+ *
+ * Length was the whole test, at eight words. That marked "Meta has open-sourced
+ * the model on GitHub." — seven words, a complete sentence naming the entity —
+ * as a "fragment", which is what the note actually claims about it and is
+ * plainly untrue. The proxy was measuring length while the note promised
+ * self-containment.
+ *
+ * A shorter run of words that is punctuated as a sentence qualifies. A table-of-
+ * contents entry does not: "Introduction" has no terminal punctuation and four
+ * words is the floor, so the discriminator that keeps a TOC out still holds.
+ */
+function bulletStandsAlone(text: string): boolean {
+  const words = (text.match(/\S+/g) || []).length;
+  if (words >= 8) return true;
+  return words >= 4 && /[.!?]["')\]]?$/.test(text.trim());
+}
+
 export function computeDraftScores(input: DraftInput): DraftScores {
   const now = input.now || new Date();
   const p = parseDraft({ body: input.body, title: input.title });

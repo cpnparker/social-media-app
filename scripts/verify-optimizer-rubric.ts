@@ -463,9 +463,20 @@ D.push({ key: "answer-first-position", label: "the answer buried past the 30% ma
   mutate(CLEAN_BODY,
     "Vaultline is a payment orchestration platform that routes card transactions across multiple acquirers from a single integration.\n\n",
     "There is a lot of noise in this category, and most of it comes from vendors with something to sell. Before getting to the substance it is worth setting out how this piece is organised and who it is for. Readers who have been through a migration will recognise the pattern and may prefer to skip ahead to the later sections, which go into more operational detail than the opening does.\n\n")) });
+// THROUGH mutate(), NOT raw .replace(). This used two bare .replace() calls,
+// and the second needle had drifted from the fixture — "Below EUR 5 million in
+// annual volume..." against the fixture's "Any useful comparison starts with
+// volume: below EUR 5 million a year...". A non-matching needle is a SILENT
+// no-op, so the mutation removed only the heading and never touched the bullets
+// for as long as it has existed. It passed anyway, because the detector keyed
+// on the heading; the day the detector started reading structure, the fixture's
+// own bug surfaced. mutate() throws on a missing anchor, which is the whole
+// reason it exists.
 D.push({ key: "tldr-block", label: "key-takeaways block removed", input: withBody(
-  CLEAN_BODY.replace("**Key takeaways**\n\n", "").replace(
-    "- Orchestration routes each payment to the acquirer most likely to authorise it.\n- Authorisation rates rise around 4% with a fallback route configured, according to the Nordvale Treasury Benchmark.\n- Below EUR 5 million in annual volume the fees usually outweigh the gains.\n\n", "")) });
+  mutate(
+    mutate(CLEAN_BODY, "**Key takeaways**\n\n", ""),
+    "- Orchestration routes each payment to the acquirer most likely to authorise it.\n- Authorisation rates rise around 4% with a fallback route configured, according to the Nordvale Treasury Benchmark.\n- Any useful comparison starts with volume: below EUR 5 million a year, Kessler Institute modelling shows the fees outweigh the gains.\n\n",
+    "")) });
 D.push({ key: "question-headings", label: "question headings turned into statements", input: withBody(
   CLEAN_BODY
     .replace("## What is a payment orchestration platform?", "## Payment orchestration platform basics")
@@ -1184,6 +1195,55 @@ console.log(`\nMeasurements, quoted figures and placeholders`);
   twoPeople && twoPeople.length === 0
     ? pass("Bird and Bond remain two different people")
     : fail(`distance-2/short surnames are being merged (spans=${twoPeople && twoPeople.length})`);
+}
+
+// ── A takeaways block is a SHAPE, not a label ──────────────────────────────
+//
+// Reported live: an article opening with five self-contained bullets under the
+// heading "Bullets:" scored ZERO, "none found", while the block sat at the top
+// of the page carrying two figures and the client name. The owner read that
+// against a judge finding about the same paragraph and called it contradictory
+// advice. It was not contradictory — one layer was right and this one was blind
+// to anything not labelled from a fixed list of thirteen phrases.
+console.log("\nTakeaways blocks are recognised by shape");
+{
+  const body = (opening: string) =>
+    withBody(`# Title\n\n${opening}\n\n${"Body sentence with enough words to pass the length floor. ".repeat(40)}`);
+  const tldrOf = (input: any) => {
+    const c = criterionOf(computeDraftScores(input), "tldr-block");
+    return c ? c.earned : -1;
+  };
+
+  const owners = "**Bullets:**\n\n- Amrize supplied the concrete for Meta's Rosemount, Minnesota data center.\n- The mix was designed using an AI model trained on lab data from the University of Illinois.\n- Result: 43% faster early strength gain, 35% lower carbon intensity, at similar cost.\n- The mix used standard, locally available materials with no exotic inputs.\n- Meta has open-sourced the model on GitHub.";
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(body(owners)) === 10,
+    'the reported document scores full marks — five self-contained bullets under the heading "Bullets:"');
+
+  const unlabelled = "- Amrize supplied the concrete for the Rosemount data center in Minnesota.\n- The mix reached early strength 43 percent faster than the conventional mix.\n- Carbon intensity fell 35 percent at a similar delivered cost per cubic yard.";
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(body(unlabelled)) === 10,
+    "and so does the same block with NO heading at all");
+
+  // The discriminator that keeps this honest. A table of contents is not a weak
+  // summary, it is a different thing, and it must not qualify at any score.
+  const toc = "- Introduction\n- Our approach\n- Results\n- Conclusion";
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(body(toc)) === 0,
+    "a table of contents does NOT qualify — fragments are not takeaways");
+
+  const tiny = "- Fast.\n- Cheap.\n- Green.";
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(body(tiny)) === 0,
+    "nor do one-word items that merely end in a full stop");
+
+  // Self-containment, not length. "Meta has open-sourced the model on GitHub."
+  // is seven words and a complete sentence; the old eight-word floor called it a
+  // fragment, which is what the note claims about it and is plainly untrue.
+  const shortButWhole = "- Amrize supplied the concrete for the Rosemount data center in Minnesota.\n- The mix reached early strength 43 percent faster than before.\n- Meta open-sourced the model on GitHub.";
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(body(shortButWhole)) === 10,
+    "a seven-word complete sentence counts — the test is self-containment, not word count");
+
+  // And the label is no longer load-bearing: removing ONLY the heading from the
+  // clean fixture must not move the score, because the block is still there.
+  const labelOnly = withBody(mutate(CLEAN_BODY, "**Key takeaways**\n\n", ""));
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(labelOnly) === 10,
+    "removing only the LABEL does not move the score — the bullets are the block");
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
