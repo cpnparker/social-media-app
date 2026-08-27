@@ -570,6 +570,34 @@ console.log("\n12. Judge findings carry their reasoning");
   for (let i = 0; i < plainWhys.length; i++) if (plainWhys[i].why) leakedPlain++;
   assert(leakedPlain === 0, "and none of them carries one under the plain lens");
 
+  // ── The judge's opening finding must not anchor to imported chrome ───────
+  // A bare "×" from a close button parses as prose, and deriveVerdictFindings
+  // took the first prose sentence — so the card read "the opening cannot be
+  // quoted alone as the answer" over a close button. Visible on production the
+  // moment judge findings started showing their reasoning.
+  {
+    const chromey = parseDraft({
+      body: "<h1>T</h1><p>×</p><p>Share</p><p>July 3, 2025</p>"
+        + "<p>Over the past five years the group has doubled in size and kept growing.</p>",
+      title: "T",
+    });
+    const rawOpen = JSON.stringify({
+      openingQuotability: { verdict: "no_answer", reason: "scene-setting" },
+      chunkSelfContainment: [], quoteAttribution: [], queryCoverage: [], findings: [], summary: "",
+    });
+    const oc: any = parseJudgeResponse(rawOpen, chromey.text);
+    const opens = oc.response ? deriveVerdictFindings(oc.response, chromey) : [];
+    // PRECONDITION: the fixture must really contain the chrome, or the
+    // assertion below passes over a document that never had the problem.
+    assert(/\u00d7/.test(chromey.text) && /Share/.test(chromey.text),
+      "the fixture really does carry a bare glyph and a Share heading ahead of the prose");
+    assert(opens.length === 1, `the opening verdict derived ${opens.length} finding(s) — exactly one to inspect`);
+    assert(opens.length === 1 && /Over the past five years/.test(opens[0].quote),
+      opens.length === 1
+        ? `the opening finding anchors to the real opening, not the chrome (${JSON.stringify(opens[0].quote.slice(0, 40))})`
+        : "no opening finding to inspect");
+  }
+
   // ── The deterministic half must not have holes either ────────────────────
   // REMEDY had 17 keys and RATIONALE 16; placeholder-guard was the odd one out,
   // so an engine-lens card carried an action and no "Why?" while every card

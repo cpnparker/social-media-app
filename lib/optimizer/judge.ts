@@ -26,6 +26,7 @@
  */
 
 import { anchorAll, validateAnchor } from "./anchors";
+import { isSentenceLike } from "./parse";
 import type { ParsedDraft } from "./parse";
 import { tieredScore } from "./rubric";
 import {
@@ -501,9 +502,20 @@ export function deriveVerdictFindings(
   // Opening: the verdict is ABOUT the first prose sentence, so anchor there.
   const ov = (response.openingQuotability && response.openingQuotability.verdict) || "";
   if ((ov === "needs_context" || ov === "no_answer") && !have["opening-quotability"]) {
+    // The first prose sentence that is actually a SENTENCE.
+    //
+    // Imported pages carry chrome inside the article region — a bare "×" from
+    // a close button, a "Share" heading, a dateline — and all of it parses as
+    // prose. This took the first of them, so the judge's own opening finding
+    // anchored to the character "×" and the card read: the opening cannot be
+    // quoted alone as the answer, over a close button. The deterministic
+    // answer-first mark had the identical bug and the identical fix; this is
+    // the second site, found only because the card became visible once judge
+    // findings started showing their reasoning.
     let first = null as null | { start: number; end: number };
     for (let i = 0; i < parsed.sentences.length; i++) {
-      if (parsed.sentences[i].kind === "prose") { first = parsed.sentences[i]; break; }
+      const sen = parsed.sentences[i];
+      if (sen.kind === "prose" && isSentenceLike(sen.text)) { first = sen; break; }
     }
     if (first) {
       const f = sliceFinding(
