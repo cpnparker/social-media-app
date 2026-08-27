@@ -156,5 +156,64 @@ console.log("\n8. Replacing a picture clears the resolved image");
   else pass("brief replaced, stale resolution and unavailable flag cleared");
 }
 
+// ── 9. THE BLANK SLIDE: a layout this tool cannot fill is refused ───────────
+//
+// The second production fault, 2026-08-27. The insert worked, landed in the
+// right place, and the user got an EMPTY slide: the model chose `cards`, which
+// is drawn from a `cards` array, and editSlide had no field to carry one. The
+// slide had a correct title and nothing beneath it. "Has a title" is not the
+// same claim as "is renderable", which is why check 6 could not catch this.
+console.log("\n9. A layout that cannot be filled from these fields is refused");
+{
+  const structured = ["stat", "bar-chart", "stacked-bar", "swot", "matrix", "timeline", "quote", "process", "logo-wall", "venn", "scatter", "comparison", "image-grid"];
+  let bad = 0;
+  for (let i = 0; i < structured.length; i++) {
+    const err = thrown(() =>
+      applyEditSlide(deck(), { insertAfter: 5, layout: structured[i], title: "T", subtitle: "S" })
+    );
+    if (!err) { fail(`layout "${structured[i]}" was inserted with no payload — it would draw blank`); bad++; }
+    else if (!/blank|slides/i.test(err.message)) { fail(`layout "${structured[i]}" threw but does not say what to do: "${err.message}"`); bad++; }
+  }
+  if (bad === 0) pass(`all ${structured.length} payload-driven layouts refused, each naming the way out`);
+}
+
+// ── 10. The exact production slide, rebuilt ────────────────────────────────
+console.log("\n10. The slide that shipped blank");
+{
+  // Verbatim shape of what was stored: cards layout, title and subtitle, no cards.
+  const err = thrown(() =>
+    applyEditSlide(deck(), {
+      insertAfter: 5,
+      layout: "cards",
+      title: "What strategy-lite actually covers",
+      subtitle: "Diagnostic work that sharpens direction before content starts",
+    })
+  );
+  if (!err) fail("the exact production insert was accepted again — it draws an empty slide");
+  else pass("refused, with the reason");
+
+  // And the version that should have been sent renders.
+  const good = applyEditSlide(deck(), {
+    insertAfter: 5,
+    layout: "cards",
+    title: "What strategy-lite actually covers",
+    cards: [
+      { marker: "AUDIT", title: "AI Authority Audit-Lite", body: "How the brand shows up in AI answers." },
+      { marker: "ASSESS", title: "Media vs Impact", body: "Activity against demonstrated reach." },
+    ],
+  });
+  const slide: any = good[5];
+  if (good.length !== 9) fail(`expected 9 slides, got ${good.length}`);
+  else if (slide?.layout !== "cards") fail(`layout was ${slide?.layout}`);
+  else if (!Array.isArray(slide.cards) || slide.cards.length !== 2) fail("the cards did not survive onto the slide");
+  else if (slide.cards[0].title !== "AI Authority Audit-Lite") fail("card content was dropped or reordered");
+  else pass("the same insert WITH cards lands at slide 6 carrying both cards");
+
+  // A cards slide with one card is still a near-empty slide.
+  const thin = thrown(() => applyEditSlide(deck(), { insertAfter: 5, layout: "cards", title: "T", cards: [{ title: "only one" }] }));
+  if (!thin) fail("a single-card cards slide was accepted");
+  else pass("fewer than two cards refused");
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
 process.exit(failures ? 1 : 0);

@@ -1443,7 +1443,28 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           properties: {
             slideNumber: { type: "number", description: "CHANGE an existing slide: which one, 1-based. Omit when inserting." },
             insertAfter: { type: "number", description: "ADD a new slide after this slide number; 0 places it before the first. Omit when changing an existing slide." },
-            layout: { type: "string", description: "Layout for an INSERTED slide (same names as the slides array — content, cards, stat, image-split, ...). Defaults to content." },
+            layout: {
+              type: "string",
+              enum: ["content", "cards", "section", "cover", "case-study", "dark-index", "image-split", "feature", "closing", "two-column"],
+              description:
+                "Layout for an INSERTED slide. ONLY these are available here, because an inserted slide is built from the fields on this object. Any other layout (stat, bar-chart, stacked-bar, swot, matrix, timeline, quote, process, logo-wall, venn, scatter, comparison, image-grid) is drawn from a structured payload this tool cannot carry, so it would come out BLANK — a correct title with nothing under it. If the new slide needs one of those, resend the whole deck through `slides` instead. Defaults to content, or to cards when you pass `cards`.",
+            },
+            cards: {
+              type: "array",
+              description:
+                "For an inserted `cards` slide: two to six blocks. This is the layout for 'add a slide explaining X' whenever X has several named parts — reach for it ahead of a bulleted `content` slide, which is the flattest thing the deck can make. A cards slide without this array is drawn EMPTY, so it is required whenever layout is cards.",
+              items: {
+                type: "object",
+                properties: {
+                  marker: { type: "string", description: "A short label or number — 'AUDIT', '01'. Drawn as a brand-blue chip. One or two words." },
+                  icon: { type: "string", description: "A Lucide icon name in kebab-case — 'search', 'line-chart', 'target', 'users'. Use the same kind of icon across all cards on the slide." },
+                  title: { type: "string", description: "The card's heading." },
+                  body: { type: "string", description: "A sentence or two. Keep the cards balanced — wildly uneven bodies read as a mistake." },
+                },
+              },
+            },
+            bodyRight: { type: "string", description: "Right-hand column text, for an inserted two-column slide." },
+            eyebrow: { type: "string", description: "Small label above the title — 'CASE STUDY', or a numeral like '02' on a section divider." },
             imageQuery: { type: "string", description: "A photograph for this slide, described. On a change, the old one is replaced." },
             title: { type: "string", description: "Title text for this slide." },
             subtitle: { type: "string", description: "Subtitle/standfirst for this slide." },

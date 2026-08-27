@@ -19,6 +19,21 @@
  *  made. Every generate_slides call site catches and reports the message back to
  *  the model, so throwing is what stops it claiming a change that never
  *  happened. Found live in production 2026-08-27. */
+/** Layouts an inserted slide can be BUILT FROM the fields editSlide carries.
+ *
+ *  Everything else — stat, bar-chart, swot, matrix, timeline, quote, process,
+ *  logo-wall and the rest — is defined by a structured payload (`stats`,
+ *  `chart`, `milestones`, `cards`...) that this tool has no field for. A layout
+ *  whose content field cannot be supplied renders as a BLANK SLIDE: correct
+ *  title, correct position, nothing on it. That is exactly what shipped on
+ *  2026-08-27 — the model picked `cards`, which needs a `cards` array, and the
+ *  user got an empty slide where four cards should have been. So the insert
+ *  refuses a layout it cannot fill and says what to do instead. */
+const TEXT_LAYOUTS = [
+  "content", "section", "cover", "case-study", "dark-index",
+  "image-split", "feature", "closing", "two-column",
+];
+
 export function applyEditSlide(
   slides: any[],
   edit: {
@@ -29,6 +44,9 @@ export function applyEditSlide(
     title?: string;
     subtitle?: string;
     body?: string;
+    bodyRight?: string;
+    eyebrow?: string;
+    cards?: { marker?: string; icon?: string; title?: string; body?: string }[];
   }
 ): any[] {
   // ADD a slide. `insertAfter` is the slide number the new one goes after, so 0
@@ -51,10 +69,30 @@ export function applyEditSlide(
         "Cannot insert an empty slide: give the new slide at least a title or a body."
       );
     }
-    const fresh: any = { layout: edit.layout || "content" };
+
+    const cards = Array.isArray(edit.cards) ? edit.cards.filter((c) => c && (c.title || c.body)) : [];
+    const layout = edit.layout || (cards.length ? "cards" : "content");
+
+    // A layout is only allowed if this tool can actually fill it. Otherwise the
+    // slide is drawn with its title and nothing else.
+    if (layout !== "cards" && TEXT_LAYOUTS.indexOf(layout) === -1) {
+      throw new Error(
+        `Cannot insert a "${layout}" slide with editSlide: that layout is drawn from a structured payload this tool cannot carry, so the slide would come out blank. Either insert it as one of ${TEXT_LAYOUTS.join(", ")}, or as "cards" with a cards array — or resend the whole deck through \`slides\`, which supports every layout.`
+      );
+    }
+    if (layout === "cards" && cards.length < 2) {
+      throw new Error(
+        `A "cards" slide needs at least two cards, each with a title or a body — otherwise it is drawn empty. Pass \`cards\`, or use layout "content" with one bullet per line in \`body\`.`
+      );
+    }
+
+    const fresh: any = { layout };
     if (typeof edit.title === "string") fresh.title = edit.title;
     if (typeof edit.subtitle === "string") fresh.subtitle = edit.subtitle;
     if (typeof edit.body === "string") fresh.body = edit.body;
+    if (typeof edit.bodyRight === "string") fresh.bodyRight = edit.bodyRight;
+    if (typeof edit.eyebrow === "string") fresh.eyebrow = edit.eyebrow;
+    if (cards.length) fresh.cards = cards;
     if (edit.imageQuery?.trim()) fresh.image = { query: edit.imageQuery.trim() };
     return slides.slice(0, at).concat([fresh], slides.slice(at));
   }
