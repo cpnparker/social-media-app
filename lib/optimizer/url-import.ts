@@ -95,6 +95,24 @@ export function extractSiteBrand(page: string, finalUrl?: string): string {
   return "";
 }
 
+/**
+ * The publisher to score a session against: the client's own name if one is
+ * attached, else the page's, else nothing.
+ *
+ * Resolved at READ time from the stored source URL rather than only at import,
+ * because import-time-only would have left every session created before the
+ * publisher existed permanently without one — and those are exactly the
+ * sessions someone is looking at when they notice their own figures reported
+ * as unsourced. A stored ref that is not a URL (a content id, a file name)
+ * yields "", which is the correct answer for a piece that was never fetched.
+ */
+export function publisherFor(canon: { brandName?: string; publisherName?: string } | null | undefined, sourceRef?: string | null): string {
+  const c = canon || {};
+  if (c.brandName) return "";           // a real client canon already supplies the first party
+  if (c.publisherName) return c.publisherName;
+  return extractSiteBrand("", sourceRef || "");
+}
+
 /** The page's own name for itself: og:title beats <title>, which carries the site suffix. */
 export function extractTitle(page: string): string {
   const og = page.match(/<meta\s[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']/i)

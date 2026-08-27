@@ -67,7 +67,7 @@
 import { parseDraft, isSentenceLike } from "../lib/optimizer/parse";
 import { computeDraftScores } from "../lib/optimizer/engine";
 import { buildLiveFindings } from "../lib/optimizer/live-issues";
-import { extractArticleRegion, extractSiteBrand } from "../lib/optimizer/url-import";
+import { extractArticleRegion, extractSiteBrand, publisherFor } from "../lib/optimizer/url-import";
 
 let failures = 0;
 const pass = (m: string) => console.log(`  ok    ${m}`);
@@ -254,6 +254,26 @@ console.log("\n7. extractSiteBrand prefers the page's own words");
   extractSiteBrand("<html></html>", "") === ""
     ? pass("no page disclosure and no URL yields no publisher, rather than a guess")
     : fail("invented a publisher from nothing");
+}
+
+// ── 8. The publisher reaches sessions imported before it existed ─────────
+console.log("\n8. publisherFor resolves at read time, not only at import");
+{
+  // Import-time-only would leave every pre-existing session permanently
+  // without a publisher — and those are exactly the sessions someone is
+  // looking at when they notice their own figures called unsourced.
+  publisherFor({}, "https://www.vaultline.com/us/en/media/a.html") === "vaultline"
+    ? pass("a session stored before publisherName existed still gets one from its source URL")
+    : fail("publisherFor did not derive a publisher from the stored URL — old sessions stay broken");
+  publisherFor({ publisherName: "Vaultline" }, "https://www.example.com/x") === "Vaultline"
+    ? pass("a recorded publisher wins over the URL")
+    : fail("the stored publisher was overridden by the URL");
+  publisherFor({ brandName: "Kessler Institute" }, "https://www.vaultline.com/x") === ""
+    ? pass("a real client canon suppresses the fallback — brandName already supplies the first party")
+    : fail("the fallback fired alongside a real client brand, adding a second first party");
+  publisherFor({}, "4821") === "" && publisherFor({}, null) === ""
+    ? pass("a non-URL source ref yields no publisher, rather than a guess")
+    : fail("invented a publisher from a source ref that was never a URL");
 }
 
 // ── Self-test ────────────────────────────────────────────────────────────

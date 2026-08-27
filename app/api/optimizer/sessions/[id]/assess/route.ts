@@ -24,6 +24,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { assertServiceAllowed } from "@/lib/admin/service-control";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
+import { publisherFor } from "@/lib/optimizer/url-import";
 import { parseDraft } from "@/lib/optimizer/parse";
 import { analysisAllowed, bandCopy, contentTypeKeyPart, DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
 import { computeDraftScores } from "@/lib/optimizer/engine";
@@ -291,7 +292,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       targetQueries: judgeInput.targetQueries,
       format: session.type_format,
       brandName: canon.brandName,
-    publisherName: canon.publisherName,
+    publisherName: publisherFor(canon, session.document_source_ref),
       brandAliases: canon.brandAliases,
     });
 

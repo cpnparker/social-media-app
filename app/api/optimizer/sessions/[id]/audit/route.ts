@@ -20,7 +20,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
-import { fetchPageForAudit, extractArticleRegion } from "@/lib/optimizer/url-import";
+import { fetchPageForAudit, extractArticleRegion, publisherFor } from "@/lib/optimizer/url-import";
 import { toEditorHtml } from "@/lib/optimizer/import-html";
 import { auditPage } from "@/lib/optimizer/page-audit";
 import { renderPage } from "@/lib/optimizer/render";
@@ -99,7 +99,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const canon = session.config_canon || {};
   const brief = session.config_brief || {};
-  const brandNames = [canon.brandName, canon.publisherName].concat(canon.brandAliases || []).filter(Boolean);
+  const brandNames = [canon.brandName, publisherFor(canon, session.document_source_ref)].concat(canon.brandAliases || []).filter(Boolean);
 
   const audit = auditPage(
     {
