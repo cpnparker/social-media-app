@@ -99,7 +99,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const canon = session.config_canon || {};
   const brief = session.config_brief || {};
-  const brandNames = [canon.brandName].concat(canon.brandAliases || []).filter(Boolean);
+  const brandNames = [canon.brandName, canon.publisherName].concat(canon.brandAliases || []).filter(Boolean);
 
   const audit = auditPage(
     {
@@ -130,6 +130,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       targetQueries: brief.targetQueries || [],
       format: session.type_format || "explainer",
       brandName: canon.brandName,
+    publisherName: canon.publisherName,
       brandAliases: canon.brandAliases,
     });
   } catch {

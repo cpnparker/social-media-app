@@ -356,6 +356,23 @@ function splitSentences(text: string): string[] {
     const lastToken = (before.match(/([A-Za-z.]+)$/) || ["", ""])[1].toLowerCase().replace(/\.$/, "");
     if (ch === "." && lastToken && ABBREV[lastToken]) continue;
     if (ch === "." && /^[A-Z]$/.test(lastToken.toUpperCase()) && lastToken.length === 1) continue;
+    // Dotted initialisms: U.S., U.K., E.U., i.e., e.g., a.m. The single-letter
+    // guard above catches only the FIRST dot; by the second, lastToken is
+    // "u.s" and the sentence splits inside it. That truncation was visible in
+    // the audit as the fragment "alone short of around 5 million homes .",
+    // which then read as a stat with no source because the subject had been
+    // severed from it — one splitter bug misreporting a different criterion.
+    // ...but ONLY when the sentence genuinely continues. "opened in the U.S.
+    // The move paid off" is two sentences, and a guard that suppressed every
+    // split after an initialism merged them — trading one truncation bug for
+    // one run-on bug. A following lowercase word means the clause continues
+    // ("the U.S. alone short of"); a capital means a new sentence began. That
+    // misreads "sales in the U.S. Midwest", which is the rarer shape and costs
+    // a split rather than a lost boundary.
+    if (ch === "." && /^(?:[a-z]\.)+[a-z]$/.test(lastToken)) {
+      const rest = text.slice(j + 1);
+      if (!/^\s+[A-Z]/.test(rest)) continue;
+    }
 
     const s = text.slice(start, j + 1).trim();
     if (s) out.push(s);
@@ -459,7 +476,7 @@ export const ATTRIBUTION_VERB_RE =
  * for the number, and "we" and "the market" are both no.
  */
 const FIRST_PARTY_CLAIM =
-  /\b[A-Z][A-Za-z&.'-]{2,}(?:'s)?\s+(?:has\s+|had\s+|have\s+)?(?:generated|reported|posted|recorded|achieved|delivered|employs|employed|operates|operated|serves|served|produced|produces|supplied|supplies|invested|announced|launched|completed|grew|reduced|increased|cut|raised|shipped|opened|acquired|earned|reached)\b/;
+  /\b[A-Z][A-Za-z&.'-]{2,}(?:'s)?\s+(?:has\s+|had\s+|have\s+)?(?:generated|reported|posted|recorded|achieved|delivered|employs|employed|operates|operated|serves|served|produced|produces|supplied|supplies|invested|announced|launched|completed|grew|reduced|increased|cut|raised|shipped|opened|acquired|earned|reached|helped|collaborated|partnered|developed|designed|built|created|introduced|expanded|supplied)\b/;
 
 export function sentenceIsSourced(text: string, brandNames?: string[]): boolean {
   if (EXPLICIT_ATTRIBUTION.test(text)) return true;
@@ -720,7 +737,20 @@ export function parseDraft(input: ParseInput): ParsedDraft {
     const hasCredit = !!creditMatch && creditMatch[1].trim().split(/\s+/).length <= 6
       && creditMatch[1].trim().length >= 3 && !/[.!?]$/.test(creditMatch[1].trim());
 
+    // The attribution can be the NEXT SENTENCE rather than a tag inside the
+    // quote or a credit line under it: «"…innovation is critical." Mark
+    // reflects on how the industry has evolved.» That page named its speaker
+    // in plain sight and the criterion still said "no speaker named" — while
+    // scoring 10/10, so the mark contradicted its own score.
+    //
+    // A capitalised subject followed by a reporting verb, in the sentence
+    // immediately after the quote closes. Deliberately allows a bare first
+    // name ("Mark"), because that is how a second reference reads once the
+    // full name has been given earlier.
+    const FOLLOW_ATTRIB = /^[\s"'\u201d\u2019]*[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,3}\s+(?:says?|said|explains?|explained|adds?|added|notes?|noted|reflects?|reflected|recalls?|recalled|continues?|continued|observes?|observed|argues?|argued|describes?|described|emphasi[sz]es?|points out|tells?|told)\b/;
+
     const attributed = ATTRIBUTION_VERB_RE.test(around)
+      || FOLLOW_ATTRIB.test(after)
       || /^\s*[—–]\s*[A-Z]/.test(after)
       || hasCredit
       || /\b[A-Z][a-z]+\s+[A-Z][a-z]+\s*,[^.!?]{0,60}?\b(?:CEO|CTO|CFO|COO|founder|co-founder|director|head|analyst|professor|Dr\.?|president|principal|partner|engineer|consultant|architect|strategist|officer|manager|lead)\b/i.test(around);
@@ -799,4 +829,25 @@ export function containsAny(haystackLower: string, terms: string[]): number {
     if (countTerm(haystackLower, terms[i].toLowerCase()) > 0) n++;
   }
   return n;
+}
+
+/**
+ * Is this text a SENTENCE, as opposed to a label, a dateline or a widget
+ * heading? Exported and pure so a check can run it rather than grep for it.
+ *
+ * Imported pages carry chrome inside the article region that no tag strip
+ * removes: "Share" (a social-widget heading) and "July 3, 2025" (a dateline)
+ * both parsed as ordinary prose and sat between the H1 and the real opening,
+ * so answer-first-position marked the article's opening on the word "Share".
+ *
+ * Terminal punctuation OR real length, because both forms occur: a short
+ * direct answer ("Amrize operates only in North America.") is a sentence and
+ * must pass, and a long unpunctuated line is prose too. What fails is the
+ * thing that is short AND unpunctuated, which is what labels are.
+ */
+export function isSentenceLike(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t) return false;
+  if (/[.!?][")\u201d\u2019]?$/.test(t)) return true;
+  return t.split(/\s+/).filter(Boolean).length >= 8;
 }

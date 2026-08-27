@@ -46,7 +46,7 @@
  * Drive to be reachable is a check that goes red for reasons unrelated to the
  * code and gets ignored within a week.
  */
-import { readFileSync } from "fs";
+import { readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { extractDocId, fetchDocText } from "../lib/gdrive/doc-link";
 
@@ -235,11 +235,37 @@ function sourceChecks() {
 console.log(`\n4. Import sources agree between client, route and migration`);
 {
   const routeSrc = readFileSync(join(ROOT, "app/api/optimizer/import/route.ts"), "utf8");
-  const sqlSrc = readFileSync(join(ROOT, "supabase/migrations/20260821_content_optimizer.sql"), "utf8");
+  // The EFFECTIVE constraint on optimizer_sessions, not the first one ever
+  // written — and not some other table's.
+  //
+  // This read a single hard-coded migration while a later one had ALTERed the
+  // constraint to add 'chat', so it reported that importing from chat would
+  // violate a CHECK that no longer existed. Widening it to "the last migration
+  // mentioning a type_source CHECK" then matched optimizer_SOURCES — the
+  // background-material table, which has its own type_source column and a
+  // deliberately narrower vocabulary — and confidently compared the import
+  // route against the wrong table.
+  //
+  // So the match is bound to the CONSTRAINT NAME, which names its table and
+  // cannot drift onto a neighbour. Migrations accumulate: the last definition
+  // wins, because that is the one the database ends up running.
+  const CHK = /optimizer_sessions_source_chk\s*(?:\r?\n\s*)?CHECK \(type_source IN \(([^)]*)\)\)/g;
+  const migDir = join(ROOT, "supabase/migrations");
+  const migFiles = readdirSync(migDir).filter((f) => f.endsWith(".sql")).sort();
+  let sqlMatch: RegExpMatchArray | null = null;
+  let sqlFrom = "";
+  for (let i = 0; i < migFiles.length; i++) {
+    const body = readFileSync(join(migDir, migFiles[i]), "utf8");
+    let m: RegExpExecArray | null;
+    CHK.lastIndex = 0;
+    while ((m = CHK.exec(body)) !== null) { sqlMatch = m; sqlFrom = migFiles[i]; }
+  }
+  sqlFrom
+    ? pass(`effective optimizer_sessions_source_chk comes from ${sqlFrom}`)
+    : fail("no migration defines optimizer_sessions_source_chk — the check cannot verify what it claims to");
   const uiSrc = readFileSync(join(ROOT, "components/optimizer/StartScreen.tsx"), "utf8");
 
   const routeMatch = routeSrc.match(/if \(\[([^\]]*)\]\.indexOf\(source\) < 0\)/);
-  const sqlMatch = sqlSrc.match(/CHECK \(type_source IN \(([^)]*)\)\)/);
   const uiMatch = uiSrc.match(/type ImportSource = ([^;]*);/);
 
   if (!routeMatch || !sqlMatch || !uiMatch) {

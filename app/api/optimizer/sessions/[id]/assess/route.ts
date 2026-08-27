@@ -291,6 +291,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       targetQueries: judgeInput.targetQueries,
       format: session.type_format,
       brandName: canon.brandName,
+    publisherName: canon.publisherName,
       brandAliases: canon.brandAliases,
     });
 

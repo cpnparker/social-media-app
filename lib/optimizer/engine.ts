@@ -28,7 +28,7 @@ import {
   CURRENCY_PHRASES, AI_TELL_TERMS, NOT_JUST_PATTERN,
   AUTHOR_LINE_PATTERN, COMPARATIVE_QUERY_PATTERN, STOPWORDS,
 } from "./rubric";
-import { parseDraft, sliceByWords, countTerm, containsAny, sectionLevels, sentenceIsSourced } from "./parse";
+import { parseDraft, sliceByWords, countTerm, containsAny, sectionLevels, sentenceIsSourced, isSentenceLike } from "./parse";
 import type { ParsedDraft, Chunk } from "./parse";
 import { validateHeadingHierarchy } from "./heading-hierarchy";
 import type { CriterionSpan, CriterionResult, DraftScores, PillarScore } from "./types";
@@ -41,6 +41,10 @@ export interface DraftInput {
   format?: string;
   brandName?: string;
   brandAliases?: string[];
+  /** The publisher of an IMPORTED page, when no client is attached. Kept apart
+   *  from brandName because brandName also addresses the writing prompts as
+   *  "the client", and a page we merely imported is not one. */
+  publisherName?: string;
   authorName?: string;
   /** ISO date. Supplied on URL import; a fresh draft normally has none. */
   publishedDate?: string;
@@ -370,6 +374,9 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
     for (let i = 0; i < p.sentences.length; i++) {
       const sen = p.sentences[i];
       if (sen.kind !== "prose") continue;
+      // Skip imported chrome — see isSentenceLike. Marking the opening on the
+      // word "Share" told the writer to fix a share button.
+      if (!isSentenceLike(sen.text)) continue;
       afSpans.push({
         start: sen.start, end: sen.end,
         note: afPts > 0 ? "the answer lands later — it should be here" : "the opening should carry the answer, quotably",
@@ -632,10 +639,24 @@ function pillar4(p: ParsedDraft, input: DraftInput): CriterionResult[] {
       "|Director|Founder|Co-founder|Scientist|Engineer|Analyst|Editor|Author|Spokesperson" +
       "|chief [a-z]+(?: [a-z]+)? officer|chief executive|managing director|vice president" +
       "|head of [a-z ]{2,30}|principal [a-z]+|senior [a-z]+";
+    // Two lists, because position changes what a verb proves.
+    //
+    // BEFORE a name, "adds", "notes" and "continues" are unambiguous
+    // attribution: "adds Jan Jenisch". AFTER one they are ordinary verbs, and
+    // "The housing gap in North America continues to widen" was binding on
+    // exactly that — a place, an everyday verb, and a misspelling claim about a
+    // continent.
+    //
+    // So the after-position keeps only the verbs that are overwhelmingly
+    // attributive when they directly follow a proper noun. The cost is missing
+    // "Jan Jenisch adds…", which is a missed misspelling. The alternative was
+    // accusing a place of being a typo, and for this criterion erring toward
+    // not-accusing is the right direction.
     const SAY = "said|says|explains|explained|adds|added|notes|noted|told|argues|observes|recalls|continues";
+    const SAY_STRICT = "said|says|told|explained|explains";
     const TITLE_BEFORE = new RegExp("(?:" + TITLE + "|" + SAY + ")[\\s,]+$", "i");
     const ROLE_AFTER = new RegExp("^\\s*,\\s*(?:the\\s+)?[a-z ]{0,24}(?:" + TITLE + ")\\b", "i");
-    const SAY_AFTER = new RegExp("^[\\s,\"'\u201d]*(?:" + SAY + ")\\b", "i");
+    const SAY_AFTER = new RegExp("^[\\s,\"'\u201d]*(?:" + SAY_STRICT + ")\\b", "i");
 
     const looksLikePerson = (index: number, length: number): boolean => {
       const before = p.text.slice(Math.max(0, index - 40), index);
@@ -1312,7 +1333,9 @@ export function computeDraftScores(input: DraftInput): DraftScores {
   const p = parseDraft({
     body: input.body,
     title: input.title,
-    brandNames: [input.brandName].concat(input.brandAliases || []).filter(Boolean) as string[],
+    brandNames: [input.brandName, input.publisherName]
+      .concat(input.brandAliases || [])
+      .filter(Boolean) as string[],
   });
 
   const byPillar: CriterionResult[][] = [

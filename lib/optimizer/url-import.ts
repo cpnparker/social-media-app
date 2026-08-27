@@ -26,6 +26,9 @@ export interface UrlImportResult {
   ok: boolean;
   title?: string;
   html?: string;
+  /** The page's own publisher — see extractSiteBrand. First-party source for
+   *  claims the page makes about itself. */
+  siteName?: string;
   error?: string;
 }
 
@@ -36,7 +39,20 @@ export function extractArticleRegion(page: string): string {
   const s = page
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<(script|style|noscript|svg|iframe|template)\b[\s\S]*?<\/\1\s*>/gi, " ")
-    .replace(/<(nav|header|footer|aside|form)\b[\s\S]*?<\/\1\s*>/gi, " ");
+    .replace(/<(nav|header|footer|aside|form)\b[\s\S]*?<\/\1\s*>/gi, " ")
+    // Chrome that lives INSIDE <article>/<main> and so survives the tag strip
+    // above. Both rules are structural rather than class-based, because class
+    // names are per-site guesses and dropping real content is the worse error.
+    //
+    // A control's label is never article prose: a close button contributed
+    // "&times;" as the block right after the H1, and answer-first-position
+    // anchored the article's opening to it.
+    .replace(/<button\b[\s\S]*?<\/button\s*>/gi, " ")
+    // Hidden from the accessibility tree or from display is hidden from a
+    // reader, and this audit reports on what a reader (and a crawler) sees.
+    // The glyph above sat in a display:none aria-hidden video modal.
+    .replace(/<(\w+)\b[^>]*\b(?:aria-hidden=["']true["']|hidden)[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/<(\w+)\b[^>]*style=["'][^"']*display\s*:\s*none[^"']*["'][^>]*>[\s\S]*?<\/\1\s*>/gi, " ");
 
   // Preference order: the page's own claim about where the article is.
   for (const tag of ["article", "main"]) {
@@ -45,6 +61,38 @@ export function extractArticleRegion(page: string): string {
   }
   const body = s.match(/<body\b[^>]*>([\s\S]*?)<\/body\s*>/i);
   return body ? body[1] : s;
+}
+
+/**
+ * The PUBLISHER of an imported page, from the page's own disclosure.
+ *
+ * An imported article usually has no client attached, so it had no brand
+ * names, so every first-party figure on it read as an unsourced statistic —
+ * "Amrize generated $11.7 billion in revenue" was marked source-less on
+ * Amrize's own site. The publisher of a page is a first-party source for
+ * claims about itself, and the page states who that is.
+ *
+ * og:site_name first because it is the publisher's own words. The domain is
+ * the fallback, stripped of www and the public suffix: a host is not a brand,
+ * but "amrize" matches "Amrize" once both are compared case-insensitively,
+ * and being wrong here costs a missing source note, not a false one.
+ */
+export function extractSiteBrand(page: string, finalUrl?: string): string {
+  const meta = page.match(/<meta\s[^>]*property=["']og:site_name["'][^>]*content=["']([^"']+)["']/i)
+    || page.match(/<meta\s[^>]*content=["']([^"']+)["'][^>]*property=["']og:site_name["']/i)
+    || page.match(/<meta\s[^>]*name=["']application-name["'][^>]*content=["']([^"']+)["']/i);
+  if (meta) {
+    const name = decodeTitle(meta[1]).slice(0, 60).trim();
+    if (name) return name;
+  }
+  try {
+    const host = new URL(finalUrl || "").hostname.replace(/^www\./i, "");
+    const label = host.split(".")[0] || "";
+    if (label.length >= 3) return label;
+  } catch {
+    /* no usable URL — no publisher, which is a fine answer */
+  }
+  return "";
 }
 
 /** The page's own name for itself: og:title beats <title>, which carries the site suffix. */
@@ -144,7 +192,7 @@ export async function importFromUrl(rawUrl: string): Promise<UrlImportResult> {
   if (!html.replace(/<[^>]+>/g, "").trim()) {
     return { ok: false, error: "Could not find any article text on that page." };
   }
-  return { ok: true, title: extractTitle(page), html };
+  return { ok: true, title: extractTitle(page), html, siteName: extractSiteBrand(page, res.url || url) };
 }
 
 /**

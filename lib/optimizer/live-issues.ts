@@ -213,6 +213,21 @@ export function buildLiveFindings(
     for (let ci = 0; ci < criteria.length; ci++) {
       const c = criteria[ci];
       if (!c.spans || !c.spans.length) continue;
+      // A criterion that PASSED contributes no marks.
+      //
+      // The score panel already filters its list on `passed`; this loop did
+      // not, so the two surfaces disagreed about the same criterion. On a live
+      // page, attributed-quotes scored 10/10 and simultaneously painted "no
+      // speaker named" on a quote whose speaker was named in the next
+      // sentence, and sentence-length-norm scored 5/5 while marking four
+      // sentences. That is the "are these done or not done?" ambiguity in its
+      // purest form: a fault-worded mark on something the score calls finished.
+      //
+      // The panel is the authority on what is done; marks are the fix list. A
+      // mark that is not a fix does not belong in it. This does drop the
+      // occasional advisory (the longest sentences on a piece whose lengths
+      // are fine overall) — a deliberate trade for the list meaning one thing.
+      if (c.passed) continue;
       // The lens gate. criterionInLens fails CLOSED on an unregistered key —
       // an unclassified criterion is one nobody has decided about, and showing
       // it on the plain lens is how an engine mark finds its way back onto a

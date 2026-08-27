@@ -255,6 +255,9 @@ export async function POST(req: NextRequest) {
   let importWarnings: string[] = [];
   /** The commissioning brief from an Engine content unit, where the import carries one. */
   let engineBrief = "";
+  /** The publisher of an imported page, used as a first-party source when no
+   *  client canon names one. See extractSiteBrand. */
+  let importedPublisher = "";
 
   if (source === "chat") {
     // Already acquired, server-side, above. It gets a branch of its own rather
@@ -282,6 +285,7 @@ export async function POST(req: NextRequest) {
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 });
     content = result.html || "";
     if (!title) title = (result.title || "Imported page").slice(0, 200);
+    importedPublisher = result.siteName || "";
     sourceRef = (typeof body.ref === "string" ? body.ref : "").trim().slice(0, 500);
   } else if (source === "file") {
     // An uploaded document. The bytes do NOT come through this request: a
@@ -521,7 +525,10 @@ export async function POST(req: NextRequest) {
         // should take away — a different thing that happened to be free.
         commission: engineBrief,
       },
-      config_canon: canon,
+      // A page imported with no client still has a publisher, and its own
+      // figures should read as attributed to it. Never overwrites a real
+      // canon: this is the fallback for the no-client case.
+      config_canon: canon.brandName ? canon : { ...canon, publisherName: importedPublisher || undefined },
       name_rubric_version: RUBRIC_VERSION,
     })
     .select("id_session")
