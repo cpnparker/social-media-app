@@ -146,6 +146,8 @@ export interface ParsedDraft {
 }
 
 export interface ParseInput {
+  /** The client's own names, so a first-party figure reads as attributed. */
+  brandNames?: string[];
   body: string;
   title?: string;
 }
@@ -442,9 +444,49 @@ function hasNonInitialProperNoun(sentence: string): boolean {
 export const ATTRIBUTION_VERB_RE =
   /\b(?:said|says|saying|explains?|explained|notes?|noted|according to|recalls?|recalled|adds?|added|describes?|described|argues?|argued|tells?|told|continues?|continued|warns?|warned|asks?|asked|remembers?|remembered|observes?|observed|puts? it)\b/i;
 
-export function sentenceIsSourced(text: string): boolean {
+/**
+ * A FIRST-PARTY claim: a named organisation stating something about itself.
+ *
+ * "In 2024, Amrize generated $11.7 billion in revenue" was being flagged as an
+ * unsourced statistic. It is not: Amrize IS the source. A named company
+ * reporting its own revenue, headcount or output has attributed the figure by
+ * naming itself — which is the entire point the rubric makes everywhere else,
+ * that the fact must travel with the entity.
+ *
+ * The subject has to be a PROPER NOUN. "The market will grow 40%" has no one
+ * standing behind it and is still, correctly, unsourced — the distinction the
+ * criterion actually cares about is whether any nameable party is answerable
+ * for the number, and "we" and "the market" are both no.
+ */
+const FIRST_PARTY_CLAIM =
+  /\b[A-Z][A-Za-z&.'-]{2,}(?:'s)?\s+(?:has\s+|had\s+|have\s+)?(?:generated|reported|posted|recorded|achieved|delivered|employs|employed|operates|operated|serves|served|produced|produces|supplied|supplies|invested|announced|launched|completed|grew|reduced|increased|cut|raised|shipped|opened|acquired|earned|reached)\b/;
+
+export function sentenceIsSourced(text: string, brandNames?: string[]): boolean {
   if (EXPLICIT_ATTRIBUTION.test(text)) return true;
   if (NAMED_SOURCE.test(text)) return true;
+  // The brand naming itself in the sentence carrying the figure. Passed in
+  // where a client is attached; the pattern above covers the case where one is
+  // not, which is most imported pages.
+  if (brandNames && brandNames.length > 0) {
+    for (let i = 0; i < brandNames.length; i++) {
+      const b = String(brandNames[i] || "").trim();
+      if (b.length > 1 && text.indexOf(b) >= 0) return true;
+    }
+  }
+  // The named party must be a real name, not a common noun that happens to
+  // start the sentence. "Adoption reached 38%" and "Growth hit 12%" have nobody
+  // answerable for the figure and must stay unsourced — caught by the live
+  // check's own fixture, which asserts it still contains an unsourced statistic.
+  // A sentence-initial brand is covered by brandNames above, where a client is
+  // attached; erring toward flagging is the right direction for a guard.
+  // The named party must not be the sentence's FIRST word, or every sentence
+  // opening on a capitalised common noun qualifies — "Adoption reached 38%",
+  // "Growth hit 12%". Position, not a proper-noun scan: the scan matched "EUR"
+  // later in that same sentence and let it through. A sentence-initial brand is
+  // covered by brandNames above where a client is attached, and erring toward
+  // flagging is the right direction for a guard.
+  const fp = text.trim().search(FIRST_PARTY_CLAIM);
+  if (fp > 0) return true;
   return SOURCE_VERB.test(text) && hasNonInitialProperNoun(text);
 }
 
@@ -616,7 +658,7 @@ export function parseDraft(input: ParseInput): ParsedDraft {
   for (let s = 0; s < sentences.length; s++) {
     const sent = sentences[s];
     if (sent.kind === "heading") continue;
-    const sourced = sentenceIsSourced(sent.text);
+    const sourced = sentenceIsSourced(sent.text, input.brandNames);
     for (let p = 0; p < STAT_PATTERNS.length; p++) {
       const re = new RegExp(STAT_PATTERNS[p].re.source, STAT_PATTERNS[p].re.flags);
       let sm: RegExpExecArray | null;

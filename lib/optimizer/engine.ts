@@ -1232,7 +1232,15 @@ function bulletStandsAlone(text: string): boolean {
 
 export function computeDraftScores(input: DraftInput): DraftScores {
   const now = input.now || new Date();
-  const p = parseDraft({ body: input.body, title: input.title });
+  // Brands go IN, so a first-party figure — "Amrize generated $11.7 billion" —
+  // reads as attributed rather than as an unsourced statistic. The company
+  // naming itself IS the source, which is the rubric's own doctrine everywhere
+  // else: the fact must travel with the entity.
+  const p = parseDraft({
+    body: input.body,
+    title: input.title,
+    brandNames: [input.brandName].concat(input.brandAliases || []).filter(Boolean) as string[],
+  });
 
   const byPillar: CriterionResult[][] = [
     pillar1(p, input), pillar2(p, input), pillar3(p, input),

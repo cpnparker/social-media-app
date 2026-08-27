@@ -36,6 +36,16 @@ interface Props {
   sessionId: string;
   workspaceId: string;
   sourceUrl: string;
+  /**
+   * Lifted so the ship checklist can READ what the audit found.
+   *
+   * Three of its rows — meta description, internal links, schema — cannot be
+   * answered from a draft and were rendering "not checked" even on a piece
+   * where this panel had already answered them. A row that says "not checked"
+   * beside a panel holding the answer is worse than one that never claimed to
+   * look.
+   */
+  onResult?: (result: any) => void;
 }
 
 const SECTION_LABEL: { [k: string]: string } = {
@@ -57,7 +67,7 @@ function StatusIcon({ s }: { s: AuditCheck["status"] }) {
   return <Info className="h-4 w-4 text-muted-foreground/60 shrink-0" />;
 }
 
-export default function PageAudit({ sessionId, workspaceId, sourceUrl }: Props) {
+export default function PageAudit({ sessionId, workspaceId, sourceUrl, onResult}: Props) {
   const [data, setData] = useState<AuditResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +84,7 @@ export default function PageAudit({ sessionId, workspaceId, sourceUrl }: Props) 
       const d = await res.json();
       if (!res.ok) { setError(d.error || "Audit failed"); return; }
       setData(d);
+      onResult?.(d);
     } catch {
       setError("Could not reach the audit service");
     } finally {

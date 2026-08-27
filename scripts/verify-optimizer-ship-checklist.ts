@@ -34,13 +34,13 @@ const assert = (ok: boolean, m: string) => (ok ? pass(m) : fail(m));
 const BODY = Array.from({ length: 10 }, (_, i) =>
   `<p>Body paragraph ${i} about the Rosemount project with enough words to read as real prose.</p>`).join("");
 
-const build = (body: string, title: string, hasLivePage = false, brand?: string): ShipRow[] => {
+const build = (body: string, title: string, hasLivePage = false, brand?: string, auditChecks?: any): ShipRow[] => {
   const scores = computeDraftScores({ body, title, targetQueries: [], format: "article", brandName: brand } as any);
   const p = parseDraft({ body, title });
   return buildShipChecklist({
     scores, text: p.text,
     headings: p.headings.map((h: any) => ({ text: h.text, level: h.level })),
-    title, hasLivePage,
+    title, hasLivePage, auditChecks: auditChecks || null,
   });
 };
 const row = (rows: ShipRow[], n: number) => rows.filter((r) => r.n === n)[0];
@@ -121,14 +121,40 @@ console.log("\n4. Not looking, versus looking and finding nothing");
     assert(r.state === "not-checked", `row ${n} (${r.check}) is NOT CHECKED on a draft, never a pass`);
     assert(/not checked/i.test(r.detail), `row ${n} says so in words`);
   }
-  assert(/no meta description field/i.test(row(draft, 2).detail),
-    "the meta description row names the reason: there is no field for one anywhere in the product");
+  assert(/CMS field/i.test(row(draft, 2).detail) && /Import the published URL/i.test(row(draft, 2).detail),
+    "the meta description row names the reason AND the way to answer it");
   assert(/stripped from the draft/i.test(row(draft, 11).detail),
     "the internal-links row names ITS reason: links are discarded before scoring");
 
   const live = build(BODY, "T", true);
   assert(/Page audit/.test(row(live, 11).detail) && /Page audit/.test(row(live, 12).detail),
     "and on a URL-imported piece they point at the audit that CAN answer them");
+
+  // ── AND ONCE THE AUDIT HAS RUN, THEY READ ITS ANSWER ───────────────────
+  //
+  // These said "not checked" even on a piece where the audit panel was holding
+  // the result — a row claiming not to have looked, beside a panel that had.
+  const audited = build(BODY, "T", true, undefined, [
+    { id: "meta-description", status: "fail", detail: "no meta description on the page" },
+    { id: "internal-link-density", status: "warn", detail: "2 internal links in 1,326 words of article" },
+    { id: "schema-present", status: "warn", detail: "no JSON-LD on the page" },
+  ]);
+  assert(row(audited, 2).state === "missing" && /no meta description/.test(row(audited, 2).detail),
+    "the meta description row reports what the audit FOUND, not that it did not look");
+  assert(row(audited, 11).state === "attention" && /2 internal links/.test(row(audited, 11).detail),
+    "so does the internal-links row");
+  assert(row(audited, 12).state === "attention" && /no JSON-LD/.test(row(audited, 12).detail),
+    "and the schema row");
+  assert(row(audited, 2).from === "live page" && row(audited, 2).via === "meta-description",
+    "each cites the audit check it came from, so a row and its source cannot disagree");
+
+  // `info` from the audit means the audit itself did not look. It must NOT
+  // become a pass on the way through — that is this file's whole subject.
+  const informational = build(BODY, "T", true, undefined, [
+    { id: "schema-present", status: "info", detail: "Not checked — could not be read." },
+  ]);
+  assert(row(informational, 12).state === "not-checked",
+    "an audit `info` stays NOT CHECKED — it never launders into done");
 }
 
 // ── 5. No total, ever ──────────────────────────────────────────────────────

@@ -129,6 +129,27 @@ export interface ShipInput {
   title: string;
   /** True only for a session imported from a URL, where a live page exists. */
   hasLivePage: boolean;
+  /**
+   * What the page audit found, when it has been run.
+   *
+   * Three rows here cannot be answered from a draft at all. Without this they
+   * said "not checked" even on a piece where the audit panel was holding the
+   * answer — a row claiming not to have looked, beside a panel that had.
+   */
+  auditChecks?: { id: string; status: string; detail: string }[] | null;
+}
+
+/** One audit check by id, or null when the audit has not been run. */
+function auditCheck(checks: ShipInput["auditChecks"], id: string) {
+  if (!checks) return null;
+  for (let i = 0; i < checks.length; i++) if (checks[i].id === id) return checks[i];
+  return null;
+}
+
+/** An audit status as a checklist state. `info` is NOT a pass — the audit uses
+ *  it precisely for "we did not look", which is this file's whole subject. */
+function stateFromAudit(status: string): ShipState {
+  return status === "pass" ? "done" : status === "warn" ? "attention" : status === "fail" ? "missing" : "not-checked";
 }
 
 export function buildShipChecklist(input: ShipInput): ShipRow[] {
@@ -153,11 +174,17 @@ export function buildShipChecklist(input: ShipInput): ShipRow[] {
   // 2. Meta description. There is no field for one, anywhere in this product.
   //    Reported as NOT CHECKED with the reason, not omitted — an absent row
   //    reads as a pass on a checklist.
+  const metaCheck = auditCheck(input.auditChecks, "meta-description");
   rows.push({
     n: 2, check: "Meta description",
-    state: "not-checked",
-    detail: "Not checked — this tool has no meta description field. It is a CMS field, and it is the second-highest-value item on this list.",
-    from: input.hasLivePage ? "live page" : "draft",
+    state: metaCheck ? stateFromAudit(metaCheck.status) : "not-checked",
+    detail: metaCheck
+      ? metaCheck.detail
+      : input.hasLivePage
+        ? "Not checked yet — run Page audit and this reads the answer from the live page."
+        : "Not checked — a draft has no meta description; it is a CMS field. Import the published URL to check it.",
+    from: metaCheck ? "live page" : input.hasLivePage ? "live page" : "draft",
+    via: metaCheck ? "meta-description" : undefined,
   });
 
   rows.push(fromCriterion(scores, "tldr-block", 3, "TL;DR block"));
@@ -218,23 +245,31 @@ export function buildShipChecklist(input: ShipInput): ShipRow[] {
 
   // 11. Internal links. parse.ts discards every link before the rubric runs, so
   //     nothing in the DRAFT can answer this. On a live page the audit does.
+  const linkCheck = auditCheck(input.auditChecks, "internal-link-density");
   rows.push({
     n: 11, check: "Internal links",
-    state: "not-checked",
-    detail: input.hasLivePage
-      ? "Counted on the live page under Page audit — the draft itself drops links before scoring."
-      : "Not checked — links are stripped from the draft before it is scored. Import the published URL and the page audit counts them.",
-    from: input.hasLivePage ? "live page" : "draft",
+    state: linkCheck ? stateFromAudit(linkCheck.status) : "not-checked",
+    detail: linkCheck
+      ? linkCheck.detail
+      : input.hasLivePage
+        ? "Not checked yet — run Page audit and this reads the answer from the live page."
+        : "Not checked — links are stripped from the draft before it is scored. Import the published URL to count them.",
+    from: linkCheck ? "live page" : input.hasLivePage ? "live page" : "draft",
+    via: linkCheck ? "internal-link-density" : undefined,
   });
 
   // 12. Schema. Genuinely unanswerable from a draft, and says so.
+  const schemaCheck = auditCheck(input.auditChecks, "schema-present");
   rows.push({
     n: 12, check: "Schema",
-    state: "not-checked",
-    detail: input.hasLivePage
-      ? "Checked on the live page under Page audit."
-      : "Not checked — schema lives in the published page, not in the text. Import the URL to audit it.",
-    from: input.hasLivePage ? "live page" : "draft",
+    state: schemaCheck ? stateFromAudit(schemaCheck.status) : "not-checked",
+    detail: schemaCheck
+      ? schemaCheck.detail
+      : input.hasLivePage
+        ? "Not checked yet — run Page audit and this reads the answer from the live page."
+        : "Not checked — schema lives in the published page, not in the text. Import the URL to audit it.",
+    from: schemaCheck ? "live page" : input.hasLivePage ? "live page" : "draft",
+    via: schemaCheck ? "schema-present" : undefined,
   });
 
   return rows;

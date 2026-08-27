@@ -42,6 +42,9 @@ interface Props {
   onAddQuery?: (query: string) => void;
   /** True only for a URL-imported session, where a live page exists to audit. */
   hasLivePage?: boolean;
+  /** What the page audit found, so the checklist can read it instead of
+   *  reporting "not checked" beside a panel holding the answer. */
+  auditChecks?: { id: string; status: string; detail: string }[] | null;
 }
 
 /**
@@ -69,7 +72,7 @@ function barTone(score: number): string {
   return "bg-[hsl(var(--ai-negative))]";
 }
 
-export default function ScorePanel({ input, muted, onAddQuery, hasLivePage }: Props) {
+export default function ScorePanel({ input, muted, onAddQuery, hasLivePage, auditChecks }: Props) {
   // Recomputed on every render of a changed body. The engine is pure and takes
   // ~1ms on a 2,500-word draft, so memoising on the body string is enough —
   // there is no need for a worker or a debounce inside the panel itself.
@@ -91,12 +94,13 @@ export default function ScorePanel({ input, muted, onAddQuery, hasLivePage }: Pr
         headings: parsed.headings.map((h: any) => ({ text: h.text, level: h.level })),
         title: input.title || "",
         hasLivePage: !!hasLivePage,
+        auditChecks: auditChecks || null,
       });
     } catch {
       return [];
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input.body, input.title, scores, hasLivePage]);
+  }, [input.body, input.title, scores, hasLivePage, auditChecks]);
 
 
   const [queryDraft, setQueryDraft] = useState("");
@@ -163,11 +167,13 @@ export default function ScorePanel({ input, muted, onAddQuery, hasLivePage }: Pr
       {/* Headline */}
       <div className="shrink-0 px-4 py-3 border-b">
         <div className="flex items-center gap-3">
-          <div className="flex flex-col items-center justify-center w-[62px] h-[62px] rounded-full border-2 shrink-0">
-            <span className={cn("text-[19px] font-bold leading-none tabular-nums", gradeTone(scores.overall))}>
+          {/* ONE score, not two. A number and a letter grade are the same
+              judgement said twice, and a reader has to work out whether they
+              agree — they always do, which makes the second one pure noise. */}
+          <div className="flex items-center justify-center w-[54px] h-[54px] rounded-full border-2 shrink-0">
+            <span className={cn("text-[20px] font-bold leading-none tabular-nums", gradeTone(scores.overall))}>
               {Math.round(scores.overall)}
             </span>
-            <span className="text-[10px] font-semibold text-muted-foreground">{scores.grade}</span>
           </div>
           <div className="flex-1 min-w-0 flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
@@ -251,20 +257,31 @@ export default function ScorePanel({ input, muted, onAddQuery, hasLivePage }: Pr
 
       {/* What to fix */}
       <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground px-1 pb-1.5">
-          {open.length === 0 ? "Nothing outstanding" : `${open.length} to address`}
+        {/* "15 to address" beside a green "+15" read as fifteen points EARNED.
+            The header now says what the list is, and the one line beneath says
+            what the numbers mean — once, rather than a label on every card. */}
+        <div className="px-1 pb-1.5">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {open.length === 0 ? "Nothing outstanding" : `Not done · ${open.length}`}
+          </div>
+          {open.length > 0 && (
+            <p className="text-[10.5px] text-muted-foreground/80 mt-0.5">
+              Points you would gain by fixing each one — not points earned.
+            </p>
+          )}
         </div>
         {open.map((c) => (
           <div key={c.key} className="rounded-xl border bg-card p-2.5 mb-1.5">
             <div className="flex items-center gap-2 mb-0.5">
-              <span className="text-[12px] font-semibold flex-1 min-w-0 truncate">{c.name.split(" — ")[0]}</span>
               <span
-                className="text-[10px] font-semibold text-muted-foreground shrink-0"
-                title="How strong the research behind this check is: A causal, B observational, C mechanistic, D house practice, X vendor correlation with no causal control"
+                className="text-[12px] font-semibold flex-1 min-w-0 truncate"
+                title={`Evidence grade ${c.evidence} — A causal, B observational, C mechanistic, D house practice, X vendor correlation with no causal control`}
               >
-                {c.evidence}
+                {c.name.split(" — ")[0]}
               </span>
-              <span className="text-[11px] font-semibold text-primary tabular-nums shrink-0">
+              {/* Muted, not accent. A primary-coloured "+15" reads as a score
+                  you have; these are points on the table. */}
+              <span className="text-[11px] font-semibold text-muted-foreground tabular-nums shrink-0">
                 +{c.maxPoints - c.earned}
               </span>
             </div>

@@ -193,6 +193,8 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
    * appends instead is a small lie caught only after it has moved their text.
    */
   const [selText, setSelText] = useState("");
+  /** What the page audit found, lifted so the ship checklist can read it. */
+  const [auditChecks, setAuditChecks] = useState<{ id: string; status: string; detail: string }[] | null>(null);
   /** Which reply a margin marker asked us to scroll to, bumped so repeat
    *  clicks on the same marker still scroll. */
   const [focusTurn, setFocusTurn] = useState<{ turn: number; nonce: number } | null>(null);
@@ -1959,7 +1961,9 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
           )}
         </div>
         {studioView === "audit" && sourceInfo.source === "url" && sourceInfo.ref && sessionId && workspaceId && (
-          <PageAudit sessionId={sessionId} workspaceId={workspaceId} sourceUrl={sourceInfo.ref} />
+          <PageAudit sessionId={sessionId} workspaceId={workspaceId} sourceUrl={sourceInfo.ref}
+              onResult={(d) => setAuditChecks(d && Array.isArray(d.checks) ? d.checks : null)}
+            />
         )}
         <div
           ref={editorScrollRef}
@@ -2125,6 +2129,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
               muted={streaming}
               onAddQuery={addTargetQuery}
               hasLivePage={sourceInfo?.source === "url"}
+              auditChecks={auditChecks}
             />
           ) : (
             <IssueList
