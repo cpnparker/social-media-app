@@ -1207,8 +1207,13 @@ console.log(`\nMeasurements, quoted figures and placeholders`);
 // to anything not labelled from a fixed list of thirteen phrases.
 console.log("\nTakeaways blocks are recognised by shape");
 {
-  const body = (opening: string) =>
-    withBody(`# Title\n\n${opening}\n\n${"Body sentence with enough words to pass the length floor. ".repeat(40)}`);
+  // MANY paragraphs, not one long one. `earlyBlocks` is 30% of the BLOCK count,
+  // so a fixture whose whole body is a single block leaves a window of two and
+  // the detector never reaches the bullets. That is a fixture that cannot trip
+  // the defect — it failed three of these assertions while the code was right.
+  const BODY_PARAS = Array.from({ length: 14 }, (_, i) =>
+    `Body paragraph ${i} with enough words in it to look like real prose rather than a stub.`).join("\n\n");
+  const body = (opening: string) => withBody(`# Title\n\n${opening}\n\n${BODY_PARAS}`);
   const tldrOf = (input: any) => {
     const c = criterionOf(computeDraftScores(input), "tldr-block");
     return c ? c.earned : -1;
@@ -1238,6 +1243,36 @@ console.log("\nTakeaways blocks are recognised by shape");
   const shortButWhole = "- Amrize supplied the concrete for the Rosemount data center in Minnesota.\n- The mix reached early strength 43 percent faster than before.\n- Meta open-sourced the model on GitHub.";
   ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(body(shortButWhole)) === 10,
     "a seven-word complete sentence counts — the test is self-containment, not word count");
+
+  // ── TYPED BULLETS, NOT LIST MARKUP ─────────────────────────────────────
+  //
+  // The reported document had NO <li> on the page at all: five
+  // `<p><strong>• …</strong></p>` blocks, which is what Word, Google Docs and
+  // email produce when list markup does not survive a paste. A detector keyed
+  // to list items saw no bullets whatsoever. A retrieval system reads the text,
+  // not the markup.
+  //
+  // Note the <br>: it parses to a SPACE, so the label and the first bullet
+  // arrive as ONE line — "Bullets: • Amrize supplied…" — and a line-start match
+  // loses the first item, which here was the one naming the client.
+  const typed = withBody(
+    `# Title\n\n**Bullets:**\n• Amrize supplied the concrete for Meta's Rosemount, Minnesota data center.\n\n` +
+    `• The mix was designed using an AI model trained on lab data from the University of Illinois.\n\n` +
+    `• Result: 43% faster early strength gain, 35% lower carbon intensity, at similar cost.\n\n` +
+    `• The mix used standard, locally available materials — no exotic inputs.\n\n` +
+    `• Meta has open-sourced the model on GitHub.\n\n${BODY_PARAS}`);
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(typed) === 10,
+    "typed bullet characters count — the reported document carried no list markup at all");
+
+  const typedToc = withBody(`# Title\n\n• Introduction\n\n• Our approach\n\n• Results\n\n• Conclusion\n\n${BODY_PARAS}`);
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(typedToc) === 0,
+    "and a typed table of contents still does not");
+
+  // An em dash inside a bullet must not split it in half, which is why the
+  // anywhere-match is restricted to true bullet glyphs.
+  const emDashProse = withBody(`# Title\n\nProse with an em dash — like this one — is not a bullet list.\n\n${BODY_PARAS}`);
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(emDashProse) === 0,
+    "an em dash in ordinary prose is never read as a bullet");
 
   // And the label is no longer load-bearing: removing ONLY the heading from the
   // clean fixture must not move the score, because the block is still there.

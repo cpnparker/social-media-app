@@ -442,25 +442,21 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   // qualify here at all rather than scoring badly — a TOC is not a weak
   // summary, it is a different thing.
   if (tldr === 0) {
-    for (let i = 0; i < Math.min(earlyBlocks, p.blocks.length); i++) {
-      if (p.blocks[i].kind !== "listItem") continue;
-      let bullets = 0, strong = 0;
+    const lines = bulletLinesNear(p.blocks as any, earlyBlocks);
+    if (lines.length >= 3) {
+      let strong = 0;
       const runSpans: CriterionSpan[] = [];
-      for (let j = i; j < Math.min(i + 8, p.blocks.length); j++) {
-        const blk = p.blocks[j];
-        if (blk.kind !== "listItem") break;
-        bullets++;
-        if (bulletStandsAlone(blk.text)) strong++;
-        else if (runSpans.length < 6) runSpans.push({ start: blk.start, end: blk.end, note: "not a self-contained sentence — a bullet a model can quote reads alone" });
+      for (let i = 0; i < lines.length; i++) {
+        if (bulletStandsAlone(lines[i].text)) strong++;
+        else if (runSpans.length < 6) runSpans.push({ start: lines[i].start, end: lines[i].end, note: "not a self-contained sentence — a bullet a model can quote reads alone" });
       }
-      // Three bullets and a clear majority carrying a sentence. Two bullets is
-      // as often a pair of links as a summary, and a bare majority of
-      // sentence-shaped items is not a block anyone would call a takeaway.
-      if (bullets >= 3 && strong / bullets >= 0.6) {
-        tldr = strong === bullets ? 10 : 7;
+      // Three bullets and a clear majority carrying a sentence. Two is as often
+      // a pair of links as a summary, and a bare majority is not a block anyone
+      // would call a takeaway.
+      if (strong / lines.length >= 0.6) {
+        tldr = strong === lines.length ? 10 : 7;
         for (let k = 0; k < runSpans.length; k++) tldrSpans.push(runSpans[k]);
       }
-      break;
     }
   }
 
@@ -1157,6 +1153,77 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
  * contents entry does not: "Introduction" has no terminal punctuation and four
  * words is the floor, so the discriminator that keeps a TOC out still holds.
  */
+/**
+ * The bullet lines near the top of a draft, wherever they came from.
+ *
+ * A real <li> is one source. The other — far more common in pasted work — is a
+ * paragraph that simply BEGINS WITH A BULLET CHARACTER, which is what Word,
+ * Google Docs and email produce when list markup does not survive the paste.
+ * The reported document was exactly this: five `<p><strong>• …</strong></p>`
+ * blocks and not one <li> on the page, so a detector keyed to list items saw
+ * no bullets at all.
+ *
+ * A retrieval system reads the text, not the markup. If it looks like a bullet
+ * to a reader it counts as one here — and the quality test that follows is what
+ * decides whether the block is a takeaway or a table of contents.
+ *
+ * Lines, not blocks: a paste often puts the label and the first bullet in ONE
+ * paragraph separated by a line break, so splitting on blocks alone loses the
+ * first item.
+ */
+/**
+ * True bullet glyphs, matched ANYWHERE in a block. A `<br>` between the label
+ * and the first bullet parses to a SPACE, not a newline, so "Bullets: • Amrize
+ * supplied…" arrives as one line and a line-start match loses the first item —
+ * which on the reported document was the one naming the client.
+ *
+ * Deliberately excludes the hyphen and the dashes here: an em dash inside a
+ * sentence ("standard, locally available materials — no exotic inputs") would
+ * split a bullet in half. Hyphen bullets are still recognised, but only at the
+ * START of a line, where they are unambiguous.
+ */
+const BULLET_GLYPH_ANY = /[•·▪‣◦]\s+/g;
+const BULLET_LINE_START = /^\s*[-–—*]\s+/;
+
+function bulletLinesNear(blocks: { kind: string; text: string; start: number; end: number }[], limit: number):
+  { text: string; start: number; end: number }[] {
+  const out: { text: string; start: number; end: number }[] = [];
+  for (let i = 0; i < Math.min(limit, blocks.length); i++) {
+    const blk = blocks[i];
+    if (blk.kind === "listItem") {
+      out.push({ text: blk.text, start: blk.start, end: blk.end });
+      continue;
+    }
+    if (blk.kind !== "prose") continue;
+
+    let matched = 0;
+    // Glyph-delimited segments anywhere in the block. Everything before the
+    // first glyph is a label, not a bullet, and is dropped.
+    const parts = blk.text.split(BULLET_GLYPH_ANY);
+    if (parts.length > 1) {
+      for (let j = 1; j < parts.length; j++) {
+        const t = parts[j].trim();
+        if (!t) continue;
+        matched++;
+        // The span is the BLOCK's: a segment inside a paragraph has no separate
+        // offset, and pointing at the block is honest where inventing a range
+        // would not be.
+        out.push({ text: t, start: blk.start, end: blk.end });
+      }
+    } else {
+      const lines = blk.text.split(/\n+/);
+      for (let j = 0; j < lines.length; j++) {
+        if (!BULLET_LINE_START.test(lines[j])) continue;
+        matched++;
+        out.push({ text: lines[j].replace(BULLET_LINE_START, "").trim(), start: blk.start, end: blk.end });
+      }
+    }
+    // A run ends at the first block contributing no bullet, once one has begun.
+    if (matched === 0 && out.length > 0) break;
+  }
+  return out;
+}
+
 function bulletStandsAlone(text: string): boolean {
   const words = (text.match(/\S+/g) || []).length;
   if (words >= 8) return true;
