@@ -2124,6 +2124,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
               input={scoreInput}
               muted={streaming}
               onAddQuery={addTargetQuery}
+              hasLivePage={sourceInfo?.source === "url"}
             />
           ) : (
             <IssueList

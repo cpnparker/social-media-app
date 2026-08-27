@@ -23,6 +23,8 @@
  */
 
 import { useMemo, useState } from "react";
+import { parseDraft } from "@/lib/optimizer/parse";
+import { buildShipChecklist, SHIP_CHECKLIST_SOURCE } from "@/lib/optimizer/ship-checklist";
 import { MIN_MARKABLE_WORDS } from "@/lib/optimizer/mark-policy";
 import { computeDraftScores } from "@/lib/optimizer/engine";
 import type { DraftInput } from "@/lib/optimizer/engine";
@@ -38,6 +40,8 @@ interface Props {
    *  skips the heaviest pillar; sending the writer back to a brief form they
    *  never filled in is not a fix they will make. */
   onAddQuery?: (query: string) => void;
+  /** True only for a URL-imported session, where a live page exists to audit. */
+  hasLivePage?: boolean;
 }
 
 /**
@@ -65,7 +69,7 @@ function barTone(score: number): string {
   return "bg-[hsl(var(--ai-negative))]";
 }
 
-export default function ScorePanel({ input, muted, onAddQuery }: Props) {
+export default function ScorePanel({ input, muted, onAddQuery, hasLivePage }: Props) {
   // Recomputed on every render of a changed body. The engine is pure and takes
   // ~1ms on a 2,500-word draft, so memoising on the body string is enough —
   // there is no need for a worker or a debounce inside the panel itself.
@@ -76,6 +80,24 @@ export default function ScorePanel({ input, muted, onAddQuery }: Props) {
       return null;
     }
   }, [input.body, input.title, input.targetQueries, input.format, input.brandName, input.unattributed]);
+
+  const [shipOpen, setShipOpen] = useState(false);
+  const shipRows = useMemo(() => {
+    try {
+      const parsed = parseDraft({ body: input.body, title: input.title });
+      return buildShipChecklist({
+        scores,
+        text: parsed.text,
+        headings: parsed.headings.map((h: any) => ({ text: h.text, level: h.level })),
+        title: input.title || "",
+        hasLivePage: !!hasLivePage,
+      });
+    } catch {
+      return [];
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input.body, input.title, scores, hasLivePage]);
+
 
   const [queryDraft, setQueryDraft] = useState("");
 
@@ -251,6 +273,59 @@ export default function ScorePanel({ input, muted, onAddQuery }: Props) {
             </p>
           </div>
         ))}
+      </div>
+
+      {/* ── The ship checklist ──────────────────────────────────────────────
+          Twelve checks a writer runs before publishing. It re-judges NOTHING —
+          every row cites the check that already answered it — and it deliberately
+          shows no fraction: a missing FAQ block and a missing byline are not two
+          of the same unit, and "9 of 12" would be the composite the audit refuses
+          by design, in a new costume.
+
+          Its reason to exist is the four rows nothing else can answer. On a
+          suggestions list those simply do not appear, and an absent row reads as
+          a pass. Here they say what was not looked at, and what would be needed
+          to look. */}
+      <div className="shrink-0 border-t">
+        <button
+          onClick={() => setShipOpen((o) => !o)}
+          className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-muted/40"
+        >
+          <span className="text-[12.5px] font-semibold">Before it ships</span>
+          <span className="text-[11px] text-muted-foreground tabular-nums">
+            {shipRows.filter((r) => r.state === "missing").length} missing ·{" "}
+            {shipRows.filter((r) => r.state === "not-checked").length} not checked
+          </span>
+        </button>
+        {shipOpen && (
+          <div className="px-4 pb-3 space-y-1.5">
+            {shipRows.map((r) => (
+              <div key={r.n} className="flex items-start gap-2">
+                <span
+                  className={cn(
+                    "mt-[5px] h-1.5 w-1.5 rounded-full shrink-0",
+                    r.state === "done" ? "bg-emerald-500"
+                      : r.state === "attention" ? "bg-amber-500"
+                      : r.state === "missing" ? "bg-[hsl(var(--ai-negative))]"
+                      : "bg-muted-foreground/40"
+                  )}
+                />
+                <div className="min-w-0">
+                  <p className="text-[12px] font-medium leading-snug">
+                    {r.n}. {r.check}
+                    {(r.state === "not-checked" || r.state === "yours") && (
+                      <span className="ml-1.5 font-normal text-muted-foreground">not checked</span>
+                    )}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground leading-snug mt-0.5">{r.detail}</p>
+                </div>
+              </div>
+            ))}
+            <p className="text-[10px] text-muted-foreground/80 pt-1.5 leading-relaxed">
+              {SHIP_CHECKLIST_SOURCE}. No total, deliberately — these rows are not the same unit.
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="shrink-0 px-4 py-2 border-t">
