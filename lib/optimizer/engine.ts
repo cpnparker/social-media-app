@@ -615,11 +615,32 @@ function pillar4(p: ParsedDraft, input: DraftInput): CriterionResult[] {
     // title, a role, or an attribution verb. People in this kind of writing are
     // introduced — "says Jan Jenisch", "Jan Jenisch, CEO" — and things that are
     // never introduced that way are not people.
-    const PERSON_SIGNAL = /\b(?:CEO|CFO|COO|CTO|Dr|Mr|Mrs|Ms|Prof|Professor|President|Chair(?:man|woman)?|Director|Head|Founder|Officer|Manager|Scientist|Engineer|Analyst|Partner|Editor|Author|said|says|saidly|explains|explained|adds|added|notes|noted|told|according to|argues|observes)\b/i;
+    // The signal has to BIND to the name, not merely share a paragraph with it.
+    // A 60-character window let "partner of choice for professional builders,
+    // we've been helping build North America" qualify — "partner" is a
+    // marketing phrase there, sixty characters away and attached to nothing.
+    //
+    // People are introduced in three shapes and only three: a title directly
+    // before the name, a role directly after it behind a comma, or an
+    // attribution verb touching it. Anything looser is a word that happens to
+    // be nearby.
+    // Spelled-out roles as well as initialisms: "Jan Jenisch, the chief
+    // executive" is far commoner in prose than "Jan Jenisch, CEO", and a list
+    // of initialisms alone misses most real introductions.
+    const TITLE =
+      "CEO|CFO|COO|CTO|Dr\\.?|Mr\\.?|Mrs\\.?|Ms\\.?|Prof\\.?|Professor|President|Chairman|Chairwoman|Chair" +
+      "|Director|Founder|Co-founder|Scientist|Engineer|Analyst|Editor|Author|Spokesperson" +
+      "|chief [a-z]+(?: [a-z]+)? officer|chief executive|managing director|vice president" +
+      "|head of [a-z ]{2,30}|principal [a-z]+|senior [a-z]+";
+    const SAY = "said|says|explains|explained|adds|added|notes|noted|told|argues|observes|recalls|continues";
+    const TITLE_BEFORE = new RegExp("(?:" + TITLE + "|" + SAY + ")[\\s,]+$", "i");
+    const ROLE_AFTER = new RegExp("^\\s*,\\s*(?:the\\s+)?[a-z ]{0,24}(?:" + TITLE + ")\\b", "i");
+    const SAY_AFTER = new RegExp("^[\\s,\"'\u201d]*(?:" + SAY + ")\\b", "i");
+
     const looksLikePerson = (index: number, length: number): boolean => {
-      const before = p.text.slice(Math.max(0, index - 60), index);
+      const before = p.text.slice(Math.max(0, index - 40), index);
       const after = p.text.slice(index + length, index + length + 60);
-      return PERSON_SIGNAL.test(before) || PERSON_SIGNAL.test(after);
+      return TITLE_BEFORE.test(before) || ROLE_AFTER.test(after) || SAY_AFTER.test(after);
     };
 
     const nameRe = /\b([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/g;

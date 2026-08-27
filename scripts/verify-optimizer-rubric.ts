@@ -1337,11 +1337,31 @@ console.log("\nFalse positives from the live audit");
   };
 
   // 1. A place is not a person spelled two ways.
-  const places = crit(`Amrize leads North American construction across North America today.${B}`, "person-name-consistency");
+  // The client page's own phrasing, verbatim. "partner of choice" sixty
+  // characters away was enough to qualify under the first fix — the signal has
+  // to BIND to the name, not share a paragraph with it.
+  const places = crit(
+    `As the partner of choice for professional builders, we have been helping build North America for over 100 years. "Rize" reflects our aspiration to lead North American construction forward.${B}`,
+    "person-name-consistency");
   say(places.earned === places.maxPoints,
-    '"North American" and "North America" are not somebody\'s name misspelled — two capitalised words is not a name');
-  const person = crit(`CEO Jan Jenisch said the plan is set. Later, Jan Jenish added a comment.${B}`, "person-name-consistency");
-  say(person.earned === 0, "and a real misspelt person, introduced by a title, still is caught");
+    '"North American" and "North America" are not somebody\'s name misspelled — and a marketing "partner of choice" nearby does not make them one');
+
+  say(crit(`CEO Jan Jenisch set the plan out. Afterwards, Jan Jenish confirmed it publicly.${B}`, "person-name-consistency").earned === 0,
+    "a title directly before the name still identifies a person");
+  say(crit(`Jan Jenisch, the chief executive, set the plan. Afterwards, Jan Jenish confirmed it.${B}`, "person-name-consistency").earned === 0,
+    "so does a spelled-out role after it — commoner in prose than the initialism");
+  say(crit(`Jan Jenisch said the plan is set. Afterwards, Jan Jenish added a comment on it.${B}`, "person-name-consistency").earned === 0,
+    "and an attribution verb touching the name");
+  say(crit(`New Yorkers gathered while New Yorker readers grew across the region last year.${B}`, "person-name-consistency").earned > 0,
+    "while two place-shaped capitalised pairs stay clean");
+
+  // KNOWN LIMIT, recorded rather than hidden: the name scanner is greedy, so
+  // "Principal Research Scientist Julius Kusuma" pairs "Principal Research" and
+  // "Scientist Julius" and never pairs the actual name. Pre-existing, not
+  // introduced by the person-signal work, and not fixed here — but a reader of
+  // this file should know the coverage has a hole rather than infer it does not.
+  say(crit(`Principal Research Scientist Julius Kusuma explained it. Afterwards, Julius Kusama spoke.${B}`, "person-name-consistency").earned > 0,
+    "(known limit) a title-prefixed name is not paired at all by the greedy scanner, so its misspelling is missed");
 
   // 2. A figure dated two years back is dated.
   const recent = crit(`In 2024, Amrize generated $11.7 billion in revenue, a 13% leap from 2021.${B}`, "current-year-stats");
