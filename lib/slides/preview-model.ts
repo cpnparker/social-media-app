@@ -49,6 +49,10 @@ export interface PreviewElement {
   caps?: boolean;
   /** Text is centred vertically inside its box. */
   vCenter?: boolean;
+  /** Text sits at the BOTTOM of its box — a heading in a band sized to the
+   *  tallest heading in its row, so the slack falls above it rather than
+   *  between it and the body beneath. */
+  vBottom?: boolean;
   /** A non-identity affine (a rotated line-chart segment). When present the
    *  preview positions the element by this matrix, not by x/y — a sloped line
    *  drawn as an axis-aligned rectangle would be the preview lying again. */
@@ -181,7 +185,11 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
         current.elements.push(el);
       } else if (kind === "updateShapeProperties") {
         const el = byId.get(body.objectId);
+        // BOTH alignments, or the preview draws a bottom-aligned heading at the
+        // top of its box and stops predicting the deck — the same class of
+        // divergence as the dropped scrim alpha below.
         if (el && body.shapeProperties?.contentAlignment === "MIDDLE") el.vCenter = true;
+        if (el && body.shapeProperties?.contentAlignment === "BOTTOM") el.vBottom = true;
         const solid = body.shapeProperties?.shapeBackgroundFill?.solidFill;
         const fill = solid?.color?.rgbColor;
         if (el && fill) el.fill = hex(fill);

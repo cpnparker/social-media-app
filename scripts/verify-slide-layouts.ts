@@ -911,6 +911,24 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     if (bodyTops.length !== 4) fail(`expected 4 card bodies, found ${bodyTops.length}`);
     else if (new Set(bodyTops).size !== 1) fail(`card bodies start at ${bodyTops.join(", ")} — a one-line and a two-line heading broke the row's baseline`);
 
+    // A shared band leaves slack under the SHORT headings. Bottom-aligning puts
+    // that slack above the heading, under the chip, instead of opening a hole
+    // between the heading and its body.
+    const bottomAligned = reqs
+      .filter((r) => r.updateShapeProperties?.shapeProperties?.contentAlignment === "BOTTOM")
+      .map((r) => r.updateShapeProperties.objectId);
+    const titleIds = Array.from(shapes.keys()).filter((k) => /ct\d+$/.test(k));
+    for (const tid of titleIds) {
+      if (bottomAligned.indexOf(tid) === -1) fail(`card title ${tid} is not bottom-aligned — a one-line heading leaves a hole above its body`);
+    }
+    // And the PREVIEW must carry it, or it draws the heading at the top of the
+    // band while the deck draws it at the bottom.
+    const pm = toPreviewModel([cardsSlide]);
+    const previewTitles = (pm.slides?.[0]?.elements ?? []).filter((e: any) => e.kind === "text" && e.vBottom);
+    if (previewTitles.length !== titleIds.length) {
+      fail(`preview shows ${previewTitles.length} bottom-aligned text boxes, the deck has ${titleIds.length} — the preview would disagree with the deck`);
+    }
+
     // The stacked bar, in the exact shape that produced two bars both labelled
     // 12k: different compositions, identical totals.
     const stacked: SlideInput = {

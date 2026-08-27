@@ -227,6 +227,14 @@ interface BoxOptions {
    *  the middle of the space and eight fill it — no estimating line heights,
    *  and no drift between what we predicted and what Google laid out. */
   vCenter?: boolean;
+  /** Sit the text at the BOTTOM of its box.
+   *
+   *  For a heading in a band sized to the tallest heading in its row: a
+   *  one-line title in a three-line box left a visible hole between itself and
+   *  the body underneath, and the body could not move up without breaking the
+   *  row's shared baseline. Bottom-aligning puts the slack ABOVE the heading,
+   *  under the chip, where it reads as spacing rather than as a gap. */
+  vBottom?: boolean;
 }
 
 /** A positioned text box: create, fill, style. Returns [] for empty text so a
@@ -328,11 +336,11 @@ function textBox(
     void li;
   }
 
-  if (options.vCenter) {
+  if (options.vCenter || options.vBottom) {
     requests.push({
       updateShapeProperties: {
         objectId,
-        shapeProperties: { contentAlignment: "MIDDLE" },
+        shapeProperties: { contentAlignment: options.vBottom ? "BOTTOM" : "MIDDLE" },
         fields: "contentAlignment",
       },
     });
@@ -1978,7 +1986,7 @@ function cardsRequests(
       // straight through the body underneath it.
       out.push(...textBox(id(`ct${i}`), page, card.title, TYPE.cardTitle, {
         x: innerX, y, width: innerW, height: titleBlockH,
-      }));
+      }, { vBottom: true }));
       y += titleBlockH + 4;
     } else {
       // No heading on this card, but the row still reserves the band, or its

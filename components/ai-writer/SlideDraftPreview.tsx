@@ -197,8 +197,12 @@ function SlideThumb({
               // Mirrors Slides' contentAlignment: MIDDLE. Without it a centred
               // body renders top-aligned here and the preview stops predicting
               // the deck — the exact divergence the scrim alpha caused.
-              ...(el.vCenter
-                ? { display: "flex", flexDirection: "column" as const, justifyContent: "center" }
+              ...(el.vCenter || el.vBottom
+                ? {
+                    display: "flex",
+                    flexDirection: "column" as const,
+                    justifyContent: el.vBottom ? ("flex-end" as const) : ("center" as const),
+                  }
                 : {}),
             }}>
               {lines.length > 1
