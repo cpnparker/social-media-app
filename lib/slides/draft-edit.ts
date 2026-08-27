@@ -107,7 +107,22 @@ export function setSlideImage(
   return next;
 }
 
+/** Take one slide out of the deck.
+ *
+ *  Structural, so it stays local: the user has already made the decision by
+ *  clicking, and asking the model to reissue the deck without slide 4 spends
+ *  tokens re-emitting the others and gives it licence to reword them on the way
+ *  past. Adding a slide is the opposite case — new content has to be written —
+ *  so that goes to the model.
+ *
+ *  Refuses to empty the deck and refuses an index that is not there. Without the
+ *  first, deleting the last slide leaves a draft with nothing to render, no way
+ *  back through the UI, and an empty presentation if it is published. Without
+ *  the second, an out-of-range index quietly removed NOTHING while every caller
+ *  treated it as a successful delete. */
 export function deleteSlide(draft: SlideDraft, slideIndex: number): SlideDraft {
+  if (!Number.isInteger(slideIndex) || slideIndex < 0 || slideIndex >= draft.slides.length) return draft;
+  if (draft.slides.length <= 1) return draft;
   const next = clone(draft);
   next.slides.splice(slideIndex, 1);
   next.preview.slides.splice(slideIndex, 1);

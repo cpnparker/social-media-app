@@ -28,6 +28,7 @@
  *   not the same claim as "the slide went where it was asked for".
  */
 import { applyEditSlide, unrenderableSlides } from "../lib/slides/edit";
+import { deleteSlide } from "../lib/slides/draft-edit";
 
 let failures = 0;
 const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
@@ -267,6 +268,46 @@ console.log("\n11. A blank slide is caught wherever it arrives from, not only on
   // Empty deck must not fault.
   if (unrenderableSlides([]).length) fail("an empty deck produced a fault");
   else pass("an empty deck produces no fault");
+}
+
+// ── 12. Deleting a slide from the draft, locally ───────────────────────────
+//
+// deleteSlide is the DIRECT one — no model, no round trip — because removing a
+// slide needs no content written. It patches two arrays that must stay in step:
+// `slides` is what publishes, `preview.slides` is what the user is looking at,
+// and letting them drift is how a preview stops predicting the deck.
+console.log("\n12. Delete removes from the spec and the preview together");
+{
+  const mk = (n: number) => ({
+    title: "Deck",
+    slides: Array.from({ length: n }, (_, i) => ({ layout: "content", title: `Slide ${i + 1}` })),
+    preview: { width: 720, height: 405, slides: Array.from({ length: n }, (_, i) => ({ background: "#fff", elements: [{ kind: "text", text: `Slide ${i + 1}` }] })) },
+  }) as any;
+
+  const after = deleteSlide(mk(5), 2);
+  if (after.slides.length !== 4) fail(`spec has ${after.slides.length} slides, expected 4`);
+  else if (after.preview.slides.length !== 4) fail(`preview has ${after.preview.slides.length} slides, expected 4 — the two arrays drifted`);
+  else if (after.slides[2].title !== "Slide 4") fail("the wrong slide was removed from the spec");
+  else if (after.preview.slides[2].elements[0].text !== "Slide 4") fail("spec and preview removed DIFFERENT slides");
+  else pass("slide 3 gone from both arrays, and they still describe the same deck");
+
+  // The guards. Without the first, deleting the last slide leaves a draft with
+  // nothing to render and publishes an empty presentation.
+  const one = mk(1);
+  if (deleteSlide(one, 0) !== one) fail("deleting the only slide was allowed — the deck would publish empty");
+  else pass("refuses to empty the deck");
+
+  const five = mk(5);
+  if (deleteSlide(five, 9) !== five) fail("an out-of-range index returned a NEW draft, so callers would treat a no-op as a delete");
+  else if (deleteSlide(five, -1) !== five) fail("a negative index was accepted");
+  else pass("an index that is not there is refused, not silently ignored");
+
+  // The input must not be mutated, or React sees the same object and the strip
+  // keeps showing the slide that was just deleted.
+  const src = mk(4);
+  deleteSlide(src, 1);
+  if (src.slides.length !== 4) fail("deleteSlide mutated its input — the preview would not re-render");
+  else pass("the input draft is left alone");
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

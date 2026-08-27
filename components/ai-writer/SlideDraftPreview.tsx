@@ -10,7 +10,7 @@
  * approximated per element.
  */
 
-import { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { setSlideText, setSlideImage, moveSlide, deleteSlide } from "@/lib/slides/draft-edit";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ import { Loader2 } from "lucide-react";
 import SlideLightbox from "./SlideLightbox";
 import SlideCommentBox from "./SlideCommentBox";
 import SlideEditPanel from "./SlideEditPanel";
-import { MessageSquarePlus, Pencil } from "lucide-react";
+import { MessageSquarePlus, Pencil, Trash2, Plus } from "lucide-react";
 
 const BASE_W = 720;
 const BASE_H = 405;
@@ -71,12 +71,24 @@ function renderRuns(
 }
 
 function SlideThumb({
-  slide, index, width = THUMB_W, onClick, onComment, onEdit,
+  slide, index, width = THUMB_W, onClick, onComment, onEdit, onDelete,
 }: {
   slide: PreviewSlide; index: number; width?: number;
   onClick?: () => void; onComment?: () => void; onEdit?: () => void;
+  onDelete?: () => void;
 }) {
   const scale = width / BASE_W;
+  // Two-step, in place. Delete is the only destructive control on this card and
+  // it sits a few pixels from Edit, so a single click is too easy to land by
+  // accident. A browser confirm() would be worse — it covers the very thumbnail
+  // it is asking about. The confirm replaces the button where it already is,
+  // and gives up after a few seconds so it never sits there armed.
+  const [confirming, setConfirming] = useState(false);
+  useEffect(() => {
+    if (!confirming) return;
+    const t = setTimeout(() => setConfirming(false), 4000);
+    return () => clearTimeout(t);
+  }, [confirming]);
   return (
     <div className="relative shrink-0 group" style={{ width }}>
     <div
@@ -213,7 +225,7 @@ function SlideThumb({
         })}
       </div>
     </div>
-      {(onEdit || onComment) && (
+      {(onEdit || onComment || onDelete) && (
         // Always in the DOM rather than mounted on hover, so they are reachable
         // by keyboard and do not vanish from under a moving cursor.
         <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
@@ -239,8 +251,105 @@ function SlideThumb({
               <MessageSquarePlus className="h-3.5 w-3.5" />
             </button>
           )}
+          {onDelete && (
+            confirming ? (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setConfirming(false); onDelete(); }}
+                aria-label={`Confirm delete slide ${index + 1}`}
+                title="Click again to remove this slide"
+                className="h-7 rounded-md px-2 bg-destructive text-destructive-foreground border border-destructive shadow-sm flex items-center gap-1 text-[11px] font-medium focus-visible:ring-2 focus-visible:ring-destructive/50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />Remove?
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
+                aria-label={`Delete slide ${index + 1}`}
+                title="Remove this slide from the deck"
+                className="h-7 w-7 rounded-md bg-background/90 border shadow-sm flex items-center justify-center text-muted-foreground hover:text-destructive focus:opacity-100 focus-visible:ring-2 focus-visible:ring-primary/40"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The gap between two slides, as a place to add one.
+ *
+ * A button BETWEEN the thumbnails rather than an "add slide" at the end,
+ * because position is half the instruction: the user is pointing at where the
+ * new slide goes, so they should not also have to describe where it goes. What
+ * they type is only what it should SHOW.
+ *
+ * It sends the request to the model rather than inserting an empty slide,
+ * because a new slide needs content written — which is the one thing local
+ * patching cannot do. Removing a slide stays local for the mirror-image reason.
+ */
+function InsertGap({ afterIndex, onInsert }: { afterIndex: number; onInsert: (afterIndex: number, description: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => { if (open) ref.current?.focus(); }, [open]);
+
+  const submit = () => {
+    const description = text.trim();
+    if (!description) return;
+    onInsert(afterIndex, description);
+    setText("");
+    setOpen(false);
+  };
+
+  if (!open) {
+    return (
+      // A thin target that stays in the DOM for keyboard users and only shows
+      // its outline on hover, so twenty of these do not turn the strip into a
+      // dotted grid.
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-label={afterIndex < 0 ? "Add a slide at the start" : `Add a slide after slide ${afterIndex + 1}`}
+        title={afterIndex < 0 ? "Add a slide here" : `Add a slide after slide ${afterIndex + 1}`}
+        className="self-stretch w-6 shrink-0 rounded flex items-center justify-center text-muted-foreground/0 hover:text-primary hover:bg-primary/5 focus-visible:opacity-100 focus-visible:text-primary focus-visible:ring-2 focus-visible:ring-primary/40 transition-colors"
+      >
+        <Plus className="h-4 w-4" />
+      </button>
+    );
+  }
+
+  return (
+    <div className="shrink-0 w-[330px] rounded border bg-background p-2.5 flex flex-col gap-2">
+      <p className="text-xs font-medium">
+        {afterIndex < 0 ? "New slide at the start" : `New slide after slide ${afterIndex + 1}`}
+      </p>
+      <textarea
+        ref={ref}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+          if (e.key === "Escape") { setOpen(false); setText(""); }
+        }}
+        rows={3}
+        placeholder="What should this slide show? e.g. the four parts of strategy-lite, as cards"
+        className="w-full resize-none rounded border bg-background px-2 py-1.5 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+      />
+      <div className="flex items-center gap-2">
+        <Button size="sm" className="h-7 text-xs" onClick={submit} disabled={!text.trim()}>Add slide</Button>
+        <button
+          type="button"
+          onClick={() => { setOpen(false); setText(""); }}
+          className="text-xs text-muted-foreground hover:text-foreground"
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
@@ -253,7 +362,7 @@ function needsGradient(draft: SlideDraft, index: number): boolean {
 }
 
 export default function SlideDraftPreview({
-  draft, onPublish, publishing, disabled, onSlideComment, onEdit,
+  draft, onPublish, publishing, disabled, onSlideComment, onEdit, onSlideInsert,
 }: {
   draft: SlideDraft;
   onPublish: () => void;
@@ -263,6 +372,8 @@ export default function SlideDraftPreview({
   onSlideComment?: (index: number, text: string) => void;
   /** Direct edits, applied locally without involving the model. */
   onEdit?: (next: SlideDraft | ((cur: SlideDraft) => SlideDraft)) => void;
+  /** Asks the model for a NEW slide at a position. -1 means before the first. */
+  onSlideInsert?: (afterIndex: number, description: string) => void;
 }) {
   const count = draft.preview.slides.length;
   // One overlay, three modes. Editing used to open a form BELOW the grid, which
@@ -318,11 +429,19 @@ export default function SlideDraftPreview({
         </Button>
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2 items-stretch">
+        {onSlideInsert && <InsertGap afterIndex={-1} onInsert={onSlideInsert} />}
         {draft.preview.slides.map((s, i) => (
-          <SlideThumb key={i} slide={s} index={i} onClick={() => open(i, "view")}
-                      onComment={onSlideComment ? () => open(i, "comment") : undefined}
-                      onEdit={onEdit ? () => open(i, "edit") : undefined} />
+          <React.Fragment key={i}>
+            <SlideThumb slide={s} index={i} onClick={() => open(i, "view")}
+                        onComment={onSlideComment ? () => open(i, "comment") : undefined}
+                        onEdit={onEdit ? () => open(i, "edit") : undefined}
+                        // Guarded, not hidden: with one slide left there is
+                        // nothing to delete down to, and a button that silently
+                        // does nothing is worse than one that is not offered.
+                        onDelete={onEdit && count > 1 ? () => onEdit(deleteSlide(draft, i)) : undefined} />
+            {onSlideInsert && <InsertGap afterIndex={i} onInsert={onSlideInsert} />}
+          </React.Fragment>
         ))}
       </div>
 

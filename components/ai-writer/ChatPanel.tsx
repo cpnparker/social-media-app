@@ -444,6 +444,32 @@ export default function ChatPanel({
   };
 
   /**
+   * Turn a click in the gap between two slides into an insert instruction.
+   *
+   * The POSITION comes from where they clicked, so all the user writes is what
+   * the slide should SHOW — the same division of labour as the comment box
+   * above, where they never have to say which slide they mean.
+   *
+   * It names editSlide and insertAfter explicitly rather than just asking for a
+   * slide. Left to itself the model resends the whole deck, and a deck resent
+   * from the copy in its context carries forward every fault in that copy —
+   * which is how a blank slide survived three regenerations in this very
+   * thread. insertAfter is 0 for "before the first", so afterIndex + 1.
+   *
+   * And it says what a layout owes, because the same thread produced a "cards"
+   * slide with no cards: a correct title over empty space.
+   */
+  const sendSlideInsert = (deckTitle: string, afterIndex: number, description: string) => {
+    const where = afterIndex < 0 ? "before slide 1" : `after slide ${afterIndex + 1}`;
+    void handleSend(
+      `Add ONE new slide to "${deckTitle}", ${where}. It should show: ${description}\n\n` +
+      `Use generate_slides with editSlide and insertAfter: ${afterIndex + 1}. Do not resend the other slides. ` +
+      `Choose the layout that fits the content and give it everything that layout needs — a "cards" slide needs a cards array, ` +
+      `a "stat" slide needs stats. A slide with only a title is drawn blank.`
+    );
+  };
+
+  /**
    * Restore the deck card from the stored messages.
    *
    * Only the LAST deck in the thread is shown. Every revision writes its own
@@ -1906,6 +1932,9 @@ export default function ChatPanel({
                   onPublish={publishSlidesDraft}
                   onSlideComment={(i, text) =>
                     sendSlideComment(slidesDraft.title, i, (slidesDraft.slides?.[i] as any)?.title, text)
+                  }
+                  onSlideInsert={(afterIndex, description) =>
+                    sendSlideInsert(slidesDraft.title, afterIndex, description)
                   }
                   onEdit={applyDraftEdit}
                 />
