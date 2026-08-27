@@ -25,6 +25,8 @@
 import { computeDraftScores } from "../lib/optimizer/engine";
 import { parseDraft } from "../lib/optimizer/parse";
 import { buildShipChecklist, shipCounts, detectFaqBlock, type ShipRow } from "../lib/optimizer/ship-checklist";
+import { fixKindFor, addSpecFor, buildAddPrompt } from "../lib/optimizer/fix-actions";
+import { CRITERIA } from "../lib/optimizer/rubric";
 
 let failures = 0;
 const pass = (m: string) => console.log(`  ✓ ${m}`);
@@ -183,6 +185,42 @@ console.log("\n6. Title");
   assert(/over the 60 limit/.test(long.detail), "an over-length title says so");
 }
 
+// ── 7. What "fix this" means, per criterion ───────────────────────────────
+//
+// Two genuinely different jobs. "3 of 5 statistics have no source" points at
+// sentences that EXIST and need revising. "No byline" points at nothing at all.
+// Sending an add-shaped criterion to a span-rewriter is not a degraded answer,
+// it is a category error — the model is asked to improve a passage that is not
+// there.
+console.log("\n7. Revise, add, or neither");
+{
+  assert(fixKindFor("stat-source-adjacency", true) === "revise",
+    "a criterion with instances in the document is REVISED");
+  assert(fixKindFor("tldr-block", false) === "add", "an absent block is ADDED");
+  assert(fixKindFor("byline-present", false) === "add", "so is an absent byline");
+  assert(fixKindFor("title-query-alignment", false) === "none",
+    "query coverage is a brief decision, not a writing one — no model action");
+  assert(fixKindFor("stat-source-adjacency", false) === "none",
+    "and a revise-shaped criterion with NO instances offers nothing, rather than pointing at text that is not there");
+
+  // Exhaustive over the register: a criterion nobody has classified must fall
+  // through to "none" rather than to a guess.
+  let guessed = 0;
+  for (let i = 0; i < CRITERIA.length; i++) {
+    const k = CRITERIA[i].key;
+    if (fixKindFor(k, false) === "revise") guessed++;
+  }
+  assert(guessed === 0, "no criterion is treated as revisable when it has no spans");
+
+  const spec = addSpecFor("tldr-block");
+  assert(!!spec && /self-contained/.test(spec.what), "the add spec says what good looks like");
+  const prompt = buildAddPrompt(spec!, "TL;DR block");
+  assert(/Invent nothing/i.test(prompt) && /NEEDS:/.test(prompt),
+    "and the prompt forbids invention, requiring a visible bracketed gap instead — a plausible invented byline is worse than a gap, because only one gets caught");
+  assert(/Return the block ONLY/i.test(prompt),
+    "and returns the block alone, because the writer pastes it verbatim");
+}
+
 // ── Self-test ──────────────────────────────────────────────────────────────
 function selfTest() {
   console.log("\n── self-test: each detector against input it must reject ──");
@@ -196,6 +234,12 @@ function selfTest() {
   detects("the FAQ row passing on scattered question headings",
     !detectFaqBlock([{ text: "Is it?", index: 0 }], 9, false).present);
   detects("a not-checked row omitted", build(BODY, "T").length === 12);
+  detects("an absent block routed to the span rewriter",
+    fixKindFor("tldr-block", false) === "add");
+  detects("a span criterion offering \"show me\" with no spans",
+    fixKindFor("stat-source-adjacency", false) === "none");
+  detects("a prompt that permits invention",
+    /Invent nothing/i.test(buildAddPrompt(addSpecFor("byline-present")!, "Byline")));
   detects("a composite creeping into the counts",
     Object.keys(shipCounts(build(BODY, "T"))).join(",") === "done,attention,missing,open");
 

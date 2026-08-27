@@ -23,6 +23,8 @@
  */
 
 import { useMemo, useState } from "react";
+import { fixKindFor } from "@/lib/optimizer/fix-actions";
+import { toast } from "sonner";
 import { parseDraft } from "@/lib/optimizer/parse";
 import { buildShipChecklist, SHIP_CHECKLIST_SOURCE } from "@/lib/optimizer/ship-checklist";
 import { MIN_MARKABLE_WORDS } from "@/lib/optimizer/mark-policy";
@@ -45,6 +47,12 @@ interface Props {
   /** What the page audit found, so the checklist can read it instead of
    *  reporting "not checked" beside a panel holding the answer. */
   auditChecks?: { id: string; status: string; detail: string }[] | null;
+  /** Reveal a criterion's first instance in the document. */
+  onShowCriterion?: (criterionKey: string) => boolean;
+  /** Put a drafted block into the document. */
+  onApplyBlock?: (text: string) => "replaced" | "appended" | "failed";
+  sessionId?: string;
+  workspaceId?: string | null;
 }
 
 /**
@@ -72,7 +80,7 @@ function barTone(score: number): string {
   return "bg-[hsl(var(--ai-negative))]";
 }
 
-export default function ScorePanel({ input, muted, onAddQuery, hasLivePage, auditChecks }: Props) {
+export default function ScorePanel({ input, muted, onAddQuery, hasLivePage, auditChecks, onShowCriterion, onApplyBlock, sessionId, workspaceId }: Props) {
   // Recomputed on every render of a changed body. The engine is pure and takes
   // ~1ms on a 2,500-word draft, so memoising on the body string is enough —
   // there is no need for a worker or a debounce inside the panel itself.
@@ -85,6 +93,43 @@ export default function ScorePanel({ input, muted, onAddQuery, hasLivePage, audi
   }, [input.body, input.title, input.targetQueries, input.format, input.brandName, input.unattributed]);
 
   const [shipOpen, setShipOpen] = useState(false);
+  /** Drafted blocks, keyed by criterion. Held here rather than fetched on
+   *  render: this costs a model call and must happen on a click, never on a
+   *  re-render of a panel that recomputes on every keystroke. */
+  /** Which criteria have instances in the document. A criterion with spans can
+   *  be REVEALED; one without has nothing to point at, and offering "Show me"
+   *  on it sends the writer looking for something that is not there. */
+  const spanKeys = useMemo(() => {
+    const out: { [k: string]: true } = {};
+    if (!scores) return out;
+    for (let i = 0; i < scores.pillars.length; i++) {
+      const cs = scores.pillars[i].criteria as any[];
+      for (let c = 0; c < cs.length; c++) if (cs[c].spans && cs[c].spans.length > 0) out[cs[c].key] = true;
+    }
+    return out;
+  }, [scores]);
+
+  const [drafted, setDrafted] = useState<{ [k: string]: string }>({});
+  const [drafting, setDrafting] = useState<string | null>(null);
+
+  const draftBlock = async (key: string, name: string) => {
+    if (!sessionId || !workspaceId) return;
+    setDrafting(key);
+    try {
+      const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}/draft-block`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId: workspaceId, criterion: key, criterionName: name }),
+      });
+      const d = await res.json();
+      if (!res.ok) { toast.error(d.error || "Could not draft that"); return; }
+      setDrafted((prev) => ({ ...prev, [key]: d.block }));
+    } catch {
+      toast.error("Could not draft that");
+    } finally {
+      setDrafting(null);
+    }
+  };
   const shipRows = useMemo(() => {
     try {
       const parsed = parseDraft({ body: input.body, title: input.title });
@@ -288,6 +333,66 @@ export default function ScorePanel({ input, muted, onAddQuery, hasLivePage, audi
             <p className="text-[11.5px] leading-snug text-muted-foreground">
               {c.name.indexOf(" — ") > 0 ? c.name.split(" — ")[1] : c.penalty ? "Guard not clear" : "Not yet met"}
             </p>
+
+            {/* ── The action ────────────────────────────────────────────────
+                Two different jobs, and sending one to the other's handler is a
+                category error rather than a degraded answer. A criterion with
+                INSTANCES in the document points at text that exists and needs
+                revising — reveal it, and the Suggestions tab's per-finding AI
+                fix takes it from there. A criterion with NO instances is absent
+                from the piece entirely: there is nothing to reveal and nothing
+                to rewrite, so the model DRAFTS it. */}
+            {(() => {
+              const kind = fixKindFor(c.key, !!spanKeys[c.key]);
+              if (kind === "none") return null;
+              if (kind === "revise") {
+                return (
+                  <button
+                    onClick={() => {
+                      if (!onShowCriterion?.(c.key)) toast.info("Nothing left to show for this one");
+                    }}
+                    className="mt-1.5 text-[11px] font-medium text-primary hover:underline underline-offset-2"
+                  >
+                    Show me
+                  </button>
+                );
+              }
+              const block = drafted[c.key];
+              if (block) {
+                return (
+                  <div className="mt-2 rounded-lg border border-primary/30 bg-primary/[0.04] overflow-hidden">
+                    <p className="px-2 py-1.5 text-[11.5px] leading-relaxed whitespace-pre-wrap">{block}</p>
+                    <div className="px-2 pb-2 flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          const what = onApplyBlock?.(block);
+                          if (what === "failed" || !what) toast.error("Could not place that");
+                          else toast.success(what === "replaced" ? "Replaced your selection" : "Added to the end");
+                        }}
+                        className="text-[11px] font-medium text-primary hover:underline underline-offset-2"
+                      >
+                        Add to the draft
+                      </button>
+                      <button
+                        onClick={() => setDrafted((p) => { const n = { ...p }; delete n[c.key]; return n; })}
+                        className="text-[11px] text-muted-foreground hover:text-foreground"
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <button
+                  onClick={() => draftBlock(c.key, c.name.split(" — ")[0])}
+                  disabled={drafting === c.key || !sessionId}
+                  className="mt-1.5 text-[11px] font-medium text-primary hover:underline underline-offset-2 disabled:opacity-50"
+                >
+                  {drafting === c.key ? "Drafting…" : "Draft it"}
+                </button>
+              );
+            })()}
           </div>
         ))}
       </div>

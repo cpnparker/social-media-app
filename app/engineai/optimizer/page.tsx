@@ -2130,6 +2130,22 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
               onAddQuery={addTargetQuery}
               hasLivePage={sourceInfo?.source === "url"}
               auditChecks={auditChecks}
+              sessionId={sessionId || undefined}
+              workspaceId={workspaceId}
+              onShowCriterion={(key) => {
+                // The instances are already anchored in the plugin — the same
+                // marks the Suggestions tab lists. Selecting one switches there,
+                // where the per-finding AI rewrite already lives.
+                const editor = editorRef.current;
+                if (!editor) return false;
+                const st = optimizerHighlightKey.getState(editor.state);
+                const hit = st?.issues.find((i) => i.status === "active" && i.finding.criterion === key);
+                if (!hit) return false;
+                handleSelect(hit.finding.id);
+                setPanelTab("issues");
+                return true;
+              }}
+              onApplyBlock={(text) => applyDraftText(text)}
             />
           ) : (
             <IssueList
