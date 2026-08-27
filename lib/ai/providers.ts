@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { applyEditSlide } from "@/lib/slides/edit";
 import { splitVolatile } from "@/lib/ai/prompt-cache";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import OpenAI from "openai";
@@ -1438,15 +1439,16 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         editSlide: {
           type: "object",
           description:
-            "Change ONE slide of the deck already in this conversation WITHOUT resending the others. Use this for 'change slide 3's picture', 'reword the title on slide 1', and the like — the server holds the current deck and patches only the slide you name, keeping every other slide (text, layout, images) exactly as it is. Pass `slideNumber` (1-based) and the change; do NOT also pass `slides` (send an empty array for it).",
+            "Change ONE slide of the deck already in this conversation, or ADD one new slide, WITHOUT resending the others. The server holds the current deck and touches only the slide you name, keeping every other slide (text, layout, images) exactly as it is. Do NOT also pass `slides` (send an empty array for it). TO CHANGE a slide ('change slide 3's picture', 'reword the title on slide 1') pass `slideNumber` (1-based) and the fields to change. TO ADD a slide ('add a slide after slide 5', 'put a new slide at the start') pass `insertAfter` — the number of the slide it goes AFTER, so 0 places it first — plus the new slide's `title`/`body`/`layout`. Pass one or the other, never both. If the edit cannot be applied you will get an error back: report it to the user and do NOT describe the change as done.",
           properties: {
-            slideNumber: { type: "number", description: "Which slide to change, 1-based." },
-            imageQuery: { type: "string", description: "A new photograph for this slide, described — the old one is replaced." },
-            title: { type: "string", description: "New title text for this slide." },
-            subtitle: { type: "string", description: "New subtitle/standfirst for this slide." },
-            body: { type: "string", description: "New body text for this slide (newline per bullet)." },
+            slideNumber: { type: "number", description: "CHANGE an existing slide: which one, 1-based. Omit when inserting." },
+            insertAfter: { type: "number", description: "ADD a new slide after this slide number; 0 places it before the first. Omit when changing an existing slide." },
+            layout: { type: "string", description: "Layout for an INSERTED slide (same names as the slides array — content, cards, stat, image-split, ...). Defaults to content." },
+            imageQuery: { type: "string", description: "A photograph for this slide, described. On a change, the old one is replaced." },
+            title: { type: "string", description: "Title text for this slide." },
+            subtitle: { type: "string", description: "Subtitle/standfirst for this slide." },
+            body: { type: "string", description: "Body text for this slide (newline per bullet)." },
           },
-          required: ["slideNumber"],
         },
         objective: {
           type: "string",
@@ -4178,31 +4180,6 @@ async function loadDeckForEdit(
   }
 }
 
-/** Apply a single-slide edit to the FULL deck, changing only the named slide
- *  and leaving every other slide — text, layout, resolved image — untouched. */
-function applyEditSlide(
-  slides: any[],
-  edit: { slideNumber?: number; imageQuery?: string; title?: string; subtitle?: string; body?: string }
-): any[] {
-  const idx = (edit.slideNumber ?? 0) - 1;
-  if (idx < 0 || idx >= slides.length) return slides;
-  return slides.map((sl, i) => {
-    if (i !== idx) return sl;                       // every other slide byte-for-byte
-    const next: any = { ...sl };
-    if (edit.imageQuery?.trim()) {
-      // New picture: set the brief and drop the resolved image so a fresh one is
-      // fetched. imageUnavailable is cleared so resolution runs again.
-      next.image = { query: edit.imageQuery.trim() };
-      delete next.resolvedImage;
-      delete next.imageUnavailable;
-      delete next.imageError;
-    }
-    if (typeof edit.title === "string") next.title = edit.title;
-    if (typeof edit.subtitle === "string") next.subtitle = edit.subtitle;
-    if (typeof edit.body === "string") next.body = edit.body;
-    return next;
-  });
-}
 
 /** What to build from a generate_slides call: either the model's full slide
  *  array, or — for a single-slide `editSlide` — the stored deck with that one
