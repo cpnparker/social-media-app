@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { applyEditSlide } from "@/lib/slides/edit";
+import { applyEditSlide, unrenderableSlides } from "@/lib/slides/edit";
 import { splitVolatile } from "@/lib/ai/prompt-cache";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import OpenAI from "openai";
@@ -4209,12 +4209,28 @@ async function loadDeckForEdit(
 async function prepareSlidesForBuild(
   input: any, conversationId?: string | null
 ): Promise<{ title: string; slides: any[]; presentationId?: string; edited: boolean }> {
+  // Both routes are checked, not just the insert. The model does not only
+  // insert — it resends the WHOLE deck through `slides`, and the deck it
+  // resends is the stored one replayed into its context. So a blank slide, once
+  // stored, is copied forward verbatim every turn and an insert-only guard
+  // never runs again. That is how a "cards" slide with no cards survived three
+  // regenerations unchanged on 2026-08-27 while the user kept re-asking.
+  const guard = (slides: any[]) => {
+    const faults = unrenderableSlides(slides);
+    if (faults.length) {
+      throw new Error(
+        `This deck contains ${faults.length} slide${faults.length > 1 ? "s" : ""} that would be drawn blank. ${faults.join(" ")} Fix and send again — do NOT tell the user the slide is done.`
+      );
+    }
+    return slides;
+  };
+
   if (input?.editSlide && conversationId) {
     const deck = await loadDeckForEdit(conversationId);
     if (deck?.slides?.length) {
       return {
         title: deck.title,
-        slides: applyEditSlide(deck.slides, input.editSlide),
+        slides: guard(applyEditSlide(deck.slides, input.editSlide)),
         presentationId: input.presentationId || deck.presentationId,
         edited: true,
       };
@@ -4222,7 +4238,7 @@ async function prepareSlidesForBuild(
   }
   return {
     title: input?.title || "Presentation",
-    slides: input?.slides || [],
+    slides: guard(input?.slides || []),
     presentationId: input?.presentationId,
     edited: false,
   };

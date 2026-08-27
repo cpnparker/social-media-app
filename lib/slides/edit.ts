@@ -9,6 +9,66 @@
  * at all. Guarded by scripts/verify-slide-edit.ts.
  */
 
+/** What each layout is DRAWN FROM. A layout in this table with its field
+ *  missing has nothing to render: the slide comes out as a title over empty
+ *  space. Layouts absent from the table are drawn from title/subtitle/body and
+ *  cannot be blank in this way. */
+const REQUIRED_PAYLOAD: { [layout: string]: string } = {
+  cards: "cards",
+  stat: "stats",
+  "bar-chart": "chart",
+  "stacked-bar": "chart",
+  "line-chart": "chart",
+  swot: "swot",
+  matrix: "matrix",
+  comparison: "comparison",
+  scatter: "scatter",
+  venn: "venn",
+  timeline: "milestones",
+  "timeline-parallel": "tracks",
+  process: "stages",
+  "logo-wall": "logos",
+  quote: "quote",
+  "image-grid": "images",
+};
+
+function isEmptyPayload(v: any): boolean {
+  if (v == null) return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === "object") return Object.keys(v).length === 0;
+  return false;
+}
+
+/**
+ * Every slide in a deck that would be drawn BLANK, whatever route it arrived by.
+ *
+ * WHY THIS IS NOT JUST THE INSERT GUARD. The insert path refuses a layout it
+ * cannot fill, but the model does not only insert — it also resends the whole
+ * deck through `slides`, and the deck it resends is the one it can SEE, which
+ * is the stored spec replayed into its context. So once a blank slide is in the
+ * deck it is copied forward verbatim on every subsequent turn, and an
+ * insert-only guard never runs again. That is exactly what happened on
+ * 2026-08-27: a `cards` slide with no `cards` array survived three further
+ * generations byte-identical, because nothing validated the array as a whole.
+ *
+ * Returns human-readable faults, most useful first. Empty means the deck draws.
+ */
+export function unrenderableSlides(slides: any[]): string[] {
+  const faults: string[] = [];
+  for (let i = 0; i < slides.length; i++) {
+    const s = slides[i] || {};
+    const n = i + 1;
+    const layout = s.layout || (i === 0 ? "cover" : "content");
+    const needs = REQUIRED_PAYLOAD[layout];
+    if (needs && isEmptyPayload(s[needs])) {
+      faults.push(
+        `slide ${n} ("${s.title || "untitled"}") is a "${layout}" slide with no \`${needs}\` — it will be drawn as a title over empty space. Either supply \`${needs}\`, or change the layout to "content" and put the points in \`body\`, one per line.`
+      );
+    }
+  }
+  return faults;
+}
+
 /** Apply a single-slide edit to the FULL deck, changing only the named slide
  *  and leaving every other slide — text, layout, resolved image — untouched.
  *  Or, with `insertAfter`, add one new slide and leave all the rest untouched.

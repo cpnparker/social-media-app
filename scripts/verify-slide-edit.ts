@@ -27,7 +27,7 @@
  *   is why 2 pins the POSITION and 3 pins the neighbours. "The deck grew" is
  *   not the same claim as "the slide went where it was asked for".
  */
-import { applyEditSlide } from "../lib/slides/edit";
+import { applyEditSlide, unrenderableSlides } from "../lib/slides/edit";
 
 let failures = 0;
 const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
@@ -213,6 +213,60 @@ console.log("\n10. The slide that shipped blank");
   const thin = thrown(() => applyEditSlide(deck(), { insertAfter: 5, layout: "cards", title: "T", cards: [{ title: "only one" }] }));
   if (!thin) fail("a single-card cards slide was accepted");
   else pass("fewer than two cards refused");
+}
+
+// ── 11. THE LOOP: a blank slide resent as part of a FULL deck ──────────────
+//
+// The third fault, and the one that made the first two fixes look useless. The
+// model does not only insert — it resends the whole deck through `slides`, and
+// the deck it resends is the stored one replayed into its context. So the blank
+// slide was copied forward verbatim on every regeneration, and the insert-only
+// guard never ran again. The user re-asked twice and got the same empty slide.
+console.log("\n11. A blank slide is caught wherever it arrives from, not only on insert");
+{
+  // The exact stored slide 6, in a full nine-slide deck.
+  const full: any[] = deck();
+  full.splice(5, 0, {
+    title: "What strategy-lite actually covers",
+    layout: "cards",
+    subtitle: "Diagnostic work that sharpens direction before content starts",
+  });
+  const faults = unrenderableSlides(full);
+  if (faults.length !== 1) fail(`expected exactly 1 fault, got ${faults.length}`);
+  else if (!/slide 6/.test(faults[0])) fail(`the fault does not name slide 6: ${faults[0]}`);
+  else if (!/cards/.test(faults[0])) fail(`the fault does not name the missing field: ${faults[0]}`);
+  else pass("the resent deck is rejected, naming slide 6 and the missing `cards`");
+
+  // Every payload-driven layout, missing its payload.
+  const pairs: [string, string][] = [
+    ["stat", "stats"], ["bar-chart", "chart"], ["stacked-bar", "chart"], ["line-chart", "chart"],
+    ["swot", "swot"], ["matrix", "matrix"], ["comparison", "comparison"], ["scatter", "scatter"],
+    ["venn", "venn"], ["timeline", "milestones"], ["timeline-parallel", "tracks"],
+    ["process", "stages"], ["logo-wall", "logos"], ["quote", "quote"], ["image-grid", "images"],
+  ];
+  let missed = 0;
+  for (let i = 0; i < pairs.length; i++) {
+    const f = unrenderableSlides([{ layout: pairs[i][0], title: "T" }]);
+    if (f.length !== 1) { fail(`layout "${pairs[i][0]}" with no ${pairs[i][1]} was not caught`); missed++; }
+  }
+  if (missed === 0) pass(`all ${pairs.length} payload-driven layouts caught when their payload is missing`);
+
+  // NEGATIVE CONTROL: a well-formed deck must pass cleanly, or the guard would
+  // reject every deck and this whole check would be worthless.
+  const good: any[] = deck();
+  good.splice(5, 0, {
+    title: "What strategy-lite actually covers", layout: "cards",
+    cards: [{ title: "Audit", body: "x" }, { title: "Assess", body: "y" }],
+  });
+  good.push({ layout: "stat", title: "The investment", stats: [{ value: "CHF 14,750", label: "total" }] });
+  good.push({ layout: "quote", title: "Q", quote: { text: "t", speaker: "s" } });
+  const clean = unrenderableSlides(good);
+  if (clean.length) fail(`a well-formed deck was rejected: ${clean.join(" | ")}`);
+  else pass("a well-formed deck with cards, stat and quote passes — the guard is not just refusing everything");
+
+  // Empty deck must not fault.
+  if (unrenderableSlides([]).length) fail("an empty deck produced a fault");
+  else pass("an empty deck produces no fault");
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
