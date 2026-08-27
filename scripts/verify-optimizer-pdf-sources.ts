@@ -36,6 +36,8 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { extractSourceText, importFile } from "../lib/optimizer/file-import";
+import { googleLinkKind } from "../lib/optimizer/url-import";
+import { extractDocId } from "../lib/gdrive/doc-link";
 import { readPdf, pdfTitle, tidyPdfText, PDFJS_VERSION } from "../lib/optimizer/pdf";
 
 const read = (p: string) => readFileSync(join(__dirname, "..", p), "utf8");
@@ -207,9 +209,48 @@ const BODY_MARKER = /skills shortages rose 43 percent/;
       : fail(`pdf-parse ships no ${PDFJS_VERSION} build — the tracing rule matches nothing`);
   }
 
+  // ── 9. Google links land somewhere sensible ─────────────────────────────
+  // A native Doc has its own path (export?format=txt). Everything else on those
+  // hosts used to reach the generic page fetch, which returns the viewer's HTML
+  // shell — and since that shell HAS text, the attach SUCCEEDED and stored
+  // Google's menu chrome as the writer's research.
+  console.log("\n9. A Google link is read, refused with a reason, or neither — never junk");
+  {
+    const doc = "https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit?usp=sharing";
+    googleLinkKind(doc) === null
+      ? pass("a native Google Doc is NOT refused — it has its own export path")
+      : fail("the guard now blocks working Google Doc links");
+    extractDocId(doc)
+      ? pass("and its id still resolves, so that path can fetch it")
+      : fail("extractDocId stopped resolving a normal Doc link");
+
+    const shapes: Array<[string, RegExp]> = [
+      ["https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit", /Sheet/],
+      ["https://docs.google.com/presentation/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit", /Slides/],
+      ["https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/view", /Drive link/],
+    ];
+    for (const [u, expect] of shapes) {
+      const msg = googleLinkKind(u);
+      msg && expect.test(msg)
+        ? pass(`${u.replace("https://", "").split("/")[1]} is refused with an instruction, not fetched`)
+        : fail(`${u} gave ${JSON.stringify(msg)}`);
+    }
+
+    // The lookalike host must not be treated as Google in either direction —
+    // neither refused with Google wording nor trusted as a Doc.
+    googleLinkKind("https://docs.google.com.evil.test/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit") === null
+      && extractDocId("https://docs.google.com.evil.test/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit") === null
+      ? pass("a lookalike host is not Google to either the guard or the id parser")
+      : fail("docs.google.com.evil.test was treated as Google");
+
+    googleLinkKind("https://example.com/report") === null
+      ? pass("an ordinary page is untouched by the guard")
+      : fail("the guard fires on non-Google URLs");
+  }
+
   // ── Self-test ────────────────────────────────────────────────────────────
   if (process.argv.indexOf("--self-test") >= 0) {
-    console.log("\n9. self-test — every detector driven against input built to break it");
+    console.log("\n10. self-test — every detector driven against input built to break it");
     const probes: Array<[string, () => Promise<boolean> | boolean]> = [
       ["the committed fixture is something pdf-parse accepts", async () => (await readPdf(withText(), "a.pdf")).ok],
       ["a text-free PDF IS distinguishable from a corrupt one", async () => {

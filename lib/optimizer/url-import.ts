@@ -64,6 +64,42 @@ export function extractArticleRegion(page: string): string {
 }
 
 /**
+ * Is this a Google link the generic page fetch cannot read, and what should the
+ * writer do about it?
+ *
+ * Returns null for anything else, INCLUDING a native Doc — those are routed to
+ * the gdoc-link path before they reach the fetch, and refusing a link that
+ * works elsewhere in the product would be worse than the bug this prevents.
+ *
+ * Exported so the check can run it rather than grep for its strings.
+ */
+export function googleLinkKind(rawUrl: string): string | null {
+  let host = "", path = "";
+  try {
+    const u = new URL(rawUrl);
+    host = u.hostname.toLowerCase();
+    path = u.pathname;
+  } catch {
+    return null;
+  }
+  // Exact hosts, not a substring: "docs.google.com.evil.test" is a different
+  // registrable domain and must not be treated as Google at all.
+  if (host !== "docs.google.com" && host !== "drive.google.com") return null;
+  if (/^\/document\//.test(path)) return null;
+
+  if (/^\/spreadsheets\//.test(path)) {
+    return "That is a Google Sheet. Background material is read as prose — download it as .csv and attach the file.";
+  }
+  if (/^\/presentation\//.test(path)) {
+    return "That is a Google Slides deck. Download it as .txt or .docx and attach the file.";
+  }
+  if (host === "drive.google.com") {
+    return "That is a Drive link to a file rather than a Google Doc. Open it, download it, and attach the file — a PDF works.";
+  }
+  return "That Google link is not a Google Doc. Open the document and copy the link from its address bar, or download the file and attach it.";
+}
+
+/**
  * The PUBLISHER of an imported page, from the page's own disclosure.
  *
  * An imported article usually has no client attached, so it had no brand
@@ -237,6 +273,19 @@ export async function fetchSourceFromUrl(
     return { ok: false, error: "That is not a web address — it should start with https://" };
   }
 
+  // A GOOGLE LINK THAT GOT THIS FAR IS A LINK NOBODY CAN READ.
+  //
+  // Native Google Docs are routed to the gdoc-link path, which exports their
+  // text. Everything else on those hosts — Sheets, Slides, and the
+  // drive.google.com/file/d/... shape Drive's own share dialog produces for
+  // uploaded files — falls through to here, and fetching it returns the
+  // viewer's HTML shell. The guard further down is `if (!text)`, and a viewer
+  // shell HAS text: menu labels, a filename, "Sign in". So the attach succeeds
+  // and stores Google's chrome as the writer's research. A named reason beats
+  // both silence and junk.
+  const googleShape = googleLinkKind(url);
+  if (googleShape) return { ok: false, error: googleShape };
+
   let res: Response;
   try {
     res = await safeFetch(url, {
@@ -297,15 +346,3 @@ export async function fetchSourceFromUrl(
   return { ok: true, title: extractTitle(page), text: text.slice(0, maxChars), kind: "page" };
 }
 
-/** A PDF's own title if it has one, else the filename, else the host. */
-function extractPdfTitle(parsed: any, url: string): string {
-  const meta = String(parsed?.info?.Title || "").trim();
-  if (meta) return meta.slice(0, 200);
-  try {
-    const u = new URL(url);
-    const name = (u.pathname.split("/").pop() || "").replace(/\.pdf$/i, "").replace(/[-_]+/g, " ").trim();
-    return (name || u.hostname).slice(0, 200);
-  } catch {
-    return "PDF document";
-  }
-}
