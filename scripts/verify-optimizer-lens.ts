@@ -33,16 +33,39 @@
  * KILLED  leaving the engine rationale inside REMEDY                    → check 8
  * KILLED  markPolicyFor letting an override beat a judge-off type       → check 6
  * KILLED  mergeFindingSets dropping the talk set                        → check 9
+ *
+ * 2026-08-27, check 12 — all run in a throwaway git worktree, never this tree
+ * (`vercel deploy --prod` uploads the working directory):
+ *
+ * KILLED  a judge key losing its rationale                             → check 12
+ * KILLED  withWhy routed through criterionInLens (the silent-zero trap)→ check 12
+ * KILLED  placeholder-guard's rationale removed again                  → check 12
+ * KILLED  whyJudge methodology copy pasted in as writer copy           → check 12
+ * KILLED  the bare judge set restored at the merge site                → check 12
+ * KILLED  the raw post-assess dispatch restored                        → check 12
+ * KILLED  the lens-repaint effect's dependency swapped to []           → check 12
+ * KILLED  an extra statement smuggled into the effect body             → check 12
+ *
+ * SURVIVED, then fixed — worth more than the kills. The repaint assertion
+ * first looked for "repaintLive()" anywhere ahead of the [policy.lens]
+ * dependency array, and `if (false) repaintLive();` sailed through it: the call
+ * was still WRITTEN, and written is not run. That is this repo's oldest
+ * failure mode wearing a React hat. A source regex cannot prove an effect
+ * fires, so the assertion now pins the effect's entire body — leaving nowhere
+ * to put a condition — and the three variants above were added to hold it.
  */
 import { CRITERIA } from "../lib/optimizer/rubric";
 import { computeDraftScores } from "../lib/optimizer/engine";
-import { buildLiveFindings } from "../lib/optimizer/live-issues";
+import { buildLiveFindings, whyFor, withWhy } from "../lib/optimizer/live-issues";
 import {
   markPolicyFor, criterionInLens, lensOf, lensDisclosure, normaliseLens,
   mergeFindingSets, MIN_MARKABLE_WORDS, type Lens,
 } from "../lib/optimizer/mark-policy";
 import { CONTENT_TYPE_IDS, criteriaFor, analysisAllowed } from "../lib/optimizer/content-types";
 import { settledStatuses, markersFor, type ResolvedNote } from "../lib/optimizer/highlight-plugin";
+import { JUDGE_CRITERION_KEYS, JUDGE_CRITERIA } from "../lib/optimizer/judge-rubric";
+import { parseJudgeResponse, deriveVerdictFindings, anchorJudgeFindings } from "../lib/optimizer/judge";
+import { parseDraft } from "../lib/optimizer/parse";
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -409,6 +432,195 @@ console.log("\n11. The studio actually uses it");
   const spendAt = suggest.indexOf("assertServiceAllowed(");
   assert(gateAt > 0 && spendAt > 0 && gateAt < spendAt,
     "the suggest route refuses an analysis-off type BEFORE it reaches the spend gate");
+}
+
+
+// ── 12. The JUDGE's findings answer "Why?" too ─────────────────────────────
+//
+// Deterministic marks carried a rationale and judge marks carried none — not a
+// dead disclosure, an absent one, because both card renderers gate on
+// `f.why &&`. So two marks sitting in one list answered different questions and
+// nothing on screen said why one of them would not explain itself.
+//
+// Section 8 above asserts the deterministic half. This is its twin, and the
+// assertions are deliberately different in kind: TOTALITY driven off the
+// rubric's own key list, because the failure mode here is a table that covers
+// some keys. `withRationale > 0` in section 8 would pass with one key of seven.
+console.log("\n12. Judge findings carry their reasoning");
+{
+  // ── Totality, from the source of truth ───────────────────────────────────
+  // Driven off JUDGE_CRITERION_KEYS rather than a list written here, so an
+  // eighth judge criterion fails the build instead of shipping a card with
+  // nothing behind it.
+  let missing: string[] = [];
+  for (let i = 0; i < JUDGE_CRITERION_KEYS.length; i++) {
+    const w = whyFor(JUDGE_CRITERION_KEYS[i], "engine");
+    if (!w || w.length < 20) missing.push(JUDGE_CRITERION_KEYS[i]);
+  }
+  assert(JUDGE_CRITERION_KEYS.length >= 7,
+    `the key list is populated (${JUDGE_CRITERION_KEYS.length}) — an empty one would pass the next assertion for free`);
+  assert(missing.length === 0,
+    missing.length === 0
+      ? `every one of the ${JUDGE_CRITERION_KEYS.length} judge criteria has a rationale`
+      : `judge criteria with no rationale: ${missing.join(", ")}`);
+
+  // ── It must not be the methodology copy ──────────────────────────────────
+  // whyJudge explains why a MODEL scores the criterion rather than the engine.
+  // It is written for whoever maintains the rubric, it has no consumer in the
+  // app, and pasting it here is the obvious shortcut — it would put "counts
+  // KNOWN aliases only ... needs NER" on a writer's screen.
+  let leaked: string[] = [];
+  for (let i = 0; i < JUDGE_CRITERIA.length; i++) {
+    const c: any = JUDGE_CRITERIA[i];
+    const w = whyFor(c.key, "engine") || "";
+    if (w === c.whyJudge || /\bNER\b|regex|anti-checklist|the engine (counts|detects|scores)/i.test(w)) leaked.push(c.key);
+  }
+  assert(leaked.length === 0,
+    leaked.length === 0
+      ? "no rationale is the rubric's own methodology copy, or written about the engine"
+      : `methodology copy reached the writer-facing table: ${leaked.join(", ")}`);
+
+  // ── The gate is the LENS, and not criterionInLens ────────────────────────
+  // criterionInLens reads the ENGINE's criteria table. None of the judge keys
+  // are in it and it fails CLOSED, so routing withWhy through it — which is the
+  // tempting symmetry — returns false for every judge finding and the feature
+  // does nothing at all, with no error anywhere.
+  let inLensWouldZero = 0;
+  for (let i = 0; i < JUDGE_CRITERION_KEYS.length; i++) {
+    if (!criterionInLens(JUDGE_CRITERION_KEYS[i], "engine")) inLensWouldZero++;
+  }
+  assert(inLensWouldZero === JUDGE_CRITERION_KEYS.length,
+    "criterionInLens still rejects every judge key — so this assertion keeps meaning something");
+  const probe = [{ criterion: JUDGE_CRITERION_KEYS[0], why: undefined as string | undefined }];
+  assert(!!withWhy(probe, "engine")[0].why,
+    "withWhy is NOT routed through criterionInLens — it attaches under the engine lens");
+  assert(!withWhy(probe, "plain")[0].why,
+    "and attaches nothing under the plain lens");
+
+  // ── Through the REAL pipe, including the findings that skip the parser ────
+  // deriveVerdictFindings builds findings from imperfect verdicts entirely in
+  // code — they never pass parseJudgeResponse, so a fixture of model findings
+  // alone would leave that whole producer unasserted.
+  // THE ID FORMATS ARE c<index> AND qt<index>, ZERO-BASED, and the quote must
+  // clear parseDraft's five-word floor. A first draft of this fixture used
+  // "c1", "q1" and a three-word quotation: every id missed, the quote was not
+  // a quote, and only ONE branch of three actually ran — while the section
+  // still reported green, because "at least one derived finding" was true.
+  const draft = parseDraft({
+    body: [
+      "<h2>Payment orchestration</h2>",
+      "<p>As mentioned above, the second option is the one most teams land on in the end.</p>",
+      "<p>“This is absolutely the future of payments for everyone involved,” a spokesperson said.</p>",
+      "<p>In our experience the approach works well across a range of operators.</p>",
+    ].join(""),
+    title: "Payment orchestration explained",
+  });
+  assert(draft.chunks.length >= 1 && draft.quotes.length >= 1,
+    `the fixture parsed to ${draft.chunks.length} chunk(s) and ${draft.quotes.length} quote(s) — the verdict ids below can resolve`);
+  const raw = JSON.stringify({
+    openingQuotability: { verdict: "no_answer", reason: "scene-setting" },
+    chunkSelfContainment: [{ chunkId: "c0", verdict: "dependent", dependency: "as mentioned above" }],
+    quoteAttribution: [{ quoteId: "qt0", verdict: "decorative" }],
+    queryCoverage: [],
+    findings: [{
+      criterion: "chunk-self-containment",
+      severity: "medium",
+      quote: "As mentioned above, the second option is the one most teams land on in the end.",
+      prefix: "", suffix: "",
+      explanation: "This section leans on text that an extracted answer will not carry with it.",
+      suggestedEdit: null,
+    }],
+    summary: "ok",
+  });
+  const outcome: any = parseJudgeResponse(raw, draft.text);
+  const modelFindings = outcome.response ? outcome.response.findings : [];
+  const derived = outcome.response ? deriveVerdictFindings(outcome.response, draft) : [];
+
+  // PRECONDITIONS FIRST. A fixture that yields nothing certifies nothing, and
+  // this file has shipped that mistake before.
+  assert(modelFindings.length >= 1,
+    `the fixture produced ${modelFindings.length} model finding(s) — the parser half is exercised`);
+  const derivedKinds: string[] = [];
+  for (let i = 0; i < derived.length; i++) if (derivedKinds.indexOf(derived[i].criterion) < 0) derivedKinds.push(derived[i].criterion);
+  assert(derivedKinds.length >= 2,
+    `the fixture derived ${derived.length} finding(s) across ${derivedKinds.length} criteria (${derivedKinds.join(", ")}) — the producer that skips the parser is exercised on more than one branch`);
+
+  // anchorJudgeFindings returns the ARRAY, not an object wrapping one. A first
+  // version read `.anchored || []` and fell back to the UNANCHORED set, so the
+  // anchoring step — the one that decides what actually reaches the rail —
+  // never ran, and the section reported green over findings that had skipped
+  // it. tsx does not typecheck; `next build` did, which is why the build is run
+  // by exit code rather than read.
+  const anchored = anchorJudgeFindings(draft.text, modelFindings.concat(derived));
+  assert(anchored.length >= 2,
+    `anchoring returned ${anchored.length} finding(s) — the real anchoring step ran, rather than being skipped by a fallback`);
+  const survivors = anchored.filter((a) => !a.orphaned).map((a) => a.finding);
+  assert(survivors.length >= 2,
+    `${survivors.length} non-orphaned finding(s) reach the merge — enough to assert over`);
+
+  const engineWhys = withWhy(survivors as any, "engine");
+  const plainWhys = withWhy(survivors as any, "plain");
+  let noWhy: string[] = [];
+  for (let i = 0; i < engineWhys.length; i++) if (!engineWhys[i].why) noWhy.push(engineWhys[i].criterion);
+  assert(noWhy.length === 0,
+    noWhy.length === 0
+      ? "every judge finding that reaches the merge carries a why under the engine lens"
+      : `judge findings with no why: ${noWhy.join(", ")}`);
+  let leakedPlain = 0;
+  for (let i = 0; i < plainWhys.length; i++) if (plainWhys[i].why) leakedPlain++;
+  assert(leakedPlain === 0, "and none of them carries one under the plain lens");
+
+  // ── The deterministic half must not have holes either ────────────────────
+  // REMEDY had 17 keys and RATIONALE 16; placeholder-guard was the odd one out,
+  // so an engine-lens card carried an action and no "Why?" while every card
+  // beside it had one. Asserted against REMEDY so the two tables cannot drift.
+  const li = read("lib/optimizer/live-issues.ts");
+  const keysOf = (name: string) => {
+    const a = li.indexOf(`const ${name}`);
+    const b = li.indexOf("\n};", a);
+    const out: string[] = [];
+    const re = /^\s*"([a-z0-9-]+)":/gm;
+    let m: RegExpExecArray | null;
+    const body = li.slice(a, b);
+    while ((m = re.exec(body)) !== null) out.push(m[1]);
+    return out;
+  };
+  const remedyKeys = keysOf("REMEDY");
+  assert(remedyKeys.length > 10, `REMEDY parsed to ${remedyKeys.length} keys — the extractor still works`);
+  let remedyNoWhy: string[] = [];
+  for (let i = 0; i < remedyKeys.length; i++) if (!whyFor(remedyKeys[i], "engine")) remedyNoWhy.push(remedyKeys[i]);
+  assert(remedyNoWhy.length === 0,
+    remedyNoWhy.length === 0
+      ? "every criterion with a remedy also has a rationale"
+      : `remedy but no rationale: ${remedyNoWhy.join(", ")}`);
+
+  // ── USED, and the NEGATIVE is the assertion that matters ─────────────────
+  const page = stripComments(read("app/engineai/optimizer/page.tsx"));
+  const flat = page.replace(/\s+/g, " ");
+  assert(/mergeFindingSets\(\{ judge: withWhy\(judgeFindingsRef\.current, policy\.lens\)/.test(flat),
+    "the merge site wraps the judge set in withWhy with the policy's lens");
+  assert(!/judge: judgeFindingsRef\.current[,}]/.test(flat),
+    "and no bare judge set survives anywhere — a second, unwrapped call site would satisfy the positive alone");
+
+  // THE BYPASS: counted, not matched. A raw dispatch beside the merged one is a
+  // second attach point that can only drift, and it was committing the
+  // why-less set into React state whenever repaintLive early-returned.
+  assert((page.match(/type: "set"/g) || []).length === 1,
+    "exactly ONE 'set' dispatch of findings exists — the post-assess duplicate is gone");
+
+  // THE REPAINT. A why derived at a merge site that nothing re-runs is a why
+  // nobody sees: repaintLive was memoised on the lens but never called when it
+  // changed, so turning AI checks ON changed no mark until the writer typed.
+  // PINNED TO THE EXACT SHAPE, not to the call's presence.
+  //
+  // The first version of this assertion looked for "repaintLive()" anywhere
+  // before the [policy.lens] dependency array, and a mutation that changed the
+  // body to `if (false) repaintLive();` SURVIVED it — the call was still
+  // written, and written is not run. A source regex cannot prove an effect
+  // fires, so it pins the whole body instead: a guard, an extra statement or a
+  // swapped dependency all fail, and there is nowhere to put a condition.
+  assert(/useEffect\(\(\) => \{ repaintLive\(\); \}, \[policy\.lens\]\);/.test(flat),
+    "an effect repaints on the lens flip, unconditionally — so the reasoning appears when it is switched on");
 }
 
 // ── Self-test ──────────────────────────────────────────────────────────────

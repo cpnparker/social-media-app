@@ -155,6 +155,49 @@ const RATIONALE: { [key: string]: string } = {
     "A bullet a model can lift and quote alone is worth more than a teaser.",
   "dateline-recency":
     "Freshness is the strongest single signal in the rubric, and an engine cannot reward a date it cannot find.",
+  // REMEDY had 17 keys and this table had 16. placeholder-guard was the odd one
+  // out, so an engine-lens card carried an action and no "Why?" while every
+  // card beside it had one. Found by asserting the two tables agree.
+  "placeholder-guard":
+    "Whatever ships is read back as the finished text, placeholder and all.",
+};
+
+/**
+ * The same thing for the JUDGE's criteria.
+ *
+ * Judge findings reached the rail with no `why` at all — not a dead control,
+ * an absent one — so a model-found mark and a deterministic mark sitting in one
+ * list answered different questions, and nothing on screen said why.
+ *
+ * A SEPARATE TABLE, not extra entries in RATIONALE, for one reason: the check
+ * drives this one off JUDGE_CRITERION_KEYS. An eighth judge criterion then
+ * fails the build instead of shipping a card with no reasoning behind it, and
+ * that is the only assertion that can catch the partial-table failure — a table
+ * covering one key of seven passes every existence-style check there is.
+ *
+ * NOT `whyJudge` FROM judge-rubric.ts, which is the tempting shortcut and is
+ * the wrong text. That field explains why a MODEL scores the criterion rather
+ * than the engine — "canonical-name-consistency counts KNOWN aliases only; its
+ * own comment says unknown variants need NER". It is methodology written for
+ * whoever maintains the rubric, it has no consumer anywhere in the app today,
+ * and putting it on a writer's screen would answer a question they did not ask
+ * with vocabulary from our own internals.
+ */
+const JUDGE_RATIONALE: { [key: string]: string } = {
+  "semantic-query-coverage":
+    "Engines retrieve on the query's words and cite on the answer; a page with only the words is read and passed over.",
+  "quote-attribution-quality":
+    "A quote a paraphrase could carry gets paraphrased, and the speaker's name disappears into it.",
+  "opening-quotability":
+    "A lifted opening arrives in the answer without the name or qualifier it leans on further down the page.",
+  "chunk-self-containment":
+    "\u201cAs mentioned above\u201d and \u201cthe second option\u201d point at a page the person reading the answer never sees.",
+  "entity-variant-drift":
+    "Mentions accrue to the exact string, so each stray spelling siphons evidence off the name you want cited.",
+  "experience-substantiation":
+    "A model repeats the figure or the named client; \u201cin our experience\u201d with neither behind it is dropped.",
+  "unsourced-absolute-claims":
+    "A model repeats an unsourced absolute with a hedge attached, and \u201cthe only platform that\u201d hedged is not a claim.",
 };
 
 /**
@@ -187,9 +230,47 @@ function explain(key: string, name: string, note: string | undefined, lens: Lens
 }
 
 /** WHY it matters, for the reader who asks. Engine lens only — under the plain
- *  lens the answer-engine reasoning is not the reader's question. */
-function whyFor(key: string, lens: Lens): string | undefined {
-  return lens === "engine" ? RATIONALE[key] : undefined;
+ *  lens the answer-engine reasoning is not the reader's question.
+ *
+ *  Both tables, because a finding read back from the database carries only a
+ *  criterion key and nothing downstream knows which layer produced it.
+ *  Exported so the check can RUN it rather than grep for the table. */
+export function whyFor(key: string, lens: Lens): string | undefined {
+  if (lens !== "engine") return undefined;
+  return RATIONALE[key] || JUDGE_RATIONALE[key];
+}
+
+/**
+ * Attach `why` to findings this module did not build — the judge's.
+ *
+ * Derived HERE, at render, from (criterion, lens), rather than stored on the
+ * row or baked in by the two client mappers. Three reasons, each of which was
+ * a way this could ship looking done:
+ *
+ *   A COLUMN would freeze whichever lens happened to be in force when the
+ *   assessment ran, and would have to be added to two independently maintained
+ *   SELECT lists — add it to one and the reasoning vanishes on reload.
+ *
+ *   THE TWO MAPPERS (fresh assess, and hydrate on reopen) would each need the
+ *   same line, which is two places to drift.
+ *
+ *   criterionInLens IS NOT THE GATE, though the symmetry is tempting. It reads
+ *   the engine's CRITERIA table, none of the seven judge keys are in it, and it
+ *   fails CLOSED — so routing this through it returns false for every judge
+ *   finding and the whole feature silently does nothing. Verified before
+ *   writing this, and asserted in the check.
+ */
+export function withWhy<T extends { criterion: string; why?: string }>(
+  findings: T[],
+  lens: Lens
+): T[] {
+  const out: T[] = [];
+  for (let i = 0; i < findings.length; i++) {
+    const f = findings[i];
+    const why = whyFor(f.criterion, lens);
+    out.push(why ? { ...f, why } : f);
+  }
+  return out;
 }
 
 /**

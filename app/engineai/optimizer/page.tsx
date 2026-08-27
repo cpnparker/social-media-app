@@ -60,7 +60,7 @@ import {
 import { buildDocIndex, textRangeToPos } from "@/lib/optimizer/doc-index";
 import { findAnchor, MAX_QUOTE_LENGTH } from "@/lib/optimizer/anchors";
 import type { Issue, HighlightFinding } from "@/lib/optimizer/highlight-plugin";
-import { buildLiveFindings } from "@/lib/optimizer/live-issues";
+import { buildLiveFindings, withWhy } from "@/lib/optimizer/live-issues";
 import { parseDraft } from "@/lib/optimizer/parse";
 import { computeDraftScores } from "@/lib/optimizer/engine";
 
@@ -902,9 +902,17 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
         // rather than wiping the pass that was just paid for.
         judgeFindingsRef.current = findings;
         setAssessedBody(editor.getHTML());
-        editor.view.dispatch(
-          editor.state.tr.setMeta(optimizerHighlightKey, { type: "set", findings })
-        );
+        // NO RAW DISPATCH HERE ANY MORE.
+        //
+        // This used to set the plugin from `findings` directly and then call
+        // repaintLive() on the next line — two attach points for one list. The
+        // raw set carried no `why`, and it was not merely one frame: the two
+        // lines below read plugin state AFTER repaintLive, and repaintLive
+        // early-returns while `streaming` and swallows a parse failure in its
+        // own try/catch. Whenever it did neither, the why-less set was what got
+        // committed to React state, and every later select or dismiss re-read
+        // that same state. repaintLive already dispatches the merged set, so
+        // the fix is to delete the duplicate rather than to wrap it too.
         repaintLive();
         const st = optimizerHighlightKey.getState(editor.state);
         setIssues(st ? st.issues : []);
@@ -1411,7 +1419,15 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
       editor.view.dispatch(
         editor.state.tr.setMeta(optimizerHighlightKey, {
           type: "set",
-          findings: mergeFindingSets({ judge: judgeFindingsRef.current, live }),
+          // withWhy here, not in the two mappers that fill judgeFindingsRef:
+          // this is the single funnel both of them feed, so the reasoning is
+          // derived once and stays in step with the lens exactly as the live
+          // half does. Deriving it at fetch time would freeze the lens that
+          // happened to be in force when the piece was opened.
+          findings: mergeFindingSets({
+            judge: withWhy(judgeFindingsRef.current, policy.lens),
+            live,
+          }),
         })
       );
       const st = optimizerHighlightKey.getState(editor.state);
@@ -1421,6 +1437,23 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
       // shows the same failure through its own try/catch.
     }
   }, [streaming, title, queries, format, canon, policy.lens]);
+
+  // REPAINT WHEN THE LENS FLIPS.
+  //
+  // repaintLive was memoised on policy.lens but nothing CALLED it when the lens
+  // changed — its callers are hydration, post-assess, and the editor's own
+  // onChange. So pressing "AI checks on" swapped the toggle label and the
+  // disclosure banner instantly while not one mark in the document changed
+  // until the writer happened to type. The reasoning this commit adds would
+  // have been invisible at precisely the moment someone turned it on, which is
+  // the moment they would look for it.
+  useEffect(() => {
+    repaintLive();
+    // repaintLive is memoised on every input it reads, so depending on the
+    // function itself would repaint on each title keystroke — a full parse and
+    // re-score per character. The lens is the input with no other trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [policy.lens]);
 
   const selectNext = useCallback(() => {
     const editor = editorRef.current;
