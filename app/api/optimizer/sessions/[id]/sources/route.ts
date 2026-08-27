@@ -167,22 +167,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const fileName = String(body?.fileName || "document");
     try {
-      const { importFile } = await import("@/lib/optimizer/file-import");
-      const result = await importFile(
-        { name: fileName, type: String(body?.fileType || ""), buffer },
-        { workspaceId: guard.caller.workspaceId, maxChars: MAX_SOURCE_CHARS }
-      );
+      // extractSourceText, NOT importFile. importFile feeds the optimiser and
+      // refuses a PDF because the optimiser scores structure a PDF does not
+      // carry — correct there, and the wrong question here. A source is read
+      // for its WORDS, which is exactly what a report in PDF has to offer.
+      const { extractSourceText } = await import("@/lib/optimizer/file-import");
+      const result = await extractSourceText({
+        name: fileName,
+        type: String(body?.fileType || ""),
+        buffer,
+      });
       if (!result.ok) {
         return NextResponse.json({ error: result.error || "Could not read that file" }, { status: 400 });
       }
-      // A source is read for its WORDS. The optimiser converts to html because
-      // it scores STRUCTURE — headings, lists, hierarchy — which is the one
-      // thing background material is never judged on.
-      text = String((result as any).html || (result as any).text || "")
-        .replace(/<[^>]+>/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (!title) title = fileName.slice(0, 200);
+      text = result.text;
+      if (!title) title = result.title || fileName.slice(0, 200);
       ref = fileName.slice(0, 500);
     } catch {
       return NextResponse.json({ error: "Could not read that file" }, { status: 502 });

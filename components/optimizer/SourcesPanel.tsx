@@ -161,9 +161,11 @@ export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Prop
       // Refused before the upload rather than after it, so nobody waits for
       // 4MB to travel only to be told the format was never accepted.
       if (ext === "doc") { toast.error("That is the older binary .doc. Save it as .docx."); return; }
-      if (ext === "pdf") { toast.error("PDF text extracts badly. Export the source as .docx."); return; }
-      if (["docx", "html", "htm", "md", "markdown", "txt"].indexOf(ext) < 0) {
-        toast.error("Attach a .docx, .html, .md or .txt."); return;
+      // PDF IS ACCEPTED HERE and refused by the optimiser's own import, and
+      // the difference is the point: that path scores structure a PDF does not
+      // carry, this one reads words. Reports arrive as PDFs.
+      if (["pdf", "docx", "html", "htm", "md", "markdown", "txt", "csv"].indexOf(ext) < 0) {
+        toast.error("Attach a .pdf, .docx, .html, .md, .txt or .csv."); return;
       }
       setBusy(true);
       try {
@@ -337,7 +339,7 @@ export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Prop
                   <input
                     type="file"
                     className="hidden"
-                    accept=".docx,.html,.htm,.md,.markdown,.txt"
+                    accept=".pdf,.docx,.html,.htm,.md,.markdown,.txt,.csv"
                     onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ""; }}
                   />
                   {busy ? (
@@ -345,7 +347,7 @@ export default function SourcesPanel({ sessionId, workspaceId, onChanged }: Prop
                       <Loader2 className="h-3.5 w-3.5 animate-spin" /> Reading
                     </span>
                   ) : (
-                    <span className="text-[12px] text-muted-foreground">.docx, .html, .md or .txt</span>
+                    <span className="text-[12px] text-muted-foreground">.pdf, .docx, .html, .md, .txt or .csv</span>
                   )}
                 </label>
               )}

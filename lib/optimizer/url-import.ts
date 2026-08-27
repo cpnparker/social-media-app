@@ -277,26 +277,16 @@ export async function fetchSourceFromUrl(
   const ctype = (res.headers.get("content-type") || "").toLowerCase();
 
   if (ctype.indexOf("pdf") >= 0) {
-    try {
-      const buffer = Buffer.from(await res.arrayBuffer());
-      // The lib entry, not the package root: pdf-parse's index runs a demo
-      // against a bundled test file on import, which throws in a serverless
-      // filesystem and has nothing to do with the caller's document.
-      // @ts-expect-error - pdf-parse ships types for its package root only,
-      // and the root is the entry that must be avoided (see above).
-      const mod = await import("pdf-parse/lib/pdf-parse.js");
-      const pdfParse = (mod.default || mod) as (b: Buffer) => Promise<any>;
-      const parsed = await pdfParse(buffer);
-      const text = String(parsed?.text || "").replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-      if (!text) {
-        // A scanned PDF is images of words. Said plainly, because "no text
-        // found" reads as a bug when it is an accurate description of the file.
-        return { ok: false, error: "That PDF has no selectable text — it looks like a scan. Attach the source document instead." };
-      }
-      return { ok: true, title: extractPdfTitle(parsed, url), text: text.slice(0, maxChars), kind: "pdf" };
-    } catch {
-      return { ok: false, error: "That PDF could not be read." };
-    }
+    // Shared with the uploaded-source path — see lib/optimizer/pdf.ts. The
+    // pdf-parse import workaround and the scanned-PDF wording live there once,
+    // because two copies of a subtle workaround go stale in one of them.
+    const { readPdf } = await import("./pdf");
+    const buffer = Buffer.from(await res.arrayBuffer());
+    let nameFromUrl = "";
+    try { nameFromUrl = new URL(url).pathname.split("/").pop() || ""; } catch { /* no name to derive */ }
+    const r = await readPdf(buffer, nameFromUrl);
+    if (!r.ok) return { ok: false, error: r.error };
+    return { ok: true, title: r.title, text: r.text.slice(0, maxChars), kind: "pdf" };
   }
 
   const page = await res.text();

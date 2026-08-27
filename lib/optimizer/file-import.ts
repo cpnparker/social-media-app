@@ -232,3 +232,76 @@ export async function importFile(
 
   return { ok: false, error: `${ext ? `.${ext} files` : "That file type"} cannot be imported. Upload a .docx, .html, .md or .txt.` };
 }
+
+
+/**
+ * Read an uploaded file as BACKGROUND MATERIAL — words, not structure.
+ *
+ * The sibling above, importFile, refuses a PDF and is right to: it feeds the
+ * optimiser, the optimiser scores headings and lists, and a PDF has none that
+ * survive extraction, so the number would describe the file format rather than
+ * the writing.
+ *
+ * A source is a different question with the opposite answer. It is never
+ * edited, never scored, never listed as content — it is material the writing
+ * draws on, and the route that stores it already strips every tag before it
+ * lands. Refusing a PDF here was importFile's judgement applied where its
+ * reasoning does not hold, and it shut out the format most background material
+ * actually arrives in: reports.
+ *
+ * So the two paths stay separate on purpose. Widening importFile to accept a
+ * PDF would have been one line and would have quietly reintroduced the scoring
+ * problem the comment above exists to prevent.
+ */
+export async function extractSourceText(
+  file: { name: string; type: string; buffer: Buffer }
+): Promise<{ ok: true; text: string; title: string } | { ok: false; error: string }> {
+  // NO LENGTH CAP HERE, deliberately. The route already caps at
+  // MAX_SOURCE_CHARS and reports `truncated` to the writer from
+  // `text.length > MAX_SOURCE_CHARS`. Truncating first would make that
+  // comparison false and the flag would go quiet on exactly the long reports
+  // it exists for — a second cap does not add safety, it removes a signal.
+  const name = (file.name || "").trim();
+  const ext = (name.toLowerCase().match(/\.([a-z0-9]+)$/) || [])[1] || "";
+  const named = () => name.replace(/\.[a-z0-9]+$/i, "").replace(/[-_]+/g, " ").trim().slice(0, 200);
+
+  if (ext === "pdf") {
+    const { readPdf } = await import("./pdf");
+    const r = await readPdf(file.buffer, name);
+    if (!r.ok) return { ok: false, error: r.error };
+    return { ok: true, text: r.text, title: r.title };
+  }
+
+  if (ext === "doc") {
+    return { ok: false, error: "That is the older binary .doc format, which cannot be read. Open it in Word and save as .docx." };
+  }
+
+  if (ext === "docx") {
+    // extractRawText, not convertToHtml: every other caller that feeds a MODEL
+    // wants words, and that is what a source is for.
+    try {
+      const mammoth = await import("mammoth");
+      const out = await mammoth.extractRawText({ buffer: file.buffer });
+      const text = String(out?.value || "").replace(/\n{3,}/g, "\n\n").trim();
+      if (!text) return { ok: false, error: "That document appears to be empty." };
+      return { ok: true, text, title: named() || "Document" };
+    } catch {
+      return { ok: false, error: "That .docx could not be read." };
+    }
+  }
+
+  if (ext === "html" || ext === "htm") {
+    const text = file.buffer.toString("utf8").replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
+      .replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    if (!text) return { ok: false, error: "That file appears to be empty." };
+    return { ok: true, text, title: named() || "Page" };
+  }
+
+  if (ext === "md" || ext === "markdown" || ext === "txt" || ext === "rtf" || ext === "csv") {
+    const text = file.buffer.toString("utf8").trim();
+    if (!text) return { ok: false, error: "That file appears to be empty." };
+    return { ok: true, text, title: named() || "Notes" };
+  }
+
+  return { ok: false, error: `Attach a .pdf, .docx, .html, .md, .txt or .csv — ${ext ? "." + ext : "that file type"} cannot be read.` };
+}
