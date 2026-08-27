@@ -36,6 +36,15 @@ export interface HighlightFinding {
   prefix?: string;
   suffix?: string;
   explanation: string;
+  /**
+   * WHY it matters, for a reader who asks for it.
+   *
+   * Separate from `explanation` because they are read at different moments.
+   * The finding and the action are scanned; the reasoning is consulted. Running
+   * them together made every card four lines and turned a list of fifteen into
+   * something nobody reads.
+   */
+  why?: string;
   suggestedEdit: string | null;
 }
 

@@ -26,6 +26,7 @@ import { computeDraftScores } from "../lib/optimizer/engine";
 import { parseDraft } from "../lib/optimizer/parse";
 import { buildShipChecklist, shipCounts, detectFaqBlock, type ShipRow } from "../lib/optimizer/ship-checklist";
 import { fixKindFor, addSpecFor, buildAddPrompt } from "../lib/optimizer/fix-actions";
+import { detectFactBlock } from "../lib/optimizer/ship-checklist";
 import { CRITERIA } from "../lib/optimizer/rubric";
 
 let failures = 0;
@@ -51,9 +52,16 @@ const row = (rows: ShipRow[], n: number) => rows.filter((r) => r.n === n)[0];
 console.log("\n1. The list is complete");
 {
   const rows = build(BODY, "A title");
-  assert(rows.length === 12, "all twelve rows render");
-  const ns = rows.map((r) => r.n).sort((a, b) => a - b).join(",");
-  assert(ns === "1,2,3,4,5,6,7,8,9,10,11,12", "numbered 1 to 12, none dropped");
+  // TWELVE from the published method, plus one of our own. The added row is
+  // numbered 3.5 rather than renumbering: the twelve are quoted from a document
+  // the client also has, and silently making it thirteen would mean row 7 here
+  // no longer means row 7 there.
+  const fromMethod = rows.filter((r) => Number.isInteger(r.n));
+  assert(fromMethod.length === 12, "all twelve rows of the published method render");
+  const ns = fromMethod.map((r) => r.n).sort((a, b) => a - b).join(",");
+  assert(ns === "1,2,3,4,5,6,7,8,9,10,11,12", "numbered 1 to 12, none dropped, none renumbered");
+  assert(rows.some((r) => !Number.isInteger(r.n)),
+    "and the row we added carries a fractional number, so the method's own numbering still lines up");
   let missingFrom = 0;
   for (let i = 0; i < rows.length; i++) if (!rows[i].from) missingFrom++;
   assert(missingFrom === 0, "every row names where its answer came from");
@@ -167,7 +175,7 @@ console.log("\n5. Four numbers, not a fraction");
   assert(typeof c.done === "number" && typeof c.attention === "number" &&
          typeof c.missing === "number" && typeof c.open === "number",
     "counts come back as four separate states");
-  assert(c.done + c.attention + c.missing + c.open === 12, "and they account for every row");
+  assert(c.done + c.attention + c.missing + c.open === rows.length, "and they account for every row");
   assert(!("score" in (c as any)) && !("total" in (c as any)) && !("percent" in (c as any)),
     "with NO composite — a missing FAQ and a missing byline are not two of the same unit");
 }
@@ -183,6 +191,28 @@ console.log("\n6. Title");
 
   const long = row(build(BODY, "A".repeat(80) + " Amrize"), 1);
   assert(/over the 60 limit/.test(long.detail), "an over-length title says so");
+}
+
+// ── 6b. The fact block ────────────────────────────────────────────────────
+//
+// Added because auditing a real article found the gap. The source method's
+// third fix for the "what is Amrize" page is a definition BOX — legal name,
+// founded, listings, headquarters — under the H1. extractable-definition scores
+// the definitional SENTENCE, a different thing, and the page library is
+// explicit that a table is the most extractable format there is.
+console.log("\n6b. Fact block");
+{
+  const B = "\n\n" + Array.from({ length: 12 }, (_, i) => `Body paragraph ${i} with plenty of words in it.`).join("\n\n");
+  assert(detectFactBlock("Intro." + B, [{ text: "Key facts" }]).present,
+    "a labelled fact block is certain");
+  assert(detectFactBlock("Legal name: Amrize Ltd\nFounded: 23 June 2025\nListings: NYSE AMRZ\nHeadquarters: Chicago" + B, []).present,
+    "so is a run of label/value lines near the top");
+  assert(detectFactBlock("| Field | Value |\n| --- | --- |\n| Founded | 2025 |\n| HQ | Chicago |" + B, []).present,
+    "and a table at the top");
+  assert(!detectFactBlock("Amrize is a building materials company. It was spun off from Holcim." + B, []).present,
+    "ordinary prose is NOT a fact block — including a definitional sentence, which is a different check");
+  assert(!detectFactBlock("Note: this is a single line of prose." + B, []).present,
+    "nor is one stray colon");
 }
 
 // ── 7. What "fix this" means, per criterion ───────────────────────────────
@@ -233,7 +263,8 @@ function selfTest() {
   detects("a skipped row showing its criterion name", !/Fact-bearing/.test(row(build(BODY, "T"), 6).detail));
   detects("the FAQ row passing on scattered question headings",
     !detectFaqBlock([{ text: "Is it?", index: 0 }], 9, false).present);
-  detects("a not-checked row omitted", build(BODY, "T").length === 12);
+  detects("a not-checked row omitted",
+    build(BODY, "T").filter((r) => Number.isInteger(r.n)).length === 12);
   detects("an absent block routed to the span rewriter",
     fixKindFor("tldr-block", false) === "add");
   detects("a span criterion offering \"show me\" with no spans",

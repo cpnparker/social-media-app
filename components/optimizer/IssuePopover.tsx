@@ -84,6 +84,7 @@ export default function IssuePopover({
   editor, issue, containerRef, onDismiss, onApply, onNext, onClose,
   onAiFix, aiEdit, aiFixing, onManualEdit, applying, activeCount,
 }: Props) {
+  const [whyOpen, setWhyOpen] = useState(false);
   const popRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ top: number; left: number; above: boolean } | null>(null);
 
@@ -149,6 +150,17 @@ export default function IssuePopover({
       </div>
 
       <p className="text-[12px] leading-snug text-muted-foreground">{f.explanation}</p>
+      {f.why && (
+        <button
+          onClick={() => setWhyOpen((o) => !o)}
+          className="mt-1 text-[10.5px] text-muted-foreground/70 hover:text-foreground"
+        >
+          {whyOpen ? "Hide why" : "Why?"}
+        </button>
+      )}
+      {f.why && whyOpen && (
+        <p className="mt-1 text-[11px] leading-snug text-muted-foreground/80">{f.why}</p>
+      )}
 
       {(f.suggestedEdit || aiEdit) && (
         <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/[0.06] px-2.5 py-2">

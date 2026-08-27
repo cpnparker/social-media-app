@@ -79,39 +79,35 @@ const SEVERITY: { [key: string]: "high" | "medium" | "low" } = {
  */
 const REMEDY: { [key: string]: string } = {
   "stat-source-adjacency":
-    "Name the source in the same sentence as the figure, not the one after it.",
+    "Name the source in the same sentence as the figure.",
   "ai-tell-guard":
-    "Rewrite in your own register. These are the constructions that read as machine-written.",
+    "Rewrite in your own register.",
   "question-headings":
-    "Phrase the heading as the question a reader would actually ask.",
+    "Phrase the heading as the question a reader would ask.",
   "sentence-length-norm":
     "Split this into two.",
   "attributed-quotes":
-    "Name who said it. A quotation with no speaker is decoration.",
-  // Bound by the research's recommendation guardrails: never ask for a figure
-  // without a source, and never propose a rewrite that strips the terms which
-  // get the page retrieved — body-only optimisation measurably REDUCED
-  // citation in the one end-to-end test that exists.
+    "Name who said it.",
   "promotional-claims":
-    "Say what you did, not what you offer. Replace the claim with the engagement behind it — who, what changed, over what period — using a figure you already hold; if you do not hold one, find and cite a source rather than asserting it.",
+    "Say what you did, not what you offer — with a figure you already hold.",
   "placeholder-guard":
-    "Replace this with the real asset or cut the line. It is a production note, and it will be published exactly as written.",
+    "Replace this with the real asset, or cut the line.",
   "person-name-consistency":
-    "One of these spellings is a typo. Pick the correct one and use it everywhere.",
+    "One spelling is a typo. Pick one and use it everywhere.",
   "current-year-stats":
-    "Date the figure — \"in 2026\" or \"as of August 2026\".",
+    "Date the figure.",
   "answer-first-position":
-    "Put a one-or-two-sentence direct answer here, before the scene-setting.",
+    "Put a one-or-two-sentence answer here, before the scene-setting.",
   "keyword-stuffing-guard":
-    "Vary the phrasing or cut repetitions. Past a threshold it reads as manipulation.",
+    "Vary the phrasing or cut repetitions.",
   "pronoun-opening-chunks":
     "Name the subject in the first sentence.",
   "heading-answer-adjacency":
-    "Answer the heading's question in the first sentence or two beneath it.",
+    "Answer the heading in the first sentence beneath it.",
   "anonymous-first-person-facts":
     "Name the brand in this sentence instead of \"we\".",
   "unverifiable-superlatives":
-    "Cut it or substantiate it. Every unsupported superlative weakens the sentences around it.",
+    "Cut it, or substantiate it.",
   "tldr-block":
     "Make each bullet a complete sentence carrying a figure or the brand name.",
   "dateline-recency":
@@ -179,12 +175,21 @@ function explain(key: string, name: string, note: string | undefined, lens: Lens
   // was duplicating it — and duplicating it in the wrong register.
   //
   // The engine lens keeps it: there the rubric's own language is the point.
+  // SHORT. What was found, then what to do — nothing else. Engine-lens copy ran
+  // to 446 characters, four or five lines in a 320px rail, and a writer scanning
+  // fifteen of those reads none of them. The rationale moved to its own field
+  // and sits behind a disclosure: the reader can ask, and mostly will not.
   const parts: string[] = [];
-  if (lens === "engine") parts.push(note ? `${name.split(" — ")[0]}: ${note}.` : `${name.split(" — ")[0]}.`);
-  else if (note) parts.push(`${note.charAt(0).toUpperCase()}${note.slice(1)}.`);
+  if (note) parts.push(`${note.charAt(0).toUpperCase()}${note.slice(1)}.`);
+  else parts.push(`${name.split(" — ")[0]}.`);
   parts.push(REMEDY[key] || "");
-  if (lens === "engine" && RATIONALE[key]) parts.push(RATIONALE[key]);
   return parts.filter(Boolean).join(" ").trim();
+}
+
+/** WHY it matters, for the reader who asks. Engine lens only — under the plain
+ *  lens the answer-engine reasoning is not the reader's question. */
+function whyFor(key: string, lens: Lens): string | undefined {
+  return lens === "engine" ? RATIONALE[key] : undefined;
 }
 
 /**
@@ -234,6 +239,7 @@ export function buildLiveFindings(
           prefix: text.slice(Math.max(0, sp.start - CONTEXT_CHARS), sp.start),
           suffix: text.slice(sp.end, Math.min(text.length, sp.end + CONTEXT_CHARS)),
           explanation: explain(c.key, c.name, sp.note, lens),
+          why: whyFor(c.key, lens),
           // Deterministic checks NEVER propose replacement prose. They know a
           // sentence is 40 words; they do not know what it should say. Offering
           // a one-click rewrite here would mean generating it, which is exactly

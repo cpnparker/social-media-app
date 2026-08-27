@@ -120,6 +120,26 @@ export function detectFaqBlock(headings: { text: string; index: number }[], tota
   return { present: run >= 3, certain: false, count: run };
 }
 
+/**
+ * Is there a fact table — a short block of label/value pairs?
+ *
+ * Detected by SHAPE, the same lesson the TL;DR check paid for: a block titled
+ * "Key facts" is certain, and a run of short "Label: value" lines is a strong
+ * inference reported as one. Deliberately conservative about pipe tables — a
+ * markdown table anywhere in a piece is often a comparison, not a fact block,
+ * so it only counts when it sits near the top.
+ */
+export function detectFactBlock(text: string, headings: { text: string }[]): { present: boolean; rows: number } {
+  const labelled = headings.some((h) => /\b(key facts?|at a glance|fact (?:box|file|sheet)|company (?:facts|profile))\b/i.test(h.text));
+  const head = text.slice(0, Math.max(1200, Math.floor(text.length * 0.25)));
+  // "Label: value" lines — four or more in a run, each short enough to be a
+  // field rather than a sentence.
+  const pairs = (head.match(/^[ \t]*[A-Z][A-Za-z ()/'-]{2,28}:[ \t]*\S[^\n]{0,80}$/gm) || []).length;
+  const tableRows = (head.match(/^\s*\|[^\n|]+\|[^\n]*$/gm) || []).length;
+  const rows = Math.max(pairs, tableRows > 2 ? tableRows : 0);
+  return { present: labelled || rows >= 4, rows };
+}
+
 export interface ShipInput {
   scores: DraftScores | null;
   /** The draft's plain text, for the checks with no criterion behind them. */
@@ -188,6 +208,27 @@ export function buildShipChecklist(input: ShipInput): ShipRow[] {
   });
 
   rows.push(fromCriterion(scores, "tldr-block", 3, "TL;DR block"));
+
+  // 3b. THE FACT BLOCK. Not one of the twelve, and added because auditing a
+  //     real article found the gap: the source method's third fix for the
+  //     "what is Amrize" page is a definition box — legal name, founded,
+  //     listings, headquarters — placed under the H1. extractable-definition
+  //     scores the definitional SENTENCE, which is a different thing, and the
+  //     page library is explicit that a table is the most extractable format
+  //     there is. Nothing checked for one.
+  //
+  //     Numbered 3b rather than renumbering the twelve: the list is quoted from
+  //     a published method, and silently making it thirteen would mean a row
+  //     number in this tool no longer matches the same row in the document.
+  const factBlock = detectFactBlock(input.text, input.headings);
+  rows.push({
+    n: 3.5 as any, check: "Fact block",
+    state: factBlock.present ? "done" : "attention",
+    detail: factBlock.present
+      ? `A fact table is present${factBlock.rows ? ` (${factBlock.rows} rows)` : ""}.`
+      : "No fact table. A short table of the things a reader looks up — founded, headquarters, listings, scale — is the most extractable format on a page.",
+    from: "draft",
+  });
   rows.push(fromCriterion(scores, "question-headings", 4, "Question headings"));
   rows.push(fromCriterion(scores, "heading-answer-adjacency", 5, "Answer-first paragraphs"));
   // 6. THE MOST IMPORTANT ROW ON THE LIST, per the method it comes from — and

@@ -15,6 +15,7 @@
  */
 
 import { cn } from "@/lib/utils";
+import { useState } from "react";
 import { findingSource } from "@/lib/optimizer/highlight-plugin";
 import { lensDisclosure } from "@/lib/optimizer/mark-policy";
 import { Check, X, Pencil, AlertCircle , Loader2, Sparkles } from "lucide-react";
@@ -232,7 +233,10 @@ export default function IssueList({
                 <span className="text-muted-foreground/60">&rdquo;</span>
               </p>
 
-              <p className="text-[11.5px] leading-snug text-muted-foreground mb-1.5">{f.explanation}</p>
+              <p className="text-[11.5px] leading-snug text-muted-foreground mb-1">{f.explanation}</p>
+              {/* The reasoning is CONSULTED, not scanned. Inline it ran every
+                  card to four lines and a list of fifteen went unread. */}
+              {f.why && <WhyLine why={f.why} />}
 
               {selected && (
                 <>
@@ -322,6 +326,22 @@ export default function IssueList({
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+/** "Why" — one tap, for the reader who wants the reasoning behind a check. */
+function WhyLine({ why }: { why: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mb-1.5">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+        className="text-[10.5px] text-muted-foreground/70 hover:text-foreground"
+      >
+        {open ? "Hide why" : "Why?"}
+      </button>
+      {open && <p className="text-[11px] leading-snug text-muted-foreground/80 mt-0.5">{why}</p>}
     </div>
   );
 }
