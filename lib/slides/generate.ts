@@ -1657,9 +1657,34 @@ function stackedBarRequests(
       const v = partOf(cat, s);
       if (v <= 0) return;
       const w = (v / max) * plotW;
-      out.push(...filledShape(id(`kb${ci}_${si}`), page, "RECTANGLE", fillFor(si), {
-        x, y, width: Math.max(1, w - GAP), height: fit.barH,
+      const segW = Math.max(1, w - GAP);
+      const fill = fillFor(si);
+      out.push(...filledShape(id(`kb${ci}_${si}`), page, "RECTANGLE", fill, {
+        x, y, width: segW, height: fit.barH,
       }));
+
+      // THE SPLIT, WRITTEN ON THE SPLIT.
+      //
+      // Only the total was ever labelled, which on this deck's budget slide
+      // meant two bars showing different compositions and both labelled 12k —
+      // the one number a stacked bar exists to show was the one number missing,
+      // and the reader was left estimating segment widths by eye. A stacked bar
+      // answers "what is this made of"; the parts have to carry their values.
+      //
+      // Drawn only where the segment can actually hold it. A label wider than
+      // its own segment spills across the neighbouring colour and reads as
+      // belonging to that one instead — worse than no label. Measured with the
+      // Slides text insets included, as everywhere else in this file.
+      const label = formatValue(v);
+      const needed = Math.ceil(label.length * TYPE.chartValue.size * 0.62) + TEXT_INSET_X;
+      if (segW >= needed) {
+        out.push(...textBox(
+          id(`kv${ci}_${si}`), page, label,
+          { ...TYPE.chartValue, color: textOn(fill) },
+          { x, y, width: segW, height: fit.barH },
+          { align: "CENTER", vCenter: true }
+        ));
+      }
       x += w;
     });
     out.push(...textBox(id(`kt${ci}`), page, formatValue(totals[ci]), TYPE.chartValue, {
@@ -1852,7 +1877,21 @@ function cardsRequests(
 ): Req[] {
   const shown = cards.filter(Boolean).slice(0, 6);
   if (!shown.length) return [];
-  const { cellW, thumbW, thumbH } = cardGeometry(shown.length);
+  const { cellW, innerW: gInnerW, thumbW, thumbH } = cardGeometry(shown.length);
+
+  // ONE title height for the whole row, taken from the tallest.
+  //
+  // Measured per card before, so a one-line heading and a two-line heading
+  // started their bodies at different heights and the row lost its baseline —
+  // four cards read as four separate columns that happened to be next to each
+  // other. Cards are a GRID: what makes them read as one is that the same part
+  // of every card sits on the same line. The cost is a few points of space
+  // under the short headings, which is what a grid costs.
+  const titleBlockH = shown.reduce((tallest, c) => {
+    if (!c.title) return tallest;
+    const lines = estimateLines(c.title, gInnerW, TYPE.cardTitle.size);
+    return Math.max(tallest, drawnTextHeight(lines, TYPE.cardTitle.size));
+  }, 0.42 * 72);
   // A panel only where there is a picture to hold. Boxing a chip and two lines
   // of text produced a card that was four-fifths empty — their own pillars
   // slide sets that type straight on the slide ground, and it reads lighter.
@@ -1919,25 +1958,32 @@ function cardsRequests(
         ...filledShape(id(`cm${i}`), page, "RECTANGLE", COLOR.blue, {
           x: innerX, y, width: chipW, height: CARDS.markerHeight,
         }),
+        // The text box covers the chip EXACTLY and is centred on both axes.
+        // It used to be nudged down 4pt while keeping the chip's full height,
+        // so it hung 4pt past the bottom and, with Slides' own top inset on top
+        // of that, the numeral sat visibly high in its own box. Nothing
+        // centred it vertically — vCenter existed and was used in exactly one
+        // place in this file. An offset is a guess at centring; contentAlignment
+        // is centring, and it stays right when the chip or the type size change.
         ...textBox(id(`cmt${i}`), page, card.marker, TYPE.cardMarker, {
-          x: innerX + 5, y: y + 4, width: chipW - 8, height: CARDS.markerHeight,
-        }),
+          x: innerX, y, width: chipW, height: CARDS.markerHeight,
+        }, { align: "CENTER", vCenter: true }),
       );
       y += CARDS.markerHeight + CARDS.titleGap;
     }
 
     if (card.title) {
-      // Measure the title, do not assume a line and a half. A two- or three-line
-      // heading ("Competitive share of voice", "Accuracy & hallucination report")
-      // used to be given a fixed 30pt box and the body started right under it —
-      // so the title's third line ran straight through the body. The body now
-      // starts below the title's actual drawn height.
-      const titleLines = estimateLines(card.title, innerW, TYPE.cardTitle.size);
-      const titleH = Math.max(0.42 * 72, drawnTextHeight(titleLines, TYPE.cardTitle.size));
+      // The row's shared height, not this card's own. Still MEASURED rather
+      // than assumed — a fixed 30pt box used to let a three-line heading run
+      // straight through the body underneath it.
       out.push(...textBox(id(`ct${i}`), page, card.title, TYPE.cardTitle, {
-        x: innerX, y, width: innerW, height: titleH,
+        x: innerX, y, width: innerW, height: titleBlockH,
       }));
-      y += titleH + 4;
+      y += titleBlockH + 4;
+    } else {
+      // No heading on this card, but the row still reserves the band, or its
+      // body would ride up and break the baseline the others share.
+      y += titleBlockH + 4;
     }
 
     if (card.body) {

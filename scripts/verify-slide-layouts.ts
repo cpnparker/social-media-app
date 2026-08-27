@@ -836,6 +836,121 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   }
   if (failures === before23) pass("a region crops to the right pixels, overshoot clamps, a missing attachment is reported");
 
+  /* 24. Text that sits ON something is centred IN it, and a stacked bar shows
+   *     its split.
+   *
+   *  Both were found by Chris looking at a real deck, and every geometric check
+   *  above passed straight over them — nothing here asked whether a label was
+   *  centred in its own ground, or whether a chart's numbers were the numbers
+   *  the chart exists to show.
+   *
+   *  The chip: its text box was nudged down 4pt while keeping the chip's full
+   *  height, so it overhung the bottom, and nothing centred it vertically. The
+   *  numeral sat visibly high in its blue box. An offset is a GUESS at
+   *  centring; contentAlignment is centring, and it survives a type-size change.
+   *
+   *  The stacked bar: only the row TOTAL was labelled. On the budget slide both
+   *  rows totalled 12k, so the chart's only two numbers were identical and the
+   *  split was left to be estimated by eye.
+   */
+  const before24 = failures;
+  console.log(`\n24. A chip centres its text, and a stacked bar labels its parts`);
+  {
+    const cardsSlide: SlideInput = {
+      layout: "cards", title: "What strategy-lite actually covers",
+      // Title lengths chosen so the line counts genuinely DIFFER. The first
+      // version of this fixture used the four real headings from the deck, and
+      // at a four-card width every one of them wrapped to exactly two lines —
+      // so per-card heights and a shared height produced identical geometry and
+      // the assertion passed against the behaviour it was written to catch.
+      // Measured, not eyeballed: "Audit" is one line, the long one is five.
+      cards: [
+        { marker: "01", title: "Audit", body: "How the brand surfaces in AI answers." },
+        { marker: "02", title: "Digital media vs. impact", body: "Activity mapped against demonstrated reach." },
+        { marker: "03", title: "Objectives and audience priorities that run long enough to wrap several times", body: "Goals and ranking." },
+        { marker: "04", title: "Calendar", body: "The practical brief writers work from." },
+      ],
+    };
+    const reqs = buildSlideRequests(cardsSlide, 0, "p24a") as any[];
+    const shapes = new Map<string, any>();
+    for (const r of reqs) if (r.createShape) shapes.set(r.createShape.objectId, r.createShape.elementProperties);
+    const geom = (o: any) => o && {
+      x: o.transform.translateX, y: o.transform.translateY,
+      w: o.size.width.magnitude, h: o.size.height.magnitude,
+    };
+
+    const chipIds = Array.from(shapes.keys()).filter((k) => /cm\d+$/.test(k));
+    if (chipIds.length !== 4) fail(`expected 4 marker chips, found ${chipIds.length}`);
+    for (const cid of chipIds) {
+      const tid = cid.replace(/cm(\d+)$/, "cmt$1");
+      const t = geom(shapes.get(tid));
+      const c = geom(shapes.get(cid));
+      if (!t) { fail(`chip ${cid} has no text box`); continue; }
+      if (t.x !== c.x || t.y !== c.y || t.w !== c.w || t.h !== c.h) {
+        fail(`chip ${cid}: text box (${t.x},${t.y} ${t.w}x${t.h}) does not cover the chip (${c.x},${c.y} ${c.w}x${c.h}) — an offset is not centring`);
+      }
+    }
+
+    const vcentred = reqs
+      .filter((r) => r.updateShapeProperties?.shapeProperties?.contentAlignment === "MIDDLE")
+      .map((r) => r.updateShapeProperties.objectId);
+    const align = new Map<string, string>();
+    for (const r of reqs) {
+      if (r.updateParagraphStyle?.style?.alignment) align.set(r.updateParagraphStyle.objectId, r.updateParagraphStyle.style.alignment);
+    }
+    for (const cid of chipIds) {
+      const tid = cid.replace(/cm(\d+)$/, "cmt$1");
+      if (vcentred.indexOf(tid) === -1) fail(`chip text ${tid} is not vertically centred (no contentAlignment MIDDLE)`);
+      if (align.get(tid) !== "CENTER") fail(`chip text ${tid} is not horizontally centred (alignment ${align.get(tid) || "unset"})`);
+    }
+
+    // Bodies share a baseline. The headings above are deliberately one-line and
+    // two-line: measured per card, they started their bodies at different
+    // heights and the row read as four adjacent columns rather than a grid.
+    const bodyTops = Array.from(shapes.keys()).filter((k) => /cb\d+$/.test(k)).map((k) => geom(shapes.get(k))!.y);
+    if (bodyTops.length !== 4) fail(`expected 4 card bodies, found ${bodyTops.length}`);
+    else if (new Set(bodyTops).size !== 1) fail(`card bodies start at ${bodyTops.join(", ")} — a one-line and a two-line heading broke the row's baseline`);
+
+    // The stacked bar, in the exact shape that produced two bars both labelled
+    // 12k: different compositions, identical totals.
+    const stacked: SlideInput = {
+      layout: "stacked-bar", title: "Where the budget is estimated to go",
+      chart: { series: [
+        { name: "Strategy-lite", points: [{ label: "Option 3 (low production)", value: 5 }, { label: "Option 3 (high production)", value: 4 }] },
+        { name: "Production", points: [{ label: "Option 3 (low production)", value: 7 }, { label: "Option 3 (high production)", value: 8 }] },
+      ] },
+    };
+    const sreqs = buildSlideRequests(stacked, 1, "p24b") as any[];
+    const stexts = new Map<string, string>();
+    for (const r of sreqs) if (r.insertText) stexts.set(r.insertText.objectId, r.insertText.text);
+    const segLabels = Array.from(stexts.entries()).filter(([k]) => /kv\d+_\d+/.test(k)).map(([, v]) => v);
+    if (segLabels.length !== 4) {
+      fail(`expected 4 segment labels on a 2x2 stacked bar, found ${segLabels.length} (${segLabels.join(", ") || "none"}) — the split is unlabelled`);
+    } else {
+      // The values themselves, not merely four labels: repeating the total in
+      // every segment would satisfy a count and still say nothing.
+      for (const want of ["5", "7", "4", "8"]) {
+        if (!segLabels.some((l) => l.replace(/[^\d.]/g, "") === want)) {
+          fail(`segment value ${want} is not drawn (labels: ${segLabels.join(", ")})`);
+        }
+      }
+    }
+
+    // A segment too narrow for its own label draws nothing, rather than
+    // spilling across the neighbouring colour and reading as its value.
+    const lopsided: SlideInput = {
+      layout: "stacked-bar", title: "T",
+      chart: { series: [
+        { name: "Tiny", points: [{ label: "Row", value: 0.4 }] },
+        { name: "Huge", points: [{ label: "Row", value: 999 }] },
+      ] },
+    };
+    const lreqs = buildSlideRequests(lopsided, 2, "p24c") as any[];
+    const lseg = lreqs.filter((r) => r.insertText && /kv\d+_\d+/.test(r.insertText.objectId));
+    if (lseg.length !== 1) fail(`a sliver should stay bare and a wide segment should be labelled: got ${lseg.length} segment labels, expected 1`);
+  }
+  if (failures === before24) pass("chip text covers its chip and is centred both ways; stacked segments carry their values, slivers stay bare");
+
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);
 })();
