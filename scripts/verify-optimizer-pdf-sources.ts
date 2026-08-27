@@ -33,10 +33,10 @@
  *   2026-08-27  SourcesPanel drops .pdf from accept           → 1 fail  ✓
  *   (baseline, unmutated: exit 0)
  */
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { extractSourceText, importFile } from "../lib/optimizer/file-import";
-import { readPdf, pdfTitle, tidyPdfText } from "../lib/optimizer/pdf";
+import { readPdf, pdfTitle, tidyPdfText, PDFJS_VERSION } from "../lib/optimizer/pdf";
 
 const read = (p: string) => readFileSync(join(__dirname, "..", p), "utf8");
 let failures = 0;
@@ -177,9 +177,39 @@ const BODY_MARKER = /skills shortages rose 43 percent/;
       : fail("url-import still carries a duplicate pdf-parse call");
   }
 
+  // ── 8. The engine actually ships to the lambda ───────────────────────────
+  // This is the one that cost a production round trip. pdf-parse resolves its
+  // engine with a dynamic require built from a template literal, which Next's
+  // tracer cannot follow — so the build never reached the serverless bundle and
+  // every upload returned "That PDF could not be read", on the deployed route
+  // only. Locally it had worked all along.
+  console.log("\n8. pdf.js is traced into the route that parses PDFs");
+  {
+    const cfg = read("next.config.mjs");
+    const route = "/api/optimizer/sessions/[id]/sources";
+    const traced = cfg.indexOf(route) >= 0;
+    traced
+      ? pass("the sources route has an outputFileTracingIncludes entry")
+      : fail("no tracing entry for the sources route — PDFs will fail in production and pass locally");
+
+    // The rule and the require must name the SAME build. One naming v2.0.550
+    // while the code asks for v1.10.100 ships 6MB of the wrong engine and fails
+    // exactly as silently as shipping none.
+    const rule = new RegExp("pdf-parse/lib/pdf\\.js/" + PDFJS_VERSION.replace(".", "\\.") + "/");
+    rule.test(cfg)
+      ? pass(`the traced build is ${PDFJS_VERSION}, the version the code asks for by name`)
+      : fail(`next.config traces a different pdf.js build than PDFJS_VERSION (${PDFJS_VERSION})`);
+
+    // And that build must exist, or the rule copies nothing and says so to
+    // nobody. Asserted against the filesystem rather than the string.
+    existsSync(join(__dirname, "..", "node_modules", "pdf-parse", "lib", "pdf.js", PDFJS_VERSION, "build", "pdf.js"))
+      ? pass("that build is present in node_modules, so the rule has something to copy")
+      : fail(`pdf-parse ships no ${PDFJS_VERSION} build — the tracing rule matches nothing`);
+  }
+
   // ── Self-test ────────────────────────────────────────────────────────────
   if (process.argv.indexOf("--self-test") >= 0) {
-    console.log("\n8. self-test — every detector driven against input built to break it");
+    console.log("\n9. self-test — every detector driven against input built to break it");
     const probes: Array<[string, () => Promise<boolean> | boolean]> = [
       ["the committed fixture is something pdf-parse accepts", async () => (await readPdf(withText(), "a.pdf")).ok],
       ["a text-free PDF IS distinguishable from a corrupt one", async () => {

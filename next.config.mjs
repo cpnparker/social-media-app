@@ -30,6 +30,25 @@ const nextConfig = {
      */
     outputFileTracingIncludes: {
       "/api/optimizer/sessions/[id]/audit": ["./node_modules/@sparticuz/chromium/**"],
+      /**
+       * The same failure as Chromium above, from a different cause.
+       *
+       * pdf-parse picks its engine with a dynamic require built from a template
+       * literal — ./pdf.js/<version>/build/pdf.js. The tracer cannot follow
+       * that, so the engine never reaches the lambda and every PDF comes back
+       * "could not be read", in production only, which is the worst place to
+       * find it. Measured: an upload that parses on a laptop failed on the
+       * deployed route with exactly that message.
+       *
+       * ONE version, not the four the package ships (29MB in total). It must be
+       * the version lib/optimizer/pdf.ts asks for by name, PDFJS_VERSION, and
+       * verify-optimizer-pdf-sources asserts the two agree — a rule naming one
+       * build while the code requires another ships the wrong 6MB and fails
+       * exactly as silently as shipping none.
+       */
+      "/api/optimizer/sessions/[id]/sources": [
+        "./node_modules/pdf-parse/lib/pdf.js/v1.10.100/**",
+      ],
     },
   },
 

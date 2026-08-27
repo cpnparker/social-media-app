@@ -17,6 +17,22 @@
  * different question, opposite answer.
  */
 
+/**
+ * The pdf.js build pdf-parse loads, named EXPLICITLY rather than defaulted.
+ *
+ * pdf-parse resolves its engine with `require(`./pdf.js/${version}/build/pdf.js`)`
+ * — a dynamic require Next's tracer cannot follow, so the build is not copied
+ * into the serverless bundle and every parse fails in production while working
+ * perfectly on a laptop. The fix is an outputFileTracingIncludes entry in
+ * next.config.js naming this exact directory.
+ *
+ * Which is why the version is pinned here instead of left to pdf-parse's
+ * default: a tracing rule naming one version and a require asking for another
+ * is a bundle that ships 6MB of the wrong engine, and it would fail the same
+ * silent way. The check asserts these two files agree.
+ */
+export const PDFJS_VERSION = "v1.10.100";
+
 /** Text and metadata from a PDF, or a stated reason there is none. */
 export type PdfRead =
   | { ok: true; text: string; title: string; pages: number }
@@ -64,8 +80,8 @@ export async function readPdf(buffer: Buffer, fallbackName: string): Promise<Pdf
     // @ts-expect-error - pdf-parse ships types for its package root only, and
     // the root is the entry that must be avoided.
     const mod = await import("pdf-parse/lib/pdf-parse.js");
-    const pdfParse = (mod.default || mod) as (b: Buffer) => Promise<typeof parsed>;
-    parsed = await pdfParse(buffer);
+    const pdfParse = (mod.default || mod) as (b: Buffer, o?: { version?: string }) => Promise<typeof parsed>;
+    parsed = await pdfParse(buffer, { version: PDFJS_VERSION });
   } catch {
     return { ok: false, reason: "unreadable", error: "That PDF could not be read. It may be encrypted or damaged." };
   }
