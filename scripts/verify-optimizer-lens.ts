@@ -242,10 +242,22 @@ console.log("\n8. What a mark says under each lens");
   assert(leaky === 0,
     `NO plain-lens mark explains itself in answer-engine terms — including through the criterion NAME${example ? ` (leaked: "${example.slice(0, 70)}…")` : ""}`);
 
-  // Moved, not deleted.
+  // Moved TWICE, and the check has to follow it. First out of REMEDY into
+  // RATIONALE; then out of `explanation` into its own `why` field, because
+  // running them together made every card four lines and a list of fifteen went
+  // unread. The rationale still exists — it is behind a disclosure now.
   let withRationale = 0;
-  for (let i = 0; i < engine.length; i++) if (ENGINE_WORDS.test(engine[i].explanation)) withRationale++;
-  assert(withRationale > 0, "the engine lens DOES give the answer-engine rationale — it was moved, not deleted");
+  for (let i = 0; i < engine.length; i++) if (engine[i].why && ENGINE_WORDS.test(String(engine[i].why))) withRationale++;
+  assert(withRationale > 0,
+    "the engine lens still gives the answer-engine rationale — moved to `why`, not deleted");
+  let leakedIntoExplanation = 0;
+  for (let i = 0; i < engine.length; i++) if (ENGINE_WORDS.test(engine[i].explanation)) leakedIntoExplanation++;
+  assert(leakedIntoExplanation === 0,
+    "and it is NOT in the explanation — the scanned line stays short, the consulted line is asked for");
+  let plainWhy = 0;
+  for (let i = 0; i < plain.length; i++) if (plain[i].why) plainWhy++;
+  assert(plainWhy === 0,
+    "the plain lens carries no `why` at all — answer-engine reasoning is not that reader's question");
 
   // The action survives on both.
   const long = letterPlain.filter((f) => f.criterion === "sentence-length-norm")[0];

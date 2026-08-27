@@ -704,8 +704,25 @@ export function parseDraft(input: ParseInput): ParsedDraft {
     //    comma, so "Fine Concrete's founding partner" and "senior structural
     //    engineer" never matched. It now tolerates up to 60 characters of
     //    modifier between the comma and the title word, within one sentence.
+    // ── A PULL-QUOTE'S SOURCE LINE ───────────────────────────────────────
+    //
+    // "Jan is 'considered by many investors to be one of the best business
+    // leaders in the world.' / Neue Zurcher Zeitung (NZZ) / Leading Swiss
+    // daily" was reported as a quote with no speaker. The speaker is on the
+    // NEXT LINE, with no dash — which is how every pull-quote in publishing is
+    // set. Only an em-dash form was recognised.
+    //
+    // A short proper-noun line immediately after a quotation is that line. The
+    // brevity is what makes it safe: an ordinary sentence continuing the prose
+    // is longer and ends in a full stop, whereas a source credit is a name.
+    const creditLine = /^[\s"'\u201d\u2019]*\n?\s*([A-Z][A-Za-z.&'-]*(?:\s+(?:[A-Z][A-Za-z.&'-]*|of|the|und|de|van|von))*(?:\s*\([A-Z]{2,6}\))?)\s*(?:\n|$)/;
+    const creditMatch = creditLine.exec(after);
+    const hasCredit = !!creditMatch && creditMatch[1].trim().split(/\s+/).length <= 6
+      && creditMatch[1].trim().length >= 3 && !/[.!?]$/.test(creditMatch[1].trim());
+
     const attributed = ATTRIBUTION_VERB_RE.test(around)
       || /^\s*[—–]\s*[A-Z]/.test(after)
+      || hasCredit
       || /\b[A-Z][a-z]+\s+[A-Z][a-z]+\s*,[^.!?]{0,60}?\b(?:CEO|CTO|CFO|COO|founder|co-founder|director|head|analyst|professor|Dr\.?|president|principal|partner|engineer|consultant|architect|strategist|officer|manager|lead)\b/i.test(around);
     quotes.push({ text: inner, wordCount: wc, attributed: attributed, start: qm.index, end: qm.index + qm[0].length });
   }

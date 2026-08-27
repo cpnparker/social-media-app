@@ -95,7 +95,7 @@ const REMEDY: { [key: string]: string } = {
   "person-name-consistency":
     "One spelling is a typo. Pick one and use it everywhere.",
   "current-year-stats":
-    "Date the figure.",
+    "Give the figure a date, or find a fresher one.",
   "answer-first-position":
     "Put a one-or-two-sentence answer here, before the scene-setting.",
   "keyword-stuffing-guard":

@@ -1321,5 +1321,39 @@ console.log("\nQuestion headings survive numbering and trailing answers");
     "question-SHAPED and IS-a-question stay different tests — only the looser one moved");
 }
 
+// ── False positives found by auditing a real client page ───────────────────
+//
+// Every one of these was on screen, on a published Amrize article, and every
+// one told the writer something untrue about their own text. They are grouped
+// because they share a cause: a pattern broad enough to match the shape, with
+// nothing checking it had matched the THING.
+console.log("\nFalse positives from the live audit");
+{
+  const say = (ok: boolean, m: string) => (ok ? pass(m) : fail(m));
+  const B = "\n\n" + Array.from({ length: 12 }, (_, i) => `Body paragraph ${i} with plenty of words in it here.`).join("\n\n");
+  const crit = (body: string, key: string) => {
+    const c = criterionOf(computeDraftScores(withBody(body) as any), key);
+    return c as any;
+  };
+
+  // 1. A place is not a person spelled two ways.
+  const places = crit(`Amrize leads North American construction across North America today.${B}`, "person-name-consistency");
+  say(places.earned === places.maxPoints,
+    '"North American" and "North America" are not somebody\'s name misspelled — two capitalised words is not a name');
+  const person = crit(`CEO Jan Jenisch said the plan is set. Later, Jan Jenish added a comment.${B}`, "person-name-consistency");
+  say(person.earned === 0, "and a real misspelt person, introduced by a title, still is caught");
+
+  // 2. A figure dated two years back is dated.
+  const recent = crit(`In 2024, Amrize generated $11.7 billion in revenue, a 13% leap from 2021.${B}`, "current-year-stats");
+  say(recent.earned === recent.maxPoints,
+    "an annual figure reported for the prior year is CURRENT — flagging it is flagging the calendar");
+  const undated = crit(`Adoption of the mix reached 38% across the region.${B}`, "current-year-stats");
+  say((undated.spans || []).some((x: any) => /no date/.test(x.note)),
+    'a figure with no date says "no date on this figure"');
+  const stale = crit(`In 2015 the sector grew 22% year on year across every market.${B}`, "current-year-stats");
+  say((stale.spans || []).some((x: any) => /dated 2015/.test(x.note)),
+    'and a figure dated 2015 says "dated 2015" — never "no year anywhere near it", which the sentence itself disproves');
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
 process.exit(failures ? 1 : 0);

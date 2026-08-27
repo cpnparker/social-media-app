@@ -603,13 +603,33 @@ function pillar4(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   // "Alexander Kitchn" in the man's own credits heading. The RARER spelling
   // is the flagged one: the majority is presumed correct.
   {
+    // ── IT HAS TO BE A PERSON ────────────────────────────────────────────
+    //
+    // Two capitalised words is not a name. "North American" and "North America"
+    // are edit-distance one, both over five letters, and were being reported as
+    // somebody's name spelled two ways — on a page with no such person in it.
+    // The same pattern matches "New York", "Swiss Performance", "Content
+    // Engine": every place, product and company on the page was a candidate.
+    //
+    // A PERSON SIGNAL near at least one occurrence is the discriminator: a
+    // title, a role, or an attribution verb. People in this kind of writing are
+    // introduced — "says Jan Jenisch", "Jan Jenisch, CEO" — and things that are
+    // never introduced that way are not people.
+    const PERSON_SIGNAL = /\b(?:CEO|CFO|COO|CTO|Dr|Mr|Mrs|Ms|Prof|Professor|President|Chair(?:man|woman)?|Director|Head|Founder|Officer|Manager|Scientist|Engineer|Analyst|Partner|Editor|Author|said|says|saidly|explains|explained|adds|added|notes|noted|told|according to|argues|observes)\b/i;
+    const looksLikePerson = (index: number, length: number): boolean => {
+      const before = p.text.slice(Math.max(0, index - 60), index);
+      const after = p.text.slice(index + length, index + length + 60);
+      return PERSON_SIGNAL.test(before) || PERSON_SIGNAL.test(after);
+    };
+
     const nameRe = /\b([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/g;
-    const byFirst: { [first: string]: { [last: string]: { count: number; spans: { start: number; end: number }[] } } } = {};
+    const byFirst: { [first: string]: { [last: string]: { count: number; spans: { start: number; end: number }[]; person: boolean } } } = {};
     let nm: RegExpExecArray | null;
     while ((nm = nameRe.exec(p.text)) !== null) {
       const fam = byFirst[nm[1]] || (byFirst[nm[1]] = {});
-      const entry = fam[nm[2]] || (fam[nm[2]] = { count: 0, spans: [] });
+      const entry = fam[nm[2]] || (fam[nm[2]] = { count: 0, spans: [], person: false });
       entry.count++;
+      if (!entry.person && looksLikePerson(nm.index, nm[0].length)) entry.person = true;
       if (entry.spans.length < 4) entry.spans.push({ start: nm.index, end: nm.index + nm[0].length });
     }
     const editDistanceOne = function (a: string, b: string): boolean {
@@ -634,6 +654,10 @@ function pillar4(p: ParsedDraft, input: DraftInput): CriterionResult[] {
         for (let b = a + 1; b < lasts.length; b++) {
           if (lasts[a].length < 5 || lasts[b].length < 5) continue;
           if (!editDistanceOne(lasts[a], lasts[b])) continue;
+          // Neither spelling ever appeared in a person context. Whatever this
+          // is, it is not somebody's name — and a misspelling claim about a
+          // place reads as the tool not knowing what it is looking at.
+          if (!byFirst[first][lasts[a]].person && !byFirst[first][lasts[b]].person) continue;
           variants++;
           const ea = byFirst[first][lasts[a]], eb = byFirst[first][lasts[b]];
           const rare = ea.count <= eb.count ? ea : eb;
@@ -948,20 +972,48 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
   if (datable.length === 0) {
     out.push(skip("current-year-stats", "No datable statistics"));
   } else {
+    // ── DATED-BUT-OLD IS NOT UNDATED ─────────────────────────────────────
+    //
+    // "In 2024, Amrize generated $11.7 billion in revenue" was marked "no year
+    // anywhere near it". There is a year, four words to its left. The check
+    // asked only whether the year was THIS one, and then described a figure it
+    // had not looked for as missing — a note that contradicts the sentence it
+    // is attached to, which is worse than a wrong verdict because the reader
+    // can see it is untrue.
+    //
+    // Two different problems with two different fixes: a figure with no date at
+    // all needs one, and a figure dated three years back needs a fresher
+    // source. Within two years counts as current — an annual revenue figure is
+    // reported for the year before, always, and flagging that is flagging the
+    // calendar.
+    const YEAR_RE = /\b(19|20)\d{2}\b/;
     let dated = false;
+    const undatedStats: CriterionSpan[] = [];
+    const staleDated: CriterionSpan[] = [];
     for (let i = 0; i < datable.length; i++) {
       const sent = p.sentences[datable[i].sentenceIndex];
       if (!sent) continue;
-      if (sent.text.indexOf(String(currentYear)) >= 0 || sent.text.indexOf(String(currentYear - 1)) >= 0) { dated = true; break; }
-    }
-    const undatedStats: CriterionSpan[] = [];
-    if (!dated) {
-      for (let i = 0; i < datable.length && undatedStats.length < 8; i++) {
-        undatedStats.push({ start: datable[i].start, end: datable[i].end, note: "no year anywhere near it — engines discount undatable figures" });
+      const years = (sent.text.match(new RegExp(YEAR_RE.source, "g")) || []).map(function (y) { return parseInt(y, 10); });
+      if (years.length === 0) {
+        if (undatedStats.length < 8) {
+          undatedStats.push({ start: datable[i].start, end: datable[i].end, note: "no date on this figure" });
+        }
+        continue;
+      }
+      const newest = Math.max.apply(null, years);
+      if (newest >= currentYear - 2) { dated = true; continue; }
+      if (staleDated.length < 8) {
+        staleDated.push({ start: datable[i].start, end: datable[i].end, note: `dated ${newest}` });
       }
     }
+    const spans = undatedStats.concat(staleDated);
     out.push(score("current-year-stats", dated ? 5 : 0, dated,
-      dated ? "statistics anchored to a current year" : "no statistic carries a current year", undatedStats));
+      dated
+        ? "statistics anchored to a current year"
+        : undatedStats.length > 0 && staleDated.length === 0
+          ? "no statistic carries a date"
+          : "every dated statistic is more than two years old",
+      dated ? [] : spans));
   }
 
   const prose = p.sentences.filter(function (s) { return s.kind === "prose" && s.wordCount >= 3; });
