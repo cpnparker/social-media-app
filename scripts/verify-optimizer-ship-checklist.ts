@@ -69,6 +69,20 @@ console.log("\n2. Skipped is not done");
   // WITH A STATISTIC. The criterion also skips on "No statistics to attribute",
   // and a fixture carrying no figure cannot tell a working check from a broken
   // one — it just skips for a different reason and looks identical.
+  // The most important row on the list, and the one most likely to say nothing.
+  // Counting first-person needs no brand, so a row that cannot SCORE still
+  // reports what it can SEE — otherwise the single most valuable recommendation
+  // in the source method renders as "not checked" with no signal at all.
+  const weHeavy = row(build(
+    `<p>We supplied the concrete and our team designed the mix. We did it fast. Our engineers say we can do more. We believe our approach is best. We know our customers agree. We are proud of our work. We think our results speak. We say our mix is good. We claim our carbon is lower. We assert our cost is similar.</p>${BODY}`,
+    "T"), 6);
+  assert(/\b24\b|\b2[0-9]\b|\btimes\b/.test(weHeavy.detail),
+    "with no client attached it still COUNTS the first-person uses rather than reporting nothing");
+  assert(weHeavy.state === "attention",
+    "and a piece leaning heavily on \"we\" is flagged for attention, not left silent");
+  assert(/Attach a client/i.test(weHeavy.detail),
+    "and names the one action that makes the real check possible");
+
   const withBrand = row(build(
     `<p>Amrize supplied the concrete for the Rosemount data center, cutting carbon intensity by 35% at similar cost.</p>${BODY}`,
     "T", false, "Amrize"), 6);

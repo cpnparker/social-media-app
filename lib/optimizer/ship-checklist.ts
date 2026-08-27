@@ -163,7 +163,25 @@ export function buildShipChecklist(input: ShipInput): ShipRow[] {
   rows.push(fromCriterion(scores, "tldr-block", 3, "TL;DR block"));
   rows.push(fromCriterion(scores, "question-headings", 4, "Question headings"));
   rows.push(fromCriterion(scores, "heading-answer-adjacency", 5, "Answer-first paragraphs"));
-  rows.push(fromCriterion(scores, "anonymous-first-person-facts", 6, "Entity in the sentence, not \"we\""));
+  // 6. THE MOST IMPORTANT ROW ON THE LIST, per the method it comes from — and
+  //    the one most likely to report nothing. anonymous-first-person-facts
+  //    needs a brand to compare against, so on a piece with no client attached
+  //    it skips, and the single most valuable recommendation in the source
+  //    document rendered as "not checked" with no signal at all.
+  //
+  //    Counting first-person is deterministic and needs no brand. So when the
+  //    criterion cannot run, the row still reports WHAT IT CAN SEE — how often
+  //    the piece says "we" — and names the one action that would let the check
+  //    run properly. A row that cannot score is not a row that must stay silent.
+  const anonRow = fromCriterion(scores, "anonymous-first-person-facts", 6, 'Entity in the sentence, not "we"');
+  if (anonRow.state === "not-checked") {
+    const firstPerson = (text.match(/\b(we|our|us)\b/gi) || []).length;
+    anonRow.detail = firstPerson > 0
+      ? `Not checked — no client is attached, so there is no brand name to compare against. This piece says "we", "our" or "us" ${firstPerson} time${firstPerson === 1 ? "" : "s"}: every one of those inside a sentence carrying a fact is a fact that travels without the brand. Attach a client to check it properly.`
+      : "Not checked — no client is attached, so there is no brand name to compare against.";
+    if (firstPerson >= 10) anonRow.state = "attention";
+  }
+  rows.push(anonRow);
   rows.push(fromCriterion(scores, "stat-source-adjacency", 7, "Verifiable specifics"));
   rows.push(fromCriterion(scores, "attributed-quotes", 8, "Named experts beside every quote"));
 
