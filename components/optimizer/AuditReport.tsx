@@ -44,7 +44,8 @@ import { cn } from "@/lib/utils";
 import { AlertCircle, AlertTriangle, ExternalLink, Printer } from "lucide-react";
 import type { AuditCheck, PageAuditResult } from "@/lib/optimizer/page-audit";
 import type { RenderShot, RenderSpot } from "@/lib/optimizer/render";
-import { buildPins, groupPins, unpinnedFindings, pinPercent, auditHeadline } from "@/lib/optimizer/audit-visual";
+import { buildPins, groupPins, unpinnedFindings, auditHeadline } from "@/lib/optimizer/audit-visual";
+import { layoutBands, CARD_HEIGHT, type Band } from "@/lib/optimizer/audit-callouts";
 
 const SECTION_LABEL: { [k: string]: string } = {
   rendering: "How it renders",
@@ -74,6 +75,7 @@ export default function AuditReport({
 }) {
   const pins = buildPins(audit.checks, spots || []);
   const groups = groupPins(pins);
+  const bands = shot ? layoutBands(pins, shot) : [];
   const rest = unpinnedFindings(audit.checks, pins);
   const counts = auditHeadline(audit.checks);
   const notMeasured = audit.checks.filter((c) => c.status === "info");
@@ -86,10 +88,12 @@ export default function AuditReport({
   })();
 
   return (
-    <div className="audit-report mx-auto max-w-[54rem] px-5 py-6 text-foreground">
+    <div className="audit-report mx-auto max-w-[72rem] px-5 py-6 text-foreground">
       <style>{`
         @media print {
-          @page { size: A4; margin: 14mm 12mm; }
+          /* Landscape: the figure is a page in the middle with notes on both
+             sides, and portrait leaves the middle column too narrow to read. */
+          @page { size: A4 landscape; margin: 12mm; }
           body { background: #fff !important; }
           /* Everything that is not the report. The app's own chrome has no
              business in a document going to a client. */
@@ -100,7 +104,7 @@ export default function AuditReport({
           .audit-report { max-width: none; padding: 0; }
           /* A finding split across a page break is a finding read twice. */
           .audit-finding { break-inside: avoid; page-break-inside: avoid; }
-          .audit-shot { break-inside: avoid; page-break-inside: avoid; max-height: 190mm; }
+          figure { break-inside: avoid; page-break-inside: avoid; }
           .audit-section { break-before: auto; }
           a[href]:after { content: ""; }
         }
@@ -156,44 +160,21 @@ export default function AuditReport({
 
       {/* ── The page, marked up ────────────────────────────────────────── */}
       {shot ? (
-        <section className="mb-6">
-          <h2 className="text-[13px] font-semibold mb-2">On the page</h2>
-          <div className="audit-shot relative border rounded-lg overflow-hidden bg-white">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={shot.dataUri} alt={`Screenshot of ${finalUrl || url}`} className="block w-full" />
-            {pins.map((pin) => {
-              const at = pinPercent(pin, shot);
-              if (at.offPicture) return null;
-              return (
-                <div
-                  key={`${pin.checkId}-${pin.n}`}
-                  className="absolute"
-                  style={{ left: `${at.left}%`, top: `${at.top}%`, width: `${at.width}%`, height: `${at.height}%` }}
-                >
-                  <span
-                    className={cn(
-                      "absolute inset-0 rounded-[3px] border-2",
-                      pin.status === "fail" ? "border-red-500/90 bg-red-500/10" : "border-amber-500/90 bg-amber-500/10"
-                    )}
-                  />
-                  {/* The badge hangs off the top-left corner so it never covers
-                      the thing it is pointing at. */}
-                  <span
-                    className={cn(
-                      "absolute -top-2.5 -left-2.5 h-5 w-5 rounded-full text-white text-[11px] font-semibold",
-                      "flex items-center justify-center shadow",
-                      pin.status === "fail" ? "bg-red-500" : "bg-amber-500"
-                    )}
-                  >
-                    {pin.n}
-                  </span>
-                </div>
-              );
-            })}
+        <section className="mb-7">
+          <h2 className="text-[13px] font-semibold mb-3">On the page</h2>
+          <div className="flex flex-col gap-7">
+            {bands.map((band, i) => (
+              <AnnotatedBand key={i} band={band} shot={shot} src={shot.dataUri} />
+            ))}
           </div>
+          {bands.length === 0 && (
+            <p className="text-[12.5px] text-muted-foreground">
+              Nothing on the page itself is marked. Everything found lives in the page&rsquo;s code, below.
+            </p>
+          )}
           {shot.clipped && (
-            <p className="text-[11px] text-muted-foreground mt-1.5">
-              The picture covers the first {Math.round((shot.height / shot.scale) / 100) * 100} pixels of a
+            <p className="text-[11px] text-muted-foreground mt-2">
+              The capture covers the first {Math.round((shot.height / shot.scale) / 100) * 100} pixels of a
               longer page. Findings below that point are listed but not marked.
             </p>
           )}
@@ -321,6 +302,124 @@ export default function AuditReport({
         weighted against each other and do not total to a score.
       </footer>
     </div>
+  );
+}
+
+/**
+ * One band of the page, with its findings around it and a line to each.
+ *
+ * ── THE GEOMETRY ────────────────────────────────────────────────────────────
+ *
+ * Everything is laid out in IMAGE pixels and then scaled to whatever width the
+ * figure ends up with, so one set of numbers serves a screen, a narrow window
+ * and a printed page. The image sits in a fixed-ratio box with the crop applied
+ * by a negative offset; the notes sit in the gutters; the connectors are drawn
+ * in an SVG that covers the whole figure and therefore shares its coordinates.
+ *
+ * The connector is a three-segment path — out from the note, across the gutter,
+ * then to the pin — rather than a diagonal. Diagonals cross each other at the
+ * slightest crowding and read as a tangle; right angles stay legible even when
+ * two notes are close together.
+ */
+function AnnotatedBand({ band, shot, src }: { band: Band; shot: RenderShot; src: string }) {
+  // The figure's own coordinate space: gutters either side of the image.
+  const GUTTER = 250;
+  const W = GUTTER * 2 + shot.width;
+  const H = band.height;
+
+  return (
+    <figure className="audit-finding m-0">
+      <div className="relative w-full" style={{ aspectRatio: `${W} / ${H}` }}>
+        {/* The page itself, cropped to this band. */}
+        <div
+          className="absolute overflow-hidden border rounded-md bg-white"
+          style={{
+            left: `${(GUTTER / W) * 100}%`,
+            width: `${(shot.width / W) * 100}%`,
+            top: 0,
+            height: "100%",
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={src}
+            alt=""
+            className="absolute left-0 max-w-none"
+            style={{ width: "100%", top: `${(-band.top / H) * 100}%` }}
+          />
+        </div>
+
+        {/* Connectors, in the figure's own coordinates. */}
+        <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+          {band.callouts.map((c) => {
+            const cardEdge = c.side === "left" ? GUTTER - 8 : GUTTER + shot.width + 8;
+            const cardY = c.top + CARD_HEIGHT / 2;
+            const pinX = GUTTER + c.targetX + (c.side === "left" ? 0 : c.pin.w * shot.scale);
+            const mid = c.side === "left" ? cardEdge + 10 : cardEdge - 10;
+            return (
+              <polyline
+                key={c.pin.n}
+                points={`${cardEdge},${cardY} ${mid},${cardY} ${mid},${c.targetY} ${pinX},${c.targetY}`}
+                fill="none"
+                stroke={c.pin.status === "fail" ? "rgb(239 68 68)" : "rgb(245 158 11)"}
+                strokeWidth={2}
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+              />
+            );
+          })}
+        </svg>
+
+        {/* The marks on the page. */}
+        {band.callouts.map((c) => (
+          <div
+            key={`m-${c.pin.n}`}
+            className={cn(
+              "absolute rounded-[3px] border-2",
+              c.pin.status === "fail" ? "border-red-500/90 bg-red-500/10" : "border-amber-500/90 bg-amber-500/10"
+            )}
+            style={{
+              left: `${((GUTTER + c.targetX) / W) * 100}%`,
+              top: `${(c.targetY / H) * 100}%`,
+              width: `${((c.pin.w * shot.scale) / W) * 100}%`,
+              height: `${(Math.max(c.pin.h * shot.scale, 10) / H) * 100}%`,
+            }}
+          />
+        ))}
+
+        {/* The notes. */}
+        {band.callouts.map((c) => (
+          <div
+            key={`c-${c.pin.n}`}
+            className="absolute flex items-start gap-1.5"
+            style={{
+              [c.side]: 0,
+              top: `${(c.top / H) * 100}%`,
+              width: `${(GUTTER / W) * 100}%`,
+              height: `${(CARD_HEIGHT / H) * 100}%`,
+              flexDirection: c.side === "left" ? "row" : "row-reverse",
+            } as React.CSSProperties}
+          >
+            <span
+              className={cn(
+                "h-[18px] w-[18px] rounded-full text-white text-[10px] font-semibold flex items-center justify-center shrink-0 mt-[1px]",
+                c.pin.status === "fail" ? "bg-red-500" : "bg-amber-500"
+              )}
+            >
+              {c.pin.n}
+            </span>
+            <span className={cn("flex-1 min-w-0", c.side === "right" && "text-right")}>
+              <span className="block text-[10.5px] font-semibold leading-tight">{c.pin.name}</span>
+              {c.pin.remedy && (
+                <span className="block text-[9.5px] text-muted-foreground leading-snug mt-0.5 line-clamp-3">
+                  {c.pin.remedy}
+                </span>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+    </figure>
   );
 }
 

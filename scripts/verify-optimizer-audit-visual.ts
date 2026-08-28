@@ -67,6 +67,7 @@ import {
 import { auditPage } from "../lib/optimizer/page-audit";
 import type { AuditCheck } from "../lib/optimizer/page-audit";
 import type { RenderSpot } from "../lib/optimizer/render";
+import { layoutBands, anyOverlap, ordersMatch, CARD_HEIGHT, BAND_MAX_HEIGHT } from "../lib/optimizer/audit-callouts";
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -203,6 +204,52 @@ console.log("\n4. The findings with nowhere to point");
     "every failure and warning is either marked or listed — none is dropped");
 }
 
+// ── 4b. The annotated figure ───────────────────────────────────────────────
+//
+// A callout layout fails in exactly two ways, and both are geometric: two notes
+// want the same vertical space and overlap, or the notes on one side run in a
+// different order from the things they point at, so the connectors cross. Both
+// are properties of the arithmetic, so both can be asserted rather than
+// eyeballed at one width with one set of findings.
+console.log("\n4b. Notes around the page");
+{
+  const shot = { width: 900, height: 4000, scale: 900 / 1280 };
+  const crowd: RenderSpot[] = [];
+  // Six things within a few pixels of each other, three a side: the case that
+  // makes a naive "put the note level with its target" layout collapse.
+  for (let i = 0; i < 6; i++) crowd.push(spot("image-no-alt", 700 + i * 12, i % 2 === 0 ? 60 : 900));
+  const pins = buildPins([check("image-alt", "fail"), check("one-h1", "warn")], crowd.concat([spot("h1", 2600)]));
+  const bands = layoutBands(pins, shot);
+
+  assert(bands.length >= 1, `the pins are grouped into ${bands.length} band(s)`);
+  const total = bands.reduce((n, b) => n + b.callouts.length, 0);
+  assert(total === pins.length, "every pin gets a note — none is dropped by the grouping");
+
+  for (const b of bands) {
+    assert(!anyOverlap(b), "no note overlaps another in its column, even with six findings a dozen pixels apart");
+    assert(ordersMatch(b), "and the notes run in the same order as the things they point at, so the lines cannot cross");
+    assert(b.height <= BAND_MAX_HEIGHT, `each band stays readable (${Math.round(b.height)}px of ${BAND_MAX_HEIGHT})`);
+    for (const c of b.callouts) {
+      assert(c.top >= 0 && c.top + CARD_HEIGHT <= Math.max(b.height, CARD_HEIGHT + 1) + CARD_HEIGHT,
+        "and every note sits inside its own figure");
+    }
+  }
+
+  // A tall page must not become one unreadable thumbnail.
+  const spread = buildPins([check("image-alt", "fail")], [spot("image-no-alt", 200), spot("image-no-alt", 2000), spot("image-no-alt", 4600)]);
+  const spreadBands = layoutBands(spread, shot);
+  assert(spreadBands.length >= 2, `findings far apart get their own figures (${spreadBands.length})`);
+  assert(spreadBands.every((b) => b.height <= BAND_MAX_HEIGHT), "each cropped to something legible");
+
+  // Both sides are used, or the notes are a single stack beside a wide picture.
+  const sides = new Set(bands.flatMap((b) => b.callouts.map((c) => c.side)));
+  assert(sides.size === 2, "notes are placed on both sides of the page");
+
+  // A pin past the bottom of a clipped capture has no figure to sit in.
+  const off = layoutBands(buildPins([check("one-h1", "fail")], [spot("h1", 99999)]), shot);
+  assert(off.length === 0, "a finding past the end of the capture is left out of the figures rather than drawn off the edge");
+}
+
 // ── 5. Placing a pin on a picture ──────────────────────────────────────────
 console.log("\n5. Geometry");
 {
@@ -215,8 +262,6 @@ console.log("\n5. Geometry");
   const below = pinPercent({ n: 1, checkId: "x", name: "x", status: "fail", detail: "", remedy: "", x: 0, y: 9000, w: 100, h: 20, label: "" }, shot);
   assert(below.offPicture === true, "and one past the bottom of a clipped capture is honestly reported as off it");
 
-  // A zero-height element would otherwise be an invisible box with a badge
-  // floating beside nothing.
   const tiny = pinPercent({ n: 1, checkId: "x", name: "x", status: "fail", detail: "", remedy: "", x: 10, y: 10, w: 0, h: 0, label: "" }, shot);
   assert(tiny.width > 0 && tiny.height > 0, "a zero-sized element still gets a visible marker");
 }
@@ -275,7 +320,10 @@ console.log("   (the whole point: a PDF someone can send to a client)");
   // Named per selector. `/break-inside: avoid/` alone matched the picture's own
   // rule, so deleting the one that governs FINDINGS survived the check.
   assert(/\.audit-finding \{[^}]*break-inside: avoid/.test(ui), "a finding does not break across two pages");
-  assert(/\.audit-shot \{[^}]*break-inside: avoid/.test(ui), "and neither does the picture");
+  // The figure now, rather than the old single picture: each annotated band is
+  // a <figure> and must survive a page break intact, or a note lands on one
+  // page and the thing it points at on the next.
+  assert(/figure \{[^}]*break-inside: avoid/.test(ui), "and neither does an annotated figure");
   assert(/audit-no-print/.test(ui) && /display: none !important/.test(ui), "and the app's own chrome is dropped from the printed document");
   assert(/window\.print\(\)/.test(ui), "with a control that prints it");
 
