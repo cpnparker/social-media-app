@@ -36,8 +36,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { CornerDownLeft, Eraser, Loader2, Quote, RefreshCw, Sparkles } from "lucide-react";
-import { parseDiscussReply, type DiscussTurn } from "@/lib/optimizer/discuss";
+import { CornerDownLeft, Eraser, Loader2, Quote, RefreshCw, Sparkles, Check } from "lucide-react";
+import { parseDiscussReply, pointKeyOf, pointSlotOf, repliesForPoint, isPointReply, type DiscussTurn } from "@/lib/optimizer/discuss";
 import { houseStyleFlags, mechanicalDedash } from "@/lib/optimizer/house-style";
 
 interface Props {
@@ -201,18 +201,85 @@ function AnchorChip({
  */
 const MIN_ACTIONABLE_POINT = 60;
 
-function PointParagraph({ text, onFix }: { text: string; onFix?: (point: string) => void }) {
+/**
+ * One point in a reply, with everything that belongs to it underneath it.
+ *
+ * ── WHY THE ANSWER LIVES HERE ───────────────────────────────────────────────
+ *
+ * "Suggest a fix" used to append its answer to the foot of the conversation and
+ * scroll there. A writer working down a six-point reply therefore lost their
+ * place on every fix they asked for, and had to scroll back to find it. The
+ * answer to a point belongs to that point, so it renders under it and the panel
+ * stays where it is.
+ *
+ * ── AND WHY A POINT CAN BE FINISHED ─────────────────────────────────────────
+ *
+ * Reviewing a long reply is a list to work down, and a list you cannot cross
+ * off is one you re-read. A finished point collapses to a single dim line with
+ * an undo, so what is left on screen is what is left to do.
+ */
+function PointParagraph({
+  text,
+  onFix,
+  pointKey,
+  done,
+  onDone,
+  children,
+  busy,
+}: {
+  text: string;
+  onFix?: (point: string, pointKey?: string) => void;
+  pointKey?: string;
+  done?: boolean;
+  onDone?: (next: boolean) => void;
+  /** The exchange that answers this point, already rendered. */
+  children?: React.ReactNode;
+  /** True while this point's own answer is arriving. */
+  busy?: boolean;
+}) {
   const actionable = !!onFix && text.trim().length >= MIN_ACTIONABLE_POINT && !/\?\s*$/.test(text.trim());
+
+  if (done) {
+    return (
+      <div className="flex items-start gap-2 rounded-md px-1.5 py-1 bg-muted/40">
+        <Check className="h-3 w-3 text-muted-foreground shrink-0 mt-0.5" />
+        <p className="flex-1 min-w-0 text-[11.5px] text-muted-foreground line-clamp-1">{text}</p>
+        <button
+          onClick={() => onDone?.(false)}
+          className="text-[10.5px] text-primary hover:underline shrink-0"
+        >
+          Undo
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="group/point">
       <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{text}</p>
-      {actionable && (
-        <button
-          onClick={() => onFix!(text)}
-          className="mt-0.5 text-[10.5px] font-medium text-muted-foreground opacity-0 group-hover/point:opacity-100 focus:opacity-100 hover:text-foreground hover:underline underline-offset-2"
-        >
-          Suggest a fix
-        </button>
+      <div className="mt-0.5 flex items-center gap-2.5">
+        {actionable && (
+          <button
+            onClick={() => onFix!(text, pointKey)}
+            disabled={busy}
+            className="text-[10.5px] font-medium text-muted-foreground opacity-0 group-hover/point:opacity-100 focus:opacity-100 hover:text-foreground hover:underline underline-offset-2 disabled:opacity-40"
+          >
+            {busy ? "Working…" : "Suggest a fix"}
+          </button>
+        )}
+        {onDone && (
+          <button
+            onClick={() => onDone(true)}
+            className="text-[10.5px] font-medium text-muted-foreground opacity-0 group-hover/point:opacity-100 focus:opacity-100 hover:text-foreground hover:underline underline-offset-2"
+          >
+            Done
+          </button>
+        )}
+      </div>
+      {/* Indented and ruled, so an answer is visibly subordinate to its point
+          rather than reading as the next point in the list. */}
+      {children && (
+        <div className="mt-1.5 ml-1 border-l-2 border-primary/25 pl-2.5 space-y-1.5">{children}</div>
       )}
     </div>
   );
@@ -387,6 +454,15 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
   const [streamed, setStreamed] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  /**
+   * The point an in-flight ask belongs to, so its tokens stream UNDER that
+   * point rather than at the foot of the conversation.
+   *
+   * Null for an ordinary question, which is still the common case and still
+   * behaves exactly as it did.
+   */
+  const [activePoint, setActivePoint] = useState<string | null>(null);
+
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   /**
@@ -463,11 +539,21 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
     onAnchorsChanged(out);
   }, [turns, onAnchorsChanged]);
 
-  // Pinned to the newest message, including as tokens arrive.
+  /**
+   * Pinned to the newest message, including as tokens arrive — EXCEPT when the
+   * answer is going to appear somewhere else.
+   *
+   * A point-scoped reply renders under its point, which is usually well above
+   * the fold. Scrolling to the bottom then moved the writer away from both the
+   * point they asked about and the answer they asked for, and they had to
+   * scroll back to find their place in a six-point reply. Reported from real
+   * use, and the reason `activePoint` exists.
+   */
   useEffect(() => {
+    if (activePoint) return;
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [turns, streamed]);
+  }, [turns, streamed, activePoint]);
 
   /**
    * Scroll to the reply a margin marker points at, and flash it.
@@ -503,7 +589,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
     return () => clearTimeout(t);
   }, [focusTurn, turns]);
 
-  const ask = useCallback(async (explicit?: string) => {
+  const ask = useCallback(async (explicit?: string, pointKey?: string) => {
     // An explicit question comes from a button, not the box. Passed as an
     // argument rather than via setQuestion-then-send: state is not readable in
     // the same tick, so that shape sends the PREVIOUS question every time.
@@ -513,11 +599,17 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
 
     // The question joins the thread immediately. Waiting for the round trip
     // leaves the writer looking at an input that just emptied itself.
-    const asked: DiscussTurn = { role: "user", content: q, at: new Date().toISOString() };
+    const asked: DiscussTurn = {
+      role: "user",
+      content: q,
+      at: new Date().toISOString(),
+      ...(pointKey ? { pointKey } : {}),
+    };
     setTurns((t) => t.concat([asked]));
     setQuestion("");
     setStreamed("");
     setBusy(true);
+    setActivePoint(pointKey || null);
 
     // This run's ticket. Every write below checks it is still the live one.
     const myRun = ++runRef.current;
@@ -535,6 +627,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
           question: q,
           draftHtml: getDraftHtml(),
           selection: selection || null,
+          pointKey: pointKey || undefined,
           // The same lens the marks are using. Sent rather than re-derived,
           // because `surface` is a property of the page the writer has open and
           // the server cannot see it — and because two derivations of one fact
@@ -596,7 +689,12 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
 
       if (!live()) return;
       if (full.trim()) {
-        setTurns((t) => t.concat([{ role: "assistant", content: full, at: assistantAt || new Date().toISOString() }]));
+        setTurns((t) => t.concat([{
+          role: "assistant",
+          content: full,
+          at: assistantAt || new Date().toISOString(),
+          ...(pointKey ? { pointKey } : {}),
+        }]));
       } else {
         toast.error("That came back empty");
         setTurns((t) => t.filter((x) => x !== asked));
@@ -614,9 +712,10 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
       if (live()) {
         setStreamed(null);
         setBusy(false);
+        setActivePoint(null);
       }
     }
-  }, [question, busy, workspaceId, sessionId, getDraftHtml, selection]);
+  }, [question, busy, workspaceId, sessionId, getDraftHtml, selection, lens]);
 
   /**
    * Ask for a rewrite of one passage.
@@ -645,16 +744,53 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
    * the document at one click rather than being another paragraph of advice.
    */
   const askForPointFix = useCallback(
-    (point: string) => {
+    (point: string, pointKey?: string) => {
       ask(
         `Act on this point:\n\n${point}\n\n` +
           `Show me the concrete change in the draft. Where it replaces something that is already ` +
           `there, quote that in an anchor block and put the replacement in a draft block so I can ` +
-          `apply it in place. If it is something to add, say exactly where it goes.`
+          `apply it in place. If it is something to add, say exactly where it goes.\n` +
+          `Answer this point only, and keep it short: the writer is working down a list and this ` +
+          `reply sits underneath the point itself.`,
+        pointKey
       );
     },
     [ask]
   );
+
+  /**
+   * Mark a point finished, or bring it back.
+   *
+   * The same optimistic-then-written shape as a dismissed block, and for the
+   * same reason: waiting for a round trip feels broken on a list you are
+   * working through, and a failure is visible because the point comes back.
+   */
+  const setPointDone = useCallback(async (at: string, slot: string, next: boolean) => {
+    if (!workspaceId) return;
+    const patch = (on: boolean) =>
+      setTurns((cur) =>
+        cur.map((t) => {
+          if (t.role !== "assistant" || t.at !== at) return t;
+          const list = t.donePoints || [];
+          const updated = on
+            ? (list.indexOf(slot) < 0 ? list.concat([slot]) : list)
+            : list.filter((p) => p !== slot);
+          return { ...t, donePoints: updated };
+        })
+      );
+    patch(next);
+    try {
+      const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}/discuss`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, at, point: slot, dismissed: next }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      patch(!next);
+      toast.error(next ? "Could not mark that done" : "Could not bring that back");
+    }
+  }, [sessionId, workspaceId]);
 
   /**
    * Read the whole piece again, as it stands now.
@@ -745,6 +881,55 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
     }
   }, [sessionId, workspaceId]);
 
+  /**
+   * Everything that answers one point, rendered underneath it.
+   *
+   * The question is deliberately NOT shown: the writer pressed a button whose
+   * label already said what it would ask, and repeating the generated prompt
+   * back at them is four lines of noise above the answer they wanted.
+   */
+  const renderPointReplies = useCallback((key: string): React.ReactNode => {
+    if (!key) return null;
+    const mine = repliesForPoint(turns, key).filter((t) => t.role === "assistant");
+    const streamingHere = activePoint === key && streamed !== null;
+    if (mine.length === 0 && !streamingHere) return null;
+    return (
+      <>
+        {mine.map((t, n) => (
+          <AssistantTurn
+            key={`${t.at}-${n}`}
+            turnIndex={-1}
+            content={t.content}
+            turnAt={t.at}
+            dismissed={t.dismissed}
+            onDismiss={setDismissed}
+            hasSelection={hasSelection}
+            onApply={onApply}
+            resolveQuote={resolveQuote}
+            onRevealQuote={onRevealQuote}
+            onFix={askForFix}
+            // No nesting. A fix suggested on a point can be applied or
+            // dismissed, but asking for a fix to a fix is a thread, and a
+            // thread inside a point is a place to get lost in.
+            onPointFix={() => {}}
+          />
+        ))}
+        {streamingHere && (
+          <div className="space-y-1.5">
+            {streamed ? (
+              <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{streamed}</p>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" /> Working on this point
+              </span>
+            )}
+          </div>
+        )}
+      </>
+    );
+  }, [turns, activePoint, streamed, setDismissed, hasSelection, onApply, resolveQuote, onRevealQuote, askForFix]);
+
+
   const clear = useCallback(async () => {
     if (!workspaceId) return;
     try {
@@ -819,6 +1004,10 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
         )}
 
         {turns.map((t, i) => {
+          // A point's exchange renders under that point, not here. Leaving it
+          // in the flow too would show the same answer twice, once where it
+          // belongs and once where it used to be.
+          if (isPointReply(t)) return null;
           const superseded = i < latestStart;
           const opensLatest = i === latestStart && turns.length > 2;
           return (
@@ -865,6 +1054,10 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
                     turnAt={t.at}
                     dismissed={t.dismissed}
                     onDismiss={setDismissed}
+                    donePoints={t.donePoints}
+                    onPointDone={setPointDone}
+                    activePoint={activePoint}
+                    renderPointReplies={renderPointReplies}
                     hasSelection={hasSelection}
                     onApply={onApply}
                     resolveQuote={resolveQuote}
@@ -983,6 +1176,10 @@ function AssistantTurn({
   turnAt,
   dismissed,
   onDismiss,
+  donePoints,
+  onPointDone,
+  activePoint,
+  renderPointReplies,
   hasSelection,
   onApply,
   resolveQuote,
@@ -998,12 +1195,19 @@ function AssistantTurn({
   turnAt: string;
   dismissed?: number[];
   onDismiss?: (at: string, index: number, next: boolean) => void;
+  /** Points in this reply the writer has finished with, as "segment.paragraph". */
+  donePoints?: string[];
+  onPointDone?: (at: string, slot: string, next: boolean) => void;
+  /** The point whose answer is arriving right now, if any. */
+  activePoint?: string | null;
+  /** Renders the exchange that answers one point, underneath it. */
+  renderPointReplies?: (key: string) => React.ReactNode;
   hasSelection: boolean;
   onApply: (text: string, anchor?: string) => "replaced" | "appended" | "failed";
   resolveQuote: (q: string) => boolean;
   onRevealQuote: (q: string) => boolean;
   onFix: (q: string) => void;
-  onPointFix: (point: string) => void;
+  onPointFix: (point: string, pointKey?: string) => void;
   /** From an earlier pass. Its points may already have been acted on. */
   superseded?: boolean;
 }) {
@@ -1059,7 +1263,13 @@ function AssistantTurn({
                     key={k}
                     text={para.trim()}
                     onFix={seg.anchor ? undefined : onPointFix}
-                  />
+                    pointKey={turnAt ? pointKeyOf(turnAt, i, k) : undefined}
+                    done={(donePoints || []).indexOf(pointSlotOf(i, k)) >= 0}
+                    onDone={turnAt && onPointDone ? (next) => onPointDone(turnAt, pointSlotOf(i, k), next) : undefined}
+                    busy={!!turnAt && activePoint === pointKeyOf(turnAt, i, k)}
+                  >
+                    {renderPointReplies ? renderPointReplies(turnAt ? pointKeyOf(turnAt, i, k) : "") : null}
+                  </PointParagraph>
                 ) : null
               )}
             </div>

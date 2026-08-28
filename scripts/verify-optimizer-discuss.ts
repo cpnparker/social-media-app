@@ -56,6 +56,10 @@ import {
   readTurns,
   DISCUSS_PROMPT_TURNS,
   DISCUSS_STORED_TURNS,
+  pointKeyOf,
+  pointSlotOf,
+  repliesForPoint,
+  isPointReply,
   type DiscussTurn,
 } from "../lib/optimizer/discuss";
 import { readFileSync } from "fs";
@@ -760,6 +764,70 @@ function selfTest() {
     process.exit(1);
   }
   console.log("  all detectors fire.");
+}
+
+// ── 10. A point's answer belongs to the point ───────────────────────────────
+//
+// Reported from real use: "when I click on a suggest a fix I am brought to the
+// bottom of the chat for a new comment. I then have to scroll back up to see
+// where I had got to."
+//
+// Every reply was a turn at the foot of the conversation and the panel pinned
+// itself to the newest message, so a writer working down a six-point reply lost
+// their place on every fix they asked for.
+console.log("\n10. Point-scoped exchanges");
+{
+  const key = pointKeyOf("2026-08-28T10:00:00.000Z", 2, 3);
+  assert(key.indexOf("#2.3") > 0, `a point is addressed by turn, segment and paragraph: ${key}`);
+  assert(pointSlotOf(2, 3) === "2.3", "and stored on its turn by the finer half of that address");
+  assert(pointKeyOf("A", 0, 0) !== pointKeyOf("A", 0, 1), "two points in one reply are different points");
+  assert(pointKeyOf("A", 0, 0) !== pointKeyOf("B", 0, 0), "and so are the same slots in different replies");
+
+  const turns: DiscussTurn[] = [
+    { role: "user", content: "how is it?", at: "t1" },
+    { role: "assistant", content: "Three things.", at: "t2" },
+    { role: "user", content: "Act on this point: ...", at: "t3", pointKey: key },
+    { role: "assistant", content: "Here is the fix.", at: "t4", pointKey: key },
+    { role: "user", content: "and the ending?", at: "t5" },
+  ];
+
+  assert(isPointReply(turns[3]) && !isPointReply(turns[1]), "a point exchange is distinguishable from an ordinary turn");
+  const mine = repliesForPoint(turns, key);
+  assert(mine.length === 2, "both halves of the exchange belong to the point");
+  assert(mine.filter((t) => t.role === "assistant").length === 1, "including exactly one answer");
+  assert(repliesForPoint(turns, pointKeyOf("A", 9, 9)).length === 0, "and a point nobody asked about has none");
+
+  // The prompt window must still open on a user turn: point exchanges are
+  // ordinary pairs in the history, so nothing about this breaks the rule every
+  // provider enforces.
+  const prompt = trimForPrompt(turns);
+  assert(prompt.length === 0 || prompt[0].role === "user", "the prompt window still opens on a user turn");
+
+  // A malformed slot must not reach the renderer as a selector.
+  const cleaned = readTurns([{ role: "assistant", content: "x", at: "t", donePoints: ["1.2", "nonsense", 7, "3.4"] }]);
+  assert(JSON.stringify(cleaned[0].donePoints) === JSON.stringify(["1.2", "3.4"]), "a malformed done-point is dropped rather than stored");
+}
+
+// ── 11. And the panel renders it there, once ───────────────────────────────
+console.log("\n11. Where the answer appears");
+{
+  const panel = read("components/optimizer/DiscussPanel.tsx");
+  assert(/if \(isPointReply\(t\)\) return null;/.test(panel), "the main flow skips a point's exchange");
+  assert(/renderPointReplies \? renderPointReplies\(/.test(panel), "and the point renders it instead — shown once, not twice");
+  assert(/const renderPointReplies = useCallback/.test(panel), "the renderer exists");
+
+  // The scroll, which is the actual complaint.
+  const scroll = panel.slice(panel.indexOf("Pinned to the newest message"), panel.indexOf("Pinned to the newest message") + 1400);
+  assert(/if \(activePoint\) return;/.test(scroll), "and the panel does NOT jump to the bottom while a point's answer is arriving");
+  assert(/\[turns, streamed, activePoint\]/.test(scroll), "with activePoint in the dependencies, or the guard reads a stale value");
+
+  // Working down the list.
+  assert(/onDone\?\.\(false\)/.test(panel) && /onDone\(true\)/.test(panel), "a point can be marked done and brought back");
+  assert(/point: slot, dismissed: next/.test(panel), "done is persisted against the turn");
+  const route = read("app/api/optimizer/sessions/[id]/discuss/route.ts");
+  assert(/\/\^\\d\+\\\.\\d\+\$\/\.test\(body\.point\)/.test(route), "and the endpoint validates the slot rather than trusting it");
+  assert(/pointKey = \/\^\[0-9TZ:\.\\-\]\{10,40\}#\\d\+\\\.\\d\+\$\/\.test\(rawPoint\)/.test(route),
+    "the point key is shape-checked before it is written onto a stored turn");
 }
 
 if (process.argv.indexOf("--self-test") >= 0) selfTest();

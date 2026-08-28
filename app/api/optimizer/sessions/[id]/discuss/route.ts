@@ -142,10 +142,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (!owned.ok) return NextResponse.json({ error: owned.error }, { status: owned.status });
 
   const at = String(body.at || "");
+  /** "segment.paragraph" — a POINT inside a reply, rather than a whole block. */
+  const point = typeof body.point === "string" && /^\d+\.\d+$/.test(body.point) ? body.point : "";
   const index = Number(body.index);
   const dismissed = body.dismissed === true;
-  if (!at || !Number.isInteger(index) || index < 0) {
-    return NextResponse.json({ error: "A turn and a block are both required" }, { status: 400 });
+  if (!at || (!point && (!Number.isInteger(index) || index < 0))) {
+    return NextResponse.json({ error: "A turn, and a block or a point, are required" }, { status: 400 });
   }
 
   const turns = readTurns((owned.session as any).config_chat);
@@ -159,6 +161,17 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   const next = turns.map((t) => {
     if (t !== target[0]) return t;
+
+    // A point being marked done, which is the finer of the two addresses.
+    if (point) {
+      const current = t.donePoints || [];
+      const updated = dismissed
+        ? (current.indexOf(point) < 0 ? current.concat([point]) : current)
+        : current.filter((p) => p !== point);
+      const { donePoints: _dropPoints, ...rest } = t;
+      return updated.length ? { ...rest, donePoints: updated } : rest;
+    }
+
     const current = t.dismissed || [];
     const updated = dismissed
       ? (current.indexOf(index) < 0 ? current.concat([index]) : current)
@@ -268,6 +281,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
    * the sort of near-miss that silently routes every optimiser session down the
    * Writer branch; mapped explicitly rather than passed through.
    */
+  /**
+   * The point this exchange answers, if it answers one.
+   *
+   * Bounded and shape-checked rather than trusted: it is written onto a stored
+   * turn and read back as a selector, so an unbounded string here is a way to
+   * bloat the row and a way to make a turn unreachable.
+   */
+  const rawPoint = typeof body.pointKey === "string" ? body.pointKey.trim() : "";
+  const pointKey = /^[0-9TZ:.\-]{10,40}#\d+\.\d+$/.test(rawPoint) ? rawPoint : "";
+
   const clientLens = normaliseLens(body.lens);
   const brief = (session.config_brief || {}) as any;
   const lens: Lens =
@@ -402,8 +425,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
         const next: DiscussTurn[] = trimForStorage(
           current.concat([
-            { role: "user", content: question, at: now },
-            { role: "assistant", content: reply, at: assistantAt },
+            { role: "user", content: question, at: now, ...(pointKey ? { pointKey } : {}) },
+            { role: "assistant", content: reply, at: assistantAt, ...(pointKey ? { pointKey } : {}) },
           ])
         );
         const { error: writeError } = await intelligenceDb

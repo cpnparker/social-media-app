@@ -70,6 +70,57 @@ export interface DiscussTurn {
    * cap and the oldest turn falls off the front.
    */
   dismissed?: number[];
+  /**
+   * The point this exchange answers, when it answers one.
+   *
+   * A reply to "Suggest a fix" on a single point used to land at the bottom of
+   * the conversation like any other turn, and the panel scrolled there — so the
+   * writer working down a six-point reply lost their place on every fix they
+   * asked for, and had to scroll back to find where they had got to. Reported
+   * from real use.
+   *
+   * A turn carrying this is rendered UNDER its point instead of in the flow.
+   * Both halves of the exchange carry it, so the question and its answer move
+   * together and neither is left stranded in the main thread.
+   */
+  pointKey?: string;
+  /**
+   * Points in THIS turn the writer has finished with, as "segment.paragraph".
+   *
+   * Separate from `dismissed`, which addresses whole draft blocks by segment
+   * index. A point is a paragraph inside a text segment, so it needs the finer
+   * key; sharing one array would make "the third thing" ambiguous between a
+   * block and a paragraph.
+   */
+  donePoints?: string[];
+}
+
+/** The address of one point inside one reply. */
+export function pointKeyOf(turnAt: string, segment: number, paragraph: number): string {
+  return `${turnAt}#${segment}.${paragraph}`;
+}
+
+/** The "segment.paragraph" half, which is what a turn's donePoints holds. */
+export function pointSlotOf(segment: number, paragraph: number): string {
+  return `${segment}.${paragraph}`;
+}
+
+/**
+ * The exchanges that answer one point, oldest first.
+ *
+ * Returned as PAIRS in document order rather than filtered per role, because a
+ * point can be asked about more than once and the second question only makes
+ * sense under the first answer.
+ */
+export function repliesForPoint(turns: DiscussTurn[], key: string): DiscussTurn[] {
+  const out: DiscussTurn[] = [];
+  for (let i = 0; i < turns.length; i++) if (turns[i].pointKey === key) out.push(turns[i]);
+  return out;
+}
+
+/** True for a turn that belongs under a point rather than in the main flow. */
+export function isPointReply(t: DiscussTurn): boolean {
+  return typeof t.pointKey === "string" && t.pointKey.length > 0;
 }
 
 /**
@@ -95,11 +146,16 @@ export function readTurns(raw: any): DiscussTurn[] {
     const dismissed = Array.isArray(t.dismissed)
       ? t.dismissed.filter((n: any) => typeof n === "number" && Number.isInteger(n) && n >= 0)
       : undefined;
+    const donePoints = Array.isArray(t.donePoints)
+      ? t.donePoints.filter((x: any) => typeof x === "string" && /^\d+\.\d+$/.test(x))
+      : undefined;
     out.push({
       role,
       content,
       at: typeof t.at === "string" ? t.at : "",
       ...(dismissed && dismissed.length ? { dismissed } : {}),
+      ...(donePoints && donePoints.length ? { donePoints } : {}),
+      ...(typeof t.pointKey === "string" && t.pointKey ? { pointKey: t.pointKey.slice(0, 200) } : {}),
     });
   }
   return out;
