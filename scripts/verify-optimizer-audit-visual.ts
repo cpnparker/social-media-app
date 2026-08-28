@@ -300,6 +300,13 @@ console.log("\n9. Capture");
   assert(/cookie" i\]/.test(render) && /consent" i\]/.test(render), "a cookie banner is hidden before the picture is taken");
   assert(/pos === "fixed" \|\| pos === "sticky"/.test(render),
     "and only when it is fixed or sticky — hiding every element named cookie would take real content with it");
+  // Scroll-reveal sections. A capture full of empty bands looks like a broken
+  // tool rather than a page with problems.
+  assert(/animation:none !important;transition:none !important/.test(render), "animations are stopped before the capture");
+  assert(/parseFloat\(cs\.opacity\) > 0\.05/.test(render), "and elements left invisible by a scroll reveal are shown");
+  assert(/!\(el\.textContent \|\| ""\)\.trim\(\) && !el\.querySelector\("img"\)/.test(render),
+    "only where they carry content — a decorative hidden layer stays hidden");
+
   const hideAt = render.indexOf('[id*="cookie"');
   const measureAt = render.indexOf("const measured");
   assert(measureAt > 0 && hideAt > measureAt, "hidden AFTER the measurement pass, so it cannot change a single finding");

@@ -367,7 +367,42 @@ export async function renderPage(
             const pos = getComputedStyle(el).position;
             if (pos === "fixed" || pos === "sticky") el.style.setProperty("display", "none", "important");
           }
+
+          /**
+           * Scroll-reveal sections, made visible.
+           *
+           * Pages that fade their sections in on scroll leave a full-page
+           * capture full of empty bands: the element is in the document, has
+           * height, and is painted at opacity 0 because its reveal either fired
+           * for a viewport position the capture does not share, or ran while
+           * the page was being scrolled past at speed. The first real report
+           * had three of these, and a client report with blank thirds in it
+           * looks like a broken tool rather than a page with problems.
+           *
+           * This shows what is ALREADY IN THE PAGE. It does not add content, it
+           * does not change the DOM the measurement pass already read, and it
+           * runs after every finding has been computed. Only elements that are
+           * invisible AND carry text are touched, so a decorative hidden layer
+           * stays hidden.
+           */
+          const anim = document.createElement("style");
+          anim.textContent = "*,*::before,*::after{animation:none !important;transition:none !important;}";
+          document.head.appendChild(anim);
+
+          const all = Array.prototype.slice.call(document.querySelectorAll("section,div,article,header,figure,li,p"));
+          for (let i = 0; i < all.length; i++) {
+            const el = all[i];
+            const cs = getComputedStyle(el);
+            if (parseFloat(cs.opacity) > 0.05) continue;
+            if (cs.visibility === "hidden" || cs.display === "none") continue;
+            if (!(el.textContent || "").trim() && !el.querySelector("img")) continue;
+            el.style.setProperty("opacity", "1", "important");
+            el.style.setProperty("transform", "none", "important");
+            el.style.setProperty("filter", "none", "important");
+          }
         })()`);
+        // One frame for the layout to settle after the styles above.
+        await new Promise((r) => setTimeout(r, 350));
 
         const docHeight: number = Math.max(1, Math.round(measured.docHeight || 0));
         const captureHeight = Math.min(docHeight, SHOT_MAX_HEIGHT);
