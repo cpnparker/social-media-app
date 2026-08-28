@@ -73,6 +73,20 @@ export interface AIProviderConfig {
     title: string; slides: any[]; preview: any;
     published?: { url?: string; presentationId?: string; slideCount?: number; thumbnails?: string[] };
   }) => void;
+  /** A card an inline tool drew this turn, stored against the assistant message.
+   *  Generic on purpose: the score, the page audit and the writer draft all
+   *  produce one card per turn and all want the same fate on reload. Without it
+   *  the card lives only in the browser that made it, and reopening the thread
+   *  leaves a reply referring to numbers that are no longer on screen. */
+  onToolCard?: (card: {
+    kind: string;
+    data: any;
+    /** The text the card describes, kept server-side so "open this in the
+     *  Optimiser" can mint a piece from the SCORED text rather than from the
+     *  reply beside it — which is a different document, and usually a summary
+     *  of the one that was scored. Stored, never accepted from the browser. */
+    source?: { text: string; title?: string };
+  }) => void;
   selectedClientId?: number;
   /** type_source string used for ai_usage logging + Control Centre lookups.
    *  Defaults to "enginegpt" (the user-facing chat). Set to a different
@@ -285,6 +299,8 @@ const POST_TAINT_READ_TOOLS = new Set([
   "query_drive_docs",
   "search_notebook",
   "lookup_client_context",
+  // Pure function over text already in the turn. Nothing leaves.
+  "query_content_score",
 ]);
 
 /** Total reads permitted after the taint: enough to finish a real question,
@@ -6360,6 +6376,70 @@ export const SEARCH_NOTEBOOK_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   },
 };
 
+/* ─────────────── Inline content score ─────────────── */
+
+/**
+ * Score a draft against the Optimiser's rubric, in the conversation.
+ *
+ * NAMED query_* ON PURPOSE, and this is not cosmetic. scripts/verify-post-taint-policy
+ * discovers the registered tools with a regex over their names —
+ * query_*, generate_*, and a short list of literals — and then fails on any it
+ * finds that nobody has classified. A tool called score_content matches none of
+ * those patterns, so it would never enter the set the check iterates: it would
+ * ship unclassified with the check green, which is the failure mode that check
+ * exists to prevent. The name is what puts it under the guard.
+ *
+ * IT IS A READ. Pure function over text already in the conversation — no
+ * network, no model, no write — so it belongs in POST_TAINT_READ_TOOLS beside
+ * the other reads. Nothing it does can leave the turn.
+ *
+ * THE DESCRIPTION SAYS "OFFER", and that is a product decision rather than a
+ * style: firing on its own guess would score the things people paste as
+ * CONTEXT — a competitor's copy, a quote, an email — and be confidently wrong
+ * about a document nobody asked it to judge. So the model proposes and the
+ * writer decides.
+ *
+ * The offer is the model's own sentence, and nothing else enforces it. That is
+ * the honest description of what is built: a check can assert this text says
+ * "offer" and that the tool is not fired by the client, but no check can make a
+ * model remember to ask. If unprompted scoring shows up in real threads, the
+ * fix is an affordance in the UI — a control on a long paste — rather than more
+ * words here.
+ */
+const CONTENT_SCORE_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "query_content_score",
+    description:
+      "Score a piece of writing against the answer-engine rubric — how likely an AI assistant is to retrieve it, quote it and cite it — and show the result to the user as a card with the highest-value fixes. Use this when the user ASKS for a score, an assessment, a review against the rubric, or asks how a draft would perform for AI answers. Do NOT call it unprompted just because a draft appears in the conversation: people paste text as context far more often than they paste it for judgement, and scoring a quote or a competitor's copy uninvited is worse than not offering. When someone shares a draft without asking, say something useful about it and OFFER to score it instead. The rubric is calibrated for 800-2,500 words of article-shaped prose; a short message scores badly for being short, which describes the format rather than the writing.",
+    parameters: {
+      type: "object",
+      properties: {
+        text: {
+          type: "string",
+          description:
+            "The full text to score, exactly as written. Send the whole piece — scoring a summary of it measures the summary.",
+        },
+        title: {
+          type: "string",
+          description:
+            "The piece's title or headline, if it has one. Several criteria read it, so omitting a title the piece actually has loses points it has earned.",
+        },
+      },
+      required: ["text"],
+    },
+  },
+};
+
+/** Anthropic tool definition for query_content_score */
+const CONTENT_SCORE_TOOL: Anthropic.Tool = {
+  name: "query_content_score",
+  description: CONTENT_SCORE_OPENAI_TOOL.function.description!,
+  input_schema: {
+    ...(CONTENT_SCORE_OPENAI_TOOL.function.parameters as any),
+  },
+};
+
 /** Anthropic tool definition for search_notebook */
 const SEARCH_NOTEBOOK_TOOL: Anthropic.Tool = {
   name: "search_notebook",
@@ -7513,6 +7593,9 @@ async function streamAnthropic(
     tools.push(SEARCH_MEMORY_TOOL);
     tools.push(SEARCH_NOTEBOOK_TOOL);
   }
+  // Offered unconditionally: it is a pure function over text the turn already
+  // holds, so there is no key to check, no cost to guard and nothing to gate on.
+  tools.push(CONTENT_SCORE_TOOL);
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_TOOL);
     tools.push(SLACK_TOOL);
@@ -8595,6 +8678,36 @@ async function streamAnthropic(
             is_error: true,
           });
         }
+      } else if (tool.name === "query_content_score") {
+        // Free and synchronous — a pure function over text the turn already
+        // holds. The card is enqueued FIRST so the reader sees the verdict
+        // while the model is still composing the sentence about it.
+        try {
+          const { buildInlineScore, inlineScoreForModel } = await import("@/lib/optimizer/inline-score");
+          const scoredText = String(tool.input.text || "");
+          const scoredTitle = String(tool.input.title || "");
+          const card = buildInlineScore(scoredText, scoredTitle);
+          if (card.ok) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content_score: card })}\n\n`));
+            config.onToolCard?.({
+              kind: "content_score",
+              data: card,
+              source: { text: scoredText, title: scoredTitle },
+            });
+          }
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: inlineScoreForModel(card),
+          });
+        } catch (err: any) {
+          console.error("[ContentScore] Failed:", err.message);
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tool.id,
+            content: `Could not score that: ${err.message}`,
+          });
+        }
       } else if (tool.name === "search_notebook") {
         try {
           const result = await searchNotebook(
@@ -8965,6 +9078,7 @@ async function streamXAIChatCompletions(
     tools.push(SEARCH_MEMORY_OPENAI_TOOL);
     tools.push(SEARCH_NOTEBOOK_OPENAI_TOOL);
   }
+  tools.push(CONTENT_SCORE_OPENAI_TOOL);
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
@@ -9580,6 +9694,36 @@ async function streamXAIChatCompletions(
             content: `Web search failed: ${err.message}. Answer based on your existing knowledge instead.`,
           } as any);
         }
+      } else if (tc.function.name === "query_content_score") {
+        // Same handler, three more times: each provider chain dispatches tools
+        // in its own loop, so there is no single place to put this.
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const { buildInlineScore, inlineScoreForModel } = await import("@/lib/optimizer/inline-score");
+          const scoredText = String(input.text || "");
+          const scoredTitle = String(input.title || "");
+          const card = buildInlineScore(scoredText, scoredTitle);
+          if (card.ok) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content_score: card })}\n\n`));
+            config.onToolCard?.({
+              kind: "content_score",
+              data: card,
+              source: { text: scoredText, title: scoredTitle },
+            });
+          }
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: inlineScoreForModel(card),
+          } as any);
+        } catch (err: any) {
+          console.error("[ContentScore] Failed:", err.message);
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Could not score that: ${err.message}`,
+          } as any);
+        }
       } else if (tc.function.name === "search_notebook") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -9966,6 +10110,7 @@ async function streamGemini(
     tools.push(SEARCH_MEMORY_OPENAI_TOOL);
     tools.push(SEARCH_NOTEBOOK_OPENAI_TOOL);
   }
+  tools.push(CONTENT_SCORE_OPENAI_TOOL);
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
@@ -10557,6 +10702,36 @@ async function streamGemini(
             content: `Web search failed: ${err.message}. Answer based on your existing knowledge instead, and say clearly that you could not verify with a live search.`,
           } as any);
         }
+      } else if (tc.function.name === "query_content_score") {
+        // Same handler, three more times: each provider chain dispatches tools
+        // in its own loop, so there is no single place to put this.
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const { buildInlineScore, inlineScoreForModel } = await import("@/lib/optimizer/inline-score");
+          const scoredText = String(input.text || "");
+          const scoredTitle = String(input.title || "");
+          const card = buildInlineScore(scoredText, scoredTitle);
+          if (card.ok) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content_score: card })}\n\n`));
+            config.onToolCard?.({
+              kind: "content_score",
+              data: card,
+              source: { text: scoredText, title: scoredTitle },
+            });
+          }
+          geminiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: inlineScoreForModel(card),
+          } as any);
+        } catch (err: any) {
+          console.error("[ContentScore] Failed:", err.message);
+          geminiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Could not score that: ${err.message}`,
+          } as any);
+        }
       } else if (tc.function.name === "search_notebook") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -10847,6 +11022,7 @@ async function streamOpenAI(
     tools.push(SEARCH_MEMORY_OPENAI_TOOL);
     tools.push(SEARCH_NOTEBOOK_OPENAI_TOOL);
   }
+  tools.push(CONTENT_SCORE_OPENAI_TOOL);
   if (config.userEmail) {
     tools.push(MEETINGBRAIN_OPENAI_TOOL);
     tools.push(SLACK_OPENAI_TOOL);
@@ -11431,6 +11607,36 @@ async function streamOpenAI(
             role: "tool",
             tool_call_id: tc.id,
             content: `Web search failed: ${err.message}. Answer based on your existing knowledge instead, and say clearly that you could not verify with a live search.`,
+          } as any);
+        }
+      } else if (tc.function.name === "query_content_score") {
+        // Same handler, three more times: each provider chain dispatches tools
+        // in its own loop, so there is no single place to put this.
+        try {
+          const input = JSON.parse(tc.function.arguments);
+          const { buildInlineScore, inlineScoreForModel } = await import("@/lib/optimizer/inline-score");
+          const scoredText = String(input.text || "");
+          const scoredTitle = String(input.title || "");
+          const card = buildInlineScore(scoredText, scoredTitle);
+          if (card.ok) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content_score: card })}\n\n`));
+            config.onToolCard?.({
+              kind: "content_score",
+              data: card,
+              source: { text: scoredText, title: scoredTitle },
+            });
+          }
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: inlineScoreForModel(card),
+          } as any);
+        } catch (err: any) {
+          console.error("[ContentScore] Failed:", err.message);
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Could not score that: ${err.message}`,
           } as any);
         }
       } else if (tc.function.name === "search_notebook") {

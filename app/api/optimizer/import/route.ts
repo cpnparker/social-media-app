@@ -160,6 +160,8 @@ export async function POST(req: NextRequest) {
    */
   let chatText: string | null = null;
   let chatPrivateSource = false;
+  /** True once the text came from an inline card rather than from the reply. */
+  let chatCardHandled = false;
   if (source === "chat") {
     const conversationId = String(body.conversationId || "");
     const messageId = String(body.messageId || "");
@@ -207,15 +209,44 @@ export async function POST(req: NextRequest) {
 
     const { data: msg } = await intelligenceDb
       .from("ai_messages")
-      .select("id_message, role_message, document_message")
+      .select("id_message, role_message, document_message, tool_card")
       .eq("id_message", messageId)
       .eq("id_conversation", conversationId)
       .maybeSingle();
     if (!msg || (msg as any).role_message !== "assistant") {
       return NextResponse.json({ error: "That answer is no longer available" }, { status: 404 });
     }
-    const raw = String((msg as any).document_message || "").trim();
-    if (!raw) {
+
+    /**
+     * "Open in Optimiser" on an inline card starts from the text that was
+     * SCORED, not from the reply next to it.
+     *
+     * They are different documents and the difference is not cosmetic: the
+     * reply is a sentence about which fix to do first, so importing it would
+     * open a studio session on a paragraph of advice and score THAT. The
+     * scored text lives on the message because the tool put it there — the
+     * browser sends the same two ids and one flag, and supplies no text, so
+     * this stays on the right side of the rule the block above exists for.
+     */
+    if (body.fromCard === true) {
+      const card: any = (msg as any).tool_card;
+      const cardText = String(card?.source?.text || "").trim();
+      if (!cardText) {
+        return NextResponse.json(
+          { error: "The text behind that card is no longer stored. Paste it in to work on it." },
+          { status: 404 }
+        );
+      }
+      chatText = cardText;
+      if (!body.title && card?.source?.title) body.title = String(card.source.title).slice(0, 200);
+      chatPrivateSource = (conv as any).type_visibility !== "team";
+      // Skips the reply-shaped cleanup below, which is about chat rendering
+      // conventions the scored text never had.
+      chatCardHandled = true;
+    }
+
+    const raw = chatCardHandled ? "" : String((msg as any).document_message || "").trim();
+    if (!chatCardHandled && !raw) {
       return NextResponse.json({ error: "That answer has no text to start from" }, { status: 400 });
     }
 
@@ -224,19 +255,21 @@ export async function POST(req: NextRequest) {
     //   Image markdown points at /api/media, which the editor cannot resolve and
     //   the export path deliberately skips — leaving it would put broken images
     //   in an exported document.
-    chatText = raw
-      .replace(/\[__CITE_\d+__\]/g, "")
-      .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-    if (!chatText) {
-      return NextResponse.json({ error: "That answer has no text to start from" }, { status: 400 });
-    }
+    if (!chatCardHandled) {
+      chatText = raw
+        .replace(/\[__CITE_\d+__\]/g, "")
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+      if (!chatText) {
+        return NextResponse.json({ error: "That answer has no text to start from" }, { status: 400 });
+      }
 
-    // THE FLOOR. Anything not positively confirmed as a team thread is treated
-    // as private — the safe direction, and the only one that survives a new
-    // visibility value being added later.
-    chatPrivateSource = (conv as any).type_visibility !== "team";
+      // THE FLOOR. Anything not positively confirmed as a team thread is treated
+      // as private — the safe direction, and the only one that survives a new
+      // visibility value being added later.
+      chatPrivateSource = (conv as any).type_visibility !== "team";
+    }
   }
 
   const clientId = body.clientId != null ? Number(body.clientId) : null;

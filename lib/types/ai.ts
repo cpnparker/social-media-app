@@ -99,4 +99,9 @@ export interface AIMessageRow {
     preview: { width: number; height: number; slides: any[] };
     published?: { url: string; presentationId: string; slideCount: number; thumbnails: string[] };
   } | null;
+  /** A card an inline tool drew beside this reply — the score, and in time the
+   *  page audit and the writer draft. `kind` says which; `data` is that card's
+   *  own payload. Read defensively: it is a record of what was shown, so a
+   *  card whose shape has moved on is dropped rather than migrated. */
+  toolCard?: { kind: string; data: any } | null;
 }

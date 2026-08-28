@@ -36,6 +36,7 @@ import {
   Search,
   Sparkles,
   ArrowDown,
+  Gauge,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -68,6 +69,7 @@ import MessageBubble from "./MessageBubble";
 import ChatInput, { type ChatInputHandle } from "./ChatInput";
 import ShareDialog from "./ShareDialog";
 import SlideDraftPreview, { type SlideDraft } from "./SlideDraftPreview";
+import ContentScoreCard, { type ContentScoreData } from "./ContentScoreCard";
 import SlideLightbox from "./SlideLightbox";
 import type { AIConversation, AIMessageRow, Attachment } from "@/lib/types/ai";
 
@@ -150,6 +152,10 @@ export default function ChatPanel({
   // the at-a-glance look at what actually landed.
   // A deck rendered but NOT written to Drive. Held until the user presses the
   // button or asks for changes, which replace it with a new draft.
+  /** The inline score card, pinned to the message that produced it. */
+  const [scoreCard, setScoreCard] = useState<ContentScoreData | null>(null);
+  const [scoreCardMessageId, setScoreCardMessageId] = useState<string | null>(null);
+  const [openingScore, setOpeningScore] = useState(false);
   const [slidesDraft, setSlidesDraft] = useState<SlideDraft | null>(null);
   // The draft as it is RIGHT NOW, for edits that resolve asynchronously. An
   // image takes tens of seconds to generate, and the patch used to be applied
@@ -237,6 +243,7 @@ export default function ChatPanel({
       setConversation(data.conversation);
       setMessages(data.messages || []);
       hydrateSlidesFromMessages(data.messages || []);
+      hydrateToolCardsFromMessages(data.messages || []);
       if (data.conversation.myPermission) setMyPermission(data.conversation.myPermission);
       if (data.conversation.shares) setShares(data.conversation.shares);
     } catch (err) {
@@ -477,6 +484,68 @@ export default function ChatPanel({
    * and put the user back to working out which one is current — the confusion
    * this flow exists to remove. A deck that was published shows as published.
    */
+  /**
+   * Take the scored text into the studio.
+   *
+   * Sends the same two ids the "Start writing" button does, plus a flag — and
+   * no text. The route re-reads the message, makes its own access and privacy
+   * decisions, and takes the SCORED text from the card rather than the reply,
+   * which is a sentence about the text and not the text.
+   */
+  const openScoreInOptimizer = useCallback(async () => {
+    if (!scoreCardMessageId || !conversationId) {
+      // The card is on screen but its message never landed — an incognito
+      // thread. Say which, because "try again" would not help.
+      toast.error("This thread isn't stored, so there's nothing to open. Paste the text into the Optimiser instead.");
+      return;
+    }
+    setOpeningScore(true);
+    try {
+      const res = await fetch("/api/optimizer/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId: conversation?.workspaceId ?? null,
+          source: "chat",
+          conversationId,
+          messageId: scoreCardMessageId,
+          fromCard: true,
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(j.error || "Could not open that in the Optimiser");
+        return;
+      }
+      window.location.href = `/engineai/optimizer?session=${encodeURIComponent(j.sessionId)}`;
+    } catch {
+      toast.error("Could not open that in the Optimiser");
+    } finally {
+      setOpeningScore(false);
+    }
+  }, [scoreCardMessageId, conversationId, conversation?.workspaceId]);
+
+  /**
+   * Put back the card the last inline tool drew.
+   *
+   * Only the LAST one, and only if its shape still parses. The reply beside it
+   * was written NOT to repeat the numbers, so a thread reopened without its
+   * card reads as a verdict about nothing — which is the whole reason the card
+   * is stored rather than left in the browser that made it.
+   */
+  const hydrateToolCardsFromMessages = useCallback((rows: AIMessageRow[]) => {
+    const withCard = [...rows].reverse().find((m) => m.toolCard?.kind === "content_score");
+    const data = withCard?.toolCard?.data;
+    // A stored card whose shape has moved on is dropped, not repaired: it is a
+    // record of what was on screen that day, and half of one is worse than none.
+    if (!withCard || !data || typeof data.overall !== "number" || !Array.isArray(data.moves)) {
+      setScoreCard(null); setScoreCardMessageId(null);
+      return;
+    }
+    setScoreCard(data as ContentScoreData);
+    setScoreCardMessageId(withCard.id);
+  }, []);
+
   const hydrateSlidesFromMessages = useCallback((rows: AIMessageRow[]) => {
     const withDeck = [...rows].reverse().find((m) => m.slidesDraft);
     if (!withDeck?.slidesDraft) {
@@ -752,6 +821,11 @@ export default function ChatPanel({
             } else if (parsed.document_error) {
               setIsGeneratingDocument(false);
               toast.error(`Document generation failed: ${parsed.document_error}`);
+            } else if (parsed.content_score) {
+              // Supersedes any earlier card: two scores on screen invites the
+              // reader to compare them, and only the newest describes the text.
+              setScoreCard(parsed.content_score as ContentScoreData);
+              setScoreCardMessageId(assistantIdRef.current || null);
             } else if (parsed.slides_draft) {
               setIsGeneratingDocument(false);
               setSlidesReauth(null);
@@ -1920,6 +1994,14 @@ export default function ChatPanel({
                 isStreaming
                 workspaceId={conversation?.workspaceId ?? null}
               />
+            )}
+            {scoreCard && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                  <Gauge className="h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <ContentScoreCard data={scoreCard} onOpen={openScoreInOptimizer} opening={openingScore} />
+              </div>
             )}
             {slidesDraft && (
               <div className="flex items-start gap-3 px-4 py-3">

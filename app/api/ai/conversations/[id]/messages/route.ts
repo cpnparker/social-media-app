@@ -1750,13 +1750,14 @@ export async function POST(
     // The last slide draft rendered this turn, persisted with the assistant
     // message so the preview outlives the browser tab that produced it.
     let lastSlidesDraft: any = null;
+    let lastToolCard: any = null;
 
     const aiStream = createStreamingResponse(
       messages,
       // userEmail is passed for team threads too: the MeetingBrain/Slack tools
       // gate personal reports server-side via conversationVisibility, while the
       // workspace-shared client_meetings report stays available to everyone.
-      { ...aiConfigRef, onSlidesDraft: (draft: any) => { lastSlidesDraft = draft; } },
+      { ...aiConfigRef, onSlidesDraft: (draft: any) => { lastSlidesDraft = draft; }, onToolCard: (card: any) => { lastToolCard = card; } },
       // modelUsed, not `model`. `model` is what this route CHOSE; four paths make
       // the answering model differ from it — Anthropic falling back to grok-4.3,
       // xAI falling back to claude-sonnet-5 on error OR on an empty reply, and a
@@ -1811,6 +1812,16 @@ export async function POST(
               .update({ slides_draft: lastSlidesDraft })
               .eq("id_message", pendingMessageId);
             if (draftErr) console.warn("[Messages] Slide draft not stored:", draftErr.message);
+          }
+
+          // Same treatment, same reason: written on its own, and a failure
+          // here costs the card on reload rather than the whole reply.
+          if (lastToolCard && pendingMessageId) {
+            const { error: cardErr } = await intelligenceDb
+              .from("ai_messages")
+              .update({ tool_card: lastToolCard })
+              .eq("id_message", pendingMessageId);
+            if (cardErr) console.warn("[Messages] Tool card not stored:", cardErr.message);
           }
 
           const { error: updateErr } = await intelligenceDb
