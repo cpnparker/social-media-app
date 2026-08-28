@@ -54,6 +54,43 @@ export interface RenderedImage {
   inContent: boolean;
 }
 
+/**
+ * A place on the rendered page that an audit finding can point at.
+ *
+ * Coordinates are DOCUMENT pixels at the render viewport width, so they map
+ * onto a full-page screenshot taken at the same width by simple scaling. The
+ * alternative — viewport coordinates — is meaningless the moment the page
+ * scrolls, and the page is scrolled to the bottom and back before this runs.
+ */
+export interface RenderSpot {
+  /** What kind of thing this is, which is how a finding claims it. */
+  kind: "h1" | "heading" | "image-no-alt" | "image" | "date" | "faq" | "first-paragraph";
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** A few words of the element, so a report can say WHICH one it means. */
+  label: string;
+}
+
+/** A full-page screenshot, already scaled and encoded for a page to render. */
+export interface RenderShot {
+  /** data:image/jpeg;base64,… */
+  dataUri: string;
+  /** Pixel size of the IMAGE, after scaling. */
+  width: number;
+  height: number;
+  /** Document height at the render width, before any clipping. Bigger than
+   *  `height / scale` means the page was taller than the capture cap. */
+  documentHeight: number;
+  /** image pixels per document pixel, so a spot can be placed on it. */
+  scale: number;
+  /** True when the page was taller than the cap and the tail is missing. Said,
+   *  never hidden: a report whose picture silently stops is a report that
+   *  claims to have looked at a page it only half saw. */
+  clipped: boolean;
+}
+
 export interface RenderOutcome {
   ok: boolean;
   /** Serialized final DOM. Null when the render did not run. */
@@ -72,6 +109,10 @@ export interface RenderOutcome {
   headings: { h1: number; h2: number; h3: number };
   jsonLdBlocks: number;
   renderMs: number;
+  /** Null when no screenshot was asked for, or when capture failed — which is
+   *  never fatal: an audit without a picture is still an audit. */
+  shot: RenderShot | null;
+  spots: RenderSpot[];
 }
 
 /**
@@ -101,6 +142,7 @@ const FAILED = (reason: string): RenderOutcome => ({
   ok: false, html: null, finalUrl: null, reason,
   blockedRequests: 0, images: [], renderedWords: 0, contentWords: 0,
   headings: { h1: 0, h2: 0, h3: 0 }, jsonLdBlocks: 0, renderMs: 0,
+  shot: null, spots: [],
 });
 
 /** Where to find a Chrome. On Vercel that is the bundled sparticuz build; in
@@ -139,7 +181,27 @@ async function launchBrowser(): Promise<{ browser: any; close: () => Promise<voi
  * happen is a reported outcome, not an exception, because the audit around it
  * must still deliver its raw-HTML findings.
  */
-export async function renderPage(url: string, timeoutMs = 20_000): Promise<RenderOutcome> {
+/**
+ * The widest a capture is scaled to. 900 is a compromise measured against what
+ * it is for: wide enough that a heading is legible in a printed report, narrow
+ * enough that a tall page stays inside a response.
+ */
+export const SHOT_WIDTH = 900;
+
+/**
+ * The tallest document a capture covers, in render pixels.
+ *
+ * Chromium refuses past roughly 16,000, and long before that a JPEG of a
+ * 30,000-pixel page is both unreadable and too large to send. A page past this
+ * is captured to the cap and SAYS the tail is missing.
+ */
+export const SHOT_MAX_HEIGHT = 7200;
+
+export async function renderPage(
+  url: string,
+  timeoutMs = 20_000,
+  opts?: { shot?: boolean }
+): Promise<RenderOutcome> {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -224,6 +286,32 @@ export async function renderPage(url: string, timeoutMs = 20_000): Promise<Rende
           h3: document.querySelectorAll("h3").length,
         },
         jsonLdBlocks: document.querySelectorAll('script[type="application/ld+json"]').length,
+        docHeight: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
+        spots: (() => {
+          const out = [];
+          const push = (el, kind) => {
+            const r = el.getBoundingClientRect();
+            const y = r.top + window.scrollY;
+            const x = r.left + window.scrollX;
+            // A zero-sized or off-canvas element has no place on a picture.
+            if (r.width < 4 || r.height < 4) return;
+            if (y < 0 || x < -50) return;
+            const text = (el.innerText || el.getAttribute("alt") || el.getAttribute("src") || "").replace(/\s+/g, " ").trim();
+            out.push({ kind: kind, x: Math.round(x), y: Math.round(y), w: Math.round(r.width), h: Math.round(r.height), label: text.slice(0, 90) });
+          };
+          Array.prototype.slice.call(document.querySelectorAll("h1")).forEach((el) => push(el, "h1"));
+          Array.prototype.slice.call(document.querySelectorAll("h2, h3")).forEach((el) => push(el, "heading"));
+          Array.prototype.slice.call(document.querySelectorAll("img")).forEach((el) => {
+            const alt = el.getAttribute("alt");
+            push(el, alt === null || alt.trim() === "" ? "image-no-alt" : "image");
+          });
+          Array.prototype.slice.call(document.querySelectorAll("time, [datetime], .date, .published")).slice(0, 3).forEach((el) => push(el, "date"));
+          const faq = document.querySelector('[class*="faq" i], [id*="faq" i], details');
+          if (faq) push(faq, "faq");
+          const firstP = root ? root.querySelector("p") : document.querySelector("p");
+          if (firstP) push(firstP, "first-paragraph");
+          return out;
+        })(),
         images: imgs.map((i) => {
           const r = i.getBoundingClientRect();
           return {
@@ -241,9 +329,51 @@ export async function renderPage(url: string, timeoutMs = 20_000): Promise<Rende
       };
     })()`);
 
+    /**
+     * The picture, and only when asked for.
+     *
+     * Taken AFTER the measurement pass, which has already scrolled the page to
+     * the bottom and back: lazy images are loaded by then, so the capture shows
+     * the page a reader sees rather than a column of grey placeholders.
+     *
+     * Failure here is never fatal. An audit without a picture is still an
+     * audit, and losing every check because a screenshot timed out would be a
+     * poor trade.
+     */
+    let shot: RenderShot | null = null;
+    if (opts?.shot) {
+      try {
+        const docHeight: number = Math.max(1, Math.round(measured.docHeight || 0));
+        const captureHeight = Math.min(docHeight, SHOT_MAX_HEIGHT);
+        const raw = (await page.screenshot({
+          type: "jpeg",
+          quality: 80,
+          clip: { x: 0, y: 0, width: 1280, height: captureHeight, scale: 1 },
+        })) as Buffer;
+        const sharp = (await import("sharp")).default;
+        const scale = SHOT_WIDTH / 1280;
+        const resized = await sharp(raw)
+          .resize({ width: SHOT_WIDTH })
+          .jpeg({ quality: 72, mozjpeg: true })
+          .toBuffer();
+        shot = {
+          dataUri: `data:image/jpeg;base64,${resized.toString("base64")}`,
+          width: SHOT_WIDTH,
+          height: Math.round(captureHeight * scale),
+          documentHeight: docHeight,
+          scale,
+          clipped: docHeight > SHOT_MAX_HEIGHT,
+        };
+      } catch (e: any) {
+        console.warn("[render] screenshot failed:", String(e?.message || e).slice(0, 120));
+      }
+    }
+
     await close();
     return {
       ok: true,
+      shot,
+      spots: (measured.spots || []) as RenderSpot[],
       html: measured.html,
       finalUrl: measured.finalUrl,
       reason: null,

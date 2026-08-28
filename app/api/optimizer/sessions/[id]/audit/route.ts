@@ -65,10 +65,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // authoritative view for an AI crawler, so a page whose render dies still
   // gets a complete audit — it just loses the JavaScript-gap comparison, and
   // says so rather than reporting a clean bill of health it never checked.
-  const render = await renderPage(fetched.finalUrl).catch((e) => {
+  // `shot: true` — the audit is the one caller that wants a picture. It is the
+  // deliverable a client sees, and a page's problems are far easier to believe
+  // when they are circled on the page itself than described in a list.
+  const render = await renderPage(fetched.finalUrl, 20_000, { shot: true }).catch((e) => {
     return { ok: false, html: null, finalUrl: null, reason: `render threw: ${String(e).slice(0, 120)}`,
              blockedRequests: 0, images: [], renderedWords: 0, contentWords: 0,
-             headings: { h1: 0, h2: 0, h3: 0 }, jsonLdBlocks: 0, renderMs: 0 };
+             headings: { h1: 0, h2: 0, h3: 0 }, jsonLdBlocks: 0, renderMs: 0,
+             shot: null, spots: [] };
   });
 
   // ── robots.txt and llms.txt ─────────────────────────────────────────────
@@ -144,5 +148,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     liveScores,
     liveWords,
     render: { ran: render.ok, reason: render.reason, ms: render.renderMs },
+    // The picture and the places on it. Sent as data rather than a stored file:
+    // the blob store is private, so a URL here would need a token to be
+    // readable, and an audit is re-run rather than revisited.
+    shot: render.shot,
+    spots: render.spots,
   });
 }

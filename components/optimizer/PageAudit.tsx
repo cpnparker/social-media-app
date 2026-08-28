@@ -18,9 +18,11 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
-  AlertCircle, AlertTriangle, CheckCircle2, ExternalLink, Info, Loader2, RefreshCw,
+  AlertCircle, AlertTriangle, CheckCircle2, ExternalLink, FileText, Info, Loader2, RefreshCw,
 } from "lucide-react";
 import type { PageAuditResult, AuditCheck } from "@/lib/optimizer/page-audit";
+import type { RenderShot, RenderSpot } from "@/lib/optimizer/render";
+import AuditReport from "./AuditReport";
 import type { DraftScores } from "@/lib/optimizer/types";
 
 interface AuditResponse {
@@ -30,6 +32,8 @@ interface AuditResponse {
   liveScores: DraftScores | null;
   liveWords: number;
   render?: { ran: boolean; reason: string | null; ms: number } | null;
+  shot?: RenderShot | null;
+  spots?: RenderSpot[];
 }
 
 interface Props {
@@ -69,6 +73,14 @@ function StatusIcon({ s }: { s: AuditCheck["status"] }) {
 
 export default function PageAudit({ sessionId, workspaceId, sourceUrl, onResult}: Props) {
   const [data, setData] = useState<AuditResponse | null>(null);
+  /**
+   * The working list, or the client-facing report over the same findings.
+   *
+   * One fetch, two arrangements. A second endpoint for the report would be a
+   * second place for the counts to be computed, and the two would disagree the
+   * first time a check changed.
+   */
+  const [view, setView] = useState<"checks" | "report">("checks");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -126,6 +138,25 @@ export default function PageAudit({ sessionId, workspaceId, sourceUrl, onResult}
     (bySection[c.section] = bySection[c.section] || []).push(c);
   }
 
+  if (view === "report") {
+    return (
+      <div className="flex-1 min-h-0 overflow-y-auto audit-print-root">
+        <div className="audit-no-print mx-auto w-full max-w-[54rem] px-5 pt-5">
+          <Button variant="ghost" size="sm" className="h-7 text-[12px]" onClick={() => setView("checks")}>
+            ← Back to the checks
+          </Button>
+        </div>
+        <AuditReport
+          url={data.url}
+          finalUrl={data.finalUrl}
+          audit={audit}
+          shot={data.shot || null}
+          spots={data.spots || []}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
       <div className="mx-auto w-full max-w-[46rem] px-6 py-6 flex flex-col gap-5">
@@ -160,6 +191,18 @@ export default function PageAudit({ sessionId, workspaceId, sourceUrl, onResult}
               Fetched {new Date(audit.fetchedAt).toLocaleTimeString()} — re-run after publishing a fix to see it land.
             </p>
           </div>
+          {/* The same findings, arranged to be sent. Offered here rather than
+              buried, because the report is what most of this work is FOR. */}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setView("report")}
+            className="shrink-0"
+            title="A printable report with the problems marked on the page"
+          >
+            <FileText className="h-3.5 w-3.5 mr-1.5" />
+            Client report
+          </Button>
           <Button size="sm" variant="outline" onClick={run} disabled={loading} className="shrink-0">
             {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
             Re-audit
@@ -185,12 +228,12 @@ export default function PageAudit({ sessionId, workspaceId, sourceUrl, onResult}
         {liveScores && (
           <div className="rounded-xl border bg-card p-4">
             <div className="flex items-baseline justify-between mb-1">
-              <span className="text-[13.5px] font-semibold">The published text, through the same rubric</span>
+              <span className="text-[13.5px] font-semibold">How the live page scores</span>
               <span className="text-[12px] text-muted-foreground">{liveWords} words</span>
             </div>
             <p className="text-[12px] text-muted-foreground mb-3">
-              What the live page would score if it were your draft. The Optimise tab is where you improve it;
-              this is the published baseline it improves on.
+              The published text run through the editor&rsquo;s rubric. Use it as the baseline: edit on the
+              Optimise tab, then re-audit to see what moved.
             </p>
             {(() => {
               let scored = 0;

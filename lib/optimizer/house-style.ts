@@ -159,6 +159,39 @@ function hasFiniteVerb(clause: string): boolean {
 }
 
 /**
+ * Prepositions and gerunds that turn a heading into a strapline.
+ *
+ * "The published text, through the same rubric" is the shape: a noun phrase,
+ * a comma, and a modifier that explains rather than instructs. It reads like
+ * the caption under a stock photograph. A heading in a working tool should say
+ * what the thing is or what to do with it, in words someone could repeat.
+ */
+const TAGLINE_JOINERS = [
+  "through", "with", "for", "in", "by", "from", "without", "against", "beyond",
+  "made", "built", "designed", "written", "measured", "explained",
+];
+
+/**
+ * Does this heading read as a marketing strapline rather than a label?
+ *
+ * Deliberately narrow: the appositive shape only, joined by a comma or a dash.
+ * A wider rule would flag ordinary headings that happen to contain a comma, and
+ * a heading check that cries wolf gets switched off.
+ *
+ * Only applied to HEADINGS. The same construction inside a paragraph is
+ * ordinary English.
+ */
+export function isTagline(heading: string): boolean {
+  const h = String(heading || "").trim();
+  if (!h || h.length > 90) return false;
+  // A question is an instruction to the reader, never a strapline.
+  if (/\?$/.test(h)) return false;
+  const m = h.match(/[,—–]\s+([a-z]+)/);
+  if (!m) return false;
+  return TAGLINE_JOINERS.indexOf(m[1].toLowerCase()) >= 0;
+}
+
+/**
  * The rule, as the model receives it.
  *
  * Written without a single dash of its own, which is not a flourish: a rule

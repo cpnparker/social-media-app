@@ -285,7 +285,8 @@ console.log(`\n5. Rendering — and never claiming to have looked when it did no
     // audit report a huge JavaScript gap — correctly — and the test that
     // caught it was the one asserting render plumbing changes no tally.
     blockedRequests: 0, images: [], renderedWords: 68, contentWords: 68,
-    headings: { h1: 1, h2: 2, h3: 3 }, jsonLdBlocks: 1, renderMs: 3000, ...over,
+    headings: { h1: 1, h2: 2, h3: 3 }, jsonLdBlocks: 1, renderMs: 3000,
+    shot: null, spots: [], ...over,
   });
   const statusWith = (render: RenderOutcome | null, id: string) =>
     statusOf({ ...BASE, render }, id);
@@ -436,6 +437,7 @@ console.log(`\n7. Regressions from the adversarial review`);
     // identical page is reported as JavaScript-dependent.
     contentWords: 9999,
     headings: { h1: 1, h2: 0, h3: 0 }, jsonLdBlocks: 0, renderMs: 1000,
+      shot: null, spots: [],
   };
   const parity = auditPage({ ...BASE, page: served, finalUrl: "https://vaultline.example/parity", render: renderedSame }, NOW)
     .checks.filter((c) => c.id === "js-dependency")[0];
