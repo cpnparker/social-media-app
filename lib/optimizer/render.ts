@@ -386,17 +386,30 @@ export async function renderPage(
           }
         })()`);
         /**
-         * Wait for the page to STOP MOVING before measuring or capturing.
+         * CAPTURED AT THE BROWSING SIZE, AND STITCHED. Never resized.
          *
-         * Revealing a hidden section starts its images loading, and an image
-         * that arrives after the measurement pushes everything below it down.
-         * The marks were then drawn from coordinates the picture no longer
-         * agreed with: every box sat above the heading it was meant to be
-         * around, and the gap grew further down the page — which is exactly
-         * what a cumulative downward shift looks like.
+         * The obvious way to photograph a long page is one clipped screenshot
+         * taller than the viewport. Chromium takes that by expanding the
+         * viewport to the clip, which re-runs the page's layout at the new
+         * height — and any section sized in viewport units changes with it. On
+         * the first page this was tried against, `min-height: 100vh` bands moved
+         * a heading from y=2,390 to y=3,650, so every mark in the report sat
+         * above the thing it pointed at, further off further down the page.
          *
-         * Poll for two things at once: every image complete, and the document
-         * height unchanged since the previous tick. Bounded, because a page
+         * Worse, it does not converge: a taller viewport makes the vh sections
+         * taller, which makes the document taller, which asks for a taller
+         * viewport. Measured across two rounds on one page: 4,357, then 6,196,
+         * then 8,709.
+         *
+         * So the viewport never changes. The page is photographed a screen at a
+         * time and the tiles are joined, which means the layout the coordinates
+         * were measured in is the layout in the picture, by construction.
+         */
+        /**
+         * Wait for the page to stop moving before measuring or photographing it.
+         *
+         * Revealing a hidden section starts its images loading, and one that
+         * arrives late pushes everything below it down. Bounded, because a page
          * with a carousel never settles and an audit that waits forever is
          * worse than one measured a moment early.
          */
@@ -414,47 +427,25 @@ export async function renderPage(
         })()`);
 
         /**
-         * The places a finding can point at, measured HERE.
+         * The places a finding can point at.
          *
-         * After the reveal, not before it. The reveal clears transforms on the
-         * containers it makes visible, and a container carrying a translateY as
-         * part of its animation therefore MOVES when it is revealed. Measured
-         * first, every box in the report then sat a few dozen pixels above the
-         * heading it was supposed to be around — a mark pointing confidently at
-         * the wrong place, which is the one thing this whole layer must not do.
-         *
-         * Nothing else needs re-measuring: the audit's own inputs are the DOM
-         * and its text, and neither opacity nor transform changes either.
+         * Measured in the SAME layout the picture is taken in, which is the
+         * whole reason the viewport is never resized: coordinates and picture
+         * come from one state of the page, so a mark cannot land beside the
+         * thing it is about.
          */
         spotted = await page.evaluate(`(() => {
           const CONTENT_SEL = "main, article, [role=main], #main, .main-content";
           const root = document.querySelector(CONTENT_SEL);
-          const out2 = (() => {
           const out = [];
           const push = (el, kind) => {
             const r = el.getBoundingClientRect();
             const y = r.top + window.scrollY;
             const x = r.left + window.scrollX;
-            // A zero-sized or off-canvas element has no place on a picture.
             if (r.width < 4 || r.height < 4) return;
             if (y < 0 || x < -50) return;
-            // textContent, NOT innerText.
-            //
-            // innerText is what a reader sees, and it omits anything currently
-            // hidden — which on a page that splits its headings into per-letter
-            // spans for an animation means the letters that happen to be hidden
-            // at this instant are simply absent. The first real report quoted a
-            // client's own heading back at them as "Boo t your trategic event
-            // communication", which reads as our tool corrupting their text.
-            // A label only has to identify the element, so the complete string
-            // is the right one even where some of it is momentarily invisible.
-            // \\s, not \s. This whole block is a TEMPLATE LITERAL handed to
-            // page.evaluate as a string, and \s is not a valid escape in one:
-            // it collapses to a bare "s", so the regex became /s+/g and every
-            // letter s in a client's own heading was replaced with a space.
-            // "Boost your strategic event communications" reached the report as
-            // "Boo t your trategic event communication ". The line above this
-            // one has the double backslash for exactly this reason.
+            // \\s, not \s: this is a template literal, where \s collapses to a
+            // bare "s" and the regex would replace every letter s with a space.
             const text = (el.textContent || el.getAttribute("alt") || el.getAttribute("src") || "").replace(/\\s+/g, " ").trim();
             out.push({ kind: kind, x: Math.round(x), y: Math.round(y), w: Math.round(r.width), h: Math.round(r.height), label: text.slice(0, 90) });
           };
@@ -470,21 +461,59 @@ export async function renderPage(
           const firstP = root ? root.querySelector("p") : document.querySelector("p");
           if (firstP) push(firstP, "first-paragraph");
           return out;
-          })();
-          return out2;
         })()`);
 
+        const VIEW_H = 2400;
+        const docHeight: number = await page.evaluate(
+          `Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)`
+        );
+        const captureHeight = Math.min(Math.max(1, Math.round(docHeight)), SHOT_MAX_HEIGHT);
+        const tiles = Math.ceil(captureHeight / VIEW_H);
 
-        const docHeight: number = Math.max(1, Math.round(measured.docHeight || 0));
-        const captureHeight = Math.min(docHeight, SHOT_MAX_HEIGHT);
-        const raw = (await page.screenshot({
-          type: "jpeg",
-          quality: 80,
-          clip: { x: 0, y: 0, width: 1280, height: captureHeight, scale: 1 },
-        })) as Buffer;
+        const parts: { input: Buffer; top: number; left: number }[] = [];
+        for (let i = 0; i < tiles; i++) {
+          const y = i * VIEW_H;
+          // Scroll, then ASK WHERE WE ACTUALLY ARE. The last tile cannot scroll
+          // to its nominal offset — the browser clamps at the bottom of the
+          // document — so compositing at the requested offset would leave a
+          // band of white and shift the tail of the page out of place.
+          await page.evaluate(`window.scrollTo(0, ${y})`);
+          // A fixed header repeated once per tile looks like a broken picture.
+          // It belongs on the first screen, where a reader sees it, and nowhere
+          // else. Restored afterwards so nothing else is affected.
+          await page.evaluate(`(() => {
+            const on = ${i > 0};
+            const els = Array.prototype.slice.call(document.querySelectorAll("*"));
+            for (let k = 0; k < els.length; k++) {
+              const el = els[k];
+              const pos = getComputedStyle(el).position;
+              if (pos !== "fixed") continue;
+              if (on) el.setAttribute("data-audit-hid", "1");
+              else el.removeAttribute("data-audit-hid");
+              el.style.setProperty("visibility", on ? "hidden" : "visible", "important");
+            }
+          })()`);
+          await new Promise((r) => setTimeout(r, 140));
+          const at: number = await page.evaluate(`Math.round(window.scrollY)`);
+          // No clip: a clip is measured in DOCUMENT coordinates, so clipping to
+          // y=0 photographed the top of the page every time however far it had
+          // been scrolled — three identical tiles stacked into one picture. A
+          // plain screenshot is the viewport, which is exactly this tile.
+          const tile = (await page.screenshot({ type: "png" })) as Buffer;
+          parts.push({ input: tile, top: at, left: 0 });
+          if (at + VIEW_H >= captureHeight) break;
+        }
+
         const sharp = (await import("sharp")).default;
+        const stitched = await sharp({
+          create: { width: 1280, height: captureHeight, channels: 3, background: "#ffffff" },
+        })
+          .composite(parts)
+          .jpeg({ quality: 80 })
+          .toBuffer();
+
         const scale = SHOT_WIDTH / 1280;
-        const resized = await sharp(raw)
+        const resized = await sharp(stitched)
           .resize({ width: SHOT_WIDTH })
           .jpeg({ quality: 72, mozjpeg: true })
           .toBuffer();
@@ -492,7 +521,7 @@ export async function renderPage(
           dataUri: `data:image/jpeg;base64,${resized.toString("base64")}`,
           width: SHOT_WIDTH,
           height: Math.round(captureHeight * scale),
-          documentHeight: docHeight,
+          documentHeight: Math.round(docHeight),
           scale,
           clipped: docHeight > SHOT_MAX_HEIGHT,
         };

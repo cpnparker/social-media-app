@@ -339,6 +339,22 @@ console.log("\n9. Capture");
   assert(/opts\?\.shot/.test(render), "the screenshot is opt-in — most callers do not want the cost");
   assert(/SHOT_MAX_HEIGHT/.test(render) && /clipped: docHeight > SHOT_MAX_HEIGHT/.test(render),
     "a tall page is captured to a cap and the clipping is recorded rather than hidden");
+
+  // THE VIEWPORT NEVER CHANGES DURING A CAPTURE, and this is the whole reason
+  // the marks land where they should. A clipped screenshot taller than the
+  // viewport is taken by expanding the viewport, which re-lays-out the page:
+  // sections sized in viewport units move, and coordinates measured before
+  // describe a page that no longer exists. Measured on a real page: a heading
+  // at y=2,390 became y=3,650, and it did not converge across rounds — 4,357,
+  // 6,196, 8,709 — because taller sections make a taller document.
+  const shotRegion = render.slice(render.indexOf("let shot: RenderShot | null = null"), render.indexOf("await close();"));
+  assert(!/setViewport/.test(shotRegion), "the viewport is never resized while the page is being measured or photographed");
+  assert(/const tile = \(await page\.screenshot\(\{ type: "png" \}\)\)/.test(shotRegion),
+    "each tile is a plain viewport screenshot — a clip is measured in DOCUMENT coordinates and photographed the top of the page every time");
+  assert(/const at: number = await page\.evaluate\(`Math\.round\(window\.scrollY\)`\)/.test(shotRegion) && /top: at,/.test(shotRegion),
+    "and is composited where the page ACTUALLY scrolled to, because the last tile cannot reach its nominal offset");
+  assert(/position;\n              if \(pos !== "fixed"\) continue;/.test(shotRegion) || /pos !== "fixed"/.test(shotRegion),
+    "a fixed header is hidden for every tile but the first, or it repeats down the picture");
   assert(/quality: 72/.test(render) && /resize\(\{ width: SHOT_WIDTH \}\)/.test(render), "and the image is scaled and compressed before it is sent");
   // Failure to capture must not cost the audit.
   const region = render.slice(render.indexOf("let shot: RenderShot | null = null"), render.indexOf("await close();"));
