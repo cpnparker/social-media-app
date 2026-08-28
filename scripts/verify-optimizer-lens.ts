@@ -64,6 +64,7 @@ import {
 import { CONTENT_TYPE_IDS, criteriaFor, analysisAllowed } from "../lib/optimizer/content-types";
 import { settledStatuses, markersFor, type ResolvedNote } from "../lib/optimizer/highlight-plugin";
 import { JUDGE_CRITERION_KEYS, JUDGE_CRITERIA } from "../lib/optimizer/judge-rubric";
+import { buildDiscussSystem } from "../lib/optimizer/discuss";
 import { parseJudgeResponse, deriveVerdictFindings, anchorJudgeFindings } from "../lib/optimizer/judge";
 import { parseDraft } from "../lib/optimizer/parse";
 import { readFileSync } from "fs";
@@ -708,6 +709,86 @@ function selfTest() {
 }
 
 if (process.argv.indexOf("--self-test") >= 0) selfTest();
+
+// ── 13. The CONVERSATION works under the same lens as the document ─────────
+//
+// Reported from real use, on a cover letter. The marks layer had correctly
+// decided the piece was `plain` — mark-policy.ts was written FOR this document
+// and cites it by name — and the Suggestions tab said so on screen. The Discuss
+// panel was never told, so it went on talking about answer-engine citability
+// over a private letter to one hiring manager, and the model had to talk its
+// way out of the frame the product had handed it:
+//
+//   "a 38 here isn't a verdict on the writing, it's a mismatch of tool to task"
+//
+// That is the product making the model apologise for a number the product
+// should not have quoted.
+console.log("\n13. The conversation is told which lens it is under");
+{
+  const base = { title: "test cover letter", format: "article", grounding: "" };
+  const plain = buildDiscussSystem({ ...base, lens: "plain" });
+  const engine = buildDiscussSystem({ ...base, lens: "engine" });
+
+  // The fixture's own precondition: the two must actually differ, or every
+  // assertion below is about one string wearing two names.
+  assert(plain !== engine, "the two lenses produce different prompts");
+
+  assert(/NOT BEING OPTIMISED FOR AI ANSWER ENGINES/.test(plain), "a plain piece is declared as not being optimised for answer engines");
+  assert(/Do not quote or reason about an optimisation score/.test(plain), "and the model is told not to quote the score");
+  assert(/retrieval|citability/i.test(plain), "the plain block names the vocabulary it is ruling out");
+  assert(/makes its case|evidence is specific/.test(plain), "and says what DOES apply, rather than only what does not");
+
+  // The other half: the engine lens must not carry the plain block, or every
+  // GEO article loses its frame.
+  assert(!/NOT BEING OPTIMISED FOR AI ANSWER ENGINES/.test(engine), "an engine piece carries no such disclaimer");
+  assert(buildDiscussSystem(base) === engine, "and an absent lens behaves exactly as engine did before it existed");
+
+  // USED, not merely present, at all three joints.
+  const route = read("app/api/optimizer/sessions/[id]/discuss/route.ts");
+  assert(/buildDiscussSystem\(\{[\s\S]{0,200}lens,/.test(route), "the route passes a lens into the prompt");
+  assert(/const clientLens = normaliseLens\(body\.lens\)/.test(route), "taken from the client, through normaliseLens rather than raw");
+  assert(/markPolicyFor\(\{/.test(route), "with a server-side fallback from the same policy the marks use");
+  // The near-miss that would route every optimiser session down the Writer
+  // branch: the column holds the American spelling, markPolicyFor takes the
+  // British one.
+  assert(/String\(session\.type_surface\) === "writer" \? "writer" : "optimiser"/.test(route),
+    "and maps type_surface explicitly, because the database spells it optimizer and the policy spells it optimiser");
+
+  const panel = read("components/optimizer/DiscussPanel.tsx");
+  assert(/selection: selection \|\| null,\n[\s\S]{0,400}\n\s*lens,/.test(panel), "the panel sends its lens with the question");
+  const page = read("app/engineai/optimizer/page.tsx");
+  // Bounded to the DiscussPanel's OWN props. `lens={policy.lens}` appears twice
+  // in this file — the other is a different panel — so an unbounded match let a
+  // hardcoded lens on the conversation survive a mutation run while the
+  // assertion went green on the other component's prop.
+  const at = page.indexOf("<DiscussPanel");
+  assert(at > 0, "the DiscussPanel element was located");
+  const props = page.slice(at, page.indexOf("/>", at));
+  assert(/lens=\{policy\.lens\}/.test(props), "and the conversation gets the SAME policy object the marks and the score read");
+  assert(!/lens=\{"/.test(props), "not a literal of its own");
+}
+
+// ── 14. Clear leaves something to press ────────────────────────────────────
+//
+// Both Re-analyse and Clear are gated on there being turns, so clearing the
+// conversation removed the one control a writer wants next. Reported by someone
+// who had just pasted a revised draft in and wanted it read.
+console.log("\n14. An empty conversation offers a way back in");
+{
+  const panel = read("components/optimizer/DiscussPanel.tsx");
+  assert(/const analyse = useCallback/.test(panel), "there is a first-pass analyse action");
+  assert(/onClick=\{analyse\}/.test(panel), "the empty state calls it");
+  assert(/Read the whole piece/.test(panel), "and says what it does");
+
+  // Distinct from re-analyse, and the difference matters: re-analyse tells the
+  // model to take account of its earlier notes, which a cleared conversation
+  // does not have.
+  const analyseBody = panel.slice(panel.indexOf("const analyse = useCallback"), panel.indexOf("const reanalyse = useCallback"));
+  assert(!/already changed since your earlier notes/.test(analyseBody),
+    "and does not tell a model with no earlier notes to take account of them");
+  const reBody = panel.slice(panel.indexOf("const reanalyse = useCallback"), panel.indexOf("const reanalyse = useCallback") + 900);
+  assert(/already changed since your earlier notes/.test(reBody), "while re-analyse still does, which is what makes them two functions");
+}
 
 console.log(failures === 0 ? "\n✓ lens checks pass\n" : `\n✗ ${failures} failed\n`);
 process.exit(failures === 0 ? 0 : 1);

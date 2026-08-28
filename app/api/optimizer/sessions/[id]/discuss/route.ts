@@ -23,6 +23,8 @@
  * it reads a jsonb column.
  */
 import { NextRequest, NextResponse } from "next/server";
+import { markPolicyFor, normaliseLens, type Lens } from "@/lib/optimizer/mark-policy";
+import { DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { createStreamingResponse } from "@/lib/ai/providers";
 import { assertServiceAllowed } from "@/lib/admin/service-control";
@@ -251,10 +253,37 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     sources,
   } as any);
 
+  /**
+   * The lens the CONVERSATION works under, and it must be the one the marks are
+   * already using or the two surfaces contradict each other on the same piece.
+   *
+   * Taken from the client when it sends one, because the client holds the
+   * authoritative policy: `surface` is a property of the page the writer has
+   * open, not of the row, so the server cannot derive it alone. Validated
+   * through normaliseLens, so an unknown value falls back rather than reaching
+   * the prompt.
+   *
+   * The fallback derives what it can. `type_surface` is the American spelling
+   * in the database and markPolicyFor takes the British one, which is exactly
+   * the sort of near-miss that silently routes every optimiser session down the
+   * Writer branch; mapped explicitly rather than passed through.
+   */
+  const clientLens = normaliseLens(body.lens);
+  const brief = (session.config_brief || {}) as any;
+  const lens: Lens =
+    clientLens ||
+    markPolicyFor({
+      surface: String(session.type_surface) === "writer" ? "writer" : "optimiser",
+      contentTypeId: String(session.type_content || DEFAULT_CONTENT_TYPE),
+      override: normaliseLens(brief.lens),
+      hasTargetQueries: Array.isArray(brief.targetQueries) && brief.targetQueries.length > 0,
+    }).lens;
+
   const systemPrompt = buildDiscussSystem({
     title: session.name_title,
     format: session.type_format,
     grounding,
+    lens,
   });
 
   const history = readTurns(session.config_chat);

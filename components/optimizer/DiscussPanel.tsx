@@ -41,6 +41,10 @@ import { parseDiscussReply, type DiscussTurn } from "@/lib/optimizer/discuss";
 import { houseStyleFlags, mechanicalDedash } from "@/lib/optimizer/house-style";
 
 interface Props {
+  /** Which marks this piece is under, from markPolicyFor. The conversation must
+   *  work under the same one as the document, or the two contradict each other
+   *  about the same piece in front of the writer. */
+  lens: "engine" | "plain";
   sessionId: string;
   workspaceId: string | null;
   /** Read at submit time, so the model sees what is on screen — not the last save. */
@@ -377,7 +381,7 @@ function DraftBlock({
   );
 }
 
-export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, resolveQuote, onRevealQuote, onAnchorsChanged, focusTurn, pendingAsk, selection, hasSelection, onApply }: Props) {
+export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, resolveQuote, onRevealQuote, onAnchorsChanged, focusTurn, pendingAsk, selection, hasSelection, onApply, lens }: Props) {
   const [turns, setTurns] = useState<DiscussTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [streamed, setStreamed] = useState<string | null>(null);
@@ -531,6 +535,12 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
           question: q,
           draftHtml: getDraftHtml(),
           selection: selection || null,
+          // The same lens the marks are using. Sent rather than re-derived,
+          // because `surface` is a property of the page the writer has open and
+          // the server cannot see it — and because two derivations of one fact
+          // is how the panel and the document came to disagree in the first
+          // place.
+          lens,
         }),
       });
 
@@ -655,6 +665,26 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
    * pass, because a fresh review that repeats four points the writer has
    * already dealt with reads as not having looked.
    */
+  /**
+   * Read the piece for the first time in this conversation.
+   *
+   * Distinct from `reanalyse`, and the difference is not cosmetic: re-analyse
+   * says "take account of what has already changed since your earlier notes",
+   * which is a lie to a model that has no earlier notes and invites it to
+   * pretend it had some. This is the version for an empty panel.
+   *
+   * It exists because Clear used to leave nothing behind: both the Re-analyse
+   * and Clear buttons are gated on there being turns, so clearing the
+   * conversation removed the one control a writer wants next. Reported from
+   * real use, by someone who had just pasted a revised draft in.
+   */
+  const analyse = useCallback(() => {
+    ask(
+      "Read the whole piece as it stands and tell me what is wrong with it. " +
+        "Quote each passage you mean in an anchor block."
+    );
+  }, [ask]);
+
   const reanalyse = useCallback(() => {
     ask(
       "Read the whole piece again as it now stands and tell me what is still wrong. " +
@@ -764,8 +794,18 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
               Select a passage first to ask about that passage. Anything it offers for the piece
               lands in the document at one click.
             </p>
+            {/* Sends immediately rather than filling the box, because it is the
+                one thing here with no wording to decide. The three below are
+                prompts to edit; this is an action. */}
+            <button
+              onClick={analyse}
+              disabled={busy}
+              className="mt-2.5 inline-flex items-center gap-1.5 text-[12px] font-medium text-primary bg-primary/10 hover:bg-primary/15 disabled:opacity-50 rounded-md px-2.5 py-1.5"
+            >
+              <RefreshCw className="h-3 w-3" /> Read the whole piece
+            </button>
             <div className="mt-2.5 space-y-1">
-              {["Is the opening doing its job?", "This paragraph is flabby — tighten it", "What is this piece missing?"].map((s) => (
+              {["Is the opening doing its job?", "This paragraph is flabby, tighten it", "What is this piece missing?"].map((s) => (
                 <button
                   key={s}
                   onClick={() => { setQuestion(s); inputRef.current?.focus(); }}

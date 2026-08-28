@@ -2172,6 +2172,10 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
                 key={sessionId}
                 sessionId={sessionId}
                 workspaceId={workspaceId}
+                // The SAME policy the marks and the score use. Deriving it a
+                // second time inside the panel is how two surfaces come to
+                // disagree about one piece.
+                lens={policy.lens}
                 getDraftHtml={getDraftHtml}
                 resolveQuote={(q) => resolveQuote(q) !== null}
                 onRevealQuote={revealQuote}

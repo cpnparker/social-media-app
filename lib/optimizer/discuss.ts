@@ -42,6 +42,7 @@
  */
 
 import { HOUSE_STYLE_RULE } from "./house-style";
+import type { Lens } from "./mark-policy";
 
 /** Kept in the prompt. Twelve messages is six exchanges — enough to hold a
  *  thread of argument, bounded because every turn is paid for on every later
@@ -142,10 +143,40 @@ export function buildDiscussSystem(opts: {
   title: string;
   format: string;
   grounding: string;
+  /**
+   * WHICH MARKS THIS PIECE IS GETTING, told to the conversation.
+   *
+   * The marks layer has decided this for every piece since mark-policy.ts
+   * landed: a cover letter, a CV or any piece whose writer switched the
+   * answer-engine checks off is judged as writing, not as something an
+   * assistant should cite. The conversation was never told, so it went on
+   * talking about retrieval and citability over a private letter to one hiring
+   * manager, and the model had to talk its way out of the frame the product had
+   * given it. Observed on a real piece: "a 38 here isn't a verdict on the
+   * writing, it's a mismatch of tool to task."
+   *
+   * Absent means engine, which is what every caller did before this existed.
+   */
+  lens?: Lens;
 }): string {
+  const plain = opts.lens === "plain";
   return (
     `You are Engine AI, working with a writer on a piece they are drafting. ` +
     `You are looking at the draft with them.\n\n` +
+    (plain
+      ? `# What this piece is being judged as\n` +
+        `THIS PIECE IS NOT BEING OPTIMISED FOR AI ANSWER ENGINES. Either its kind rules that out, or ` +
+        `the writer has switched those checks off. Judge it as writing, for the person who will actually ` +
+        `read it.\n` +
+        `Do not raise retrieval, citability, being quoted by an assistant, schema, target queries, ` +
+        `answer-first openings or a TL;DR block. Do not quote or reason about an optimisation score: ` +
+        `the number is not measuring this piece, and repeating it lends it an authority it does not have. ` +
+        `If the writer asks about the score, say plainly that the rubric does not fit this kind of ` +
+        `document and offer to read it on its own terms instead.\n` +
+        `What DOES apply: whether it makes its case, whether the evidence is specific, whether the ` +
+        `opening earns the reader's attention, whether it is clear, and whether anything in it is vague, ` +
+        `unsupported or repeated.\n\n`
+      : "") +
     `# How to be useful here\n` +
     `Answer the question actually asked. If they ask what is wrong with a paragraph, say what is wrong ` +
     `with it. Do not rewrite it unasked. If they ask for a rewrite, give the rewrite.\n` +
