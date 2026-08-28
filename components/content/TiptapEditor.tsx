@@ -21,7 +21,7 @@ import Placeholder from "@tiptap/extension-placeholder";
 // logged. The optimiser scores what is in the editor, so a dropped image is
 // also an image the alt-text criteria can never see.
 import Image from "@tiptap/extension-image";
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import {
   Bold,
   Italic,
@@ -183,6 +183,31 @@ export default function TiptapEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /**
+   * Whether there is anything to undo, tracked rather than asked once.
+   *
+   * `editor.can().undo()` is read at render time, and nothing re-renders this
+   * component when the history stack changes — so the buttons would show
+   * whatever was true when the toolbar last happened to redraw. Subscribed to
+   * the editor's own transaction event, which is the only thing that moves the
+   * stack.
+   */
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  useEffect(() => {
+    if (!editor) return;
+    const sync = () => {
+      setCanUndo(editor.can().undo());
+      setCanRedo(editor.can().redo());
+    };
+    sync();
+    editor.on("transaction", sync);
+    return () => { editor.off("transaction", sync); };
+  }, [editor]);
+
+  /** ⌘ on a Mac, Ctrl everywhere else. Read once; it cannot change. */
+  const modKey = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘" : "Ctrl+";
+
   if (!editor) return null;
 
   const ToolbarButton = ({
@@ -190,19 +215,23 @@ export default function TiptapEditor({
     isActive,
     children,
     title,
+    disabled,
   }: {
     onClick: () => void;
     isActive?: boolean;
     children: React.ReactNode;
     title: string;
+    disabled?: boolean;
   }) => (
     <button
       type="button"
       onClick={onClick}
       title={title}
+      disabled={disabled}
       className={cn(
         "p-1.5 rounded hover:bg-muted transition-colors",
-        isActive && "bg-muted text-foreground"
+        isActive && "bg-muted text-foreground",
+        disabled && "opacity-35 pointer-events-none"
       )}
     >
       {children}
@@ -288,15 +317,21 @@ export default function TiptapEditor({
 
           <div className="w-px h-5 bg-border mx-1" />
 
+          {/* Labelled with the shortcut and dimmed when there is nothing to
+              undo. Two unlabelled arrows that look identical whether or not
+              they will do anything read as decoration, which is how a writer
+              comes to believe the editor has no undo at all. */}
           <ToolbarButton
             onClick={() => editor.chain().focus().undo().run()}
-            title="Undo"
+            title={`Undo (${modKey}Z)`}
+            disabled={!canUndo}
           >
             <Undo className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
             onClick={() => editor.chain().focus().redo().run()}
-            title="Redo"
+            title={`Redo (${modKey}⇧Z)`}
+            disabled={!canRedo}
           >
             <Redo className="h-4 w-4" />
           </ToolbarButton>

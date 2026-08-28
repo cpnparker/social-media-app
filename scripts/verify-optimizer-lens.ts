@@ -65,6 +65,9 @@ import { CONTENT_TYPE_IDS, criteriaFor, analysisAllowed } from "../lib/optimizer
 import { settledStatuses, markersFor, type ResolvedNote } from "../lib/optimizer/highlight-plugin";
 import { JUDGE_CRITERION_KEYS, JUDGE_CRITERIA } from "../lib/optimizer/judge-rubric";
 import { buildDiscussSystem } from "../lib/optimizer/discuss";
+import { liveFindingKey, LIVE_KEY_CHARS } from "../lib/optimizer/live-issues";
+import { LONG_SENTENCE_WORDS } from "../lib/optimizer/engine";
+import { isSingleWord, sentenceAround, occurrenceIndex, buildThesaurusAsk, THESAURUS_OPTIONS } from "../lib/optimizer/thesaurus";
 import { parseJudgeResponse, deriveVerdictFindings, anchorJudgeFindings } from "../lib/optimizer/judge";
 import { parseDraft } from "../lib/optimizer/parse";
 import { readFileSync } from "fs";
@@ -788,6 +791,143 @@ console.log("\n14. An empty conversation offers a way back in");
     "and does not tell a model with no earlier notes to take account of them");
   const reBody = panel.slice(panel.indexOf("const reanalyse = useCallback"), panel.indexOf("const reanalyse = useCallback") + 900);
   assert(/already changed since your earlier notes/.test(reBody), "while re-analyse still does, which is what makes them two functions");
+}
+
+// ── 15. A dismissed mark stays dismissed while the writer works ────────────
+//
+// Reported from real use: "I keep editing a line and the sentence runs too long
+// alert keeps coming back. I've dismissed it but it reappears."
+//
+// The id was `live:<criterion>:<start>-<end>`, and it carried a comment
+// promising a dismissed issue "stays dismissed while the writer edits
+// elsewhere". Character offsets are relative to the whole document, so it did
+// the opposite of what it claimed: typing one word in the first paragraph
+// shifted every offset after it and resurrected every dismissal below the
+// cursor. Dismissal is carried by finding id (anchorFindings), so an id that
+// moves is a dismissal that does not stick.
+console.log("\n15. Mark identity survives editing");
+{
+  // Typed as `string`: as literals TypeScript proves the comparison below can
+  // never be true and rejects it, which would mean deleting the precondition
+  // that makes the fixture mean anything.
+  const sentence: string = "The claims are there, but they are unsourced, undated, and attached to nobody at all.";
+
+  // The bug, in one line: the same passage, at two positions.
+  assert(liveFindingKey(sentence) === liveFindingKey(sentence), "the same passage keys the same");
+
+  // Editing elsewhere in the document moves this passage. Its identity must not
+  // move with it — this is the half that resurrected everything below an edit.
+  const shifted = "A new opening sentence. " + sentence;
+  assert(
+    liveFindingKey(sentence) === liveFindingKey(shifted.slice(shifted.indexOf("The claims"))),
+    "a passage keeps its identity when text is inserted above it"
+  );
+
+  // The reported half: editing INSIDE the sentence, past its opening.
+  const editedTail: string = "The claims are there, but they are unsourced, undated, and attached to no one whatsoever.";
+  assert(editedTail !== sentence, "the fixture really is an edit");
+  assert(
+    liveFindingKey(editedTail) === liveFindingKey(sentence),
+    "and while the writer edits the end of the sentence, the mark they dismissed stays dismissed"
+  );
+
+  // Punctuation and spacing, which is most of what editing a long sentence
+  // involves, must not count as a different passage either.
+  assert(
+    liveFindingKey("The claims  are there -- but they are unsourced, undated") ===
+      liveFindingKey("The claims are there, but they are unsourced undated"),
+    "punctuation and spacing changes do not re-mint the mark"
+  );
+
+  // The honest boundary. Rewrite the OPENING and it is a different sentence,
+  // so the mark is entitled to come back.
+  assert(
+    liveFindingKey("Every claim here is unsourced, undated, and attached to nobody at all.") !== liveFindingKey(sentence),
+    "rewriting the opening does bring the mark back — that IS a different sentence"
+  );
+
+  // And the id is built from it, rather than the function merely existing.
+  const live = read("lib/optimizer/live-issues.ts");
+  assert(/id: `live:\$\{c\.key\}:\$\{keyFor\(quote\)\}`/.test(live), "the finding id is built from the passage, not its offsets");
+  assert(!/\$\{sp\.start\}-\$\{sp\.end\}/.test(live), "no offset-based id survives anywhere");
+  assert(/used\[base\] === 1 \? base/.test(live), "and two passages that open alike stay separately dismissible");
+  assert(LIVE_KEY_CHARS >= 24 && LIVE_KEY_CHARS <= 96, `the key window is ${LIVE_KEY_CHARS} characters, long enough to distinguish and short enough to survive an edit`);
+}
+
+// ── 16. What counts as one sentence being too long ─────────────────────────
+console.log("\n16. The long-sentence threshold");
+{
+  // The mean band and the per-sentence mark are DIFFERENT QUANTITIES. They were
+  // the same number, 28, which marked ordinary variation inside a piece whose
+  // mean was healthy.
+  assert(LONG_SENTENCE_WORDS > 28, `a single sentence is marked past ${LONG_SENTENCE_WORDS} words, above the mean band's own ceiling of 28`);
+  assert(LONG_SENTENCE_WORDS <= 45, "and still low enough to catch a sentence that genuinely cannot be lifted alone");
+
+  const engine = read("lib/optimizer/engine.ts");
+  assert(/wordCount > LONG_SENTENCE_WORDS/.test(engine), "the filter reads the constant rather than a literal");
+  assert(!/wordCount > 28/.test(engine), "and no copy of the old literal survives");
+}
+
+// ── 17. One word selected is a thesaurus, not a rewrite ────────────────────
+console.log("\n17. Alternatives for a single word");
+{
+  assert(isSingleWord("clear") && isSingleWord("well-known") && isSingleWord("client's"),
+    "a word, a hyphenated compound and a possessive all count as one word");
+  assert(!isSingleWord("two words") && !isSingleWord("") && !isSingleWord("   "),
+    "a passage, and nothing at all, do not");
+  assert(!isSingleWord("42") && !isSingleWord("—"), "and neither does a numeral or a mark of punctuation, which have no synonyms");
+
+  const para = "The plan was clear. We had no budget for it, so the clear thing was to wait. Everyone agreed.";
+  const at = para.indexOf("clear thing");
+  const sent = sentenceAround(para, at);
+  assert(sent === "We had no budget for it, so the clear thing was to wait.", `the containing sentence is found: ${JSON.stringify(sent)}`);
+  assert(sentenceAround(para, 0).indexOf("Everyone") < 0, "and it does not run past its own boundaries");
+
+  // The initialism trap: without it the model is handed a fragment to rewrite.
+  const dotted = "Sales in the U.S. market grew fast. Nothing else did.";
+  assert(sentenceAround(dotted, dotted.indexOf("grew")) === "Sales in the U.S. market grew fast.",
+    "a dotted initialism does not end the sentence");
+
+  // Which occurrence, when the word appears more than once.
+  const twice = "The clear answer was the clear one.";
+  assert(occurrenceIndex(twice, "clear", twice.indexOf("clear")) === 1, "the first occurrence is the first");
+  assert(occurrenceIndex(twice, "clear", twice.lastIndexOf("clear")) === 2, "and the second is the second");
+
+  const ask = buildThesaurusAsk({ word: "clear", sentence: "The plan was clear.", occurrence: 2 });
+  assert(/second time it appears/.test(ask), "an ambiguous word says which one is meant");
+  assert(!/time it appears/.test(buildThesaurusAsk({ word: "clear", sentence: "The plan was clear." })),
+    "and an unambiguous one does not clutter the ask with it");
+  assert(new RegExp(`Offer ${THESAURUS_OPTIONS} options`).test(ask), "it asks for a readable number of options");
+  assert(/not a list of synonyms/.test(ask), "and for the difference between them, which is the part a thesaurus cannot give");
+  assert(/already the best word/.test(ask), "it is allowed to say the original wins");
+  assert(/simply cut/.test(ask), "and to say the word should go");
+
+  // THE ANCHOR. resolveQuote matches the FIRST occurrence in the document with
+  // no prefix or suffix, so anchoring on a bare word would replace some other
+  // paragraph's copy of it, silently, off screen.
+  assert(/Put the whole sentence in an anchor block/.test(ask), "the anchor is the sentence, not the word");
+  assert(/WHOLE sentence with only that one word changed/.test(ask), "and each option is the whole sentence, so applying it lands in the right place");
+
+  const ui = read("components/optimizer/SelectionActions.tsx");
+  assert(/kind === "rewrite" && isSingleWord\(p\)/.test(ui), "Rewrite branches on a single-word selection");
+  assert(/label=\{oneWord \? "Alternatives" : "Rewrite"\}/.test(ui), "and the button says which one it is about to do");
+  assert(/\{!oneWord && \(/.test(ui), "while Tighten and Make specific, which have nothing to do to one word, stand down");
+}
+
+// ── 18. Undo and redo say whether they will do anything ────────────────────
+console.log("\n18. Undo and redo");
+{
+  const ed = read("components/content/TiptapEditor.tsx");
+  assert(/editor\.chain\(\)\.focus\(\)\.undo\(\)\.run\(\)/.test(ed) && /editor\.chain\(\)\.focus\(\)\.redo\(\)\.run\(\)/.test(ed),
+    "both buttons exist and act on the editor");
+  // The state has to be SUBSCRIBED. `editor.can().undo()` read at render time
+  // shows whatever was true when the toolbar last happened to redraw, because
+  // nothing re-renders this component when the history stack moves.
+  assert(/editor\.on\("transaction", sync\)/.test(ed), "their enabled state is subscribed to the editor's transactions");
+  assert(/setCanUndo\(editor\.can\(\)\.undo\(\)\)/.test(ed) && /setCanRedo\(editor\.can\(\)\.redo\(\)\)/.test(ed), "and read from the editor rather than guessed");
+  assert(/editor\.off\("transaction", sync\)/.test(ed), "and unsubscribed, so a remounted editor does not leak a listener per mount");
+  assert(/disabled=\{!canUndo\}/.test(ed) && /disabled=\{!canRedo\}/.test(ed), "the buttons are disabled when there is nothing to do");
+  assert(/Undo \(\$\{modKey\}Z\)/.test(ed), "and name their keyboard shortcut, which is how most people will actually use them");
 }
 
 console.log(failures === 0 ? "\n✓ lens checks pass\n" : `\n✗ ${failures} failed\n`);

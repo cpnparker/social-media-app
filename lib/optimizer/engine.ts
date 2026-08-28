@@ -14,8 +14,7 @@
  * loosen the fixture instead of finding the clock.
  */
 
-import {
-  SUPERLATIVE_TERMS, SUPERLATIVE_TIERS, ANON_FACT_TIERS,
+import {  SUPERLATIVE_TERMS, SUPERLATIVE_TIERS, ANON_FACT_TIERS,
   CRITERIA, PILLARS, RUBRIC_VERSION, scoreToGrade, tieredScore,
   TITLE_ALIGNMENT_TIERS, HEADING_QUERY_TIERS, BODY_QUERY_TIERS,
   STAT_DENSITY_TIERS, NAKED_STAT_TIERS, EXTERNAL_LINK_TIERS,
@@ -32,6 +31,17 @@ import { parseDraft, sliceByWords, countTerm, containsAny, sectionLevels, senten
 import type { ParsedDraft, Chunk } from "./parse";
 import { validateHeadingHierarchy } from "./heading-hierarchy";
 import type { CriterionSpan, CriterionResult, DraftScores, PillarScore } from "./types";
+
+
+/**
+ * Words past which a SINGLE sentence is worth marking.
+ *
+ * Not the mean's upper bound, which is a different measurement. 35 is where a
+ * sentence stops comfortably surviving being lifted as a chunk on its own, and
+ * it is far enough above the mean band that normal variation in a well-written
+ * piece goes unmarked.
+ */
+export const LONG_SENTENCE_WORDS = 35;
 
 export interface DraftInput {
   body: string;
@@ -1063,6 +1073,13 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
   for (let i = 0; i < prose.length; i++) totalWords += prose[i].wordCount;
   const mean = prose.length > 0 ? totalWords / prose.length : 0;
   const sPts = (mean >= 14 && mean <= 22) ? 5 : ((mean >= 11 && mean < 14) || (mean > 22 && mean <= 28)) ? 3 : 0;
+  // NOTE the two numbers are different quantities and must not be conflated.
+  // The band above judges the MEAN; LONG_SENTENCE_WORDS decides which single
+  // sentences get marked. They were the same value, 28, and that was a category
+  // error: a healthy mean of 18 to 20 is made of sentences that vary, and
+  // plenty of good ones run past the mean's own ceiling. Marking every sentence
+  // over 28 flagged ordinary variation, and the writer who reported it was
+  // being told a line was too long while editing it.
   // The criterion scores the MEAN, but a writer cannot edit a mean. Point at
   // the individual sentences pulling it up — sorted longest first, so the ones
   // worth splitting come before the ones that are merely long.
@@ -1079,7 +1096,7 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
     return false;
   };
   const longSentences = prose
-    .filter(function (x) { return x.wordCount > 28 && !inAnyQuote(x); })
+    .filter(function (x) { return x.wordCount > LONG_SENTENCE_WORDS && !inAnyQuote(x); })
     .sort(function (a, b) { return b.wordCount - a.wordCount; })
     .map(function (x): CriterionSpan {
       return { start: x.start, end: x.end, note: x.wordCount + " words" };

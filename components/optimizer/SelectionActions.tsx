@@ -29,7 +29,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { Editor } from "@tiptap/react";
-import { MessageSquare, PenLine, Scissors, Target } from "lucide-react";
+import { BookA, MessageSquare, PenLine, Scissors, Target } from "lucide-react";
+import { isSingleWord, sentenceAround, occurrenceIndex, buildThesaurusAsk } from "@/lib/optimizer/thesaurus";
 
 interface Props {
   editor: Editor | null;
@@ -123,9 +124,38 @@ export default function SelectionActions({ editor, onAsk, onDiscuss, enabled }: 
     return editor.state.doc.textBetween(from, to, "\n").trim();
   };
 
+  /**
+   * Whether the writer has one word selected.
+   *
+   * Recomputed on the same events as the toolbar's position, because the label
+   * on the button changes with it: a button that says Rewrite and asks for
+   * synonyms is a worse lie than one that says neither.
+   */
+  const oneWord = isSingleWord(passage());
+
   const act = (kind: "rewrite" | "tighten" | "specific") => {
     const p = passage();
     if (!p) return;
+
+    // A single word is not a passage to rewrite, it is a word to look up.
+    // "Rewrite this passage so it is stronger" with one word attached is not a
+    // question anyone means to ask.
+    if (kind === "rewrite" && isSingleWord(p)) {
+      const $from = editor.state.selection.$from;
+      // The block's own text and the offset inside it, so the sentence search
+      // cannot wander into the paragraph above.
+      const para = $from.parent.textContent || "";
+      const at = $from.parentOffset;
+      const sentence = sentenceAround(para, at) || p;
+      onAsk(
+        buildThesaurusAsk({
+          word: p,
+          sentence,
+          occurrence: occurrenceIndex(sentence, p, Math.max(0, at - para.indexOf(sentence))),
+        })
+      );
+      return;
+    }
     onAsk(instruction(kind, p));
   };
 
@@ -159,9 +189,21 @@ export default function SelectionActions({ editor, onAsk, onDiscuss, enabled }: 
       role="toolbar"
       aria-label="Actions for the selected passage"
     >
-      <Item onClick={() => act("rewrite")} title="Rewrite this passage with AI" icon={<PenLine className="h-3 w-3" />} label="Rewrite" />
-      <Item onClick={() => act("tighten")} title="Same meaning, fewer words" icon={<Scissors className="h-3 w-3" />} label="Tighten" />
-      <Item onClick={() => act("specific")} title="Replace what is asserted with something verifiable" icon={<Target className="h-3 w-3" />} label="Make specific" />
+      <Item
+        onClick={() => act("rewrite")}
+        title={oneWord ? "Alternatives for this word, in this sentence" : "Rewrite this passage with AI"}
+        icon={oneWord ? <BookA className="h-3 w-3" /> : <PenLine className="h-3 w-3" />}
+        label={oneWord ? "Alternatives" : "Rewrite"}
+      />
+      {/* Both are about a passage. On one word, Tighten has nothing to shorten
+          and Make specific has nothing to verify, so offering them is offering
+          two buttons that come back saying there was nothing to do. */}
+      {!oneWord && (
+        <>
+          <Item onClick={() => act("tighten")} title="Same meaning, fewer words" icon={<Scissors className="h-3 w-3" />} label="Tighten" />
+          <Item onClick={() => act("specific")} title="Replace what is asserted with something verifiable" icon={<Target className="h-3 w-3" />} label="Make specific" />
+        </>
+      )}
       <span className="mx-0.5 h-4 w-px bg-border" />
       <Item onClick={onDiscuss} title="Open the conversation with this passage" icon={<MessageSquare className="h-3 w-3" />} label="Ask" muted />
     </div>

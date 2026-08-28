@@ -289,6 +289,20 @@ export function buildLiveFindings(
   const out: HighlightFinding[] = [];
   if (!text) return out;
 
+  /**
+   * Two passages can open the same way, so a key is not a guarantee of
+   * uniqueness. The second one to appear takes a suffix, which is deterministic
+   * within a build and keeps the two marks separately dismissible. Without it
+   * one dismissal would silently hide the other, and a mark that is hidden for
+   * a reason nothing on screen explains is worse than a duplicate.
+   */
+  const used: { [k: string]: number } = {};
+  const keyFor = (quote: string): string => {
+    const base = liveFindingKey(quote);
+    used[base] = (used[base] || 0) + 1;
+    return used[base] === 1 ? base : `${base}~${used[base]}`;
+  };
+
   for (let pi = 0; pi < scores.pillars.length; pi++) {
     const criteria = scores.pillars[pi].criteria;
     for (let ci = 0; ci < criteria.length; ci++) {
@@ -326,9 +340,11 @@ export function buildLiveFindings(
         if (!quote.trim()) continue;
 
         out.push({
-          // Stable across recomputes: same criterion, same offsets, same id, so
-          // a dismissed issue stays dismissed while the writer edits elsewhere.
-          id: `live:${c.key}:${sp.start}-${sp.end}`,
+          // Identified by WHAT IT IS ABOUT, not by where it sits. See
+          // liveFindingKey: an id built from character offsets changes whenever
+          // anything earlier in the document changes, so every dismissal below
+          // an edit came back on the next keystroke.
+          id: `live:${c.key}:${keyFor(quote)}`,
           criterion: c.key,
           severity: SEVERITY[c.key] || "low",
           quote,
@@ -347,6 +363,54 @@ export function buildLiveFindings(
     }
   }
   return out;
+}
+
+/**
+ * How much of a passage decides which passage it IS.
+ *
+ * Long enough that two different sentences rarely share it, short enough that
+ * working on the end of a sentence does not keep re-minting the mark you just
+ * waved away.
+ */
+export const LIVE_KEY_CHARS = 48;
+
+/**
+ * A stable identity for a marked passage.
+ *
+ * ── WHY NOT THE OFFSETS ─────────────────────────────────────────────────────
+ *
+ * The id used to be `live:<criterion>:<start>-<end>`, with a comment promising
+ * that a dismissed issue "stays dismissed while the writer edits elsewhere".
+ * It did the opposite. Character offsets are relative to the whole document, so
+ * typing a single word in the first paragraph shifts every offset after it, and
+ * every dismissal below the cursor came back on the next keystroke. Reported
+ * from real use as a "sentence runs too long" mark that would not stay
+ * dismissed.
+ *
+ * ── WHY A PREFIX AND NOT THE WHOLE QUOTE ────────────────────────────────────
+ *
+ * Because the reported case is a writer EDITING the sentence they dismissed.
+ * Hashing the whole quote fixes the document-wide bug and leaves that one:
+ * every keystroke inside the sentence mints a new id and the mark returns while
+ * they are still working on it. Keying on the opening means the mark stays
+ * dismissed while the sentence is being worked on, and returns only when its
+ * opening changes, which is the honest boundary for "this became a different
+ * sentence".
+ *
+ * Normalised so that punctuation and spacing changes, which are most of what
+ * editing a long sentence involves, do not count as a different passage.
+ */
+export function liveFindingKey(quote: string): string {
+  const norm = String(quote || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, LIVE_KEY_CHARS);
+  // djb2, so an id stays short and printable whatever the passage contains.
+  let h = 5381;
+  for (let i = 0; i < norm.length; i++) h = ((h << 5) + h + norm.charCodeAt(i)) >>> 0;
+  return h.toString(36);
 }
 
 /** True for findings this module produced, so the two layers can be told apart
