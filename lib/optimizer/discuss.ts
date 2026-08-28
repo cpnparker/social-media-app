@@ -122,6 +122,27 @@ export function anchorSlotOf(segment: number): string {
 }
 
 /**
+ * Is this a slot a turn may store, and a selector the renderer may use?
+ *
+ * A pure function rather than a regex in the route, for two reasons. The check
+ * can RUN it, which a literal in a handler only lets it grep for — and the two
+ * spellings drifted the moment anchors gained their own namespace, which broke
+ * a check that was asserting the old one.
+ */
+export function isValidPointSlot(v: unknown): boolean {
+  return typeof v === "string" && /^\d{1,3}\.(\d{1,3}|a)$/.test(v);
+}
+
+/** The full address: a turn's timestamp, then a slot. Bounded, because it is
+ *  written onto a stored row and read back as a selector. */
+export function isValidPointKey(v: unknown): boolean {
+  if (typeof v !== "string" || v.length > 60) return false;
+  const at = v.indexOf("#");
+  if (at < 10) return false;
+  return isValidPointSlot(v.slice(at + 1));
+}
+
+/**
  * The exchanges that answer one point, oldest first.
  *
  * Returned as PAIRS in document order rather than filtered per role, because a
@@ -163,7 +184,7 @@ export function readTurns(raw: any): DiscussTurn[] {
       ? t.dismissed.filter((n: any) => typeof n === "number" && Number.isInteger(n) && n >= 0)
       : undefined;
     const donePoints = Array.isArray(t.donePoints)
-      ? t.donePoints.filter((x: any) => typeof x === "string" && /^\d+\.(\d+|a)$/.test(x))
+      ? t.donePoints.filter((x: any) => isValidPointSlot(x))
       : undefined;
     out.push({
       role,

@@ -60,6 +60,8 @@ import {
   pointSlotOf,
   anchorKeyOf,
   anchorSlotOf,
+  isValidPointSlot,
+  isValidPointKey,
   repliesForPoint,
   isPointReply,
   type DiscussTurn,
@@ -842,9 +844,20 @@ console.log("\n11. Where the answer appears");
   // Working down the list.
   assert(/onDone\?\.\(false\)/.test(panel) && /onDone\(true\)/.test(panel), "a point can be marked done and brought back");
   assert(/point: slot, dismissed: next/.test(panel), "done is persisted against the turn");
+  // RUN, not grepped. These were regex literals inside the handler and the
+  // check asserted their exact spelling, so widening the pattern for anchors
+  // broke the check rather than the code. A pure validator can be exercised.
+  assert(isValidPointSlot("2.3") && isValidPointSlot("2.a"), "a well-formed slot is accepted");
+  assert(!isValidPointSlot("nonsense") && !isValidPointSlot("2") && !isValidPointSlot("2.3.4") && !isValidPointSlot(7),
+    "and anything else is refused");
+  assert(!isValidPointSlot("9999.1"), "including a slot number no reply could contain");
+  assert(isValidPointKey("2026-08-28T10:00:00.000Z#2.a"), "a well-formed key is accepted");
+  assert(!isValidPointKey("#2.3") && !isValidPointKey("2026-08-28T10:00:00.000Z#nope"), "a key with no turn, or a bad slot, is refused");
+  assert(!isValidPointKey("x".repeat(200) + "#1.1"), "and one long enough to bloat the row is refused");
+
   const route = read("app/api/optimizer/sessions/[id]/discuss/route.ts");
-  assert(/\/\^\\d\+\\\.\\d\+\$\/\.test\(body\.point\)/.test(route), "and the endpoint validates the slot rather than trusting it");
-  assert(/pointKey = \/\^\[0-9TZ:\.\\-\]\{10,40\}#\\d\+\\\.\\d\+\$\/\.test\(rawPoint\)/.test(route),
+  assert(/const point = isValidPointSlot\(body\.point\)/.test(route), "and the endpoint validates the slot rather than trusting it");
+  assert(/const pointKey = isValidPointKey\(rawPoint\)/.test(route),
     "the point key is shape-checked before it is written onto a stored turn");
 }
 
