@@ -145,13 +145,18 @@ from V1", 859.50 CU, the single largest row in `app_content`).
 
 ## Content Optimizer checks
 
-Fourteen scripts guard `lib/optimizer/` and the import/export paths. Run all of
-them before shipping anything that touches the rubric, the judge, anchoring or
-how content gets in:
+A growing set of scripts guards `lib/optimizer/`, the import/export paths and
+the studio's surfaces in chat. Run all of them before shipping anything that
+touches the rubric, the judge, anchoring or how content gets in:
 
 ```
-for f in rubric anchors judge gate doc-index highlight import export import-html live url page-audit file-import coverage; do npx tsx scripts/verify-optimizer-$f.ts || break; done
+for f in scripts/verify-optimizer-*.ts; do npx tsx "$f" || break; done
 ```
+
+The glob is the point. This line used to name fourteen scripts and there are
+now twenty-four: ten checks — including every one guarding work done since —
+were invisible to anyone following the instructions in this file. A hand-kept
+list of the things that catch drift is itself a thing that drifts.
 
 Two checks in `verify-optimizer-rubric.ts` are about the SET rather than any
 one criterion, and exist because nothing tied the engine to the register:

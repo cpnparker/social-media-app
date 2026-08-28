@@ -32,19 +32,38 @@
  *
  * ── MUTATION LOG ────────────────────────────────────────────────────────────
  *
- * KILLED  dropping `moreCount`/`morePoints` from buildInlineScore              → check 3
- * KILLED  `partial: false` hardcoded                                           → check 2
- * KILLED  removing the "ALREADY ON THE USER'S SCREEN" line from the tool result → check 4
- * KILLED  sorting open criteria ascending (smallest fixes first)               → check 3
- * KILLED  INLINE_SCORE_MIN_WORDS = 0 (score anything, including "hi")          → check 1
- * KILLED  sending `text: scoreCard.text` in the ChatPanel import POST          → check 6
- * KILLED  reading body.text instead of tool_card in the fromCard branch        → check 6
- * KILLED  deleting the tool_card update in the messages route                  → check 7
- * KILLED  onToolCard called in three chains but not the fourth                 → check 5
- * SURVIVED  renaming `scoredTitle` to `t` in the handlers — nothing reads the
- *           local name, and no assertion should: the check asserts the card
- *           CARRIES a source text, which holds under any spelling. Recorded
- *           because a survivor is a fact about the check, not a gap to tidy.
+ * Eighteen mutations, run in a detached worktree rather than by breaking this
+ * tree — it is shared with other sessions and it also deploys, and a deliberate
+ * break has reached production from here once already.
+ *
+ * KILLED  moreCount forced to 0 (the list stops at three, silently)          → check 3
+ * KILLED  rest sliced from shown+2, so the remainder under-counts            → check 3
+ * KILLED  open criteria sorted smallest-first                                → check 3
+ * KILLED  partial hardcoded false                                            → check 2
+ * KILLED  the short-band caveat made constant                                → check 2
+ * KILLED  INLINE_SCORE_MIN_WORDS = 0 (score anything, including "hi")        → check 1
+ * KILLED  the "ALREADY ON THE USER'S SCREEN" line removed                    → check 4
+ * KILLED  verdictLine collapsed to one sentence for all four cases           → check 4
+ * KILLED  one chain's handler renamed away                                   → check 5
+ * KILLED  one chain's onToolCard call deleted                                → check 5
+ * KILLED  the tool description told to fire on sight                         → check 5
+ * KILLED  the ChatPanel POST sending text alongside the ids                  → check 6
+ * KILLED  the fromCard branch reading body.text                              → check 6
+ * KILLED  the tool_card update deleted from the messages route               → check 7
+ * KILLED  the hydrator no longer called on load                              → check 7
+ * KILLED  the stored-card shape check removed                                → check 7
+ *
+ * SURVIVED, and then killed by widening the check: `source: undefined` on the
+ *   stored card. It opens no hole — the import route refuses rather than
+ *   importing the wrong text — but it turns "Open in Optimiser" into a dead
+ *   end for every card, which is a silent product failure. Check 6 now counts
+ *   the chains that carry the scored text.
+ *
+ * SURVIVED, correctly: renaming the handler's `scoredText`/`scoredTitle`
+ *   locals. Nothing reads the names, and check 6 asserts the PROPERTY — that a
+ *   source text is carried — which holds under any spelling. Recorded rather
+ *   than tidied away: a survivor is a fact about the check, and this one says
+ *   the assertion is pitched at the right level.
  */
 import {
   buildInlineScore,
@@ -241,6 +260,13 @@ console.log("\n6. Provenance of the escape hatch");
     !/\btext\s*:|content\s*:|\bhtml\s*:/.test(post),
     "and sends NO text — ids only, so the server decides what the piece contains"
   );
+
+  // The stored text is what makes the ids-only rule POSSIBLE. Dropping it does
+  // not open a hole — the route refuses rather than importing the wrong thing —
+  // but it turns the button into a dead end, and this survived the first pass.
+  const chains = stripComments(read("lib/ai/providers.ts"));
+  const carried = (chains.match(/source: \{ text: /g) || []).length;
+  assert(carried === 4, `${carried} chains store the scored text with the card (expected 4)`);
 
   const route = stripComments(read("app/api/optimizer/import/route.ts"));
   const branch = route.slice(route.indexOf("body.fromCard === true"), route.indexOf("body.fromCard === true") + 900);
