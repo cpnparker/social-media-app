@@ -30,23 +30,37 @@
  *
  * ── MUTATION LOG ────────────────────────────────────────────────────────────
  *
- * Filled in from a real run — see the bottom of this comment after the mutation
- * pass. Every entry below was observed, not predicted.
+ * Eighteen mutations, run in a detached worktree. All eighteen killed, no
+ * survivors — unusual, and worth reading as a property of the SUBJECT rather
+ * than of the check: almost everything here is a pure function with a narrow
+ * contract, and the source-level assertions are counts across four chains that
+ * any single-site edit breaks.
  *
- * KILLED  pickAuditUrl returning the MODEL's string instead of the user's    → check 2
- * KILLED  normaliseForMatch stripping the query string                       → check 1
- * KILLED  pickAuditUrl auto-selecting the only typed URL on a mismatch       → check 2
- * KILLED  urlsInUserTurns reading assistant turns too                        → check 2
- * KILLED  an overall percentage added to the card                            → check 4
- * KILLED  the "MUST NOT INVENT ONE" line removed from the model text         → check 4
- * KILLED  info checks folded into counts.pass                                → check 5
- * KILLED  findings sorted warn-first                                         → check 3
- * KILLED  the remainder counted as a single number rather than by status     → check 3
- * KILLED  one chain's handler renamed away                                   → check 6
- * KILLED  a handler passing input.url to runInlineAudit                      → check 6
- * KILLED  query_page_audit added to POST_TAINT_READ_TOOLS                    → check 7
- * KILLED  a bare fetch() in runInlineAudit                                   → check 8
- * KILLED  the render wired in instead of null                                → check 8
+ * The URL rule, from six directions:
+ *   KILLED  pickAuditUrl returning the MODEL's string instead of the user's  → 2
+ *   KILLED  normaliseForMatch stripping the query string                     → 1
+ *   KILLED  normaliseForMatch lowercasing the whole URL (path case folded)   → 1
+ *   KILLED  auto-selecting the only typed URL on a mismatch                  → 2
+ *   KILLED  urlsInUserTurns reading assistant turns too                      → 2
+ *   KILLED  a handler passing the model's argument to runInlineAudit         → 6
+ *
+ * The number that must not exist:
+ *   KILLED  a computed percentage added to the card                          → 4
+ *   KILLED  the "MUST NOT INVENT ONE" line removed from the model text       → 4
+ *   KILLED  the card component growing a score line                          → 4
+ *
+ * The checks that did not run:
+ *   KILLED  info checks folded into counts.pass                              → 5
+ *   KILLED  notMeasured dropped from the card                                → 5
+ *   KILLED  the render wired in instead of null                              → 8
+ *
+ * The rest:
+ *   KILLED  findings sorted warn-first                                       → 3
+ *   KILLED  the remainder collapsed to one number                            → 3
+ *   KILLED  one chain's handler renamed away                                 → 6
+ *   KILLED  query_page_audit added to POST_TAINT_READ_TOOLS                  → 7
+ *   KILLED  a bare fetch() replacing safeFetch                               → 8
+ *   KILLED  the hydrator restoring only one card kind                        → 9
  */
 import {
   urlsInUserTurns,
