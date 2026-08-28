@@ -147,6 +147,14 @@ export default function TiptapEditor({
     // document can be shorter than the old offset.
     const keep = selectionAfterExternalContent({ from, to }, editor.state.doc.content.size, hadFocus);
     if (keep) editor.commands.setTextSelection(keep);
+    // The record means "the HTML this editor and its parent last agreed on",
+    // which an external write settles just as much as an emission does.
+    //
+    // Without this line the guard turns into a different bug: edit piece A,
+    // open piece B, come back to A, and A's stored body is byte-identical to
+    // what this editor last emitted for A — so it reads as an echo, is skipped,
+    // and the editor goes on showing B's text under A's title.
+    lastEmittedRef.current = content;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content]);
 

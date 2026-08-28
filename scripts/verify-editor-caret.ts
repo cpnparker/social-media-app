@@ -32,7 +32,7 @@
  *
  * ── MUTATION LOG ────────────────────────────────────────────────────────────
  *
- * Nine mutations in a detached worktree, all nine killed.
+ * Ten mutations in a detached worktree, all ten killed.
  *
  * KILLED  decideExternalContent ignoring lastEmitted (the original bug)   → 1
  * KILLED  the echo guard comparing with != instead of ===                 → 1
@@ -43,6 +43,12 @@
  * KILLED  the effect setting content without preserving the selection     → 4
  * KILLED  focus read AFTER setContent, when it is no longer true          → 4
  * KILLED  the effect reverting to the prop-vs-editor comparison           → 4
+ * KILLED  the record not updated on an EXTERNAL write                     → 2b
+ *
+ * That last one was found by reasoning about the fix rather than by testing it:
+ * a record written only on the way out turns this fix into a quieter bug, where
+ * returning to a piece you had edited reads as an echo of itself and the editor
+ * keeps showing the piece you visited in between.
  */
 import { decideExternalContent, selectionAfterExternalContent } from "../lib/editor/external-content";
 import { readFileSync } from "fs";
@@ -105,6 +111,38 @@ console.log("\n2. A genuinely new document is still applied");
   assert(decideExternalContent(theirs, null, mine).reason === "external", "including the first hydration");
 }
 
+// ── 2b. Switching pieces and coming back ───────────────────────────────────
+//
+// The way the fix in section 1 turns into a worse bug if the record is only
+// ever written on the way OUT. Sequence: edit A, open B, return to A. A's
+// stored body is byte-identical to what the editor last emitted for A, so it
+// reads as an echo, is skipped, and the editor keeps showing B under A's title.
+console.log("\n2b. Piece A, then B, then A again");
+{
+  const a = "<p>Piece A, as the writer left it</p>";
+  const b = "<p>Piece B, a different article entirely</p>";
+
+  // 1. Editing A: the editor emits A.
+  let lastAgreed: string | null = a;
+  let inEditor = a;
+
+  // 2. Opening B: external, applied.
+  const toB = decideExternalContent(b, lastAgreed, inEditor);
+  assert(toB.apply === true, "opening a different piece applies it");
+  inEditor = b;
+  // The line under test: an external write settles the agreement too.
+  lastAgreed = b;
+
+  // 3. Back to A.
+  const backToA = decideExternalContent(a, lastAgreed, inEditor);
+  assert(backToA.apply === true, "and coming back to the first piece applies it again, rather than reading as an echo of it");
+
+  // The same sequence with the record NOT updated on the way in, which is the
+  // bug this section exists for.
+  const stale = decideExternalContent(a, a, b);
+  assert(stale.apply === false, "whereas a record left at A would skip A and leave B's text on screen — the precondition this asserts against");
+}
+
 // ── 3. Where the caret goes when content really does arrive ────────────────
 console.log("\n3. The caret after an external change");
 {
@@ -140,6 +178,7 @@ console.log("\n4. Wiring");
   assert(/selectionAfterExternalContent\(\{ from, to \}/.test(ed) && /if \(keep\) editor\.commands\.setTextSelection\(keep\)/.test(ed),
     "and the caret is restored after a real external change");
   assert(/const hadFocus = editor\.isFocused/.test(ed), "focus is read BEFORE setContent, which is the only moment it is still true");
+  assert(/lastEmittedRef\.current = content;/.test(ed), "and an external write updates the record too, or returning to a piece reads as an echo of it");
 }
 
 // ── Self-test ──────────────────────────────────────────────────────────────
@@ -156,6 +195,7 @@ if (process.argv.includes("--self-test")) {
   must(selectionAfterExternalContent({ from: 9, to: 9 }, 3, true)?.from === 3, "an unclamped offset");
   must(selectionAfterExternalContent({ from: 9, to: 9 }, 30, false) === null, "restoring into an unfocused editor");
 
+  must(decideExternalContent("A", "A", "B").apply === false, "a record left behind after switching pieces");
   const oldEffect = 'if (editor && content !== editor.getHTML()) { editor.commands.setContent(content); }';
   must(!/decideExternalContent\(/.test(oldEffect), "the pre-fix effect, which compared the prop with the editor and nothing else");
   const rawEmit = 'debounceRef.current = setTimeout(() => { onChange(editor.getHTML()); }, debounceMs);';
