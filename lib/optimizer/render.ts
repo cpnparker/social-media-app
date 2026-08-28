@@ -343,6 +343,32 @@ export async function renderPage(
     let shot: RenderShot | null = null;
     if (opts?.shot) {
       try {
+        /**
+         * Hide the consent overlay before the picture is taken.
+         *
+         * A cookie banner is not part of the page being audited: it is a fixed
+         * sheet that covers the bottom third of the first screen, and a client
+         * report whose picture is half consent dialogue looks careless and
+         * hides the content the findings are about. Observed on the first real
+         * capture.
+         *
+         * NARROW ON PURPOSE. Only elements that are BOTH fixed-position AND
+         * named as consent are hidden. Hiding every fixed element would take
+         * the site's own header with it, which is part of the page and is
+         * exactly what one of the checks is about. Nothing is removed from the
+         * DOM: the measurement pass has already run, so this cannot change a
+         * single finding.
+         */
+        await page.evaluate(`(() => {
+          const SEL = '[id*="cookie" i],[class*="cookie" i],[id*="consent" i],[class*="consent" i],[id*="gdpr" i],[class*="gdpr" i],[aria-label*="cookie" i],[data-testid*="cookie" i]';
+          const els = Array.prototype.slice.call(document.querySelectorAll(SEL));
+          for (let i = 0; i < els.length; i++) {
+            const el = els[i];
+            const pos = getComputedStyle(el).position;
+            if (pos === "fixed" || pos === "sticky") el.style.setProperty("display", "none", "important");
+          }
+        })()`);
+
         const docHeight: number = Math.max(1, Math.round(measured.docHeight || 0));
         const captureHeight = Math.min(docHeight, SHOT_MAX_HEIGHT);
         const raw = (await page.screenshot({

@@ -56,6 +56,7 @@
  */
 import {
   buildPins,
+  groupPins,
   unpinnedFindings,
   pinPercent,
   auditHeadline,
@@ -160,6 +161,27 @@ console.log("\n3. Bounded");
   const oneSpot = [spot("heading", 300)];
   const stacked = buildPins([check("heading-hierarchy", "fail"), check("question-headings-live", "warn")], oneSpot);
   assert(stacked.length === 1, "one element carries one badge, not two on top of each other");
+}
+
+// ── 3b. One problem marked six times is still one problem ──────────────────
+//
+// Seen on the first real report: three identical "Question-shaped headings"
+// entries in a row, each repeating the same evidence and the same remedy. That
+// reads as three problems and wastes the page it is printed on.
+console.log("\n3b. Grouping");
+{
+  const spots = [spot("heading", 100, 40, "Scale digital content"), spot("heading", 300, 40, "Raise brand awareness"), spot("heading", 500, 40, "Grow audiences"), spot("h1", 200, 40, "The title")];
+  const pins = buildPins([check("question-headings-live", "warn"), check("one-h1", "fail")], spots);
+  const groups = groupPins(pins);
+
+  assert(pins.length === 4, `four badges on the picture (${pins.length})`);
+  assert(groups.length === 2, `but two entries in the list (${groups.length})`);
+  const headings = groups.filter((g) => g.checkId === "question-headings-live")[0];
+  assert(!!headings && headings.ns.length === 3, "the repeated finding carries all three of its badge numbers");
+  assert(headings.labels.length === 3, "and names each element it marked, so they can be told apart");
+  assert(groups[0].ns[0] < groups[1].ns[0], "the list still runs down the page, ordered by first badge");
+  // The picture keeps every badge: each one points somewhere different.
+  assert(pins.filter((p) => p.checkId === "question-headings-live").length === 3, "the badges are not collapsed on the picture itself");
 }
 
 // ── 4. Everything else is shown, not dropped ───────────────────────────────
@@ -273,6 +295,14 @@ console.log("\n9. Capture");
   // Failure to capture must not cost the audit.
   const region = render.slice(render.indexOf("let shot: RenderShot | null = null"), render.indexOf("await close();"));
   assert(/catch \(e: any\)/.test(region) && !/throw/.test(region), "a screenshot that fails is warned about, never thrown — an audit without a picture is still an audit");
+
+  // The consent overlay, which is not part of the page being audited.
+  assert(/cookie" i\]/.test(render) && /consent" i\]/.test(render), "a cookie banner is hidden before the picture is taken");
+  assert(/pos === "fixed" \|\| pos === "sticky"/.test(render),
+    "and only when it is fixed or sticky — hiding every element named cookie would take real content with it");
+  const hideAt = render.indexOf('[id*="cookie"');
+  const measureAt = render.indexOf("const measured");
+  assert(measureAt > 0 && hideAt > measureAt, "hidden AFTER the measurement pass, so it cannot change a single finding");
 
   const route = stripComments(read("app/api/optimizer/sessions/[id]/audit/route.ts"));
   assert(/renderPage\(fetched\.finalUrl, 20_000, \{ shot: true \}\)/.test(route), "the audit route asks for one");

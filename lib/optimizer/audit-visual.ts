@@ -127,6 +127,43 @@ export function buildPins(checks: AuditCheck[], spots: RenderSpot[]): AuditPin[]
   return claimed.map((p, i) => ({ ...p, n: i + 1 }));
 }
 
+/** One finding, and every place on the page it was marked. */
+export interface PinGroup {
+  checkId: string;
+  name: string;
+  status: "fail" | "warn";
+  detail: string;
+  remedy: string;
+  /** The badge numbers, in reading order. */
+  ns: number[];
+  /** A few words of each marked element, so the reader can tell them apart. */
+  labels: string[];
+}
+
+/**
+ * Collapse the pins into one entry per finding.
+ *
+ * Six headings missing a question mark is ONE problem marked six times, and a
+ * list that repeats the same name, evidence and remedy three times running
+ * reads as three problems and wastes the page it is printed on. The badges stay
+ * separate on the picture, because each one points somewhere different.
+ *
+ * Ordered by the FIRST badge, so the list still runs down the page.
+ */
+export function groupPins(pins: AuditPin[]): PinGroup[] {
+  const order: string[] = [];
+  const by: { [id: string]: PinGroup } = {};
+  for (const p of pins) {
+    if (!by[p.checkId]) {
+      by[p.checkId] = { checkId: p.checkId, name: p.name, status: p.status, detail: p.detail, remedy: p.remedy, ns: [], labels: [] };
+      order.push(p.checkId);
+    }
+    by[p.checkId].ns.push(p.n);
+    if (p.label) by[p.checkId].labels.push(p.label);
+  }
+  return order.map((id) => by[id]).sort((a, b) => a.ns[0] - b.ns[0]);
+}
+
 /**
  * The findings with nowhere to point, and the passes.
  *

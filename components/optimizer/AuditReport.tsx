@@ -44,7 +44,7 @@ import { cn } from "@/lib/utils";
 import { AlertCircle, AlertTriangle, ExternalLink, Printer } from "lucide-react";
 import type { AuditCheck, PageAuditResult } from "@/lib/optimizer/page-audit";
 import type { RenderShot, RenderSpot } from "@/lib/optimizer/render";
-import { buildPins, unpinnedFindings, pinPercent, auditHeadline } from "@/lib/optimizer/audit-visual";
+import { buildPins, groupPins, unpinnedFindings, pinPercent, auditHeadline } from "@/lib/optimizer/audit-visual";
 
 const SECTION_LABEL: { [k: string]: string } = {
   rendering: "How it renders",
@@ -73,6 +73,7 @@ export default function AuditReport({
   clientName?: string | null;
 }) {
   const pins = buildPins(audit.checks, spots || []);
+  const groups = groupPins(pins);
   const rest = unpinnedFindings(audit.checks, pins);
   const counts = auditHeadline(audit.checks);
   const notMeasured = audit.checks.filter((c) => c.status === "info");
@@ -207,26 +208,38 @@ export default function AuditReport({
       {pins.length > 0 && (
         <section className="audit-section mb-6">
           <h2 className="text-[13px] font-semibold mb-2.5">What is marked</h2>
-          <ol className="space-y-3">
-            {pins.map((pin) => (
-              <li key={`${pin.checkId}-${pin.n}`} className="audit-finding flex items-start gap-3">
-                <span
-                  className={cn(
-                    "h-5 w-5 rounded-full text-white text-[11px] font-semibold flex items-center justify-center shrink-0 mt-0.5",
-                    pin.status === "fail" ? "bg-red-500" : "bg-amber-500"
-                  )}
-                >
-                  {pin.n}
+          <ol className="space-y-3.5">
+            {groups.map((g) => (
+              <li key={g.checkId} className="audit-finding flex items-start gap-3">
+                {/* Every badge for this finding, together. Six headings missing
+                    a question mark is one problem marked six times, not six
+                    problems. */}
+                <span className="flex flex-col gap-1 shrink-0 mt-0.5">
+                  {g.ns.map((n) => (
+                    <span
+                      key={n}
+                      className={cn(
+                        "h-5 w-5 rounded-full text-white text-[11px] font-semibold flex items-center justify-center",
+                        g.status === "fail" ? "bg-red-500" : "bg-amber-500"
+                      )}
+                    >
+                      {n}
+                    </span>
+                  ))}
                 </span>
                 <div className="flex-1 min-w-0">
-                  <p className="text-[13px] font-medium leading-snug">{pin.name}</p>
-                  {pin.label && (
-                    <p className="text-[11.5px] text-muted-foreground italic leading-snug mt-0.5 line-clamp-2">
-                      &ldquo;{pin.label}&rdquo;
-                    </p>
+                  <p className="text-[13px] font-medium leading-snug">{g.name}</p>
+                  <p className="text-[12.5px] text-muted-foreground leading-snug mt-0.5">{g.detail}</p>
+                  {g.labels.length > 0 && (
+                    <ul className="mt-1 space-y-0.5">
+                      {g.labels.map((l, i) => (
+                        <li key={i} className="text-[11.5px] text-muted-foreground italic leading-snug line-clamp-1">
+                          {g.ns[i]}. &ldquo;{l}&rdquo;
+                        </li>
+                      ))}
+                    </ul>
                   )}
-                  <p className="text-[12.5px] text-muted-foreground leading-snug mt-1">{pin.detail}</p>
-                  {pin.remedy && <p className="text-[12.5px] leading-snug mt-1">{pin.remedy}</p>}
+                  {g.remedy && <p className="text-[12.5px] leading-snug mt-1.5">{g.remedy}</p>}
                 </div>
               </li>
             ))}
