@@ -344,6 +344,20 @@ console.log("\n9. Capture");
   const region = render.slice(render.indexOf("let shot: RenderShot | null = null"), render.indexOf("await close();"));
   assert(/catch \(e: any\)/.test(region) && !/throw/.test(region), "a screenshot that fails is warned about, never thrown — an audit without a picture is still an audit");
 
+  // The page must STOP MOVING before it is measured or captured. Revealing a
+  // hidden section starts its images loading, and one that arrives afterwards
+  // pushes everything below it down — so the marks were drawn from coordinates
+  // the picture no longer agreed with, every box above its heading, the gap
+  // growing further down the page.
+  assert(/im\.complete/.test(render) && /documentElement\.scrollHeight/.test(render),
+    "the capture waits for every image and for the document height to stop changing");
+  assert(/i < 20/.test(render), "and the wait is bounded — a page with a carousel never settles");
+  const settleAt = render.indexOf("im.complete");
+  const measureSpotsAt = render.indexOf("spotted = await page.evaluate");
+  const shootAt = render.indexOf("page.screenshot({");
+  assert(settleAt < measureSpotsAt && measureSpotsAt < shootAt,
+    "and it happens BEFORE both the measurement and the picture, which is the whole point");
+
   // A label quotes the client's own words back at them, so it must be the
   // WHOLE string. innerText omits anything hidden at that instant, and a page
   // that splits its headings into per-letter spans for an animation therefore

@@ -385,8 +385,33 @@ export async function renderPage(
             el.style.setProperty("filter", "none", "important");
           }
         })()`);
-        // One frame for the layout to settle after the styles above.
-        await new Promise((r) => setTimeout(r, 350));
+        /**
+         * Wait for the page to STOP MOVING before measuring or capturing.
+         *
+         * Revealing a hidden section starts its images loading, and an image
+         * that arrives after the measurement pushes everything below it down.
+         * The marks were then drawn from coordinates the picture no longer
+         * agreed with: every box sat above the heading it was meant to be
+         * around, and the gap grew further down the page — which is exactly
+         * what a cumulative downward shift looks like.
+         *
+         * Poll for two things at once: every image complete, and the document
+         * height unchanged since the previous tick. Bounded, because a page
+         * with a carousel never settles and an audit that waits forever is
+         * worse than one measured a moment early.
+         */
+        await page.evaluate(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          let previous = -1;
+          for (let i = 0; i < 20; i++) {
+            await sleep(150);
+            const imgs = Array.prototype.slice.call(document.images);
+            const pending = imgs.filter((im) => !im.complete).length;
+            const height = document.documentElement.scrollHeight;
+            if (pending === 0 && height === previous) return;
+            previous = height;
+          }
+        })()`);
 
         /**
          * The places a finding can point at, measured HERE.
