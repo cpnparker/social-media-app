@@ -255,9 +255,63 @@ console.log("\n7. Words, and the honest refusal past the cap");
     : fail("an oversized diff returned parts; the cost guard is not firing");
 }
 
+// ── 8. The view is wired, and says what it cannot know ───────────────────
+console.log("\n8. The delivery view is reachable and honest");
+{
+  const read = (f: string) => require("fs").readFileSync(require("path").join(__dirname, "..", f), "utf8");
+  const page = read("app/engineai/optimizer/page.tsx");
+  const view = read("components/optimizer/DeliveryView.tsx");
+
+  /studioView === "delivery"/.test(page)
+    ? pass("the page renders a delivery view")
+    : fail("nothing renders for the delivery view");
+  // The switcher used to exist only for URL sessions, so a pasted piece had no
+  // tabs at all and could never reach this.
+  !/\{sourceInfo\.source === "url" && sourceInfo\.ref && \(\s*<div className="flex items-center rounded-lg border/.test(page)
+    ? pass("the view switcher no longer requires a URL-imported session")
+    : fail("the switcher is still gated on a URL, so a pasted piece cannot reach the delivery view");
+  /studioView !== "optimise" && "hidden"/.test(page)
+    ? pass("the editor is hidden rather than unmounted, so the undo stack survives a tab switch")
+    : fail("the editor's hide rule does not cover the new view");
+
+  // THE INVARIANT THE WHOLE VIEW RESTS ON: a change the writer did not type
+  // must leave a version behind, or there is no before-state to report. The
+  // autosave overwrites the newest row, so a path that edits without cutting
+  // is a change that becomes invisible the moment the debounce fires.
+  //
+  // Applying a suggestion was exactly that path — the most common AI-driven
+  // edit in the product, and the only text-changing one that cut nothing.
+  {
+    const apply = page.slice(page.indexOf("const handleApply = useCallback"));
+    const body = apply.slice(0, apply.indexOf("const handleDismiss"));
+    /const beforeHtml = editor\.getHTML\(\);/.test(body)
+      ? pass("handleApply captures the body BEFORE it edits")
+      : fail("handleApply does not capture a before-state, so no version can be cut");
+    /cutVersion\(beforeHtml/.test(body)
+      ? pass("and cuts a version — an applied suggestion is now recoverable and reportable")
+      : fail("applying a suggestion still leaves no version; the delivery view cannot see it");
+    /result\.ok && editor\) cutVersion/.test(body)
+      ? pass("only on success, so a drifted anchor does not mint an empty version")
+      : fail("a version is cut even when nothing was replaced");
+  }
+
+  view.indexOf("alignRevisions") >= 0 && view.indexOf("wordDiff") >= 0
+    ? pass("it uses the checked alignment and diff rather than its own")
+    : fail("the view computes its own comparison");
+  /not recorded/.test(view)
+    ? pass("a change with no stored reason SAYS so rather than being given one")
+    : fail("the reason slot does not state when a reason is missing — the fabrication case");
+  /We think these are the same section|our reading, not a fact/.test(view)
+    ? pass("an inferred pairing is presented as an inference")
+    : fail("a body-matched pairing is shown as certain");
+  /Too long to mark word by word/.test(view)
+    ? pass("past the diff cap it shows both versions instead of nothing")
+    : fail("an oversized section would render blank");
+}
+
 // ── Self-test ────────────────────────────────────────────────────────────
 if (process.argv.indexOf("--self-test") >= 0) {
-  console.log("\n8. self-test — every detector driven against input built to break it");
+  console.log("\n9. self-test — every detector driven against input built to break it");
   const probes: Array<[string, () => boolean]> = [
     ["alignment CAN report a removal", () =>
       alignRevisions(BEFORE, doc("<h2>Only this</h2><p>Nothing else at all here now.</p>"))

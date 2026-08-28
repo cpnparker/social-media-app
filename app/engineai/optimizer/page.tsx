@@ -50,6 +50,7 @@ import StartScreen from "@/components/optimizer/StartScreen";
 import DiscussPanel from "@/components/optimizer/DiscussPanel";
 import VersionHistory from "@/components/optimizer/VersionHistory";
 import SelectionActions from "@/components/optimizer/SelectionActions";
+import DeliveryView from "@/components/optimizer/DeliveryView";
 import SourcesPanel from "@/components/optimizer/SourcesPanel";
 import { draftBlockToHtml, draftBlockToInlineHtml } from "@/lib/optimizer/discuss";
 import { railTabsFor, defaultRailTab, type RailTabKey } from "@/lib/optimizer/rail-tabs";
@@ -237,7 +238,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
    * source ref is what makes the audit possible, so both come from hydration
    * together and the tab renders only when there is a page to audit.
    */
-  const [studioView, setStudioView] = useState<"optimise" | "audit">("optimise");
+  const [studioView, setStudioView] = useState<"optimise" | "audit" | "delivery">("optimise");
   const [sourceInfo, setSourceInfo] = useState<{ source: string; ref: string | null }>({ source: "generated", ref: null });
   const [navSearch, setNavSearch] = useState("");
   const [navTab, setNavTab] = useState<"private" | "team">("private");
@@ -1279,6 +1280,8 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     /* the AI-edit override, when one was generated for this finding */
     const editor = editorRef.current;
     if (!editor) return;
+    // CAPTURED BEFORE THE EDIT, because the version is the whole point below.
+    const beforeHtml = editor.getHTML();
     const result = applyFinding(editor as any, id, aiEdits[id]);
     if (!result.ok) {
       toast.error(
@@ -1293,7 +1296,23 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     // Persist immediately: the edit came from a button, not from typing, so
     // there is no debounce coming to save it.
     if (editor) saveBody(editor.getHTML());
-  }, [syncIssues, aiEdits]);
+    // AND CUT A VERSION. This was the one text-changing path that did not, and
+    // it is the one that most obviously should: the versions route states the
+    // rule as "a version is cut where the writer would want to go BACK to —
+    // before a change they did not type themselves", and pressing Apply on a
+    // suggestion is exactly that.
+    //
+    // The cost of the omission was invisible until there was something to read
+    // the history: the autosave OVERWRITES the newest draft row, so an applied
+    // suggestion left no before-state anywhere and the delivery view could
+    // never show the most common AI-driven edit in the product. Restoring past
+    // one was impossible too.
+    //
+    // Only on success — a drifted or deleted anchor changed nothing, and a
+    // version whose content equals the one below it is a row that makes the
+    // history longer and tells the reader nothing (the route refuses it anyway).
+    if (result.ok && editor) cutVersion(beforeHtml, editor.getHTML());
+  }, [syncIssues, aiEdits, cutVersion]);
 
   const handleDismiss = useCallback((id: string) => {
     const editor = editorRef.current;
@@ -1831,7 +1850,13 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
           </button>
           <span className="w-px h-4 bg-border shrink-0" />
           <span className="text-[13px] font-semibold truncate flex-1 min-w-0">{title}</span>
-          {sourceInfo.source === "url" && sourceInfo.ref && (
+          {/* The switcher used to render only for URL-imported sessions, because
+              Page audit was the only other view and it needs a live page. A
+              pasted piece therefore had no tabs at all. Delivery applies to any
+              session with a history, so the control is now shown whenever there
+              is more than one view to switch between, and Page audit keeps its
+              own condition. */}
+          {(surface !== "writer") && (
             <div className="flex items-center rounded-lg border p-0.5 shrink-0">
               <button
                 onClick={() => setStudioView("optimise")}
@@ -1843,14 +1868,25 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
                 Optimise
               </button>
               <button
-                onClick={() => setStudioView("audit")}
+                onClick={() => setStudioView("delivery")}
                 className={cn(
                   "px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors",
-                  studioView === "audit" ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"
+                  studioView === "delivery" ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"
                 )}
               >
-                Page audit
+                What changed
               </button>
+              {sourceInfo.source === "url" && sourceInfo.ref && (
+                <button
+                  onClick={() => setStudioView("audit")}
+                  className={cn(
+                    "px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors",
+                    studioView === "audit" ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  Page audit
+                </button>
+              )}
             </div>
           )}
           {/* Assessment state, in the header rather than buried in a panel.
@@ -1998,6 +2034,15 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
               onResult={(d) => setAuditChecks(d && Array.isArray(d.checks) ? d.checks : null)}
             />
         )}
+        {studioView === "delivery" && sessionId && workspaceId && (
+          <DeliveryView
+            sessionId={sessionId}
+            workspaceId={workspaceId}
+            title={title}
+            currentHtml={editorRef.current ? editorRef.current.getHTML() : body}
+            refreshKey={versionsKey}
+          />
+        )}
         <div
           ref={editorScrollRef}
           className={cn(
@@ -2005,7 +2050,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
             // Hidden, not unmounted: Tiptap's undo stack and the highlight
             // plugin's state live in the editor instance, and remounting on
             // every tab switch would discard both.
-            studioView === "audit" && "hidden"
+            studioView !== "optimise" && "hidden"
           )}
         >
           <IssuePopover
@@ -2089,7 +2134,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
         // The audit view carries its own "live text through the rubric" card;
         // keeping the DRAFT's score panel beside it put two different numbers
         // for "this piece" on screen with nothing saying which was which.
-        studioView === "audit" ? "lg:hidden" : "lg:flex"
+        studioView !== "optimise" ? "lg:hidden" : "lg:flex"
       )}>
         {/* The rail's tabs are the separation made visible. The Writer gets the
             tools for PRODUCING text — the conversation, the material it draws
