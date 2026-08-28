@@ -136,7 +136,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     );
   }
 
-  const words = (body.body.match(/\S+/g) || []).length;
+  // COUNTED ON THE TEXT, not the markup. This tokenised the raw HTML, so every
+  // <p> and </p> counted as a word — a 1,339-word article was stored as 1,519.
+  // Invisible until the delivery view put the stored figure next to a parsed
+  // one on the same screen and they disagreed by 13%.
+  //
+  // Rows written before this keep their inflated number; nothing recomputes
+  // history, and a version list that silently changed its arithmetic would be
+  // its own small lie.
+  const words = (body.body.replace(/<[^>]+>/g, " ").match(/\S+/g) || []).length;
   const current = await latestDraft(id);
 
   if (current) {

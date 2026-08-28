@@ -147,12 +147,18 @@ export default function DeliveryView({
             >
               {(versions || []).map((v) => (
                 <option key={v.units_version} value={v.units_version}>
-                  version {v.units_version} · {new Date(v.date_created).toLocaleDateString()} · {v.units_words.toLocaleString()} words
+                  version {v.units_version} · {new Date(v.date_created).toLocaleDateString()}
                 </option>
               ))}
             </select>
             <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="font-medium">the draft as it stands</span>
+            {/* No word count on the options, deliberately. The stored figure was
+                tokenised from the HTML and counts markup, so it disagreed with
+                the parsed count in the summary below by more than a tenth. The
+                computation is fixed for new versions; old rows keep their
+                inflated number, and two contradicting counts on one screen is
+                worse than one. The summary's before→after is the honest pair. */}
           </div>
 
           {summary && (
