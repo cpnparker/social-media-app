@@ -353,6 +353,18 @@ console.log("\n9. Capture");
     "each tile is a plain viewport screenshot — a clip is measured in DOCUMENT coordinates and photographed the top of the page every time");
   assert(/const at: number = await page\.evaluate\(`Math\.round\(window\.scrollY\)`\)/.test(shotRegion) && /top: at,/.test(shotRegion),
     "and is composited where the page ACTUALLY scrolled to, because the last tile cannot reach its nominal offset");
+
+  // MEASURED INSIDE THE TILE, at the instant it is photographed. A page with
+  // scroll-driven layout is not the same shape at scroll 0 as at scroll 2,400,
+  // so coordinates taken once at the top described a layout that no longer
+  // existed lower down and every mark drifted further off the further it sat.
+  // An element's position is this tile's offset plus its offset within the
+  // tile: correct by construction rather than by timing.
+  assert(/const tileSpots: any\[\] = await page\.evaluate/.test(shotRegion), "the elements are measured tile by tile");
+  assert(/spotted\.push\(\{ \.\.\.sp, y: sp\.y \+ at \}\)/.test(shotRegion),
+    "and their positions are the tile's own offset plus their offset within it");
+  assert(/if \(r\.top < 0 \|\| r\.top > window\.innerHeight - 8\) return;/.test(shotRegion),
+    "an element outside this viewport belongs to the tile that actually photographed it");
   assert(/position;\n              if \(pos !== "fixed"\) continue;/.test(shotRegion) || /pos !== "fixed"/.test(shotRegion),
     "a fixed header is hidden for every tile but the first, or it repeats down the picture");
   assert(/quality: 72/.test(render) && /resize\(\{ width: SHOT_WIDTH \}\)/.test(render), "and the image is scaled and compressed before it is sent");
@@ -368,11 +380,15 @@ console.log("\n9. Capture");
   assert(/im\.complete/.test(render) && /documentElement\.scrollHeight/.test(render),
     "the capture waits for every image and for the document height to stop changing");
   assert(/i < 20/.test(render), "and the wait is bounded — a page with a carousel never settles");
+  // The settle comes before the capture loop, and the measurement now happens
+  // INSIDE it — one tile at a time, beside the screenshot of that tile.
   const settleAt = render.indexOf("im.complete");
-  const measureSpotsAt = render.indexOf("spotted = await page.evaluate");
-  const shootAt = render.indexOf("page.screenshot({");
-  assert(settleAt < measureSpotsAt && measureSpotsAt < shootAt,
-    "and it happens BEFORE both the measurement and the picture, which is the whole point");
+  const loopAt = render.indexOf("for (let i = 0; i < tiles; i++)");
+  const measureSpotsAt = render.indexOf("const tileSpots");
+  const shootAt = render.indexOf('page.screenshot({ type: "png" })');
+  assert(settleAt > 0 && settleAt < loopAt, "the settle happens before anything is measured or photographed");
+  assert(loopAt < measureSpotsAt && measureSpotsAt < shootAt,
+    "and each tile is measured and photographed together, in that order");
 
   // A label quotes the client's own words back at them, so it must be the
   // WHOLE string. innerText omits anything hidden at that instant, and a page

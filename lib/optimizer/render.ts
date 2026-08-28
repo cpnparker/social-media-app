@@ -315,7 +315,7 @@ export async function renderPage(
      * audit, and losing every check because a screenshot timed out would be a
      * poor trade.
      */
-    let spotted: any = [];
+    const spotted: any[] = [];
     let shot: RenderShot | null = null;
     if (opts?.shot) {
       try {
@@ -426,43 +426,6 @@ export async function renderPage(
           }
         })()`);
 
-        /**
-         * The places a finding can point at.
-         *
-         * Measured in the SAME layout the picture is taken in, which is the
-         * whole reason the viewport is never resized: coordinates and picture
-         * come from one state of the page, so a mark cannot land beside the
-         * thing it is about.
-         */
-        spotted = await page.evaluate(`(() => {
-          const CONTENT_SEL = "main, article, [role=main], #main, .main-content";
-          const root = document.querySelector(CONTENT_SEL);
-          const out = [];
-          const push = (el, kind) => {
-            const r = el.getBoundingClientRect();
-            const y = r.top + window.scrollY;
-            const x = r.left + window.scrollX;
-            if (r.width < 4 || r.height < 4) return;
-            if (y < 0 || x < -50) return;
-            // \\s, not \s: this is a template literal, where \s collapses to a
-            // bare "s" and the regex would replace every letter s with a space.
-            const text = (el.textContent || el.getAttribute("alt") || el.getAttribute("src") || "").replace(/\\s+/g, " ").trim();
-            out.push({ kind: kind, x: Math.round(x), y: Math.round(y), w: Math.round(r.width), h: Math.round(r.height), label: text.slice(0, 90) });
-          };
-          Array.prototype.slice.call(document.querySelectorAll("h1")).forEach((el) => push(el, "h1"));
-          Array.prototype.slice.call(document.querySelectorAll("h2, h3")).forEach((el) => push(el, "heading"));
-          Array.prototype.slice.call(document.querySelectorAll("img")).forEach((el) => {
-            const alt = el.getAttribute("alt");
-            push(el, alt === null || alt.trim() === "" ? "image-no-alt" : "image");
-          });
-          Array.prototype.slice.call(document.querySelectorAll("time, [datetime], .date, .published")).slice(0, 3).forEach((el) => push(el, "date"));
-          const faq = document.querySelector('[class*="faq" i], [id*="faq" i], details');
-          if (faq) push(faq, "faq");
-          const firstP = root ? root.querySelector("p") : document.querySelector("p");
-          if (firstP) push(firstP, "first-paragraph");
-          return out;
-        })()`);
-
         const VIEW_H = 2400;
         const docHeight: number = await page.evaluate(
           `Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)`
@@ -495,6 +458,63 @@ export async function renderPage(
           })()`);
           await new Promise((r) => setTimeout(r, 140));
           const at: number = await page.evaluate(`Math.round(window.scrollY)`);
+
+          /**
+           * Measure the elements IN THIS TILE, at this instant.
+           *
+           * Not once at the top of the page. This page, and any page with
+           * scroll-driven layout, is not the same shape at scroll 0 as it is at
+           * scroll 2,400 — so coordinates taken once described a layout that no
+           * longer existed by the time the lower tiles were photographed, and
+           * every mark drifted further off the further down it sat. Measured
+           * inside the loop, an element's position is `tileOffset + its offset
+           * within this tile`, which is exactly where its pixels were just
+           * captured. Correct by construction rather than by timing.
+           */
+          const tileSpots: any[] = await page.evaluate(`(() => {
+            const CONTENT_SEL = "main, article, [role=main], #main, .main-content";
+            const root = document.querySelector(CONTENT_SEL);
+            const out = [];
+            const seen = {};
+            const push = (el, kind) => {
+              const r = el.getBoundingClientRect();
+              // Inside THIS viewport only. An element half off the top belongs
+              // to the tile above, where it was photographed whole.
+              if (r.top < 0 || r.top > window.innerHeight - 8) return;
+              if (r.width < 4 || r.height < 4) return;
+              // \\s, not \s: a template literal collapses \s to a bare "s",
+              // which would replace every letter s in the label with a space.
+              const text = (el.textContent || el.getAttribute("alt") || el.getAttribute("src") || "").replace(/\\s+/g, " ").trim();
+              const key = kind + ":" + Math.round(r.top) + ":" + text.slice(0, 20);
+              if (seen[key]) return;
+              seen[key] = 1;
+              out.push({
+                kind: kind,
+                x: Math.round(r.left),
+                y: Math.round(r.top),
+                w: Math.round(r.width),
+                h: Math.round(r.height),
+                label: text.slice(0, 90),
+              });
+            };
+            Array.prototype.slice.call(document.querySelectorAll("h1")).forEach((el) => push(el, "h1"));
+            Array.prototype.slice.call(document.querySelectorAll("h2, h3")).forEach((el) => push(el, "heading"));
+            Array.prototype.slice.call(document.querySelectorAll("img")).forEach((el) => {
+              const alt = el.getAttribute("alt");
+              push(el, alt === null || alt.trim() === "" ? "image-no-alt" : "image");
+            });
+            Array.prototype.slice.call(document.querySelectorAll("time, [datetime], .date, .published")).forEach((el) => push(el, "date"));
+            const faq = document.querySelector('[class*="faq" i], [id*="faq" i], details');
+            if (faq) push(faq, "faq");
+            const firstP = root ? root.querySelector("p") : document.querySelector("p");
+            if (firstP) push(firstP, "first-paragraph");
+            return out;
+          })()`);
+          for (const sp of tileSpots) {
+            // Into document coordinates that match the stitched picture: this
+            // tile's own offset plus the element's offset within it.
+            spotted.push({ ...sp, y: sp.y + at });
+          }
           // No clip: a clip is measured in DOCUMENT coordinates, so clipping to
           // y=0 photographed the top of the page every time however far it had
           // been scrolled — three identical tiles stacked into one picture. A
