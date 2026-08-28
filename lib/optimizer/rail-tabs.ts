@@ -59,6 +59,21 @@ export function railTabsFor(
   // deterministic marks still appear under Suggestions.
   if (chrome.showScore) t.push({ key: "score", label: "Score" });
   t.push({ key: "issues", label: "Suggestions", count: activeIssues });
+  // DISCUSS IS NOW THE OPTIMISER'S TOO, and this reverses an earlier decision
+  // deliberately rather than by drift — a check asserted its absence, and that
+  // check has been rewritten to assert what is true now.
+  //
+  // The reasoning that kept it out was that the Optimiser judges and the Writer
+  // produces. That holds for the SCORE, which is why the Writer still has no
+  // score tab. It does not hold for the conversation: assessing a piece and
+  // then rewriting a paragraph it complained about is one job, and the
+  // selection actions beside the editor already assumed the panel was there —
+  // Rewrite, Tighten, Make specific and Ask all set the tab to "discuss", which
+  // on this surface fell through to the Suggestions list and answered nothing.
+  //
+  // AFTER Suggestions, not before: the Optimiser still opens on the number,
+  // because defaultRailTab takes the first tab and that is the surface's job.
+  t.push({ key: "discuss", label: "Discuss" });
   if (chrome.showCoverageTab) t.push({ key: "coverage", label: "Coverage" });
   return t;
 }

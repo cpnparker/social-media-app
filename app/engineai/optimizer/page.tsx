@@ -2116,7 +2116,12 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
               a tab does not change which one is selected, so a session whose
               type or surface changes while a tab is open would keep rendering a
               panel for something no longer offered. */}
-          {panelTab === "discuss" && surface === "writer" ? (
+          {/* No surface test on this one, deliberately: the conversation belongs
+              to both. The capability test is the session — a panel that posts
+              to /discuss needs something to post about. Background (sources)
+              stays the Writer's, because that is material you write FROM and
+              the Optimiser is looking at something already written. */}
+          {panelTab === "discuss" ? (
             sessionId ? (
               <DiscussPanel
                 key={sessionId}

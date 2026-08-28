@@ -393,11 +393,24 @@ console.log("\n7. The two rails stay different");
   assert(defaultRailTab("writer", chromes[0]) === "discuss", "the Writer OPENS on the conversation");
   assert(defaultRailTab("optimiser", chromes[0]) === "score", "the Optimiser opens on the number");
 
+  // THE OPTIMISER NOW HAS DISCUSS, and this assertion used to say the opposite.
+  //
+  // It was not wrong when written: the separation it protected is real, and the
+  // half that still matters is asserted immediately below — the Writer has no
+  // Score and the Optimiser has no Background. What changed is that the
+  // conversation turned out to belong to both surfaces, and the selection
+  // actions had already assumed so: Rewrite, Tighten, Make specific and Ask all
+  // set the tab to "discuss", which on the Optimiser fell through to the
+  // Suggestions list, so the instruction went nowhere and nothing said why.
   const o = railTabsFor("optimiser", chromes[0], 3).map((t) => t.key);
-  assert(o.indexOf("discuss") < 0 && o.indexOf("sources") < 0,
-    "the Optimiser's rail does NOT grow the Writer's tabs — the separation cuts both ways");
-  assert(railTabsFor("optimiser", chromes[3], 0).map((t) => t.key).join(",") === "issues",
-    "with no judge and no coverage the Optimiser is left with Suggestions alone, not an empty rail");
+  assert(o.indexOf("discuss") >= 0,
+    "the Optimiser's rail offers Discuss — the selection actions have somewhere to land");
+  assert(o.indexOf("sources") < 0,
+    "but NOT Background: material you write FROM belongs to the surface that writes");
+  assert(o.indexOf("discuss") > o.indexOf("issues"),
+    "Discuss sits after Suggestions, so defaultRailTab still opens the Optimiser on the number");
+  assert(railTabsFor("optimiser", chromes[3], 0).map((t) => t.key).join(",") === "issues,discuss",
+    "with no judge and no coverage the Optimiser is left with Suggestions and the conversation");
 
   // And the page must actually USE it, or the function is a decoration and the
   // page keeps its own list.
@@ -409,6 +422,13 @@ console.log("\n7. The two rails stay different");
   // only one of the three that read the tab alone.
   assert(/panelTab === "score" && chrome\.showScore && surface !== "writer"/.test(page),
     "the score panel's render branch ALSO tests the surface, not just the tab");
+  // The counterpart: the DISCUSS branch must NOT test the surface any more, or
+  // the tab appears on the Optimiser and renders the Suggestions list — the
+  // exact dead end this change exists to close, now with a tab pointing at it.
+  assert(!/panelTab === "discuss" && surface === "writer"/.test(page),
+    "the discuss branch no longer excludes the Optimiser");
+  assert(/panelTab === "discuss" \?/.test(page),
+    "and it renders on tab alone, with the session as its capability test");
   assert(!/key: "score", label: "Score"/.test(page),
     "no tab list survives inline in the page — one definition, not two");
 
