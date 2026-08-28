@@ -389,7 +389,15 @@ export async function renderPage(
           anim.textContent = "*,*::before,*::after{animation:none !important;transition:none !important;}";
           document.head.appendChild(anim);
 
-          const all = Array.prototype.slice.call(document.querySelectorAll("section,div,article,header,figure,li,p"));
+          // HEADINGS INCLUDED, and that omission is why this is a list rather
+          // than a shrug: the first version listed containers and paragraphs
+          // only, so a page whose section headings fade in on scroll produced
+          // numbered boxes around visibly nothing. Measured on the live page:
+          // every h2 sat at opacity 0 with no transform and no clip path, so
+          // the loop below was right and its selector was wrong.
+          const all = Array.prototype.slice.call(document.querySelectorAll(
+            "h1,h2,h3,h4,h5,h6,section,div,article,header,figure,li,p,span,a,blockquote,figcaption"
+          ));
           for (let i = 0; i < all.length; i++) {
             const el = all[i];
             const cs = getComputedStyle(el);

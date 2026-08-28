@@ -304,6 +304,11 @@ console.log("\n9. Capture");
   // tool rather than a page with problems.
   assert(/animation:none !important;transition:none !important/.test(render), "animations are stopped before the capture");
   assert(/parseFloat\(cs\.opacity\) > 0\.05/.test(render), "and elements left invisible by a scroll reveal are shown");
+  // HEADINGS, which the first version's selector omitted — so a page whose
+  // section headings fade in produced numbered boxes around visibly nothing,
+  // and every pin on a heading pointed at blank space.
+  const revealSel = render.slice(render.indexOf("querySelectorAll(\n            \"h1"), render.indexOf("querySelectorAll(\n            \"h1") + 200);
+  assert(/h1,h2,h3/.test(revealSel), "including headings, which is what a heading pin points at");
   assert(/!\(el\.textContent \|\| ""\)\.trim\(\) && !el\.querySelector\("img"\)/.test(render),
     "only where they carry content — a decorative hidden layer stays hidden");
 
