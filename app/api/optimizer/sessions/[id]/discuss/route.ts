@@ -143,7 +143,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   const at = String(body.at || "");
   /** "segment.paragraph" — a POINT inside a reply, rather than a whole block. */
-  const point = typeof body.point === "string" && /^\d+\.\d+$/.test(body.point) ? body.point : "";
+  const point = typeof body.point === "string" && /^\d+\.(\d+|a)$/.test(body.point) ? body.point : "";
   const index = Number(body.index);
   const dismissed = body.dismissed === true;
   if (!at || (!point && (!Number.isInteger(index) || index < 0))) {
@@ -289,7 +289,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
    * bloat the row and a way to make a turn unreachable.
    */
   const rawPoint = typeof body.pointKey === "string" ? body.pointKey.trim() : "";
-  const pointKey = /^[0-9TZ:.\-]{10,40}#\d+\.\d+$/.test(rawPoint) ? rawPoint : "";
+  const pointKey = /^[0-9TZ:.\-]{10,40}#\d+\.(\d+|a)$/.test(rawPoint) ? rawPoint : "";
 
   const clientLens = normaliseLens(body.lens);
   const brief = (session.config_brief || {}) as any;

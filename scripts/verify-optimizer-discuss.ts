@@ -58,6 +58,8 @@ import {
   DISCUSS_STORED_TURNS,
   pointKeyOf,
   pointSlotOf,
+  anchorKeyOf,
+  anchorSlotOf,
   repliesForPoint,
   isPointReply,
   type DiscussTurn,
@@ -783,6 +785,15 @@ console.log("\n10. Point-scoped exchanges");
   assert(pointKeyOf("A", 0, 0) !== pointKeyOf("A", 0, 1), "two points in one reply are different points");
   assert(pointKeyOf("A", 0, 0) !== pointKeyOf("B", 0, 0), "and so are the same slots in different replies");
 
+  // An ANCHORED passage and the prose beneath it are two different things a
+  // writer can ask about. Sharing a slot would have one quietly answering for
+  // the other — and the anchor chip is the "Suggest a fix" people actually
+  // click, which is how the first version of this fix missed the reported case
+  // entirely.
+  assert(anchorKeyOf("A", 3) !== pointKeyOf("A", 3, 0), "an anchor is not paragraph zero of its own segment");
+  assert(anchorSlotOf(3) === "3.a", "an anchor has its own slot namespace");
+  assert(anchorKeyOf("A", 3) !== anchorKeyOf("A", 4), "and one per segment");
+
   const turns: DiscussTurn[] = [
     { role: "user", content: "how is it?", at: "t1" },
     { role: "assistant", content: "Three things.", at: "t2" },
@@ -804,8 +815,9 @@ console.log("\n10. Point-scoped exchanges");
   assert(prompt.length === 0 || prompt[0].role === "user", "the prompt window still opens on a user turn");
 
   // A malformed slot must not reach the renderer as a selector.
-  const cleaned = readTurns([{ role: "assistant", content: "x", at: "t", donePoints: ["1.2", "nonsense", 7, "3.4"] }]);
-  assert(JSON.stringify(cleaned[0].donePoints) === JSON.stringify(["1.2", "3.4"]), "a malformed done-point is dropped rather than stored");
+  const cleaned = readTurns([{ role: "assistant", content: "x", at: "t", donePoints: ["1.2", "nonsense", 7, "3.a", "3.4"] }]);
+  assert(JSON.stringify(cleaned[0].donePoints) === JSON.stringify(["1.2", "3.a", "3.4"]),
+    "a malformed done-point is dropped rather than stored, and an anchor slot is not mistaken for one");
 }
 
 // ── 11. And the panel renders it there, once ───────────────────────────────
@@ -813,7 +825,13 @@ console.log("\n11. Where the answer appears");
 {
   const panel = read("components/optimizer/DiscussPanel.tsx");
   assert(/if \(isPointReply\(t\)\) return null;/.test(panel), "the main flow skips a point's exchange");
-  assert(/renderPointReplies \? renderPointReplies\(/.test(panel), "and the point renders it instead — shown once, not twice");
+  const renders = (panel.match(/renderPointReplies \? renderPointReplies\(/g) || []).length;
+  // BOTH affordances, or the reported one stays broken: the "Suggest a fix"
+  // people click most is the anchor chip's, and scoping only the prose point
+  // left every anchored fix landing at the bottom exactly as before.
+  assert(renders === 2, `both the anchored passage and the prose point render their own answer (${renders} sites)`);
+  assert(/onFix\(quote, pointKey\)/.test(panel), "the anchor chip's fix carries its address");
+  assert(/onFix!\(text, pointKey\)/.test(panel), "and so does the prose point's");
   assert(/const renderPointReplies = useCallback/.test(panel), "the renderer exists");
 
   // The scroll, which is the actual complaint.

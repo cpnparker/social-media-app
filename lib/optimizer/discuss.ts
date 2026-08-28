@@ -106,6 +106,22 @@ export function pointSlotOf(segment: number, paragraph: number): string {
 }
 
 /**
+ * The address of one ANCHORED passage inside a reply.
+ *
+ * Its own slot namespace, `<segment>.a`, rather than paragraph zero. An anchor
+ * chip and the first prose paragraph of the same segment are two different
+ * things a writer can ask about, and sharing a slot would have one of them
+ * quietly answering for the other.
+ */
+export function anchorKeyOf(turnAt: string, segment: number): string {
+  return `${turnAt}#${segment}.a`;
+}
+
+export function anchorSlotOf(segment: number): string {
+  return `${segment}.a`;
+}
+
+/**
  * The exchanges that answer one point, oldest first.
  *
  * Returned as PAIRS in document order rather than filtered per role, because a
@@ -147,7 +163,7 @@ export function readTurns(raw: any): DiscussTurn[] {
       ? t.dismissed.filter((n: any) => typeof n === "number" && Number.isInteger(n) && n >= 0)
       : undefined;
     const donePoints = Array.isArray(t.donePoints)
-      ? t.donePoints.filter((x: any) => typeof x === "string" && /^\d+\.\d+$/.test(x))
+      ? t.donePoints.filter((x: any) => typeof x === "string" && /^\d+\.(\d+|a)$/.test(x))
       : undefined;
     out.push({
       role,

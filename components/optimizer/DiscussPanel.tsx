@@ -37,7 +37,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { CornerDownLeft, Eraser, Loader2, Quote, RefreshCw, Sparkles, Check } from "lucide-react";
-import { parseDiscussReply, pointKeyOf, pointSlotOf, repliesForPoint, isPointReply, type DiscussTurn } from "@/lib/optimizer/discuss";
+import { parseDiscussReply, pointKeyOf, pointSlotOf, anchorKeyOf, anchorSlotOf, repliesForPoint, isPointReply, type DiscussTurn } from "@/lib/optimizer/discuss";
 import { houseStyleFlags, mechanicalDedash } from "@/lib/optimizer/house-style";
 
 interface Props {
@@ -119,16 +119,40 @@ function AnchorChip({
   onRevealQuote,
   onFix,
   superseded,
+  pointKey,
+  done,
+  onDone,
+  busy,
+  children,
 }: {
   quote: string;
   resolveQuote: (q: string) => boolean;
   onRevealQuote: (q: string) => boolean;
   /** Absent when this point already carries a rewrite of its own. */
-  onFix?: (quote: string) => void;
+  onFix?: (quote: string, pointKey?: string) => void;
   superseded?: boolean;
+  /** This anchor's address, so its answer can be rendered under it. */
+  pointKey?: string;
+  done?: boolean;
+  onDone?: (next: boolean) => void;
+  busy?: boolean;
+  /** The exchange that answers this anchor, already rendered. */
+  children?: React.ReactNode;
 }) {
   const found = resolveQuote(quote);
   const short = quote.length > 90 ? `${quote.slice(0, 90)}…` : quote;
+
+  if (done) {
+    return (
+      <div className="mb-1 flex items-start gap-2 rounded-md px-1.5 py-1 bg-muted/40">
+        <Check className="h-3 w-3 text-muted-foreground shrink-0 mt-0.5" />
+        <p className="flex-1 min-w-0 text-[11px] text-muted-foreground line-clamp-1">&ldquo;{short}&rdquo;</p>
+        <button onClick={() => onDone?.(false)} className="text-[10.5px] text-primary hover:underline shrink-0">
+          Undo
+        </button>
+      </div>
+    );
+  }
 
   if (!found) {
     return (
@@ -168,13 +192,24 @@ function AnchorChip({
           // presumes the writer wants the model's words rather than their own.
           // The button is the offer; the click is the request.
           <button
-            onClick={() => onFix(quote)}
+            onClick={() => onFix(quote, pointKey)}
+            disabled={busy}
+            className="text-[10.5px] font-medium text-muted-foreground hover:text-foreground hover:underline underline-offset-2 disabled:opacity-40"
+          >
+            {busy ? "Working…" : "Suggest a fix"}
+          </button>
+        )}
+        {onDone && (
+          <button
+            onClick={() => onDone(true)}
             className="text-[10.5px] font-medium text-muted-foreground hover:text-foreground hover:underline underline-offset-2"
           >
-            Suggest a fix
+            Done
           </button>
         )}
       </div>
+      {/* The answer to THIS passage, under this passage. */}
+      {children && <div className="mt-1.5 space-y-1.5">{children}</div>}
     </div>
   );
 }
@@ -727,10 +762,13 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
    * click is the request.
    */
   const askForFix = useCallback(
-    (quote: string) => {
+    (quote: string, pointKey?: string) => {
       ask(
         `Rewrite this passage to fix what you just said about it:\n\n"${quote}"\n\n` +
-          `Put the passage in an anchor block and the replacement in a draft block, so I can apply it in place.`
+          `Put the passage in an anchor block and the replacement in a draft block, so I can apply it in place.\n` +
+          `Answer this passage only, and keep it short: the writer is working down a list and this reply ` +
+          `sits underneath the passage itself.`,
+        pointKey
       );
     },
     [ask]
@@ -1206,7 +1244,7 @@ function AssistantTurn({
   onApply: (text: string, anchor?: string) => "replaced" | "appended" | "failed";
   resolveQuote: (q: string) => boolean;
   onRevealQuote: (q: string) => boolean;
-  onFix: (q: string) => void;
+  onFix: (q: string, pointKey?: string) => void;
   onPointFix: (point: string, pointKey?: string) => void;
   /** From an earlier pass. Its points may already have been acted on. */
   superseded?: boolean;
@@ -1238,7 +1276,13 @@ function AssistantTurn({
               onRevealQuote={onRevealQuote}
               onFix={answered[seg.anchor] ? undefined : onFix}
               superseded={superseded}
-            />
+              pointKey={turnAt ? anchorKeyOf(turnAt, i) : undefined}
+              done={(donePoints || []).indexOf(anchorSlotOf(i)) >= 0}
+              onDone={turnAt && onPointDone ? (next) => onPointDone(turnAt, anchorSlotOf(i), next) : undefined}
+              busy={!!turnAt && activePoint === anchorKeyOf(turnAt, i)}
+            >
+              {renderPointReplies ? renderPointReplies(turnAt ? anchorKeyOf(turnAt, i) : "") : null}
+            </AnchorChip>
           )}
           {seg.type === "draft" ? (
             <DraftBlock
