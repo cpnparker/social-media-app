@@ -352,6 +352,17 @@ console.log("\n9. Capture");
     "a spot's label is taken from the complete text, not from what happens to be visible");
   assert(!/\(el\.innerText \|\| el\.getAttribute\("alt"\)/.test(render), "and innerText is not used for it");
 
+  // THE ESCAPE. Every regex inside these blocks is a TEMPLATE LITERAL handed to
+  // page.evaluate as a string, where \s is not a valid escape and collapses to a
+  // bare "s". A single-backslash \s therefore compiles to /s+/g in the browser
+  // and replaces every letter s with a space: a client's heading reached the
+  // report as "Boo t your trategic event communication ". The file's original
+  // author knew this; the line added beside theirs did not.
+  const evals = render.split("page.evaluate(`").slice(1).join("");
+  const singleS = (evals.match(/replace\(\/(?<!\\)\\s\+/g) || []).length;
+  assert(singleS === 0, `no regex inside an evaluated block escapes whitespace with a single backslash (${singleS} found)`);
+  assert(/replace\(\/\\\\s\+\/g/.test(evals), "and the ones that need it use the double backslash");
+
   // The consent overlay, which is not part of the page being audited.
   assert(/cookie" i\]/.test(render) && /consent" i\]/.test(render), "a cookie banner is hidden before the picture is taken");
   assert(/pos === "fixed" \|\| pos === "sticky"/.test(render),

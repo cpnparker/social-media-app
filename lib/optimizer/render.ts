@@ -287,41 +287,6 @@ export async function renderPage(
         },
         jsonLdBlocks: document.querySelectorAll('script[type="application/ld+json"]').length,
         docHeight: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
-        spots: (() => {
-          const out = [];
-          const push = (el, kind) => {
-            const r = el.getBoundingClientRect();
-            const y = r.top + window.scrollY;
-            const x = r.left + window.scrollX;
-            // A zero-sized or off-canvas element has no place on a picture.
-            if (r.width < 4 || r.height < 4) return;
-            if (y < 0 || x < -50) return;
-            // textContent, NOT innerText.
-            //
-            // innerText is what a reader sees, and it omits anything currently
-            // hidden — which on a page that splits its headings into per-letter
-            // spans for an animation means the letters that happen to be hidden
-            // at this instant are simply absent. The first real report quoted a
-            // client's own heading back at them as "Boo t your trategic event
-            // communication", which reads as our tool corrupting their text.
-            // A label only has to identify the element, so the complete string
-            // is the right one even where some of it is momentarily invisible.
-            const text = (el.textContent || el.getAttribute("alt") || el.getAttribute("src") || "").replace(/\s+/g, " ").trim();
-            out.push({ kind: kind, x: Math.round(x), y: Math.round(y), w: Math.round(r.width), h: Math.round(r.height), label: text.slice(0, 90) });
-          };
-          Array.prototype.slice.call(document.querySelectorAll("h1")).forEach((el) => push(el, "h1"));
-          Array.prototype.slice.call(document.querySelectorAll("h2, h3")).forEach((el) => push(el, "heading"));
-          Array.prototype.slice.call(document.querySelectorAll("img")).forEach((el) => {
-            const alt = el.getAttribute("alt");
-            push(el, alt === null || alt.trim() === "" ? "image-no-alt" : "image");
-          });
-          Array.prototype.slice.call(document.querySelectorAll("time, [datetime], .date, .published")).slice(0, 3).forEach((el) => push(el, "date"));
-          const faq = document.querySelector('[class*="faq" i], [id*="faq" i], details');
-          if (faq) push(faq, "faq");
-          const firstP = root ? root.querySelector("p") : document.querySelector("p");
-          if (firstP) push(firstP, "first-paragraph");
-          return out;
-        })(),
         images: imgs.map((i) => {
           const r = i.getBoundingClientRect();
           return {
@@ -350,6 +315,7 @@ export async function renderPage(
      * audit, and losing every check because a screenshot timed out would be a
      * poor trade.
      */
+    let spotted: any = [];
     let shot: RenderShot | null = null;
     if (opts?.shot) {
       try {
@@ -422,6 +388,68 @@ export async function renderPage(
         // One frame for the layout to settle after the styles above.
         await new Promise((r) => setTimeout(r, 350));
 
+        /**
+         * The places a finding can point at, measured HERE.
+         *
+         * After the reveal, not before it. The reveal clears transforms on the
+         * containers it makes visible, and a container carrying a translateY as
+         * part of its animation therefore MOVES when it is revealed. Measured
+         * first, every box in the report then sat a few dozen pixels above the
+         * heading it was supposed to be around — a mark pointing confidently at
+         * the wrong place, which is the one thing this whole layer must not do.
+         *
+         * Nothing else needs re-measuring: the audit's own inputs are the DOM
+         * and its text, and neither opacity nor transform changes either.
+         */
+        spotted = await page.evaluate(`(() => {
+          const CONTENT_SEL = "main, article, [role=main], #main, .main-content";
+          const root = document.querySelector(CONTENT_SEL);
+          const out2 = (() => {
+          const out = [];
+          const push = (el, kind) => {
+            const r = el.getBoundingClientRect();
+            const y = r.top + window.scrollY;
+            const x = r.left + window.scrollX;
+            // A zero-sized or off-canvas element has no place on a picture.
+            if (r.width < 4 || r.height < 4) return;
+            if (y < 0 || x < -50) return;
+            // textContent, NOT innerText.
+            //
+            // innerText is what a reader sees, and it omits anything currently
+            // hidden — which on a page that splits its headings into per-letter
+            // spans for an animation means the letters that happen to be hidden
+            // at this instant are simply absent. The first real report quoted a
+            // client's own heading back at them as "Boo t your trategic event
+            // communication", which reads as our tool corrupting their text.
+            // A label only has to identify the element, so the complete string
+            // is the right one even where some of it is momentarily invisible.
+            // \\s, not \s. This whole block is a TEMPLATE LITERAL handed to
+            // page.evaluate as a string, and \s is not a valid escape in one:
+            // it collapses to a bare "s", so the regex became /s+/g and every
+            // letter s in a client's own heading was replaced with a space.
+            // "Boost your strategic event communications" reached the report as
+            // "Boo t your trategic event communication ". The line above this
+            // one has the double backslash for exactly this reason.
+            const text = (el.textContent || el.getAttribute("alt") || el.getAttribute("src") || "").replace(/\\s+/g, " ").trim();
+            out.push({ kind: kind, x: Math.round(x), y: Math.round(y), w: Math.round(r.width), h: Math.round(r.height), label: text.slice(0, 90) });
+          };
+          Array.prototype.slice.call(document.querySelectorAll("h1")).forEach((el) => push(el, "h1"));
+          Array.prototype.slice.call(document.querySelectorAll("h2, h3")).forEach((el) => push(el, "heading"));
+          Array.prototype.slice.call(document.querySelectorAll("img")).forEach((el) => {
+            const alt = el.getAttribute("alt");
+            push(el, alt === null || alt.trim() === "" ? "image-no-alt" : "image");
+          });
+          Array.prototype.slice.call(document.querySelectorAll("time, [datetime], .date, .published")).slice(0, 3).forEach((el) => push(el, "date"));
+          const faq = document.querySelector('[class*="faq" i], [id*="faq" i], details');
+          if (faq) push(faq, "faq");
+          const firstP = root ? root.querySelector("p") : document.querySelector("p");
+          if (firstP) push(firstP, "first-paragraph");
+          return out;
+          })();
+          return out2;
+        })()`);
+
+
         const docHeight: number = Math.max(1, Math.round(measured.docHeight || 0));
         const captureHeight = Math.min(docHeight, SHOT_MAX_HEIGHT);
         const raw = (await page.screenshot({
@@ -452,7 +480,7 @@ export async function renderPage(
     return {
       ok: true,
       shot,
-      spots: (measured.spots || []) as RenderSpot[],
+      spots: (spotted || []) as RenderSpot[],
       html: measured.html,
       finalUrl: measured.finalUrl,
       reason: null,
