@@ -39,7 +39,11 @@ import type { EvidenceGrade, RollUp, Tier } from "./types";
 // 1.2.0: substantive quotes require name + role/organisation (never invented
 // in a suggestedEdit — expose the gap instead); a concrete scope qualifier is
 // not hedging; the author joins the registered-entity list for drift.
-export const JUDGE_PROMPT_VERSION = "1.2.0";
+// 1.3.0: the house style block, so a suggestedEdit does not arrive with an em
+// dash in it. The prompt's own prose about suggestedEdit was rewritten without
+// dashes at the same time: a ban demonstrated in the breach is two rules, and
+// the model reads both.
+export const JUDGE_PROMPT_VERSION = "1.3.0";
 
 export interface JudgeCriterionMeta {
   key: string;

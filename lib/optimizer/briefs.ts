@@ -15,6 +15,7 @@
  */
 
 import type { ClientCanon } from "./client-canon";
+import { HOUSE_STYLE_RULE } from "./house-style";
 import { styleBlock } from "./client-style";
 import { sourcesBlock } from "./sources";
 import type { OptimizerSource } from "./sources";
@@ -166,7 +167,7 @@ export function buildGenerationPrompt(ctx: GenerationContext): string {
   const parts: string[] = [];
 
   parts.push(
-    `You are writing a piece of content for The Content Engine that is optimised to be retrieved and cited by AI assistants — ChatGPT, Perplexity, Google's AI Overviews — as well as read by a person.`
+    `You are writing a piece of content for The Content Engine that is optimised to be retrieved and cited by AI assistants such as ChatGPT, Perplexity and Google's AI Overviews, as well as read by a person.`
   );
 
   parts.push(`## The piece\n\nWorking title: ${ctx.title}\nFormat: ${ctx.format}\nLength: roughly ${ctx.brief.lengthBand} words.`);
@@ -178,13 +179,13 @@ export function buildGenerationPrompt(ctx: GenerationContext): string {
 
 **Open with the answer.** The first paragraph must answer the main question completely, in a way that could be quoted on its own with no surrounding context. Roughly 44% of AI citations are extracted from the first third of a page, so an answer that arrives after a scene-setting preamble is an answer that does not get cited. Do not open with throat-clearing about how important or complex the topic is.
 
-**Follow it with a short key-takeaways block** — two or three bullets, each a complete statement rather than a teaser.
+**Follow it with a short key-takeaways block** of two or three bullets, each a complete statement rather than a teaser.
 
 **Use question-shaped section headings** and answer each one in its first sentence or two. A heading followed by a paragraph of context before the answer wastes the extraction slot.
 
-**Write self-contained sections.** Assume each section may be lifted out and quoted alone. Never open a section with "It", "They", "This is why" or "The company" — name the subject. Define the main entity once, early, in a plain copular sentence ("X is a [category] that …").
+**Write self-contained sections.** Assume each section may be lifted out and quoted alone. Never open a section with "It", "They", "This is why" or "The company". Name the subject. Define the main entity once, early, in a plain copular sentence ("X is a [category] that …").
 
-**Be specific and attribute.** Statistics, named expert quotations and citations to primary sources are the best-evidenced ways to earn a citation. Every number must carry its source IN THE SAME SENTENCE, because the sentence is the unit an assistant quotes — an attribution in the next sentence travels nowhere.
+**Be specific and attribute.** Statistics, named expert quotations and citations to primary sources are the best-evidenced ways to earn a citation. Every number must carry its source IN THE SAME SENTENCE, because the sentence is the unit an assistant quotes, and an attribution in the next sentence travels nowhere.
 
 **Never invent a statistic, a source, a quotation or a case study.** If a number would strengthen a claim and you do not have a real one, write the claim without it and mark the gap inline as \`[NEEDS SOURCE: what would go here]\`. A fabricated citation is far worse than a missing one: it is the single fastest way to destroy a client's credibility, and it is the thing this tool exists to prevent, not to automate.
 
@@ -192,9 +193,9 @@ export function buildGenerationPrompt(ctx: GenerationContext): string {
 
 **Sentences around 18 words on average.** Vary them, but avoid both academic sprawl and staccato fragments.
 
-**Do not pad.** Length is not a virtue — measured correlation between word count and citation is essentially zero. Cut anything that does not carry information.
+**Do not pad.** Length is not a virtue: the measured correlation between word count and citation is essentially zero. Cut anything that does not carry information.
 
-**Banned vocabulary**, because it marks text as machine-written: delve, leverage (as a verb), tapestry, seamlessly, game-changer, revolutionise, "elevate your", "unlock the", "in today's fast-paced", "ever-evolving", "navigate the landscape/complexities", and the "it's not just X, it's Y" construction. Use em-dashes sparingly — no more than one per thousand words.
+${HOUSE_STYLE_RULE}
 
 Return the piece as clean markdown: a byline line, a credential line if one is warranted, a dateline, then the content. No preamble, no explanation of what you have written, no closing offer to revise.`);
 

@@ -21,6 +21,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { buildSpanRewritePrompt } from "@/lib/optimizer/fix-actions";
 import { analysisAllowed, DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
 import Anthropic from "@anthropic-ai/sdk";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
@@ -110,13 +111,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     system: [
       {
         type: "text",
-        text:
-          `You rewrite one marked span inside a writer's draft. You are given the span, its surrounding context, and what is wrong with it.\n\n` +
-          `Return ONLY the replacement text for the span — no preamble, no quotes around it, no commentary. It must read naturally in place of the original.\n\n` +
-          `HARD RULES:\n` +
-          `- Never introduce a number, statistic, date, name, organisation or quotation that is not already in the context you were shown. If the fix requires information you do not have (a source, a figure, a speaker), rewrite to make the GAP explicit — "according to [source]" — rather than inventing one.\n` +
-          `- Preserve the writer's meaning and register. This is their piece, not yours.\n` +
-          `- Keep roughly the original length unless the problem IS the length.`,
+        text: buildSpanRewritePrompt(),
         cache_control: { type: "ephemeral" },
       },
     ] as any,

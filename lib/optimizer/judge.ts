@@ -26,6 +26,7 @@
  */
 
 import { anchorAll, validateAnchor } from "./anchors";
+import { HOUSE_STYLE_RULE } from "./house-style";
 import { isSentenceLike } from "./parse";
 import type { ParsedDraft } from "./parse";
 import { tieredScore } from "./rubric";
@@ -82,11 +83,11 @@ YOUR SEVEN CRITERIA
 
 1. semantic-query-coverage — for each target query, does the draft ANSWER it? Not "does it contain the words" — the engine already checks that. A draft can use every word of a question and never answer it. Verdict per query: covered (a reader gets a direct answer), partial (touched but incomplete or hedged into uselessness), missing. An answer bounded by a concrete scope qualifier — "results vary by project, local materials and performance requirements" — is still COVERED; a scope limit makes a passage safer to repeat, and partial means the SUBSTANCE is missing, never that the answer was honest about its limits. For every PARTIAL verdict, also report a finding anchored at the passage that half-answers it, explaining what is missing from it and suggesting the completed passage.
 
-2. quote-attribution-quality — for each quotation the parser found, is the speaker named and plausibly real, and does the quote say something a paraphrase could not? A SUBSTANTIVE verdict requires the speaker's full name PLUS a role or organisation in the surrounding text; a named speaker with neither is at best weak. Verdict: substantive, weak (attributed but says nothing, or named without role or organisation), decorative (no real attribution, or a slogan in quote marks). Never invent a title or organisation in a suggestedEdit — if the credential is missing, the rewrite must expose the gap ("says [name], [role, organisation]") for the writer to fill. For every WEAK or DECORATIVE verdict, also report a finding anchored at that quotation saying what would make it citable.
+2. quote-attribution-quality — for each quotation the parser found, is the speaker named and plausibly real, and does the quote say something a paraphrase could not? A SUBSTANTIVE verdict requires the speaker's full name PLUS a role or organisation in the surrounding text; a named speaker with neither is at best weak. Verdict: substantive, weak (attributed but says nothing, or named without role or organisation), decorative (no real attribution, or a slogan in quote marks). Never invent a title or organisation in a suggestedEdit. If the credential is missing, the rewrite must expose the gap ("says [name], [role, organisation]") for the writer to fill. For every WEAK or DECORATIVE verdict, also report a finding anchored at that quotation saying what would make it citable.
 
 3. opening-quotability — could the opening be lifted verbatim and stand alone as the answer, with no surrounding context? Verdict: quotable_alone, needs_context (the answer is there but depends on something else), no_answer. For NEEDS_CONTEXT or NO_ANSWER, also report a finding anchored at the opening sentence, with a suggestedEdit rewriting it to stand alone where one clean replacement exists.
 
-4. chunk-self-containment — for each section, would it make sense extracted alone? Look for semantic dependencies the engine cannot see: "as mentioned above", "the second option", comparisons to an antecedent named only earlier, a subject identifiable only from a previous section. Verdict: self_contained, dependent. For every DEPENDENT verdict, also report a finding anchored at the dependent phrase itself — the words that would confuse a reader who arrived at this section alone — with a suggestedEdit naming the antecedent in place.
+4. chunk-self-containment — for each section, would it make sense extracted alone? Look for semantic dependencies the engine cannot see: "as mentioned above", "the second option", comparisons to an antecedent named only earlier, a subject identifiable only from a previous section. Verdict: self_contained, dependent. For every DEPENDENT verdict, also report a finding anchored at the dependent phrase itself, meaning the words that would confuse a reader who arrived at this section alone, with a suggestedEdit naming the antecedent in place.
 
 5. entity-variant-drift — names for the main entity that are NOT in the registered list you are given: misspellings, unregistered abbreviations, inconsistent capitalisation of a proper noun. Report each as a finding.
 
@@ -96,7 +97,7 @@ YOUR SEVEN CRITERIA
 
 EVERY IMPERFECT VERDICT PRODUCES A FINDING. This is the contract that makes your work usable: a verdict adjusts a score, but only a finding puts a mark on the writer's text, and a problem the writer cannot see in their text is a problem they will not fix. If you return a partial, missing, weak, decorative, needs_context, no_answer or dependent verdict with no corresponding finding, you have told the score something you kept from the writer. The only exception is a MISSING query verdict where no passage even attempts the answer — there is nothing to anchor, so describe the gap in the verdict's own field.
 
-FINDINGS — THE ANCHORING CONTRACT
+FINDINGS: THE ANCHORING CONTRACT
 
 Every finding carries a quote that will be located in the draft by exact string match. If the match fails, the finding is discarded and your work is wasted.
 
@@ -105,11 +106,13 @@ Every finding carries a quote that will be located in the draft by exact string 
 - Maximum 200 characters. If the passage is longer, quote the most specific 200-character span inside it.
 - A quote must not cross a blank line (a paragraph boundary).
 - Give prefix and suffix: up to 40 characters immediately before and after the quote, copied equally exactly. These disambiguate when the same sentence appears twice.
-- If you cannot quote something verbatim, do not invent a paraphrase to quote — leave it out and describe it in the relevant verdict field instead.
+- If you cannot quote something verbatim, do not invent a paraphrase to quote. Leave it out and describe it in the relevant verdict field instead.
 
-suggestedEdit is the replacement text itself, ready to substitute for the quote. Not advice about what to change — the actual words. Null if no clean single-span replacement exists.
+suggestedEdit is the replacement text itself, ready to substitute for the quote. Not advice about what to change: the actual words. Null if no clean single-span replacement exists.
 
-WHEN UNCERTAIN about a VERDICT, choose the better one — a false accusation costs a writer's trust in the whole tool. But once you have chosen an imperfect verdict, the finding for it is not optional and not an accusation: it is you showing the writer what you already told the score. Report at most ${MAX_FINDINGS} findings, most important first.
+${HOUSE_STYLE_RULE}
+
+WHEN UNCERTAIN about a VERDICT, choose the better one, because a false accusation costs a writer's trust in the whole tool. But once you have chosen an imperfect verdict, the finding for it is not optional and not an accusation: it is you showing the writer what you already told the score. Report at most ${MAX_FINDINGS} findings, most important first.
 
 Return ONLY a JSON object. No preamble, no markdown fence, no commentary.`;
 

@@ -41,6 +41,8 @@
  * explanation into somebody's article.
  */
 
+import { HOUSE_STYLE_RULE } from "./house-style";
+
 /** Kept in the prompt. Twelve messages is six exchanges — enough to hold a
  *  thread of argument, bounded because every turn is paid for on every later
  *  turn. */
@@ -57,6 +59,16 @@ export interface DiscussTurn {
   role: "user" | "assistant";
   content: string;
   at: string;
+  /**
+   * Which ```draft blocks in this turn the writer has waved away, by their
+   * index among the turn's segments.
+   *
+   * Persisted rather than held in the panel, because the point of dismissing a
+   * suggestion is that it stays gone. Addressed by `at` from the client, since
+   * the array position shifts every time the conversation passes its storage
+   * cap and the oldest turn falls off the front.
+   */
+  dismissed?: number[];
 }
 
 /**
@@ -76,7 +88,18 @@ export function readTurns(raw: any): DiscussTurn[] {
     if (!role) continue;
     const content = typeof t.content === "string" ? t.content : "";
     if (!content) continue;
-    out.push({ role, content, at: typeof t.at === "string" ? t.at : "" });
+    // Validated, not trusted: this column has no shape enforcement, and a
+    // non-integer here would index into the segment list and render nothing
+    // while looking like a dismissal that failed.
+    const dismissed = Array.isArray(t.dismissed)
+      ? t.dismissed.filter((n: any) => typeof n === "number" && Number.isInteger(n) && n >= 0)
+      : undefined;
+    out.push({
+      role,
+      content,
+      at: typeof t.at === "string" ? t.at : "",
+      ...(dismissed && dismissed.length ? { dismissed } : {}),
+    });
   }
   return out;
 }
@@ -125,30 +148,31 @@ export function buildDiscussSystem(opts: {
     `You are looking at the draft with them.\n\n` +
     `# How to be useful here\n` +
     `Answer the question actually asked. If they ask what is wrong with a paragraph, say what is wrong ` +
-    `with it — do not rewrite it unasked. If they ask for a rewrite, give the rewrite.\n` +
+    `with it. Do not rewrite it unasked. If they ask for a rewrite, give the rewrite.\n` +
     `Be specific to THIS draft: quote the line you mean. General writing advice is worthless to someone ` +
     `who has a real paragraph in front of them.\n` +
     `Disagree when you disagree. A writer asking "is this opening any good?" is better served by "no, and ` +
     `here is why" than by encouragement.\n` +
     `Keep commentary short. You are a voice beside the page, not an essay about it.\n\n` +
     `# Pointing at a passage\n` +
-    `When a point you make is ABOUT a particular passage, put that passage — verbatim from the draft, ` +
-    `nothing else, no ellipsis, one or two sentences at most — in a fenced block marked \`\`\`anchor, ` +
+    `When a point you make is ABOUT a particular passage, put that passage, verbatim from the draft, ` +
+    `nothing else, no ellipsis, one or two sentences at most, in a fenced block marked \`\`\`anchor, ` +
     `immediately BEFORE the point it concerns. It becomes a link the writer can click to jump straight there.\n` +
     `Copy it exactly as it appears in the draft. A near-miss cannot be found and the link is dropped.\n` +
-    `Only where you mean a specific passage. A point about the piece as a whole — its shape, what it is ` +
-    `missing, the order of its argument — has nothing to underline, and inventing a passage for it would ` +
+    `Only where you mean a specific passage. A point about the piece as a whole, its shape, what it is ` +
+    `missing, the order of its argument, has nothing to underline, and inventing a passage for it would ` +
     `send the writer to the wrong place with a confident label on it. Say those as ordinary prose.\n\n` +
     `# Text meant FOR the draft\n` +
-    `When you offer words to go INTO the piece — a rewritten sentence, a new paragraph, a better heading — ` +
+    `When you offer words to go INTO the piece, whether a rewritten sentence, a new paragraph or a better heading, ` +
     `put exactly those words inside a fenced block marked \`\`\`draft, and nothing else inside it. ` +
     `No preamble, no "here's a version:", no commentary. The writer's editor inserts that block verbatim ` +
     `at one click, so anything in it that is not the piece ends up in the piece.\n` +
-    `Everything else — your reasoning, options, questions back — goes outside the fence as ordinary prose.\n` +
+    `Everything else, meaning your reasoning, your options and your questions back, goes outside the fence as ordinary prose.\n` +
     `Offer replacement text only for the passage under discussion. Do not restate the whole piece unless ` +
     `you are explicitly asked to rewrite the whole piece.\n` +
     `If your answer is only commentary, use no fence at all. A fence is a button in their interface, ` +
     `and a button that inserts an explanation into an article is worse than no button.\n\n` +
+    `${HOUSE_STYLE_RULE}\n\n` +
     `# The piece\n` +
     `Title: ${opts.title || "Untitled"}\n` +
     `Format: ${opts.format || "article"}\n\n` +

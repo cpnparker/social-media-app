@@ -112,6 +112,67 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   return NextResponse.json({ turns: [] });
 }
 
+/**
+ * PATCH: mark one suggested block dismissed, or bring it back.
+ *
+ * Addressed by the turn's `at` rather than its position. The stored
+ * conversation is capped, so the oldest turn falls off the front the moment it
+ * passes the cap, and every index the client held would then point one turn
+ * earlier: a writer dismissing today's suggestion would silently hide one from
+ * last week.
+ *
+ * Calls no model, so no spend gate. Refusing to hide a suggestion because a
+ * budget is exhausted would block a free action on an unrelated condition,
+ * which is the reasoning the clear route already records.
+ */
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  let body: any = {};
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+  }
+
+  const guard = await requireOptimizer(body.workspaceId || null);
+  if (!guard.ok) return guard.response;
+  const owned = await loadSessionForCaller(id, guard.caller);
+  if (!owned.ok) return NextResponse.json({ error: owned.error }, { status: owned.status });
+
+  const at = String(body.at || "");
+  const index = Number(body.index);
+  const dismissed = body.dismissed === true;
+  if (!at || !Number.isInteger(index) || index < 0) {
+    return NextResponse.json({ error: "A turn and a block are both required" }, { status: 400 });
+  }
+
+  const turns = readTurns((owned.session as any).config_chat);
+  const target = turns.filter((t) => t.role === "assistant" && t.at === at);
+  if (target.length !== 1) {
+    // Zero means the turn has been trimmed away or never had a timestamp; more
+    // than one means two turns share a millisecond. Either way the write would
+    // land somewhere nobody chose, so it does not happen.
+    return NextResponse.json({ error: "That reply is no longer here" }, { status: 404 });
+  }
+
+  const next = turns.map((t) => {
+    if (t !== target[0]) return t;
+    const current = t.dismissed || [];
+    const updated = dismissed
+      ? (current.indexOf(index) < 0 ? current.concat([index]) : current)
+      : current.filter((n) => n !== index);
+    const { dismissed: _drop, ...rest } = t;
+    return updated.length ? { ...rest, dismissed: updated } : rest;
+  });
+
+  const { error } = await intelligenceDb
+    .from("optimizer_sessions")
+    .update({ config_chat: next })
+    .eq("id_session", id);
+  if (error) return NextResponse.json({ error: "Could not save that" }, { status: 500 });
+  return NextResponse.json({ ok: true });
+}
+
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 

@@ -38,6 +38,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { CornerDownLeft, Eraser, Loader2, Quote, RefreshCw, Sparkles } from "lucide-react";
 import { parseDiscussReply, type DiscussTurn } from "@/lib/optimizer/discuss";
+import { houseStyleFlags, mechanicalDedash } from "@/lib/optimizer/house-style";
 
 interface Props {
   sessionId: string;
@@ -220,6 +221,8 @@ function DraftBlock({
   pending,
   anchor,
   anchorFound,
+  dismissed,
+  onDismiss,
 }: {
   text: string;
   hasSelection: boolean;
@@ -228,6 +231,10 @@ function DraftBlock({
   /** The passage this rewrite was written for, if the model named one. */
   anchor?: string;
   anchorFound?: boolean;
+  /** Waved away earlier, and remembered. Undefined where dismissal is not
+   *  offered at all, which is the case for a block still streaming. */
+  dismissed?: boolean;
+  onDismiss?: (next: boolean) => void;
 }) {
   // Confirmed ON the block rather than in a toast. The rail's composer is
   // bottom-right and so is sonner, so a toast fired from here covers the input
@@ -235,29 +242,96 @@ function DraftBlock({
   // It also reads better: the confirmation sits on the thing that was applied.
   const [applied, setApplied] = useState<null | "replaced" | "appended">(null);
 
+  /**
+   * The writer's version of the suggestion.
+   *
+   * A suggestion is a starting point far more often than it is an answer, and
+   * before this the only two moves were take it whole or retype it in the
+   * editor. Kept in state seeded from the model's text, so what gets applied is
+   * whatever is in the box at the moment the button is pressed.
+   *
+   * NOT persisted. An edit that is never applied is lost on reload, which is
+   * the right trade for now: the edit exists to be applied, and storing every
+   * keystroke of an abandoned rewrite would mean a write per keystroke on a
+   * column the conversation also lives in.
+   */
+  const [edited, setEdited] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const body = edited ?? text;
+  const flags = houseStyleFlags(body);
+
+  if (dismissed) {
+    return (
+      <div className="mt-2 rounded-lg border border-dashed px-2.5 py-1.5 flex items-center gap-2">
+        <span className="text-[11.5px] text-muted-foreground flex-1">Suggestion dismissed</span>
+        <button
+          onClick={() => onDismiss?.(false)}
+          className="text-[11.5px] text-primary hover:underline"
+        >
+          Undo
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="mt-2 rounded-lg border border-primary/30 bg-primary/[0.04] overflow-hidden">
       <div className="px-2.5 py-1.5 border-b border-primary/20 flex items-center gap-1.5">
         <Quote className="h-3 w-3 text-primary/70" />
-        <span className="text-[10.5px] font-medium uppercase tracking-wide text-primary/80">
+        <span className="text-[10.5px] font-medium uppercase tracking-wide text-primary/80 flex-1">
           For the piece
         </span>
+        {/* What the house style catches, on the block itself. The prompt asks
+            for none of this; the flag is what happens when the ask was not
+            enough, and it names what it found rather than saying "style issue". */}
+        {!pending && !flags.clean && (
+          <span className="text-[10.5px] text-amber-700 dark:text-amber-500">
+            {flags.dashes > 0 && `${flags.dashes} dash${flags.dashes === 1 ? "" : "es"}`}
+            {flags.dashes > 0 && flags.tropes.length > 0 && ", "}
+            {flags.tropes.length > 0 && flags.tropes.slice(0, 2).join(", ")}
+          </span>
+        )}
+        {!pending && flags.dashes > 0 && (
+          <button
+            // Puts the mechanical result in the EDIT box rather than applying
+            // it. There is no substitution for a dash that is always right, so
+            // the writer reads it before it reaches their piece.
+            onClick={() => { setEdited(mechanicalDedash(body)); setEditing(true); }}
+            className="text-[10.5px] text-primary hover:underline"
+          >
+            Fix dashes
+          </button>
+        )}
       </div>
-      <p className="px-2.5 py-2 text-[12.5px] leading-relaxed whitespace-pre-wrap">{text}</p>
+
+      {editing ? (
+        <textarea
+          value={body}
+          onChange={(e) => setEdited(e.target.value)}
+          rows={Math.min(14, Math.max(3, body.split("\n").length + Math.floor(body.length / 90)))}
+          className="w-full px-2.5 py-2 text-[12.5px] leading-relaxed bg-background/60 border-0 resize-y focus:outline-none focus:ring-1 focus:ring-primary/40"
+          autoFocus
+        />
+      ) : (
+        <p className="px-2.5 py-2 text-[12.5px] leading-relaxed whitespace-pre-wrap">{body}</p>
+      )}
+
       {!pending && (
-        <div className="px-2.5 pb-2">
+        <div className="px-2.5 pb-2 flex items-center gap-1.5 flex-wrap">
           <Button
             size="sm"
             variant="outline"
             className="h-7 text-[11.5px]"
             onClick={() => {
-              const what = onApply(text, anchorFound ? anchor : undefined);
+              // Whatever is in the box, not what the model wrote. Applying the
+              // original after someone edited it would be the worst of both.
+              const what = onApply(body, anchorFound ? anchor : undefined);
               // Reported from what actually happened. A confirmation shown
               // before the fact is how a writer comes to believe text landed in
               // a document it never reached. An outright failure still toasts:
               // that one is not redundant, and it is worth interrupting for.
-              if (what === "failed") toast.error("Could not place that — the editor is not ready");
-              else setApplied(what);
+              if (what === "failed") toast.error("Could not place that. The editor is not ready");
+              else { setApplied(what); setEditing(false); }
             }}
           >
             {/* The label says what will happen, which depends on whether
@@ -269,8 +343,29 @@ function DraftBlock({
                 read it, and came back; their cursor is not the instruction. */}
             {anchorFound ? "Replace that passage" : hasSelection ? "Replace selection" : "Add to the end"}
           </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 text-[11.5px] px-2"
+            onClick={() => setEditing((v) => !v)}
+          >
+            {editing ? "Done" : "Edit"}
+          </Button>
+          {onDismiss && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 text-[11.5px] px-2 text-muted-foreground"
+              onClick={() => onDismiss(true)}
+            >
+              Dismiss
+            </Button>
+          )}
+          {edited !== null && edited !== text && !applied && (
+            <span className="text-[11px] text-muted-foreground">Edited</span>
+          )}
           {applied && (
-            <span className="ml-2 text-[11px] text-muted-foreground">
+            <span className="text-[11px] text-muted-foreground">
               {applied === "replaced"
                 ? anchorFound ? "Replaced that passage" : "Replaced your selection"
                 : "Added to the end"}
@@ -577,6 +672,46 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
     ask(pendingAsk.text);
   }, [pendingAsk, ask]);
 
+  /**
+   * Wave a suggestion away, and remember it.
+   *
+   * Optimistic, then written. A dismissal that waits for a round trip feels
+   * broken on a list you are working through, and the failure case is visible:
+   * the block comes back and says why.
+   */
+  const setDismissed = useCallback(async (at: string, index: number, next: boolean) => {
+    if (!workspaceId) return;
+    setTurns((cur) =>
+      cur.map((t) => {
+        if (t.role !== "assistant" || t.at !== at) return t;
+        const list = t.dismissed || [];
+        const updated = next
+          ? (list.indexOf(index) < 0 ? list.concat([index]) : list)
+          : list.filter((n) => n !== index);
+        return { ...t, dismissed: updated };
+      })
+    );
+    try {
+      const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}/discuss`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, at, index, dismissed: next }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      // Put it back rather than leaving the writer believing it is saved.
+      setTurns((cur) =>
+        cur.map((t) => {
+          if (t.role !== "assistant" || t.at !== at) return t;
+          const list = t.dismissed || [];
+          const reverted = next ? list.filter((n) => n !== index) : list.concat([index]);
+          return { ...t, dismissed: reverted };
+        })
+      );
+      toast.error(next ? "Could not dismiss that" : "Could not bring that back");
+    }
+  }, [sessionId, workspaceId]);
+
   const clear = useCallback(async () => {
     if (!workspaceId) return;
     try {
@@ -684,6 +819,9 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
                   <AssistantTurn
                     turnIndex={i}
                     content={t.content}
+                    turnAt={t.at}
+                    dismissed={t.dismissed}
+                    onDismiss={setDismissed}
                     hasSelection={hasSelection}
                     onApply={onApply}
                     resolveQuote={resolveQuote}
@@ -799,6 +937,9 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
 function AssistantTurn({
   turnIndex,
   content,
+  turnAt,
+  dismissed,
+  onDismiss,
   hasSelection,
   onApply,
   resolveQuote,
@@ -809,6 +950,11 @@ function AssistantTurn({
 }: {
   turnIndex: number;
   content: string;
+  /** The turn's timestamp, which is how a dismissal addresses one of its
+   *  blocks. Positions shift when the stored conversation passes its cap. */
+  turnAt: string;
+  dismissed?: number[];
+  onDismiss?: (at: string, index: number, next: boolean) => void;
   hasSelection: boolean;
   onApply: (text: string, anchor?: string) => "replaced" | "appended" | "failed";
   resolveQuote: (q: string) => boolean;
@@ -854,6 +1000,11 @@ function AssistantTurn({
               onApply={onApply}
               anchor={seg.anchor}
               anchorFound={!!seg.anchor && resolveQuote(seg.anchor)}
+              // Indexed among the turn's SEGMENTS, which is what the writer is
+              // looking at. Indexing among the draft blocks alone would drift
+              // the moment a reply's prose and blocks interleave differently.
+              dismissed={(dismissed || []).indexOf(i) >= 0}
+              onDismiss={turnAt && onDismiss ? (next) => onDismiss(turnAt, i, next) : undefined}
             />
           ) : (
             // Split into paragraphs so each POINT carries its own action. One

@@ -14,6 +14,8 @@
  * appear in the "Not done" list, asserted by the check.
  */
 
+import { HOUSE_STYLE_RULE } from "./house-style";
+
 export type FixKind = "revise" | "add" | "none";
 
 /**
@@ -88,6 +90,25 @@ export function addSpecFor(key: string): { what: string; where: string } | null 
  * block ONLY, because the writer applies it verbatim at one click; anything
  * conversational in the response ends up in the article.
  */
+/**
+ * The system prompt behind a one-click span rewrite.
+ *
+ * Lifted out of the route so a check can RUN it rather than grep for it. The
+ * route owns the network and nothing else; every word the model is given lives
+ * here, next to the other prompt this file already owns.
+ */
+export function buildSpanRewritePrompt(): string {
+  return (
+    `You rewrite one marked span inside a writer's draft. You are given the span, its surrounding context, and what is wrong with it.\n\n` +
+    `Return ONLY the replacement text for the span. No preamble, no quotes around it, no commentary. It must read naturally in place of the original.\n\n` +
+    `HARD RULES:\n` +
+    `- Never introduce a number, statistic, date, name, organisation or quotation that is not already in the context you were shown. If the fix requires information you do not have (a source, a figure, a speaker), rewrite to make the GAP explicit, as in "according to [source]", rather than inventing one.\n` +
+    `- Preserve the writer's meaning and register. This is their piece, not yours.\n` +
+    `- Keep roughly the original length unless the problem IS the length.\n\n` +
+    HOUSE_STYLE_RULE
+  );
+}
+
 export function buildAddPrompt(spec: { what: string; where: string }, criterionName: string): string {
   return [
     "You are drafting one missing block for a piece of content, for a writer who will paste it straight in.",
@@ -97,7 +118,7 @@ export function buildAddPrompt(spec: { what: string; where: string }, criterionN
     `WHERE IT GOES: ${spec.where}.`,
     "",
     "RULES",
-    "Use ONLY facts already present in the draft below. Invent nothing — no figure, no source, no name, no date,",
+    "Use ONLY facts already present in the draft below. Invent nothing: no figure, no source, no name, no date,",
     "no credential. Where the block needs something the draft does not contain, write the line with a bracketed",
     "gap saying exactly what is needed, like [NEEDS: author name] or [NEEDS: publication date]. A plausible",
     "invented byline is worse than a visible gap, because only one of them gets caught before it publishes.",
@@ -105,5 +126,7 @@ export function buildAddPrompt(spec: { what: string; where: string }, criterionN
     "Return the block ONLY. No preamble, no explanation, no surrounding quotes. Markdown for structure is fine",
     "(bullets, a bold label). The writer pastes what you return, verbatim, so anything that is not the block",
     "ends up in their article.",
+    "",
+    HOUSE_STYLE_RULE,
   ].join("\n");
 }
