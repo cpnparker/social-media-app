@@ -296,6 +296,14 @@ console.log("\n9. Capture");
   const region = render.slice(render.indexOf("let shot: RenderShot | null = null"), render.indexOf("await close();"));
   assert(/catch \(e: any\)/.test(region) && !/throw/.test(region), "a screenshot that fails is warned about, never thrown — an audit without a picture is still an audit");
 
+  // A label quotes the client's own words back at them, so it must be the
+  // WHOLE string. innerText omits anything hidden at that instant, and a page
+  // that splits its headings into per-letter spans for an animation therefore
+  // produced "Boo t your trategic event communication" in a client report.
+  assert(/el\.textContent \|\| el\.getAttribute\("alt"\)/.test(render),
+    "a spot's label is taken from the complete text, not from what happens to be visible");
+  assert(!/\(el\.innerText \|\| el\.getAttribute\("alt"\)/.test(render), "and innerText is not used for it");
+
   // The consent overlay, which is not part of the page being audited.
   assert(/cookie" i\]/.test(render) && /consent" i\]/.test(render), "a cookie banner is hidden before the picture is taken");
   assert(/pos === "fixed" \|\| pos === "sticky"/.test(render),

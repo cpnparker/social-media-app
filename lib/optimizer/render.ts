@@ -296,7 +296,17 @@ export async function renderPage(
             // A zero-sized or off-canvas element has no place on a picture.
             if (r.width < 4 || r.height < 4) return;
             if (y < 0 || x < -50) return;
-            const text = (el.innerText || el.getAttribute("alt") || el.getAttribute("src") || "").replace(/\s+/g, " ").trim();
+            // textContent, NOT innerText.
+            //
+            // innerText is what a reader sees, and it omits anything currently
+            // hidden — which on a page that splits its headings into per-letter
+            // spans for an animation means the letters that happen to be hidden
+            // at this instant are simply absent. The first real report quoted a
+            // client's own heading back at them as "Boo t your trategic event
+            // communication", which reads as our tool corrupting their text.
+            // A label only has to identify the element, so the complete string
+            // is the right one even where some of it is momentarily invisible.
+            const text = (el.textContent || el.getAttribute("alt") || el.getAttribute("src") || "").replace(/\s+/g, " ").trim();
             out.push({ kind: kind, x: Math.round(x), y: Math.round(y), w: Math.round(r.width), h: Math.round(r.height), label: text.slice(0, 90) });
           };
           Array.prototype.slice.call(document.querySelectorAll("h1")).forEach((el) => push(el, "h1"));
