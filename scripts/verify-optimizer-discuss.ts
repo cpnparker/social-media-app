@@ -834,6 +834,16 @@ console.log("\n11. Where the answer appears");
   assert(renders === 2, `both the anchored passage and the prose point render their own answer (${renders} sites)`);
   assert(/onFix\(quote, pointKey\)/.test(panel), "the anchor chip's fix carries its address");
   assert(/onFix!\(text, pointKey\)/.test(panel), "and so does the prose point's");
+
+  // The streaming buffer is PARSED where it renders, not printed. Shown raw,
+  // the writer watches ```anchor and ```draft scroll past, which reads as the
+  // tool leaking its own plumbing. Caught on screen in Chrome, not by a check.
+  const inline = panel.slice(panel.indexOf("function InlineStream"), panel.indexOf("function DraftBlock"));
+  assert(inline.length > 200, "the inline stream component was located");
+  assert(/splitLive\(text\)/.test(inline) && /parseDiscussReply\(live\.settled\)/.test(inline),
+    "an arriving answer is split and parsed exactly as the main conversation splits and parses its own");
+  assert(/pending/.test(inline), "and a half-arrived fence is rendered as pending, never as a button over a partial sentence");
+  assert(!/whitespace-pre-wrap\">\{text\}/.test(inline), "the raw buffer is never printed straight to the panel");
   assert(/const renderPointReplies = useCallback/.test(panel), "the renderer exists");
 
   // The scroll, which is the actual complaint.

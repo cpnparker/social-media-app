@@ -320,6 +320,52 @@ function PointParagraph({
   );
 }
 
+/**
+ * A point's answer while it is still arriving.
+ *
+ * Parsed, not printed raw. The reply's fences are a wire format: shown
+ * unparsed, the writer watches ```anchor and ```draft scroll past, which reads
+ * as the tool leaking its own plumbing. The main conversation has always parsed
+ * its live buffer; this is the same treatment where the answer now appears.
+ */
+function InlineStream({
+  text,
+  hasSelection,
+  onApply,
+}: {
+  text: string | null;
+  hasSelection: boolean;
+  onApply: (text: string, anchor?: string) => "replaced" | "appended" | "failed";
+}) {
+  if (!text) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
+        <Loader2 className="h-3 w-3 animate-spin" /> Working on this point
+      </span>
+    );
+  }
+  // The same split the main conversation uses: what has definitely arrived, and
+  // the fence that may still be half-written.
+  const live = splitLive(text);
+  const parsed = parseDiscussReply(live.settled);
+  return (
+    <div className="space-y-1.5">
+      {parsed.segments.map((seg, i) =>
+        seg.type === "draft" ? (
+          // `pending` while the fence may still be half-arrived: a button over a
+          // partial sentence would insert a partial sentence.
+          <DraftBlock key={i} text={seg.text} hasSelection={hasSelection} onApply={onApply} pending />
+        ) : seg.type === "anchor" ? null : (
+          <p key={i} className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{seg.text}</p>
+        )
+      )}
+      {live.partial !== null && (
+        <DraftBlock text={live.partial} hasSelection={hasSelection} onApply={onApply} pending />
+      )}
+    </div>
+  );
+}
+
 function DraftBlock({
   text,
   hasSelection,
@@ -952,17 +998,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
             onPointFix={() => {}}
           />
         ))}
-        {streamingHere && (
-          <div className="space-y-1.5">
-            {streamed ? (
-              <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{streamed}</p>
-            ) : (
-              <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
-                <Loader2 className="h-3 w-3 animate-spin" /> Working on this point
-              </span>
-            )}
-          </div>
-        )}
+        {streamingHere && <InlineStream text={streamed} hasSelection={hasSelection} onApply={onApply} />}
       </>
     );
   }, [turns, activePoint, streamed, setDismissed, hasSelection, onApply, resolveQuote, onRevealQuote, askForFix]);
