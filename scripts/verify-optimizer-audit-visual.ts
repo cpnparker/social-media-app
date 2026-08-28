@@ -351,8 +351,8 @@ console.log("\n9. Capture");
   assert(!/setViewport/.test(shotRegion), "the viewport is never resized while the page is being measured or photographed");
   assert(/const tile = \(await page\.screenshot\(\{ type: "png" \}\)\)/.test(shotRegion),
     "each tile is a plain viewport screenshot — a clip is measured in DOCUMENT coordinates and photographed the top of the page every time");
-  assert(/const at: number = await page\.evaluate\(`Math\.round\(window\.scrollY\)`\)/.test(shotRegion) && /top: at,/.test(shotRegion),
-    "and is composited where the page ACTUALLY scrolled to, because the last tile cannot reach its nominal offset");
+  assert(/const at: number = await page\.evaluate\(`Math\.round\(window\.scrollY\)`\)/.test(shotRegion),
+    "and its real scroll position is read back, because the last tile cannot reach its nominal offset");
 
   // MEASURED INSIDE THE TILE, at the instant it is photographed. A page with
   // scroll-driven layout is not the same shape at scroll 0 as at scroll 2,400,
@@ -365,6 +365,18 @@ console.log("\n9. Capture");
     "and their positions are the tile's own offset plus their offset within it");
   assert(/if \(r\.top < 0 \|\| r\.top > window\.innerHeight - 8\) return;/.test(shotRegion),
     "an element outside this viewport belongs to the tile that actually photographed it");
+
+  // NO TILE PAINTS OVER ROWS ALREADY PHOTOGRAPHED. The last tile cannot reach
+  // its nominal offset, so it overlaps the one before it; composited whole it
+  // overwrites those rows with pixels laid out at a different scroll position,
+  // and every element measured in the earlier tile stops matching what is under
+  // its mark. This was the cause that made SOME marks right and others wrong on
+  // the same page, which is what finally identified it.
+  assert(/const overlap = Math\.max\(0, covered - at\)/.test(shotRegion), "an overlapping tile is cropped rather than composited whole");
+  assert(/\.extract\(\{ left: 0, top: overlap/.test(shotRegion), "by the size of the overlap");
+  assert(/top: at \+ overlap/.test(shotRegion), "and placed below what is already there");
+  assert(/if \(sp\.y < Math\.max\(0, covered - at\)\) continue;/.test(shotRegion),
+    "and an element inside that overlap keeps the measurement from the tile that photographed it");
   assert(/position;\n              if \(pos !== "fixed"\) continue;/.test(shotRegion) || /pos !== "fixed"/.test(shotRegion),
     "a fixed header is hidden for every tile but the first, or it repeats down the picture");
   assert(/quality: 72/.test(render) && /resize\(\{ width: SHOT_WIDTH \}\)/.test(render), "and the image is scaled and compressed before it is sent");

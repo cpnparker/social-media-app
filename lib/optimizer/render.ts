@@ -434,6 +434,8 @@ export async function renderPage(
         const tiles = Math.ceil(captureHeight / VIEW_H);
 
         const parts: { input: Buffer; top: number; left: number }[] = [];
+        /** The first row not yet photographed. Tiles never paint above it. */
+        let covered = 0;
         for (let i = 0; i < tiles; i++) {
           const y = i * VIEW_H;
           // Scroll, then ASK WHERE WE ACTUALLY ARE. The last tile cannot scroll
@@ -511,6 +513,9 @@ export async function renderPage(
             return out;
           })()`);
           for (const sp of tileSpots) {
+            // An element inside the overlap was photographed by the tile above,
+            // at that tile's layout. Its mark belongs to those pixels.
+            if (sp.y < Math.max(0, covered - at)) continue;
             // Into document coordinates that match the stitched picture: this
             // tile's own offset plus the element's offset within it.
             spotted.push({ ...sp, y: sp.y + at });
@@ -520,8 +525,27 @@ export async function renderPage(
           // been scrolled — three identical tiles stacked into one picture. A
           // plain screenshot is the viewport, which is exactly this tile.
           const tile = (await page.screenshot({ type: "png" })) as Buffer;
-          parts.push({ input: tile, top: at, left: 0 });
-          if (at + VIEW_H >= captureHeight) break;
+
+          /**
+           * Never paint over rows already photographed.
+           *
+           * The last tile cannot scroll to its nominal offset — the browser
+           * clamps at the bottom of the document — so it overlaps the tile
+           * before it. Composited whole, it OVERWRITES those rows with pixels
+           * laid out at a different scroll position, and every element measured
+           * in the earlier tile then no longer matches what is under its mark.
+           * That was the last of four causes of drifting boxes, and the only
+           * one that made some marks right and others wrong on the same page.
+           */
+          const sharpLib = (await import("sharp")).default;
+          const overlap = Math.max(0, covered - at);
+          if (overlap >= VIEW_H) break;
+          const usable = overlap > 0
+            ? await sharpLib(tile).extract({ left: 0, top: overlap, width: 1280, height: VIEW_H - overlap }).png().toBuffer()
+            : tile;
+          parts.push({ input: usable, top: at + overlap, left: 0 });
+          covered = at + VIEW_H;
+          if (covered >= captureHeight) break;
         }
 
         const sharp = (await import("sharp")).default;
