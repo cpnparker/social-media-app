@@ -548,6 +548,9 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
       // Frames are `data: {...}\n\n` with a bare `data: [DONE]` that is not
       // JSON. Splitting the buffer on "\n\n" is load-bearing — a frame can
       // arrive split across two reads.
+      // The server's identity for the turn it is about to store. Stamping our
+      // own here is how dismissal used to address a turn that did not exist.
+      const assistantAt = res.headers.get("X-Discuss-At") || "";
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -583,7 +586,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
 
       if (!live()) return;
       if (full.trim()) {
-        setTurns((t) => t.concat([{ role: "assistant", content: full, at: new Date().toISOString() }]));
+        setTurns((t) => t.concat([{ role: "assistant", content: full, at: assistantAt || new Date().toISOString() }]));
       } else {
         toast.error("That came back empty");
         setTurns((t) => t.filter((x) => x !== asked));

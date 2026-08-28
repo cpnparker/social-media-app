@@ -259,6 +259,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const history = readTurns(session.config_chat);
   const now = new Date().toISOString();
+  /**
+   * The assistant turn's identity, decided HERE and told to the browser.
+   *
+   * It used to be stamped twice: once by the server when the turn was stored,
+   * and once by the browser when the stream finished. Two clocks, one identity,
+   * and nothing compared them until a feature needed to address a single turn.
+   * Dismissing a suggestion then 404'd every time until the page was reloaded,
+   * because the browser was asking about a turn that does not exist under that
+   * timestamp. One source, sent in a header the client reads before the first
+   * token arrives.
+   */
+  const assistantAt = new Date(Date.parse(now) + 1).toISOString();
 
   // History carries the writer's words only — never the copy of the draft that
   // rode with them. Ten turns each holding their own snapshot would grow the
@@ -362,7 +374,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         const next: DiscussTurn[] = trimForStorage(
           current.concat([
             { role: "user", content: question, at: now },
-            { role: "assistant", content: reply, at: new Date().toISOString() },
+            { role: "assistant", content: reply, at: assistantAt },
           ])
         );
         const { error: writeError } = await intelligenceDb
@@ -385,6 +397,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
+        // Read before the first token arrives, so the turn the browser appends
+        // carries the same identity as the one that gets stored.
+        "X-Discuss-At": assistantAt,
       },
     });
   } catch (error: any) {

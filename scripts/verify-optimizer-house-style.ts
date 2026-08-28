@@ -37,7 +37,33 @@
  *
  * ── MUTATION LOG ────────────────────────────────────────────────────────────
  *
- * Recorded from a real run in a detached worktree; see the entries at the end.
+ * Eighteen mutations in a detached worktree. Seventeen killed on the first
+ * pass, one survived, and the survivor is the interesting one.
+ *
+ * KILLED  the rule dropped from the Discuss prompt                        → 1
+ * KILLED  the rule dropped from the generation prompt                     → 1
+ * KILLED  the rule dropped from the span rewrite                          → 1
+ * KILLED  the old "em-dashes sparingly" rule restored beside the ban      → 2
+ * KILLED  a dash put back in the Discuss prompt                           → 2
+ * KILLED  a dash put back in the judge's suggestedEdit contract           → 2
+ * KILLED  the rule itself written with a dash                             → 1
+ * KILLED  the range guard removed from the detector                       → 4
+ * KILLED  "landscape" banned as a bare word                               → 4
+ * KILLED  the trope list emptied                                          → 3
+ * KILLED  the fix using a comma everywhere, producing comma splices       → 5
+ * KILLED  the fix mangling number ranges                                  → 5
+ * KILLED  the fix applied straight into the piece, unseen                 → 5
+ * KILLED  apply sending the model's text rather than the edit             → 6
+ * KILLED  the dismissal endpoint call turned into a POST                  → 6
+ * KILLED  dismissal addressed by position rather than timestamp           → 6
+ *
+ * SURVIVED, then killed by tightening: removing the edit box, by renaming
+ *   `<textarea` to `<textarea_disabled`. The assertion was `/<textarea/`, which
+ *   matches the renamed tag as a SUBSTRING, so a check meant to prove the
+ *   suggestion is editable proved only that eight letters appear somewhere.
+ *   It now asserts a word boundary AND that the box is bound to the edit state
+ *   in both directions. Worth the entry: this is the same failure as asserting
+ *   a line EXISTS rather than that it is USED, wearing a different hat.
  */
 import {
   HOUSE_STYLE_RULE,
@@ -204,7 +230,13 @@ console.log("\n6. What the writer can do with a suggestion");
   const panel = read("components/optimizer/DiscussPanel.tsx");
   const block = panel.slice(panel.indexOf("function DraftBlock("), panel.indexOf("export default function DiscussPanel("));
   assert(block.length > 500, "the block component was located");
-  assert(/<textarea/.test(block), "the suggestion is editable in place");
+  // Bound to the state, not merely present. `/<textarea/` matched
+  // "<textarea_disabled" in a mutation run, so the assertion survived removing
+  // the edit box: a substring match on a tag name proves the letters are there
+  // and nothing about whether anything is wired to them.
+  assert(/<textarea\b/.test(block), "the suggestion is editable in place");
+  assert(/value=\{body\}/.test(block) && /onChange=\{\(e\) => setEdited\(e\.target\.value\)\}/.test(block),
+    "and the box is bound to the edit state in both directions");
   // The assertion that matters: what is applied is what is in the box.
   assert(/onApply\(body,/.test(block), "and applying uses the edited text, not the model's original");
   assert(/const body = edited \?\? text/.test(block), "with the model's text as the starting point");
@@ -216,6 +248,20 @@ console.log("\n6. What the writer can do with a suggestion");
   assert(/t\.role === "assistant" && t\.at === at/.test(route), "addressed by the turn's timestamp, not its position");
   assert(/target\.length !== 1/.test(route), "and a turn that cannot be identified uniquely is refused rather than guessed at");
   assert(/setDismissed/.test(panel) && /method: "PATCH"/.test(panel), "and the panel calls it");
+
+  // ONE CLOCK. Found in production QA: the browser stamped its own timestamp on
+  // the assistant turn while the server stamped a different one, so every
+  // dismissal addressed a turn that does not exist and 404'd until reload. Two
+  // sources for one identity, with nothing comparing them until a feature
+  // needed to name a single turn.
+  assert(/const assistantAt = new Date\(/.test(route), "the route decides the turn's identity once");
+  assert(/"X-Discuss-At": assistantAt/.test(route), "and tells the browser in a header");
+  assert(/content: reply, at: assistantAt/.test(route), "and stores the turn under that same value");
+  assert(/res\.headers\.get\("X-Discuss-At"\)/.test(panel), "the panel reads it rather than inventing one");
+  assert(
+    /at: assistantAt \|\| new Date\(\)\.toISOString\(\)/.test(panel),
+    "and uses the server's value first, falling back to its own clock only when the header is missing"
+  );
 }
 
 // ── Self-test ──────────────────────────────────────────────────────────────
@@ -234,8 +280,11 @@ if (process.argv.includes("--self-test")) {
   must(houseStyleFlags("2020–2024").clean, "a range being wrongly flagged (must stay clean)");
   must(mechanicalDedash("It failed — we had none.") !== "It failed, we had none.", "a comma splice from the fix");
   must(AI_TROPES.length > 10, "an emptied trope list");
+  must(!/<textarea\b/.test("<textarea_disabled value={x} />"), "a renamed-away edit box (the substring trap)");
   const badPanel = 'const what = onApply(mechanicalDedash(text));';
   must(/onApply\(mechanicalDedash/.test(badPanel), "the fix being applied without a human reading it");
+  const badPanelClock = 'setTurns((t) => t.concat([{ role: "assistant", content: full, at: new Date().toISOString() }]));';
+  must(!/at: assistantAt \|\| new Date\(\)\.toISOString\(\)/.test(badPanelClock), "the browser stamping its own turn identity");
   const badRoute = 'const target = turns[body.index];';
   must(!/t\.role === "assistant" && t\.at === at/.test(badRoute), "dismissal addressed by position");
 
