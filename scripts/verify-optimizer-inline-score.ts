@@ -276,9 +276,20 @@ console.log("\n6. Provenance of the escape hatch");
     !/body\.(text|content|html)/.test(branch),
     "and never from the request body — the rule the whole chat-import block exists for"
   );
+  // The read must REACH tool_card without NAMING it. Naming a column that may
+  // not exist yet makes PostgREST reject the whole query, and the casualty is
+  // "Start writing" — a button with nothing to do with cards, broken by the gap
+  // between a deploy and a migration. Deploy order is not ours to choose.
+  // Bounded FORWARD from the read, not to the file's first .maybeSingle() —
+  // which sits 35 lines earlier on the conversation lookup, so the naive slice
+  // runs backwards and matches nothing while looking like a failing assertion.
+  const readAt = route.indexOf('.from("ai_messages")');
+  const msgRead = readAt < 0 ? "" : route.slice(readAt, route.indexOf(".maybeSingle()", readAt));
+  assert(msgRead.length > 20 && msgRead.includes("id_conversation"), "the window really covers the message read — a slice that matched nothing would pass the negative assertion below for free");
+  assert(msgRead.includes('.select("*")'), "the message read takes the whole row");
   assert(
-    /select\("id_message, role_message, document_message, tool_card"\)/.test(route),
-    "the message read fetches tool_card, or the branch above finds nothing"
+    !/select\([^)]*tool_card/.test(msgRead),
+    "and never names tool_card in the select — an unknown column fails the query, not just the card"
   );
 }
 
@@ -344,6 +355,8 @@ if (process.argv.includes("--self-test")) {
   );
   const badPost = 'fetch("/api/optimizer/import", { body: JSON.stringify({ source: "chat", fromCard: true, text: card.text }) })';
   must(/\btext\s*:/.test(badPost), "a browser that starts sending the text up");
+  const namedSelect = '.from("ai_messages").select("id_message, tool_card").maybeSingle()';
+  must(/select\([^)]*tool_card/.test(namedSelect), "a select that names the new column");
   const badBranch = 'if (body.fromCard === true) { chatText = String(body.text || ""); }';
   must(/body\.(text|content|html)/.test(badBranch), "a card branch reading the body instead of the row");
   const routeSrc = stripComments(read("app/api/ai/conversations/[id]/messages/route.ts"));

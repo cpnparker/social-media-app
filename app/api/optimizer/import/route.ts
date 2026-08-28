@@ -209,7 +209,14 @@ export async function POST(req: NextRequest) {
 
     const { data: msg } = await intelligenceDb
       .from("ai_messages")
-      .select("id_message, role_message, document_message, tool_card")
+      // `*` rather than a column list, and that is deliberate. Naming
+      // `tool_card` makes this read FAIL on a database where the migration has
+      // not run — PostgREST rejects the whole query for an unknown column — and
+      // the failure would land on "Start writing", a button that has nothing to
+      // do with cards and worked yesterday. The column is new; the deploy and
+      // the migration are separate events; the order between them is not ours
+      // to choose.
+      .select("*")
       .eq("id_message", messageId)
       .eq("id_conversation", conversationId)
       .maybeSingle();
