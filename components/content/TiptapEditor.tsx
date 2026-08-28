@@ -1,6 +1,7 @@
 "use client";
 
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
+import { decideExternalContent, selectionAfterExternalContent } from "@/lib/editor/external-content";
 import StarterKit from "@tiptap/starter-kit";
 // Tables are not in StarterKit, and their absence was not cosmetic. Tiptap
 // DISCARDS markup its schema cannot represent, so an imported Google Doc built
@@ -81,6 +82,20 @@ export default function TiptapEditor({
   const editorRef = useRef<Editor | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  /**
+   * The last HTML this editor reported upward.
+   *
+   * The parent stores it and hands it straight back as `content`, so without a
+   * record of what we sent there is no way to tell our own text returning late
+   * from a genuinely new document arriving. See lib/editor/external-content.ts:
+   * treating the first as the second is what threw the caret to the end of the
+   * document whenever a writer resumed typing just after a debounce fired.
+   */
+  const lastEmittedRef = useRef<string | null>(null);
+  const emit = (html: string) => {
+    lastEmittedRef.current = html;
+    onChangeRef.current(html);
+  };
 
   const editor = useEditor({
     extensions: [
@@ -107,20 +122,31 @@ export default function TiptapEditor({
     onUpdate: ({ editor }) => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
-        onChange(editor.getHTML());
+        emit(editor.getHTML());
       }, debounceMs);
     },
     onBlur: ({ editor }) => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
-      onChange(editor.getHTML());
+      emit(editor.getHTML());
     },
   });
 
-  // Update content when prop changes externally
+  // Update content when it changes EXTERNALLY — which is not the same thing as
+  // when it differs. See lib/editor/external-content.ts for the race and the
+  // production measurement behind this.
   useEffect(() => {
-    if (editor && content !== editor.getHTML()) {
-      editor.commands.setContent(content, { emitUpdate: false });
-    }
+    if (!editor) return;
+    const decision = decideExternalContent(content, lastEmittedRef.current, editor.getHTML());
+    if (!decision.apply) return;
+
+    const hadFocus = editor.isFocused;
+    const { from, to } = editor.state.selection;
+    editor.commands.setContent(content, { emitUpdate: false });
+    // A writer whose caret was in this editor keeps it. setContent rebuilds the
+    // document, so the position has to be re-applied and clamped: the new
+    // document can be shorter than the old offset.
+    const keep = selectionAfterExternalContent({ from, to }, editor.state.doc.content.size, hadFocus);
+    if (keep) editor.commands.setTextSelection(keep);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content]);
 
@@ -140,7 +166,10 @@ export default function TiptapEditor({
     return () => {
       if (debounceRef.current) {
         clearTimeout(debounceRef.current);
-        if (editorRef.current) onChangeRef.current(editorRef.current.getHTML());
+        if (editorRef.current) {
+          lastEmittedRef.current = editorRef.current.getHTML();
+          onChangeRef.current(lastEmittedRef.current);
+        }
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
