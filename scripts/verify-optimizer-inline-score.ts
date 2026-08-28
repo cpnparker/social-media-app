@@ -311,7 +311,14 @@ console.log("\n7. Persistence, end to end");
   const panel = stripComments(read("components/ai-writer/ChatPanel.tsx"));
   assert(/hydrateToolCardsFromMessages\(data\.messages/.test(panel), "and the panel hydrates from it on load — a hydrator nobody calls is a hydrator that does nothing");
   const hyd = panel.slice(panel.indexOf("const hydrateToolCardsFromMessages"), panel.indexOf("const hydrateSlidesFromMessages"));
-  assert(/typeof data\.overall !== "number"/.test(hyd), "a stored card of the wrong shape is dropped rather than rendered half-drawn");
+  // Asserted as a PROPERTY rather than one spelling: the guard's polarity flipped
+  // when the hydrator grew a second card kind, and an assertion pinned to
+  // `!== "number"` reported that reshuffle as a regression. What must hold is
+  // that both fields are validated before the card is rendered.
+  assert(
+    /typeof \w+\.overall\s*[!=]==\s*"number"/.test(hyd) && /Array\.isArray\(\w+\.moves\)/.test(hyd),
+    "a stored card of the wrong shape is dropped rather than rendered half-drawn"
+  );
 
   const migration = read("supabase/migrations/20260828_inline_tool_cards.sql");
   assert(/add column if not exists tool_card jsonb/.test(migration), "the column exists in a migration");

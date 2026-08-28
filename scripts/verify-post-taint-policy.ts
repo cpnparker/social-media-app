@@ -33,6 +33,14 @@ const registered = new Set(
 const MUST_BLOCK = new Set([
   "web_search", "create_scheduled_task", "generate_image", "generate_video",
   "generate_chart", "generate_document", "generate_slides", "generate_word_document",
+  // Reads nothing of the user's and writes nothing — but it makes an OUTBOUND
+  // REQUEST to an address that arrives as a model argument, which is the shape
+  // web_search is blocked for. inline-audit.ts already refuses any address the
+  // user did not type and fetches the human's own string rather than the
+  // model's, so the exfiltration path is closed by construction. This is the
+  // second layer, and the point of a second layer is that it does not depend on
+  // the first one's reasoning being right.
+  "query_page_audit",
 ]);
 
 console.log(`\n1. Every registered tool is classified (${registered.size} tools)`);

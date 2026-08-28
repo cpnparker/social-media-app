@@ -70,6 +70,7 @@ import ChatInput, { type ChatInputHandle } from "./ChatInput";
 import ShareDialog from "./ShareDialog";
 import SlideDraftPreview, { type SlideDraft } from "./SlideDraftPreview";
 import ContentScoreCard, { type ContentScoreData } from "./ContentScoreCard";
+import PageAuditCard, { type PageAuditData } from "./PageAuditCard";
 import SlideLightbox from "./SlideLightbox";
 import type { AIConversation, AIMessageRow, Attachment } from "@/lib/types/ai";
 
@@ -156,6 +157,7 @@ export default function ChatPanel({
   const [scoreCard, setScoreCard] = useState<ContentScoreData | null>(null);
   const [scoreCardMessageId, setScoreCardMessageId] = useState<string | null>(null);
   const [openingScore, setOpeningScore] = useState(false);
+  const [auditCard, setAuditCard] = useState<PageAuditData | null>(null);
   const [slidesDraft, setSlidesDraft] = useState<SlideDraft | null>(null);
   // The draft as it is RIGHT NOW, for edits that resolve asynchronously. An
   // image takes tens of seconds to generate, and the patch used to be applied
@@ -534,16 +536,29 @@ export default function ChatPanel({
    * is stored rather than left in the browser that made it.
    */
   const hydrateToolCardsFromMessages = useCallback((rows: AIMessageRow[]) => {
-    const withCard = [...rows].reverse().find((m) => m.toolCard?.kind === "content_score");
-    const data = withCard?.toolCard?.data;
+    const newest = (kind: string) => [...rows].reverse().find((m) => m.toolCard?.kind === kind);
+
+    // Each kind is restored independently. A thread can hold a score for a
+    // draft and an audit of the page it will replace, and they are answers to
+    // different questions — collapsing to "the last card" would hide one.
+    const withScore = newest("content_score");
+    const score = withScore?.toolCard?.data;
     // A stored card whose shape has moved on is dropped, not repaired: it is a
     // record of what was on screen that day, and half of one is worse than none.
-    if (!withCard || !data || typeof data.overall !== "number" || !Array.isArray(data.moves)) {
+    if (withScore && score && typeof score.overall === "number" && Array.isArray(score.moves)) {
+      setScoreCard(score as ContentScoreData);
+      setScoreCardMessageId(withScore.id);
+    } else {
       setScoreCard(null); setScoreCardMessageId(null);
-      return;
     }
-    setScoreCard(data as ContentScoreData);
-    setScoreCardMessageId(withCard.id);
+
+    const withAudit = newest("page_audit");
+    const audit = withAudit?.toolCard?.data;
+    if (withAudit && audit && audit.counts && Array.isArray(audit.findings)) {
+      setAuditCard(audit as PageAuditData);
+    } else {
+      setAuditCard(null);
+    }
   }, []);
 
   const hydrateSlidesFromMessages = useCallback((rows: AIMessageRow[]) => {
@@ -821,6 +836,8 @@ export default function ChatPanel({
             } else if (parsed.document_error) {
               setIsGeneratingDocument(false);
               toast.error(`Document generation failed: ${parsed.document_error}`);
+            } else if (parsed.page_audit) {
+              setAuditCard(parsed.page_audit as PageAuditData);
             } else if (parsed.content_score) {
               // Supersedes any earlier card: two scores on screen invites the
               // reader to compare them, and only the newest describes the text.
@@ -1994,6 +2011,14 @@ export default function ChatPanel({
                 isStreaming
                 workspaceId={conversation?.workspaceId ?? null}
               />
+            )}
+            {auditCard && (
+              <div className="flex items-start gap-3 px-4 py-3">
+                <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                  <Globe className="h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <PageAuditCard data={auditCard} />
+              </div>
             )}
             {scoreCard && (
               <div className="flex items-start gap-3 px-4 py-3">
