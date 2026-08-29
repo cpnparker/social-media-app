@@ -27,7 +27,7 @@
  *
  * ── MUTATION LOG ────────────────────────────────────────────────────────────
  *
- * Twenty-three mutations in a detached worktree. Twenty-one killed on the first
+ * Twenty-six mutations in a detached worktree. Twenty-four killed on the first
  * pass; both survivors were faults in this file rather than in the code.
  *
  * KILLED  an invisible check mapped to a nearby element                    → 1
@@ -49,6 +49,10 @@
  * KILLED  the remedy gate dropped, so a page WITH an FAQ was told to add one → 4d
  * KILLED  an opportunity ranked level with a warning, pushing one off     → 4d
  * KILLED  a marked opportunity still listed as not measured               → 4c
+ * KILLED  the last mark at a place owning its close-up instead of the first → 4c
+ * KILLED  the close-up deduplication removed, so one strip of headline
+ *           printed three times                                           → 4c
+ * KILLED  deduplication widened until the whole report showed one close-up → 4c
  *
  * The last five are the placement work, and the ordering one is worth reading.
  * The fixture originally appended the opportunity LAST, where a stable sort
@@ -79,6 +83,8 @@ import {
   PLACEMENT_OPPORTUNITIES,
   isOpportunity,
   isPlacement,
+  cropOwners,
+  splitCrops,
 } from "../lib/optimizer/audit-visual";
 import { auditPage } from "../lib/optimizer/page-audit";
 import type { AuditCheck } from "../lib/optimizer/page-audit";
@@ -293,8 +299,44 @@ console.log("\n4c. Close-ups");
   const tileAt = render.indexOf("const tile = (await page.screenshot");
   assert(tileAt > 0 && cropAt > tileAt, "cut after the tile is photographed, from the same pixels");
 
+  // ONE close-up per PLACE. Three things are missing from under this page's H1,
+  // and each of their findings carries a crop cut from the same two pixels: the
+  // same strip of headline, printed three times, which is the repetition this
+  // report was rebuilt to stop. The fixture uses ONE crop string across three
+  // pins, which is the precondition — with three different crops it could not
+  // tell deduplication from ordinary rendering.
+  const sameStrip = "data:image/jpeg;base64,SAME";
+  const slotSpot = spot("slot-top", 200, 40, "under the headline");
+  const shared = buildPins(
+    [check("tldr-visible", "warn"), check("byline-visible", "warn"), check("visible-date", "warn")],
+    [{ ...slotSpot, crop: sameStrip, cropWidth: 620, cropHeight: 90 }],
+  );
+  assert(shared.length === 3 && shared.every((p) => p.crop === sameStrip),
+    `precondition: three marks at one place, all carrying the same picture (${shared.length})`);
+  const owners = cropOwners(shared);
+  const splits = groupPins(shared).map((g) => splitCrops(g, owners));
+  assert(splits.filter((s) => s.own.length > 0).length === 1, "the picture is shown once, not once per finding");
+  assert(splits[0].own.length === 1 && splits[0].sharedWith.length === 0, "the first mark at a place is the one that shows it");
+  assert(splits[1].sharedWith.join() === "1" && splits[2].sharedWith.join() === "1",
+    "and the others name the mark whose picture it is, rather than showing nothing");
+
+  // Two findings about DIFFERENT elements keep their own close-ups. The rule is
+  // about one place, not about tidying the report.
+  const distinct = buildPins(
+    [check("heading-hierarchy", "fail")],
+    [
+      { ...spot("heading", 300, 40, "One"), crop: "data:image/jpeg;base64,AAA" },
+      { ...spot("heading", 600, 40, "Two"), crop: "data:image/jpeg;base64,BBB" },
+    ],
+  );
+  const distinctSplit = splitCrops(groupPins(distinct)[0], cropOwners(distinct));
+  assert(distinctSplit.own.length === 2 && distinctSplit.sharedWith.length === 0,
+    "two different elements keep two close-ups");
+
   const ui = stripComments(read("components/optimizer/AuditReport.tsx"));
-  assert(/g\.pins\.filter\(\(p\) => p\.crop\)/.test(ui), "the report shows a close-up per mark");
+  assert(/splitCrops\(g, owners\)/.test(ui), "the report shows a close-up per mark, deduplicated by place");
+  assert(/isPlacement\(p\) \? "bg-sky-500"/.test(ui),
+    "and a place's close-up is badged as a place, the same colour it has on the picture");
   // An opportunity that earned a mark must leave the "Not measured" list, or
   // one finding is reported twice under two headings that contradict each other.
   const nmAt = ui.indexOf("const notMeasured");

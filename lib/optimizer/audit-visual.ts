@@ -233,6 +233,49 @@ export function groupPins(pins: AuditPin[]): PinGroup[] {
 }
 
 /**
+ * Which mark owns each close-up.
+ *
+ * Three things are missing from under this page's H1, so three marks point at
+ * one spot and three findings carry a close-up cut from the same two pixels.
+ * Printed, that is the same strip of headline three times running, which is
+ * precisely the "one issue repeated" look the banded version was rebuilt to
+ * escape. The first mark at a spot shows the picture; the rest say whose.
+ *
+ * Keyed on the crop itself rather than on the coordinates, because the crop IS
+ * the evidence: two pins with identical pixels are looking at the same thing
+ * whatever their rects say.
+ */
+export function cropOwners(pins: AuditPin[]): { [crop: string]: number } {
+  const owners: { [crop: string]: number } = {};
+  const ordered = pins.slice().sort((a, b) => a.n - b.n);
+  for (let i = 0; i < ordered.length; i++) {
+    const c = ordered[i].crop;
+    if (!c) continue;
+    if (owners[c] === undefined) owners[c] = ordered[i].n;
+  }
+  return owners;
+}
+
+/** A finding's close-ups: the ones it shows, and the marks it shares a place
+ *  with. */
+export interface CropSplit {
+  own: AuditPin[];
+  sharedWith: number[];
+}
+
+export function splitCrops(group: PinGroup, owners: { [crop: string]: number }): CropSplit {
+  const own: AuditPin[] = [];
+  const sharedWith: number[] = [];
+  for (let i = 0; i < group.pins.length; i++) {
+    const p = group.pins[i];
+    if (!p.crop) continue;
+    if (owners[p.crop] === p.n) own.push(p);
+    else if (sharedWith.indexOf(owners[p.crop]) < 0) sharedWith.push(owners[p.crop]);
+  }
+  return { own, sharedWith: sharedWith.sort((a, b) => a - b) };
+}
+
+/**
  * The findings with nowhere to point, and the passes.
  *
  * Split out rather than dropped. A report that shows six pins over a page with

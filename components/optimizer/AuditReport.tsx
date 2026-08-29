@@ -44,7 +44,7 @@ import { cn } from "@/lib/utils";
 import { AlertCircle, AlertTriangle, ExternalLink, Printer } from "lucide-react";
 import type { AuditCheck, PageAuditResult } from "@/lib/optimizer/page-audit";
 import type { RenderShot, RenderSpot } from "@/lib/optimizer/render";
-import { buildPins, groupPins, unpinnedFindings, auditHeadline, isPlacement } from "@/lib/optimizer/audit-visual";
+import { buildPins, groupPins, unpinnedFindings, auditHeadline, isPlacement, cropOwners, splitCrops } from "@/lib/optimizer/audit-visual";
 import { layoutFigure, CARD_HEIGHT, type Band } from "@/lib/optimizer/audit-callouts";
 
 const SECTION_LABEL: { [k: string]: string } = {
@@ -77,6 +77,10 @@ export default function AuditReport({
   const groups = groupPins(pins);
   const figure = shot ? layoutFigure(pins, shot) : null;
   const rest = unpinnedFindings(audit.checks, pins);
+  // One close-up per PLACE. Three things are missing from under this H1, and
+  // showing each of them the same strip of headline is the repetition this
+  // report was rebuilt to stop.
+  const owners = cropOwners(pins);
   const counts = auditHeadline(audit.checks);
   // An opportunity that earned a mark is shown on the picture instead; listing
   // it here as well would report one thing twice under two different headings.
@@ -223,29 +227,42 @@ export default function AuditReport({
                     in, so what is in the picture IS the thing being described —
                     the one part of this report that cannot point at the wrong
                     place. */}
-                {g.pins.some((p) => p.crop) && (
-                  <div className="mt-2.5 ml-8 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    {g.pins.filter((p) => p.crop).map((p) => (
-                      <figure key={p.n} className="m-0 rounded-md border overflow-hidden bg-white">
-                        <div className="flex items-center gap-1.5 px-2 py-1 border-b bg-muted/40">
-                          <span
-                            className={cn(
-                              "h-4 w-4 rounded-full text-white text-[9.5px] font-semibold flex items-center justify-center shrink-0",
-                              p.status === "fail" ? "bg-red-500" : "bg-amber-500"
-                            )}
-                          >
-                            {p.n}
-                          </span>
-                          <figcaption className="text-[10.5px] text-muted-foreground truncate">
-                            {p.label || "on the page"}
-                          </figcaption>
+                {(() => {
+                  const { own, sharedWith } = splitCrops(g, owners);
+                  return (
+                    <>
+                      {own.length > 0 && (
+                        <div className="mt-2.5 ml-8 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                          {own.map((p) => (
+                            <figure key={p.n} className="m-0 rounded-md border overflow-hidden bg-white">
+                              <div className="flex items-center gap-1.5 px-2 py-1 border-b bg-muted/40">
+                                <span
+                                  className={cn(
+                                    "h-4 w-4 rounded-full text-white text-[9.5px] font-semibold flex items-center justify-center shrink-0",
+                                    isPlacement(p) ? "bg-sky-500" : p.status === "fail" ? "bg-red-500" : "bg-amber-500"
+                                  )}
+                                >
+                                  {p.n}
+                                </span>
+                                <figcaption className="text-[10.5px] text-muted-foreground truncate">
+                                  {p.label || "on the page"}
+                                </figcaption>
+                              </div>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={p.crop} alt={p.label || "The marked element"} className="block w-full" />
+                            </figure>
+                          ))}
                         </div>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={p.crop} alt={p.label || "The marked element"} className="block w-full" />
-                      </figure>
-                    ))}
-                  </div>
-                )}
+                      )}
+                      {sharedWith.length > 0 && (
+                        <p className="mt-2 ml-8 text-[11.5px] text-muted-foreground">
+                          Goes in the same place as {sharedWith.length === 1 ? "mark" : "marks"}{" "}
+                          {sharedWith.join(" and ")}, shown above.
+                        </p>
+                      )}
+                    </>
+                  );
+                })()}
               </li>
             ))}
           </ol>
