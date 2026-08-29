@@ -78,7 +78,11 @@ export default function AuditReport({
   const figure = shot ? layoutFigure(pins, shot) : null;
   const rest = unpinnedFindings(audit.checks, pins);
   const counts = auditHeadline(audit.checks);
-  const notMeasured = audit.checks.filter((c) => c.status === "info");
+  // An opportunity that earned a mark is shown on the picture instead; listing
+  // it here as well would report one thing twice under two different headings.
+  const notMeasured = audit.checks.filter(
+    (c) => c.status === "info" && !pins.some((p) => p.checkId === c.id)
+  );
   const [showPasses, setShowPasses] = useState(false);
   const passes = audit.checks.filter((c) => c.status === "pass");
 
@@ -253,8 +257,8 @@ export default function AuditReport({
         <section className="audit-section mb-6">
           <h2 className="text-[13px] font-semibold mb-1">Not visible on the page</h2>
           <p className="text-[11.5px] text-muted-foreground mb-2.5">
-            These live in the page&rsquo;s code or its site settings rather than in what a reader sees, so
-            there is nothing to mark on the picture.
+            Nothing on the picture points at these: they sit in the page&rsquo;s code or its settings, or
+            they apply across the page rather than at one spot.
           </p>
           <ul className="space-y-3">
             {rest.map((c) => (

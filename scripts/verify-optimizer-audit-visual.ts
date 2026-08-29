@@ -27,8 +27,8 @@
  *
  * ── MUTATION LOG ────────────────────────────────────────────────────────────
  *
- * Seventeen mutations in a detached worktree. Fifteen killed on the first pass;
- * both survivors were faults in this file rather than in the code.
+ * Twenty-three mutations in a detached worktree. Twenty-one killed on the first
+ * pass; both survivors were faults in this file rather than in the code.
  *
  * KILLED  an invisible check mapped to a nearby element                    → 1
  * KILLED  passing checks marked too                                       → 1
@@ -42,6 +42,19 @@
  * KILLED  the route no longer asking for a picture                        → 9
  * KILLED  the print stylesheet removed                                    → 8
  * KILLED  the no-total disclaimer removed                                 → 6
+ * KILLED  the one-badge-per-spot rule applied to places too, so the second
+ *           thing missing from one spot vanished                          → 4d
+ * KILLED  opportunities never marked                                      → 4d
+ * KILLED  an opportunity allowed to box an element that is already there  → 4d
+ * KILLED  the remedy gate dropped, so a page WITH an FAQ was told to add one → 4d
+ * KILLED  an opportunity ranked level with a warning, pushing one off     → 4d
+ * KILLED  a marked opportunity still listed as not measured               → 4c
+ *
+ * The last five are the placement work, and the ordering one is worth reading.
+ * The fixture originally appended the opportunity LAST, where a stable sort
+ * leaves it last whether it is ranked or not; the mutation survived until the
+ * fixture put it first. Same failure as the reading-order one below, found the
+ * same way.
  *
  * SURVIVED, then killed by rebuilding the fixture: removing the reading-order
  *   sort. The three-pin fixture had severity order and reading order AGREEING
@@ -63,6 +76,9 @@ import {
   CHECK_SPOTS,
   MAX_PINS,
   MAX_PINS_PER_CHECK,
+  PLACEMENT_OPPORTUNITIES,
+  isOpportunity,
+  isPlacement,
 } from "../lib/optimizer/audit-visual";
 import { auditPage } from "../lib/optimizer/page-audit";
 import type { AuditCheck } from "../lib/optimizer/page-audit";
@@ -279,7 +295,100 @@ console.log("\n4c. Close-ups");
 
   const ui = stripComments(read("components/optimizer/AuditReport.tsx"));
   assert(/g\.pins\.filter\(\(p\) => p\.crop\)/.test(ui), "the report shows a close-up per mark");
+  // An opportunity that earned a mark must leave the "Not measured" list, or
+  // one finding is reported twice under two headings that contradict each other.
+  const nmAt = ui.indexOf("const notMeasured");
+  assert(nmAt > 0, "precondition: the report builds a not-measured list");
+  const nmLine = ui.slice(nmAt, nmAt + 220);
+  assert(/pins\.some\(\(p\) => p\.checkId === c\.id\)/.test(nmLine),
+    "and a marked opportunity is not also listed as not measured");
   assert(/alt=\{p\.label \|\| "The marked element"\}/.test(ui), "with alt text, because a report gets forwarded and read in a mail client");
+}
+
+// ── 4d. Places, and the things that are missing from them ─────────────────
+//
+// A placement mark answers a different question from every other mark on the
+// picture: not "this is wrong" but "this is where the missing thing goes". Two
+// rules follow from that and neither is obvious.
+//
+// A PLACE CAN BE MISSING MORE THAN ONE THING. The one-badge-per-element rule
+// exists because two boxes over one heading stack two circles and the lower one
+// cannot be read. Applied to a place it deletes a true finding: under this
+// page's H1 both a summary block and a byline are absent, and the second one
+// silently vanished from the report while the first was marked.
+//
+// AN OPPORTUNITY IS NOT A FAULT. `faq-visible` is held at `info` in both states
+// on purpose, so that an unscored criterion cannot re-enter the tally. It still
+// has a place, and a report that knows where an FAQ would go and does not say
+// is withholding the useful half. Marked, it changes no count.
+console.log("\n4d. Places");
+{
+  // Both checks want the SAME slot, and there is exactly one. That is the
+  // precondition: with two slots the fixture could not tell the sharing rule
+  // from ordinary placement, and the mutation would survive.
+  const slot = spot("slot-top", 200, 40, "under the headline");
+  assert(
+    (CHECK_SPOTS["tldr-visible"] || []).join() === "slot-top" &&
+    (CHECK_SPOTS["byline-visible"] || []).join() === "slot-top",
+    "precondition: both the summary and the byline declare the same single slot",
+  );
+  const shared = buildPins([check("tldr-visible", "warn"), check("byline-visible", "warn")], [slot]);
+  assert(shared.length === 2, `one place, two things missing from it, two marks (${shared.length})`);
+  assert(shared[0].y === 200 && shared[1].y === 200, "both pointing at the same spot, which is the honest picture");
+  assert(shared.every(isPlacement), "and both drawn as places rather than as boxes round nothing");
+
+  // The rule it must NOT loosen: two findings about one real element still get
+  // one badge, or the lower circle is unreadable and unclickable.
+  const oneHeading = [spot("heading", 300, 40, "A heading")];
+  const stacked = buildPins([check("heading-hierarchy", "fail"), check("question-headings-live", "fail")], oneHeading);
+  assert(
+    (CHECK_SPOTS["heading-hierarchy"] || []).join() === "heading" &&
+    (CHECK_SPOTS["question-headings-live"] || []).join() === "heading",
+    "precondition: both heading checks want the same element kind",
+  );
+  assert(stacked.length === 1, `two findings about one heading still produce one badge (${stacked.length})`);
+
+  // The opportunity, in both of its states. The REMEDY is the only field that
+  // separates them: the id and the status are identical either way.
+  const faqMissing: AuditCheck = { id: "faq-visible", section: "structure", name: "Visible FAQ block", status: "info", detail: "no FAQ section found", remedy: "Question and answer pairs are pre-chunked for extraction. Optional, not a defect." };
+  const faqPresent: AuditCheck = { ...faqMissing, detail: "an FAQ section appears in the page text", remedy: undefined };
+  assert(faqMissing.status === "info" && faqPresent.status === "info" && faqMissing.id === faqPresent.id,
+    "precondition: the two states differ only in the remedy");
+  assert(isOpportunity(faqMissing) && !isOpportunity(faqPresent), "an absent FAQ is an opportunity; one already on the page is not");
+
+  const marked = buildPins([faqMissing], [spot("slot-end", 4000, 40, "at the end of the article")]);
+  assert(marked.length === 1 && marked[0].status === "info", "the absent FAQ is marked, and keeps its status so no count moves");
+  assert(isPlacement(marked[0]), "as a place");
+  assert(buildPins([faqPresent], [spot("slot-end", 4000)]).length === 0, "a page that already has one is not told to add one");
+
+  // An opportunity may not put a box round something that IS there. The `faq`
+  // element kind is FIRST in the preference order, so preference alone would
+  // have chosen it: this fails if the placement-only rule is dropped.
+  assert((CHECK_SPOTS["faq-visible"] || [])[0] === "faq", "precondition: the element kind is preferred over the slot");
+  const bothKinds = buildPins([faqMissing], [spot("faq", 1000, 40, "an FAQ"), spot("slot-end", 4000, 40, "at the end")]);
+  assert(bothKinds.length === 1 && bothKinds[0].kind === "slot-end", `an opportunity claims the place, never an element (${bothKinds[0] && bothKinds[0].kind})`);
+
+  // The opt-in list is a list so it cannot creep, which only holds if every id
+  // on it is real and has somewhere to go.
+  for (let i = 0; i < PLACEMENT_OPPORTUNITIES.length; i++) {
+    const id = PLACEMENT_OPPORTUNITIES[i];
+    const kinds = CHECK_SPOTS[id] || [];
+    assert(kinds.filter((k) => isPlacement({ kind: k })).length > 0, `${id} declares a place to be marked at`);
+  }
+
+  // Real problems come first when the cap bites. An opportunity is the last
+  // thing that should push a failure off the picture.
+  const crowd: RenderSpot[] = [];
+  const crowdChecks: AuditCheck[] = [];
+  for (let i = 0; i < MAX_PINS; i++) {
+    crowd.push(spot("heading", 100 + i * 50));
+    crowdChecks.push(check("heading-hierarchy", "warn"));
+  }
+  // The opportunity is listed FIRST. Appended last it would stay last under a
+  // stable sort even with the ranking removed, and the mutation would survive.
+  const crowded = buildPins([faqMissing].concat(crowdChecks), crowd.concat([spot("slot-end", 5000)]));
+  assert(crowded.length === MAX_PINS, "the cap still holds");
+  assert(crowded.filter((p) => p.checkId === "faq-visible").length === 0, "and the opportunity is what gets dropped, not a warning");
 }
 
 // ── 5. Placing a pin on a picture ──────────────────────────────────────────

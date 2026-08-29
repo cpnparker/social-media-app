@@ -34,7 +34,7 @@ export interface AuditPin {
   n: number;
   checkId: string;
   name: string;
-  status: "fail" | "warn";
+  status: "fail" | "warn" | "info";
   detail: string;
   remedy: string;
   /** The element this points at, in DOCUMENT pixels at render width. */
@@ -85,6 +85,39 @@ function isMarkable(status: AuditStatus): status is "fail" | "warn" {
 }
 
 /**
+ * Checks that may be marked even though they are not defects.
+ *
+ * `faq-visible` is held at `info` in BOTH states on purpose: the rubric does
+ * not score FAQ presence, and letting it fail would smuggle a dropped criterion
+ * back into the tally. But "there is no FAQ block" is still the single most
+ * asked-for editorial addition on a page like this, and a report that knows
+ * where one would go and does not say is withholding the useful half.
+ *
+ * So an opportunity is marked as a PLACE and never as a fault: sky blue, a
+ * dashed rule, and its own remedy text saying it is optional. It changes no
+ * count, because it is still not measured.
+ *
+ * An explicit list rather than a status rule, so this cannot creep: every other
+ * `info` check ("not checked", "rendered in 17.2s") would be nonsense as a mark.
+ */
+export const PLACEMENT_OPPORTUNITIES = ["faq-visible"];
+
+/**
+ * Is this check an opportunity worth marking?
+ *
+ * The REMEDY is the gate, and it is the gate because it is the only field that
+ * distinguishes the two states of an unscored check. `faq-visible` writes a
+ * remedy only when the page has no FAQ; a page that already has one carries the
+ * same id and the same `info` status with no remedy. Keying on the id alone
+ * would mark "put an FAQ at the end" on a page whose FAQ is right there.
+ */
+export function isOpportunity(check: { id: string; status: AuditStatus; remedy?: string }): boolean {
+  if (check.status !== "info") return false;
+  if (PLACEMENT_OPPORTUNITIES.indexOf(check.id) < 0) return false;
+  return !!(check.remedy && check.remedy.trim());
+}
+
+/**
  * Place the failing checks on the page.
  *
  * Fails are placed before warnings, so that when the cap bites it drops the
@@ -101,18 +134,24 @@ export function buildPins(checks: AuditCheck[], spots: RenderSpot[]): AuditPin[]
   }
   for (const k of Object.keys(byKind)) byKind[k].sort((a, b) => a.y - b.y || a.x - b.x);
 
+  const rank = (c: AuditCheck): number => (c.status === "fail" ? 0 : c.status === "warn" ? 1 : 2);
   const severityFirst = checks
-    .filter((c) => isMarkable(c.status))
+    .filter((c) => isMarkable(c.status) || isOpportunity(c))
     .slice()
-    .sort((a, b) => (a.status === "fail" ? 0 : 1) - (b.status === "fail" ? 0 : 1));
+    .sort((a, b) => rank(a) - rank(b));
 
   const claimed: AuditPin[] = [];
   const used = new Set<string>();
 
   for (const check of severityFirst) {
     if (claimed.length >= MAX_PINS) break;
-    const kinds = CHECK_SPOTS[check.id];
-    if (!kinds) continue;
+    const declared = CHECK_SPOTS[check.id];
+    if (!declared) continue;
+    // An opportunity may only claim a PLACE. Marking an element would put a
+    // box round something that is present and call it an improvement.
+    const opportunity = isOpportunity(check);
+    const kinds = opportunity ? declared.filter((k) => isPlacement({ kind: k })) : declared;
+    if (!kinds.length) continue;
 
     let placed = 0;
     for (const kind of kinds) {
@@ -121,14 +160,19 @@ export function buildPins(checks: AuditCheck[], spots: RenderSpot[]): AuditPin[]
         // One badge per element. Two findings about the same heading would
         // stack two circles on top of each other, and the lower one would be
         // unreadable and unclickable.
+        // One badge per ELEMENT: two boxes over one heading stack two circles
+        // and the lower one cannot be read. A PLACE is different. A single spot
+        // can be missing more than one thing, and under this page's H1 two are:
+        // a summary block and a byline. Two notes pointing at one dashed rule
+        // says that; dropping the second says the page has a byline.
         const at = `${spot.x},${spot.y},${spot.kind}`;
-        if (used.has(at)) continue;
+        if (used.has(at) && !isPlacement(spot)) continue;
         used.add(at);
         claimed.push({
           n: 0,
           checkId: check.id,
           name: check.name,
-          status: check.status === "fail" ? "fail" : "warn",
+          status: check.status === "fail" ? "fail" : check.status === "warn" ? "warn" : "info",
           detail: check.detail,
           remedy: check.remedy || "",
           x: spot.x, y: spot.y, w: spot.w, h: spot.h,
@@ -152,7 +196,7 @@ export function buildPins(checks: AuditCheck[], spots: RenderSpot[]): AuditPin[]
 export interface PinGroup {
   checkId: string;
   name: string;
-  status: "fail" | "warn";
+  status: "fail" | "warn" | "info";
   detail: string;
   remedy: string;
   /** The badge numbers, in reading order. */
