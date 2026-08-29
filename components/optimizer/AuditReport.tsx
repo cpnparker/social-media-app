@@ -167,7 +167,7 @@ export default function AuditReport({
               {pins.length} {pins.length === 1 ? "mark" : "marks"}
             </span>
           </div>
-          <AnnotatedFigure band={figure} shot={shot} src={shot.dataUri} />
+          <AnnotatedFigure band={figure} src={shot.dataUri} />
           {shot.clipped && (
             <p className="text-[11px] text-muted-foreground mt-2">
               The preview covers the first {Math.round((shot.height / shot.scale) / 100) * 100} pixels of a
@@ -322,59 +322,50 @@ export default function AuditReport({
 /**
  * The page, once, with every note around it and a line to each.
  *
- * ── THE GEOMETRY ────────────────────────────────────────────────────────────
+ * ── DISPLAY PIXELS, NOT IMAGE PIXELS ────────────────────────────────────────
  *
- * Laid out in IMAGE pixels and scaled to whatever width the figure ends up
- * with, so one set of numbers serves a screen, a narrow window and a printed
- * page. The connectors are drawn in an SVG covering the whole figure, which
- * therefore shares its coordinates.
- *
- * The connector is three right-angled segments rather than a diagonal.
- * Diagonals cross each other at the slightest crowding and read as a tangle;
- * right angles stay legible when two notes are close together.
+ * The picture is scaled to fit; the notes are not, because a note is text. An
+ * earlier version laid everything out in image pixels and scaled the whole
+ * figure, so on a five-thousand-pixel page the notes came out ten pixels tall.
  *
  * ── AND WHAT THE PREVIEW IS FOR ─────────────────────────────────────────────
  *
- * It is a map, not a document. A page four thousand pixels tall cannot be read
- * at this size and is not meant to be: the marks show WHERE the problems are,
- * and the close-up under each finding shows WHAT they are.
+ * It is a map. A page this long cannot be read at this size and is not meant to
+ * be: the marks show WHERE the problems are, and the close-up under each
+ * finding shows WHAT they are. Drawn full size instead, the figure is four
+ * thousand pixels tall and you meet one note per screen, which reads as the
+ * same problem over and over.
  */
-function AnnotatedFigure({ band, shot, src }: { band: Band; shot: RenderShot; src: string }) {
-  const GUTTER = 250;
-  const W = GUTTER * 2 + shot.width;
+function AnnotatedFigure({ band, src }: { band: Band; src: string }) {
+  const GUTTER = 230;
+  const W = GUTTER * 2 + band.previewWidth;
   const H = band.height;
 
   return (
-    <figure className="audit-finding m-0">
-      <div className="relative w-full" style={{ aspectRatio: `${W} / ${H}` }}>
+    <figure className="audit-finding m-0 flex justify-center">
+      <div className="relative" style={{ width: W, height: H }}>
         <div
-          className="absolute overflow-hidden border rounded-md bg-white"
-          style={{
-            left: `${(GUTTER / W) * 100}%`,
-            width: `${(shot.width / W) * 100}%`,
-            top: 0,
-            height: `${(shot.height / H) * 100}%`,
-          }}
+          className="absolute overflow-hidden border rounded-md bg-white shadow-sm"
+          style={{ left: GUTTER, top: 0, width: band.previewWidth, height: band.previewHeight }}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={src} alt={`The page as it is published`} className="block w-full" />
+          <img src={src} alt="The page as it is published" className="block w-full" />
         </div>
 
-        <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+        <svg className="absolute inset-0 pointer-events-none" width={W} height={H}>
           {band.callouts.map((c) => {
-            const cardEdge = c.side === "left" ? GUTTER - 8 : GUTTER + shot.width + 8;
+            const cardEdge = c.side === "left" ? GUTTER - 6 : GUTTER + band.previewWidth + 6;
             const cardY = c.top + CARD_HEIGHT / 2;
-            const pinX = GUTTER + c.targetX + (c.side === "left" ? 0 : c.pin.w * shot.scale);
-            const mid = c.side === "left" ? cardEdge + 10 : cardEdge - 10;
+            const pinX = GUTTER + c.targetX + (c.side === "left" ? 0 : c.targetW);
+            const mid = c.side === "left" ? cardEdge - 10 : cardEdge + 10;
             return (
               <polyline
                 key={c.pin.n}
-                points={`${cardEdge},${cardY} ${mid},${cardY} ${mid},${c.targetY} ${pinX},${c.targetY}`}
+                points={`${mid},${cardY} ${cardEdge},${cardY} ${cardEdge},${c.targetY + c.targetH / 2} ${pinX},${c.targetY + c.targetH / 2}`}
                 fill="none"
                 stroke={c.pin.status === "fail" ? "rgb(239 68 68)" : "rgb(245 158 11)"}
-                strokeWidth={1.5}
+                strokeWidth={1}
                 strokeLinejoin="round"
-                vectorEffect="non-scaling-stroke"
               />
             );
           })}
@@ -384,14 +375,14 @@ function AnnotatedFigure({ band, shot, src }: { band: Band; shot: RenderShot; sr
           <div
             key={`m-${c.pin.n}`}
             className={cn(
-              "absolute rounded-[2px] border-2",
-              c.pin.status === "fail" ? "border-red-500/90 bg-red-500/15" : "border-amber-500/90 bg-amber-500/15"
+              "absolute rounded-[2px] border",
+              c.pin.status === "fail" ? "border-red-500 bg-red-500/25" : "border-amber-500 bg-amber-500/25"
             )}
             style={{
-              left: `${((GUTTER + c.targetX) / W) * 100}%`,
-              top: `${(c.targetY / H) * 100}%`,
-              width: `${((c.pin.w * shot.scale) / W) * 100}%`,
-              height: `${(Math.max(c.pin.h * shot.scale, 10) / H) * 100}%`,
+              left: GUTTER + c.targetX,
+              top: c.targetY,
+              width: Math.max(c.targetW, 4),
+              height: Math.max(c.targetH, 4),
             }}
           />
         ))}
@@ -402,15 +393,15 @@ function AnnotatedFigure({ band, shot, src }: { band: Band; shot: RenderShot; sr
             className="absolute flex items-start gap-1.5"
             style={{
               [c.side]: 0,
-              top: `${(c.top / H) * 100}%`,
-              width: `${(GUTTER / W) * 100}%`,
-              height: `${(CARD_HEIGHT / H) * 100}%`,
+              top: c.top,
+              width: GUTTER - 14,
+              height: CARD_HEIGHT,
               flexDirection: c.side === "left" ? "row" : "row-reverse",
             } as React.CSSProperties}
           >
             <span
               className={cn(
-                "h-[18px] w-[18px] rounded-full text-white text-[10px] font-semibold flex items-center justify-center shrink-0 mt-[1px]",
+                "h-[17px] w-[17px] rounded-full text-white text-[10px] font-semibold flex items-center justify-center shrink-0 mt-[1px]",
                 c.pin.status === "fail" ? "bg-red-500" : "bg-amber-500"
               )}
             >

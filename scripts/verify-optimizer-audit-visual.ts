@@ -67,7 +67,7 @@ import {
 import { auditPage } from "../lib/optimizer/page-audit";
 import type { AuditCheck } from "../lib/optimizer/page-audit";
 import type { RenderSpot } from "../lib/optimizer/render";
-import { layoutFigure, anyOverlap, ordersMatch, CARD_HEIGHT } from "../lib/optimizer/audit-callouts";
+import { layoutFigure, anyOverlap, ordersMatch, CARD_HEIGHT, FIGURE_MAX_HEIGHT } from "../lib/optimizer/audit-callouts";
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -227,10 +227,23 @@ console.log("\n4b. Notes around the page");
   assert(fig.callouts.length === pins.length, `every pin gets a note on the one figure (${fig.callouts.length})`);
   assert(!anyOverlap(fig), "no note overlaps another in its column, even with six findings a dozen pixels apart");
   assert(ordersMatch(fig), "and the notes run in the same order as the things they point at, so the lines cannot cross");
-  assert(fig.height >= shot.height, "the figure is at least as tall as the page it shows");
+  // THE PICTURE IS SCALED, THE NOTES ARE NOT. Laid out in image pixels and
+  // scaled with the figure, a note on a five-thousand-pixel page came out ten
+  // pixels tall. And a figure drawn at full size is four thousand pixels of
+  // scrolling, one note per screen, which is what "one repeated issue" felt
+  // like.
+  assert(fig.previewHeight <= FIGURE_MAX_HEIGHT + 1, `the preview is capped at ${FIGURE_MAX_HEIGHT}px (${Math.round(fig.previewHeight)})`);
+  assert(fig.previewWidth > 0 && fig.previewHeight > 0, "and keeps a real size");
+  assert(Math.abs(fig.previewWidth / fig.previewHeight - shot.width / shot.height) < 0.01, "at the page's own proportions");
 
   const deepest = fig.callouts.reduce((n: number, c) => Math.max(n, c.top + CARD_HEIGHT), 0);
-  assert(fig.height >= deepest, "and tall enough for the notes, so a long column cannot run off the bottom");
+  assert(fig.height >= deepest, "the figure is tall enough for the notes, so a long column cannot run off the bottom");
+  assert(fig.height >= fig.previewHeight, "and at least as tall as the picture");
+
+  // A very tall page must not shrink its notes with it.
+  const tall = layoutFigure(pins, { width: 900, height: 9000, scale: 0.703 });
+  assert(tall.callouts.every((c) => c.top >= 0), "notes on a very long page still sit inside the figure");
+  assert(tall.previewHeight <= FIGURE_MAX_HEIGHT + 1, "whose preview is capped rather than drawn at full length");
 
   const sides = new Set(fig.callouts.map((c) => c.side));
   assert(sides.size === 2, "notes are placed on both sides of the page");

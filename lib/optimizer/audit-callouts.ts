@@ -26,28 +26,47 @@
 
 import type { AuditPin } from "./audit-visual";
 
-/** Fixed, so the layout is exact arithmetic rather than a measurement of text
- *  that has not been rendered yet. The note carries a name and one short line;
- *  the full detail is in the list below the figures. */
-export const CARD_HEIGHT = 84;
+/**
+ * DISPLAY pixels, and fixed.
+ *
+ * The layout used to be computed in image pixels and scaled with the picture,
+ * which meant that on a five-thousand-pixel page the notes shrank to ten pixels
+ * tall and could not be read at all. A note is text: it has a size of its own
+ * and does not scale with the thing it points at.
+ */
+export const CARD_HEIGHT = 62;
 
-/** The least space between two notes in the same column. */
-export const CARD_GAP = 12;
+/** The least space between two notes in the same column, in display pixels. */
+export const CARD_GAP = 10;
+
+/**
+ * The tallest the preview may be drawn.
+ *
+ * A page is often several thousand pixels tall, and a figure that tall is not a
+ * preview: it is the page again, scrolled past one note at a time, which is
+ * exactly how the banded version felt. Capped, the preview becomes what it is
+ * for — a map of WHERE the problems are — and the close-up under each finding
+ * carries what they are.
+ */
+export const FIGURE_MAX_HEIGHT = 560;
 
 export interface Callout {
   pin: AuditPin;
   side: "left" | "right";
-  /** Top of the note, in the FIGURE's coordinate space (image pixels from the
-   *  top of the band). */
+  /** Top of the note, in DISPLAY pixels from the top of the figure. */
   top: number;
-  /** Where the connector meets the image: the pin's own position in the band. */
+  /** Where the connector meets the picture, in display pixels. */
   targetX: number;
   targetY: number;
+  targetW: number;
+  targetH: number;
 }
 
 export interface Band {
-  /** Crop window on the full capture, in image pixels. */
-  top: number;
+  /** The picture, scaled to fit, in display pixels. */
+  previewWidth: number;
+  previewHeight: number;
+  /** The figure as a whole: the picture, or the notes if they run longer. */
   height: number;
   callouts: Callout[];
 }
@@ -67,21 +86,34 @@ export interface Band {
  */
 export function layoutFigure(
   pins: AuditPin[],
-  shot: { width: number; height: number; scale: number }
+  shot: { width: number; height: number; scale: number },
+  maxHeight = FIGURE_MAX_HEIGHT
 ): Band {
+  // Everything below is in DISPLAY pixels: the picture is scaled to fit, and
+  // the notes are not, because a note is text.
+  const fit = Math.min(1, maxHeight / Math.max(1, shot.height));
+  const previewH = shot.height * fit;
+  const previewW = shot.width * fit;
+
   const placed = pins
-    .map((pin) => ({ pin, x: pin.x * shot.scale, y: pin.y * shot.scale }))
-    .filter((p) => p.y <= shot.height)
+    .map((pin) => ({
+      pin,
+      x: pin.x * shot.scale * fit,
+      y: pin.y * shot.scale * fit,
+      w: Math.max(pin.w * shot.scale * fit, 3),
+      h: Math.max(pin.h * shot.scale * fit, 3),
+    }))
+    .filter((p) => p.y <= previewH)
     .sort((a, b) => a.y - b.y);
 
-  const half = shot.width / 2;
+  const half = previewW / 2;
   const bySide: { left: typeof placed; right: typeof placed } = { left: [], right: [] };
   for (const p of placed) {
     // A note goes on the side its subject sits on, so a connector never crosses
     // the page. Once a side holds more than half of them the rest go opposite,
     // or a page whose findings are all on the left stacks every note into one
     // column beside an empty gutter.
-    const wants: "left" | "right" = p.x + (p.pin.w * shot.scale) / 2 < half ? "left" : "right";
+    const wants: "left" | "right" = p.x + p.w / 2 < half ? "left" : "right";
     const other = wants === "left" ? "right" : "left";
     if (bySide[wants].length > Math.ceil(placed.length / 2) - 1 && bySide[other].length < bySide[wants].length) {
       bySide[other].push(p);
@@ -101,16 +133,19 @@ export function layoutFigure(
       const wanted = Math.max(0, p.y - CARD_HEIGHT / 2);
       const at = Math.max(wanted, cursor);
       cursor = at + CARD_HEIGHT + CARD_GAP;
-      callouts.push({ pin: p.pin, side, top: at, targetX: p.x, targetY: p.y });
+      callouts.push({ pin: p.pin, side, top: at, targetX: p.x, targetY: p.y, targetW: p.w, targetH: p.h });
     }
   }
 
   callouts.sort((a, b) => a.pin.n - b.pin.n);
 
-  // Tall enough for the page AND for the notes: a column longer than the
-  // picture would otherwise run off the bottom of the figure.
   const deepest = callouts.reduce((n, c) => Math.max(n, c.top + CARD_HEIGHT), 0);
-  return { top: 0, height: Math.max(shot.height, deepest + 8), callouts };
+  return {
+    previewWidth: previewW,
+    previewHeight: previewH,
+    height: Math.max(previewH, deepest + 4),
+    callouts,
+  };
 }
 
 /**
