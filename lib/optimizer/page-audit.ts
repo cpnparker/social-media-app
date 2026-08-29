@@ -359,6 +359,67 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     remedy: questionHeads === 0 ? "A heading phrased as the buyer's question is what retrieval matches against; a label matches nothing." : undefined,
   });
 
+  /**
+   * A summary block near the top: the checklist's TL;DR.
+   *
+   * Two ways a page can have one and only one of them is reliable to detect.
+   * A labelled block ("Key takeaways", "In short", "TL;DR") is unambiguous. A
+   * short bulleted list in the first quarter of the article is the unlabelled
+   * form, and it is the common one — so it counts, but only when the bullets
+   * are short enough to be summary lines rather than a body list.
+   *
+   * Deliberately NOT scored on the whole page: a footer list of links or a
+   * navigation menu is a list of short items near nothing in particular, and
+   * counting it would report a summary on almost every page on the web.
+   */
+  const articleTypesForCoverage = ["Article", "NewsArticle", "BlogPosting", "TechArticle"];
+  const { region: articleRegion } = contentRegion(dom);
+  const articleTop = articleRegion.slice(0, Math.max(2000, Math.round(articleRegion.length * 0.25)));
+  const labelledSummary = /\b(key takeaways?|in short|tl;?dr|at a glance|the short version|summary)\b/i.test(strip(articleTop));
+  const topLists = articleTop.match(/<(ul|ol)\b[\s\S]*?<\/\1\s*>/gi) || [];
+  const summaryList = topLists.some((list) => {
+    const items = list.match(/<li\b[\s\S]*?<\/li\s*>/gi) || [];
+    if (items.length < 3 || items.length > 6) return false;
+    const lengths = items.map((li) => strip(li).length);
+    // Summary lines: a complete statement, not a two-word nav label and not a
+    // paragraph. Measured on the checklist's own description, "3-5 bullets,
+    // each a complete, self-contained fact".
+    return lengths.every((n) => n >= 40 && n <= 320);
+  });
+  const hasSummary = labelledSummary || summaryList;
+  push({
+    id: "tldr-visible", section: "structure", name: "A summary block near the top",
+    status: hasSummary ? "pass" : "warn",
+    detail: labelledSummary
+      ? "a labelled summary block appears near the top of the article"
+      : summaryList
+        ? "a short bulleted list near the top reads as a summary"
+        : "no summary block or short bulleted list in the first quarter of the article",
+    remedy: hasSummary
+      ? undefined
+      : "Three to five bullets under the H1, each a complete fact that stands on its own. It is the block most often lifted whole as an answer, because it is the only part of the page already written as one.",
+  });
+
+  /**
+   * A visible byline. The machine-readable half is schema-author, above.
+   *
+   * A page can name its author in schema and show nothing to a reader, or the
+   * reverse; both halves are worth having and only one of them was checked.
+   */
+  const bylineMarkup = /\b(rel=["']?author|class=["'][^"']*\b(author|byline)\b)/i.test(articleRegion);
+  const bylineText = /\bby\s+[A-Z][a-z]+(?:\s+[A-Z][a-z'’-]+){1,3}\b/.test(strip(articleTop));
+  const hasByline = bylineMarkup || bylineText;
+  push({
+    id: "byline-visible", section: "identity", name: "A named author on the page",
+    status: hasByline ? "pass" : "warn",
+    detail: hasByline
+      ? bylineMarkup ? "an author or byline element is marked up in the article" : "a byline appears in the opening of the article"
+      : "no visible byline in the article",
+    remedy: hasByline
+      ? undefined
+      : "A named author with a role is one of the few reliability signals a model can read literally. An article with no author is anonymous corporate copy to a system deciding whether to repeat it.",
+  });
+
   const faqVisible = /Frequently asked|FAQ/i.test(strip(dom.slice(0, 400000)));
   push({
     id: "faq-visible", section: "structure", name: "Visible FAQ block",
@@ -525,10 +586,35 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
       : uniqueTypes.indexOf("(unparseable block)") >= 0 ? "A JSON-LD block failed to parse — invalid schema is worse than none, because it claims machine-readability it does not deliver." : undefined,
   });
 
+  /**
+   * WHICH types, not just whether any.
+   *
+   * `schema-present` lists what it found, which is evidence rather than a
+   * verdict: a page carrying only BreadcrumbList passes it while telling a
+   * model nothing about who published the article or what it answers. The four
+   * below are the ones with a mechanism behind them — identity (Organization,
+   * Person), the article itself, and answer-block eligibility (FAQPage).
+   */
+  const WANTED = ["Organization", "Person", "FAQPage"];
+  const missingTypes = WANTED.filter((t) => uniqueTypes.indexOf(t) < 0)
+    .concat(uniqueTypes.some((t) => articleTypesForCoverage.indexOf(t) >= 0) ? [] : ["Article"]);
+  push({
+    id: "schema-coverage", section: "schema", name: "Schema covers identity, the article and its answers",
+    status: ldBlocks.length === 0 ? "info" : missingTypes.length === 0 ? "pass" : "warn",
+    detail: ldBlocks.length === 0
+      ? "no JSON-LD to cover anything (see structured data above)"
+      : missingTypes.length === 0
+        ? "Organization, Person, Article and FAQPage are all present"
+        : `missing: ${missingTypes.join(", ")}`,
+    remedy: ldBlocks.length > 0 && missingTypes.length > 0
+      ? "Organization and Person say who is behind the page, Article says what it is, FAQPage is what makes an answer block eligible. Anything else is decoration by comparison."
+      : undefined,
+  });
+
   // From the PARSED types — the raw-regex version missed array-form @type
   // ("@type": ["Article", "TechArticle"]) and read "author" from anywhere in
   // the page, including body prose.
-  const articleTypes = ["Article", "NewsArticle", "BlogPosting", "TechArticle"];
+  const articleTypes = articleTypesForCoverage;
   const hasArticleType = uniqueTypes.some((t) => articleTypes.indexOf(t) >= 0);
   const hasArticleWithAuthor = hasArticleType && ldBlocks.some((blk) => /"author"\s*:/.test(blk));
   push({

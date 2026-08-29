@@ -23,6 +23,12 @@
 import type { AuditCheck, AuditStatus } from "./page-audit";
 import type { RenderSpot } from "./render";
 
+/** True for the marks that say WHERE something should go, rather than what is
+ *  wrong with something already there. */
+export function isPlacement(pin: { kind?: string }): boolean {
+  return pin.kind === "slot-top" || pin.kind === "slot-end";
+}
+
 export interface AuditPin {
   /** 1-based, in reading order down the page. What the badge shows. */
   n: number;
@@ -38,6 +44,9 @@ export interface AuditPin {
   h: number;
   /** A few words of the element, so the list can say which one. */
   label: string;
+  /** The kind of spot claimed, so a placement can be drawn as a place rather
+   *  than as a box around something that is not there. */
+  kind?: string;
   /** A close-up of the element, cut from the pixels it was measured in. */
   crop?: string;
   cropWidth?: number;
@@ -52,12 +61,16 @@ export interface AuditPin {
  * as "no marker" rather than as a pin on whatever the switch fell through to.
  */
 export const CHECK_SPOTS: { [checkId: string]: RenderSpot["kind"][] } = {
+  // Missing blocks, marked where they WOULD go. A report that says a page has
+  // no summary and cannot say where to put one is half a sentence.
+  "tldr-visible": ["slot-top"],
+  "byline-visible": ["slot-top"],
+  "visible-date": ["date", "slot-top"],
+  "faq-visible": ["faq", "slot-end"],
   "one-h1": ["h1"],
   "heading-hierarchy": ["heading"],
   "question-headings-live": ["heading"],
   "image-alt": ["image-no-alt"],
-  "visible-date": ["date"],
-  "faq-visible": ["faq"],
   "js-dependency": ["first-paragraph"],
 };
 
@@ -120,6 +133,7 @@ export function buildPins(checks: AuditCheck[], spots: RenderSpot[]): AuditPin[]
           remedy: check.remedy || "",
           x: spot.x, y: spot.y, w: spot.w, h: spot.h,
           label: spot.label,
+          kind: spot.kind,
           crop: spot.crop,
           cropWidth: spot.cropWidth,
           cropHeight: spot.cropHeight,

@@ -64,7 +64,25 @@ export interface RenderedImage {
  */
 export interface RenderSpot {
   /** What kind of thing this is, which is how a finding claims it. */
-  kind: "h1" | "heading" | "image-no-alt" | "image" | "date" | "faq" | "first-paragraph";
+  kind:
+    | "h1"
+    | "heading"
+    | "image-no-alt"
+    | "image"
+    | "date"
+    | "faq"
+    | "first-paragraph"
+    /**
+     * PLACES, not things. Where a block that is missing would go.
+     *
+     * Every other kind marks something that exists and is wrong. These mark
+     * somewhere that is empty and should not be: a summary belongs under the
+     * H1, an FAQ belongs at the end of the article. A report that only ever
+     * circles what is on the page can say a page has no summary but never
+     * where to put one, which is the more useful half of the sentence.
+     */
+    | "slot-top"
+    | "slot-end";
   x: number;
   y: number;
   w: number;
@@ -211,7 +229,7 @@ export const SHOT_WIDTH = 900;
 export const SHOT_MAX_HEIGHT = 7200;
 
 /** Kinds worth a close-up: the ones an audit finding can actually point at. */
-export const CROP_KINDS = ["h1", "heading", "image-no-alt", "date", "faq", "first-paragraph"];
+export const CROP_KINDS = ["h1", "heading", "image-no-alt", "date", "faq", "first-paragraph", "slot-top", "slot-end"];
 
 /** Enough for every finding a report will show, and no more: each one is an
  *  image inside a JSON response. */
@@ -535,6 +553,24 @@ export async function renderPage(
             if (faq) push(faq, "faq");
             const firstP = root ? root.querySelector("p") : document.querySelector("p");
             if (firstP) push(firstP, "first-paragraph");
+
+            // The two places a missing block belongs. Zero-height markers: they
+            // are positions, not elements, and drawing them as a box around
+            // something would claim there is something there.
+            const article = root || document.body;
+            if (article) {
+              const h1 = document.querySelector("h1");
+              const anchorEl = h1 && article.contains(h1) ? h1 : article;
+              const ar = anchorEl.getBoundingClientRect();
+              const top = ar.bottom;
+              if (top >= 0 && top <= window.innerHeight - 8) {
+                out.push({ kind: "slot-top", x: Math.round(ar.left), y: Math.round(top), w: Math.round(ar.width), h: 2, label: "under the headline" });
+              }
+              const br = article.getBoundingClientRect();
+              if (br.bottom >= 0 && br.bottom <= window.innerHeight - 8) {
+                out.push({ kind: "slot-end", x: Math.round(br.left), y: Math.round(br.bottom - 2), w: Math.round(br.width), h: 2, label: "at the end of the article" });
+              }
+            }
             return out;
           })()`);
           const tile = (await page.screenshot({ type: "png" })) as Buffer;

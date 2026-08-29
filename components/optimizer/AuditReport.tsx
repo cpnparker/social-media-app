@@ -44,7 +44,7 @@ import { cn } from "@/lib/utils";
 import { AlertCircle, AlertTriangle, ExternalLink, Printer } from "lucide-react";
 import type { AuditCheck, PageAuditResult } from "@/lib/optimizer/page-audit";
 import type { RenderShot, RenderSpot } from "@/lib/optimizer/render";
-import { buildPins, groupPins, unpinnedFindings, auditHeadline } from "@/lib/optimizer/audit-visual";
+import { buildPins, groupPins, unpinnedFindings, auditHeadline, isPlacement } from "@/lib/optimizer/audit-visual";
 import { layoutFigure, CARD_HEIGHT, type Band } from "@/lib/optimizer/audit-callouts";
 
 const SECTION_LABEL: { [k: string]: string } = {
@@ -168,6 +168,12 @@ export default function AuditReport({
             </span>
           </div>
           <AnnotatedFigure band={figure} src={shot.dataUri} />
+          {figure.callouts.some((c) => isPlacement(c.pin)) && (
+            <p className="text-[11px] text-muted-foreground mt-2 flex items-center gap-1.5 justify-center">
+              <span className="inline-block h-0 w-5 border-t-2 border-dashed border-sky-500" />
+              A dashed line marks where something missing would go, rather than something already there.
+            </p>
+          )}
           {shot.clipped && (
             <p className="text-[11px] text-muted-foreground mt-2">
               The preview covers the first {Math.round((shot.height / shot.scale) / 100) * 100} pixels of a
@@ -195,7 +201,7 @@ export default function AuditReport({
                         key={n}
                         className={cn(
                           "h-5 w-5 rounded-full text-white text-[11px] font-semibold flex items-center justify-center",
-                          g.status === "fail" ? "bg-red-500" : "bg-amber-500"
+                          g.pins.some(isPlacement) ? "bg-sky-500" : g.status === "fail" ? "bg-red-500" : "bg-amber-500"
                         )}
                       >
                         {n}
@@ -363,7 +369,7 @@ function AnnotatedFigure({ band, src }: { band: Band; src: string }) {
                 key={c.pin.n}
                 points={`${mid},${cardY} ${cardEdge},${cardY} ${cardEdge},${c.targetY + c.targetH / 2} ${pinX},${c.targetY + c.targetH / 2}`}
                 fill="none"
-                stroke={c.pin.status === "fail" ? "rgb(239 68 68)" : "rgb(245 158 11)"}
+                stroke={isPlacement(c.pin) ? "rgb(14 165 233)" : c.pin.status === "fail" ? "rgb(239 68 68)" : "rgb(245 158 11)"}
                 strokeWidth={1}
                 strokeLinejoin="round"
               />
@@ -371,21 +377,35 @@ function AnnotatedFigure({ band, src }: { band: Band; src: string }) {
           })}
         </svg>
 
-        {band.callouts.map((c) => (
-          <div
-            key={`m-${c.pin.n}`}
-            className={cn(
-              "absolute rounded-[2px] border",
-              c.pin.status === "fail" ? "border-red-500 bg-red-500/25" : "border-amber-500 bg-amber-500/25"
-            )}
-            style={{
-              left: GUTTER + c.targetX,
-              top: c.targetY,
-              width: Math.max(c.targetW, 4),
-              height: Math.max(c.targetH, 4),
-            }}
-          />
-        ))}
+        {band.callouts.map((c) =>
+          // A PLACE, not a thing. Drawn as a dashed insertion rule across the
+          // column with a caret, because a box implies there is something
+          // inside it and the whole point of these is that there is not.
+          isPlacement(c.pin) ? (
+            <div
+              key={`m-${c.pin.n}`}
+              className="absolute flex items-center"
+              style={{ left: GUTTER + c.targetX, top: c.targetY - 4, width: Math.max(c.targetW, 8), height: 9 }}
+            >
+              <span className="h-0 flex-1 border-t-2 border-dashed border-sky-500" />
+              <span className="h-1.5 w-1.5 rounded-full bg-sky-500 shrink-0" />
+            </div>
+          ) : (
+            <div
+              key={`m-${c.pin.n}`}
+              className={cn(
+                "absolute rounded-[2px] border",
+                c.pin.status === "fail" ? "border-red-500 bg-red-500/25" : "border-amber-500 bg-amber-500/25"
+              )}
+              style={{
+                left: GUTTER + c.targetX,
+                top: c.targetY,
+                width: Math.max(c.targetW, 4),
+                height: Math.max(c.targetH, 4),
+              }}
+            />
+          )
+        )}
 
         {band.callouts.map((c) => (
           <div
@@ -402,7 +422,7 @@ function AnnotatedFigure({ band, src }: { band: Band; src: string }) {
             <span
               className={cn(
                 "h-[17px] w-[17px] rounded-full text-white text-[10px] font-semibold flex items-center justify-center shrink-0 mt-[1px]",
-                c.pin.status === "fail" ? "bg-red-500" : "bg-amber-500"
+                isPlacement(c.pin) ? "bg-sky-500" : c.pin.status === "fail" ? "bg-red-500" : "bg-amber-500"
               )}
             >
               {c.pin.n}
