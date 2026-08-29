@@ -11,23 +11,20 @@
  * assert the two properties that matter — no note overlaps another, and the
  * notes on each side run in the same order as the things they point at.
  *
- * ── AND WHY THE PAGE IS SHOWN IN BANDS ──────────────────────────────────────
+ * ── ONE FIGURE, AND WHERE LEGIBILITY WENT ───────────────────────────────────
  *
- * A 4,300-pixel page shrunk to fit one figure is a thumbnail: nobody can read
- * the heading a note is about, which defeats the point of showing the page at
- * all. So the pins are grouped into bands, each band is a CROP of the capture
- * around its own findings, and each crop gets its own annotated figure. A page
- * with problems in three places produces three legible figures rather than one
- * unreadable one.
+ * An earlier version cut the page into bands, one annotated figure each. It was
+ * legible, and it answered the wrong question: a reader wants to see THE PAGE,
+ * once, with its problems marked on it. Six near identical crops of a page
+ * whose findings are all the same kind read as one issue repeated six times.
+ *
+ * So the figure shows the whole page and every note sits around it. The detail
+ * moves to where it belongs: each finding carries a close-up of its own
+ * element, cut from the pixels that element was measured in, which is also the
+ * only part of this that cannot drift.
  */
 
 import type { AuditPin } from "./audit-visual";
-
-/** Image pixels. A band taller than this is cropped to it. */
-export const BAND_MAX_HEIGHT = 560;
-
-/** Breathing room above the first pin in a band and below the last. */
-export const BAND_PADDING = 90;
 
 /** Fixed, so the layout is exact arithmetic rather than a measurement of text
  *  that has not been rendered yet. The note carries a name and one short line;
@@ -56,87 +53,64 @@ export interface Band {
 }
 
 /**
- * Group the pins into bands, and lay the notes out around each one.
+ * ONE figure: the whole page, with every note placed around it.
  *
- * @param pins  in reading order, already numbered
- * @param shot  the capture's dimensions and scale
+ * The first version cut the page into bands and gave each its own figure. It
+ * was legible, and it was the wrong answer to the question asked: a reader
+ * wants to see THE PAGE, once, with its problems marked on it. Six near
+ * identical crops of a page whose findings are all the same kind read as the
+ * same issue repeated six times rather than as one page with six marks.
+ *
+ * Legibility is not lost, it moves. The preview carries the map; each finding
+ * carries a close-up of its own element underneath. Overview, then detail,
+ * which is how an audit report worth reading is arranged.
  */
-export function layoutBands(
+export function layoutFigure(
   pins: AuditPin[],
   shot: { width: number; height: number; scale: number }
-): Band[] {
-  if (pins.length === 0) return [];
-
-  // Everything in IMAGE pixels from here.
+): Band {
   const placed = pins
     .map((pin) => ({ pin, x: pin.x * shot.scale, y: pin.y * shot.scale }))
     .filter((p) => p.y <= shot.height)
     .sort((a, b) => a.y - b.y);
-  if (placed.length === 0) return [];
 
-  // ── Bands ────────────────────────────────────────────────────────────────
-  // A pin joins the current band while it still fits inside the maximum crop.
-  // Greedy and in order, so a band is always a contiguous slice of the page.
-  const groups: (typeof placed)[] = [];
-  let current: typeof placed = [placed[0]];
-  for (let i = 1; i < placed.length; i++) {
-    const first = current[0];
-    if (placed[i].y - first.y <= BAND_MAX_HEIGHT - BAND_PADDING * 2) current.push(placed[i]);
-    else { groups.push(current); current = [placed[i]]; }
+  const half = shot.width / 2;
+  const bySide: { left: typeof placed; right: typeof placed } = { left: [], right: [] };
+  for (const p of placed) {
+    // A note goes on the side its subject sits on, so a connector never crosses
+    // the page. Once a side holds more than half of them the rest go opposite,
+    // or a page whose findings are all on the left stacks every note into one
+    // column beside an empty gutter.
+    const wants: "left" | "right" = p.x + (p.pin.w * shot.scale) / 2 < half ? "left" : "right";
+    const other = wants === "left" ? "right" : "left";
+    if (bySide[wants].length > Math.ceil(placed.length / 2) - 1 && bySide[other].length < bySide[wants].length) {
+      bySide[other].push(p);
+    } else {
+      bySide[wants].push(p);
+    }
   }
-  groups.push(current);
 
-  return groups.map((group) => {
-    const first = group[0];
-    const last = group[group.length - 1];
-    const top = Math.max(0, first.y - BAND_PADDING);
-    const height = Math.min(
-      BAND_MAX_HEIGHT,
-      Math.max(CARD_HEIGHT + BAND_PADDING, last.y - top + BAND_PADDING)
-    );
-
-    // ── Sides ──────────────────────────────────────────────────────────────
-    // By where the thing SITS: something on the left of the page gets its note
-    // on the left, so the connector never crosses the figure. A page whose
-    // findings are all on one side would stack every note in one column, so
-    // once a side holds more than half of them the rest go to the other.
-    const half = shot.width / 2;
-    const bySide: { left: typeof group; right: typeof group } = { left: [], right: [] };
-    for (const p of group) {
-      const wants: "left" | "right" = p.x + (p.pin.w * shot.scale) / 2 < half ? "left" : "right";
-      const other = wants === "left" ? "right" : "left";
-      if (bySide[wants].length > Math.ceil(group.length / 2) - 1 && bySide[other].length < bySide[wants].length) {
-        bySide[other].push(p);
-      } else {
-        bySide[wants].push(p);
-      }
+  const callouts: Callout[] = [];
+  for (const side of ["left", "right"] as const) {
+    const column = bySide[side].slice().sort((a, b) => a.y - b.y);
+    let cursor = 0;
+    for (const p of column) {
+      // Level with its target, then pushed down if that would overlap the note
+      // above. One pass, walked in order, so the order can never invert and two
+      // notes can never share the same space.
+      const wanted = Math.max(0, p.y - CARD_HEIGHT / 2);
+      const at = Math.max(wanted, cursor);
+      cursor = at + CARD_HEIGHT + CARD_GAP;
+      callouts.push({ pin: p.pin, side, top: at, targetX: p.x, targetY: p.y });
     }
+  }
 
-    const callouts: Callout[] = [];
-    for (const side of ["left", "right"] as const) {
-      const column = bySide[side].slice().sort((a, b) => a.y - b.y);
-      let cursor = 0;
-      for (const p of column) {
-        // The note wants to sit level with its target. It is then pushed down
-        // if that would overlap the note above it, which is the whole of the
-        // no-overlap guarantee: the column is walked in order, so one pass is
-        // enough and the order can never invert.
-        const wanted = Math.max(0, p.y - top - CARD_HEIGHT / 2);
-        const at = Math.max(wanted, cursor);
-        cursor = at + CARD_HEIGHT + CARD_GAP;
-        callouts.push({
-          pin: p.pin,
-          side,
-          top: at,
-          targetX: p.x,
-          targetY: p.y - top,
-        });
-      }
-    }
+  callouts.sort((a, b) => a.pin.n - b.pin.n);
 
-    callouts.sort((a, b) => a.pin.n - b.pin.n);
-    return { top, height, callouts };
-  });
+  // Tall enough for the page AND for the notes: a column longer than the
+  // picture would otherwise run off the bottom of the figure.
+  const deepest = callouts.reduce((n, c) => Math.max(n, c.top + CARD_HEIGHT), 0);
+  return { top: 0, height: Math.max(shot.height, deepest + 8), callouts };
 }
 
 /**

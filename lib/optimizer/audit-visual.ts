@@ -38,6 +38,10 @@ export interface AuditPin {
   h: number;
   /** A few words of the element, so the list can say which one. */
   label: string;
+  /** A close-up of the element, cut from the pixels it was measured in. */
+  crop?: string;
+  cropWidth?: number;
+  cropHeight?: number;
 }
 
 /**
@@ -116,6 +120,9 @@ export function buildPins(checks: AuditCheck[], spots: RenderSpot[]): AuditPin[]
           remedy: check.remedy || "",
           x: spot.x, y: spot.y, w: spot.w, h: spot.h,
           label: spot.label,
+          crop: spot.crop,
+          cropWidth: spot.cropWidth,
+          cropHeight: spot.cropHeight,
         });
         placed++;
       }
@@ -138,6 +145,8 @@ export interface PinGroup {
   ns: number[];
   /** A few words of each marked element, so the reader can tell them apart. */
   labels: string[];
+  /** The pins themselves, for the close-ups each one carries. */
+  pins: AuditPin[];
 }
 
 /**
@@ -155,10 +164,11 @@ export function groupPins(pins: AuditPin[]): PinGroup[] {
   const by: { [id: string]: PinGroup } = {};
   for (const p of pins) {
     if (!by[p.checkId]) {
-      by[p.checkId] = { checkId: p.checkId, name: p.name, status: p.status, detail: p.detail, remedy: p.remedy, ns: [], labels: [] };
+      by[p.checkId] = { checkId: p.checkId, name: p.name, status: p.status, detail: p.detail, remedy: p.remedy, ns: [], labels: [], pins: [] };
       order.push(p.checkId);
     }
     by[p.checkId].ns.push(p.n);
+    by[p.checkId].pins.push(p);
     if (p.label) by[p.checkId].labels.push(p.label);
   }
   return order.map((id) => by[id]).sort((a, b) => a.ns[0] - b.ns[0]);

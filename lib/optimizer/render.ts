@@ -71,6 +71,19 @@ export interface RenderSpot {
   h: number;
   /** A few words of the element, so a report can say WHICH one it means. */
   label: string;
+  /**
+   * A close-up of this element, cut from the very screenshot that was taken
+   * while it was being measured.
+   *
+   * The point is that it cannot drift. A mark drawn at a coordinate on a
+   * stitched picture depends on that coordinate still describing the page when
+   * the picture was assembled, and four separate things turned out to break
+   * that. A crop carries its own evidence: whatever is in it IS the element,
+   * because it was cut from the pixels the element was measured in.
+   */
+  crop?: string;
+  cropWidth?: number;
+  cropHeight?: number;
 }
 
 /** A full-page screenshot, already scaled and encoded for a page to render. */
@@ -196,6 +209,16 @@ export const SHOT_WIDTH = 900;
  * is captured to the cap and SAYS the tail is missing.
  */
 export const SHOT_MAX_HEIGHT = 7200;
+
+/** Kinds worth a close-up: the ones an audit finding can actually point at. */
+export const CROP_KINDS = ["h1", "heading", "image-no-alt", "date", "faq", "first-paragraph"];
+
+/** Enough for every finding a report will show, and no more: each one is an
+ *  image inside a JSON response. */
+export const MAX_CROPS = 16;
+
+/** Wide enough to read a heading in a printed report. */
+export const CROP_WIDTH = 620;
 
 export async function renderPage(
   url: string,
@@ -433,6 +456,8 @@ export async function renderPage(
         const captureHeight = Math.min(Math.max(1, Math.round(docHeight)), SHOT_MAX_HEIGHT);
         const tiles = Math.ceil(captureHeight / VIEW_H);
 
+        const sharpLib = (await import("sharp")).default;
+        let cropped = 0;
         const parts: { input: Buffer; top: number; left: number }[] = [];
         /** The first row not yet photographed. Tiles never paint above it. */
         let covered = 0;
@@ -512,18 +537,6 @@ export async function renderPage(
             if (firstP) push(firstP, "first-paragraph");
             return out;
           })()`);
-          for (const sp of tileSpots) {
-            // An element inside the overlap was photographed by the tile above,
-            // at that tile's layout. Its mark belongs to those pixels.
-            if (sp.y < Math.max(0, covered - at)) continue;
-            // Into document coordinates that match the stitched picture: this
-            // tile's own offset plus the element's offset within it.
-            spotted.push({ ...sp, y: sp.y + at });
-          }
-          // No clip: a clip is measured in DOCUMENT coordinates, so clipping to
-          // y=0 photographed the top of the page every time however far it had
-          // been scrolled — three identical tiles stacked into one picture. A
-          // plain screenshot is the viewport, which is exactly this tile.
           const tile = (await page.screenshot({ type: "png" })) as Buffer;
 
           /**
@@ -537,19 +550,62 @@ export async function renderPage(
            * That was the last of four causes of drifting boxes, and the only
            * one that made some marks right and others wrong on the same page.
            */
-          const sharpLib = (await import("sharp")).default;
           const overlap = Math.max(0, covered - at);
           if (overlap >= VIEW_H) break;
           const usable = overlap > 0
             ? await sharpLib(tile).extract({ left: 0, top: overlap, width: 1280, height: VIEW_H - overlap }).png().toBuffer()
             : tile;
           parts.push({ input: usable, top: at + overlap, left: 0 });
+          for (const sp of tileSpots) {
+            // An element inside the overlap was photographed by the tile above,
+            // at that tile's layout. Its mark belongs to those pixels.
+            if (sp.y < overlap) continue;
+
+            /**
+             * Cut the element out of THIS tile, now.
+             *
+             * Padded, so the crop shows the element among its surroundings
+             * rather than as a floating fragment: a heading with the paragraph
+             * beneath it reads as part of a page, which is what makes it
+             * recognisable to the person who owns that page.
+             */
+            let crop: string | undefined;
+            let cropWidth: number | undefined;
+            let cropHeight: number | undefined;
+            if (CROP_KINDS.indexOf(sp.kind) >= 0 && cropped < MAX_CROPS) {
+              try {
+                const padY = 46;
+                const top = Math.max(0, sp.y - padY);
+                const height = Math.min(VIEW_H - top, sp.h + padY * 2);
+                if (height > 24) {
+                  const out = await sharpLib(tile)
+                    .extract({ left: 0, top, width: 1280, height })
+                    .resize({ width: CROP_WIDTH })
+                    .jpeg({ quality: 66, mozjpeg: true })
+                    .toBuffer();
+                  crop = `data:image/jpeg;base64,${out.toString("base64")}`;
+                  cropWidth = CROP_WIDTH;
+                  cropHeight = Math.round(height * (CROP_WIDTH / 1280));
+                  cropped++;
+                }
+              } catch {
+                /* a crop is a bonus; the finding stands without it */
+              }
+            }
+            // Into document coordinates that match the stitched picture: this
+            // tile's own offset plus the element's offset within it.
+            spotted.push({ ...sp, y: sp.y + at, crop, cropWidth, cropHeight });
+          }
+          // No clip: a clip is measured in DOCUMENT coordinates, so clipping to
+          // y=0 photographed the top of the page every time however far it had
+          // been scrolled — three identical tiles stacked into one picture. A
+          // plain screenshot is the viewport, which is exactly this tile.
+
           covered = at + VIEW_H;
           if (covered >= captureHeight) break;
         }
 
-        const sharp = (await import("sharp")).default;
-        const stitched = await sharp({
+        const stitched = await sharpLib({
           create: { width: 1280, height: captureHeight, channels: 3, background: "#ffffff" },
         })
           .composite(parts)
@@ -557,7 +613,7 @@ export async function renderPage(
           .toBuffer();
 
         const scale = SHOT_WIDTH / 1280;
-        const resized = await sharp(stitched)
+        const resized = await sharpLib(stitched)
           .resize({ width: SHOT_WIDTH })
           .jpeg({ quality: 72, mozjpeg: true })
           .toBuffer();

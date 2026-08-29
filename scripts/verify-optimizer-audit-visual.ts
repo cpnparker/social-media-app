@@ -67,7 +67,7 @@ import {
 import { auditPage } from "../lib/optimizer/page-audit";
 import type { AuditCheck } from "../lib/optimizer/page-audit";
 import type { RenderSpot } from "../lib/optimizer/render";
-import { layoutBands, anyOverlap, ordersMatch, CARD_HEIGHT, BAND_MAX_HEIGHT } from "../lib/optimizer/audit-callouts";
+import { layoutFigure, anyOverlap, ordersMatch, CARD_HEIGHT } from "../lib/optimizer/audit-callouts";
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -219,35 +219,54 @@ console.log("\n4b. Notes around the page");
   // makes a naive "put the note level with its target" layout collapse.
   for (let i = 0; i < 6; i++) crowd.push(spot("image-no-alt", 700 + i * 12, i % 2 === 0 ? 60 : 900));
   const pins = buildPins([check("image-alt", "fail"), check("one-h1", "warn")], crowd.concat([spot("h1", 2600)]));
-  const bands = layoutBands(pins, shot);
+  const fig = layoutFigure(pins, shot);
 
-  assert(bands.length >= 1, `the pins are grouped into ${bands.length} band(s)`);
-  const total = bands.reduce((n, b) => n + b.callouts.length, 0);
-  assert(total === pins.length, "every pin gets a note — none is dropped by the grouping");
+  // ONE figure, not one per finding. Six near identical crops of a page whose
+  // findings are all the same kind read as one issue repeated six times, which
+  // is exactly how the banded version was reported.
+  assert(fig.callouts.length === pins.length, `every pin gets a note on the one figure (${fig.callouts.length})`);
+  assert(!anyOverlap(fig), "no note overlaps another in its column, even with six findings a dozen pixels apart");
+  assert(ordersMatch(fig), "and the notes run in the same order as the things they point at, so the lines cannot cross");
+  assert(fig.height >= shot.height, "the figure is at least as tall as the page it shows");
 
-  for (const b of bands) {
-    assert(!anyOverlap(b), "no note overlaps another in its column, even with six findings a dozen pixels apart");
-    assert(ordersMatch(b), "and the notes run in the same order as the things they point at, so the lines cannot cross");
-    assert(b.height <= BAND_MAX_HEIGHT, `each band stays readable (${Math.round(b.height)}px of ${BAND_MAX_HEIGHT})`);
-    for (const c of b.callouts) {
-      assert(c.top >= 0 && c.top + CARD_HEIGHT <= Math.max(b.height, CARD_HEIGHT + 1) + CARD_HEIGHT,
-        "and every note sits inside its own figure");
-    }
-  }
+  const deepest = fig.callouts.reduce((n: number, c) => Math.max(n, c.top + CARD_HEIGHT), 0);
+  assert(fig.height >= deepest, "and tall enough for the notes, so a long column cannot run off the bottom");
 
-  // A tall page must not become one unreadable thumbnail.
-  const spread = buildPins([check("image-alt", "fail")], [spot("image-no-alt", 200), spot("image-no-alt", 2000), spot("image-no-alt", 4600)]);
-  const spreadBands = layoutBands(spread, shot);
-  assert(spreadBands.length >= 2, `findings far apart get their own figures (${spreadBands.length})`);
-  assert(spreadBands.every((b) => b.height <= BAND_MAX_HEIGHT), "each cropped to something legible");
-
-  // Both sides are used, or the notes are a single stack beside a wide picture.
-  const sides = new Set(bands.flatMap((b) => b.callouts.map((c) => c.side)));
+  const sides = new Set(fig.callouts.map((c) => c.side));
   assert(sides.size === 2, "notes are placed on both sides of the page");
 
-  // A pin past the bottom of a clipped capture has no figure to sit in.
-  const off = layoutBands(buildPins([check("one-h1", "fail")], [spot("h1", 99999)]), shot);
-  assert(off.length === 0, "a finding past the end of the capture is left out of the figures rather than drawn off the edge");
+  // A pin past the bottom of a clipped capture has nothing to point at.
+  const off = layoutFigure(buildPins([check("one-h1", "fail")], [spot("h1", 99999)]), shot);
+  assert(off.callouts.length === 0, "a finding past the end of the capture is left out of the figure rather than drawn off the edge");
+}
+
+// ── 4c. The close-ups, which are the part that cannot drift ────────────────
+//
+// A mark drawn at a coordinate depends on that coordinate still describing the
+// page when the picture was assembled, and four separate things turned out to
+// break that. A crop carries its own evidence: whatever is in it IS the
+// element, because it was cut from the pixels the element was measured in.
+console.log("\n4c. Close-ups");
+{
+  const withCrop: RenderSpot = { ...spot("heading", 300, 40, "A heading"), crop: "data:image/jpeg;base64,AAAA", cropWidth: 620, cropHeight: 120 };
+  const pins = buildPins([check("heading-hierarchy", "fail")], [withCrop]);
+  assert(pins.length === 1 && pins[0].crop === "data:image/jpeg;base64,AAAA", "a pin carries the close-up of its own element");
+
+  const grouped = groupPins(pins);
+  assert(grouped[0].pins.length === 1 && !!grouped[0].pins[0].crop, "and the grouped finding still has it, so the report can show one per mark");
+
+  const render = stripComments(read("lib/optimizer/render.ts"));
+  assert(/CROP_KINDS\.indexOf\(sp\.kind\) >= 0 && cropped < MAX_CROPS/.test(render),
+    "only the kinds a finding can point at are cropped, and the number is bounded — each one is an image inside a JSON response");
+  assert(/sharpLib\(tile\)\s*\n?\s*\.extract\(\{ left: 0, top, width: 1280, height \}\)/.test(render),
+    "and each crop is cut from THIS tile, the screenshot the element was measured in");
+  const cropAt = render.indexOf("CROP_KINDS.indexOf");
+  const tileAt = render.indexOf("const tile = (await page.screenshot");
+  assert(tileAt > 0 && cropAt > tileAt, "cut after the tile is photographed, from the same pixels");
+
+  const ui = stripComments(read("components/optimizer/AuditReport.tsx"));
+  assert(/g\.pins\.filter\(\(p\) => p\.crop\)/.test(ui), "the report shows a close-up per mark");
+  assert(/alt=\{p\.label \|\| "The marked element"\}/.test(ui), "with alt text, because a report gets forwarded and read in a mail client");
 }
 
 // ── 5. Placing a pin on a picture ──────────────────────────────────────────
@@ -307,7 +326,7 @@ console.log("\n7. Honesty in the report");
   assert(/Not visible on the page/.test(ui), "under a heading that explains why they carry no marker");
   assert(/status === "info"/.test(ui) && /Not measured/.test(ui), "and the unmeasured checks are shown as unmeasured");
   assert(/These are not passes/.test(ui), "stated in words, because an absent check reads as a passing one");
-  assert(/No screenshot for this page/.test(ui), "and a failed render degrades to the findings rather than to nothing");
+  assert(/No preview for this page/.test(ui), "and a failed render degrades to the findings rather than to nothing");
 }
 
 // ── 8. It is built to be printed ───────────────────────────────────────────
@@ -361,7 +380,7 @@ console.log("\n9. Capture");
   // An element's position is this tile's offset plus its offset within the
   // tile: correct by construction rather than by timing.
   assert(/const tileSpots: any\[\] = await page\.evaluate/.test(shotRegion), "the elements are measured tile by tile");
-  assert(/spotted\.push\(\{ \.\.\.sp, y: sp\.y \+ at \}\)/.test(shotRegion),
+  assert(/spotted\.push\(\{ \.\.\.sp, y: sp\.y \+ at,/.test(shotRegion),
     "and their positions are the tile's own offset plus their offset within it");
   assert(/if \(r\.top < 0 \|\| r\.top > window\.innerHeight - 8\) return;/.test(shotRegion),
     "an element outside this viewport belongs to the tile that actually photographed it");
@@ -375,7 +394,7 @@ console.log("\n9. Capture");
   assert(/const overlap = Math\.max\(0, covered - at\)/.test(shotRegion), "an overlapping tile is cropped rather than composited whole");
   assert(/\.extract\(\{ left: 0, top: overlap/.test(shotRegion), "by the size of the overlap");
   assert(/top: at \+ overlap/.test(shotRegion), "and placed below what is already there");
-  assert(/if \(sp\.y < Math\.max\(0, covered - at\)\) continue;/.test(shotRegion),
+  assert(/if \(sp\.y < overlap\) continue;/.test(shotRegion),
     "and an element inside that overlap keeps the measurement from the tile that photographed it");
   assert(/position;\n              if \(pos !== "fixed"\) continue;/.test(shotRegion) || /pos !== "fixed"/.test(shotRegion),
     "a fixed header is hidden for every tile but the first, or it repeats down the picture");

@@ -45,7 +45,7 @@ import { AlertCircle, AlertTriangle, ExternalLink, Printer } from "lucide-react"
 import type { AuditCheck, PageAuditResult } from "@/lib/optimizer/page-audit";
 import type { RenderShot, RenderSpot } from "@/lib/optimizer/render";
 import { buildPins, groupPins, unpinnedFindings, auditHeadline } from "@/lib/optimizer/audit-visual";
-import { layoutBands, CARD_HEIGHT, type Band } from "@/lib/optimizer/audit-callouts";
+import { layoutFigure, CARD_HEIGHT, type Band } from "@/lib/optimizer/audit-callouts";
 
 const SECTION_LABEL: { [k: string]: string } = {
   rendering: "How it renders",
@@ -75,7 +75,7 @@ export default function AuditReport({
 }) {
   const pins = buildPins(audit.checks, spots || []);
   const groups = groupPins(pins);
-  const bands = shot ? layoutBands(pins, shot) : [];
+  const figure = shot ? layoutFigure(pins, shot) : null;
   const rest = unpinnedFindings(audit.checks, pins);
   const counts = auditHeadline(audit.checks);
   const notMeasured = audit.checks.filter((c) => c.status === "info");
@@ -159,69 +159,83 @@ export default function AuditReport({
       </div>
 
       {/* ── The page, marked up ────────────────────────────────────────── */}
-      {shot ? (
+      {shot && figure ? (
         <section className="mb-7">
-          <h2 className="text-[13px] font-semibold mb-3">On the page</h2>
-          <div className="flex flex-col gap-7">
-            {bands.map((band, i) => (
-              <AnnotatedBand key={i} band={band} shot={shot} src={shot.dataUri} />
-            ))}
+          <div className="flex items-baseline justify-between mb-2">
+            <h2 className="text-[13px] font-semibold">Where the problems are</h2>
+            <span className="text-[11px] text-muted-foreground">
+              {pins.length} {pins.length === 1 ? "mark" : "marks"}
+            </span>
           </div>
-          {bands.length === 0 && (
-            <p className="text-[12.5px] text-muted-foreground">
-              Nothing on the page itself is marked. Everything found lives in the page&rsquo;s code, below.
-            </p>
-          )}
+          <AnnotatedFigure band={figure} shot={shot} src={shot.dataUri} />
           {shot.clipped && (
             <p className="text-[11px] text-muted-foreground mt-2">
-              The capture covers the first {Math.round((shot.height / shot.scale) / 100) * 100} pixels of a
+              The preview covers the first {Math.round((shot.height / shot.scale) / 100) * 100} pixels of a
               longer page. Findings below that point are listed but not marked.
             </p>
           )}
         </section>
       ) : (
         <p className="text-[12.5px] text-muted-foreground mb-6">
-          No screenshot for this page: the render did not complete. Every finding below still applies.
+          No preview for this page: the render did not complete. Every finding below still applies.
         </p>
       )}
 
       {/* ── The marked findings, in the order they appear on the page ──── */}
-      {pins.length > 0 && (
+      {groups.length > 0 && (
         <section className="audit-section mb-6">
-          <h2 className="text-[13px] font-semibold mb-2.5">What is marked</h2>
-          <ol className="space-y-3.5">
+          <h2 className="text-[13px] font-semibold mb-3">What is marked, and what to do</h2>
+          <ol className="space-y-5">
             {groups.map((g) => (
-              <li key={g.checkId} className="audit-finding flex items-start gap-3">
-                {/* Every badge for this finding, together. Six headings missing
-                    a question mark is one problem marked six times, not six
-                    problems. */}
-                <span className="flex flex-col gap-1 shrink-0 mt-0.5">
-                  {g.ns.map((n) => (
-                    <span
-                      key={n}
-                      className={cn(
-                        "h-5 w-5 rounded-full text-white text-[11px] font-semibold flex items-center justify-center",
-                        g.status === "fail" ? "bg-red-500" : "bg-amber-500"
-                      )}
-                    >
-                      {n}
-                    </span>
-                  ))}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-[13px] font-medium leading-snug">{g.name}</p>
-                  <p className="text-[12.5px] text-muted-foreground leading-snug mt-0.5">{g.detail}</p>
-                  {g.labels.length > 0 && (
-                    <ul className="mt-1 space-y-0.5">
-                      {g.labels.map((l, i) => (
-                        <li key={i} className="text-[11.5px] text-muted-foreground italic leading-snug line-clamp-1">
-                          {g.ns[i]}. &ldquo;{l}&rdquo;
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {g.remedy && <p className="text-[12.5px] leading-snug mt-1.5">{g.remedy}</p>}
+              <li key={g.checkId} className="audit-finding">
+                <div className="flex items-start gap-3">
+                  <span className="flex flex-col gap-1 shrink-0 mt-0.5">
+                    {g.ns.map((n) => (
+                      <span
+                        key={n}
+                        className={cn(
+                          "h-5 w-5 rounded-full text-white text-[11px] font-semibold flex items-center justify-center",
+                          g.status === "fail" ? "bg-red-500" : "bg-amber-500"
+                        )}
+                      >
+                        {n}
+                      </span>
+                    ))}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13.5px] font-medium leading-snug">{g.name}</p>
+                    <p className="text-[12.5px] text-muted-foreground leading-snug mt-0.5">{g.detail}</p>
+                    {g.remedy && <p className="text-[12.5px] leading-snug mt-1.5">{g.remedy}</p>}
+                  </div>
                 </div>
+
+                {/* The close-ups. Cut from the pixels each element was measured
+                    in, so what is in the picture IS the thing being described —
+                    the one part of this report that cannot point at the wrong
+                    place. */}
+                {g.pins.some((p) => p.crop) && (
+                  <div className="mt-2.5 ml-8 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {g.pins.filter((p) => p.crop).map((p) => (
+                      <figure key={p.n} className="m-0 rounded-md border overflow-hidden bg-white">
+                        <div className="flex items-center gap-1.5 px-2 py-1 border-b bg-muted/40">
+                          <span
+                            className={cn(
+                              "h-4 w-4 rounded-full text-white text-[9.5px] font-semibold flex items-center justify-center shrink-0",
+                              p.status === "fail" ? "bg-red-500" : "bg-amber-500"
+                            )}
+                          >
+                            {p.n}
+                          </span>
+                          <figcaption className="text-[10.5px] text-muted-foreground truncate">
+                            {p.label || "on the page"}
+                          </figcaption>
+                        </div>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={p.crop} alt={p.label || "The marked element"} className="block w-full" />
+                      </figure>
+                    ))}
+                  </div>
+                )}
               </li>
             ))}
           </ol>
@@ -306,23 +320,26 @@ export default function AuditReport({
 }
 
 /**
- * One band of the page, with its findings around it and a line to each.
+ * The page, once, with every note around it and a line to each.
  *
  * ── THE GEOMETRY ────────────────────────────────────────────────────────────
  *
- * Everything is laid out in IMAGE pixels and then scaled to whatever width the
- * figure ends up with, so one set of numbers serves a screen, a narrow window
- * and a printed page. The image sits in a fixed-ratio box with the crop applied
- * by a negative offset; the notes sit in the gutters; the connectors are drawn
- * in an SVG that covers the whole figure and therefore shares its coordinates.
+ * Laid out in IMAGE pixels and scaled to whatever width the figure ends up
+ * with, so one set of numbers serves a screen, a narrow window and a printed
+ * page. The connectors are drawn in an SVG covering the whole figure, which
+ * therefore shares its coordinates.
  *
- * The connector is a three-segment path — out from the note, across the gutter,
- * then to the pin — rather than a diagonal. Diagonals cross each other at the
- * slightest crowding and read as a tangle; right angles stay legible even when
- * two notes are close together.
+ * The connector is three right-angled segments rather than a diagonal.
+ * Diagonals cross each other at the slightest crowding and read as a tangle;
+ * right angles stay legible when two notes are close together.
+ *
+ * ── AND WHAT THE PREVIEW IS FOR ─────────────────────────────────────────────
+ *
+ * It is a map, not a document. A page four thousand pixels tall cannot be read
+ * at this size and is not meant to be: the marks show WHERE the problems are,
+ * and the close-up under each finding shows WHAT they are.
  */
-function AnnotatedBand({ band, shot, src }: { band: Band; shot: RenderShot; src: string }) {
-  // The figure's own coordinate space: gutters either side of the image.
+function AnnotatedFigure({ band, shot, src }: { band: Band; shot: RenderShot; src: string }) {
   const GUTTER = 250;
   const W = GUTTER * 2 + shot.width;
   const H = band.height;
@@ -330,26 +347,19 @@ function AnnotatedBand({ band, shot, src }: { band: Band; shot: RenderShot; src:
   return (
     <figure className="audit-finding m-0">
       <div className="relative w-full" style={{ aspectRatio: `${W} / ${H}` }}>
-        {/* The page itself, cropped to this band. */}
         <div
           className="absolute overflow-hidden border rounded-md bg-white"
           style={{
             left: `${(GUTTER / W) * 100}%`,
             width: `${(shot.width / W) * 100}%`,
             top: 0,
-            height: "100%",
+            height: `${(shot.height / H) * 100}%`,
           }}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={src}
-            alt=""
-            className="absolute left-0 max-w-none"
-            style={{ width: "100%", top: `${(-band.top / H) * 100}%` }}
-          />
+          <img src={src} alt={`The page as it is published`} className="block w-full" />
         </div>
 
-        {/* Connectors, in the figure's own coordinates. */}
         <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
           {band.callouts.map((c) => {
             const cardEdge = c.side === "left" ? GUTTER - 8 : GUTTER + shot.width + 8;
@@ -362,7 +372,7 @@ function AnnotatedBand({ band, shot, src }: { band: Band; shot: RenderShot; src:
                 points={`${cardEdge},${cardY} ${mid},${cardY} ${mid},${c.targetY} ${pinX},${c.targetY}`}
                 fill="none"
                 stroke={c.pin.status === "fail" ? "rgb(239 68 68)" : "rgb(245 158 11)"}
-                strokeWidth={2}
+                strokeWidth={1.5}
                 strokeLinejoin="round"
                 vectorEffect="non-scaling-stroke"
               />
@@ -370,13 +380,12 @@ function AnnotatedBand({ band, shot, src }: { band: Band; shot: RenderShot; src:
           })}
         </svg>
 
-        {/* The marks on the page. */}
         {band.callouts.map((c) => (
           <div
             key={`m-${c.pin.n}`}
             className={cn(
-              "absolute rounded-[3px] border-2",
-              c.pin.status === "fail" ? "border-red-500/90 bg-red-500/10" : "border-amber-500/90 bg-amber-500/10"
+              "absolute rounded-[2px] border-2",
+              c.pin.status === "fail" ? "border-red-500/90 bg-red-500/15" : "border-amber-500/90 bg-amber-500/15"
             )}
             style={{
               left: `${((GUTTER + c.targetX) / W) * 100}%`,
@@ -387,7 +396,6 @@ function AnnotatedBand({ band, shot, src }: { band: Band; shot: RenderShot; src:
           />
         ))}
 
-        {/* The notes. */}
         {band.callouts.map((c) => (
           <div
             key={`c-${c.pin.n}`}
@@ -410,9 +418,9 @@ function AnnotatedBand({ band, shot, src }: { band: Band; shot: RenderShot; src:
             </span>
             <span className={cn("flex-1 min-w-0", c.side === "right" && "text-right")}>
               <span className="block text-[10.5px] font-semibold leading-tight">{c.pin.name}</span>
-              {c.pin.remedy && (
-                <span className="block text-[9.5px] text-muted-foreground leading-snug mt-0.5 line-clamp-3">
-                  {c.pin.remedy}
+              {c.pin.label && (
+                <span className="block text-[9.5px] text-muted-foreground leading-snug mt-0.5 line-clamp-2 italic">
+                  &ldquo;{c.pin.label}&rdquo;
                 </span>
               )}
             </span>
