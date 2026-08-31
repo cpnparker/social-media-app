@@ -1105,6 +1105,29 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     );
     assertTurn(third.slides.length === 5, `and a third call sees the second's (${third.slides.length})`);
 
+    // AN EMPTY DECK IS NEVER BUILT. This is the hole that destroyed a real deck
+    // twice on production: whatever the model got wrong about the shape of its
+    // call, `slides` arrived as [] and a 0-slide deck REPLACED the twelve
+    // already drafted. No request means "delete the deck".
+    let emptied = "";
+    try { await prepareSlidesForBuild({ slides: [] }, conv); } catch (e: any) { emptied = e.message; }
+    assertTurn(emptied.indexOf("at least one slide") >= 0,
+      `an empty slides array is refused rather than replacing the deck (${emptied.slice(0, 70)})`);
+    assertTurn(emptied.indexOf("insertSlides") >= 0, "and the refusal shows the call it should have made");
+    // The deck is genuinely untouched by that refusal.
+    const still = await prepareSlidesForBuild(
+      { slides: [], editSlide: { insertAfter: 5, insertSlides: [{ layout: "content", title: "After", body: "q" }] } }, conv);
+    assertTurn(still.slides.length === 6, `the deck survived the refused call (${still.slides.length})`);
+
+    // THE INSERT FIELDS AT THE TOP LEVEL. The model nests them under editSlide
+    // about as often as it does not, and a misplaced insertSlides used to mean
+    // `slides` was read instead — which was empty, so the deck was replaced
+    // with nothing. Folded in rather than refused: the intent is unambiguous.
+    const flat = await prepareSlidesForBuild(
+      { slides: [], insertAfter: 6, insertSlides: [{ layout: "content", title: "Flat", body: "r" }] } as any, conv);
+    assertTurn(flat.slides.length === 7, `insertSlides at the top level still appends (${flat.slides.length})`);
+    assertTurn(flat.slides[6].title === "Flat", "and puts the slide where it was asked for");
+
     // NO SILENT FALLTHROUGH. An edit with no deck to edit must fail loudly. It
     // used to build whatever `slides` held, which was empty.
     let threw = "";

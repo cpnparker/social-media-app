@@ -4304,6 +4304,18 @@ export async function prepareSlidesForBuild(
   // never runs again. That is how a "cards" slide with no cards survived three
   // regenerations unchanged on 2026-08-27 while the user kept re-asking.
   const guard = (slides: any[]) => {
+    // AN EMPTY DECK IS NEVER BUILT. This is the hole that destroyed a deck in
+    // production twice: whatever the model got wrong about the shape of its
+    // call, `slides` arrived as [] and a 0-slide deck REPLACED the twelve
+    // already drafted. No request means "delete the deck", so an empty array is
+    // a malformed call and is refused with the shape it should have used.
+    if (!slides.length) {
+      throw new Error(
+        "A deck must have at least one slide, and this call had none — the deck already in this conversation has NOT been changed. " +
+        "To ADD slides to it, call generate_slides again with editSlide: { insertAfter: <the slide number to add after>, insertSlides: [ ...the new slides...] } and leave `slides` out entirely. " +
+        "To replace the whole deck, send every slide in `slides`."
+      );
+    }
     const faults = unrenderableSlides(slides);
     if (faults.length) {
       throw new Error(
@@ -4313,7 +4325,19 @@ export async function prepareSlidesForBuild(
     return slides;
   };
 
-  if (input?.editSlide) {
+  // The model puts these at the TOP LEVEL about as often as it nests them under
+  // editSlide, and a misplaced `insertSlides` used to mean `slides` was read
+  // instead — which was empty, so the deck was replaced with nothing. Folded in
+  // rather than refused: the intent is unambiguous.
+  const edit = input?.editSlide
+    || (input && (input.insertSlides || input.insertAfter != null || input.slideNumber != null)
+      ? {
+          slideNumber: input.slideNumber, insertAfter: input.insertAfter, insertSlides: input.insertSlides,
+          layout: input.layout, title: input.slideTitle, body: input.slideBody, imageQuery: input.imageQuery,
+        }
+      : null);
+
+  if (edit) {
     const deck = conversationId ? await loadDeckForEdit(conversationId) : null;
     // NO SILENT FALLTHROUGH. An editSlide with no deck to edit used to drop
     // through to `input.slides` — which the schema tells the model to send
@@ -4327,7 +4351,7 @@ export async function prepareSlidesForBuild(
     }
     const out = {
       title: deck.title,
-      slides: guard(applyEditSlide(deck.slides, input.editSlide)),
+      slides: guard(applyEditSlide(deck.slides, edit)),
       presentationId: input.presentationId || deck.presentationId,
       edited: true,
     };
@@ -8363,7 +8387,7 @@ async function streamAnthropic(
             toolResults.push({
               type: "tool_result",
               tool_use_id: tool.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             });
             continue;
           }
@@ -9648,7 +9672,7 @@ async function streamXAIChatCompletions(
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             } as any);
             continue;
           }
@@ -10690,7 +10714,7 @@ async function streamGemini(
             geminiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             } as any);
             continue;
           }
@@ -11620,7 +11644,7 @@ async function streamOpenAI(
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             } as any);
             continue;
           }
