@@ -20,15 +20,15 @@ const MAX_CHARS = 8000;
 /**
  * The opening of the marker appended to a document that did not fit.
  *
- * Exported because callers have to be able to TELL. The chat tool wants the
- * marker in the text (it is addressed to the model); the content optimiser must
- * refuse the import outright, because scoring the first two thirds of an
- * article produces a confident number for a piece nobody has read. Sharing the
- * constant makes that a compile-time coupling — a hand-copied string here would
- * go stale silently and truncated documents would start importing again with
- * nothing going red.
+ * DEFINED IN `lib/ai/truncation.ts` and re-exported here, unchanged, so every
+ * existing importer keeps working. It moved because the chat's attachment
+ * extractor needs the same string and importing this module drags in the Google
+ * auth client; copying it instead is exactly what the original note here warned
+ * against, since a hand-copied marker goes stale in silence and truncated
+ * documents start arriving unlabelled with nothing going red.
  */
-export const TRUNCATION_MARKER = "[⚠ TRUNCATED";
+export { TRUNCATION_MARKER } from "@/lib/ai/truncation";
+import { TRUNCATION_MARKER } from "@/lib/ai/truncation";
 
 const listCache: { at: number; files: DriveFile[] } = { at: 0, files: [] };
 const contentCache = new Map<string, { at: number; text: string }>();

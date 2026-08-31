@@ -5,6 +5,7 @@ import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 import crypto from "crypto";
 import { auth } from "@/lib/auth";
+import { ALLOWED_UPLOAD_TYPES } from "@/lib/media/allowed-types";
 
 // Route segment config
 export const maxDuration = 60;
@@ -12,30 +13,10 @@ export const maxDuration = 60;
 /** Namespaces only the server writes to, with its own token. */
 const RESERVED_PREFIXES = ["slides/"];
 
-const ALLOWED_TYPES = [
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-  "video/mp4",
-  "video/quicktime",
-  "video/webm",
-  "application/pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "application/vnd.ms-excel",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  "application/vnd.ms-powerpoint",
-  "application/rtf",
-  "application/json",
-  "application/xml",
-  "text/plain",
-  "text/csv",
-  "text/markdown",
-  "text/xml",
-  "text/tab-separated-values",
-  "text/html",
-];
+// Defined in lib/media/allowed-types.ts, beside the extractor's own view of
+// what it can read. They were separate lists and disagreed: a spreadsheet was
+// accepted here and silently unreadable downstream.
+const ALLOWED_TYPES = ALLOWED_UPLOAD_TYPES;
 
 // POST /api/media/upload
 // Handles two flows:

@@ -18,6 +18,9 @@ import {
   runBackgroundSummaryUpdate,
 } from "@/lib/ai/conversation-summary";
 import type { Attachment } from "@/lib/types/ai";
+import { workbookToText, delimitedToText } from "@/lib/ai/spreadsheet-text";
+import { rtfToText } from "@/lib/ai/rtf-text";
+import { isSpreadsheet, isPlainTextish } from "@/lib/media/allowed-types";
 import { assertServiceAllowed, ServiceControlError } from "@/lib/admin/service-control";
 import { calculateCostTenths } from "@/lib/ai/model-costs";
 import { appendVolatile } from "@/lib/ai/prompt-cache";
@@ -64,6 +67,12 @@ async function extractPptxText(buffer: Buffer): Promise<string | undefined> {
 }
 
 // ── Helper: extract text from a document attachment ──
+//
+// Every branch below is paired with the upload allowlist by
+// scripts/verify-chat-attachments.ts, which runs both and fails when a type can
+// be uploaded but not read. That check exists because this function used to
+// return `undefined` for spreadsheets, which reached the model as "this file
+// type cannot be read directly" and stalled a conversation about a forecast.
 // Uses fetchBlobContent() which handles both private proxy URLs and legacy public URLs
 async function extractDocumentText(att: Attachment): Promise<string | undefined> {
   try {
@@ -99,7 +108,28 @@ async function extractDocumentText(att: Attachment): Promise<string | undefined>
       return ((await extractPptxText(buffer)) || "").trim() || undefined;
     }
 
-    if (att.type.startsWith("text/")) {
+    // Spreadsheets. The upload route has always accepted these and nothing
+    // here read them, so a workbook attached cleanly and arrived at the model
+    // as "this file type cannot be read directly". CSV and TSV come through
+    // this path too rather than as plain text, because a comma-separated grid
+    // read as prose is a wall of commas: the same row serialisation makes the
+    // columns legible.
+    if (isSpreadsheet(att)) {
+      const name = att.name.toLowerCase();
+      if (name.endsWith(".csv") || name.endsWith(".tsv")) {
+        return delimitedToText(buffer.toString("utf-8"), { delimiter: name.endsWith(".tsv") ? "\t" : "," })
+          .text.trim() || undefined;
+      }
+      return workbookToText(buffer).text.trim() || undefined;
+    }
+
+    if (att.type === "application/rtf" || att.name.toLowerCase().endsWith(".rtf")) {
+      return rtfToText(buffer.toString("utf-8")).trim() || undefined;
+    }
+
+    // JSON and XML are text wearing a non-text label, and were dropped for
+    // exactly that reason.
+    if (isPlainTextish(att)) {
       return buffer.toString("utf-8").trim() || undefined;
     }
 
