@@ -967,6 +967,39 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     assertTable(Math.abs(roomy.reduce((a, b) => a + b, 0) - 400) < 1, "spare room is given out, not left blank");
     assertTable(roomy[1] > roomy[0], "in proportion, so the wider column stays wider");
 
+    // A TABLE CAN KEEP ITS COMMENTARY. A real source slide carried a table PLUS
+    // two analysis panels beside it; with nowhere to put them the model moved
+    // the analysis into speaker notes and spare closing slides, and the
+    // converted slide showed the numbers with none of the argument.
+    const railed = buildSlideRequests({ layout: "table", title: "Baselines and targets",
+      bodyRight: "Renegotiate the AI citation target: propose 150 or more.\nSplit the traffic target: branded and non-branded from day one.",
+      table: { columns: ["Metric", "Baseline", "12 mo"], rows: [["Organic traffic, US", "7,316", "15,000"], ["Total AI citations", "26", "500"]] } } as SlideInput, 0, "n");
+    const railText = (railed as any[]).filter((r) => (r.insertText?.objectId || "").endsWith("_trail")).map((r) => r.insertText.text)[0] || "";
+    assertTable(railText.indexOf("Renegotiate") >= 0, "commentary passed as bodyRight is drawn beside the table");
+    // The rail must not overlap the table, and the table's own figures must
+    // still come out whole at the narrower width.
+    // The rail's left edge and the table's right edge BOTH derive from tableW,
+    // so comparing them to each other can never fail — that mutation survived.
+    // What actually breaks when the table keeps its full width is the rail's
+    // own box: zero or negative width, or off the canvas.
+    let tableRight = 0, railLeft = 1e9, railW = 0;
+    for (const r of railed as any[]) {
+      const cs = r.createShape; if (!cs) continue;
+      const t = cs.elementProperties; const x = t.transform.translateX, w = t.size.width.magnitude * (t.transform.scaleX || 1);
+      if (/_trh$/.test(cs.objectId)) tableRight = x + w;
+      if (/_trail$/.test(cs.objectId)) { railLeft = x; railW = w; }
+    }
+    assertTable(tableRight > 0 && railLeft > tableRight, `the rail starts after the table ends (${Math.round(tableRight)} < ${Math.round(railLeft)})`);
+    assertTable(railW >= 150, `the rail is wide enough to read (${Math.round(railW)}px)`);
+    assertTable(railLeft + railW <= CANVAS.width - GRID.margin + 1, `and stays on the canvas (${Math.round(railLeft + railW)} of ${CANVAS.width})`);
+    const railedCells = (railed as any[]).filter((r) => (r.insertText?.objectId || "").match(/_tc\d+_\d+$/)).map((r) => r.insertText.text as string);
+    assertTable(["7,316", "15,000", "26", "500"].every((v) => railedCells.indexOf(v) >= 0), "and every figure survives the narrower table");
+    // Without bodyRight the table keeps the full width, or every existing deck
+    // gets a phantom gutter.
+    const plain = buildSlideRequests({ layout: "table", title: "T",
+      table: { columns: ["A", "B"], rows: [["x", "1"]] } } as SlideInput, 0, "n");
+    assertTable(!(plain as any[]).some((r) => (r.createShape?.objectId || "").endsWith("_trail")), "no rail is drawn when none was given");
+
     // A CELL IS ONE LINE. Left to wrap, a long label pushes its row into the
     // next one, which the overloaded fixture caught as an overlap.
     const long = "A first-column label that runs on and on well past the width of any column";

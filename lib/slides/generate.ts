@@ -2666,13 +2666,29 @@ export function fitCell(text: string, boxWidth: number, size: number, lines = 1)
 }
 
 /** A data table: a header row and rows of cells, figures right-aligned. */
+/**
+ * A data table, optionally with a commentary rail beside it.
+ *
+ * The rail exists because of a real conversion: a source slide carried a
+ * baselines-and-targets table PLUS two analysis panels beside it ("Renegotiate
+ * the AI citation target", "Split the traffic target"). The table layout had
+ * nowhere to put them, so the model moved the analysis into speaker notes and
+ * spare closing slides, and the converted slide showed the numbers with none
+ * of the argument. The commentary is usually the whole point of such a slide.
+ */
 function tableRequests(
   page: string, id: (s: string) => string,
-  spec: NonNullable<SlideInput["table"]>, bandTop: number
+  spec: NonNullable<SlideInput["table"]>, bandTop: number,
+  rail?: string
 ): Req[] {
   const columns = (spec.columns || []).map((c) => String(c ?? "")).slice(0, TABLE_MAX_COLS);
   const allRows = (spec.rows || []).filter((r) => Array.isArray(r) && r.some((c) => String(c ?? "").trim() !== ""));
   if (!columns.length || !allRows.length) return [];
+  // With a rail the table gives up a third of the width. Cells clip earlier,
+  // which is the trade: a table that fills the slide while its argument sits in
+  // the speaker notes is the failure this exists to fix.
+  const hasRail = !!rail?.trim();
+  const tableW = hasRail ? Math.floor(GRID.contentWidth * 0.63) : GRID.contentWidth;
   const rows = allRows.slice(0, TABLE_MAX_ROWS).map((r) => columns.map((_, j) => String(r[j] ?? "")));
 
   const out: Req[] = [];
@@ -2702,7 +2718,7 @@ function tableRequests(
     const cellW = cells * TYPE.cellText.size * PER_CHAR;
     return Math.max(TABLE_MIN_COL, Math.max(headW, cellW) + TEXT_INSET_X);
   });
-  const widths = fitColumnWidths(natural, GRID.contentWidth);
+  const widths = fitColumnWidths(natural, tableW);
   const xs: number[] = [];
   let acc = GRID.margin;
   for (const w of widths) { xs.push(acc); acc += w; }
@@ -2730,7 +2746,7 @@ function tableRequests(
     }, { align: aligns[j] === "right" ? "END" : "START" }));
   });
   out.push(...filledShape(id("trh"), page, "RECTANGLE", COLOR.navy, {
-    x: GRID.margin, y: top + headH, width: GRID.contentWidth, height: RULE.hairlineThickness,
+    x: GRID.margin, y: top + headH, width: tableW, height: RULE.hairlineThickness,
   }, 0.4));
 
   const highlighted = new Set((spec.highlight || []).filter((n) => Number.isInteger(n)));
@@ -2738,7 +2754,7 @@ function tableRequests(
     const ry = top + headH + 4 + i * rowH;
     if (highlighted.has(i)) {
       out.push(...filledShape(id(`trb${i}`), page, "RECTANGLE", COLOR.tintBlue, {
-        x: GRID.margin, y: ry, width: GRID.contentWidth, height: rowH,
+        x: GRID.margin, y: ry, width: tableW, height: rowH,
       }, 0.6));
     }
     r.forEach((cell, j) => {
@@ -2750,7 +2766,7 @@ function tableRequests(
     });
     if (i < rows.length - 1) {
       out.push(...filledShape(id(`trr${i}`), page, "RECTANGLE", COLOR.navy, {
-        x: GRID.margin, y: ry + rowH, width: GRID.contentWidth, height: RULE.hairlineThickness,
+        x: GRID.margin, y: ry + rowH, width: tableW, height: RULE.hairlineThickness,
       }, 0.15));
     }
   });
@@ -2760,8 +2776,16 @@ function tableRequests(
     if (dropped > 0) parts.push(`${rows.length} of ${allRows.length} rows`);
     if (droppedCols > 0) parts.push(`${columns.length} of ${(spec.columns || []).length} columns`);
     out.push(...textBox(id("tdrop"), page, `Showing ${parts.join(" and ")}`, TYPE.chartAxis, {
-      x: GRID.margin, y: top + headH + 4 + rows.length * rowH + 4, width: GRID.contentWidth, height: 12,
+      x: GRID.margin, y: top + headH + 4 + rows.length * rowH + 4, width: tableW, height: 12,
     }));
+  }
+
+  if (hasRail) {
+    const railX = GRID.margin + tableW + 22;
+    const railW = GRID.contentWidth - tableW - 22;
+    out.push(...textBox(id("trail"), page, String(rail).trim(), TYPE.cellText, {
+      x: railX, y: top, width: railW, height: CANVAS.height - GRID.margin - top,
+    }, { bullets: true }));
   }
   return out;
 }
@@ -3031,7 +3055,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     if (layout === "swot" && slide.swot) requests.push(...swotRequests(page, id, slide.swot, aTop));
     else if (layout === "matrix" && slide.matrix) requests.push(...matrixRequests(page, id, slide.matrix, aTop));
     else if (layout === "comparison" && slide.comparison) requests.push(...comparisonRequests(page, id, slide.comparison, aTop));
-    else if (layout === "table" && slide.table) requests.push(...tableRequests(page, id, slide.table, aTop));
+    else if (layout === "table" && slide.table) requests.push(...tableRequests(page, id, slide.table, aTop, slide.bodyRight));
     else if (layout === "scatter" && slide.scatter) requests.push(...scatterRequests(page, id, slide.scatter, onDark, aTop));
     else if (layout === "venn" && slide.venn) requests.push(...vennRequests(page, id, slide.venn, onDark, aTop));
   } else if (layout === "timeline-parallel") {
