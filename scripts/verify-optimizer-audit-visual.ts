@@ -557,8 +557,11 @@ console.log("\n7. Honesty in the report");
   assert(/shot\.clipped/.test(ui), "a picture that stops early says so");
   assert(/unpinnedFindings/.test(ui), "the findings with nowhere to point are rendered");
   assert(/Not visible on the page/.test(ui), "under a heading that explains why they carry no marker");
-  assert(/status === "info"/.test(ui) && /Not measured/.test(ui), "and the unmeasured checks are shown as unmeasured");
-  assert(/These are not passes/.test(ui), "stated in words, because an absent check reads as a passing one");
+  // The heading used to read "Not measured", which was wrong for most of what
+  // lands under it: the render time, the absent FAQ and the absent Article
+  // schema were all measured. What they share is being kept out of the counts.
+  assert(/status === "info"/.test(ui) && /Noted, not counted/.test(ui), "and the unscored checks have a section of their own");
+  assert(/not passes/.test(ui), "stated in words, because a check left out of the figures reads as a passing one");
   assert(/No preview for this page/.test(ui), "and a failed render degrades to the findings rather than to nothing");
 }
 

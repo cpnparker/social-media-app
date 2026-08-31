@@ -654,7 +654,9 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     id: "visible-date", section: "freshness", name: "A visible published or updated date",
     status: dateMatch ? "pass" : "warn",
     detail: dateMatch ? `found: "${dateMatch[0].slice(0, 60)}"` : "no visible published/updated date found in the page text",
-    remedy: !dateMatch ? "Freshness is a grade-A signal in the rubric — roughly double the citation rate for recently-updated content — and an engine cannot reward a date it cannot find." : undefined,
+    // "A grade-A signal in the rubric" is our word for it, not the client's,
+    // and a remedy should say what to do rather than why it scores.
+    remedy: !dateMatch ? "Print the published date, and the updated date if it has changed, in the article itself rather than only in the markup. Recently updated pages are cited about twice as often, and an engine cannot reward a date it cannot find." : undefined,
   });
 
   // ── Schema against the visible copy ─────────────────────────────────────

@@ -218,7 +218,7 @@ export default function AuditReport({
           <strong className="tabular-nums text-foreground">{counts.pass}</strong> passing
         </span>
         {counts.info > 0 && (
-          <span className="text-muted-foreground">{counts.info} not measured</span>
+          <span className="text-muted-foreground">{counts.info} noted, not counted</span>
         )}
       </div>
 
@@ -370,9 +370,14 @@ export default function AuditReport({
       {/* ── Not measured. Stated, because an absent check reads as a pass ─ */}
       {notMeasured.length > 0 && (
         <section className="audit-section mb-6">
-          <h2 className="text-[15px] font-semibold tracking-tight mb-1">Not measured</h2>
-          <p className="text-[11.5px] text-muted-foreground mb-2">
-            Looked for and not established. These are not passes.
+          {/* "Not measured" was wrong for most of what lands here. The render
+              time WAS measured; so was the absent FAQ block and the absent
+              Article schema. What they have in common is that they are kept out
+              of the counts, not that nobody looked. Each line says which it is. */}
+          <h2 className="text-[15px] font-semibold tracking-tight mb-1">Noted, not counted</h2>
+          <p className="text-[11.5px] text-muted-foreground mb-2 max-w-[78ch]">
+            Deliberately left out of the figures above. Some of these were measured and are not scored;
+            others could not be established at all. Either way they are not passes.
           </p>
           <ul className="space-y-1.5">
             {notMeasured.map((c) => (
