@@ -95,6 +95,12 @@ export function serializeSheet(
   const maxCols = opts?.maxCols ?? SHEET_MAX_COLS;
   const maxChars = opts?.maxChars ?? SHEET_TEXT_MAX_CHARS;
 
+  // Dates first: the displayed value is right for money and percentages and
+  // wrong for a date, because "3/4/27" is the fourth of March to the author and
+  // the third of April to a model, and nothing downstream can tell which. This
+  // workspace has a standing rule against letting a model interpret a date.
+  isoDates(ws);
+
   // `raw: false` gives the DISPLAYED value. See the docblock: a percentage that
   // arrives as 0.7 gets quoted back as 0.7%.
   const grid: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
@@ -125,6 +131,34 @@ export function serializeSheet(
   }
 
   return { text: lines.join("\n"), rows: grid.length, cols: widest, nonEmpty, emitted };
+}
+
+/**
+ * Rewrite every date cell's DISPLAYED text to ISO.
+ *
+ * A workbook written in the UK shows 04/03/27 for the fourth of March and one
+ * written in the US shows it for the third of April, and by the time the text
+ * reaches a model the format that decided which is gone. So the display value,
+ * which is the right answer for every other cell type, is replaced here with
+ * the one form that cannot be read two ways. The time is kept only when there
+ * is one, since a bare date with " 00:00" on it invites a different mistake.
+ *
+ * Mutates the worksheet. It comes from a parse of one uploaded file and is not
+ * used for anything else afterwards.
+ */
+export function isoDates(ws: XLSX.WorkSheet): number {
+  let changed = 0;
+  for (const addr of Object.keys(ws)) {
+    if (addr[0] === "!") continue;
+    const cell: any = (ws as any)[addr];
+    if (!cell || cell.t !== "d" || !(cell.v instanceof Date)) continue;
+    const d: Date = cell.v;
+    const iso = d.toISOString();
+    const midnight = d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0;
+    cell.w = midnight ? iso.slice(0, 10) : `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+    changed++;
+  }
+  return changed;
 }
 
 /**

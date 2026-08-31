@@ -39,6 +39,7 @@
  * KILLED  an uploadable type with no reader and no entry on the unreadable list
  * KILLED  blank rows counted as truncation, firing the marker on a sparse sheet
  * KILLED  RTF control words emitted as if they were words
+ * KILLED  a date cell handed over in the workbook's own display order
  */
 import * as XLSX from "xlsx";
 import {
@@ -143,6 +144,27 @@ console.log("\n1. What the model is handed");
 
   assert(out.truncated === false, "a workbook that fits is not reported as truncated");
   assert(out.text.indexOf(TRUNCATION_MARKER) < 0, "and carries no truncation marker");
+
+  // DATES ARE THE ONE CELL TYPE WHERE THE DISPLAYED VALUE IS THE WRONG ANSWER.
+  // The fixture's contract dates are the 15th on purpose: a day past 12 cannot
+  // be mistaken for a month, so any US-order default would still read as a
+  // valid date and slip through a looser fixture. The assertion is on the ISO
+  // form, which is the only one that cannot be read two ways.
+  assert(/2027-01-15/.test(out.text), "a date cell arrives as ISO, not in the workbook's own display order");
+  assert(!/1\/15\/27/.test(out.text) && !/15\/01\/27/.test(out.text), "and not in either ambiguous order");
+}
+
+// ── 1b. The date rule, on the day that is actually ambiguous ───────────────
+console.log("\n1b. A date that could be read two ways");
+{
+  const wb = XLSX.utils.book_new();
+  // The fourth of March. Displayed by the author's locale as 3/4/27 or 4/3/27,
+  // and there is no way to tell which from the text alone.
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["When"], [new Date(Date.UTC(2027, 2, 4))]]), "D");
+  const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+  const out = workbookToText(buf);
+  assert(/2027-03-04/.test(out.text), `the fourth of March is unambiguous (${out.text.split("\n").pop()})`);
+  assert(!/3\/4\/27/.test(out.text), "and is not handed over as 3/4/27");
 }
 
 // ── 2. The contents page ───────────────────────────────────────────────────
@@ -350,11 +372,23 @@ if (process.argv.indexOf("--self-test") >= 0) {
   })();
   detector("blank rows being read as a cut (must be quiet here)", sparse.truncated === false);
 
+  // A date left in the workbook's display order.
+  const ambiguous = (() => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([[new Date(Date.UTC(2027, 2, 4))]]), "D");
+    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+    const ws = XLSX.read(buf, { type: "buffer", cellDates: true }).Sheets["D"];
+    // Without the ISO pass, this is what the serialiser would have emitted.
+    const asShipped: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
+    return String(asShipped[0][0]);
+  })();
+  detector("a date in the workbook's own display order", /^\d{1,2}\/\d{1,2}\/\d{2}/.test(ambiguous));
+
   // Control words as prose.
   const naive = String.raw`{\rtf1\pard\plain\f0\fs24 Hello\par}`.replace(/[{}]/g, "").replace(/\\/g, " ");
   detector("RTF control words emitted as words", /pard|fs24/.test(naive) && !/pard|fs24/.test(rtfToText(String.raw`{\rtf1\pard\plain\f0\fs24 Hello\par}`)));
 
-  if (fired < 6) { console.log("  a detector stayed silent — this run proves nothing"); failures++; }
+  if (fired < 7) { console.log("  a detector stayed silent — this run proves nothing"); failures++; }
   else if (failures === before) console.log("  all detectors fire");
 }
 
