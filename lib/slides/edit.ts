@@ -126,6 +126,11 @@ export function applyEditSlide(
     bodyRight?: string;
     eyebrow?: string;
     cards?: { marker?: string; icon?: string; title?: string; body?: string }[];
+    /** SEVERAL slides at once, in order, at `insertAfter`. One slide per call
+     *  is arithmetically hopeless for a long deck: the tool is capped at three
+     *  calls a turn, so thirty-five slides would take twelve turns of a user
+     *  typing "continue". A dozen at a time makes it one. */
+    insertSlides?: any[];
     /** Any structured payload a layout is drawn from — `table`, `chart`,
      *  `stats`, `swot`, `milestones` and the rest. Same shape as in `slides`. */
     [payload: string]: any;
@@ -142,6 +147,36 @@ export function applyEditSlide(
         `Cannot insert after slide ${at}: the deck has ${slides.length} slides, so insertAfter must be between 0 (before the first) and ${slides.length} (after the last).`
       );
     }
+    // SEVERAL AT ONCE. Each is validated exactly as a single insert is, so a
+    // batch cannot smuggle in a blank slide that one at a time would refuse.
+    const batch = Array.isArray(edit.insertSlides) ? edit.insertSlides : null;
+    if (batch) {
+      if (!batch.length) throw new Error("insertSlides was empty: pass at least one slide, or use the single-slide fields.");
+      const faults: string[] = [];
+      const built = batch.map((raw: any, i: number) => {
+        const one: any = { ...(raw || {}) };
+        const lay = one.layout || (Array.isArray(one.cards) && one.cards.length ? "cards" : "content");
+        if (typeof one.title !== "string" && typeof one.body !== "string" && typeof one.subtitle !== "string") {
+          faults.push(`slide ${i + 1} of the batch has no title or body`);
+          return one;
+        }
+        const ok = insertableLayout(lay, one);
+        if (!ok.ok) {
+          faults.push(ok.needs
+            ? `slide ${i + 1} of the batch is "${lay}" but carries no \`${ok.needs}\`, so it would be blank`
+            : `slide ${i + 1} of the batch names an unknown layout "${lay}"`);
+        }
+        one.layout = lay;
+        if (one.imageQuery && String(one.imageQuery).trim()) {
+          one.image = { query: String(one.imageQuery).trim() };
+          delete one.imageQuery;
+        }
+        return one;
+      });
+      if (faults.length) throw new Error(`Cannot insert these slides: ${faults.join("; ")}.`);
+      return slides.slice(0, at).concat(built, slides.slice(at));
+    }
+
     if (
       typeof edit.title !== "string" &&
       typeof edit.body !== "string" &&

@@ -1013,10 +1013,35 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     assertEdit(schemaAt > 0 && schemaEnd > schemaAt, "precondition: the editSlide schema block was located");
     const schema = prov.slice(schemaAt, schemaEnd);
     const missing = PAYLOAD_FIELDS.filter((f) => !new RegExp(`\\n\\s+${f}: \\{`).test(schema));
+    assertEdit(/insertSlides: \{/.test(schema), "the schema offers insertSlides, or a long deck still takes a dozen turns");
     assertEdit(missing.length === 0, `editSlide accepts these server-side but does not offer them: ${missing.join(", ")}`);
     for (const l of ["table", "stat", "bar-chart", "timeline"]) {
       assertEdit(schema.indexOf(`"${l}"`) >= 0, `the layout enum offers "${l}"`);
     }
+
+    // SEVERAL AT ONCE. One slide per call is arithmetically hopeless: the tool
+    // is capped at three calls a turn, so a 35-slide deck would take a dozen
+    // turns of the user typing "continue".
+    const many = applyEditSlide(deck, { insertAfter: 2, insertSlides: [
+      { layout: "content", title: "A", body: "x" },
+      { layout: "table", title: "B", table: tableSpec },
+      { layout: "stat", title: "C", stats: [{ value: "71", label: "DR" }] },
+    ] } as any);
+    assertEdit(many.length === 5, `three slides appended in one call (${many.length})`);
+    assertEdit(many.map((s: any) => s.layout).join(",") === "cover,content,content,table,stat",
+      `in the order given (${many.map((s: any) => s.layout).join(",")})`);
+    assertEdit(unrenderableSlides(many).length === 0, "and none of them is blank");
+    assertEdit(JSON.stringify(deck) === before, "the original deck is still not mutated");
+
+    // A batch must not smuggle past the guard one at a time would apply.
+    let batchRefused = "";
+    try { applyEditSlide(deck, { insertAfter: 2, insertSlides: [{ layout: "content", title: "Fine", body: "y" }, { layout: "table", title: "Bad" }] } as any); }
+    catch (e: any) { batchRefused = e.message; }
+    assertEdit(batchRefused.indexOf("slide 2 of the batch") >= 0,
+      `a blank slide inside a batch is refused, saying which one (${batchRefused.slice(0, 90)})`);
+    let emptyBatch = "";
+    try { applyEditSlide(deck, { insertAfter: 2, insertSlides: [] } as any); } catch (e: any) { emptyBatch = e.message; }
+    assertEdit(emptyBatch.indexOf("empty") >= 0, "an empty batch is refused");
 
     // Patching an existing slide's payload, which is "change the table on
     // slide 14" without regenerating the deck.
