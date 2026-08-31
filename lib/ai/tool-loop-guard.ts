@@ -55,6 +55,17 @@ const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
   // on wording again"; they drifted on NUMBERS instead, which is why they now
   // share the loop itself rather than only its constants.
   query_gmail: 8, query_slack: 8, query_calendar: 6, query_microsoft: 6,
+
+  // NOT read-only, and here on purpose. Building a long deck is a sequence of
+  // legitimate calls, not a spiral: one to create it and then a batch of about
+  // a dozen slides appended per call, because a single call cannot write out
+  // thirty-five slides before it is cut off. At the default cap of three, a
+  // 35-slide conversion stopped at 24 and the user had to type "continue" —
+  // measured, converting a real client deck. Six covers roughly seventy slides.
+  //
+  // The other half of the guard still applies: a call with the SAME arguments
+  // is refused outright however large the budget, so this cannot become a loop.
+  generate_slides: 6,
 };
 
 export function toolBudgetFor(name: string): number {

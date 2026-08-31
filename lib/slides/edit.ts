@@ -225,7 +225,9 @@ export function applyEditSlide(
   const idx = (edit.slideNumber ?? 0) - 1;
   if (idx < 0 || idx >= slides.length) {
     throw new Error(
-      `Cannot edit slide ${edit.slideNumber ?? "(none given)"}: the deck has ${slides.length} slides. To ADD a slide pass insertAfter; to change one, pass a slideNumber between 1 and ${slides.length}.`
+      edit.slideNumber == null
+        ? `No slide was named. The deck has ${slides.length} slides. To ADD slides pass insertAfter (the number to add them after) with insertSlides; to CHANGE one, pass slideNumber between 1 and ${slides.length}. The deck has not been changed.`
+        : `Cannot edit slide ${edit.slideNumber}: the deck has ${slides.length} slides. To ADD a slide pass insertAfter; to change one, pass a slideNumber between 1 and ${slides.length}.`
     );
   }
   const changesPayload = PAYLOAD_FIELDS.some((f) => !isEmptyPayload(edit[f]));
