@@ -40,6 +40,20 @@
  * KILLED  blank rows counted as truncation, firing the marker on a sparse sheet
  * KILLED  RTF control words emitted as if they were words
  * KILLED  a date cell handed over in the workbook's own display order
+ * KILLED  a date formatted through UTC, which grew an "02:00" on it in Zurich
+ *           and would have moved it to the previous day west of Greenwich
+ *
+ * SURVIVED, then killed by section 7: that same UTC-formatting mutation, run on
+ *   a machine whose own timezone is UTC. Local and UTC fields are identical
+ *   there, so every date assertion stayed green while the formatter was wrong
+ *   everywhere else — and CI is usually UTC. The file now re-runs itself once
+ *   in a child process under a different zone.
+ *
+ * A NOTE ON THE FIRST ATTEMPT AT THAT MUTATION. It was run in a detached
+ * worktree with no node_modules, so `xlsx` did not resolve, the script died
+ * before its first assertion, and the grep for failures came back empty. An
+ * error read as a pass. Symlink node_modules into the worktree, and check the
+ * baseline actually prints its summary line before trusting a mutation result.
  */
 import * as XLSX from "xlsx";
 import {
@@ -58,6 +72,7 @@ import {
 } from "../lib/media/allowed-types";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { execFileSync } from "child_process";
 
 const root = join(__dirname, "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
@@ -99,7 +114,10 @@ function forecastWorkbook(opts?: { workingsRows?: number }): Buffer {
   const n = opts?.workingsRows ?? 40;
   const workings: any[][] = [["Client", "Contract end", "CU", "At risk"]];
   for (let i = 0; i < n; i++) {
-    workings.push([`Client ${i + 1}`, new Date(Date.UTC(2027, i % 12, 15)), 10 + i, i % 3 === 0 ? "Yes" : "No"]);
+    // LOCAL midnight, which is how SheetJS writes and reads an Excel date: the
+    // value is wall-clock and carries no zone. A UTC-midnight fixture grows an
+    // hour on it everywhere east of Greenwich and loses a day west of it.
+    workings.push([`Client ${i + 1}`, new Date(2027, i % 12, 15), 10 + i, i % 3 === 0 ? "Yes" : "No"]);
   }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(workings), "Workings");
 
@@ -160,11 +178,19 @@ console.log("\n1b. A date that could be read two ways");
   const wb = XLSX.utils.book_new();
   // The fourth of March. Displayed by the author's locale as 3/4/27 or 4/3/27,
   // and there is no way to tell which from the text alone.
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["When"], [new Date(Date.UTC(2027, 2, 4))]]), "D");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["When"], [new Date(2027, 2, 4)]]), "D");
   const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
   const out = workbookToText(buf);
   assert(/2027-03-04/.test(out.text), `the fourth of March is unambiguous (${out.text.split("\n").pop()})`);
   assert(!/3\/4\/27/.test(out.text), "and is not handed over as 3/4/27");
+  // A DATE WITH NO TIME MUST NOT GROW ONE. The first version formatted through
+  // toISOString(), which reads a local wall-clock value in UTC and shifts it by
+  // the offset: a 15 April contract end arrived as "2027-04-15 02:00" in
+  // Zurich, and west of Greenwich it would have arrived as the 14th. These two
+  // hold in every zone, and fail in every zone but UTC if the local getters are
+  // swapped back for UTC ones.
+  assert(!/2027-03-04 \d\d:/.test(out.text), `a midnight date carries no time (TZ=${Intl.DateTimeFormat().resolvedOptions().timeZone})`);
+  assert(!/2027-03-03|2027-03-05/.test(out.text), "and does not slip to the day either side");
 }
 
 // ── 2. The contents page ───────────────────────────────────────────────────
@@ -313,6 +339,38 @@ Profit is \'a32,000 on that scenario.\par
   assert(text.split("\n").length >= 2, "paragraph breaks survive");
 }
 
+// ── 7. The date rule holds off this machine's timezone ─────────────────────
+//
+// WHY THIS RUNS ITSELF AGAIN. The date assertions above compare a local
+// wall-clock value against what the formatter emits, and on a UTC machine those
+// two are the same thing: swapping the local getters for UTC ones changes
+// nothing, every assertion stays green, and the check certifies a formatter
+// that moves a contract end date to the day before in Zurich. Measured — the
+// mutation is killed in Europe/Zurich and America/Los_Angeles and survives in
+// UTC. CI is usually UTC, which is the worst place for that blind spot.
+//
+// So the whole file re-runs in a zone west of Greenwich, once, in a child. The
+// guard variable is what stops that recursing.
+if (!process.env.VERIFY_ATTACHMENTS_TZ_CHILD) {
+  console.log("\n7. The same assertions, in a timezone that is not this one");
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const other = zone === "America/Los_Angeles" ? "Pacific/Auckland" : "America/Los_Angeles";
+  try {
+    // `npx tsx`, not process.execPath: this file is TypeScript, and plain node
+    // exits before the first assertion — which the first version of this read
+    // as "the child passed".
+    execFileSync("npx", ["tsx", __filename], {
+      env: { ...process.env, TZ: other, VERIFY_ATTACHMENTS_TZ_CHILD: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    pass(`every assertion also holds under TZ=${other} (this machine is ${zone})`);
+  } catch (e: any) {
+    const out = String(e.stdout || "") + String(e.stderr || "");
+    const first = (out.match(/^  ✗ .*$/m) || ["(no assertion line captured)"])[0].trim();
+    fail(`under TZ=${other}: ${first}`);
+  }
+}
+
 // ── Self-test ──────────────────────────────────────────────────────────────
 if (process.argv.indexOf("--self-test") >= 0) {
   console.log("\n── self-test: each detector against input that should trip it ──");
@@ -375,7 +433,7 @@ if (process.argv.indexOf("--self-test") >= 0) {
   // A date left in the workbook's display order.
   const ambiguous = (() => {
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([[new Date(Date.UTC(2027, 2, 4))]]), "D");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([[new Date(2027, 2, 4)]]), "D");
     const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
     const ws = XLSX.read(buf, { type: "buffer", cellDates: true }).Sheets["D"];
     // Without the ISO pass, this is what the serialiser would have emitted.

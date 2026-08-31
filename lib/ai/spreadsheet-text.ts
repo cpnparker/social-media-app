@@ -153,9 +153,16 @@ export function isoDates(ws: XLSX.WorkSheet): number {
     const cell: any = (ws as any)[addr];
     if (!cell || cell.t !== "d" || !(cell.v instanceof Date)) continue;
     const d: Date = cell.v;
-    const iso = d.toISOString();
-    const midnight = d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0;
-    cell.w = midnight ? iso.slice(0, 10) : `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+    // LOCAL getters, not toISOString(). An Excel date is a wall-clock value
+    // with no timezone in it at all, and SheetJS builds the Date in local time
+    // to represent that. Reading it back through UTC shifts it by the offset:
+    // a contract ending on 15 April, written at local midnight, came out of the
+    // first version of this as "2027-04-15 02:00" in Zurich, and in a negative
+    // offset it would have come out as the day before.
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const midnight = d.getHours() === 0 && d.getMinutes() === 0 && d.getSeconds() === 0;
+    cell.w = midnight ? day : `${day} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
     changed++;
   }
   return changed;
