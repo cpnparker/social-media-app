@@ -17,6 +17,9 @@ import {
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
+import { applyEditSlide, unrenderableSlides, PAYLOAD_FIELDS, insertableLayout } from "../lib/slides/edit";
+import { readFileSync } from "fs";
+import { join } from "path";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
 import { CANVAS, LAYOUT_STYLE, COLOR, GRID } from "../lib/slides/brand";
 
@@ -953,6 +956,81 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     if (!prev.some((e) => !e.text && e.fill === "#e6f1fb")) fail("the preview does not tint the highlighted row");
   }
   if (failures === before20c) pass("figures right-aligned under their headings, highlight tinted, cells kept to one line, drops declared, preview agrees");
+
+  /* 20d. A deck can be built up a few slides at a time. */
+  //
+  // WHY THIS MATTERS. `generate_slides` REPLACES the deck, so the only way to
+  // add a slide used to be to resend every slide — and a thirty-five slide deck
+  // is more than one call emits before it is cut off. editSlide could append,
+  // but only text layouts and `cards`: it had no field for a table or a chart,
+  // so a deck containing one could not be built in pieces at all. That is the
+  // wall a real client conversion hit.
+  const before20d = failures;
+  console.log(`\n20d. Appending a slide that needs a payload`);
+  {
+    const assertEdit = (ok: boolean, m: string) => { if (!ok) fail(m); };
+    const deck: any[] = [
+      { layout: "cover", title: "Cover" },
+      { layout: "content", title: "Two", body: "A line" },
+    ];
+    const before = JSON.stringify(deck);
+
+    const tableSpec = { columns: ["Domain", "Shared KW", "DR"], rows: [["holcim.com", "108", "76"], ["holcim.co.uk", "25", "65"]] };
+    const grown = applyEditSlide(deck, { insertAfter: 2, layout: "table", title: "Legacy domains", table: tableSpec } as any);
+    assertEdit(grown.length === 3, `the deck grew by one (${grown.length})`);
+    assertEdit(grown[2].layout === "table", `the appended slide keeps its layout (${grown[2].layout})`);
+    assertEdit((grown[2].table?.rows || []).length === 2, "and carries its rows");
+    assertEdit(JSON.stringify(deck) === before, "the original array is not mutated");
+    assertEdit(JSON.stringify(grown[0]) === JSON.stringify(deck[0]) && JSON.stringify(grown[1]) === JSON.stringify(deck[1]),
+      "every other slide is byte-for-byte what it was");
+
+    // And it MUST still refuse what it cannot draw, or the guard that stopped
+    // blank slides is simply gone. This is the same rule unrenderableSlides
+    // applies to a whole deck, so an insert cannot pass here and be reported
+    // blank there.
+    let refused = "";
+    try { applyEditSlide(deck, { insertAfter: 2, layout: "table", title: "No rows" } as any); }
+    catch (e: any) { refused = e.message; }
+    assertEdit(refused.indexOf("`table`") >= 0, `a table slide with no table is refused, naming the field (${refused.slice(0, 70)})`);
+    assertEdit(unrenderableSlides(grown).length === 0, "the grown deck has nothing unrenderable in it");
+
+    // Every payload a layout can be drawn from must be carryable, or some
+    // layout is still unappendable and the wall is only partly gone.
+    for (const field of PAYLOAD_FIELDS) {
+      assertEdit(/^[a-z]+$/i.test(field), `payload field "${field}" is a plain name`);
+    }
+    for (const l of ["table", "stat", "bar-chart", "swot", "timeline", "quote"]) {
+      const need = insertableLayout(l, {}).needs;
+      assertEdit(!!need && PAYLOAD_FIELDS.indexOf(need) >= 0, `${l} declares a payload this tool can carry (${need})`);
+    }
+
+    // The tool SCHEMA has to offer them, or the model cannot send what the
+    // server now accepts — the two lists drifting is the failure this repo
+    // keeps paying for.
+    const prov = readFileSync(join(__dirname, "..", "lib/ai/providers.ts"), "utf8");
+    const schemaAt = prov.indexOf("editSlide: {");
+    const schemaEnd = prov.indexOf("generate_slides", schemaAt);
+    assertEdit(schemaAt > 0 && schemaEnd > schemaAt, "precondition: the editSlide schema block was located");
+    const schema = prov.slice(schemaAt, schemaEnd);
+    const missing = PAYLOAD_FIELDS.filter((f) => !new RegExp(`\\n\\s+${f}: \\{`).test(schema));
+    assertEdit(missing.length === 0, `editSlide accepts these server-side but does not offer them: ${missing.join(", ")}`);
+    for (const l of ["table", "stat", "bar-chart", "timeline"]) {
+      assertEdit(schema.indexOf(`"${l}"`) >= 0, `the layout enum offers "${l}"`);
+    }
+
+    // Patching an existing slide's payload, which is "change the table on
+    // slide 14" without regenerating the deck.
+    const patched = applyEditSlide(grown, { slideNumber: 3, table: { columns: ["A"], rows: [["1"]] } } as any);
+    assertEdit((patched[2].table?.rows || []).length === 1, "a payload can be replaced on an existing slide");
+    assertEdit(patched[2].layout === "table", "and the layout is left alone when it is not being changed");
+    assertEdit(patched[2].title === "Legacy domains", "and so is the title");
+
+    // A payload-only edit is a real change; it used to be rejected as none.
+    let none = "";
+    try { applyEditSlide(grown, { slideNumber: 3 } as any); } catch (e: any) { none = e.message; }
+    assertEdit(none.indexOf("No change") >= 0, "an edit with nothing in it is still refused");
+  }
+  if (failures === before20d) pass("a payload slide can be appended and patched, blanks are still refused, and the schema offers every field the server takes");
 
   /* 21. The analysis formats draw their structure. */
   const before21 = failures;

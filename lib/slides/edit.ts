@@ -80,20 +80,38 @@ export function unrenderableSlides(slides: any[]): string[] {
  *  made. Every generate_slides call site catches and reports the message back to
  *  the model, so throwing is what stops it claiming a change that never
  *  happened. Found live in production 2026-08-27. */
-/** Layouts an inserted slide can be BUILT FROM the fields editSlide carries.
- *
- *  Everything else — stat, bar-chart, swot, matrix, timeline, quote, process,
- *  logo-wall and the rest — is defined by a structured payload (`stats`,
- *  `chart`, `milestones`, `cards`...) that this tool has no field for. A layout
- *  whose content field cannot be supplied renders as a BLANK SLIDE: correct
- *  title, correct position, nothing on it. That is exactly what shipped on
- *  2026-08-27 — the model picked `cards`, which needs a `cards` array, and the
- *  user got an empty slide where four cards should have been. So the insert
- *  refuses a layout it cannot fill and says what to do instead. */
+/** Layouts drawn from title/subtitle/body alone, so they need no payload. */
 const TEXT_LAYOUTS = [
   "content", "section", "cover", "case-study", "dark-index",
   "image-split", "feature", "closing", "two-column",
 ];
+
+/**
+ * The structured fields an edit may carry, which is every payload a layout is
+ * drawn from.
+ *
+ * WHY THIS TOOL NOW CARRIES THEM. It used to accept only text layouts and
+ * `cards`, and refused everything else on the honest grounds that a layout
+ * whose payload it could not supply would render blank. The consequence turned
+ * up building a 35-slide client deck: `generate_slides` REPLACES the deck, so
+ * the only way to add a table slide was to resend all thirty-five at once —
+ * which is the call that gets cut off. A deck with a chart or a table in it
+ * could not be built up in pieces at all.
+ *
+ * Derived from REQUIRED_PAYLOAD rather than listed again, so a new layout
+ * cannot be added to one and forgotten in the other.
+ */
+export const PAYLOAD_FIELDS: string[] = Object.keys(REQUIRED_PAYLOAD)
+  .map((l) => REQUIRED_PAYLOAD[l])
+  .filter((f, i, all) => all.indexOf(f) === i);
+
+/** Can this layout be inserted with the fields given? Exported because it is
+ *  the whole rule, and a rule worth enforcing is worth being able to run. */
+export function insertableLayout(layout: string, edit: any): { ok: boolean; needs?: string } {
+  const need = REQUIRED_PAYLOAD[layout];
+  if (!need) return { ok: TEXT_LAYOUTS.indexOf(layout) >= 0 };
+  return { ok: !isEmptyPayload(edit?.[need]), needs: need };
+}
 
 export function applyEditSlide(
   slides: any[],
@@ -108,6 +126,9 @@ export function applyEditSlide(
     bodyRight?: string;
     eyebrow?: string;
     cards?: { marker?: string; icon?: string; title?: string; body?: string }[];
+    /** Any structured payload a layout is drawn from — `table`, `chart`,
+     *  `stats`, `swot`, `milestones` and the rest. Same shape as in `slides`. */
+    [payload: string]: any;
   }
 ): any[] {
   // ADD a slide. `insertAfter` is the slide number the new one goes after, so 0
@@ -134,11 +155,16 @@ export function applyEditSlide(
     const cards = Array.isArray(edit.cards) ? edit.cards.filter((c) => c && (c.title || c.body)) : [];
     const layout = edit.layout || (cards.length ? "cards" : "content");
 
-    // A layout is only allowed if this tool can actually fill it. Otherwise the
-    // slide is drawn with its title and nothing else.
-    if (layout !== "cards" && TEXT_LAYOUTS.indexOf(layout) === -1) {
+    // A layout is allowed if this tool can actually FILL it — either it needs
+    // no payload, or the payload was supplied. The check is the same one
+    // `unrenderableSlides` applies to a whole deck, so an inserted slide cannot
+    // pass here and be reported blank there.
+    const can = insertableLayout(layout, edit);
+    if (!can.ok) {
       throw new Error(
-        `Cannot insert a "${layout}" slide with editSlide: that layout is drawn from a structured payload this tool cannot carry, so the slide would come out blank. Either insert it as one of ${TEXT_LAYOUTS.join(", ")}, or as "cards" with a cards array — or resend the whole deck through \`slides\`, which supports every layout.`
+        can.needs
+          ? `Cannot insert a "${layout}" slide without \`${can.needs}\`: that is what the layout is drawn from, so the slide would come out blank — a correct title with nothing under it. Pass \`${can.needs}\` alongside the title.`
+          : `Cannot insert a "${layout}" slide: there is no such layout. Text layouts are ${TEXT_LAYOUTS.join(", ")}; every other layout needs its own payload (${PAYLOAD_FIELDS.join(", ")}).`
       );
     }
     if (layout === "cards" && cards.length < 2) {
@@ -154,6 +180,9 @@ export function applyEditSlide(
     if (typeof edit.bodyRight === "string") fresh.bodyRight = edit.bodyRight;
     if (typeof edit.eyebrow === "string") fresh.eyebrow = edit.eyebrow;
     if (cards.length) fresh.cards = cards;
+    for (const f of PAYLOAD_FIELDS) {
+      if (f !== "cards" && !isEmptyPayload(edit[f])) fresh[f] = edit[f];
+    }
     if (edit.imageQuery?.trim()) fresh.image = { query: edit.imageQuery.trim() };
     return slides.slice(0, at).concat([fresh], slides.slice(at));
   }
@@ -164,14 +193,16 @@ export function applyEditSlide(
       `Cannot edit slide ${edit.slideNumber ?? "(none given)"}: the deck has ${slides.length} slides. To ADD a slide pass insertAfter; to change one, pass a slideNumber between 1 and ${slides.length}.`
     );
   }
+  const changesPayload = PAYLOAD_FIELDS.some((f) => !isEmptyPayload(edit[f]));
   if (
     !edit.imageQuery?.trim() &&
     typeof edit.title !== "string" &&
     typeof edit.subtitle !== "string" &&
-    typeof edit.body !== "string"
+    typeof edit.body !== "string" &&
+    !changesPayload
   ) {
     throw new Error(
-      `No change was given for slide ${edit.slideNumber}: pass at least one of title, subtitle, body or imageQuery.`
+      `No change was given for slide ${edit.slideNumber}: pass at least one of title, subtitle, body, imageQuery, or a payload such as ${PAYLOAD_FIELDS.slice(0, 3).join(", ")}.`
     );
   }
   return slides.map((sl, i) => {
@@ -188,6 +219,12 @@ export function applyEditSlide(
     if (typeof edit.title === "string") next.title = edit.title;
     if (typeof edit.subtitle === "string") next.subtitle = edit.subtitle;
     if (typeof edit.body === "string") next.body = edit.body;
+    // A payload change carries its layout with it: replacing a slide's `table`
+    // without moving it off `content` leaves the table stored and undrawn.
+    if (typeof edit.layout === "string" && edit.layout.trim()) next.layout = edit.layout.trim();
+    for (const f of PAYLOAD_FIELDS) {
+      if (!isEmptyPayload(edit[f])) next[f] = edit[f];
+    }
     return next;
   });
 }

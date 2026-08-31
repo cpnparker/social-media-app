@@ -1464,16 +1464,30 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         editSlide: {
           type: "object",
           description:
-            "Change ONE slide of the deck already in this conversation, or ADD one new slide, WITHOUT resending the others. The server holds the current deck and touches only the slide you name, keeping every other slide (text, layout, images) exactly as it is. Do NOT also pass `slides` (send an empty array for it). TO CHANGE a slide ('change slide 3's picture', 'reword the title on slide 1') pass `slideNumber` (1-based) and the fields to change. TO ADD a slide ('add a slide after slide 5', 'put a new slide at the start') pass `insertAfter` — the number of the slide it goes AFTER, so 0 places it first — plus the new slide's `title`/`body`/`layout`. Pass one or the other, never both. If the edit cannot be applied you will get an error back: report it to the user and do NOT describe the change as done.",
+            "Change ONE slide of the deck already in this conversation, or ADD one new slide, WITHOUT resending the others. USE THIS TO BUILD A LONG DECK: `slides` replaces the deck entirely, and a deck of thirty-plus slides is more than one call can emit before it is cut off, so start it with `slides` and append the rest a few at a time here. The server holds the current deck and touches only the slide you name, keeping every other slide (text, layout, images) exactly as it is. Do NOT also pass `slides` (send an empty array for it). TO CHANGE a slide ('change slide 3's picture', 'reword the title on slide 1') pass `slideNumber` (1-based) and the fields to change. TO ADD a slide ('add a slide after slide 5', 'put a new slide at the start') pass `insertAfter` — the number of the slide it goes AFTER, so 0 places it first — plus the new slide's `title`/`body`/`layout`. Pass one or the other, never both. If the edit cannot be applied you will get an error back: report it to the user and do NOT describe the change as done.",
           properties: {
             slideNumber: { type: "number", description: "CHANGE an existing slide: which one, 1-based. Omit when inserting." },
             insertAfter: { type: "number", description: "ADD a new slide after this slide number; 0 places it before the first. Omit when changing an existing slide." },
             layout: {
               type: "string",
-              enum: ["content", "cards", "section", "cover", "case-study", "dark-index", "image-split", "feature", "closing", "two-column"],
+              enum: ["content", "cards", "section", "cover", "case-study", "dark-index", "image-split", "feature", "closing", "two-column", "stat", "bar-chart", "stacked-bar", "line-chart", "table", "comparison", "swot", "matrix", "scatter", "venn", "timeline", "timeline-parallel", "process", "logo-wall", "quote", "image-grid"],
               description:
-                "Layout for an INSERTED slide. ONLY these are available here, because an inserted slide is built from the fields on this object. Any other layout (stat, bar-chart, stacked-bar, swot, matrix, timeline, quote, process, logo-wall, venn, scatter, comparison, image-grid) is drawn from a structured payload this tool cannot carry, so it would come out BLANK — a correct title with nothing under it. If the new slide needs one of those, resend the whole deck through `slides` instead. Defaults to content, or to cards when you pass `cards`.",
+                "Layout for an INSERTED slide. Every layout is available, but one drawn from a structured payload needs that payload passed alongside — `table` needs `table`, `stat` needs `stats`, the chart layouts need `chart`, and so on — or the slide comes out BLANK and the insert is refused with a message saying which field is missing. Defaults to content, or to cards when you pass `cards`. THIS IS HOW A LONG DECK IS BUILT: `slides` replaces the whole deck and a deck of thirty-plus slides is too much to emit in one call, so build the first few with `slides` and append the rest one or two at a time with insertAfter.",
             },
+            table: { type: "object", description: "For a `table` slide. Same shape as `table` in `slides`: `columns`, `rows` (each an array of cells in column order), optional `highlight`." },
+            chart: { type: "object", description: "For bar-chart, stacked-bar or line-chart. Same shape as `chart` in `slides`." },
+            stats: { type: "array", description: "For a `stat` slide. Same shape as `stats` in `slides`.", items: { type: "object" } },
+            swot: { type: "object", description: "For a `swot` slide. Same shape as in `slides`." },
+            matrix: { type: "object", description: "For a `matrix` slide. Same shape as in `slides`." },
+            comparison: { type: "object", description: "For a `comparison` slide. Same shape as in `slides`." },
+            scatter: { type: "object", description: "For a `scatter` slide. Same shape as in `slides`." },
+            venn: { type: "object", description: "For a `venn` slide. Same shape as in `slides`." },
+            milestones: { type: "array", description: "For a `timeline` slide. Same shape as in `slides`.", items: { type: "object" } },
+            tracks: { type: "array", description: "For a `timeline-parallel` slide. Same shape as in `slides`.", items: { type: "object" } },
+            stages: { type: "array", description: "For a `process` slide. Same shape as in `slides`.", items: { type: "object" } },
+            logos: { type: "array", description: "For a `logo-wall` slide. Same shape as in `slides`.", items: { type: "object" } },
+            quote: { type: "object", description: "For a `quote` slide. Same shape as in `slides`." },
+            images: { type: "array", description: "For an `image-grid` slide. Same shape as in `slides`.", items: { type: "object" } },
             cards: {
               type: "array",
               description:
