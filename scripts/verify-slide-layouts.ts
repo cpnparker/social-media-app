@@ -13,7 +13,7 @@
 import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
-  niceTicks,
+  niceTicks, isNumericColumn, fitCell,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
@@ -87,6 +87,14 @@ const DECK: SlideInput[] = [
   { layout: "matrix", eyebrow: "Priorities", title: LONG, subtitle: "Impact against effort, every recommendation.",
     matrix: { xAxis: ["Low effort", "High effort"], yAxis: ["Low impact", "High impact"], quadrants: ["Quick wins", "Big bets", "Fill-ins", "Time sinks"],
       items: [{ label: "Schema markup", x: 0.18, y: 0.85, highlight: true }, { label: "Wikipedia entry", x: 0.75, y: 0.9 }, { label: "Rewrite exec bios", x: 0.4, y: 0.45 }, { label: "Full site rebuild", x: 0.9, y: 0.28 }] } },
+  { layout: "table", eyebrow: "The picture today", title: LONG,
+    subtitle: "A standfirst above the table, long enough to wrap onto a second line.",
+    table: { columns: ["Domain competing for our queries", "Shared KW", "Their traffic", "DR"], highlight: [0],
+      rows: [
+        ["holcim.com, the legacy parent domain", "108", "8,853", "76"],
+        ["holcimgroup.com, the legacy group site", "30", "493", "47"],
+        ["holcim.co.uk, a UK site on US queries", "25", "2,981", "65"],
+        ["holcimalpenaconnect.com, an orphaned plant site", "19", "49", "0.9"] ] } },
   { layout: "comparison", eyebrow: "The choice", title: LONG, subtitle: "Against the two agencies you shortlisted.",
     comparison: { columns: ["Us", "Agency A", "Agency B"], rows: [
       { label: "AI-answer testing across models", cells: ["yes", "no", "no"], highlight: true },
@@ -157,6 +165,12 @@ const STRESS: SlideInput[] = [
     tracks: Array.from({ length: 5 }, (_, i) => ({ name: `Workstream ${i + 1}`, phases: [
       { start: "2026-01-01", end: "2026-03-01", label: `Phase ${i + 1}` },
       { start: "2026-06-01", label: "A late milestone with a long label" } ] })) },
+  { layout: "table", title: "Twenty rows and eight columns, more than fit",
+    table: {
+      columns: Array.from({ length: 8 }, (_, j) => `A column heading number ${j + 1}`),
+      rows: Array.from({ length: 20 }, (_, i) =>
+        Array.from({ length: 8 }, (_, j) => (j === 0 ? `A first-column label that runs on, row ${i + 1}` : String((i + 1) * (j + 1) * 137)))),
+      highlight: [0, 19] } },
   { layout: "logo-wall", title: "Clients whose marks we do not have",
     logos: [{ name: "Holcim", resolvedUrl: "logo.png" }, { name: "Siemens Energy" }, { name: "Hiscox" }] },
   { layout: "timeline", title: "Eight milestones in six slots",
@@ -840,6 +854,80 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     if (t[0] < lo || t[t.length - 1] > hi) fail(`niceTicks stepped outside ${lo}..${hi}`);
   }
   if (failures === before20b) pass("zero rule drawn only when the data crosses zero, y values labelled in the reserved gutter, preview agrees");
+
+  /* 20c. A data table lines its figures up and admits what it dropped. */
+  const before20c = failures;
+  console.log(`\n20c. A data table`);
+  {
+    const spec: SlideInput = { layout: "table", title: "Legacy domains",
+      table: { columns: ["Domain", "Shared KW", "Their traffic", "DR"], highlight: [0],
+        rows: [
+          ["holcim.com", "108", "8,853", "76"],
+          ["holcimgroup.com", "30", "493", "47"],
+          ["holcim.co.uk", "25", "2,981", "65"] ] } };
+    const tr = buildSlideRequests(spec, 0, "n");
+    const cells = (tr as any[]).filter((r) => (r.insertText?.objectId || "").match(/_tc\d+_\d+$/));
+    if (cells.length !== 12) fail(`a 3x4 table drew ${cells.length} cells, expected 12`);
+
+    // THE REASON THIS LAYOUT EXISTS. `comparison` centres every cell, and a
+    // column of centred numbers cannot be read down because the digits do not
+    // line up. Column 0 is text and must stay left; 1-3 are figures.
+    const alignOf = (suffix: string): string | undefined => {
+      for (const r of tr as any[]) {
+        if (r.updateParagraphStyle?.objectId?.endsWith(suffix)) return r.updateParagraphStyle.style?.alignment;
+      }
+      return undefined;
+    };
+    if (alignOf("_tc0_0") !== "START") fail(`the text column is not left-aligned (${alignOf("_tc0_0")})`);
+    for (const j of [1, 2, 3]) {
+      if (alignOf(`_tc0_${j}`) !== "END") fail(`numeric column ${j} is not right-aligned (${alignOf(`_tc0_${j}`)})`);
+      if (alignOf(`_th${j}`) !== "END") fail(`the heading over numeric column ${j} is not right-aligned`);
+    }
+    // And the detection is on the CELLS, not the heading: "Shared KW" is text.
+    if (!isNumericColumn(["108", "30", "25"])) fail("a column of integers is not read as numeric");
+    if (isNumericColumn(["holcim.com", "holcimgroup.com"])) fail("a column of domains is read as numeric");
+    if (!isNumericColumn(["8,853", "n/a", "2,981", "493"])) fail("one non-numeric cell flips a numeric column");
+    if (isNumericColumn([])) fail("an empty column is read as numeric");
+
+    const tint = (tr as any[]).filter((r) => (r.createShape?.objectId || "").endsWith("_trb0"));
+    if (tint.length !== 1) fail("the highlighted row is not tinted");
+    if ((tr as any[]).some((r) => (r.createShape?.objectId || "").endsWith("_trb1"))) fail("a row that was not highlighted is tinted");
+
+    // Saying what was dropped, in BOTH dimensions. A table that quietly shows
+    // the first twelve of twenty reads as the whole set.
+    const over = buildSlideRequests({ layout: "table", title: "T",
+      table: { columns: Array.from({ length: 8 }, (_, j) => `C${j + 1}`),
+        rows: Array.from({ length: 20 }, (_, i) => Array.from({ length: 8 }, (_, j) => String(i * j))) } }, 0, "n");
+    const drop = (over as any[]).filter((r) => (r.insertText?.objectId || "").endsWith("_tdrop")).map((r) => r.insertText.text)[0];
+    if (!drop) fail("a truncated table says nothing about what it dropped");
+    else {
+      if (drop.indexOf("12 of 20 rows") < 0) fail(`the drop note does not name the rows (${drop})`);
+      if (drop.indexOf("6 of 8 columns") < 0) fail(`the drop note does not name the columns (${drop})`);
+    }
+
+    // A CELL IS ONE LINE. Left to wrap, a long label pushes its row into the
+    // next one, which the overloaded fixture caught as an overlap.
+    const long = "A first-column label that runs on and on well past the width of any column";
+    const cut = fitCell(long, 120, 9);
+    if (cut.length >= long.length) fail("a long cell is not truncated");
+    if (cut.slice(-1) !== "\u2026") fail(`a truncated cell does not end in an ellipsis (${JSON.stringify(cut.slice(-3))})`);
+    if (fitCell("108", 120, 9) !== "108") fail("a short cell is truncated when it fits");
+    if (fitCell("", 120, 9) !== "") fail("an empty cell becomes something");
+
+    // A table with no rows, or no columns, draws nothing rather than a header
+    // over empty space.
+    if (buildSlideRequests({ layout: "table", title: "T", table: { columns: ["A"], rows: [] } }, 0, "n")
+      .some((r: any) => (r.insertText?.objectId || "").match(/_th\d/))) fail("a table with no rows still drew its header");
+
+    // The preview must show the same cells, or the deck is right and the
+    // picture of it is wrong.
+    const prev = toPreviewModel([spec]).slides[0].elements as any[];
+    for (const want of ["holcim.com", "8,853", "Shared KW"]) {
+      if (!prev.some((e) => e.text === want)) fail(`the preview is missing the table cell "${want}"`);
+    }
+    if (!prev.some((e) => !e.text && e.fill === "#e6f1fb")) fail("the preview does not tint the highlighted row");
+  }
+  if (failures === before20c) pass("figures right-aligned under their headings, highlight tinted, cells kept to one line, drops declared, preview agrees");
 
   /* 21. The analysis formats draw their structure. */
   const before21 = failures;

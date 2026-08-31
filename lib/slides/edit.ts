@@ -22,6 +22,7 @@ const REQUIRED_PAYLOAD: { [layout: string]: string } = {
   swot: "swot",
   matrix: "matrix",
   comparison: "comparison",
+  table: "table",
   scatter: "scatter",
   venn: "venn",
   timeline: "milestones",

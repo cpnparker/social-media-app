@@ -40,6 +40,8 @@
  * KILLED  blank rows counted as truncation, firing the marker on a sparse sheet
  * KILLED  RTF control words emitted as if they were words
  * KILLED  a date cell handed over in the workbook's own display order
+ * KILLED  a PowerPoint table flattened into a space-joined word soup
+ * KILLED  a round cut off mid-tool-call reported as a finished answer
  * KILLED  a date formatted through UTC, which grew an "02:00" on it in Zurich
  *           and would have moved it to the previous day west of Greenwich
  *
@@ -62,6 +64,8 @@ import {
   SHEET_TEXT_MAX_CHARS,
 } from "../lib/ai/spreadsheet-text";
 import { rtfToText } from "../lib/ai/rtf-text";
+import { deckToText, slideXmlToText, tableToLines, PPTX_TABLE_MAX_ROWS } from "../lib/ai/pptx-text";
+import { stallOutcome } from "../lib/ai/tool-loop-guard";
 import { TRUNCATION_MARKER } from "../lib/ai/truncation";
 import {
   ALLOWED_UPLOAD_TYPES,
@@ -371,6 +375,112 @@ if (!process.env.VERIFY_ATTACHMENTS_TZ_CHILD) {
   }
 }
 
+// ── 7b. A .pptx keeps its tables ───────────────────────────────────────────
+//
+// THE DEFECT. The extractor pulled every <a:t> run in a slide and joined them
+// with SPACES. Fine for prose, fatal for a table: a competitor row arrived as
+// "concrete calculator 238,000 asphalt calculator 11,000" and the model had to
+// guess which figure belonged to which keyword. Eleven of the thirty-five
+// slides in the deck this was found on are tables, and they are the slides
+// carrying the numbers — where a guess is repeated to a client as a
+// measurement.
+console.log("\n7b. PowerPoint tables");
+{
+  const cell = (t: string) => `<a:tc><a:txBody><a:p><a:r><a:t>${t}</a:t></a:r></a:p></a:txBody></a:tc>`;
+  const row = (cells: string[]) => `<a:tr h="0">${cells.map(cell).join("")}</a:tr>`;
+  const table = (rows: string[][]) =>
+    `<a:graphicFrame><a:graphic><a:graphicData><a:tbl>${rows.map(row).join("")}</a:tbl></a:graphicData></a:graphic></a:graphicFrame>`;
+  const para = (t: string) => `<p:sp><p:txBody><a:p><a:r><a:t>${t}</a:t></a:r></a:p></p:txBody></p:sp>`;
+
+  const xml = `<p:sld><p:cSld><p:spTree>${para("THE PICTURE TODAY")}${para("The brand transition is visibly incomplete")}` +
+    table([["Domain", "Shared KW", "Their traffic", "DR"],
+           ["holcim.com", "108", "8,853", "76"],
+           ["holcim.co.uk", "25", "2,981", "65"]]) +
+    `${para("SO WHAT The closest competitor is its own former parent.")}</p:spTree></p:cSld></p:sld>`;
+
+  const text = slideXmlToText(xml);
+
+  // The precondition that makes this test mean anything: joined the old way,
+  // the row really is ambiguous.
+  const flattened = Array.from(xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g), (m) => m[1]).join(" ");
+  assert(/Domain Shared KW Their traffic DR holcim\.com 108/.test(flattened),
+    "precondition: joining every run with a space really does produce an ambiguous row");
+
+  assert(/holcim\.com \| 108 \| 8,853 \| 76/.test(text), `the row keeps its columns (${JSON.stringify(text.slice(0, 160))})`);
+  assert(/Domain \| Shared KW \| Their traffic \| DR/.test(text), "and so does the header row");
+  assert(text.indexOf("[table]") >= 0, "the table is marked as one");
+
+  // DOCUMENT ORDER. A table's heading is the shape directly above it; hoisting
+  // every table to the end of the slide separates the two.
+  const headingAt = text.indexOf("The brand transition");
+  const tableAt = text.indexOf("[table]");
+  const soWhatAt = text.indexOf("SO WHAT");
+  assert(headingAt >= 0 && tableAt > headingAt, "the table comes after the heading that introduces it");
+  assert(soWhatAt > tableAt, "and the text below it stays below it");
+
+  // A cell's own runs join with NO separator: PowerPoint splits a word across
+  // runs whenever formatting changes inside it, so a styled thousands separator
+  // turns "238,000" into three runs.
+  const split = `<a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>238</a:t></a:r><a:r><a:t>,</a:t></a:r><a:r><a:t>000</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl>`;
+  assert(tableToLines(split)[0] === "238,000", `a figure split across runs is rejoined (${tableToLines(split)[0]})`);
+
+  // Entities, and the order they are unescaped in.
+  const amp = `<a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>R&amp;D</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl>`;
+  assert(tableToLines(amp)[0] === "R&D", `entities are decoded (${tableToLines(amp)[0]})`);
+
+  // A very long table is cut and SAYS so.
+  const many = Array.from({ length: PPTX_TABLE_MAX_ROWS + 20 }, (_, i) => [`r${i}`, String(i)]);
+  const lines = tableToLines(`<a:tbl>${many.map(row).join("")}</a:tbl>`);
+  assert(lines.length === PPTX_TABLE_MAX_ROWS + 1, `a long table is capped (${lines.length} lines)`);
+  assert(/of this table's \d+ rows are shown/.test(lines[lines.length - 1]), "and says how many it dropped");
+
+  // Slides are numbered by their file order, not by the order the zip lists
+  // them: slide10 sorts before slide2 as a string.
+  const deck = deckToText([
+    { name: "ppt/slides/slide10.xml", xml: para("TENTH") },
+    { name: "ppt/slides/slide2.xml", xml: para("SECOND") },
+  ]);
+  assert(deck.indexOf("SECOND") < deck.indexOf("TENTH"), "slide 2 comes before slide 10");
+
+  // A slide with no text at all is skipped rather than emitted as a header.
+  assert(deckToText([{ name: "ppt/slides/slide1.xml", xml: "<p:sld/>" }]) === "", "an empty slide contributes nothing");
+}
+
+// ── 7c. A round that was cut off says so ───────────────────────────────────
+//
+// THE DEFECT. A tool call still being written when the 90-second stall guard
+// fires is simply gone: nothing runs, nothing throws. The narration the model
+// had already streamed — "I'll rebuild this as a preview, keeping every number
+// exactly as given" — was then persisted as a complete answer. A 35-slide deck
+// was asked for, a confident reply came back, and no deck was produced. The
+// chain rethrew only when NOTHING had been streamed, which is the one case
+// where the user could not have been misled.
+console.log("\n7c. A cut-off turn admits it");
+{
+  const nothingWrong = stallOutcome(false, "Here is your deck.");
+  assert(nothingWrong.append === null && !nothingWrong.rethrow, "a turn that did not stall is left alone");
+
+  const blank = stallOutcome(true, "   ");
+  assert(blank.rethrow && blank.append === null,
+    "a stall with nothing on screen is rethrown, so the turn restarts rather than persisting blank");
+
+  const spoke = stallOutcome(true, "I'll rebuild this as a preview using our layouts.", "generate_slides");
+  assert(!spoke.rethrow, "a stall with text already streamed keeps the text, which is on the user's screen");
+  assert(!!spoke.append, "and appends a notice");
+  const n = spoke.append || "";
+  assert(n.indexOf("generate_slides") >= 0, `the notice names the tool that was dropped (${n.slice(0, 80)})`);
+  assert(/nothing was created/i.test(n), "and says nothing was created");
+  // THE SENTENCE THAT MATTERS. The text above it claims work was done. Without
+  // this the notice is just a warning beside a confident lie.
+  assert(/was not done/i.test(n), "and contradicts the claim above it directly");
+  assert(/smaller parts/i.test(n), "and says what to do instead");
+
+  const anon = stallOutcome(true, "Working on it.");
+  assert(!!anon.append && (anon.append || "").indexOf("A tool call") >= 0,
+    "a stall between tool blocks still produces a notice, without inventing a tool name");
+  assert((anon.append || "").indexOf("undefined") < 0, "and never prints undefined at the user");
+}
+
 // ── Self-test ──────────────────────────────────────────────────────────────
 if (process.argv.indexOf("--self-test") >= 0) {
   console.log("\n── self-test: each detector against input that should trip it ──");
@@ -442,11 +552,23 @@ if (process.argv.indexOf("--self-test") >= 0) {
   })();
   detector("a date in the workbook's own display order", /^\d{1,2}\/\d{1,2}\/\d{2}/.test(ambiguous));
 
+  // A table flattened into a word soup.
+  const soup = (() => {
+    const xml = `<a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>concrete calculator</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>238,000</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl>`;
+    const flat = Array.from(xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g), (m) => m[1]).join(" ");
+    return { flat, kept: slideXmlToText(xml) };
+  })();
+  detector("a table joined into a word soup", !/\|/.test(soup.flat) && /concrete calculator \| 238,000/.test(soup.kept));
+
+  // A stalled turn kept quiet.
+  detector("a stalled turn with text already streamed being kept silently",
+    stallOutcome(true, "I'll rebuild this as a preview.", "generate_slides").append !== null);
+
   // Control words as prose.
   const naive = String.raw`{\rtf1\pard\plain\f0\fs24 Hello\par}`.replace(/[{}]/g, "").replace(/\\/g, " ");
   detector("RTF control words emitted as words", /pard|fs24/.test(naive) && !/pard|fs24/.test(rtfToText(String.raw`{\rtf1\pard\plain\f0\fs24 Hello\par}`)));
 
-  if (fired < 7) { console.log("  a detector stayed silent — this run proves nothing"); failures++; }
+  if (fired < 9) { console.log("  a detector stayed silent — this run proves nothing"); failures++; }
   else if (failures === before) console.log("  all detectors fire");
 }
 

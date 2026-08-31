@@ -65,6 +65,54 @@ export function repeatedCallNotice(name: string): string {
   return `You already called ${name} with these exact arguments this turn — the result is above. Do NOT call it again. Answer the user now with what you have; if the data isn't available, say so plainly. Never promise to run a search or tool you cannot actually run.`;
 }
 
+/**
+ * What a user is told when a round was abandoned mid-stream.
+ *
+ * A tool call still being written when the stall guard fires is simply gone:
+ * nothing ran, nothing threw, and the narration the model had already streamed
+ * ("I'll rebuild this as a preview…") was persisted as a complete answer. A
+ * user asked for a 35-slide deck, read a confident reply, and got no deck.
+ *
+ * This is DETERMINISTIC text, not an instruction to the model. The forced final
+ * pass is already asked to be honest about what it could not retrieve, and in
+ * this case it was not — it cannot see that its own tool call was dropped. The
+ * system knows for a fact that the round was abandoned, so it says so itself
+ * rather than hoping.
+ */
+export function stallNotice(toolName?: string): string {
+  const what = toolName ? `The \`${toolName}\` call` : "A tool call";
+  return (
+    `\n\n---\n\n⚠ **This turn was cut off.** ${what} was still being written when it ran out of time, ` +
+    `so it never ran and nothing was created. Anything described above as done was not done.\n\n` +
+    `Ask again. If it was a large deck or document, ask for it in smaller parts — a request that takes ` +
+    `more than 90 seconds to write out will be cut off again.`
+  );
+}
+
+/**
+ * What to do about a stalled round, as a decision rather than as two ifs spread
+ * through a streaming loop.
+ *
+ * Pulled out because the two cases are easy to state and were easy to get
+ * wrong: with nothing streamed the turn must be RETHROWN so the provider
+ * fallback restarts it cleanly, and with something already streamed it must be
+ * KEPT and annotated, because that text is already on the user's screen. The
+ * chain had only the first, so the second silently shipped a confident answer
+ * over a tool call that never ran.
+ */
+export interface StallOutcome {
+  /** Text to append and stream, or null when there is nothing to say. */
+  append: string | null;
+  /** Rethrow instead: nothing was shown, so the turn can be restarted. */
+  rethrow: boolean;
+}
+
+export function stallOutcome(stalled: boolean, textSoFar: string, toolName?: string): StallOutcome {
+  if (!stalled) return { append: null, rethrow: false };
+  if (!String(textSoFar || "").trim()) return { append: null, rethrow: true };
+  return { append: stallNotice(toolName), rethrow: false };
+}
+
 export function overBudgetNotice(name: string): string {
   return `You have called ${name} too many times this turn. Stop calling it and answer now. IMPORTANT: report only what you actually retrieved — do NOT fill missing rows or columns with placeholders — no "[not retrieved]", "Not retrieved", "N/A", "TBC" or dashes standing in for figures you never fetched. If a whole column would be placeholders, drop that column and say why underneath the table instead of shipping a column of nothing. Say plainly which parts you could not fetch and why, and mention that many of these tools accept a comma-separated list (or "all") so the rest can be fetched in ONE call next time.`;
 }

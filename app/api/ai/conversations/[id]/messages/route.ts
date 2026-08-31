@@ -20,6 +20,7 @@ import {
 import type { Attachment } from "@/lib/types/ai";
 import { workbookToText, delimitedToText } from "@/lib/ai/spreadsheet-text";
 import { rtfToText } from "@/lib/ai/rtf-text";
+import { deckToText } from "@/lib/ai/pptx-text";
 import { isSpreadsheet, isPlainTextish } from "@/lib/media/allowed-types";
 import { assertServiceAllowed, ServiceControlError } from "@/lib/admin/service-control";
 import { calculateCostTenths } from "@/lib/ai/model-costs";
@@ -38,32 +39,18 @@ async function extractPptxText(buffer: Buffer): Promise<string | undefined> {
   const JSZip = JSZipModule.default ?? JSZipModule;
   const zip = await JSZip.loadAsync(buffer);
 
-  const slideFiles = Object.keys(zip.files)
-    .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
-    .sort((a, b) => {
-      const an = parseInt(a.match(/slide(\d+)\.xml/)?.[1] ?? "0", 10);
-      const bn = parseInt(b.match(/slide(\d+)\.xml/)?.[1] ?? "0", 10);
-      return an - bn;
-    });
-
+  const slideFiles = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
   if (slideFiles.length === 0) return undefined;
 
-  const slides: string[] = [];
-  for (let i = 0; i < slideFiles.length; i++) {
-    const xml = await zip.files[slideFiles[i]].async("string");
-    const runs = Array.from(xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g), (m) =>
-      m[1]
-        .replace(/&amp;/g, "&")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&quot;/g, '"')
-        .replace(/&apos;/g, "'"),
-    );
-    const slideText = runs.join(" ").trim();
-    if (slideText) slides.push(`--- Slide ${i + 1} ---\n${slideText}`);
+  const slides: { name: string; xml: string }[] = [];
+  for (const name of slideFiles) {
+    slides.push({ name, xml: await zip.files[name].async("string") });
   }
-
-  return slides.join("\n\n") || undefined;
+  // deckToText keeps <a:tbl> blocks as rows. Joining every run with a space —
+  // which is what this did — turned a competitor table into
+  // "concrete calculator 238,000 asphalt calculator 11,000", and the model had
+  // to guess which number belonged to which row.
+  return deckToText(slides) || undefined;
 }
 
 // ── Helper: extract text from a document attachment ──

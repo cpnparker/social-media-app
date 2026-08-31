@@ -84,6 +84,21 @@ export interface SlideInput {
     xAxis?: string; yAxis?: string;
     points?: { x: number; y: number; label?: string; group?: string }[];
   };
+  /** A data table: a header row and rows of cells. The comparison layout is a
+   *  table too, but a judgement one — four options at most, a third of the
+   *  width given to the criterion, cells centred and yes/no drawn as ticks.
+   *  A keyword table with six columns of numbers needs none of that and wants
+   *  the one thing comparison will not do: figures right-aligned under their
+   *  heading, so the eye can run down a column. */
+  table?: {
+    columns?: string[];
+    rows?: string[][];
+    /** Per column. Inferred from the cells when absent, which is right often
+     *  enough that asking is the exception. */
+    align?: ("left" | "right")[];
+    /** Row indices drawn on a tint — the rows that carry the argument. */
+    highlight?: number[];
+  };
   /** A Venn diagram — two or three overlapping sets. */
   venn?: { sets?: { label: string }[]; overlap?: string };
   milestones?: Milestone[];
@@ -2561,6 +2576,145 @@ function comparisonRequests(
   return out;
 }
 
+/** The most columns a slide can carry before the cells are too narrow to read,
+ *  and the most rows before it is a spreadsheet on a projector. */
+export const TABLE_MAX_COLS = 6;
+export const TABLE_MAX_ROWS = 12;
+
+/**
+ * Is this column numeric?
+ *
+ * Right-aligning figures is the whole reason this layout exists rather than
+ * reusing `comparison`: a column of centred numbers cannot be scanned, because
+ * the digits do not line up. Decided per column on the CELLS, by majority, so
+ * one "n/a" in a column of thousands does not left-align the lot.
+ */
+export function isNumericColumn(cells: string[]): boolean {
+  const filled = cells.map((c) => String(c ?? "").trim()).filter((c) => c !== "");
+  if (!filled.length) return false;
+  let numeric = 0;
+  for (const c of filled) {
+    // A figure, with optional currency, thousands separators, decimals, a
+    // percentage, a leading sign, or a multiplier suffix ("153x", "3.2k").
+    if (/^[-+(]?\s*[£$€]?\s*\d[\d,.\s]*\s*(%|x|k|m|bn)?\)?$/i.test(c)) numeric++;
+  }
+  return numeric * 2 > filled.length;
+}
+
+/**
+ * One cell, cut to the characters that fit on `lines` lines of its column.
+ *
+ * A TABLE CELL IS NOT A PARAGRAPH. Left to wrap, a long first-column label
+ * pushed its row into the one beneath it, and eight long headings ran the whole
+ * header block over the first three rows of data — caught by the overlap
+ * detector on the deliberately overloaded fixture, not by eye. Truncating is
+ * what a table does at this size; the alternative is a row height set by the
+ * worst cell in the table, which wastes the slide for every other row.
+ */
+export function fitCell(text: string, boxWidth: number, size: number, lines = 1): string {
+  const s = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!s) return "";
+  const usable = Math.max(size, boxWidth - TEXT_INSET_X);
+  const perLine = Math.max(1, Math.floor(usable / (size * PER_CHAR)));
+  const budget = perLine * lines;
+  if (s.length <= budget) return s;
+  // A word boundary if one is close, so a cut does not land mid-word when it
+  // does not have to.
+  const cut = s.slice(0, Math.max(1, budget - 1));
+  const space = cut.lastIndexOf(" ");
+  return (space > budget * 0.6 ? cut.slice(0, space) : cut).trimEnd() + "…";
+}
+
+/** A data table: a header row and rows of cells, figures right-aligned. */
+function tableRequests(
+  page: string, id: (s: string) => string,
+  spec: NonNullable<SlideInput["table"]>, bandTop: number
+): Req[] {
+  const columns = (spec.columns || []).map((c) => String(c ?? "")).slice(0, TABLE_MAX_COLS);
+  const allRows = (spec.rows || []).filter((r) => Array.isArray(r) && r.some((c) => String(c ?? "").trim() !== ""));
+  if (!columns.length || !allRows.length) return [];
+  const rows = allRows.slice(0, TABLE_MAX_ROWS).map((r) => columns.map((_, j) => String(r[j] ?? "")));
+
+  const out: Req[] = [];
+  const top = bandTop;
+  const dropped = allRows.length - rows.length;
+  const droppedCols = (spec.columns || []).length - columns.length;
+  // A dropped row is SAID, never silently cut: a table that quietly shows the
+  // first twelve of twenty reads as the whole set.
+  const note = dropped > 0 || droppedCols > 0;
+  const tail = SOURCE_BLOCK + (note ? 12 : 0);
+
+  // Column widths from the widest cell in each, so a column of "DR" does not
+  // take the same space as one of full domain names.
+  const weights = columns.map((c, j) => {
+    let w = c.length;
+    for (const r of rows) w = Math.max(w, r[j].length);
+    return Math.max(4, Math.min(40, w));
+  });
+  const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
+  const widths = weights.map((w) => (w / totalWeight) * GRID.contentWidth);
+  const xs: number[] = [];
+  let acc = GRID.margin;
+  for (const w of widths) { xs.push(acc); acc += w; }
+
+  const aligns = columns.map((_, j) =>
+    spec.align?.[j] || (isNumericColumn(rows.map((r) => r[j])) ? "right" : "left")
+  );
+  const PAD = 6;
+  const inner = (j: number) => Math.max(10, widths[j] - PAD * 2);
+
+  // A HEADING MAY WRAP TO TWO LINES; a cell may not. The header block is then
+  // sized to what the headings actually need, rather than to a constant that
+  // was right for the first table anyone tried.
+  const heads = columns.map((c, j) => fitCell(c, inner(j), TYPE.cellHead.size, 2));
+  const headLines = heads.reduce((n, h, j) => Math.max(n, estimateLines(h, inner(j), TYPE.cellHead.size)), 1);
+  const headH = Math.max(22, drawnTextHeight(headLines, TYPE.cellHead.size));
+
+  const bottom = CANVAS.height - GRID.margin - tail;
+  const rowH = Math.max(16, Math.min(30, (bottom - top - headH) / rows.length));
+
+  heads.forEach((c, j) => {
+    out.push(...textBox(id(`th${j}`), page, c, TYPE.cellHead, {
+      x: xs[j] + PAD, y: top, width: inner(j), height: headH,
+    }, { align: aligns[j] === "right" ? "END" : "START" }));
+  });
+  out.push(...filledShape(id("trh"), page, "RECTANGLE", COLOR.navy, {
+    x: GRID.margin, y: top + headH, width: GRID.contentWidth, height: RULE.hairlineThickness,
+  }, 0.4));
+
+  const highlighted = new Set((spec.highlight || []).filter((n) => Number.isInteger(n)));
+  rows.forEach((r, i) => {
+    const ry = top + headH + 4 + i * rowH;
+    if (highlighted.has(i)) {
+      out.push(...filledShape(id(`trb${i}`), page, "RECTANGLE", COLOR.tintBlue, {
+        x: GRID.margin, y: ry, width: GRID.contentWidth, height: rowH,
+      }, 0.6));
+    }
+    r.forEach((cell, j) => {
+      if (!cell.trim()) return;
+      const style = j === 0 ? { ...TYPE.cellText, bold: true } : TYPE.cellText;
+      out.push(...textBox(id(`tc${i}_${j}`), page, fitCell(cell, inner(j), style.size), style, {
+        x: xs[j] + PAD, y: ry + rowH / 2 - 8, width: inner(j), height: 16,
+      }, { align: aligns[j] === "right" ? "END" : "START" }));
+    });
+    if (i < rows.length - 1) {
+      out.push(...filledShape(id(`trr${i}`), page, "RECTANGLE", COLOR.navy, {
+        x: GRID.margin, y: ry + rowH, width: GRID.contentWidth, height: RULE.hairlineThickness,
+      }, 0.15));
+    }
+  });
+
+  if (note) {
+    const parts: string[] = [];
+    if (dropped > 0) parts.push(`${rows.length} of ${allRows.length} rows`);
+    if (droppedCols > 0) parts.push(`${columns.length} of ${(spec.columns || []).length} columns`);
+    out.push(...textBox(id("tdrop"), page, `Showing ${parts.join(" and ")}`, TYPE.chartAxis, {
+      x: GRID.margin, y: top + headH + 4 + rows.length * rowH + 4, width: GRID.contentWidth, height: 12,
+    }));
+  }
+  return out;
+}
+
 /** One slide → its full request list. Exported so the layout geometry can be
  *  exercised without a Google round-trip; nothing else should call it. */
 export function buildSlideRequests(slide: SlideInput, index: number, run = "r0"): Req[] {
@@ -2805,7 +2959,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         : layout === "line-chart" ? lineChartRequests(page, id, slide.chart, onDark, chartBandTop)
         : barChartRequests(page, id, slide.chart, onDark, chartBandTop)));
     }
-  } else if (layout === "swot" || layout === "matrix" || layout === "comparison" || layout === "scatter" || layout === "venn") {
+  } else if (layout === "swot" || layout === "matrix" || layout === "comparison" || layout === "table" || layout === "scatter" || layout === "venn") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
         x: GRID.margin, y: GRID.eyebrowY, width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
@@ -2826,6 +2980,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     if (layout === "swot" && slide.swot) requests.push(...swotRequests(page, id, slide.swot, aTop));
     else if (layout === "matrix" && slide.matrix) requests.push(...matrixRequests(page, id, slide.matrix, aTop));
     else if (layout === "comparison" && slide.comparison) requests.push(...comparisonRequests(page, id, slide.comparison, aTop));
+    else if (layout === "table" && slide.table) requests.push(...tableRequests(page, id, slide.table, aTop));
     else if (layout === "scatter" && slide.scatter) requests.push(...scatterRequests(page, id, slide.scatter, onDark, aTop));
     else if (layout === "venn" && slide.venn) requests.push(...vennRequests(page, id, slide.venn, onDark, aTop));
   } else if (layout === "timeline-parallel") {

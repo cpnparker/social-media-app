@@ -9,7 +9,7 @@ import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
 import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings } from "@/lib/slides/generate";
-import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, type ToolUsage } from "@/lib/ai/tool-loop-guard";
+import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, stallOutcome, type ToolUsage } from "@/lib/ai/tool-loop-guard";
 import { toPreviewModel } from "@/lib/slides/preview-model";
 import { signedMediaUrl } from "@/lib/media/signed";
 import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
@@ -1359,6 +1359,15 @@ const DOCUMENT_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                   }, required: ["label", "x", "y"] } },
                 },
               },
+              table: {
+                type: "object",
+                description: "A DATA table (table layout): `columns` is the header row, `rows` is an array of rows, each an array of cell strings IN COLUMN ORDER. Columns whose cells are figures are right-aligned automatically, so a column of numbers can be read down. `highlight` takes the row indices that carry the argument. Up to 6 columns and 12 rows; extra rows are dropped and the slide says so. Reach for this over `comparison` when the cells are measurements rather than judgements, and over a bar chart when the reader needs the actual figures.",
+                properties: {
+                  columns: { type: "array", items: { type: "string" } },
+                  rows: { type: "array", items: { type: "array", items: { type: "string" } } },
+                  highlight: { type: "array", items: { type: "number" } },
+                },
+              },
               comparison: {
                 type: "object",
                 description: "A comparison table (comparison layout): `columns` are the options across the top (2-4), `rows` are the criteria. A cell of 'yes'/'no' draws a green tick or coral cross; any other text prints as-is. Highlight the row that makes your case.",
@@ -1507,7 +1516,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                 type: "string",
                 enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "scatter", "venn", "cards", "quote", "process", "logo-wall", "closing"],
                 description:
-                  "cover = opening slide, big centred title over a dark ground. section = a divider between parts of the deck — give it an `image.query` for a full-bleed photograph and a numeric `eyebrow` ('01', '02') for a big index numeral; without a photo it falls back to a flat blue field. content = title + body, the FALLBACK when nothing else fits — a bulleted slide is the flattest thing the deck can make, so reach for a layout above it first. Give it a `subtitle` (drawn as a standfirst) and an `image.query` (drawn as a rail down the right) and it stops looking like a document. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. line-chart = a trend over time — months, quarters, years — as a connected line; supply `chart` with each series' points IN TIME ORDER (they are plotted in the order given, evenly spaced). Reach for it whenever the point is that something CHANGED, where a bar chart would only show the endpoints. swot = a four-quadrant SWOT on colour-coded panels; supply `swot` with strengths/weaknesses/opportunities/threats. matrix = a 2x2 priority grid (impact/effort, risk/reward) with items plotted by position; supply `matrix`. comparison = a table weighing options against criteria, with ticks and crosses; supply `comparison`. scatter = a scatter plot for a correlation between two measures; supply `scatter` with points that each have x and y. venn = two or three overlapping sets, for where things intersect; supply `venn`. cards = two to six repeated blocks across the slide — pillars, product types, numbered steps, a portfolio of formats. Reach for it whenever a slide would otherwise be a list of things that are the same KIND of thing; supply `cards`. quote = a pull quote on navy with the speaker named beneath — use it for a client testimonial or an executive line, never for your own copy; supply `quote`. process = stages carried left to right by arrows, for a way of working; supply `stages`. logo-wall = client marks on a clean ground, the credibility slide; supply `logos`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter — but defaulting through a whole deck produces exactly the flat deck this tool exists to avoid.",
+                  "cover = opening slide, big centred title over a dark ground. section = a divider between parts of the deck — give it an `image.query` for a full-bleed photograph and a numeric `eyebrow` ('01', '02') for a big index numeral; without a photo it falls back to a flat blue field. content = title + body, the FALLBACK when nothing else fits — a bulleted slide is the flattest thing the deck can make, so reach for a layout above it first. Give it a `subtitle` (drawn as a standfirst) and an `image.query` (drawn as a rail down the right) and it stops looking like a document. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. line-chart = a trend over time — months, quarters, years — as a connected line; supply `chart` with each series' points IN TIME ORDER (they are plotted in the order given, evenly spaced). Reach for it whenever the point is that something CHANGED, where a bar chart would only show the endpoints. swot = a four-quadrant SWOT on colour-coded panels; supply `swot` with strengths/weaknesses/opportunities/threats. matrix = a 2x2 priority grid (impact/effort, risk/reward) with items plotted by position; supply `matrix`. comparison = a table weighing options against criteria, with ticks and crosses; supply `comparison`. table = a DATA table, a header row and rows of figures with numeric columns right-aligned under their headings; supply `table`. Reach for it over comparison when the cells are measurements rather than judgements, and over a bar chart when the reader needs the actual numbers. scatter = a scatter plot for a correlation between two measures; supply `scatter` with points that each have x and y. venn = two or three overlapping sets, for where things intersect; supply `venn`. cards = two to six repeated blocks across the slide — pillars, product types, numbered steps, a portfolio of formats. Reach for it whenever a slide would otherwise be a list of things that are the same KIND of thing; supply `cards`. quote = a pull quote on navy with the speaker named beneath — use it for a client testimonial or an executive line, never for your own copy; supply `quote`. process = stages carried left to right by arrows, for a way of working; supply `stages`. logo-wall = client marks on a clean ground, the credibility slide; supply `logos`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter — but defaulting through a whole deck produces exactly the flat deck this tool exists to avoid.",
               },
               title: { type: "string", description: "Slide heading." },
               subtitle: {
@@ -7739,6 +7748,9 @@ async function streamAnthropic(
   // final) must rethrow so the provider fallback fires instead of persisting a
   // blank reply as a successful completion.
   let stalledOut = false;
+  /** The tool that was mid-stream when the guard fired, so the notice can name
+   *  it. Empty when the stall landed between blocks. */
+  let stalledTool = "";
   // No-progress guard (mirrors the xAI loop): stop the model re-calling the
   // same tool with no progress, which produces a wall of repeated text.
   const toolLoopGuard = createToolLoopGuard();
@@ -7886,9 +7898,10 @@ async function streamAnthropic(
 
     } catch (e) {
       if (e instanceof StreamStallError) {
-        console.warn(`[Anthropic] Round ${round} stalled mid-stream — aborting tool loop, forcing final answer from gathered context`);
+        console.warn(`[Anthropic] Round ${round} stalled mid-stream${currentToolName ? ` while writing ${currentToolName}` : ""} — aborting tool loop, forcing final answer from gathered context`);
         stalled = true;
         stalledOut = true;
+        if (currentToolName) stalledTool = currentToolName;
       } else {
         throw e;
       }
@@ -9046,10 +9059,20 @@ async function streamAnthropic(
     }
   }
 
-  // Stalled AND nothing to show (round-0 stall on a fresh chat, or the rescue
-  // itself failed): rethrow so createStreamingResponse's provider fallback
-  // takes the turn — never persist a blank reply as a successful completion.
-  if (stalledOut && !fullText.trim()) {
+  // STALLED, WITH SOMETHING ALREADY SAID. The narration written before the tool
+  // call survives and reads as a finished answer, because nothing in it knows
+  // the call was dropped. Stated deterministically rather than left to the
+  // forced final pass, which cannot see its own abandoned tool call and, asked
+  // to be honest about what it could not retrieve, said "Done" instead.
+  const outcome = stallOutcome(stalledOut, fullText, stalledTool || undefined);
+  if (outcome.append) {
+    fullText += outcome.append;
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: outcome.append })}\n\n`));
+  }
+  // Nothing to show (a round-0 stall on a fresh chat, or the rescue itself
+  // failed): rethrow so createStreamingResponse's provider fallback takes the
+  // turn — never persist a blank reply as a successful completion.
+  if (outcome.rethrow) {
     throw new StreamStallError();
   }
 
