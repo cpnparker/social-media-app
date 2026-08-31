@@ -156,6 +156,11 @@ export interface SlideInput {
     benchmark?: { value: number; label?: string };
     /** A short annotation tied to one bar — the reason behind the number. */
     callout?: { point: number; text: string };
+    /** What the y axis measures — "Net profit (CHF)", "Users". Drawn above the
+     *  axis values on a line chart. There was no field for this at all, so a
+     *  request to label the axis had nowhere to go and the model answered it by
+     *  claiming a label it could not set. */
+    yAxisLabel?: string;
   };
   /** A deck-wide art-direction note threaded into every PHOTOGRAPH query, so a
    *  deck's images read as one commission rather than a stock grab-bag. Never
@@ -1292,6 +1297,49 @@ export function barChartNote(
   return parts.length ? `Showing ${parts.join(" · ")}` : "";
 }
 
+/**
+ * Round values to label a y axis with, and the reason this exists.
+ *
+ * A line chart of monthly profit that dips to -25k and climbs to +17k was drawn
+ * with ONE horizontal rule, at the bottom of the plot — which is the padded
+ * MINIMUM, about -28k, not zero. Every month including the four loss-making
+ * ones therefore sat above the only line on the chart, and January read as the
+ * low point of a rising line rather than as a loss. Zero was 149px above that
+ * rule with nothing marking it, and no y value was drawn anywhere: the layout
+ * reserved 34px at the left for labels it never wrote.
+ *
+ * Ticks are round numbers, not evenly-divided ends: an axis labelled -28,360 /
+ * -12,180 / 4,000 is arithmetic nobody reads. Zero is always among them when it
+ * is in range, because 0 is a multiple of every step, which is the property the
+ * zero rule depends on.
+ *
+ * Pure and exported so the check can drive it directly rather than infer the
+ * scale from a rendered box.
+ */
+export function niceTicks(lo: number, hi: number, count = 5): number[] {
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return [];
+  const raw = (hi - lo) / Math.max(1, count);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+  const out: number[] = [];
+  // Start at the first step boundary inside the range and walk up. Bounded
+  // rather than while(true): a pathological span once produced a step of 0 and
+  // an infinite loop is a worse failure than a missing axis.
+  const first = Math.ceil(lo / step) * step;
+  // first + i*step, NOT v += step. Accumulating a fractional step compounds its
+  // own error: a 0.5-to-0.9 axis came out labelled 0.7999999999999999.
+  const decimals = Math.min(10, Math.max(0, -Math.floor(Math.log10(step)) + 1));
+  for (let i = 0; i < 24; i++) {
+    const v = first + i * step;
+    if (v > hi + step * 1e-9) break;
+    const r = Number(v.toFixed(decimals));
+    // -0 prints as "-0". It is the same number and reads as a mistake.
+    out.push(Object.is(r, -0) ? 0 : r);
+  }
+  return out;
+}
+
 /** A line chart: change over time. The one device the bar layouts cannot give,
  *  because a trend is a shape, not a set of lengths.
  *
@@ -1319,8 +1367,15 @@ function lineChartRequests(
   const allValues = series.flatMap((sx) => sx.points.map((p) => p.value));
   const bench = chart.benchmark && Number.isFinite(chart.benchmark.value) ? chart.benchmark : null;
   if (bench) allValues.push(bench.value);
-  let lo = Math.min(...allValues);
-  let hi = Math.max(...allValues);
+  // The RAW extremes, kept before any snapping or padding. The zero rule is
+  // decided on the data, not on the scale: padding pushes `lo` below zero on a
+  // chart whose values are all positive (120..340 snaps lo to 0, then pads it
+  // to -17.6), and testing the padded scale drew a "zero" rule a few pixels
+  // above the baseline on charts that never cross zero.
+  const rawLo = Math.min(...allValues);
+  const rawHi = Math.max(...allValues);
+  let lo = rawLo;
+  let hi = rawHi;
   // Include zero when the data sits near it, so the line is not floated on a
   // cropped axis that exaggerates the slope.
   if (lo > 0 && lo < hi * 0.5) lo = 0;
@@ -1346,6 +1401,46 @@ function lineChartRequests(
   out.push(...filledShape(id("laxis"), page, "RECTANGLE", axisColor, {
     x: plotX, y: plotBottom, width: plotW, height: CHART.axisThickness,
   }));
+
+  // The y axis: round values in the 34px this layout has always reserved for
+  // them and never used. Without these the plot has no scale at all — the only
+  // number on it is the last point's own label.
+  const ticks = niceTicks(lo, hi);
+  for (let i = 0; i < ticks.length; i++) {
+    const v = ticks[i];
+    const ty = yAt(v);
+    // Skip a tick that would collide with the x labels sitting under the axis.
+    if (ty > plotBottom - 3) continue;
+    out.push(...textBox(id(`lyt${i}`), page, formatValue(v),
+      { ...TYPE.chartAxis, color: onDark ? COLOR.periwinkle : COLOR.ink }, {
+        x: GRID.margin - 4, y: ty - 6, width: 34, height: 12,
+      }, { align: "END" }));
+  }
+
+  // THE ZERO RULE. This is the fix: on a chart that crosses zero, the bottom
+  // baseline is the padded minimum, so a loss was drawn above the only line on
+  // the plot and read as a small positive. Drawn only when the data actually
+  // crosses zero — otherwise the baseline IS the floor and a second rule there
+  // is redundant ink, which is the same rule the bar chart follows.
+  if (rawLo < 0 && rawHi > 0) {
+    // Navy, not the baseline's light grey: the bottom rule is a frame and this
+    // one is the number the reader is being asked to compare against, so it has
+    // to be the stronger of the two.
+    out.push(...filledShape(id("lzero"), page, "RECTANGLE", onDark ? COLOR.periwinkle : COLOR.navy, {
+      x: plotX, y: yAt(0), width: plotW, height: 1.2,
+    }));
+  }
+
+  // What the axis is measuring, when the caller says. Horizontal, above the
+  // ticks: Slides can rotate a text box, but a rotated label in a 34px gutter
+  // is unreadable at deck scale and the rotation is one more thing to get
+  // wrong in the preview.
+  if (chart.yAxisLabel?.trim()) {
+    out.push(...textBox(id("lylab"), page, chart.yAxisLabel.trim(),
+      { ...TYPE.chartAxis, color: onDark ? COLOR.periwinkle : COLOR.ink }, {
+        x: GRID.margin - 4, y: plotTop - 14, width: 120, height: 12,
+      }));
+  }
 
   // The benchmark, if any — a reference rule across the plot.
   if (bench) {

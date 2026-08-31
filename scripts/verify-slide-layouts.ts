@@ -13,11 +13,12 @@
 import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
+  niceTicks,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
-import { CANVAS, LAYOUT_STYLE, COLOR } from "../lib/slides/brand";
+import { CANVAS, LAYOUT_STYLE, COLOR, GRID } from "../lib/slides/brand";
 
 const TYPE_STAT_CAP = 54;   // the multi-stat value cap; a hero must exceed it
 let failures = 0;
@@ -741,6 +742,104 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   }
   if (disconnected > 0) fail(`${disconnected} line segment(s) do not land on their data points`);
   if (failures === before20) pass("segments connect consecutive points, benchmark and legend drawn, nothing off-canvas");
+
+  /* 20b. A line chart that crosses zero says where zero is. */
+  //
+  // THE DEFECT. The line chart drew ONE horizontal rule, at the bottom of the
+  // plot — which is the padded MINIMUM, not zero. On monthly profit running
+  // -25k in January to +17k in August the scale ran -28,360 to +20,360, so the
+  // only rule on the chart sat at -28,360 and every loss-making month was drawn
+  // ABOVE it. January read as the low point of a rising line rather than as a
+  // loss, and there was no y value anywhere on the slide: the layout reserved
+  // 34px at the left for labels it never wrote. Reported from a real deck.
+  const before20b = failures;
+  console.log(`\n20b. A line chart across zero draws the zero line and its scale`);
+  const lossPoints = [-25000, -18000, -9000, -3000, 2000, 6000, 11000, 17000]
+    .map((v, i) => ({ label: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug"][i], value: v }));
+  const lossSlide: SlideInput = { layout: "line-chart", title: "The monthly trend",
+    chart: { sequence: true, yAxisLabel: "Net profit (CHF)", source: "Management accounts",
+      series: [{ name: "Net profit", points: lossPoints }] } };
+  const lreq2 = buildSlideRequests(lossSlide, 0, "n");
+
+  const ruleY = (suffix: string): number | null => {
+    for (const r of lreq2 as any[]) {
+      if (!r.createShape || !(r.createShape.objectId || "").endsWith(suffix)) continue;
+      return r.createShape.elementProperties.transform.translateY;
+    }
+    return null;
+  };
+  const baseY = ruleY("_laxis");
+  const zeroY = ruleY("_lzero");
+  if (baseY == null) fail("line-chart lost its baseline");
+  if (zeroY == null) fail("a line chart crossing zero drew no zero rule — the loss months sit above the only line on it");
+  // The precondition that makes the rest meaningful: the two rules must be in
+  // DIFFERENT places. Drawing the zero rule on top of the baseline would
+  // satisfy "a zero rule exists" and change nothing a reader can see.
+  if (baseY != null && zeroY != null && Math.abs(baseY - zeroY) < 20) {
+    fail(`the zero rule is drawn on the baseline (${zeroY?.toFixed(1)} vs ${baseY?.toFixed(1)}), so it marks nothing`);
+  }
+  // And zero must sit ABOVE the baseline, because every value is above the
+  // padded minimum. If it came out below, the scale is inverted.
+  if (baseY != null && zeroY != null && zeroY >= baseY) fail("zero is drawn at or below the bottom of the plot");
+
+  // The scale itself. Without y values the plot has no magnitude at all: the
+  // only number on the old chart was the last point's own label.
+  const yTicks = (lreq2 as any[]).filter((r) => (r.insertText?.objectId || "").match(/_lyt\d/)).map((r) => r.insertText.text);
+  if (yTicks.length < 3) fail(`line-chart drew ${yTicks.length} y-axis values, expected at least 3`);
+  if (yTicks.indexOf("0") < 0) fail(`the y axis does not label zero (${yTicks.join(", ")})`);
+  if (!yTicks.some((t: string) => t.indexOf("-") === 0)) fail(`the y axis labels no negative value, on a chart whose point is a loss (${yTicks.join(", ")})`);
+  // The labels have to sit in the gutter the layout reserves, not over the plot.
+  for (const r of lreq2 as any[]) {
+    if (!(r.createShape?.objectId || "").match(/_lyt\d/)) continue;
+    const t = r.createShape.elementProperties;
+    if (t.transform.translateX + t.size.width.magnitude > GRID.margin + 34 + 1) {
+      fail("a y-axis label runs into the plot area");
+      break;
+    }
+  }
+  if (!lreq2.some((r: any) => r.insertText?.text === "Net profit (CHF)")) fail("yAxisLabel was given and not drawn");
+
+  // NOT drawn when the data does not cross zero: the baseline already IS the
+  // floor there, and a second rule on it is redundant ink. Same rule the bar
+  // chart follows, and the reason this is a condition rather than always-on.
+  const allPositive = buildSlideRequests({ layout: "line-chart", title: "T",
+    chart: { sequence: true, series: [{ name: "R", points: [{ label: "Q1", value: 120 }, { label: "Q2", value: 180 }, { label: "Q3", value: 340 }] }] } }, 0, "n");
+  if (allPositive.some((r: any) => (r.createShape?.objectId || "").endsWith("_lzero"))) {
+    fail("a chart entirely above zero drew a zero rule anyway");
+  }
+
+  // The preview has to carry both rules, or the deck is right and the picture
+  // of it is wrong — which is how a correct deck showed a wrong preview for a
+  // day when the scrim lost its alpha.
+  const lossPrev = toPreviewModel([lossSlide]).slides[0].elements as any[];
+  const prevRules = lossPrev.filter((e) => !e.text && e.h <= 2 && e.w > 300);
+  if (prevRules.length < 2) fail(`the preview shows ${prevRules.length} of the chart's 2 horizontal rules`);
+  if (!lossPrev.some((e) => e.text === "0")) fail("the preview does not show the y-axis zero label");
+  if (!lossPrev.some((e) => e.text === "Net profit (CHF)")) fail("the preview does not show the y-axis label");
+
+  // The tick maths itself, driven directly.
+  const t1 = niceTicks(-28360, 20360);
+  if (t1.indexOf(0) < 0) fail("niceTicks omitted zero from a range that crosses it");
+  if (t1.some((v) => Math.abs(v) > 0 && Math.abs(v) < 1)) fail("niceTicks produced values finer than the data warrants");
+  // TWO fractional ranges, because they catch different halves of the fix.
+  // 0.5..0.9 drifts only when the ticks are ACCUMULATED (v += step), which is
+  // what shipped first. 0.25..0.75 drifts even computed as first + i*step, so
+  // it is the one that proves the rounding earns its place — without it the
+  // axis reads 0.30000000000000004. A single range would have certified half
+  // the fix.
+  for (const [lo, hi] of [[0.5, 0.9], [0.25, 0.75], [1.15, 1.65]] as [number, number][]) {
+    const t = niceTicks(lo, hi);
+    if (t.some((v) => String(v).length > 6)) fail(`niceTicks drifted on ${lo}..${hi} (${t.join(", ")})`);
+  }
+  if (niceTicks(0, 0).length !== 0) fail("niceTicks invented ticks for an empty range");
+  if (niceTicks(10, 0).length !== 0) fail("niceTicks accepted an inverted range");
+  for (const [lo, hi] of [[-5, 5], [0, 108], [980, 1020], [-1200000, 300000]] as [number, number][]) {
+    const t = niceTicks(lo, hi);
+    if (t.length < 2 || t.length > 12) fail(`niceTicks gave ${t.length} ticks for ${lo}..${hi}`);
+    for (let i = 1; i < t.length; i++) if (t[i] <= t[i - 1]) fail(`niceTicks is not ascending for ${lo}..${hi}`);
+    if (t[0] < lo || t[t.length - 1] > hi) fail(`niceTicks stepped outside ${lo}..${hi}`);
+  }
+  if (failures === before20b) pass("zero rule drawn only when the data crosses zero, y values labelled in the reserved gutter, preview agrees");
 
   /* 21. The analysis formats draw their structure. */
   const before21 = failures;

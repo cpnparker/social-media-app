@@ -1657,6 +1657,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                   highlight: { type: "number", description: "Zero-based index of the single bar that carries the argument — 'us, today'. Drawn in the accent, every other bar muted." },
                   benchmark: { type: "object", description: "A target or reference line across the plot — an industry average, a goal — so every bar reads as above or below it. Give `value` and a short `label`.", properties: { value: { type: "number" }, label: { type: "string" } } },
                   callout: { type: "object", description: "A short annotation on ONE bar — the reason behind its number, six words at most. Give the bar's `point` index and the `text`.", properties: { point: { type: "number" }, text: { type: "string" } } },
+                  yAxisLabel: { type: "string", description: "What the y axis measures — \"Net profit (CHF)\", \"Users\". line-chart only; drawn above the axis values. A line chart already draws its own scale and a zero rule when the data crosses zero, so a chart of profit and loss shows the loss without being asked." },
                 },
               },
               tracks: {
