@@ -859,6 +859,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   const before20c = failures;
   console.log(`\n20c. A data table`);
   {
+    const assertTable = (ok: boolean, m: string) => { if (!ok) fail(m); };
     const spec: SlideInput = { layout: "table", title: "Legacy domains",
       table: { columns: ["Domain", "Shared KW", "Their traffic", "DR"], highlight: [0],
         rows: [
@@ -903,6 +904,30 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     else {
       if (drop.indexOf("12 of 20 rows") < 0) fail(`the drop note does not name the rows (${drop})`);
       if (drop.indexOf("6 of 8 columns") < 0) fail(`the drop note does not name the columns (${drop})`);
+    }
+
+    // A NARROW COLUMN MUST STILL FIT ITS OWN FIGURES. Sharing the width in
+    // proportion to character counts starved the last column: beside one column
+    // of long domain names, "DR" got 29px and its value 0.9 came out as "0…".
+    // Found by looking at a rendered slide, not by any assertion here.
+    const real: SlideInput = { layout: "table", title: "Legacy domains",
+      table: { columns: ["Domain competing for Amrize queries", "Shared KW", "Their traffic", "DR"],
+        rows: [
+          ["holcim.com - legacy parent", "108", "8,853", "76"],
+          ["holcimgroup.com - legacy parent", "30", "493", "47"],
+          ["holcim.co.uk - a UK site on US queries", "25", "2,981", "65"],
+          ["holcimalpenaconnect.com - orphaned plant site", "19", "49", "0.9"] ] } };
+    const drawn = (buildSlideRequests(real, 0, "n") as any[])
+      .filter((r) => (r.insertText?.objectId || "").match(/_t[ch]/))
+      .map((r) => r.insertText.text as string);
+    // The precondition: this table genuinely has a wide column beside narrow
+    // ones, which is the shape that caused it.
+    assertTable(drawn.some((t) => t.length > 30) && drawn.some((t) => t.length <= 3),
+      "precondition: the fixture mixes a wide text column with narrow numeric ones");
+    const clipped = drawn.filter((t) => t.slice(-1) === "\u2026");
+    assertTable(clipped.length === 0, `a table that fits clipped ${clipped.length} cell(s): ${clipped.join(", ")}`);
+    for (const want of ["0.9", "8,853", "holcimalpenaconnect.com - orphaned plant site"]) {
+      assertTable(drawn.indexOf(want) >= 0, `"${want}" is drawn in full`);
     }
 
     // A CELL IS ONE LINE. Left to wrap, a long label pushes its row into the

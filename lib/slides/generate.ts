@@ -2581,6 +2581,10 @@ function comparisonRequests(
 export const TABLE_MAX_COLS = 6;
 export const TABLE_MAX_ROWS = 12;
 
+/** The narrowest a column may be drawn. Below this even a three-character
+ *  figure loses characters to the ellipsis, which is worse than no table. */
+export const TABLE_MIN_COL = 46;
+
 /**
  * Is this column numeric?
  *
@@ -2644,15 +2648,34 @@ function tableRequests(
   const note = dropped > 0 || droppedCols > 0;
   const tail = SOURCE_BLOCK + (note ? 12 : 0);
 
-  // Column widths from the widest cell in each, so a column of "DR" does not
-  // take the same space as one of full domain names.
-  const weights = columns.map((c, j) => {
-    let w = c.length;
-    for (const r of rows) w = Math.max(w, r[j].length);
-    return Math.max(4, Math.min(40, w));
+  // COLUMN WIDTHS ARE MEASURED, NOT WEIGHTED. Sharing the width in proportion
+  // to character counts starves a narrow column: with one column of long domain
+  // names, "DR" got 29px and its own value 0.9 was truncated to "0…" — a table
+  // whose figures cannot be read, which is the one thing it is for. Every
+  // column now gets what its widest cell actually needs, and only the SLACK is
+  // shared out; when there is no slack the wide columns give way first, because
+  // a long label reads fine clipped and a number does not.
+  const natural = columns.map((c, j) => {
+    let cells = 0;
+    for (const r of rows) cells = Math.max(cells, r[j].length);
+    const headW = c.length * TYPE.cellHead.size * PER_CHAR;
+    const cellW = cells * TYPE.cellText.size * PER_CHAR;
+    return Math.max(TABLE_MIN_COL, Math.min(GRID.contentWidth * 0.45, Math.max(headW, cellW) + 14));
   });
-  const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
-  const widths = weights.map((w) => (w / totalWeight) * GRID.contentWidth);
+  const naturalTotal = natural.reduce((a, b) => a + b, 0) || 1;
+  let widths: number[];
+  if (naturalTotal <= GRID.contentWidth) {
+    // Slack goes to the columns that can use it, in proportion to what they
+    // already take, so a text column gets the room and "DR" stays narrow.
+    const slack = GRID.contentWidth - naturalTotal;
+    widths = natural.map((w) => w + (w / naturalTotal) * slack);
+  } else {
+    // Over budget: take it off the columns above the floor, proportionally.
+    const floorTotal = natural.length * TABLE_MIN_COL;
+    const shrinkable = Math.max(1, naturalTotal - floorTotal);
+    const over = naturalTotal - GRID.contentWidth;
+    widths = natural.map((w) => Math.max(TABLE_MIN_COL, w - ((w - TABLE_MIN_COL) / shrinkable) * over));
+  }
   const xs: number[] = [];
   let acc = GRID.margin;
   for (const w of widths) { xs.push(acc); acc += w; }
