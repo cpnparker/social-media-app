@@ -152,17 +152,34 @@ export function fitColumns(
   pictureWidth: number,
   maxHeight: number
 ): { columns: number; columnWidth: number; columnHeight: number; scale: number } {
+  // BIGGEST, not first-fit. The first version took the first column count whose
+  // height cleared the cap, which is not the same thing and is not even
+  // monotone: at a picture width of 1112 the three-column layout comes out
+  // 650.06px tall against a 650 cap, misses by six hundredths of a pixel, falls
+  // through to four columns and throws away 46% of the height budget. A WIDER
+  // container produced a SMALLER picture. Scoring every count and taking the
+  // best one cannot do that.
+  //
+  // Each count is bounded twice: by the width it has to share, and by the cap
+  // on how tall one column may be. The scale is the lower of the two, and the
+  // best layout is the one with the largest scale.
+  let best = { columns: 1, columnWidth: 0, columnHeight: 0, scale: -1 };
   for (let n = 1; n <= MAX_COLUMNS; n++) {
-    const colW = (pictureWidth - (n - 1) * COLUMN_GAP) / n;
-    const scale = colW / Math.max(1, shot.width);
-    const colH = (shot.height / n) * scale;
-    if (colH <= maxHeight || n === MAX_COLUMNS) {
-      return { columns: n, columnWidth: colW, columnHeight: colH, scale };
+    const byWidth = (pictureWidth - (n - 1) * COLUMN_GAP) / (n * Math.max(1, shot.width));
+    const byHeight = (maxHeight * n) / Math.max(1, shot.height);
+    const scale = Math.min(byWidth, byHeight);
+    // Ties go to the lower count: fewer columns is fewer places for a reader's
+    // eye to jump, and the page reads in one run for longer.
+    if (scale > best.scale + 1e-9) {
+      best = {
+        columns: n,
+        columnWidth: shot.width * scale,
+        columnHeight: (shot.height / n) * scale,
+        scale,
+      };
     }
   }
-  // Unreachable: the loop always returns at n === MAX_COLUMNS.
-  const scale = pictureWidth / Math.max(1, shot.width);
-  return { columns: 1, columnWidth: pictureWidth, columnHeight: shot.height * scale, scale };
+  return best;
 }
 
 /**
@@ -338,13 +355,21 @@ export function ordersMatch(band: Band): boolean {
   return true;
 }
 
-/** Does every mark sit inside the picture it is drawn on? A mark outside the
- *  columns points at nothing and is the failure a snake introduces. */
+/**
+ * Does every mark sit inside the COLUMN it belongs to?
+ *
+ * Not merely inside the picture: that weaker test let a real mutation through.
+ * Dropping the column offset from a mark's x piles every mark into the first
+ * column, where they are all still comfortably "inside the picture" and all
+ * pointing at the wrong paragraph. The band a mark is allowed to occupy is
+ * decided by its own column, so that is what gets asserted.
+ */
 export function marksInsidePicture(band: Band): boolean {
   for (const c of band.callouts) {
-    if (c.targetX < -0.5 || c.targetY < -0.5) return false;
-    if (c.targetX > band.pictureWidth + 0.5) return false;
-    if (c.targetY > band.previewHeight + 0.5) return false;
+    if (c.targetY < -0.5 || c.targetY > band.previewHeight + 0.5) return false;
+    const left = c.column * (band.previewWidth + band.columnGap);
+    if (c.targetX < left - 0.5) return false;
+    if (c.targetX > left + band.previewWidth + 0.5) return false;
   }
   return true;
 }

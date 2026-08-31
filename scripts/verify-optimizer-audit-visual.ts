@@ -27,8 +27,8 @@
  *
  * ── MUTATION LOG ────────────────────────────────────────────────────────────
  *
- * Twenty-six mutations in a detached worktree. Twenty-four killed on the first
- * pass; both survivors were faults in this file rather than in the code.
+ * Thirty mutations in a detached worktree. Twenty-seven killed on the first
+ * pass; all three survivors were faults in this file rather than in the code.
  *
  * KILLED  an invisible check mapped to a nearby element                    → 1
  * KILLED  passing checks marked too                                       → 1
@@ -49,6 +49,18 @@
  * KILLED  the remedy gate dropped, so a page WITH an FAQ was told to add one → 4d
  * KILLED  an opportunity ranked level with a warning, pushing one off     → 4d
  * KILLED  a marked opportunity still listed as not measured               → 4c
+ * KILLED  the preview fitted to height alone, drawing a tall page 98px wide → 4b-ii
+ * KILLED  fitColumns back to first-fit, where a wider box gives a smaller
+ *           picture                                                       → 4b-ii
+ * KILLED  the 260px floor removed, so a tall page keeps its notes and its
+ *           sliver                                                        → 4b-ii
+ * KILLED  a mark losing the slice offset that puts it in its own column    → 4b-ii
+ *
+ * SURVIVED, then killed by tightening the invariant: dropping the COLUMN
+ *   offset from a mark's x. Every mark piles into the first column, pointing at
+ *   the wrong paragraph, and `marksInsidePicture` still passed because they
+ *   were all comfortably inside the picture as a whole. It now asserts the band
+ *   of the mark's OWN column, which is the property that was meant all along.
  * KILLED  the last mark at a place owning its close-up instead of the first → 4c
  * KILLED  the close-up deduplication removed, so one strip of headline
  *           printed three times                                           → 4c
@@ -103,6 +115,9 @@ let failures = 0;
 const fail = (m: string) => { failures++; console.log(`  ✗ ${m}`); };
 const pass = (m: string) => console.log(`  ✓ ${m}`);
 const assert = (ok: boolean, m: string) => (ok ? pass(m) : fail(m));
+/** For assertions inside a sweep: silent when it holds, loud when it does not.
+ *  301 identical green lines hide the one red one. */
+const assert2 = (ok: boolean, m: string) => { if (!ok) fail(m); };
 
 const stripComments = (src: string) =>
   src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -316,7 +331,7 @@ console.log("\n4b-ii. A page too tall for one column");
   // the next column, and one placed with the wrong slice offset points at a
   // paragraph three thousand pixels from the one it is about.
   assert(fig.callouts.length === pins.length, `every mark survives the cut (${fig.callouts.length} of ${pins.length})`);
-  assert(marksInsidePicture(fig), "and lands inside the picture rather than off the edge of a column");
+  assert(marksInsidePicture(fig), "and inside the band of its OWN column, not merely somewhere on the picture");
   const cols = fig.callouts.map((c) => c.column).sort();
   assert(cols[0] === 0 && cols[cols.length - 1] === 2, `marks are distributed across the columns (${cols.join(",")})`);
 
@@ -336,6 +351,26 @@ console.log("\n4b-ii. A page too tall for one column");
   // height leaves a strip of the page in no column at all.
   const covered = fig.columns * (fig.previewHeight / fig.previewScale);
   assert(Math.abs(covered - amrize.height) < 1.5, `the columns together cover the whole capture (${Math.round(covered)} of ${amrize.height})`);
+
+  // A WIDER BOX MUST NEVER GIVE A SMALLER PICTURE. The first version of
+  // fitColumns took the first column count that cleared the height cap, and at
+  // a picture width of 1112 the three-column layout came out 650.06px against
+  // the 650 cap, missed by six hundredths of a pixel, fell through to four
+  // columns and drew each one 251px wide instead of 347. Nothing in a cap, an
+  // aspect ratio or an overlap test can see that; only sweeping the width can.
+  let previous = 0;
+  let shrank = 0;
+  let worst = "";
+  for (let w = 400; w <= 1600; w += 4) {
+    const f = fitColumns(amrize, w, COLUMN_MAX_HEIGHT);
+    if (f.columnWidth < previous - 1e-6) {
+      shrank++;
+      if (!worst) worst = `${w}px gave ${Math.round(f.columnWidth)}px after ${Math.round(previous)}px`;
+    }
+    previous = f.columnWidth;
+    assert2(f.columnHeight <= COLUMN_MAX_HEIGHT + 0.5, `a column never runs past the cap (${w}px gave ${Math.round(f.columnHeight)})`);
+  }
+  assert(shrank === 0, shrank ? `a wider box gives a smaller picture at ${shrank} widths, first ${worst}` : "widening the box never shrinks the picture, across 301 widths from 400 to 1600");
 
   // And the ratchet: a page that is merely tall must NOT be cut up.
   const ordinary = chooseMode({ width: 900, height: 2000 }, DEFAULT_FIGURE_WIDTH, COLUMN_MAX_HEIGHT);
