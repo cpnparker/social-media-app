@@ -18,6 +18,7 @@ import {
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
 import { applyEditSlide, unrenderableSlides, PAYLOAD_FIELDS, insertableLayout } from "../lib/slides/edit";
+import { prepareSlidesForBuild } from "../lib/ai/providers";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
@@ -1056,6 +1057,66 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     assertEdit(none.indexOf("No change") >= 0, "an edit with nothing in it is still refused");
   }
   if (failures === before20d) pass("a payload slide can be appended and patched, blanks are still refused, and the schema offers every field the server takes");
+
+  /* 20e. A deck built earlier in the same turn is still there. */
+  //
+  // THE DEFECT, reproduced on production. `slides_draft` is written when the
+  // assistant message is SAVED, at the end of the turn. A second
+  // generate_slides call in the same turn — which is exactly how a long deck is
+  // built — looked the deck up, found nothing, fell through to the model's own
+  // `slides` array (EMPTY, because the schema tells it not to resend when
+  // editing) and produced a 0-SLIDE deck that replaced the eleven already
+  // drafted. The model reported it honestly and the eleven slides were gone.
+  const before20e = failures;
+  console.log(`\n20e. The second call in a turn can see the first call's deck`);
+  {
+    const assertTurn = (ok: boolean, m: string) => { if (!ok) fail(m); };
+    const conv = `verify-${process.pid}-${failures}`;
+    // Wrapped, because the interesting failures here THROW. Left to escape, an
+    // exception kills the script before it prints anything, and a mutation that
+    // causes one looks exactly like a mutation that changed nothing.
+    try {
+    const first = await prepareSlidesForBuild(
+      { title: "Amrize", slides: [{ layout: "cover", title: "Cover" }, { layout: "content", title: "Two", body: "x" }] },
+      conv
+    );
+    assertTurn(first.slides.length === 2, `the first call builds its slides (${first.slides.length})`);
+
+    // The database has NOT been written at this point. This is the whole test.
+    const second = await prepareSlidesForBuild(
+      { slides: [], editSlide: { insertAfter: 2, insertSlides: [
+        { layout: "table", title: "Legacy domains", table: { columns: ["Domain", "DR"], rows: [["holcim.com", "76"]] } },
+        { layout: "content", title: "Next", body: "y" },
+      ] } },
+      conv
+    );
+    assertTurn(second.slides.length === 4, `the second call appends to it rather than replacing it (${second.slides.length})`);
+    assertTurn(second.edited === true, "and is reported as an edit");
+    assertTurn(second.slides[0].title === "Cover" && second.slides[1].title === "Two",
+      "the slides from the first call survive");
+    assertTurn(second.slides[2].layout === "table", "and the appended table slide is there");
+    assertTurn(second.title === "Amrize", "the deck keeps its title");
+
+    // A third call sees the second's work too, or a deck can only ever be built
+    // in two batches.
+    const third = await prepareSlidesForBuild(
+      { slides: [], editSlide: { insertAfter: 4, insertSlides: [{ layout: "content", title: "Last", body: "z" }] } },
+      conv
+    );
+    assertTurn(third.slides.length === 5, `and a third call sees the second's (${third.slides.length})`);
+
+    // NO SILENT FALLTHROUGH. An edit with no deck to edit must fail loudly. It
+    // used to build whatever `slides` held, which was empty.
+    let threw = "";
+    try {
+      await prepareSlidesForBuild({ slides: [], editSlide: { insertAfter: 0, title: "Orphan", body: "b" } }, null);
+    } catch (e: any) { threw = e.message; }
+    assertTurn(threw.indexOf("no deck") >= 0, `an edit with no deck to edit is an error, not a 0-slide deck (${threw.slice(0, 80)})`);
+    } catch (e: any) {
+      fail(`building a deck across calls in one turn threw: ${String(e?.message || e).slice(0, 120)}`);
+    }
+  }
+  if (failures === before20e) pass("a deck built earlier in the turn is found and appended to, and an edit with no deck fails loudly");
 
   /* 21. The analysis formats draw their structure. */
   const before21 = failures;

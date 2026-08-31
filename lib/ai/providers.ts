@@ -4217,6 +4217,41 @@ async function buildSlidesDraft(title: string, rawSlides: any[], messages?: AIMe
   };
 }
 
+/**
+ * The deck built earlier IN THIS TURN, which the database has not seen yet.
+ *
+ * `slides_draft` is written when the assistant message is saved, at the END of
+ * the turn. So a second generate_slides call in the same turn — which is
+ * exactly how a long deck is built, twelve slides at a time — looked the deck
+ * up and found NOTHING, fell through to the model's own `slides` array (empty,
+ * because the schema tells it not to resend), and produced a 0-slide deck that
+ * replaced the eleven already drafted. Reproduced on production while testing a
+ * 35-slide conversion.
+ *
+ * Per process and short-lived. A different instance falls back to the database,
+ * which is correct for a deck from an earlier turn; within one turn the stream
+ * is handled by one instance, which is the case that matters.
+ */
+const RECENT_DECKS = new Map<string, { at: number; title: string; slides: any[]; presentationId?: string }>();
+const RECENT_DECK_TTL_MS = 15 * 60_000;
+
+function rememberDeck(conversationId: string | null | undefined, deck: { title: string; slides: any[]; presentationId?: string }) {
+  if (!conversationId || !deck.slides?.length) return;
+  const now = Date.now();
+  RECENT_DECKS.set(conversationId, { at: now, ...deck });
+  // Bounded: this is a cache, not a store.
+  for (const [k, v] of Array.from(RECENT_DECKS.entries())) {
+    if (now - v.at > RECENT_DECK_TTL_MS) RECENT_DECKS.delete(k);
+  }
+}
+
+function recentDeck(conversationId: string) {
+  const hit = RECENT_DECKS.get(conversationId);
+  if (!hit) return null;
+  if (Date.now() - hit.at > RECENT_DECK_TTL_MS) { RECENT_DECKS.delete(conversationId); return null; }
+  return hit;
+}
+
 /** The current deck in a conversation, loaded server-side for a single-slide
  *  edit — so the model never has to resend 23 slides it may not even see. The
  *  server has held the draft all along (ai_messages.slides_draft); a picture
@@ -4224,6 +4259,11 @@ async function buildSlidesDraft(title: string, rawSlides: any[], messages?: AIMe
 async function loadDeckForEdit(
   conversationId: string
 ): Promise<{ title: string; slides: any[]; presentationId?: string } | null> {
+  // This turn's deck first: the database does not have it yet.
+  const fresh = recentDeck(conversationId);
+  if (fresh?.slides?.length) {
+    return { title: fresh.title, slides: fresh.slides, presentationId: fresh.presentationId };
+  }
   try {
     const { intelligenceDb } = await import("@/lib/supabase-intelligence");
     const { data } = await intelligenceDb
@@ -4251,7 +4291,10 @@ async function loadDeckForEdit(
  *  array, or — for a single-slide `editSlide` — the stored deck with that one
  *  slide patched. The editSlide path is what makes "change slide 1's picture"
  *  reliable: the model expresses the change, the server owns the deck. */
-async function prepareSlidesForBuild(
+/** Exported for scripts/verify-slide-layouts.ts: the turn-local deck cache and
+ *  the no-silent-fallthrough rule are the two things that made a 35-slide build
+ *  lose eleven slides, and both are decisions a check can drive directly. */
+export async function prepareSlidesForBuild(
   input: any, conversationId?: string | null
 ): Promise<{ title: string; slides: any[]; presentationId?: string; edited: boolean }> {
   // Both routes are checked, not just the insert. The model does not only
@@ -4270,23 +4313,35 @@ async function prepareSlidesForBuild(
     return slides;
   };
 
-  if (input?.editSlide && conversationId) {
-    const deck = await loadDeckForEdit(conversationId);
-    if (deck?.slides?.length) {
-      return {
-        title: deck.title,
-        slides: guard(applyEditSlide(deck.slides, input.editSlide)),
-        presentationId: input.presentationId || deck.presentationId,
-        edited: true,
-      };
+  if (input?.editSlide) {
+    const deck = conversationId ? await loadDeckForEdit(conversationId) : null;
+    // NO SILENT FALLTHROUGH. An editSlide with no deck to edit used to drop
+    // through to `input.slides` — which the schema tells the model to send
+    // EMPTY when editing — and built a 0-slide deck over the one it was meant
+    // to add to. An edit that cannot find its deck is an error, and the model
+    // is told so rather than shown a deck that lost eleven slides.
+    if (!deck?.slides?.length) {
+      throw new Error(
+        "There is no deck in this conversation to edit. editSlide patches an existing deck; build one first with `slides`, then append to it."
+      );
     }
+    const out = {
+      title: deck.title,
+      slides: guard(applyEditSlide(deck.slides, input.editSlide)),
+      presentationId: input.presentationId || deck.presentationId,
+      edited: true,
+    };
+    rememberDeck(conversationId, out);
+    return out;
   }
-  return {
+  const built = {
     title: input?.title || "Presentation",
     slides: guard(input?.slides || []),
     presentationId: input?.presentationId,
     edited: false,
   };
+  rememberDeck(conversationId, built);
+  return built;
 }
 
 const THEMES: Record<string, ThemeColors> = {
