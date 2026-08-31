@@ -1451,6 +1451,12 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           type: "string",
           description: "Presentation title. Used on the cover slide and as the Drive filename.",
         },
+        fidelity: {
+          type: "string",
+          enum: ["preserve", "restyle"],
+          description:
+            "Set to \"preserve\" whenever the user is CONVERTING something they already have — 'put this deck in our format', 'keep the content the same', 'same slides, just our style', 'just change the format'. Under preserve: ONE source slide becomes ONE output slide, in the source's order, keeping its own wording, figures and slide count. Choose the layout that best CARRIES each slide's content, but do not change what the content IS: do not merge slides, do not invent section dividers or closing slides the source does not have, do not reword titles, do not drop the source's own labels. It also turns off the advice to make the deck more visual, which is written for a deck you are AUTHORING and otherwise pushes you to restructure a conversion. Default is \"restyle\".",
+        },
         publish: {
           type: "boolean",
           description:
@@ -4151,9 +4157,20 @@ async function buildOrUpdateSlides(
  *  Reported back to the model because a deck of text slides is the failure mode
  *  it falls into unprompted, and it cannot see its own output. A number it has
  *  to read is harder to ignore than an instruction it read once. */
-function visualAudit(slides: any[]): string {
+function visualAudit(slides: any[], preserve = false): string {
   const visual = slides.filter((s) => isVisualSlide(s)).length;
   const share = slides.length ? Math.round((visual / slides.length) * 100) : 0;
+  // A FAITHFUL CONVERSION IS NOT AN UNDER-DESIGNED DECK. This nag fires after
+  // every draft and tells the model to find slides to turn into stats, cards
+  // and photographs — which is right when it is authoring, and exactly wrong
+  // when the user said "keep the content the same". Asked to convert a 35-slide
+  // client deck, the model read this, collapsed six Quick Win slides into one
+  // cards slide, invented a section divider and a closing slide, and reworded
+  // titles. The count is still reported; the instruction to go and change
+  // things is not.
+  if (preserve) {
+    return `${visual} of ${slides.length} slides carry a picture, chart, card grid or headline number (${share}%). This is a CONVERSION: do not restructure it.`;
+  }
   // The threshold matches the benchmark it quotes. It used to pass at 50 while
   // its own failure text said their real decks are past 60, so a deck between
   // the two was reported with a neutral sentence and no push at all. And the
@@ -4205,6 +4222,11 @@ async function buildSlidesDraft(title: string, rawSlides: any[], messages?: AIMe
   // Split BEFORE anything else, so the preview shows the deck that will be
   // built rather than one slide fewer.
   const slides = splitOverflowingSlides(rawSlides);
+  // How many slides the server added. On a faithful conversion this is the
+  // difference between "one source slide, one output slide" and a deck with
+  // "(continued)" in it, and the user has to be told which slides those are
+  // rather than left to spot them.
+  (slides as any).splitCount = slides.length - rawSlides.length;
   await resolveDeckImages(
     slides,
     (prompt: string) => generateImage(prompt, "1792x1024", "openai", undefined, undefined, "public"),
@@ -8387,7 +8409,7 @@ async function streamAnthropic(
             toolResults.push({
               type: "tool_result",
               tool_use_id: tool.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, tool.input?.fidelity === "preserve")}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             });
             continue;
           }
@@ -9672,7 +9694,7 @@ async function streamXAIChatCompletions(
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             } as any);
             continue;
           }
@@ -10714,7 +10736,7 @@ async function streamGemini(
             geminiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             } as any);
             continue;
           }
@@ -11644,7 +11666,7 @@ async function streamOpenAI(
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides)}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             } as any);
             continue;
           }

@@ -1141,6 +1141,69 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   }
   if (failures === before20e) pass("a deck built earlier in the turn is found and appended to, and an edit with no deck fails loudly");
 
+  /* 20f. A conversion is not told to redesign itself. */
+  //
+  // THE DEFECT, from a real client conversion. Asked to "make this presentation
+  // in TCE format, keep the content the same", the deck came back with six
+  // Quick Win slides collapsed into one cards slide, a section divider and a
+  // closing slide the source does not have, and reworded titles. The cause was
+  // not the model being loose: visualAudit is appended to EVERY draft result
+  // and tells it to "name the ones whose numbers should be a stat or a bar, the
+  // sets of like things that should be cards ... then say what you would change
+  // and offer to redraw it". Correct advice for a deck being authored, and the
+  // opposite of what was asked for here.
+  const before20f = failures;
+  console.log(`\n20f. A conversion keeps its own shape`);
+  {
+    const assertFid = (ok: boolean, m: string) => { if (!ok) fail(m); };
+    const prov = readFileSync(join(__dirname, "..", "lib/ai/providers.ts"), "utf8");
+
+    // The nag exists and is the pushy one — precondition, or the rest is about
+    // a string that no longer says what it used to.
+    assertFid(/offer to redraw it/.test(prov), "precondition: the restructuring advice is still in visualAudit");
+    assertFid(/function visualAudit\(slides: any\[\], preserve = false\)/.test(prov),
+      "visualAudit takes a preserve flag");
+    // And it is short-circuited BEFORE the pushy branch, not after it.
+    const va = prov.slice(prov.indexOf("function visualAudit("), prov.indexOf("function visualAudit(") + 2600);
+    const guardAt = va.indexOf("if (preserve)");
+    const pushAt = va.indexOf("offer to redraw it");
+    assertFid(guardAt > 0 && pushAt > guardAt, "the preserve branch returns before the restructuring advice");
+    assertFid(/do not restructure it/i.test(va), "and says plainly that this is a conversion");
+
+    // Every chain passes the flag, or a conversion is faithful on Claude and
+    // redesigned on Grok. Four chains, four call sites: this repo has shipped
+    // that exact drift before.
+    const wired = (prov.match(/visualAudit\(draft\.slides, [a-zA-Z.?]+\?\.fidelity === "preserve"\)/g) || []).length;
+    assertFid(wired === 4, `all four provider chains pass the fidelity flag (${wired} of 4)`);
+
+    // The model has to be able to SET it.
+    assertFid(/fidelity: \{/.test(prov), "generate_slides accepts a fidelity parameter");
+    assertFid(/enum: \["preserve", "restyle"\]/.test(prov), "with the two values named");
+    const fid = prov.slice(prov.indexOf("fidelity: {"), prov.indexOf("fidelity: {") + 1400);
+    for (const phrase of ["keep the content the same", "do not merge slides", "ONE source slide becomes ONE output slide"]) {
+      assertFid(fid.indexOf(phrase) >= 0, `the description says "${phrase}"`);
+    }
+
+    // A SPLIT SLIDE BREAKS ONE-TO-ONE, so it has to be reported. The server
+    // splits a slide whose body overflows, which is how "(continued)" appeared
+    // in a deck the user had asked to keep 1:1 — with nothing saying so.
+    // The MECHANISM first, run rather than read: a slide whose body overflows
+    // really is split, so there really is something to report.
+    const longBody = Array.from({ length: 60 }, (_, i) => `A bullet line number ${i + 1} that carries enough words to take a full line on its own`).join("\n");
+    const splitOut = splitOverflowingSlides([{ layout: "content", title: "Long", body: longBody }] as SlideInput[]);
+    assertFid(splitOut.length > 1, `precondition: an overflowing slide really is split by the server (${splitOut.length})`);
+    assertFid(splitOut.length - 1 > 0, "so the count the model is told is a real number");
+    // And the count is COMPUTED, not merely mentioned. Grepping for the word
+    // alone passed with the assignment deleted, because the reporting lines
+    // still contained it.
+    assertFid(/splitCount = slides\.length - rawSlides\.length/.test(prov),
+      "the draft computes how many slides the server added");
+    const reported = (prov.match(/splitCount > 0 \?/g) || []).length;
+    assertFid(reported === 4, `and every chain reports it to the model (${reported} of 4)`);
+    assertFid(/TELL THE USER which ones/.test(prov), "naming which slides were split");
+  }
+  if (failures === before20f) pass("a preserve conversion is not told to restructure, all four chains pass the flag, and server-side splits are declared");
+
   /* 21. The analysis formats draw their structure. */
   const before21 = failures;
   console.log(`\n21. SWOT, matrix and comparison draw their parts`);
