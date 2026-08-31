@@ -89,8 +89,11 @@ import {
 import { auditPage } from "../lib/optimizer/page-audit";
 import type { AuditCheck } from "../lib/optimizer/page-audit";
 import type { RenderSpot } from "../lib/optimizer/render";
-import { layoutFigure, anyOverlap, ordersMatch, CARD_HEIGHT, FIGURE_MAX_HEIGHT } from "../lib/optimizer/audit-callouts";
-import { readFileSync } from "fs";
+import {
+  layoutFigure, anyOverlap, ordersMatch, marksInsidePicture, chooseMode, fitColumns,
+  CARD_HEIGHT, COLUMN_MAX_HEIGHT, DEFAULT_FIGURE_WIDTH, MIN_CALLOUT_PREVIEW_WIDTH, NOTE_WIDTH, NOTE_GAP,
+} from "../lib/optimizer/audit-callouts";
+import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 
 const root = join(__dirname, "..");
@@ -235,14 +238,17 @@ console.log("\n4. The findings with nowhere to point");
 // eyeballed at one width with one set of findings.
 console.log("\n4b. Notes around the page");
 {
-  const shot = { width: 900, height: 4000, scale: 900 / 1280 };
+  // 900 x 2000 is a page of ordinary proportions: tall, but not so tall that it
+  // has to be cut up. This is the fixture for the callout layout.
+  const shot = { width: 900, height: 2000, scale: 900 / 1280 };
   const crowd: RenderSpot[] = [];
   // Six things within a few pixels of each other, three a side: the case that
   // makes a naive "put the note level with its target" layout collapse.
-  for (let i = 0; i < 6; i++) crowd.push(spot("image-no-alt", 700 + i * 12, i % 2 === 0 ? 60 : 900));
-  const pins = buildPins([check("image-alt", "fail"), check("one-h1", "warn")], crowd.concat([spot("h1", 2600)]));
+  for (let i = 0; i < 6; i++) crowd.push(spot("image-no-alt", 400 + i * 12, i % 2 === 0 ? 60 : 900));
+  const pins = buildPins([check("image-alt", "fail"), check("one-h1", "warn")], crowd.concat([spot("h1", 1400)]));
   const fig = layoutFigure(pins, shot);
 
+  assert(fig.mode === "callouts", `a page of ordinary proportions keeps its notes (${fig.mode})`);
   // ONE figure, not one per finding. Six near identical crops of a page whose
   // findings are all the same kind read as one issue repeated six times, which
   // is exactly how the banded version was reported.
@@ -251,21 +257,14 @@ console.log("\n4b. Notes around the page");
   assert(ordersMatch(fig), "and the notes run in the same order as the things they point at, so the lines cannot cross");
   // THE PICTURE IS SCALED, THE NOTES ARE NOT. Laid out in image pixels and
   // scaled with the figure, a note on a five-thousand-pixel page came out ten
-  // pixels tall. And a figure drawn at full size is four thousand pixels of
-  // scrolling, one note per screen, which is what "one repeated issue" felt
-  // like.
-  assert(fig.previewHeight <= FIGURE_MAX_HEIGHT + 1, `the preview is capped at ${FIGURE_MAX_HEIGHT}px (${Math.round(fig.previewHeight)})`);
-  assert(fig.previewWidth > 0 && fig.previewHeight > 0, "and keeps a real size");
+  // pixels tall.
+  assert(fig.previewHeight <= COLUMN_MAX_HEIGHT + 1, `the preview is capped at ${COLUMN_MAX_HEIGHT}px (${Math.round(fig.previewHeight)})`);
   assert(Math.abs(fig.previewWidth / fig.previewHeight - shot.width / shot.height) < 0.01, "at the page's own proportions");
+  assert(marksInsidePicture(fig), "and every mark lands inside the picture");
 
   const deepest = fig.callouts.reduce((n: number, c) => Math.max(n, c.top + CARD_HEIGHT), 0);
   assert(fig.height >= deepest, "the figure is tall enough for the notes, so a long column cannot run off the bottom");
   assert(fig.height >= fig.previewHeight, "and at least as tall as the picture");
-
-  // A very tall page must not shrink its notes with it.
-  const tall = layoutFigure(pins, { width: 900, height: 9000, scale: 0.703 });
-  assert(tall.callouts.every((c) => c.top >= 0), "notes on a very long page still sit inside the figure");
-  assert(tall.previewHeight <= FIGURE_MAX_HEIGHT + 1, "whose preview is capped rather than drawn at full length");
 
   const sides = new Set(fig.callouts.map((c) => c.side));
   assert(sides.size === 2, "notes are placed on both sides of the page");
@@ -273,6 +272,76 @@ console.log("\n4b. Notes around the page");
   // A pin past the bottom of a clipped capture has nothing to point at.
   const off = layoutFigure(buildPins([check("one-h1", "fail")], [spot("h1", 99999)]), shot);
   assert(off.callouts.length === 0, "a finding past the end of the capture is left out of the figure rather than drawn off the edge");
+}
+
+// ── 4b-ii. The page that cannot be shown in one column ─────────────────────
+//
+// THE DEFECT THIS EXISTS FOR. The layout used to fit the preview to HEIGHT
+// alone. Measured on production, the Amrize capture (900 x 5063, a ratio of 1
+// to 5.6) was therefore drawn NINETY-EIGHT PIXELS WIDE in a column 1112px wide,
+// with the marks on it 52 by 6, and half the column empty either side. Every
+// assertion the old check made passed on that picture: it was capped, it kept
+// the page's proportions, its notes did not overlap. None of them was about
+// whether a reader could see anything.
+console.log("\n4b-ii. A page too tall for one column");
+{
+  const amrize = { width: 900, height: 5063, scale: 900 / 1280 };
+
+  // The old behaviour, computed rather than remembered, so this fixture states
+  // what it is defending against.
+  const oldFit = 560 / amrize.height;
+  assert(Math.round(amrize.width * oldFit) === 100,
+    `precondition: fitted to height alone this page is ${Math.round(amrize.width * oldFit)}px wide, which is the bug`);
+
+  const decision = chooseMode(amrize, DEFAULT_FIGURE_WIDTH, COLUMN_MAX_HEIGHT);
+  assert(decision.mode === "snake", `so it is cut into columns instead (${decision.mode})`);
+  assert(decision.calloutPreviewWidth < MIN_CALLOUT_PREVIEW_WIDTH,
+    `because keeping the notes would draw it ${Math.round(decision.calloutPreviewWidth)}px wide, under the ${MIN_CALLOUT_PREVIEW_WIDTH}px floor`);
+
+  const pins = buildPins(
+    [check("heading-hierarchy", "warn"), check("one-h1", "fail")],
+    [spot("heading", 500), spot("heading", 3200), spot("heading", 6400), spot("h1", 300)]
+  );
+  const fig = layoutFigure(pins, amrize);
+  assert(fig.mode === "snake" && fig.columns === 3, `three columns (${fig.columns})`);
+  assert(Math.round(fig.previewWidth) === 320, `each 320px wide, against 98 before (${Math.round(fig.previewWidth)})`);
+  assert(fig.previewWidth > MIN_CALLOUT_PREVIEW_WIDTH, "which clears the floor that decided to snake in the first place");
+
+  // The reason for the height cap: one A4 landscape sheet at 12mm margins.
+  assert(fig.height <= 703, `and the whole figure still fits one landscape sheet (${Math.round(fig.height)}px of 703)`);
+  assert(fig.pictureWidth <= DEFAULT_FIGURE_WIDTH + 1, `within its width too (${Math.round(fig.pictureWidth)}px of ${DEFAULT_FIGURE_WIDTH})`);
+
+  // Every mark has to land on the picture, and the column arithmetic is the new
+  // way that can go wrong: a mark whose y is past its column's slice belongs to
+  // the next column, and one placed with the wrong slice offset points at a
+  // paragraph three thousand pixels from the one it is about.
+  assert(fig.callouts.length === pins.length, `every mark survives the cut (${fig.callouts.length} of ${pins.length})`);
+  assert(marksInsidePicture(fig), "and lands inside the picture rather than off the edge of a column");
+  const cols = fig.callouts.map((c) => c.column).sort();
+  assert(cols[0] === 0 && cols[cols.length - 1] === 2, `marks are distributed across the columns (${cols.join(",")})`);
+
+  // The mark that is hardest to place: one near the very bottom of the capture.
+  const last = layoutFigure(buildPins([check("heading-hierarchy", "warn")], [spot("heading", 7100)]), amrize);
+  assert(last.callouts.length === 1, "a mark near the end of the capture is kept");
+  assert(last.callouts[0].column === 2, `in the last column (${last.callouts[0].column})`);
+  assert(last.callouts[0].targetY <= last.previewHeight + 0.5,
+    `and inside that column's height (${Math.round(last.callouts[0].targetY)} of ${Math.round(last.previewHeight)})`);
+
+  // A snake has no notes, so the two callout properties are vacuous rather than
+  // true; assert that explicitly or they read as evidence they are not.
+  assert(!anyOverlap(fig) && ordersMatch(fig), "the callout properties are vacuously satisfied when there are no notes");
+  assert(fig.callouts.every((c) => c.top === 0), "and no note position is invented for marks that have none");
+
+  // The columns must tile the capture exactly. An off-by-one in the slice
+  // height leaves a strip of the page in no column at all.
+  const covered = fig.columns * (fig.previewHeight / fig.previewScale);
+  assert(Math.abs(covered - amrize.height) < 1.5, `the columns together cover the whole capture (${Math.round(covered)} of ${amrize.height})`);
+
+  // And the ratchet: a page that is merely tall must NOT be cut up.
+  const ordinary = chooseMode({ width: 900, height: 2000 }, DEFAULT_FIGURE_WIDTH, COLUMN_MAX_HEIGHT);
+  assert(ordinary.mode === "callouts", `a 900x2000 page is not cut up (${ordinary.mode}, ${Math.round(ordinary.calloutPreviewWidth)}px)`);
+  const fits = fitColumns({ width: 900, height: 5063 }, DEFAULT_FIGURE_WIDTH - 2 * (NOTE_WIDTH + NOTE_GAP), COLUMN_MAX_HEIGHT);
+  assert(fits.columns > 1, "and the column arithmetic agrees with the mode decision on the tall one");
 }
 
 // ── 4c. The close-ups, which are the part that cannot drift ────────────────
@@ -507,8 +576,15 @@ console.log("   (the whole point: a PDF someone can send to a client)");
   // a <figure> and must survive a page break intact, or a note lands on one
   // page and the thing it points at on the next.
   assert(/figure \{[^}]*break-inside: avoid/.test(ui), "and neither does an annotated figure");
-  assert(/audit-no-print/.test(ui) && /display: none !important/.test(ui), "and the app's own chrome is dropped from the printed document");
   assert(/window\.print\(\)/.test(ui), "with a control that prints it");
+  // Everything ABOUT the printed result now lives in verify-optimizer-print.ts,
+  // which renders this stylesheet in a real browser in print media and asks
+  // what is left. The assertion that used to sit here read
+  //   /audit-no-print/ && /display: none !important/
+  // and passed for months while every PDF came out blank: both strings were
+  // present, and the selector carrying them hid the report's own ancestor.
+  assert(existsSync(join(root, "scripts/verify-optimizer-print.ts")),
+    "and the printed OUTPUT is asserted in a browser rather than by reading the CSS");
 
   const panel = read("components/optimizer/PageAudit.tsx");
   assert(/setView\("report"\)/.test(panel), "the panel offers the report");

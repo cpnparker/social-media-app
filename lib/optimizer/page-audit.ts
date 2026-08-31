@@ -75,6 +75,12 @@ export interface PageAuditResult {
   checks: AuditCheck[];
   counts: { pass: number; warn: number; fail: number };
   fetchedAt: string;
+  /** The page's own <title>, so a report about someone's page can call it what
+   *  they call it. The report used to title-case the URL slug, which rendered
+   *  the Amrize article as "Building The Future 10 Things To Know About
+   *  Amrize": the client's own headline, with its punctuation removed and its
+   *  capitals changed, as the largest type in a document about their page. */
+  pageTitle?: string;
 }
 
 const strip = (s: string) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
@@ -340,13 +346,24 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   const headingTags = dom.match(/<h([1-6])\b[^>]*>[\s\S]*?<\/h\1>/gi) || [];
   const headings = headingTags.map((h) => ({ level: Number((h.match(/<h([1-6])/i) || [])[1]), text: strip(h) }));
   let skips = 0;
+  // The FIRST skip, named. The detail used to read "3 level skips (e.g. H2 →
+  // H4)" with that example hardcoded, on every page, whatever it actually
+  // skipped. A client checks the one example a report gives them, and an
+  // invented one in the line that is supposed to carry the evidence costs more
+  // than the finding is worth. Both levels are right here in the loop.
+  let firstSkip = "";
   for (let i = 1; i < headings.length; i++) {
-    if (headings[i].level > headings[i - 1].level + 1) skips++;
+    if (headings[i].level > headings[i - 1].level + 1) {
+      skips++;
+      if (!firstSkip) firstSkip = `H${headings[i - 1].level} to H${headings[i].level}`;
+    }
   }
   push({
     id: "heading-hierarchy", section: "structure", name: "Heading levels do not skip",
     status: skips === 0 ? "pass" : "warn",
-    detail: skips === 0 ? `${headings.length} headings, levels descend cleanly` : `${skips} level skip${skips === 1 ? "" : "s"} (e.g. H2 → H4)`,
+    detail: skips === 0
+      ? `${headings.length} headings, levels descend cleanly`
+      : `${skips} level skip${skips === 1 ? "" : "s"}, the first ${firstSkip}`,
     remedy: skips > 0 ? "Skipped levels break the outline retrieval systems use to segment the page into liftable chunks." : undefined,
   });
 
@@ -770,5 +787,5 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
     else if (s === "warn") counts.warn++;
     else if (s === "fail") counts.fail++;
   }
-  return { checks, counts, fetchedAt: now.toISOString() };
+  return { checks, counts, fetchedAt: now.toISOString(), pageTitle: title || undefined };
 }
