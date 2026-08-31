@@ -126,6 +126,11 @@ export function applyEditSlide(
     bodyRight?: string;
     eyebrow?: string;
     cards?: { marker?: string; icon?: string; title?: string; body?: string }[];
+    /** Slide numbers to DELETE, 1-based. The tool could add and change but not
+     *  remove, so taking two slides out of a 34-slide deck meant resending all
+     *  34 — the call that gets cut off. Applied before any insert, so the
+     *  numbers mean what they mean in the deck the user is looking at. */
+    removeSlides?: number[];
     /** SEVERAL slides at once, in order, at `insertAfter`. One slide per call
      *  is arithmetically hopeless for a long deck: the tool is capped at three
      *  calls a turn, so thirty-five slides would take twelve turns of a user
@@ -136,6 +141,32 @@ export function applyEditSlide(
     [payload: string]: any;
   }
 ): any[] {
+  // DELETE first, and against the deck the user can SEE. Doing it after an
+  // insert would renumber everything under the user's feet: "remove 33 and 34"
+  // means the slides that are 33 and 34 on screen right now.
+  if (Array.isArray(edit.removeSlides) && edit.removeSlides.length) {
+    const bad = edit.removeSlides.filter((n) => !Number.isInteger(n) || n < 1 || n > slides.length);
+    if (bad.length) {
+      throw new Error(
+        `Cannot remove slide${bad.length > 1 ? "s" : ""} ${bad.join(", ")}: the deck has ${slides.length} slides, so each number must be between 1 and ${slides.length}. Nothing has been removed.`
+      );
+    }
+    const drop = new Set(edit.removeSlides);
+    const kept = slides.filter((_, i) => !drop.has(i + 1));
+    if (!kept.length) {
+      throw new Error("That would remove every slide in the deck. Nothing has been removed.");
+    }
+    // A removal on its own is the whole edit; anything else in the same call
+    // would be applied to numbers that have just shifted.
+    const alsoEditing = edit.slideNumber != null || edit.insertAfter != null;
+    if (alsoEditing) {
+      throw new Error(
+        `removeSlides cannot be combined with slideNumber or insertAfter in one call: the numbering shifts as soon as a slide is removed. Remove first, look at the result, then edit.`
+      );
+    }
+    return kept;
+  }
+
   // ADD a slide. `insertAfter` is the slide number the new one goes after, so 0
   // puts it first and slides.length appends. Without this the tool could only
   // patch, so "add a slide after slide 5" was structurally impossible — and

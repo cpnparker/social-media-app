@@ -1077,6 +1077,35 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     try { applyEditSlide(deck, { insertAfter: 2, insertSlides: [] } as any); } catch (e: any) { emptyBatch = e.message; }
     assertEdit(emptyBatch.indexOf("empty") >= 0, "an empty batch is refused");
 
+    // REMOVING slides. The tool could add and change but not remove, so taking
+    // two invented closing slides out of a 34-slide conversion meant resending
+    // all 34 — the call that gets cut off. Found comparing a generated deck
+    // against the source it was converted from.
+    const six: any[] = Array.from({ length: 6 }, (_, i) => ({ layout: "content", title: `S${i + 1}`, body: "x" }));
+    const cut = applyEditSlide(six, { removeSlides: [5, 6] } as any);
+    assertEdit(cut.length === 4, `two slides removed (${cut.length})`);
+    assertEdit(cut.map((s: any) => s.title).join(",") === "S1,S2,S3,S4", "and the right two went");
+    assertEdit(six.length === 6, "without mutating the deck it was given");
+    // Numbers are 1-based against the deck ON SCREEN, so removing 1 and 3 must
+    // not take 1 and 4 — an off-by-one here deletes the wrong client slide.
+    const gap = applyEditSlide(six, { removeSlides: [1, 3] } as any);
+    assertEdit(gap.map((s: any) => s.title).join(",") === "S2,S4,S5,S6", `numbers are 1-based (${gap.map((s: any) => s.title).join(",")})`);
+
+    let badNum = "";
+    try { applyEditSlide(six, { removeSlides: [99] } as any); } catch (e: any) { badNum = e.message; }
+    assertEdit(/between 1 and 6/.test(badNum) && /Nothing has been removed/.test(badNum),
+      `an out-of-range number removes nothing and says so (${badNum.slice(0, 60)})`);
+    let all = "";
+    try { applyEditSlide(six, { removeSlides: [1, 2, 3, 4, 5, 6] } as any); } catch (e: any) { all = e.message; }
+    assertEdit(/every slide/.test(all), "and a deck cannot be emptied");
+    // Combining a removal with an insert renumbers under the model's feet.
+    let combo = "";
+    try { applyEditSlide(six, { removeSlides: [1], insertAfter: 2, insertSlides: [{ layout: "content", title: "n", body: "b" }] } as any); }
+    catch (e: any) { combo = e.message; }
+    assertEdit(/cannot be combined/.test(combo), "a removal and an insert in one call is refused");
+    assertEdit(/removeSlides: \{/.test(readFileSync(join(__dirname, "..", "lib/ai/providers.ts"), "utf8")),
+      "and the schema offers removeSlides, or the model cannot ask for it");
+
     // Patching an existing slide's payload, which is "change the table on
     // slide 14" without regenerating the deck.
     const patched = applyEditSlide(grown, { slideNumber: 3, table: { columns: ["A"], rows: [["1"]] } } as any);

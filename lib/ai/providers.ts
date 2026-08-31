@@ -1470,10 +1470,15 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         editSlide: {
           type: "object",
           description:
-            "Change ONE slide of the deck already in this conversation, or ADD one new slide, WITHOUT resending the others. USE THIS TO BUILD A LONG DECK: `slides` replaces the deck entirely, and a deck of thirty-plus slides is more than one call can emit before it is cut off, so start it with `slides` and append the rest a few at a time here. The server holds the current deck and touches only the slide you name, keeping every other slide (text, layout, images) exactly as it is. Do NOT also pass `slides` (send an empty array for it). TO CHANGE a slide ('change slide 3's picture', 'reword the title on slide 1') pass `slideNumber` (1-based) and the fields to change. TO ADD a slide ('add a slide after slide 5', 'put a new slide at the start') pass `insertAfter` — the number of the slide it goes AFTER, so 0 places it first — plus the new slide's `title`/`body`/`layout`. Pass one or the other, never both. If the edit cannot be applied you will get an error back: report it to the user and do NOT describe the change as done.",
+            "Change ONE slide of the deck already in this conversation, ADD new slides, or REMOVE slides, WITHOUT resending the others. USE THIS TO BUILD A LONG DECK: `slides` replaces the deck entirely, and a deck of thirty-plus slides is more than one call can emit before it is cut off, so start it with `slides` and append the rest a few at a time here. The server holds the current deck and touches only the slide you name, keeping every other slide (text, layout, images) exactly as it is. Do NOT also pass `slides` (send an empty array for it). TO CHANGE a slide ('change slide 3's picture', 'reword the title on slide 1') pass `slideNumber` (1-based) and the fields to change. TO ADD a slide ('add a slide after slide 5', 'put a new slide at the start') pass `insertAfter` — the number of the slide it goes AFTER, so 0 places it first — plus the new slide's `title`/`body`/`layout`. Pass one or the other, never both. If the edit cannot be applied you will get an error back: report it to the user and do NOT describe the change as done.",
           properties: {
             slideNumber: { type: "number", description: "CHANGE an existing slide: which one, 1-based. Omit when inserting." },
             insertAfter: { type: "number", description: "ADD slides after this slide number; 0 places them before the first. Omit when changing an existing slide." },
+            removeSlides: {
+              type: "array",
+              description: "DELETE slides, by their 1-based number in the deck the user is looking at now. Use this for 'drop slide 12', 'remove the last two slides', 'take out the closing'. Applied on its own — do not combine it with slideNumber or insertAfter in the same call, because the numbering shifts the moment a slide goes.",
+              items: { type: "number" },
+            },
             insertSlides: {
               type: "array",
               description: "ADD SEVERAL slides at once, in order, at `insertAfter`. Each entry is a full slide — the same shape as an entry in `slides`, with its own layout, title, body and payload. THIS IS HOW A LONG DECK IS BUILT: this tool is capped at three calls a turn, so one slide per call would take a dozen turns; build the first dozen with `slides`, then append the rest in one or two batches of about a dozen here. A batch that is too large is cut off exactly as a full deck would be, so keep each one to roughly twelve slides.",
@@ -4387,9 +4392,10 @@ export async function prepareSlidesForBuild(
   // instead — which was empty, so the deck was replaced with nothing. Folded in
   // rather than refused: the intent is unambiguous.
   const edit = input?.editSlide
-    || (input && (input.insertSlides || input.insertAfter != null || input.slideNumber != null)
+    || (input && (input.insertSlides || input.removeSlides || input.insertAfter != null || input.slideNumber != null)
       ? {
           slideNumber: input.slideNumber, insertAfter: input.insertAfter, insertSlides: input.insertSlides,
+          removeSlides: input.removeSlides,
           layout: input.layout, title: input.slideTitle, body: input.slideBody, imageQuery: input.imageQuery,
         }
       : null);
