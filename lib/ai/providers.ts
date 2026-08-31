@@ -4157,6 +4157,41 @@ async function buildOrUpdateSlides(
  *  Reported back to the model because a deck of text slides is the failure mode
  *  it falls into unprompted, and it cannot see its own output. A number it has
  *  to read is harder to ignore than an instruction it read once. */
+/**
+ * How many slides the source document has, when one is attached.
+ *
+ * The pptx reader emits "--- Slide N ---" per slide, so on a CONVERSION the
+ * server knows the number the deck is supposed to come out at. That is the
+ * only fact in this loop that can hold a preserve conversion to one-for-one:
+ * telling the model not to merge slides is advice, and it merged six Quick Win
+ * slides into one cards slide anyway. A count it is shown, against a count it
+ * produced, is checkable.
+ */
+export function sourceSlideCount(messages?: AIMessage[]): number {
+  if (!messages?.length) return 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    for (const att of messages[i].attachments || []) {
+      const text = (att as any).extractedText;
+      if (typeof text !== "string") continue;
+      const marks = text.match(/^--- Slide \d+ ---$/gm);
+      if (marks?.length) return marks.length;
+    }
+  }
+  return 0;
+}
+
+/** What the model is told when a conversion has come out a different length
+ *  from the document it is converting. */
+export function fidelityAudit(deckLength: number, sourceCount: number): string {
+  if (!sourceCount || deckLength === sourceCount) return "";
+  const verb = deckLength < sourceCount ? "FEWER" : "MORE";
+  return (
+    ` The source document has ${sourceCount} slides and this deck has ${deckLength} — ${verb} than the source. ` +
+    `The user asked to keep the content the same, so say plainly which source slides you merged, split or added, ` +
+    `and offer to put them back one-for-one. Do NOT describe the deck as a faithful copy of the original.`
+  );
+}
+
 function visualAudit(slides: any[], preserve = false): string {
   const visual = slides.filter((s) => isVisualSlide(s)).length;
   const share = slides.length ? Math.round((visual / slides.length) * 100) : 0;
@@ -8409,7 +8444,7 @@ async function streamAnthropic(
             toolResults.push({
               type: "tool_result",
               tool_use_id: tool.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, tool.input?.fidelity === "preserve")}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, tool.input?.fidelity === "preserve")}${tool.input?.fidelity === "preserve" ? fidelityAudit(draft.slides.length, sourceSlideCount(messages)) : ""}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             });
             continue;
           }
@@ -9694,7 +9729,7 @@ async function streamXAIChatCompletions(
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${input?.fidelity === "preserve" ? fidelityAudit(draft.slides.length, sourceSlideCount(messages)) : ""}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             } as any);
             continue;
           }
@@ -10736,7 +10771,7 @@ async function streamGemini(
             geminiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${input?.fidelity === "preserve" ? fidelityAudit(draft.slides.length, sourceSlideCount(messages)) : ""}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             } as any);
             continue;
           }
@@ -11666,7 +11701,7 @@ async function streamOpenAI(
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${input?.fidelity === "preserve" ? fidelityAudit(draft.slides.length, sourceSlideCount(messages)) : ""}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             } as any);
             continue;
           }

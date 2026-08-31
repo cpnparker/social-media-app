@@ -2586,6 +2586,42 @@ export const TABLE_MAX_ROWS = 12;
 export const TABLE_MIN_COL = 46;
 
 /**
+ * Share the width between columns, narrow ones first.
+ *
+ * NOT proportional shrinking, which is what shipped and what a real ten-row
+ * action table exposed: with two long prose columns beside "#" and "Effort",
+ * every column lost the same PERCENTAGE, so "2 hours" was drawn as "2 ho…"
+ * while the prose columns still had two hundred pixels each. A column of
+ * figures is either complete or useless; a column of prose reads fine with an
+ * ellipsis on the end.
+ *
+ * So: find the widest any column may be, and cap at that. Columns needing less
+ * than the cap keep exactly what they need; the ones above it share what is
+ * left equally. Max-min fair, which is the standard answer to this and is the
+ * one that protects the narrow columns.
+ */
+export function fitColumnWidths(natural: number[], available: number): number[] {
+  const total = natural.reduce((a, b) => a + b, 0);
+  if (!natural.length) return [];
+  if (total <= available) {
+    // Room to spare: give it to the columns that can use it, in proportion to
+    // what they already take, so prose gets the space and "DR" stays narrow.
+    const slack = available - total;
+    return natural.map((w) => w + (w / (total || 1)) * slack);
+  }
+  // Binary search the cap. 40 iterations is far past the precision a slide can
+  // draw and cannot loop: the interval halves every pass.
+  let lo = 0, hi = Math.max(...natural);
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    const sum = natural.reduce((a, w) => a + Math.min(w, mid), 0);
+    if (sum > available) hi = mid; else lo = mid;
+  }
+  const cap = Math.max(lo, TABLE_MIN_COL);
+  return natural.map((w) => Math.min(w, cap));
+}
+
+/**
  * Is this column numeric?
  *
  * Right-aligning figures is the whole reason this layout exists rather than
@@ -2655,27 +2691,18 @@ function tableRequests(
   // column now gets what its widest cell actually needs, and only the SLACK is
   // shared out; when there is no slack the wide columns give way first, because
   // a long label reads fine clipped and a number does not.
+  // What each column needs for its own widest cell. The Slides text inset is
+  // the padding, so nothing is subtracted here: taking a margin off the box AND
+  // letting fitCell subtract the inset again charged every column twice, which
+  // is how an "Effort" column of "1 week" and "2 hours" came out as "1 we…".
   const natural = columns.map((c, j) => {
     let cells = 0;
     for (const r of rows) cells = Math.max(cells, r[j].length);
     const headW = c.length * TYPE.cellHead.size * PER_CHAR;
     const cellW = cells * TYPE.cellText.size * PER_CHAR;
-    return Math.max(TABLE_MIN_COL, Math.min(GRID.contentWidth * 0.45, Math.max(headW, cellW) + 14));
+    return Math.max(TABLE_MIN_COL, Math.max(headW, cellW) + TEXT_INSET_X);
   });
-  const naturalTotal = natural.reduce((a, b) => a + b, 0) || 1;
-  let widths: number[];
-  if (naturalTotal <= GRID.contentWidth) {
-    // Slack goes to the columns that can use it, in proportion to what they
-    // already take, so a text column gets the room and "DR" stays narrow.
-    const slack = GRID.contentWidth - naturalTotal;
-    widths = natural.map((w) => w + (w / naturalTotal) * slack);
-  } else {
-    // Over budget: take it off the columns above the floor, proportionally.
-    const floorTotal = natural.length * TABLE_MIN_COL;
-    const shrinkable = Math.max(1, naturalTotal - floorTotal);
-    const over = naturalTotal - GRID.contentWidth;
-    widths = natural.map((w) => Math.max(TABLE_MIN_COL, w - ((w - TABLE_MIN_COL) / shrinkable) * over));
-  }
+  const widths = fitColumnWidths(natural, GRID.contentWidth);
   const xs: number[] = [];
   let acc = GRID.margin;
   for (const w of widths) { xs.push(acc); acc += w; }
@@ -2683,8 +2710,9 @@ function tableRequests(
   const aligns = columns.map((_, j) =>
     spec.align?.[j] || (isNumericColumn(rows.map((r) => r[j])) ? "right" : "left")
   );
-  const PAD = 6;
-  const inner = (j: number) => Math.max(10, widths[j] - PAD * 2);
+  // The Slides text box carries its own inset; there is no second margin.
+  const PAD = 0;
+  const inner = (j: number) => Math.max(10, widths[j]);
 
   // A HEADING MAY WRAP TO TWO LINES; a cell may not. The header block is then
   // sized to what the headings actually need, rather than to a constant that

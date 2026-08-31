@@ -13,12 +13,12 @@
 import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
-  niceTicks, isNumericColumn, fitCell,
+  niceTicks, isNumericColumn, fitCell, fitColumnWidths,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
 import { applyEditSlide, unrenderableSlides, PAYLOAD_FIELDS, insertableLayout } from "../lib/slides/edit";
-import { prepareSlidesForBuild } from "../lib/ai/providers";
+import { prepareSlidesForBuild, sourceSlideCount, fidelityAudit } from "../lib/ai/providers";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
@@ -934,6 +934,39 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       assertTable(drawn.indexOf(want) >= 0, `"${want}" is drawn in full`);
     }
 
+    // NARROW COLUMNS ARE PROTECTED, PROSE COLUMNS TAKE THE HIT. Shrinking every
+    // column by the same PERCENTAGE is what shipped, and a real ten-row action
+    // table exposed it: "2 hours" was drawn as "2 ho…" while the two prose
+    // columns still had two hundred pixels each. A column of figures is either
+    // complete or useless; prose reads fine with an ellipsis.
+    const action = [
+      ["1", "Publish llms.txt at the root", "Web team", "2 hours", "Makes the citable surface explicit to AI crawlers"],
+      ["3", "FAQ blocks with FAQPage schema on the four business pages", "Story Lab + web", "2 days", "Largest single AEO gain; targets People Also Ask"],
+      ["7", "Create the /ca/en/ tree, sitemap and hreflang", "Web team", "1 week", "Fixes the largest structural gap in the audit"],
+      ["10", "Stand up the measurement and tracking", "TC Digital + client", "1 day", "Without it there is no defensible before-and-after"],
+    ];
+    const dense = buildSlideRequests({ layout: "table", title: "The first 30 days",
+      table: { columns: ["#", "Action", "Owner", "Effort", "Expected outcome"], rows: action } } as SlideInput, 0, "n");
+    const denseCells = (dense as any[]).filter((r) => (r.insertText?.objectId || "").match(/_tc\d+_\d+$/)).map((r) => r.insertText.text as string);
+    assertTable(denseCells.length === 20, `precondition: the dense fixture drew all its cells (${denseCells.length})`);
+    // Column 3 is Effort. Every one of its values must survive whole.
+    const effort = denseCells.filter((_, i) => i % 5 === 3);
+    assertTable(effort.join("|") === "2 hours|2 days|1 week|1 day",
+      `a narrow column of values is never clipped (${effort.join("|")})`);
+    const shortCols = denseCells.filter((_, i) => i % 5 === 0 || i % 5 === 3);
+    assertTable(shortCols.every((t) => t.slice(-1) !== "\u2026"), "nor is the index column");
+    // And the prose columns are where the ellipsis lands, which is the trade.
+    assertTable(denseCells.some((t) => t.slice(-1) === "\u2026"), "precondition: this table genuinely does not fit, so something must be cut");
+
+    // The allocation itself, driven directly.
+    const w = fitColumnWidths([28, 294, 106, 52, 259], 637);
+    assertTable(Math.abs(w.reduce((a, b) => a + b, 0) - 637) < 1, `the widths add up to the space (${Math.round(w.reduce((a, b) => a + b, 0))})`);
+    assertTable(w[0] === 28 && w[3] === 52, `columns that fit keep exactly what they need (${w[0]}, ${w[3]})`);
+    assertTable(Math.abs(w[1] - w[4]) < 1, "and the ones that do not share what is left equally");
+    const roomy = fitColumnWidths([50, 60], 400);
+    assertTable(Math.abs(roomy.reduce((a, b) => a + b, 0) - 400) < 1, "spare room is given out, not left blank");
+    assertTable(roomy[1] > roomy[0], "in proportion, so the wider column stays wider");
+
     // A CELL IS ONE LINE. Left to wrap, a long label pushes its row into the
     // next one, which the overloaded fixture caught as an overlap.
     const long = "A first-column label that runs on and on well past the width of any column";
@@ -1201,6 +1234,33 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     const reported = (prov.match(/splitCount > 0 \?/g) || []).length;
     assertFid(reported === 4, `and every chain reports it to the model (${reported} of 4)`);
     assertFid(/TELL THE USER which ones/.test(prov), "naming which slides were split");
+
+    // A COUNT IS CHECKABLE, ADVICE IS NOT. Telling the model not to merge
+    // slides is advice, and it merged six Quick Win slides into one cards slide
+    // anyway. The pptx reader emits "--- Slide N ---" per slide, so on a
+    // conversion the server knows what the deck is supposed to come out at.
+    const src = sourceSlideCount([{ role: "user", content: "x", attachments: [
+      { url: "u", name: "d.pptx", type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        extractedText: "--- Slide 1 ---\nA\n\n--- Slide 2 ---\nB\n\n--- Slide 3 ---\nC" },
+    ] }] as any);
+    assertFid(src === 3, `the source slide count is read from the extracted text (${src})`);
+    assertFid(sourceSlideCount([]) === 0, "and is zero when nothing is attached, so nothing is claimed");
+    assertFid(sourceSlideCount([{ role: "user", content: "x", attachments: [
+      { url: "u", name: "d.txt", type: "text/plain", extractedText: "no slide markers here" } ] }] as any) === 0,
+      "and zero for a document that is not a deck");
+
+    assertFid(fidelityAudit(35, 35) === "", "a deck that matches its source says nothing");
+    assertFid(fidelityAudit(0, 0) === "", "and nothing is said when the source is unknown");
+    const short = fidelityAudit(32, 35);
+    assertFid(short.indexOf("35") >= 0 && short.indexOf("32") >= 0, `both counts are named (${short.slice(0, 60)})`);
+    assertFid(/FEWER/.test(short), "and which way it went");
+    assertFid(/merged, split or added/.test(short), "with what to say about it");
+    assertFid(/Do NOT describe the deck as a faithful copy/.test(short),
+      "and it is forbidden from calling a shortened deck faithful");
+    assertFid(/MORE/.test(fidelityAudit(38, 35)), "a deck longer than its source is caught too");
+
+    const audited = (prov.match(/fidelityAudit\(draft\.slides\.length, sourceSlideCount\(messages\)\)/g) || []).length;
+    assertFid(audited === 4, `all four chains run the fidelity audit (${audited} of 4)`);
   }
   if (failures === before20f) pass("a preserve conversion is not told to restructure, all four chains pass the flag, and server-side splits are declared");
 
