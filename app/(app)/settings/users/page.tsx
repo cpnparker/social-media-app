@@ -430,7 +430,7 @@ export default function UsersSettingsPage() {
   }
 
   return (
-    <div className="space-y-3 max-w-3xl">
+    <div className="space-y-3 max-w-5xl">
       {/* ── Action bar: search + add user ── */}
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
@@ -565,12 +565,14 @@ export default function UsersSettingsPage() {
                   <div
                     key={member.id}
                     className={cn(
-                      "group flex items-center gap-3 p-3 transition-colors",
+                      "group flex flex-col gap-2 p-3 transition-colors",
                       isSelected
                         ? "bg-primary/5"
                         : "hover:bg-muted/30"
                     )}
                   >
+                    {/* Top line: identity on the left, role on the right */}
+                    <div className="flex items-center gap-3">
                     {/* Checkbox */}
                     <button
                       onClick={() => toggleSelect(member.id)}
@@ -635,7 +637,7 @@ export default function UsersSettingsPage() {
                     </div>
 
                     {/* Role + User Type + Access */}
-                    <div className="flex flex-col items-end gap-1.5 shrink-0">
+                    <div className="flex items-center gap-1.5 shrink-0">
                       <div className="flex items-center gap-1.5">
                         {/* Workspace role */}
                         <select
@@ -673,29 +675,6 @@ export default function UsersSettingsPage() {
                         })()}
                       </div>
 
-                      {/* Area access pills */}
-                      <div className="flex flex-wrap gap-1">
-                        {accessFields.map(({ key, label }) => (
-                          <button
-                            key={key}
-                            onClick={() =>
-                              handleUpdateAccess(
-                                member.id,
-                                key,
-                                !member[key]
-                              )
-                            }
-                            className={cn(
-                              "text-[10px] font-medium px-1.5 py-0.5 rounded transition-colors",
-                              member[key]
-                                ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                                : "bg-muted text-muted-foreground/40"
-                            )}
-                          >
-                            {label}
-                          </button>
-                        ))}
-                      </div>
                     </div>
 
                     {/* Remove button */}
@@ -705,6 +684,32 @@ export default function UsersSettingsPage() {
                     >
                       <X className="h-3.5 w-3.5" />
                     </button>
+                    </div>
+
+                    {/* Area access pills — their own row: as a shrink-0 flex
+                        sibling their intrinsic width crushed the name column */}
+                    <div className="flex flex-wrap gap-1 pl-[4.75rem]">
+                      {accessFields.map(({ key, label }) => (
+                        <button
+                          key={key}
+                          onClick={() =>
+                            handleUpdateAccess(
+                              member.id,
+                              key,
+                              !member[key]
+                            )
+                          }
+                          className={cn(
+                            "text-[10px] font-medium px-1.5 py-0.5 rounded transition-colors",
+                            member[key]
+                              ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                              : "bg-muted text-muted-foreground/40"
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 );
               })}
