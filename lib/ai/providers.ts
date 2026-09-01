@@ -9,7 +9,7 @@ import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
 import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings } from "@/lib/slides/generate";
-import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, stallOutcome, type ToolUsage } from "@/lib/ai/tool-loop-guard";
+import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, stallOutcome, slidesWritten, type ToolUsage } from "@/lib/ai/tool-loop-guard";
 import { toPreviewModel } from "@/lib/slides/preview-model";
 import { signedMediaUrl } from "@/lib/media/signed";
 import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
@@ -7912,6 +7912,8 @@ async function streamAnthropic(
   /** The tool that was mid-stream when the guard fired, so the notice can name
    *  it. Empty when the stall landed between blocks. */
   let stalledTool = "";
+  /** High-water mark for the slide counter, so progress only ever ticks up. */
+  let lastSlidesWritten = 0;
   // No-progress guard (mirrors the xAI loop): stop the model re-calling the
   // same tool with no progress, which produces a wall of repeated text.
   const toolLoopGuard = createToolLoopGuard();
@@ -8029,6 +8031,16 @@ async function streamAnthropic(
         (event.delta as any).type === "input_json_delta"
       ) {
         currentToolInput += (event.delta as any).partial_json || "";
+        // A deck takes a minute to write out and used to look exactly like a
+        // stall while it did. Stream the slide count as it grows; the client
+        // shows "slide 14" ticking instead of a static pulse.
+        if (currentToolName === "generate_slides") {
+          const n = slidesWritten(currentToolInput);
+          if (n > lastSlidesWritten) {
+            lastSlidesWritten = n;
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ slides_progress: { writing: n } })}\n\n`));
+          }
+        }
       }
 
       // Tool use block completed — save it
@@ -9487,6 +9499,13 @@ async function streamXAIChatCompletions(
           if (tc.id) existing.id = tc.id;
           if (tc.function?.name) existing.name = tc.function.name;
           if (tc.function?.arguments) existing.arguments += tc.function.arguments;
+          if (existing.name === "generate_slides" && tc.function?.arguments) {
+            const n = slidesWritten(existing.arguments);
+            if (n > ((existing as any)._slidesWritten || 0)) {
+              (existing as any)._slidesWritten = n;
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ slides_progress: { writing: n } })}\n\n`));
+            }
+          }
 
           // Emit generating_image indicator when we first detect the tool
           if (existing.name === "generate_image" && tc.function?.name) {
@@ -10536,6 +10555,13 @@ async function streamGemini(
           if (tc.id) existing.id = tc.id;
           if (tc.function?.name) existing.name = tc.function.name;
           if (tc.function?.arguments) existing.arguments += tc.function.arguments;
+          if (existing.name === "generate_slides" && tc.function?.arguments) {
+            const n = slidesWritten(existing.arguments);
+            if (n > ((existing as any)._slidesWritten || 0)) {
+              (existing as any)._slidesWritten = n;
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ slides_progress: { writing: n } })}\n\n`));
+            }
+          }
 
           if (existing.name === "generate_image" && tc.function?.name) {
             controller.enqueue(
@@ -11468,6 +11494,13 @@ async function streamOpenAI(
           if (tc.id) existing.id = tc.id;
           if (tc.function?.name) existing.name = tc.function.name;
           if (tc.function?.arguments) existing.arguments += tc.function.arguments;
+          if (existing.name === "generate_slides" && tc.function?.arguments) {
+            const n = slidesWritten(existing.arguments);
+            if (n > ((existing as any)._slidesWritten || 0)) {
+              (existing as any)._slidesWritten = n;
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ slides_progress: { writing: n } })}\n\n`));
+            }
+          }
 
           // Emit generating_image indicator when we first detect the tool
           if (existing.name === "generate_image" && tc.function?.name) {

@@ -65,7 +65,7 @@ import {
 } from "../lib/ai/spreadsheet-text";
 import { rtfToText } from "../lib/ai/rtf-text";
 import { deckToText, slideXmlToText, tableToLines, PPTX_TABLE_MAX_ROWS } from "../lib/ai/pptx-text";
-import { stallOutcome } from "../lib/ai/tool-loop-guard";
+import { stallOutcome, slidesWritten } from "../lib/ai/tool-loop-guard";
 import { TRUNCATION_MARKER } from "../lib/ai/truncation";
 import {
   ALLOWED_UPLOAD_TYPES,
@@ -479,6 +479,34 @@ console.log("\n7c. A cut-off turn admits it");
   assert(!!anon.append && (anon.append || "").indexOf("A tool call") >= 0,
     "a stall between tool blocks still produces a notice, without inventing a tool name");
   assert((anon.append || "").indexOf("undefined") < 0, "and never prints undefined at the user");
+}
+
+// ── 7d. A minute-long deck build shows movement ────────────────────────────
+//
+// The client showed one static "Generating presentation…" line for the whole
+// write-out, indistinguishable from a stall — and this session has real
+// stalls, so the distinction matters. The slide count is derived from the
+// PARTIAL tool JSON as it streams, which is why the counter has to be robust
+// to a string that ends mid-token.
+console.log("\n7d. Deck progress");
+{
+  assert(slidesWritten("") === 0, "no input, no count");
+  assert(slidesWritten('{"title":"Deck","slides":[{"layout"') === 1,
+    "a slide is counted the moment its layout key streams in, even mid-token");
+  const three = '{"slides":[{"layout":"cover"},{"layout":"table","table":{"rows":[["a","b"]]}},{"layout":"stat","stats":[{"value":"71","label":"DR"}]}';
+  assert(slidesWritten(three) === 3, `payload keys inside a slide are not counted as slides (${slidesWritten(three)})`);
+  const inserts = '{"editSlide":{"insertAfter":12,"insertSlides":[{"layout":"content"},{"layout"';
+  assert(slidesWritten(inserts) === 2, "an append batch counts the same way");
+  // Wired into all four chains, or a deck built on Grok pulses while one on
+  // Claude ticks — the drift this repo keeps paying for.
+  const prov = readFileSync(join(root, "lib/ai/providers.ts"), "utf8");
+  const wired = (prov.match(/slides_progress: \{ writing: n \}/g) || []).length;
+  assert(wired === 4, `all four provider chains stream the counter (${wired} of 4)`);
+  const client = readFileSync(join(root, "components/ai-writer/ChatPanel.tsx"), "utf8");
+  assert(/parsed\.slides_progress/.test(client), "and the client listens for it");
+  assert(/Writing the deck… slide /.test(client), "and shows the count, not a pulse");
+  assert((client.match(/setSlidesProgress\(null\)/g) || []).length >= 8,
+    "and resets the counter everywhere the build indicator drops, so a stale count cannot survive into the next turn");
 }
 
 // ── Self-test ──────────────────────────────────────────────────────────────

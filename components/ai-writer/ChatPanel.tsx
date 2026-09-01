@@ -144,6 +144,10 @@ export default function ChatPanel({
   const [isSearchingWeb, setIsSearchingWeb] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isGeneratingDocument, setIsGeneratingDocument] = useState(false);
+  // How far a deck build has got: the server streams the slide count while the
+  // model writes the deck out, so a minute-long build shows movement instead of
+  // a static pulse a user cannot tell from a stall.
+  const [slidesProgress, setSlidesProgress] = useState<number | null>(null);
   // A slide request that failed on the Google connection rather than on the
   // deck. Held in state (not a toast) because it carries the only action that
   // fixes it, and a toast the user misses leaves them stuck.
@@ -825,8 +829,14 @@ export default function ChatPanel({
               toast.error(`Image generation failed: ${parsed.image_error}`);
             } else if (parsed.generating_document) {
               setIsGeneratingDocument(true);
+            } else if (parsed.slides_progress) {
+              setIsGeneratingDocument(true);
+              if (typeof parsed.slides_progress.writing === "number") {
+                setSlidesProgress(parsed.slides_progress.writing);
+              }
             } else if (parsed.document_ready) {
               setIsGeneratingDocument(false);
+              setSlidesProgress(null);
               const docUrl = parsed.document_ready.url;
               const docName = parsed.document_ready.filename;
               if (docUrl) {
@@ -835,6 +845,7 @@ export default function ChatPanel({
               }
             } else if (parsed.document_error) {
               setIsGeneratingDocument(false);
+              setSlidesProgress(null);
               toast.error(`Document generation failed: ${parsed.document_error}`);
             } else if (parsed.page_audit) {
               setAuditCard(parsed.page_audit as PageAuditData);
@@ -845,6 +856,7 @@ export default function ChatPanel({
               setScoreCardMessageId(assistantIdRef.current || null);
             } else if (parsed.slides_draft) {
               setIsGeneratingDocument(false);
+              setSlidesProgress(null);
               setSlidesReauth(null);
               // A new draft supersedes the last one; two previews of the same
               // deck on screen is the confusion this whole flow removes.
@@ -853,6 +865,7 @@ export default function ChatPanel({
               setSlidesDraftMessageId(assistantIdRef.current || null);
             } else if (parsed.slides_ready) {
               setIsGeneratingDocument(false);
+              setSlidesProgress(null);
               const deck = parsed.slides_ready;
               if (deck.url) {
                 setSlidesReauth(null);
@@ -869,6 +882,7 @@ export default function ChatPanel({
               }
             } else if (parsed.slides_reauth) {
               setIsGeneratingDocument(false);
+              setSlidesProgress(null);
               setSlidesReauth({
                 message: parsed.slides_reauth.message,
                 reason: parsed.slides_reauth.reason,
@@ -878,6 +892,7 @@ export default function ChatPanel({
               // crash — so the message is shown as-is rather than wrapped in
               // "generation failed", which would bury the action.
               setIsGeneratingDocument(false);
+              setSlidesProgress(null);
               toast.error(parsed.slides_error);
             } else if (parsed.querying_engine) {
               setIsQueryingEngine(true);
@@ -907,6 +922,7 @@ export default function ChatPanel({
               setIsSearchingWeb(false);
               setIsGeneratingImage(false);
               setIsGeneratingDocument(false);
+              setSlidesProgress(null);
               setIsQueryingEngine(false);
               setIsSearchingMemory(false);
               fullText += parsed.token;
@@ -1034,6 +1050,7 @@ export default function ChatPanel({
       setIsSearchingWeb(false);
       setIsGeneratingImage(false);
       setIsGeneratingDocument(false);
+              setSlidesProgress(null);
       setIsQueryingEngine(false);
       setIsSearchingMemory(false);
       setStreamingContent("");
@@ -1977,8 +1994,19 @@ export default function ChatPanel({
                 <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
                   <FileText className="h-3.5 w-3.5 text-muted-foreground animate-pulse" />
                 </div>
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <span className="animate-pulse">Generating presentation…</span>
+                <div className="flex flex-col gap-1.5 text-sm text-muted-foreground min-w-0">
+                  <span className="animate-pulse">
+                    {slidesProgress !== null
+                      ? `Writing the deck… slide ${slidesProgress}`
+                      : "Generating presentation…"}
+                  </span>
+                  {slidesProgress !== null && (
+                    <span className="flex items-center gap-[3px]" aria-hidden>
+                      {Array.from({ length: Math.min(slidesProgress, 40) }).map((_, i) => (
+                        <span key={i} className="h-1.5 w-1.5 rounded-[2px] bg-primary/60" />
+                      ))}
+                    </span>
+                  )}
                 </div>
               </div>
             )}

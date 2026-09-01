@@ -124,6 +124,25 @@ export function stallOutcome(stalled: boolean, textSoFar: string, toolName?: str
   return { append: stallNotice(toolName), rethrow: false };
 }
 
+/**
+ * How many slides a streaming generate_slides call has written so far.
+ *
+ * A deck takes a minute or more to write out, and for all of it the client
+ * used to show one static "Generating presentation…" line — indistinguishable
+ * from a stall, which this session has real ones of. The partial JSON is
+ * counted as it accumulates and the count streamed to the client, so the user
+ * watches slide 14 become slide 15 instead of watching a pulse.
+ *
+ * `"layout"` keys are the proxy: one per slide in `slides` and in
+ * `insertSlides`, and never inside a payload (cards, stats and table rows have
+ * no layout field). A slide that omits layout undercounts by one, which is the
+ * right direction for a progress figure — it may only ever tick up.
+ */
+export function slidesWritten(partialJson: string): number {
+  if (!partialJson) return 0;
+  return (partialJson.match(/"layout"/g) || []).length;
+}
+
 export function overBudgetNotice(name: string): string {
   return `You have called ${name} too many times this turn. Stop calling it and answer now. IMPORTANT: report only what you actually retrieved — do NOT fill missing rows or columns with placeholders — no "[not retrieved]", "Not retrieved", "N/A", "TBC" or dashes standing in for figures you never fetched. If a whole column would be placeholders, drop that column and say why underneath the table instead of shipping a column of nothing. Say plainly which parts you could not fetch and why, and mention that many of these tools accept a comma-separated list (or "all") so the rest can be fetched in ONE call next time.`;
 }
