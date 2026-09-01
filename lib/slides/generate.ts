@@ -3868,7 +3868,11 @@ export type AttachmentSupplier = (
 export async function resolveDeckImages(
   slides: SlideInput[],
   generate?: ImageGenerator,
-  attachments?: AttachmentSupplier
+  attachments?: AttachmentSupplier,
+  /** Ticked once per slide whose picture had to be fetched or generated. The
+   *  execution phase used to be SILENT — a 27-slide deck with photographs sat
+   *  behind one static line for minutes and read as hung. */
+  onProgress?: (done: number, total: number) => void
 ): Promise<void> {
   // Normalise the layout name ONCE, here, because every build path goes through
   // this function. A slide asking for "title" or "bullets" — names the sibling
@@ -3896,8 +3900,15 @@ export async function resolveDeckImages(
     return { ...req, query: `${req.query}. ${deckStyle}` };
   };
 
+  const pending = slides.filter((sx) => sx.image && !sx.resolvedImage && !sx.imageUnavailable).length;
+  let done = 0;
+  const tick = () => { done++; try { onProgress?.(done, pending); } catch { /* progress must never break a build */ } };
+
   await Promise.all(
     slides.map(async (slide, slideIndex) => {
+      const counted = !!(slide.image && !slide.resolvedImage && !slide.imageUnavailable);
+      try {
+      await (async () => {
       // `imageUnavailable` means we already tried and could not find one. It
       // is checked as well as `resolvedImage` because publishing re-runs this
       // whole resolution: a slide that previewed as flat navy — because
@@ -4045,6 +4056,10 @@ export async function resolveDeckImages(
           console.warn(`[SlideImages] grid: ${slide.imagesDropped} of ${specs.length} images not found`);
         }
       }
+      })();
+      } finally {
+        if (counted) tick();
+      }
     })
   );
 
@@ -4074,7 +4089,8 @@ export async function updateSlides(
   slides: SlideInput[],
   userEmail: string,
   generateImageFn?: ImageGenerator,
-  attachments?: AttachmentSupplier
+  attachments?: AttachmentSupplier,
+  onImageProgress?: (done: number, total: number) => void
 ): Promise<SlidesResult> {
   const auth = await getUserGoogleToken(userEmail);
   if (!auth.ok || !auth.accessToken) {
@@ -4099,7 +4115,7 @@ export async function updateSlides(
 
   slides = splitOverflowingSlides(slides);
   refreshDeckImageUrls(slides);
-  await resolveDeckImages(slides, generateImageFn, attachments);
+  await resolveDeckImages(slides, generateImageFn, attachments, onImageProgress);
 
   const run = runId();
   const requests: Req[] = slides.flatMap((slide, i) => buildSlideRequests(slide, i, run));
@@ -4141,7 +4157,8 @@ export async function generateSlides(
   slides: SlideInput[],
   userEmail: string,
   generateImageFn?: ImageGenerator,
-  attachments?: AttachmentSupplier
+  attachments?: AttachmentSupplier,
+  onImageProgress?: (done: number, total: number) => void
 ): Promise<SlidesResult> {
   if (!userEmail) return { ok: false, error: "No signed-in user to create the deck for." };
   if (!slides?.length) return { ok: false, error: "No slides to build." };
@@ -4173,7 +4190,7 @@ export async function generateSlides(
 
   slides = splitOverflowingSlides(slides);
   refreshDeckImageUrls(slides);
-  await resolveDeckImages(slides, generateImageFn, attachments);
+  await resolveDeckImages(slides, generateImageFn, attachments, onImageProgress);
 
   const run = runId();
   const requests: Req[] = slides.flatMap((slide, i) => buildSlideRequests(slide, i, run));

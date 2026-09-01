@@ -1474,7 +1474,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         presentationId: {
           type: "string",
           description:
-            "The id of a deck ALREADY created in Drive in this conversation. Pass it so a further change edits that file in place, keeping the user's link, comments and history. Omit while the deck is still only a preview.",
+            "IGNORED, kept only so old calls do not error. A deck created in Drive is the USER'S file and is never touched again: they may have hand-edited it. Changes continue on the draft in this conversation, and publishing again creates a NEW file. Never tell the user an existing Drive deck was updated.",
         },
         editSlide: {
           type: "object",
@@ -4148,7 +4148,8 @@ async function buildOrUpdateSlides(
   slides: any[],
   userEmail: string,
   presentationId?: string,
-  messages?: AIMessage[]
+  messages?: AIMessage[],
+  onImageProgress?: (done: number, total: number) => void
 ): Promise<Awaited<ReturnType<typeof generateSlides>> & { fellBack?: boolean }> {
   // Photographs the deck cannot find are generated with the same pipeline the
   // chat uses. Passed in rather than imported by lib/slides, which would close
@@ -4157,14 +4158,15 @@ async function buildOrUpdateSlides(
     generateImage(prompt, "1792x1024", "openai", undefined, undefined, "public");
   const attach = messages ? attachmentSupplierFor(messages) : undefined;
 
-  if (presentationId) {
-    const updated = await updateSlides(presentationId, title, slides, userEmail, imageGen, attach);
-    if (updated.ok || !updated.notFound) return updated;
-    console.warn(`[Slides] ${presentationId} not updatable — creating a new deck`);
-    const created = await generateSlides(title, slides, userEmail, imageGen, attach);
-    return { ...created, fellBack: true };
-  }
-  return generateSlides(title, slides, userEmail, imageGen, attach);
+  // THE IN-PLACE UPDATE IS GONE, on purpose and not gated. A deck created in
+  // Drive is the user's file: they open it, hand-edit it, present from it —
+  // and the update path silently REPLACED every slide of a deck Chris had
+  // already reworked by hand. His work was gone. Edits in chat continue on the
+  // draft; publishing again creates a NEW file, every time. prepareSlidesForBuild
+  // strips presentationId as well, so this parameter should always arrive
+  // undefined; ignoring it here is the second lock on the same door.
+  void presentationId;
+  return generateSlides(title, slides, userEmail, imageGen, attach, onImageProgress);
 }
 
 /** How much of a deck is actually visual.
@@ -4268,7 +4270,10 @@ function attachmentSupplierFor(messages: AIMessage[]) {
   };
 }
 
-async function buildSlidesDraft(title: string, rawSlides: any[], messages?: AIMessage[]) {
+async function buildSlidesDraft(
+  title: string, rawSlides: any[], messages?: AIMessage[],
+  onImageProgress?: (done: number, total: number) => void
+) {
   // Split BEFORE anything else, so the preview shows the deck that will be
   // built rather than one slide fewer.
   const slides = splitOverflowingSlides(rawSlides);
@@ -4281,6 +4286,7 @@ async function buildSlidesDraft(title: string, rawSlides: any[], messages?: AIMe
     slides,
     (prompt: string) => generateImage(prompt, "1792x1024", "openai", undefined, undefined, "public"),
     messages ? attachmentSupplierFor(messages) : undefined,
+    onImageProgress,
   );
   return {
     title,
@@ -4425,16 +4431,23 @@ export async function prepareSlidesForBuild(
     const out = {
       title: deck.title,
       slides: guard(applyEditSlide(deck.slides, edit)),
-      presentationId: input.presentationId || deck.presentationId,
+      // NO presentationId, EVER. A published deck is the user's file — they
+      // hand-edit it — and the in-place update replaced every slide of one
+      // Chris had already edited. Edits continue on the DRAFT; publishing
+      // again creates a new file. Removed, not gated.
+      presentationId: undefined,
       edited: true,
     };
     rememberDeck(conversationId, out);
     return out;
   }
   const built = {
-    title: input?.title || "Presentation",
+    // A deck is named for what it is about: "Presentation" as a Drive filename
+    // is how a folder fills with files nobody can tell apart. The cover
+    // slide's own title stands in before the generic word does.
+    title: input?.title || String((input?.slides || [])[0]?.title || "").trim() || "Presentation",
     slides: guard(input?.slides || []),
-    presentationId: input?.presentationId,
+    presentationId: undefined,
     edited: false,
   };
   rememberDeck(conversationId, built);
@@ -8456,15 +8469,18 @@ async function streamAnthropic(
           // A single-slide edit (editSlide) is patched onto the stored deck
           // server-side, so the model never resends every slide. Otherwise the
           // model's full slides array is used, as before.
+          // The execution phase used to be silent for minutes — image generation and
+          // the Drive write emitted nothing, and a working build read as a hang.
+          const onDeckImage = (done: number, total: number) => { try { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ slides_progress: { images: { done, total } } })}\n\n`)); } catch { /* stream may be gone */ } };
           const prepared = await prepareSlidesForBuild(tool.input, config.conversationId);
           const deckTitle = prepared.title;
           const deckSlides = prepared.slides;
           const deckPresId = prepared.presentationId;
 
           // Draft is the default. A file appears only when a person asked for
-          // one; an editSlide on a deck already in Drive updates it in place.
+          // one. A deck already in Drive is never updated — it is the user's.
           if (!tool.input.publish && !deckPresId) {
-            const draft = await buildSlidesDraft(deckTitle, deckSlides, messages);
+            const draft = await buildSlidesDraft(deckTitle, deckSlides, messages, onDeckImage);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
@@ -8482,7 +8498,8 @@ async function streamAnthropic(
             deckSlides,
             config.userEmail || "",
             deckPresId,
-            messages
+            messages,
+            onDeckImage
           );
 
           if (!result.ok) {
@@ -9748,15 +9765,18 @@ async function streamXAIChatCompletions(
           const input = JSON.parse(tc.function.arguments);
           // A single-slide edit (editSlide) is patched onto the stored deck
           // server-side, so the model never resends every slide.
+          // The execution phase used to be silent for minutes — image generation and
+          // the Drive write emitted nothing, and a working build read as a hang.
+          const onDeckImage = (done: number, total: number) => { try { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ slides_progress: { images: { done, total } } })}\n\n`)); } catch { /* stream may be gone */ } };
           const prepared = await prepareSlidesForBuild(input, config.conversationId);
           const deckTitle = prepared.title;
           const deckSlides = prepared.slides;
           const deckPresId = prepared.presentationId;
 
           // Draft is the default; an editSlide on a deck already in Drive
-          // updates it in place.
+          // is never touched again: it is the user's file.
           if (!input.publish && !deckPresId) {
-            const draft = await buildSlidesDraft(deckTitle, deckSlides, messages);
+            const draft = await buildSlidesDraft(deckTitle, deckSlides, messages, onDeckImage);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
@@ -9774,7 +9794,8 @@ async function streamXAIChatCompletions(
             deckSlides,
             config.userEmail || "",
             deckPresId,
-            messages
+            messages,
+            onDeckImage
           );
 
           if (!result.ok) {
@@ -10797,15 +10818,18 @@ async function streamGemini(
           const input = JSON.parse(tc.function.arguments);
           // A single-slide edit (editSlide) is patched onto the stored deck
           // server-side, so the model never resends every slide.
+          // The execution phase used to be silent for minutes — image generation and
+          // the Drive write emitted nothing, and a working build read as a hang.
+          const onDeckImage = (done: number, total: number) => { try { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ slides_progress: { images: { done, total } } })}\n\n`)); } catch { /* stream may be gone */ } };
           const prepared = await prepareSlidesForBuild(input, config.conversationId);
           const deckTitle = prepared.title;
           const deckSlides = prepared.slides;
           const deckPresId = prepared.presentationId;
 
           // Draft is the default; an editSlide on a deck already in Drive
-          // updates it in place.
+          // is never touched again: it is the user's file.
           if (!input.publish && !deckPresId) {
-            const draft = await buildSlidesDraft(deckTitle, deckSlides, messages);
+            const draft = await buildSlidesDraft(deckTitle, deckSlides, messages, onDeckImage);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
@@ -10823,7 +10847,8 @@ async function streamGemini(
             deckSlides,
             config.userEmail || "",
             deckPresId,
-            messages
+            messages,
+            onDeckImage
           );
 
           if (!result.ok) {
@@ -11734,15 +11759,18 @@ async function streamOpenAI(
           const input = JSON.parse(tc.function.arguments);
           // A single-slide edit (editSlide) is patched onto the stored deck
           // server-side, so the model never resends every slide.
+          // The execution phase used to be silent for minutes — image generation and
+          // the Drive write emitted nothing, and a working build read as a hang.
+          const onDeckImage = (done: number, total: number) => { try { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ slides_progress: { images: { done, total } } })}\n\n`)); } catch { /* stream may be gone */ } };
           const prepared = await prepareSlidesForBuild(input, config.conversationId);
           const deckTitle = prepared.title;
           const deckSlides = prepared.slides;
           const deckPresId = prepared.presentationId;
 
           // Draft is the default; an editSlide on a deck already in Drive
-          // updates it in place.
+          // is never touched again: it is the user's file.
           if (!input.publish && !deckPresId) {
-            const draft = await buildSlidesDraft(deckTitle, deckSlides, messages);
+            const draft = await buildSlidesDraft(deckTitle, deckSlides, messages, onDeckImage);
             config.onSlidesDraft?.(draft);
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
@@ -11760,7 +11788,8 @@ async function streamOpenAI(
             deckSlides,
             config.userEmail || "",
             deckPresId,
-            messages
+            messages,
+            onDeckImage
           );
 
           if (!result.ok) {

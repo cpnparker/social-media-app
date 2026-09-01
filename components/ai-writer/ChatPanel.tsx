@@ -147,7 +147,7 @@ export default function ChatPanel({
   // How far a deck build has got: the server streams the slide count while the
   // model writes the deck out, so a minute-long build shows movement instead of
   // a static pulse a user cannot tell from a stall.
-  const [slidesProgress, setSlidesProgress] = useState<number | null>(null);
+  const [slidesProgress, setSlidesProgress] = useState<{ writing?: number; images?: { done: number; total: number } } | null>(null);
   // A slide request that failed on the Google connection rather than on the
   // deck. Held in state (not a toast) because it carries the only action that
   // fixes it, and a toast the user misses leaves them stuck.
@@ -171,6 +171,7 @@ export default function ChatPanel({
   slidesDraftRef.current = slidesDraft;
   const [slidesDraftMessageId, setSlidesDraftMessageId] = useState<string | null>(null);
   const [slidesZoom, setSlidesZoom] = useState<number | null>(null);
+  const [slidesFixText, setSlidesFixText] = useState("");
   const previewRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const draftSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Warn once per thread, not once per keystroke. */
@@ -831,9 +832,12 @@ export default function ChatPanel({
               setIsGeneratingDocument(true);
             } else if (parsed.slides_progress) {
               setIsGeneratingDocument(true);
-              if (typeof parsed.slides_progress.writing === "number") {
-                setSlidesProgress(parsed.slides_progress.writing);
-              }
+              const sp = parsed.slides_progress;
+              setSlidesProgress((prev) => ({
+                ...(prev || {}),
+                ...(typeof sp.writing === "number" ? { writing: sp.writing } : {}),
+                ...(sp.images ? { images: sp.images } : {}),
+              }));
             } else if (parsed.document_ready) {
               setIsGeneratingDocument(false);
               setSlidesProgress(null);
@@ -1996,17 +2000,26 @@ export default function ChatPanel({
                 </div>
                 <div className="flex flex-col gap-1.5 text-sm text-muted-foreground min-w-0">
                   <span className="animate-pulse">
-                    {slidesProgress !== null
-                      ? `Writing the deck… slide ${slidesProgress}`
-                      : "Generating presentation…"}
+                    {slidesProgress?.images
+                      ? `Finding photographs… ${slidesProgress.images.done} of ${slidesProgress.images.total}`
+                      : slidesProgress?.writing !== undefined
+                        ? `Writing the deck… slide ${slidesProgress.writing}`
+                        : "Generating presentation…"}
                   </span>
-                  {slidesProgress !== null && (
+                  {slidesProgress?.images ? (
+                    <span className="h-1.5 w-40 rounded bg-foreground/[0.08] overflow-hidden" aria-hidden>
+                      <span
+                        className="block h-full bg-primary/60 transition-all"
+                        style={{ width: `${Math.round((slidesProgress.images.done / Math.max(1, slidesProgress.images.total)) * 100)}%` }}
+                      />
+                    </span>
+                  ) : slidesProgress?.writing !== undefined ? (
                     <span className="flex items-center gap-[3px]" aria-hidden>
-                      {Array.from({ length: Math.min(slidesProgress, 40) }).map((_, i) => (
+                      {Array.from({ length: Math.min(slidesProgress.writing, 40) }).map((_, i) => (
                         <span key={i} className="h-1.5 w-1.5 rounded-[2px] bg-primary/60" />
                       ))}
                     </span>
-                  )}
+                  ) : null}
                 </div>
               </div>
             )}
@@ -2110,7 +2123,10 @@ export default function ChatPanel({
                     </p>
                   )}
                   {slidesPreview.thumbnails.length > 0 && (
-                    <p className="text-xs text-muted-foreground mt-2.5">Click a slide to read it full size.</p>
+                    <p className="text-xs text-muted-foreground mt-2.5">
+                      Click a slide to read it full size, or to ask for a change. The file in Drive is yours —
+                      changes build a new deck rather than touching it.
+                    </p>
                   )}
                 </div>
               </div>
@@ -2121,6 +2137,27 @@ export default function ChatPanel({
                 count={slidesPreview.thumbnails.length}
                 onClose={() => setSlidesZoom(null)}
                 onIndex={setSlidesZoom}
+                footer={
+                  <form
+                    className="flex items-center gap-2 w-full max-w-xl"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const text = slidesFixText.trim();
+                      if (!text) return;
+                      sendSlideComment(slidesPreview.title, slidesZoom, undefined, text);
+                      setSlidesFixText("");
+                      setSlidesZoom(null);
+                    }}
+                  >
+                    <input
+                      value={slidesFixText}
+                      onChange={(e) => setSlidesFixText(e.target.value)}
+                      placeholder="Ask for a change to this slide — a new deck is built, the Drive file stays yours"
+                      className="flex-1 rounded-md border bg-background px-3 py-1.5 text-sm"
+                    />
+                    <Button type="submit" size="sm" disabled={!slidesFixText.trim()}>Send</Button>
+                  </form>
+                }
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img

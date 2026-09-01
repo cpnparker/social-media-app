@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { generateSlides, updateSlides, type SlideInput } from "@/lib/slides/generate";
+import { generateSlides, type SlideInput } from "@/lib/slides/generate";
 import { isReconnectable } from "@/lib/slides/reauth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { draftWriteAccess } from "@/lib/slides/message-access";
@@ -57,14 +57,12 @@ export async function POST(req: NextRequest) {
   // cannot tell us to: the case this covers is a response that never arrived —
   // the deck was created, the browser saw a timeout, and the user pressed the
   // button again. Trusting the client to send the id back means the one moment
-  // the id matters is the one moment nobody has it.
-  const existingId = body.presentationId || stored?.published?.presentationId;
-
-  // Publishing the same draft twice should edit the deck it already made, not
-  // leave a duplicate behind — the button is easy to press again.
-  const result = existingId
-    ? await updateSlides(existingId, title, slides, email)
-    : await generateSlides(title, slides, email);
+  // A deck in Drive is the USER'S file, never updated again. The old
+  // press-twice-edits-in-place convenience is exactly what destroyed a deck
+  // Chris had hand-edited: the "update" replaced every slide, and his manual
+  // work was gone. A second press now creates a second file, which is the
+  // recoverable mistake of the two.
+  const result = await generateSlides(title, slides, email);
 
   if (!result.ok) {
     return NextResponse.json(

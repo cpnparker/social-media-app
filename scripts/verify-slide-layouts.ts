@@ -1490,6 +1490,63 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   }
   if (failures === before20h) pass("the panel draws inside its card with drops declared, and the PDF is the escaped preview at 960x540");
 
+  /* 20i. A published deck is the user's file, and a deck gets a real name. */
+  //
+  // Chris hand-edited a deck EngineAI had created in Drive; a later chat turn
+  // ran the in-place update and REPLACED every slide. His work was gone. The
+  // policy is absolute now: once created, a Drive deck is never written again —
+  // edits continue on the draft, publishing again creates a new file. Two locks:
+  // prepareSlidesForBuild strips every presentationId, and buildOrUpdateSlides
+  // ignores the parameter outright.
+  const before20i = failures;
+  console.log(`\n20i. Drive decks are never touched again, and get real names`);
+  {
+    const assertI = (ok: boolean, m: string) => { if (!ok) fail(m); };
+    const conv = `verify-pub-${process.pid}`;
+    // Build a deck, as a turn would, with the model TRYING to pass an id.
+    const built = await prepareSlidesForBuild(
+      { title: "", presentationId: "someones-drive-file", slides: [{ layout: "cover", title: "Finance Update 2026" }, { layout: "content", title: "Two", body: "x" }] },
+      conv
+    );
+    assertI(built.presentationId === undefined, "a model-supplied presentationId is stripped on a full build");
+    // And on the edit path, where the stored deck may carry a published id.
+    const edited = await prepareSlidesForBuild(
+      { slides: [], editSlide: { insertAfter: 2, insertSlides: [{ layout: "content", title: "Three", body: "y" }] }, presentationId: "someones-drive-file" },
+      conv
+    );
+    assertI(edited.presentationId === undefined, "and on an edit, even when the stored deck was published");
+    assertI(edited.slides.length === 3, "while the edit itself still lands");
+    // The publish button route must have no update path left at all.
+    const pubRoute = readFileSync(join(__dirname, "..", "app/api/slides/publish/route.ts"), "utf8");
+    assertI(pubRoute.indexOf("updateSlides") < 0, "the publish route cannot update a Drive file");
+    const prov2 = readFileSync(join(__dirname, "..", "lib/ai/providers.ts"), "utf8");
+    assertI(/void presentationId;/.test(prov2), "buildOrUpdateSlides ignores the id outright — the second lock");
+    assertI(!/await updateSlides\(/.test(prov2), "and no chat path calls updateSlides at all");
+
+    // THE NAME. "Presentation" as a Drive filename is how a folder fills with
+    // files nobody can tell apart. The cover's own title stands in.
+    assertI(built.title === "Finance Update 2026", `an untitled deck takes its cover title (${built.title})`);
+    const named = await prepareSlidesForBuild({ title: "Q3 Review", slides: [{ layout: "cover", title: "Other" }] }, `${conv}-b`);
+    assertI(named.title === "Q3 Review", "a given title still wins");
+    const bare = await prepareSlidesForBuild({ slides: [{ layout: "content", body: "x", title: "" }, { layout: "content", title: "Real", body: "y" }] }, `${conv}-c`);
+    assertI(bare.title === "Presentation", "and the generic word only when there is truly nothing to name it by");
+
+    // EXECUTION-PHASE PROGRESS: the image resolver ticks, so the minutes-long
+    // photo phase cannot read as a hang.
+    const ticks: [number, number][] = [];
+    await resolveDeckImages(
+      [{ layout: "content", title: "T", body: "x", image: { url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" } } as SlideInput,
+       { layout: "content", title: "U", body: "y" } as SlideInput],
+      undefined, undefined,
+      (done, total) => ticks.push([done, total])
+    );
+    assertI(ticks.length >= 1, `the resolver reports progress (${ticks.length} ticks)`);
+    assertI(ticks.every(([, t]) => t === 1), `against the real pending count, not the slide count (${JSON.stringify(ticks)})`);
+    const wired2 = (prov2.match(/slides_progress: \{ images: \{ done, total \} \}/g) || []).length;
+    assertI(wired2 === 4, `all four chains stream image progress (${wired2} of 4)`);
+  }
+  if (failures === before20i) pass("no path can write into a Drive deck, decks take their cover's name, and the photo phase reports progress");
+
   /* 21. The analysis formats draw their structure. */
   const before21 = failures;
   console.log(`\n21. SWOT, matrix and comparison draw their parts`);
