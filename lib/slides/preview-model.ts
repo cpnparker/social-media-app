@@ -62,6 +62,8 @@ export interface PreviewElement {
    *  as a flag on the box: underlining the whole box would be a different kind
    *  of wrong from not underlining it at all. */
   links?: { start: number; end: number; url: string }[];
+  /** The accent phrase's ranges: italic, and lime on dark grounds. */
+  accents?: { start: number; end: number; italic?: boolean; color?: string }[];
   /** Points of space after each paragraph, and the line-spacing percentage.
    *  Both are set on every text box in the deck; dropping them made a body of
    *  bullets render tighter here than it does in Slides, which is how a block
@@ -220,6 +222,20 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
         // draws a box in one style, so a style covering three words of it
         // cannot be represented and must not be allowed to redefine the box.
         if (body.textRange?.type === "FIXED_RANGE") {
+          // The accent phrase: an italic (and on dark grounds lime) run inside
+          // a headline. Kept as a RANGE like links are, because the deck will
+          // draw those words differently and a preview that draws them plain is
+          // a preview of a slide the user is not going to get.
+          const st0 = body.style || {};
+          if (!st0.link && (st0.italic || st0.foregroundColor) && typeof body.textRange.startIndex === "number") {
+            (el.accents ||= []).push({
+              start: body.textRange.startIndex,
+              end: body.textRange.endIndex,
+              italic: !!st0.italic,
+              color: st0.foregroundColor?.opaqueColor?.rgbColor ? hex(st0.foregroundColor.opaqueColor.rgbColor) : undefined,
+            });
+            continue;
+          }
           // A run-scoped style must not redefine the box — that is what wiped
           // the typography off a linked title. But the RANGE is worth keeping:
           // Slides underlines those words, and a preview that draws them plain

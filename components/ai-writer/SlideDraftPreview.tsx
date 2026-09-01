@@ -59,15 +59,19 @@ function lineOffset(lines: string[], index: number): number {
 
 /** A line, with the linked words underlined exactly as Slides underlines them. */
 function renderRuns(
-  line: string, offset: number, links?: { start: number; end: number; url: string }[]
+  line: string, offset: number,
+  links?: { start: number; end: number; url: string }[],
+  accents?: { start: number; end: number; italic?: boolean; color?: string }[]
 ) {
-  const runs = runsOf(line, offset, links);
-  if (runs.length === 1 && !runs[0].url) return line;
-  return runs.map((run, i) =>
-    run.url
-      ? <span key={i} style={{ textDecoration: "underline" }}>{run.text}</span>
-      : <span key={i}>{run.text}</span>
-  );
+  const runs = runsOf(line, offset, links, accents);
+  if (runs.length === 1 && !runs[0].url && !runs[0].italic && !runs[0].color) return line;
+  return runs.map((run, i) => {
+    const style: React.CSSProperties = {};
+    if (run.url) style.textDecoration = "underline";
+    if (run.italic) style.fontStyle = "italic";
+    if (run.color) style.color = run.color;
+    return Object.keys(style).length ? <span key={i} style={style}>{run.text}</span> : <span key={i}>{run.text}</span>;
+  });
 }
 
 function SlideThumb({
@@ -208,7 +212,7 @@ function SlideThumb({
               {lines.length > 1
                 ? lines.map((line, li) => {
                     const spacing = li < lines.length - 1 ? { marginBottom: gap } : undefined;
-                    const drawn = renderRuns(line, lineOffset(lines, li), el.links);
+                    const drawn = renderRuns(line, lineOffset(lines, li), el.links, el.accents);
                     // Slides hangs a bullet: the glyph sits at the box's inset
                     // and every wrapped line lines up under the TEXT, not under
                     // the dot. An inline "• " prefix returned each continuation
@@ -223,7 +227,7 @@ function SlideThumb({
                       </div>
                     );
                   })
-                : renderRuns(el.text || "", 0, el.links)}
+                : renderRuns(el.text || "", 0, el.links, el.accents)}
             </div>
           );
         })}

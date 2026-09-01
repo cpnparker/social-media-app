@@ -13,7 +13,7 @@
 import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
-  niceTicks, isNumericColumn, fitCell, fitColumnWidths,
+  niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, deckWarnings,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
@@ -22,7 +22,7 @@ import { prepareSlidesForBuild, sourceSlideCount, fidelityAudit } from "../lib/a
 import { readFileSync } from "fs";
 import { join } from "path";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
-import { CANVAS, LAYOUT_STYLE, COLOR, GRID } from "../lib/slides/brand";
+import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS } from "../lib/slides/brand";
 
 const TYPE_STAT_CAP = 54;   // the multi-stat value cap; a hero must exceed it
 let failures = 0;
@@ -1325,6 +1325,94 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     assertFid(audited === 4, `all four chains run the fidelity audit (${audited} of 4)`);
   }
   if (failures === before20f) pass("a preserve conversion is not told to restructure, all four chains pass the flag, and server-side splits are declared");
+
+  /* 20g. The brand system from the master template. */
+  //
+  // Ported from the tce-deck-rebrand kit, which is the brand extracted from the
+  // JERA Nex bp master. Three things: the accent phrase (braces in a headline
+  // become ONE italic phrase, lime on dark grounds — the colour flip the design
+  // system calls the brand's strongest recognisable detail), the footer
+  // furniture, and the statement layout.
+  const before20g = failures;
+  console.log(`\n20g. Accent phrase, footer, statement`);
+  {
+    const assertBrand = (ok: boolean, m: string) => { if (!ok) fail(m); };
+
+    // The parser, driven directly.
+    const pa = parseAccents("Great storytelling can {change the world}");
+    assertBrand(pa.text === "Great storytelling can change the world", `braces are stripped (${pa.text})`);
+    assertBrand(pa.ranges.length === 1 && pa.ranges[0].start === 23 && pa.ranges[0].end === 39,
+      `and the range lands on the phrase (${JSON.stringify(pa.ranges)})`);
+    assertBrand(parseAccents("No braces").ranges.length === 0, "text without braces is untouched");
+    assertBrand(parseAccents("Unmatched {stays").text === "Unmatched {stays", "an unmatched brace stays literal");
+    assertBrand(parseAccents("{a} and {b}").ranges.length === 2, "two phrases give two ranges");
+    assertBrand(parseAccents("empty {} pair").ranges.length === 0, "an empty pair marks nothing");
+
+    // On a DARK ground the phrase turns lime; on a light ground italic only.
+    // Derived from the ink, so no call site can get it wrong.
+    const coverReqs = buildSlideRequests({ layout: "cover", title: "Response to {Request for Proposal}" } as SlideInput, 0, "n");
+    const coverTexts = (coverReqs as any[]).filter((r) => r.insertText).map((r) => r.insertText.text);
+    assertBrand(!coverTexts.some((t: string) => t.indexOf("{") >= 0), "no brace ever reaches a slide");
+    const coverAccent = (coverReqs as any[]).find((r) => r.updateTextStyle?.textRange?.type === "FIXED_RANGE" && r.updateTextStyle.style?.italic);
+    assertBrand(!!coverAccent, "the cover title carries the accent range");
+    assertBrand(coverAccent.updateTextStyle.fields.indexOf("foregroundColor") >= 0, "lime on the dark cover");
+    const stReqs = buildSlideRequests({ layout: "statement", title: "One {big} idea" } as SlideInput, 0, "n");
+    const stAccent = (stReqs as any[]).find((r) => r.updateTextStyle?.textRange?.type === "FIXED_RANGE" && r.updateTextStyle.style?.italic);
+    assertBrand(!!stAccent && stAccent.updateTextStyle.fields === "italic", "italic ONLY on the light ground — the flip is the dark-ground detail");
+
+    // The preview carries the range, or the deck styles words the preview
+    // draws plain.
+    const prevEls = toPreviewModel([{ layout: "cover", title: "Response to {Request for Proposal}" } as SlideInput]).slides[0].elements as any[];
+    const covEl = prevEls.find((e) => e.text && e.text.indexOf("Request") >= 0);
+    assertBrand(!!covEl?.accents?.length && covEl.accents[0].italic === true, "the preview keeps the accent range");
+    assertBrand(covEl.text.indexOf("{") < 0, "and its text is clean");
+
+    // Braces in ROBOTO fields pass through untouched — user content is never
+    // silently rewritten outside the headline voice.
+    const bodyReqs = buildSlideRequests({ layout: "content", title: "T", body: "keep {these} braces" } as SlideInput, 0, "n");
+    const bodyTexts = (bodyReqs as any[]).filter((r) => r.insertText).map((r) => r.insertText.text);
+    assertBrand(bodyTexts.some((t: string) => t.indexOf("{these}") >= 0), "braces in body copy are left alone");
+
+    // FOOTER. On content slides, numbered by the builder; never on the cover
+    // or the closing, which is the master's own rule.
+    const c5 = buildSlideRequests({ layout: "content", title: "T", body: "x" } as SlideInput, 4, "n");
+    const c5texts = (c5 as any[]).filter((r) => r.insertText).map((r) => r.insertText.text);
+    assertBrand(c5texts.indexOf("The Content Engine") >= 0, "the footer names the house");
+    assertBrand(c5texts.indexOf("5") >= 0, "and numbers the page from the builder's own index");
+    for (const l of ["cover", "closing"] as const) {
+      const t = (buildSlideRequests({ layout: l, title: "T" } as SlideInput, 0, "n") as any[])
+        .filter((r) => r.insertText).map((r) => r.insertText.text);
+      assertBrand(t.indexOf("The Content Engine") < 0, `no footer on the ${l}`);
+    }
+    // The footer lives in the margin band, below every layout's content floor.
+    for (const r of c5 as any[]) {
+      if (!(r.createShape?.objectId || "").match(/_ft[ln]$/)) continue;
+      // Below 392.5, measured: the chart layouts draw their source line 12pt
+      // into the margin band, so "inside the margin" was not low enough and
+      // the first footer position collided with every chart's source note.
+      assertBrand(r.createShape.elementProperties.transform.translateY >= CANVAS.height - 12,
+        "the footer sits on the last points of the canvas, under every layout's bottom furniture");
+    }
+
+    // STATEMENT: in the catalogue everywhere a layout has to be known.
+    assertBrand(LAYOUTS.indexOf("statement" as any) >= 0, "statement is a real layout");
+    const st2 = buildSlideRequests({ layout: "statement", eyebrow: "THE ARGUMENT", title: "One sentence that is the whole point", subtitle: "A lead below it." } as SlideInput, 0, "n");
+    const st2texts = (st2 as any[]).filter((r) => r.insertText).map((r) => r.insertText.text);
+    assertBrand(st2texts.indexOf("One sentence that is the whole point") >= 0, "it draws its sentence");
+    assertBrand(st2texts.indexOf("A lead below it.") >= 0, "and its lead");
+    const inserted = applyEditSlide([{ layout: "cover", title: "C" }], { insertAfter: 1, layout: "statement", title: "S" } as any);
+    assertBrand(inserted.length === 2 && inserted[1].layout === "statement", "and editSlide can insert one");
+
+    // GROUND RHYTHM + the dash rule, in deckWarnings.
+    const darkDeck = Array.from({ length: 6 }, () => ({ layout: "stat", title: "X", stats: [{ value: "1", label: "l" }] }));
+    // /dark grounds/ also matches the ADJACENT warning's text, which is how
+    // killing the ratio branch survived: the other warning answered for it.
+    assertBrand(/house ratio is roughly 70% light/.test(deckWarnings(darkDeck as any)), "an all-dark deck is flagged against the 70% light ratio");
+    assertBrand(/in a row/.test(deckWarnings(darkDeck as any)), "and so are adjacent dark slides");
+    assertBrand(/em or en dashes/.test(deckWarnings([{ layout: "content", title: "A — B", body: "x" }] as any)), "an em dash is flagged against the house hyphen rule");
+    assertBrand(deckWarnings([{ layout: "content", title: "A", body: "x" }] as any) === "", "a clean deck stays quiet");
+  }
+  if (failures === before20g) pass("braces become the accent phrase with the dark-ground lime flip, the footer is numbered by the builder, statement exists, and the rhythm rules advise");
 
   /* 21. The analysis formats draw their structure. */
   const before21 = failures;

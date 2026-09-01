@@ -222,6 +222,14 @@ export const TYPE: Record<string, TypeStyle> = {
   quadLabel:     { font: "Roboto", size: 8, weight: 300, color: COLOR.ink },
   dotLabel:      { font: "Roboto", size: 8, weight: 400, color: COLOR.navy },
   cellText:      { font: "Roboto", size: 9, weight: 300, color: COLOR.navy },
+  /** The footer furniture from the master: 8px on the 960 canvas is 6pt here.
+   *  The page number is the blue bold detail, lime on dark grounds. */
+  footerLeft:    { font: "Roboto", size: 6, weight: 300, color: COLOR.navy },
+  footerNumber:  { font: "Roboto", size: 6, bold: true, color: COLOR.blue },
+  /** One big Playfair sentence: the statement layout. Master sets it a step
+   *  above the slide headline; ~34px on the 960 canvas is 25.5pt here. */
+  statementTitle:{ font: "Playfair Display", size: 25, color: COLOR.navy },
+  statementLead: { font: "Roboto", size: 10, weight: 300, color: COLOR.ink },
   cellHead:      { font: "Playfair Display", size: 12, color: COLOR.navy },
   standfirstDark:{ font: "Roboto", size: 13, weight: 300, color: COLOR.greyLight },
   statistic:     { font: "Poppins", size: 30, color: COLOR.white },
@@ -333,6 +341,7 @@ export type SlideLayout =
   | "matrix"
   | "comparison"
   | "table"
+  | "statement"
   | "scatter"
   | "venn"
   | "cards"
@@ -342,7 +351,7 @@ export type SlideLayout =
   | "closing";
 
 export const LAYOUTS: SlideLayout[] = [
-  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "table", "scatter", "venn", "cards", "quote", "process", "logo-wall", "closing",
+  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "table", "statement", "scatter", "venn", "cards", "quote", "process", "logo-wall", "closing",
 ];
 
 /** Horizontal timeline: an axis rule with evenly spaced milestone markers.
@@ -571,6 +580,7 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   "matrix":      { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "comparison":  { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "table":       { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  "statement":   { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "scatter":     { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "venn":        { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   cards:         { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },

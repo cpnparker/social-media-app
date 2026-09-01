@@ -83,7 +83,7 @@ export function unrenderableSlides(slides: any[]): string[] {
 /** Layouts drawn from title/subtitle/body alone, so they need no payload. */
 const TEXT_LAYOUTS = [
   "content", "section", "cover", "case-study", "dark-index",
-  "image-split", "feature", "closing", "two-column",
+  "image-split", "feature", "closing", "two-column", "statement",
 ];
 
 /**

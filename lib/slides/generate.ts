@@ -287,6 +287,46 @@ function extractLinks(raw: string): { text: string; links: { start: number; end:
   return { text: text + rest, links };
 }
 
+/**
+ * The brand's accent phrase: braces in a headline mark one italic phrase.
+ *
+ *     "Great storytelling can {change the world}"
+ *
+ * On light grounds the phrase turns italic; on dark grounds it turns italic AND
+ * lime, while the roman part stays off-white — the colour flip the design
+ * system calls the brand's strongest recognisable detail. The braces are
+ * MARKUP: they are stripped before the text reaches the slide, and the ranges
+ * they marked are what the styling is applied to.
+ *
+ * Applied to Playfair fields only. Playfair is the headline voice, which is
+ * exactly where the brand says the accent belongs; body copy in Roboto passes
+ * braces through untouched, so user content is never silently rewritten.
+ */
+export function parseAccents(source: string): { text: string; ranges: { start: number; end: number }[] } {
+  const ranges: { start: number; end: number }[] = [];
+  let text = "";
+  let i = 0;
+  while (i < source.length) {
+    const open = source.indexOf("{", i);
+    if (open < 0) { text += source.slice(i); break; }
+    const close = source.indexOf("}", open + 1);
+    if (close < 0) { text += source.slice(i); break; }   // unmatched brace stays literal
+    text += source.slice(i, open);
+    const start = text.length;
+    text += source.slice(open + 1, close);
+    // An empty pair marks nothing and is dropped rather than recorded.
+    if (text.length > start) ranges.push({ start, end: text.length });
+    i = close + 1;
+  }
+  return { text, ranges };
+}
+
+/** Light inks mean a dark ground, which is where the accent goes lime. Derived
+ *  from the ink rather than passed in, so no call site can get it wrong. */
+function accentColorFor(style: TypeStyle): string | undefined {
+  return style.color === COLOR.white || style.color === COLOR.greyLight ? COLOR.lime : undefined;
+}
+
 function textBox(
   objectId: string,
   pageObjectId: string,
@@ -306,7 +346,18 @@ function textBox(
     ? content.split("\n").map((l) => l.trim()).filter(Boolean).join("\n")
     : content;
   if (!collapsed) return [];
-  const rendered = style.caps ? collapsed.toUpperCase() : collapsed;
+  let rendered = style.caps ? collapsed.toUpperCase() : collapsed;
+
+  // The accent phrase, on Playfair fields only. Skipped when the box also
+  // carries markdown links: both index into the final text and stripping braces
+  // would shift the link ranges — a headline carrying both is not a real case,
+  // and leaving the braces visible is more honest than styling the wrong words.
+  let accentRanges: { start: number; end: number }[] = [];
+  if (style.font === "Playfair Display" && links.length === 0 && rendered.indexOf("{") >= 0) {
+    const parsed = parseAccents(rendered);
+    rendered = parsed.text;
+    accentRanges = parsed.ranges;
+  }
 
   const requests: Req[] = [
     {
@@ -335,6 +386,22 @@ function textBox(
       },
     },
   ];
+
+  const accentColor = accentColorFor(style);
+  for (let ai = 0; ai < accentRanges.length; ai++) {
+    const r = accentRanges[ai];
+    requests.push({
+      updateTextStyle: {
+        objectId,
+        textRange: { type: "FIXED_RANGE", startIndex: r.start, endIndex: r.end },
+        style: {
+          italic: true,
+          ...(accentColor ? { foregroundColor: { opaqueColor: { rgbColor: rgb(accentColor) } } } : {}),
+        },
+        fields: accentColor ? "italic,foregroundColor" : "italic",
+      },
+    });
+  }
 
   // Links LAST, and carrying the brand colour with them. Setting a link makes
   // Slides apply its theme hyperlink colour and an underline, so a link applied
@@ -1915,6 +1982,29 @@ export function deckWarnings(slides: SlideInput[]): string {
       notes.push(`slide ${n} shows ${asked - s.imagesDropped} of ${asked} thumbnails; the rest could not be found`);
     }
   }
+  // GROUND RHYTHM, from the design system: roughly 70% light, dark slides as
+  // punctuation, and two dark slides in a row reads as a mistake. Advisory —
+  // the model is told, the deck still builds.
+  const grounds = slides.map((sl, i) => LAYOUT_STYLE[layoutOf(sl.layout, i)].onDark);
+  const darkShare = grounds.length ? grounds.filter(Boolean).length / grounds.length : 0;
+  if (slides.length >= 6 && darkShare > 0.45) {
+    notes.push(`${Math.round(darkShare * 100)}% of the deck is on dark grounds — the house ratio is roughly 70% light, with dark slides as punctuation`);
+  }
+  const adjacentDark: number[] = [];
+  for (let i = 1; i < grounds.length; i++) {
+    if (grounds[i] && grounds[i - 1]) adjacentDark.push(i + 1);
+  }
+  if (adjacentDark.length) {
+    notes.push(`slides ${adjacentDark.join(", ")} each follow another dark slide — two dark grounds in a row reads as a mistake in this brand`);
+  }
+  // The house dash rule. Em and en dashes are not part of TCE materials.
+  const dashed: number[] = [];
+  for (let i = 0; i < slides.length; i++) {
+    if (/[\u2013\u2014]/.test(JSON.stringify(slides[i]))) dashed.push(i + 1);
+  }
+  if (dashed.length) {
+    notes.push(`slide${dashed.length > 1 ? "s" : ""} ${dashed.join(", ")} use em or en dashes — house style is hyphens, rewrite those lines`);
+  }
   if (!notes.length) return "";
   return ` TELL THE USER, briefly and without apologising: ${notes.join("; ")}.`;
 }
@@ -3072,6 +3162,29 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       }),
       ...parallelTimelineRequests(page, id, slide.tracks || [], slide.today),
     );
+  } else if (layout === "statement") {
+    // One big Playfair sentence on the paper ground — the slide that makes the
+    // argument. From the master template's catalogue: at most ~14 words in the
+    // title, an optional Roboto lead below, nothing else. The vertical centring
+    // is what keeps a nearly-empty slide reading as composed rather than
+    // unfinished.
+    const stTitle = fitHeading(slide.title, TYPE.statementTitle, GRID.contentWidth * 0.86, {
+      bottom: CANVAS.height * 0.62,
+      minTop: CANVAS.height * 0.30,
+      minHeight: 60,
+      minSize: 18,
+    });
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY, width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, stTitle.style, {
+        x: GRID.margin, y: stTitle.y, width: GRID.contentWidth * 0.86, height: stTitle.height,
+      }, { lineSpacing: 1.18 }),
+      ...textBox(id("lead"), page, slide.subtitle || slide.body, TYPE.statementLead, {
+        x: GRID.margin, y: stTitle.y + stTitle.height + 14, width: GRID.contentWidth * 0.7, height: 60,
+      }),
+    );
   } else if (layout === "feature") {
     const feature = fitHeading(slide.title, TYPE.featureTitle, GRID.contentWidth * 0.72, {
       bottom: IMAGE.overlayBodyY - 10,
@@ -3284,6 +3397,29 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
   }
 
   requests.push(...logoRequests(id("logo"), page, layout, slide));
+
+  // The footer, from the master template: "The Content Engine" at the left and
+  // the page number at the right of every slide except the cover and the
+  // closing. It lives in the bottom margin band, below where any layout is
+  // allowed to draw, so it can never collide with content. The number is the
+  // builder's own — index is authoritative here in a way a model-supplied
+  // number never is.
+  if (layout !== "cover" && layout !== "closing") {
+    // 394, not 389: the chart layouts draw their source line 12pt into the
+    // bottom margin (measured: 378.5 + 14), so the footer sits on the last
+    // 11pt of the canvas, under everything any layout draws.
+    const footerY = CANVAS.height - 11;
+    const inkLeft = onDark ? { ...TYPE.footerLeft, color: COLOR.greyLight } : TYPE.footerLeft;
+    const inkNum = onDark ? { ...TYPE.footerNumber, color: COLOR.lime } : TYPE.footerNumber;
+    requests.push(
+      ...textBox(id("ftl"), page, "The Content Engine", inkLeft, {
+        x: GRID.margin, y: footerY, width: 160, height: 10,
+      }),
+      ...textBox(id("ftn"), page, String(index + 1), inkNum, {
+        x: CANVAS.width - GRID.margin - 40, y: footerY, width: 40, height: 10,
+      }, { align: "END" }),
+    );
+  }
   return requests;
 }
 
