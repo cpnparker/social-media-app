@@ -398,6 +398,36 @@ export default function SlideDraftPreview({
   const [mode, setMode] = useState<"view" | "edit" | "comment">("view");
   const open = (i: number, m: "view" | "edit" | "comment") => { setZoom(i); setMode(m); };
   const slideTitle = (i: number) => (draft.slides?.[i] as any)?.title as string | undefined;
+  // The PDF export: the server re-derives the preview from the spec and prints
+  // it, so the file is what a fresh preview would show — not a snapshot of
+  // whatever this component happens to have rendered.
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const downloadPdf = async () => {
+    setPdfBusy(true);
+    try {
+      const res = await fetch("/api/slides/pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slides: draft.slides, title: draft.title }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || "PDF export failed");
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(draft.title || "deck").replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-").toLowerCase() || "deck"}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } finally {
+      setPdfBusy(false);
+    }
+  };
   const submitComment = (i: number) => (text: string) => {
     onSlideComment?.(i, text);
     // Closes: the request is now in the conversation, and the preview it refers
@@ -430,11 +460,18 @@ export default function SlideDraftPreview({
             Draft preview · {count} slide{count === 1 ? "" : "s"} · not saved to Drive
           </p>
         </div>
-        <Button size="sm" onClick={onPublish} disabled={publishing || disabled} className="shrink-0">
-          {publishing ? (
-            <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Creating…</>
-          ) : "Create in Google Slides"}
-        </Button>
+        <div className="flex items-center gap-2 shrink-0">
+          <Button size="sm" variant="outline" onClick={downloadPdf} disabled={pdfBusy || disabled}>
+            {pdfBusy ? (
+              <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Printing…</>
+            ) : "Download PDF"}
+          </Button>
+          <Button size="sm" onClick={onPublish} disabled={publishing || disabled}>
+            {publishing ? (
+              <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Creating…</>
+            ) : "Create in Google Slides"}
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2 items-stretch">

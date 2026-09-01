@@ -30,6 +30,9 @@ const nextConfig = {
      */
     outputFileTracingIncludes: {
       "/api/optimizer/sessions/[id]/audit": ["./node_modules/@sparticuz/chromium/**"],
+      // The PDF export runs the same headless Chromium; without this line the
+      // binary never reaches the lambda and the route 500s in production only.
+      "/api/slides/pdf": ["./node_modules/@sparticuz/chromium/**"],
       /**
        * The same failure as Chromium above, from a different cause.
        *

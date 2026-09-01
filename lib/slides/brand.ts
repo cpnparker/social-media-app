@@ -34,6 +34,7 @@ export const COLOR = {
   coralDeep: "C63528",
   forest: "114535",
   greyLight: "EBEBEB",   // light surface; body text ON blue/navy
+  lav: "E1E5FF",         // the soft panel fill from the master template
   ink: "272727",
   white: "FFFFFF",
   offWhite: "F8F8F8",    // the actual background of most content slides

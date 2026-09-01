@@ -103,6 +103,10 @@ const TEXT_LAYOUTS = [
  */
 export const PAYLOAD_FIELDS: string[] = Object.keys(REQUIRED_PAYLOAD)
   .map((l) => REQUIRED_PAYLOAD[l])
+  // `panel` is optional on the content family rather than required by any
+  // layout, so deriving from REQUIRED_PAYLOAD alone would leave it the one
+  // structured field an edit could not carry.
+  .concat(["panel"])
   .filter((f, i, all) => all.indexOf(f) === i);
 
 /** Can this layout be inserted with the fields given? Exported because it is

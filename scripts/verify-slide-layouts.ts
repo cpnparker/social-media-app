@@ -18,6 +18,7 @@ import {
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
 import { applyEditSlide, unrenderableSlides, PAYLOAD_FIELDS, insertableLayout } from "../lib/slides/edit";
+import { deckToHtml, safeSrc } from "../lib/slides/pdf-html";
 import { prepareSlidesForBuild, sourceSlideCount, fidelityAudit } from "../lib/ai/providers";
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -1413,6 +1414,81 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     assertBrand(deckWarnings([{ layout: "content", title: "A", body: "x" }] as any) === "", "a clean deck stays quiet");
   }
   if (failures === before20g) pass("braces become the accent phrase with the dark-ground lime flip, the footer is numbered by the builder, statement exists, and the rhythm rules advise");
+
+  /* 20h. Panels, and the PDF print of the preview. */
+  const before20h = failures;
+  console.log(`\n20h. The panel device, and the PDF export`);
+  {
+    const assertP = (ok: boolean, m: string) => { if (!ok) fail(m); };
+
+    // THE PANEL. The master's rounded card beside the prose, blue with white
+    // ink or soft lavender, up to four titled items with drops declared.
+    const withPanel: SlideInput = { layout: "content", title: "A disciplined engine", body: "Prose beside the panel.",
+      panel: { title: "A combination of:", items: [
+        { title: "Process", text: "A disciplined workflow." },
+        { title: "People", text: "Editors and analysts." },
+        { title: "Platform", text: "The tooling underneath." },
+        { title: "Proof", text: "Measured outcomes." },
+        { title: "Extra", text: "Past the ceiling." } ] } };
+    const pr = buildSlideRequests(withPanel, 0, "n");
+    const prTexts = (pr as any[]).filter((r) => r.insertText).map((r) => r.insertText.text);
+    assertP(prTexts.indexOf("A combination of:") >= 0, "the panel title is drawn");
+    assertP(["Process", "People", "Platform", "Proof"].every((t) => prTexts.indexOf(t) >= 0), "with its four items");
+    assertP(prTexts.indexOf("Extra") < 0, "the fifth is dropped — the kit's ceiling is four");
+    assertP(prTexts.some((t: string) => t.indexOf("Showing 4 of 5") >= 0), "and the drop is declared on the slide");
+    const round = (pr as any[]).find((r) => r.createShape?.shapeType === "ROUND_RECTANGLE");
+    assertP(!!round, "the card is a rounded rectangle");
+    // The panel replaces the rail and narrows the prose: the title must be
+    // measured against the narrow column, or fitHeading fits it to a width the
+    // panel is about to take a third of.
+    const titleReq = (pr as any[]).find((r) => (r.createShape?.objectId || "").endsWith("_title"));
+    assertP(titleReq.createShape.elementProperties.size.width.magnitude <= GRID.proseNarrow + 1,
+      `the title is measured against the narrowed prose (${Math.round(titleReq.createShape.elementProperties.size.width.magnitude)})`);
+    assertP(!(pr as any[]).some((r) => (r.createShape?.objectId || "").endsWith("_rail") || (r.createImage?.objectId || "").endsWith("_rail")),
+      "and the photo rail gives way — the master carries a panel or an image, never both");
+    // No panel content may cross the card's right edge.
+    const cardRight = round.createShape.elementProperties.transform.translateX + round.createShape.elementProperties.size.width.magnitude;
+    for (const r of pr as any[]) {
+      if (!(r.createShape?.objectId || "").match(/_pn[htb]\d*$/)) continue;
+      const t = r.createShape.elementProperties;
+      assertP(t.transform.translateX + t.size.width.magnitude <= cardRight + 0.5, "panel text stays inside the card");
+    }
+    // The soft variant flips fill and ink.
+    const soft = buildSlideRequests({ ...withPanel, panel: { ...withPanel.panel!, style: "soft" } }, 0, "n");
+    const softRound = (soft as any[]).find((r) => r.createShape?.shapeType === "ROUND_RECTANGLE");
+    const softFill = (soft as any[]).find((r) => r.updateShapeProperties?.objectId === softRound.createShape.objectId);
+    const c = softFill.updateShapeProperties.shapeProperties.shapeBackgroundFill.solidFill.color.rgbColor;
+    assertP(Math.abs(c.red - 0.882) < 0.01 && c.blue === 1, "the soft variant is the lavender fill");
+    // And an edit can carry it.
+    assertP(PAYLOAD_FIELDS.indexOf("panel") >= 0, "editSlide can carry a panel");
+
+    // THE PDF. Pure first: the HTML is the preview model, escaped, at 960x540.
+    const evil: SlideInput = { layout: "content", title: 'Injection <script>document.title="pwned"</script>', body: "safe" };
+    const deck = [
+      { layout: "cover", title: "Response to {Request for Proposal}" } as SlideInput,
+      evil,
+      { layout: "table", title: "Figures", table: { columns: ["A", "B"], rows: [["x", "1"], ["y", "2"]] } } as SlideInput,
+    ];
+    const html = deckToHtml(toPreviewModel(deck), "Brand test");
+    assertP(html.indexOf("<script>") < 0, "slide text cannot inject markup into the print browser");
+    assertP(html.indexOf("&lt;script&gt;") >= 0, "it arrives escaped instead of dropped");
+    assertP((html.match(/<section class="slide"/g) || []).length === 3, "one page per slide");
+    assertP(html.indexOf(`width:960px;height:540px`) >= 0, "on the master template's 960x540 canvas");
+    // The ELEMENTS scale too, not only the page box: printing at Slides points
+    // inside a 960px page draws the deck in the top-left three-quarters. The
+    // margin lands at 24.48 x 4/3 = 32.64, and that exact left proves the
+    // scale reached the elements.
+    assertP(html.indexOf("left:32.64px") >= 0, "elements are scaled to the 960 canvas, not left at Slides points");
+    assertP(/font-style:italic/.test(html), "the accent phrase prints italic");
+    assertP(/#c0ff7e/i.test(html), "and lime on the dark cover");
+    assertP(html.indexOf("{Request") < 0, "braces do not leak into the print");
+    assertP(/@page \{ size: 10in 5.625in/.test(html), "the page is 10 by 5.625 inches");
+    assertP(safeSrc("https://x.test/a.png") !== null && safeSrc("data:image/png;base64,AA") !== null,
+      "web and data images pass");
+    assertP(safeSrc("file:///etc/passwd") === null && safeSrc("chrome://settings") === null,
+      "file and chrome URLs never reach the print browser");
+  }
+  if (failures === before20h) pass("the panel draws inside its card with drops declared, and the PDF is the escaped preview at 960x540");
 
   /* 21. The analysis formats draw their structure. */
   const before21 = failures;

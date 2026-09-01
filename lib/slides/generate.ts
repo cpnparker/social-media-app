@@ -99,6 +99,18 @@ export interface SlideInput {
     /** Row indices drawn on a tint — the rows that carry the argument. */
     highlight?: number[];
   };
+  /** The master template's panel: a rounded card beside the prose, blue with
+   *  white ink or the soft lavender variant, carrying a short titled list. The
+   *  device the JERA master uses for "The Content Engine is a combination of:".
+   *  Drawn on the content family; a slide with a panel gives up its photo rail,
+   *  because the master's split has either a panel or an image, never both. */
+  panel?: {
+    title?: string;
+    items?: { title?: string; text?: string }[];
+    /** "blue" (default) or "soft" — lavender with navy ink, for when a blue
+     *  panel would make three blue elements fight on one slide. */
+    style?: string;
+  };
   /** A Venn diagram — two or three overlapping sets. */
   venn?: { sets?: { label: string }[]; overlap?: string };
   milestones?: Milestone[];
@@ -2880,6 +2892,85 @@ function tableRequests(
   return out;
 }
 
+/** The kit's density budget: three panel items read comfortably, four is the
+ *  ceiling. Anything past that is dropped and said, never silently cut. */
+export const PANEL_MAX_ITEMS = 4;
+
+/** The master template's rounded panel beside the prose. */
+function panelRequests(
+  page: string, id: (s: string) => string,
+  spec: NonNullable<SlideInput["panel"]>, box: { x: number; y: number; width: number; height: number }
+): Req[] {
+  const soft = spec.style === "soft";
+  const fill = soft ? COLOR.lav : COLOR.blue;
+  const inkTitle = soft ? COLOR.navy : COLOR.white;
+  const inkBody = soft ? COLOR.ink : COLOR.white;
+  const allItems = (spec.items || []).filter((it) => it && (it.title?.trim() || it.text?.trim()));
+  const items = allItems.slice(0, PANEL_MAX_ITEMS);
+
+  const out: Req[] = [];
+  out.push(...filledShape(id("pnl"), page, "ROUND_RECTANGLE", fill, box));
+
+  const PAD = 15;                       // the master's 26px inner padding, minus a step for our tighter canvas
+  let cursor = box.y + PAD;
+  const innerW = box.width - PAD * 2;
+  if (spec.title?.trim()) {
+    const tStyle: TypeStyle = { font: "Roboto", size: 11, weight: 600, color: inkTitle };
+    const h = drawnTextHeight(estimateLines(spec.title, innerW, tStyle.size), tStyle.size);
+    out.push(...textBox(id("pnt"), page, spec.title, tStyle, {
+      x: box.x + PAD, y: cursor, width: innerW, height: h,
+    }));
+    cursor += h + 8;
+  }
+  items.forEach((it, i) => {
+    // The dotted circular marker from the master, as a small open ring.
+    out.push({
+      createShape: {
+        objectId: id(`pnm${i}`), shapeType: "ELLIPSE",
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(5), height: pt(5) },
+          transform: { scaleX: 1, scaleY: 1, translateX: box.x + PAD, translateY: cursor + 2, unit: "PT" },
+        },
+      },
+    }, {
+      updateShapeProperties: {
+        objectId: id(`pnm${i}`),
+        shapeProperties: {
+          shapeBackgroundFill: { solidFill: { color: { rgbColor: rgb(soft ? COLOR.blue : COLOR.lime) } } },
+          outline: { outlineFill: { solidFill: { color: { rgbColor: rgb(soft ? COLOR.blue : COLOR.lime) } } }, weight: pt(1) },
+        },
+        fields: "shapeBackgroundFill.solidFill.color,outline",
+      },
+    });
+    const textX = box.x + PAD + 11;
+    const textW = innerW - 11;
+    if (it.title?.trim()) {
+      const hStyle: TypeStyle = { font: "Roboto", size: 8.5, weight: 600, color: inkTitle };
+      const h = drawnTextHeight(estimateLines(it.title, textW, hStyle.size), hStyle.size);
+      out.push(...textBox(id(`pnh${i}`), page, it.title, hStyle, {
+        x: textX, y: cursor, width: textW, height: h,
+      }, { spaceBelow: 0 }));
+      cursor += h + 1;
+    }
+    if (it.text?.trim()) {
+      const bStyle: TypeStyle = { font: "Roboto", size: 8, weight: 300, color: inkBody };
+      const h = drawnTextHeight(estimateLines(it.text, textW, bStyle.size), bStyle.size);
+      out.push(...textBox(id(`pnb${i}`), page, it.text, bStyle, {
+        x: textX, y: cursor, width: textW, height: h,
+      }, { spaceBelow: 0, lineSpacing: 1.1 }));
+      cursor += h;
+    }
+    cursor += 8;
+  });
+  if (allItems.length > items.length) {
+    out.push(...textBox(id("pnd"), page, `Showing ${items.length} of ${allItems.length} items`, { font: "Roboto", size: 6, weight: 300, color: inkBody }, {
+      x: box.x + PAD, y: box.y + box.height - 14, width: innerW, height: 10,
+    }));
+  }
+  return out;
+}
+
 /** One slide → its full request list. Exported so the layout geometry can be
  *  exercised without a Google round-trip; nothing else should call it. */
 export function buildSlideRequests(slide: SlideInput, index: number, run = "r0"): Req[] {
@@ -2933,8 +3024,12 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
   // Prose layouts set their title on the same measure as their body, so the
   // two align and the heading is fitted to the width it will actually occupy.
   const isProse = layout === "content" || layout === "case-study" || layout === "dark-index";
+  // A panel narrows the prose exactly as a rail does — the title has to be
+  // measured against the width it will actually be drawn in, or fitHeading
+  // fits it to a column the panel is about to take a third of.
+  const hasPanel = !!(slide.panel && ((slide.panel.items || []).length || slide.panel.title?.trim()));
   const proseColumn = isProse
-    ? (railBox(slide) ? GRID.proseNarrow : GRID.proseWidth)
+    ? (railBox(slide) || hasPanel ? GRID.proseNarrow : GRID.proseWidth)
     : GRID.contentWidth;
   const titleWidth = layout === "image-split" ? IMAGE.splitTextWidth : proseColumn;
   const heading = fitHeading(slide.title, onDark ? TYPE.slideTitleDark : TYPE.slideTitle, titleWidth, {
@@ -3328,8 +3423,23 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     // bottom 47% of the canvas empty. Four things change that, none of them a
     // new layout: a measure, a rule, a middle step in the type scale, and the
     // photograph the slide already asked for and used to throw away.
-    const rail = railBox(slide);
+    // A panel replaces the rail: the master's split carries either a panel or
+    // an image on the right, never both.
+    const panel = slide.panel && (slide.panel.items?.length || slide.panel.title?.trim()) ? slide.panel : undefined;
+    const rail = panel ? null : railBox(slide);
+    // ONE decision, made above: proseColumn already narrows for a panel the
+    // same way it narrows for a rail. A second panel-check here is how the
+    // drawn box and the measured width drift apart — the mutation that removes
+    // the narrowing from one of them is invisible until a title wraps wrong.
     const proseWidth = proseColumn;
+
+    if (panel) {
+      const panelW = GRID.contentWidth - GRID.proseNarrow - 18;
+      requests.push(...panelRequests(page, id, panel, {
+        x: GRID.margin + GRID.proseNarrow + 18, y: GRID.bodyY,
+        width: panelW, height: CANVAS.height - GRID.margin - GRID.bodyY - 4,
+      }));
+    }
 
     if (rail) {
       requests.push({

@@ -1359,6 +1359,15 @@ const DOCUMENT_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                   }, required: ["label", "x", "y"] } },
                 },
               },
+              panel: {
+                type: "object",
+                description: "A rounded brand panel drawn BESIDE the prose on a content/case-study slide — the device the master template uses for a titled list of parts ('The Content Engine is a combination of: Process / People / Platform'). Give `title` and `items` (up to 4, each {title, text}); `style: \"soft\"` swaps the blue fill for lavender with navy ink, for slides where a blue panel would fight other blue elements. A slide with a panel gives up its photo rail: it is one or the other, never both.",
+                properties: {
+                  title: { type: "string" },
+                  items: { type: "array", items: { type: "object", properties: { title: { type: "string" }, text: { type: "string" } } } },
+                  style: { type: "string", enum: ["blue", "soft"] },
+                },
+              },
               table: {
                 type: "object",
                 description: "A DATA table (table layout): `columns` is the header row, `rows` is an array of rows, each an array of cell strings IN COLUMN ORDER. A source slide that carries commentary BESIDE its table — analysis panels, renegotiation notes, a takeaway — keeps that commentary ON the slide: pass it as `bodyRight` (one line per panel) and the table narrows to make room. Moving it to speaker notes is losing it; the commentary is usually the point of such a slide. Columns whose cells are figures are right-aligned automatically, so a column of numbers can be read down. `highlight` takes the row indices that carry the argument. Up to 6 columns and 12 rows; extra rows are dropped and the slide says so. Reach for this over `comparison` when the cells are measurements rather than judgements, and over a bar chart when the reader needs the actual figures.",
@@ -1491,6 +1500,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                 "Layout for an INSERTED slide. Every layout is available, but one drawn from a structured payload needs that payload passed alongside — `table` needs `table`, `stat` needs `stats`, the chart layouts need `chart`, and so on — or the slide comes out BLANK and the insert is refused with a message saying which field is missing. Defaults to content, or to cards when you pass `cards`. THIS IS HOW A LONG DECK IS BUILT: `slides` replaces the whole deck and a deck of thirty-plus slides is too much to emit in one call, so build the first few with `slides` and append the rest one or two at a time with insertAfter.",
             },
             table: { type: "object", description: "For a `table` slide. Same shape as `table` in `slides`: `columns`, `rows` (each an array of cells in column order), optional `highlight`." },
+            panel: { type: "object", description: "A rounded brand panel beside the prose on a content slide. Same shape as `panel` in `slides`: `title`, `items` (up to 4 of {title, text}), optional style \"soft\"." },
             chart: { type: "object", description: "For bar-chart, stacked-bar or line-chart. Same shape as `chart` in `slides`." },
             stats: { type: "array", description: "For a `stat` slide. Same shape as `stats` in `slides`.", items: { type: "object" } },
             swot: { type: "object", description: "For a `swot` slide. Same shape as in `slides`." },
