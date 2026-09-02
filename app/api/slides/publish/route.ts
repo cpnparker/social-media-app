@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { generateSlides, type SlideInput } from "@/lib/slides/generate";
-import { isReconnectable } from "@/lib/slides/reauth";
+import { isReconnectable, isRetryable, isActionable } from "@/lib/slides/reauth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { draftWriteAccess } from "@/lib/slides/message-access";
 
@@ -70,8 +70,13 @@ export async function POST(req: NextRequest) {
         error: result.error,
         reason: result.reason ?? null,
         reconnectable: isReconnectable(result.reason),
+        // A grant store we could not reach is not a reconnect, but it IS worth
+        // pressing again — and the client needs to be told so, or the user is
+        // left with a sentence and no control.
+        retryable: isRetryable(result.reason),
+        actionable: isActionable(result.reason),
       },
-      { status: isReconnectable(result.reason) ? 409 : 502 }
+      { status: isReconnectable(result.reason) ? 409 : isRetryable(result.reason) ? 503 : 502 }
     );
   }
 

@@ -613,10 +613,15 @@ export default function ChatPanel({
       if (!res.ok) {
         // A connection problem is fixable, so it gets the reconnect card
         // rather than a toast the user cannot act on.
-        if (j.reconnectable) setSlidesReauth({ message: j.error, reason: j.reason || "needs_reconnect" });
-        else toast.error(j.error || "Couldn't create the deck.");
+        if (j.actionable ?? j.reconnectable) {
+          // The draft is still here and still wanted: whichever action the card
+          // offers, finishing it should finish the export.
+          pendingPublishRef.current = true;
+          setSlidesReauth({ message: j.error, reason: j.reason || "needs_reconnect" });
+        } else toast.error(j.error || "Couldn't create the deck.");
         return;
       }
+      pendingPublishRef.current = false;
       setSlidesDraft(null);
       setSlidesPreview({
         url: j.url, title: j.title, slideCount: j.slideCount ?? 0,
@@ -646,6 +651,21 @@ export default function ChatPanel({
    * endpoint is asked whether the scope actually landed before the prompt is
    * cleared. Anything else would tell the user they are ready when they are not.
    */
+  // Set when an export was blocked by a connection problem, so a successful
+  // reconnect can finish the job instead of handing the user back a to-do.
+  // Refs rather than state: reconnectGoogle is memoised for the lifetime of the
+  // panel and would otherwise close over the draft as it was when it mounted.
+  const pendingPublishRef = useRef(false);
+  const publishSlidesDraftRef = useRef<null | (() => Promise<void>)>(null);
+
+  useEffect(() => { publishSlidesDraftRef.current = publishSlidesDraft; }, [publishSlidesDraft]);
+
+  /** The card's action for a fault we could not diagnose: press it again. */
+  const retryPublish = useCallback(() => {
+    setSlidesReauth(null);
+    void publishSlidesDraftRef.current?.();
+  }, []);
+
   const reconnectGoogle = useCallback(() => {
     const url = "/api/connections/google/start";
     const w = window.open(url, "engine-google-connect", "width=520,height=720");
@@ -666,7 +686,18 @@ export default function ChatPanel({
           const j = await res.json();
           if (j.canCreate) {
             setSlidesReauth(null);
-            toast.success("Google reconnected — ask for the deck again and I'll build it.");
+            // RESUME, rather than asking her to start again. The reconnect only
+            // ever happens because an export was blocked, and the draft that was
+            // blocked is still on screen — telling someone who has just fixed
+            // their connection to "ask for the deck again" is making them do the
+            // work twice, and is how a 41-slide deck sat unpublished for a day.
+            if (pendingPublishRef.current) {
+              toast.success("Google reconnected — creating your deck now.");
+              pendingPublishRef.current = false;
+              void publishSlidesDraftRef.current?.();
+            } else {
+              toast.success("Google reconnected — ask for the deck again and I'll build it.");
+            }
           } else {
             setSlidesReauth({ message: j.message || "That didn't complete. Try connecting again, and make sure you approve the Google account you use here.", reason: j.reason || "needs_reconnect" });
           }
@@ -885,6 +916,9 @@ export default function ChatPanel({
                 setStreamingContent(fullText);
               }
             } else if (parsed.slides_reauth) {
+              // The model's own attempt was blocked. The draft it built is on
+              // screen, so the card's action can finish it.
+              pendingPublishRef.current = true;
               setIsGeneratingDocument(false);
               setSlidesProgress(null);
               setSlidesReauth({
@@ -2176,10 +2210,27 @@ export default function ChatPanel({
                 <div className="flex-1 min-w-0 rounded-lg border bg-muted/40 px-3 py-2.5">
                   <p className="text-sm text-foreground/90">{slidesReauth.message}</p>
                   <div className="mt-2.5 flex items-center gap-2">
-                    <Button size="sm" onClick={reconnectGoogle} disabled={reauthBusy}>
-                      {reauthBusy ? "Waiting for Google…" : slidesReauth.reason === "not_connected" ? "Connect Google" : "Reconnect Google"}
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setSlidesReauth(null)} disabled={reauthBusy}>
+                    {slidesReauth.reason === "unavailable" ? (
+                      // Not a reconnect: nothing about this user's Google account
+                      // is wrong, so offering to reconnect it would send them to
+                      // fix something that is not broken. Pressing again is the
+                      // honest action — and it is an action, which is the whole
+                      // point. Reconnecting stays available underneath for the
+                      // case where the fault outlives a retry.
+                      <>
+                        <Button size="sm" onClick={retryPublish} disabled={reauthBusy || publishingSlides || !slidesDraft}>
+                          {publishingSlides ? "Trying again…" : "Try again"}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={reconnectGoogle} disabled={reauthBusy}>
+                          {reauthBusy ? "Waiting for Google…" : "Reconnect Google"}
+                        </Button>
+                      </>
+                    ) : (
+                      <Button size="sm" onClick={reconnectGoogle} disabled={reauthBusy}>
+                        {reauthBusy ? "Waiting for Google…" : slidesReauth.reason === "not_connected" ? "Connect Google" : "Reconnect Google"}
+                      </Button>
+                    )}
+                    <Button size="sm" variant="ghost" onClick={() => { pendingPublishRef.current = false; setSlidesReauth(null); }} disabled={reauthBusy}>
                       Not now
                     </Button>
                   </div>

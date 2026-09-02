@@ -13,7 +13,7 @@ import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, stallOutcome
 import { toPreviewModel } from "@/lib/slides/preview-model";
 import { signedMediaUrl } from "@/lib/media/signed";
 import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
-import { isReconnectable } from "@/lib/slides/reauth";
+import { isReconnectable, isActionable } from "@/lib/slides/reauth";
 
 /* ─────────────── Types ─────────────── */
 
@@ -8515,7 +8515,10 @@ async function streamAnthropic(
           if (!result.ok) {
             // A connection the user can fix gets a button, not an error toast —
             // the chat is where they asked, so it is where the fix belongs.
-            const fixable = isReconnectable(result.reason);
+            // Actionable, not merely reconnectable: a grant store we could not
+            // reach still gets a card, with Try again on it. The alternative is
+            // the prose dead end that stranded a real user for a day.
+            const fixable = isActionable(result.reason);
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify(
@@ -9809,7 +9812,10 @@ async function streamXAIChatCompletions(
           );
 
           if (!result.ok) {
-            const fixable = isReconnectable(result.reason);
+            // Actionable, not merely reconnectable: a grant store we could not
+            // reach still gets a card, with Try again on it. The alternative is
+            // the prose dead end that stranded a real user for a day.
+            const fixable = isActionable(result.reason);
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify(
@@ -10862,7 +10868,10 @@ async function streamGemini(
           );
 
           if (!result.ok) {
-            const fixable = isReconnectable(result.reason);
+            // Actionable, not merely reconnectable: a grant store we could not
+            // reach still gets a card, with Try again on it. The alternative is
+            // the prose dead end that stranded a real user for a day.
+            const fixable = isActionable(result.reason);
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify(
@@ -11803,7 +11812,10 @@ async function streamOpenAI(
           );
 
           if (!result.ok) {
-            const fixable = isReconnectable(result.reason);
+            // Actionable, not merely reconnectable: a grant store we could not
+            // reach still gets a card, with Try again on it. The alternative is
+            // the prose dead end that stranded a real user for a day.
+            const fixable = isActionable(result.reason);
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify(

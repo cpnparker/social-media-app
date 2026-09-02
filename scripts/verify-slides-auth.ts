@@ -286,6 +286,48 @@ const account = (over: Partial<any>) => ({
     if (failures === before) ok("the token cache cannot cross-write another grant's row");
   }
 
+  console.log("\n6. Every failure leaves the user something to press");
+  {
+    const before = failures;
+    const { isReconnectable, isRetryable, isActionable, reconnectLabel } = await import("../lib/slides/reauth");
+    const { authFailureMessage } = await import("../lib/slides/token");
+
+    // The full union, written out. If a reason is added and not classified, the
+    // exhaustiveness assertion below fails rather than the new reason quietly
+    // becoming a dead end — which is exactly what `unavailable` was.
+    const ALL = ["not_connected", "needs_reconnect", "refresh_failed", "not_configured", "unavailable"] as const;
+
+    assert(ALL.filter((r) => isReconnectable(r)).join(",") === "not_connected,needs_reconnect,refresh_failed",
+      "only genuine connection problems offer a reconnect");
+    assert(ALL.filter((r) => isRetryable(r)).join(",") === "unavailable",
+      "a grant store we could not reach offers a retry instead");
+    assert(!isReconnectable("unavailable"),
+      "and never a reconnect — nothing about that user's Google account is wrong, so reconnecting sends them to fix what is not broken");
+
+    // THE RULE. A user is never handed a sentence and no control. The single
+    // exception is the one failure that is genuinely nothing to do with them.
+    const stranded = ALL.filter((r) => !isActionable(r));
+    assert(stranded.join(",") === "not_configured",
+      `every failure but the deployment's own leaves an action (stranded: ${stranded.join(",") || "none"})`);
+
+    // And each one says something true, so the card's text and its button agree.
+    for (const r of ALL) {
+      const msg = authFailureMessage(r);
+      assert(!!msg && msg.length > 20, `${r} has a real message`);
+      if (isRetryable(r)) {
+        assert(/again/i.test(msg), `${r} tells the user to try again, which is what its button does (${msg})`);
+        assert(!/Settings/i.test(msg),
+          `${r} does not send the user to Settings — reconnecting cannot fix it, and that advice is what wasted a real user's day`);
+      }
+      if (isReconnectable(r)) {
+        assert(/connect/i.test(msg), `${r} tells the user to connect, which is what its button does`);
+      }
+    }
+    assert(reconnectLabel("not_connected") === "Connect Google", "someone who never connected is not asked to reconnect");
+    assert(reconnectLabel("needs_reconnect") === "Reconnect Google", "and someone who did is");
+    if (failures === before) ok("no reason strands the user, and every message matches its button");
+  }
+
   server.close();
   console.log(failures ? `\n✗ ${failures} failure${failures === 1 ? "" : "s"}` : "\n✓ a second Google grant cannot break slide export");
   process.exit(failures ? 1 : 0);
