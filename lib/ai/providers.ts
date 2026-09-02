@@ -4336,12 +4336,15 @@ function recentDeck(conversationId: string) {
  *  change is a patch to it, not a full regeneration. */
 async function loadDeckForEdit(
   conversationId: string
-): Promise<{ title: string; slides: any[]; presentationId?: string } | null> {
-  // This turn's deck first: the database does not have it yet.
-  const fresh = recentDeck(conversationId);
-  if (fresh?.slides?.length) {
-    return { title: fresh.title, slides: fresh.slides, presentationId: fresh.presentationId };
-  }
+): Promise<{ title: string; slides: any[]; publishedBefore: boolean } | null> {
+  // The Drive question is answered from the DATABASE even when the slides come
+  // from this turn's cache: the Create button runs in a different process and
+  // stamps `published` onto the stored row, so a warm lambda's cache knows
+  // nothing about it — and the missed note is exactly the confusion this flag
+  // exists to stop ("can you update the slide, I don't see that", asked of a
+  // Drive file that policy forbids touching).
+  let publishedBefore = false;
+  let dbDraft: any = null;
   try {
     const { intelligenceDb } = await import("@/lib/supabase-intelligence");
     const { data } = await intelligenceDb
@@ -4351,17 +4354,23 @@ async function loadDeckForEdit(
       .not("slides_draft", "is", null)
       .order("date_created", { ascending: false })
       .limit(1);
-    const draft: any = data?.[0]?.slides_draft;
-    if (!draft?.slides?.length) return null;
-    return {
-      title: draft.title || "Presentation",
-      slides: draft.slides,
-      presentationId: draft.published?.presentationId,
-    };
+    dbDraft = data?.[0]?.slides_draft;
+    publishedBefore = !!dbDraft?.published?.presentationId;
   } catch (e: any) {
     console.warn("[Slides] loadDeckForEdit failed:", e?.message);
-    return null;
   }
+
+  // This turn's deck first: the database does not have its SLIDES yet.
+  const fresh = recentDeck(conversationId);
+  if (fresh?.slides?.length) {
+    return { title: fresh.title, slides: fresh.slides, publishedBefore };
+  }
+  if (!dbDraft?.slides?.length) return null;
+  return {
+    title: dbDraft.title || "Presentation",
+    slides: dbDraft.slides,
+    publishedBefore,
+  };
 }
 
 
@@ -4374,7 +4383,7 @@ async function loadDeckForEdit(
  *  lose eleven slides, and both are decisions a check can drive directly. */
 export async function prepareSlidesForBuild(
   input: any, conversationId?: string | null
-): Promise<{ title: string; slides: any[]; presentationId?: string; edited: boolean }> {
+): Promise<{ title: string; slides: any[]; presentationId?: string; edited: boolean; publishedBefore?: boolean }> {
   // Both routes are checked, not just the insert. The model does not only
   // insert — it resends the WHOLE deck through `slides`, and the deck it
   // resends is the stored one replayed into its context. So a blank slide, once
@@ -4437,6 +4446,7 @@ export async function prepareSlidesForBuild(
       // again creates a new file. Removed, not gated.
       presentationId: undefined,
       edited: true,
+      publishedBefore: deck.publishedBefore,
     };
     rememberDeck(conversationId, out);
     return out;
@@ -8488,7 +8498,7 @@ async function streamAnthropic(
             toolResults.push({
               type: "tool_result",
               tool_use_id: tool.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, tool.input?.fidelity === "preserve")}${tool.input?.fidelity === "preserve" ? fidelityAudit(draft.slides.length, sourceSlideCount(messages)) : ""}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, tool.input?.fidelity === "preserve")}${tool.input?.fidelity === "preserve" ? fidelityAudit(draft.slides.length, sourceSlideCount(messages)) : ""}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} ${prepared.publishedBefore ? " A DECK ALREADY EXISTS IN DRIVE from an earlier version of this draft. It has NOT been changed and never will be — it is the user's file. Say this plainly: the change is in THIS draft, and pressing Create in Google Slides produces a NEW deck containing it. Never say the existing file was updated, and never tell the user to refresh." : ""} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             });
             continue;
           }
@@ -9784,7 +9794,7 @@ async function streamXAIChatCompletions(
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${input?.fidelity === "preserve" ? fidelityAudit(draft.slides.length, sourceSlideCount(messages)) : ""}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${input?.fidelity === "preserve" ? fidelityAudit(draft.slides.length, sourceSlideCount(messages)) : ""}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} ${prepared.publishedBefore ? " A DECK ALREADY EXISTS IN DRIVE from an earlier version of this draft. It has NOT been changed and never will be — it is the user's file. Say this plainly: the change is in THIS draft, and pressing Create in Google Slides produces a NEW deck containing it. Never say the existing file was updated, and never tell the user to refresh." : ""} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             } as any);
             continue;
           }
@@ -10837,7 +10847,7 @@ async function streamGemini(
             geminiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${input?.fidelity === "preserve" ? fidelityAudit(draft.slides.length, sourceSlideCount(messages)) : ""}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${input?.fidelity === "preserve" ? fidelityAudit(draft.slides.length, sourceSlideCount(messages)) : ""}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} ${prepared.publishedBefore ? " A DECK ALREADY EXISTS IN DRIVE from an earlier version of this draft. It has NOT been changed and never will be — it is the user's file. Say this plainly: the change is in THIS draft, and pressing Create in Google Slides produces a NEW deck containing it. Never say the existing file was updated, and never tell the user to refresh." : ""} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             } as any);
             continue;
           }
@@ -11778,7 +11788,7 @@ async function streamOpenAI(
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${input?.fidelity === "preserve" ? fidelityAudit(draft.slides.length, sourceSlideCount(messages)) : ""}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
+              content: `Draft deck rendered as a ${draft.slides.length}-slide preview in the chat. NOTHING has been written to Drive. ${visualAudit(draft.slides, input?.fidelity === "preserve")}${input?.fidelity === "preserve" ? fidelityAudit(draft.slides.length, sourceSlideCount(messages)) : ""}${(draft.slides as any).splitCount > 0 ? ` ${(draft.slides as any).splitCount} slide(s) did not fit on one page and were split in two, so the deck is longer than what you sent — TELL THE USER which ones.` : ""}${deckWarnings(draft.slides)} ${prepared.publishedBefore ? " A DECK ALREADY EXISTS IN DRIVE from an earlier version of this draft. It has NOT been changed and never will be — it is the user's file. Say this plainly: the change is in THIS draft, and pressing Create in Google Slides produces a NEW deck containing it. Never say the existing file was updated, and never tell the user to refresh." : ""} The user can see it and there is a "Create in Google Slides" button under it — tell them briefly what is in the deck and invite changes. Do NOT claim it is saved, do NOT write a link, and do NOT tell them where to click. TO ADD MORE SLIDES TO THIS DECK — which is how a long document is converted, because one call cannot write out thirty slides before it is cut off — call generate_slides again with editSlide: { insertAfter: ${draft.slides.length}, insertSlides: [ ...about ten more slides... ] }. Do NOT resend the slides already here; \`slides\` must be left out of that call entirely.`,
             } as any);
             continue;
           }

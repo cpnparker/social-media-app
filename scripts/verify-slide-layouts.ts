@@ -1545,7 +1545,20 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     const wired2 = (prov2.match(/slides_progress: \{ images: \{ done, total \} \}/g) || []).length;
     assertI(wired2 === 4, `all four chains stream image progress (${wired2} of 4)`);
   }
-  if (failures === before20i) pass("no path can write into a Drive deck, decks take their cover's name, and the photo phase reports progress");
+  {
+    const assertI = (ok: boolean, m: string) => { if (!ok) fail(m); };
+    // THE NOTE, when a deck already exists in Drive. Without it the model told
+    // the user "that should be visible now — try refreshing" about a Drive file
+    // the policy forbids touching. All four chains must carry it, gated on the
+    // flag the DB row answers.
+    const prov3 = readFileSync(join(__dirname, "..", "lib/ai/providers.ts"), "utf8");
+    const noted = (prov3.match(/A DECK ALREADY EXISTS IN DRIVE/g) || []).length;
+    assertI(noted === 4, `all four chains tell the model about an existing Drive deck (${noted} of 4)`);
+    assertI((prov3.match(/prepared\.publishedBefore \?/g) || []).length === 4, "gated on the flag, not always-on");
+    assertI(/publishedBefore = !!dbDraft\?\.published\?\.presentationId/.test(prov3),
+      "and the flag is answered by the DATABASE row, which the Create button stamps from another process");
+  }
+  if (failures === before20i) pass("no path can write into a Drive deck, decks take their cover's name, the photo phase reports progress, and an existing Drive deck is named to the model");
 
   /* 21. The analysis formats draw their structure. */
   const before21 = failures;
