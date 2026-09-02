@@ -397,7 +397,11 @@ function displayFilename(title: string): string {
 
 export async function generateWordDocument(
   input: WordDocInput
-): Promise<{ url: string; filename: string }> {
+  // The BUFFER comes back as well as the link. A Google Doc is made by handing
+  // Drive these exact bytes and asking it to convert them, so the Doc and the
+  // .docx are the same document by construction rather than by two builders
+  // that agree today.
+): Promise<{ url: string; filename: string; buffer: Buffer }> {
   const { title, body, subtitle, coverPage = false, workspaceId } = input;
 
   const children: (Paragraph | Table)[] = [];
@@ -498,5 +502,6 @@ export async function generateWordDocument(
   return {
     url: `/api/media/file?path=${encodeURIComponent(blob.pathname)}`,
     filename: displayFilename(title),
+    buffer: Buffer.from(buffer),
   };
 }

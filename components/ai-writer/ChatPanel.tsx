@@ -878,6 +878,15 @@ export default function ChatPanel({
                 fullText += `\n\n📄 [Download ${docName}](${docUrl})\n\n`;
                 setStreamingContent(fullText);
               }
+            } else if (parsed.google_doc_ready) {
+              setIsGeneratingDocument(false);
+              setSlidesProgress(null);
+              const d = parsed.google_doc_ready;
+              if (d.url) {
+                fullText += `\n\n\uD83D\uDCDD [Open ${d.title || "the document"} in Google Docs](${d.url})\n\n`;
+                setStreamingContent(fullText);
+              }
+              toast.success("Document created in your Google Drive.");
             } else if (parsed.document_error) {
               setIsGeneratingDocument(false);
               setSlidesProgress(null);
@@ -916,9 +925,11 @@ export default function ChatPanel({
                 setStreamingContent(fullText);
               }
             } else if (parsed.slides_reauth) {
-              // The model's own attempt was blocked. The draft it built is on
-              // screen, so the card's action can finish it.
-              pendingPublishRef.current = true;
+              // The model's own attempt was blocked. For a deck the draft it
+              // built is on screen, so the card's action can finish it. For a
+              // document there is nothing to resume — the content lived in that
+              // turn — so the card reconnects and says to ask again.
+              pendingPublishRef.current = parsed.slides_reauth.intent !== "doc";
               setIsGeneratingDocument(false);
               setSlidesProgress(null);
               setSlidesReauth({

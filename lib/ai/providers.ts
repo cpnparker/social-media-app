@@ -1787,7 +1787,7 @@ const WORD_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   function: {
     name: "generate_word_document",
     description:
-      "Generate a Word document (.docx) when the user asks for a Word doc, document, report, letter, memo, proposal, brief, or a file they can edit or upload to Google Drive. Use this for prose documents; use generate_document for slide decks. The body is markdown and is rendered as real Word formatting — headings, bullet and numbered lists, tables, quotes and links all carry over.",
+      "Generate a Word document (.docx) when the user asks for a Word doc, document, report, letter, memo, proposal, brief, or a file they can edit or upload to Google Drive. Use this for prose documents; use generate_document for slide decks. The body is markdown and is rendered as real Word formatting — headings, bullet and numbered lists, tables, quotes and links all carry over. Set `googleDoc: true` when the user asks for a GOOGLE DOC, a Google Doc version, or something they can edit in Google Docs: the same document is then also created in their Google Drive and they get both links. You CAN create Google Docs — never tell a user that Google Docs is unsupported or that you lack the permission or scope for it.",
     parameters: {
       type: "object",
       properties: {
@@ -1803,6 +1803,11 @@ const WORD_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           type: "string",
           description:
             "The full document in markdown. Use # ## ### for headings, - for bullets, 1. for numbered lists, | tables |, > quotes, **bold**, *italic*, [links](url). Write the COMPLETE content — this is what the file will contain, so never abbreviate or write a placeholder.",
+        },
+        googleDoc: {
+          type: "boolean",
+          description:
+            "Create the document in the user's Google Drive as a Google Doc as well as producing the .docx. Set true when they ask for a Google Doc or say they want to edit it in Google Docs. They get both links. If their Google connection needs attention they are shown a reconnect button — that is a connection problem, not a missing capability.",
         },
         coverPage: {
           type: "boolean",
@@ -4143,6 +4148,40 @@ interface ThemeColors {
  *  rather than dead-ending. That fallback is reported rather than silent: the
  *  whole complaint that prompted this was a second deck appearing while the
  *  user watched an unchanged one. */
+/**
+ * A generated document, and — when asked for — the same document as a Google
+ * Doc in the user's Drive.
+ *
+ * One function rather than the four copies this handler previously had, because
+ * the four chains had already drifted in their tool-result wording and this
+ * adds a branch to each. The .docx is built and returned FIRST and always: if
+ * the Drive step fails the user still has their document, which is the
+ * difference between a degraded answer and a lost one.
+ */
+export async function buildWordAndMaybeDoc(
+  input: any,
+  config: { workspaceId?: string; userEmail?: string }
+): Promise<{ events: Record<string, unknown>[]; marker: string; toolText: string }> {
+  const { generateWordDocument } = await import("@/lib/documents/word");
+  const { url, filename, buffer } = await generateWordDocument({
+    title: input.title || "Document",
+    body: input.body || "",
+    subtitle: input.subtitle,
+    coverPage: input.coverPage === true,
+    workspaceId: config.workspaceId,
+  });
+
+  const { documentOutcome } = await import("@/lib/documents/google-doc");
+  if (input.googleDoc !== true || !config.userEmail) {
+    return documentOutcome({ url, filename });
+  }
+
+  const { createGoogleDoc } = await import("@/lib/documents/google-doc");
+  const { isActionable } = await import("@/lib/slides/reauth");
+  const doc = await createGoogleDoc({ title: input.title || "Document", docx: buffer, userEmail: config.userEmail });
+  return documentOutcome({ url, filename, doc, docActionable: isActionable(doc.reason) });
+}
+
 async function buildOrUpdateSlides(
   title: string,
   slides: any[],
@@ -8438,27 +8477,15 @@ async function streamAnthropic(
         }
       } else if (tool.name === "generate_word_document") {
         try {
-          const { generateWordDocument } = await import("@/lib/documents/word");
-          const { url, filename } = await generateWordDocument({
-            title: tool.input.title || "Document",
-            body: tool.input.body || "",
-            subtitle: tool.input.subtitle,
-            coverPage: tool.input.coverPage === true,
-            workspaceId: config.workspaceId,
-          });
-
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ document_ready: { url, filename } })}\n\n`
-            )
-          );
-
-          fullText += `\n\n\u{1F4C4} [Download ${filename}](${url})\n\n`;
-
+          const out = await buildWordAndMaybeDoc(tool.input, config);
+          for (const ev of out.events) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
+          }
+          fullText += out.marker;
           toolResults.push({
             type: "tool_result",
             tool_use_id: tool.id,
-            content: `Word document generated: ${filename}. Download: ${url} — The download link is already shown to the user. Do NOT write another link.`,
+            content: out.toolText,
           });
         } catch (err: any) {
           console.error("[WordGen] Failed:", err.message);
@@ -9738,27 +9765,15 @@ async function streamXAIChatCompletions(
       } else if (tc.function.name === "generate_word_document") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const { generateWordDocument } = await import("@/lib/documents/word");
-          const { url, filename } = await generateWordDocument({
-            title: input.title || "Document",
-            body: input.body || "",
-            subtitle: input.subtitle,
-            coverPage: input.coverPage === true,
-            workspaceId: config.workspaceId,
-          });
-
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ document_ready: { url, filename } })}\n\n`
-            )
-          );
-
-          fullText += `\n\n\u{1F4C4} [Download ${filename}](${url})\n\n`;
-
+          const out = await buildWordAndMaybeDoc(input, config);
+          for (const ev of out.events) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
+          }
+          fullText += out.marker;
           openaiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: `Word document generated: ${filename}. Download: ${url} — The download link is already shown to the user. Do NOT write another link.`,
+            content: out.toolText,
           } as any);
         } catch (err: any) {
           console.error("[WordGen/OpenAI] Failed:", err.message);
@@ -10794,27 +10809,15 @@ async function streamGemini(
       } else if (tc.function.name === "generate_word_document") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const { generateWordDocument } = await import("@/lib/documents/word");
-          const { url, filename } = await generateWordDocument({
-            title: input.title || "Document",
-            body: input.body || "",
-            subtitle: input.subtitle,
-            coverPage: input.coverPage === true,
-            workspaceId: config.workspaceId,
-          });
-
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ document_ready: { url, filename } })}\n\n`
-            )
-          );
-
-          fullText += `\n\n\u{1F4C4} [Download ${filename}](${url})\n\n`;
-
+          const out = await buildWordAndMaybeDoc(input, config);
+          for (const ev of out.events) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
+          }
+          fullText += out.marker;
           geminiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: `Word document generated: ${filename}. Download: ${url} — The download link is already shown to the user. Do NOT write another link.`,
+            content: out.toolText,
           } as any);
         } catch (err: any) {
           console.error("[WordGen/Gemini] Failed:", err.message);
@@ -11738,27 +11741,15 @@ async function streamOpenAI(
       } else if (tc.function.name === "generate_word_document") {
         try {
           const input = JSON.parse(tc.function.arguments);
-          const { generateWordDocument } = await import("@/lib/documents/word");
-          const { url, filename } = await generateWordDocument({
-            title: input.title || "Document",
-            body: input.body || "",
-            subtitle: input.subtitle,
-            coverPage: input.coverPage === true,
-            workspaceId: config.workspaceId,
-          });
-
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ document_ready: { url, filename } })}\n\n`
-            )
-          );
-
-          fullText += `\n\n\u{1F4C4} [Download ${filename}](${url})\n\n`;
-
+          const out = await buildWordAndMaybeDoc(input, config);
+          for (const ev of out.events) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
+          }
+          fullText += out.marker;
           openaiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: `Word document generated: ${filename}. Download: ${url} — The download link is already shown to the user. Do NOT write another link.`,
+            content: out.toolText,
           } as any);
         } catch (err: any) {
           console.error("[WordGen/OpenAI] Failed:", err.message);
