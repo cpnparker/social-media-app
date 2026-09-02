@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { meetingBrainDb } from "@/lib/supabase-meetingbrain";
+import { chooseGrantRow } from "@/lib/connections/grant-row";
 import { closingPage } from "@/lib/connections/closing-page";
 import { stateIsStale, verifyState } from "@/lib/connections/state";
 import {
@@ -126,19 +127,35 @@ export async function GET(req: NextRequest) {
       id_token: tokens.id_token ?? null,
     };
 
-    // Replace rather than accumulate. getGoogleClient picks a google row with no
-    // ORDER BY, so leaving an older row behind is a coin-flip over which token
-    // gets used — and a stale one produces intermittent auth failures that look
-    // like anything but a duplicate row.
-    const { data: prior } = await mb
+    // ONE row, chosen deliberately.
+    //
+    // This used to update every google row for the user at once. When a user
+    // holds two — MeetingBrain's sign-in keys its row by the numeric Google
+    // subject, this flow keys its own by email address — that writes the SAME
+    // provider_account_id onto both, and the table has a unique constraint on
+    // (provider, provider_account_id). The update failed outright:
+    //
+    //   duplicate key value violates unique constraint
+    //   "account_provider_provider_account_id_key"
+    //
+    // which surfaced as "something went wrong" on the last page of the consent
+    // flow. So the duplicate blocked the export AND blocked the only thing that
+    // could have fixed the export. There was no way out from inside the product.
+    const { data: prior, error: priorErr } = await mb
       .from("account")
-      .select("id")
+      .select("id, user_id, refresh_token, access_token, expires_at, scope, provider_account_id")
       .eq("user_id", mbUserId)
       .eq("provider", "google");
+    if (priorErr) throw new Error(`could not read existing grants: ${priorErr.message}`);
 
-    if (prior && prior.length > 0) {
-      const { error: updErr } = await mb.from("account").update(row).eq("user_id", mbUserId).eq("provider", "google");
+    const target = chooseGrantRow((prior || []) as any, row.provider_account_id);
+    if (target) {
+      // By id. Addressing the update by (user, provider) is what collided.
+      const { error: updErr } = await mb.from("account").update(row).eq("id", target.id);
       if (updErr) throw new Error(`could not update grant: ${updErr.message}`);
+      if ((prior || []).length > 1) {
+        console.warn(`[Connections/google] mb_user=${mbUserId} holds ${(prior || []).length} google rows; refreshed ${target.id}`);
+      }
     } else {
       const { error: insErr } = await mb.from("account").insert(row);
       if (insErr) throw new Error(`could not store grant: ${insErr.message}`);

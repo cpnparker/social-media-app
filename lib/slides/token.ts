@@ -33,7 +33,7 @@ export interface SlidesAuth {
   reason?: SlidesAuthFailure;
 }
 
-interface AccountRow {
+export interface AccountRow {
   id: string | number;
   user_id: string;
   refresh_token: string | null;

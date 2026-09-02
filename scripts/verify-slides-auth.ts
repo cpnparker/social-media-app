@@ -50,6 +50,8 @@
  */
 
 import { createServer, type Server } from "http";
+import { readFileSync } from "fs";
+import { join } from "path";
 
 let failures = 0;
 const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
@@ -330,6 +332,51 @@ const account = (over: Partial<any>) => ({
     assert(reconnectLabel("not_connected") === "Connect Google", "someone who never connected is not asked to reconnect");
     assert(reconnectLabel("needs_reconnect") === "Reconnect Google", "and someone who did is");
     if (failures === before) ok("no reason strands the user, and every message matches its button");
+  }
+
+  console.log("\n7. A reconnect writes ONE row, and cannot collide");
+  {
+    const before = failures;
+    const { chooseGrantRow } = await import("../lib/connections/grant-row");
+
+    // The live shape that broke Gabriella's reconnect: two rows for one Google
+    // account, keyed differently, and a unique constraint on
+    // (provider, provider_account_id) that the all-rows update violated.
+    const mbRow = { ...account({ id: "row-mb" }), provider_account_id: "113853489538272936426" };
+    const engineRow = { ...account({ id: "row-engine" }), provider_account_id: "her@example.com" };
+
+    const picked = chooseGrantRow([mbRow, engineRow] as any, "her@example.com");
+    assert(picked?.id === "row-engine",
+      `the row already holding this account id is the one refreshed (${picked?.id})`);
+    // Which is what makes it collision-free: the value written is the value the
+    // chosen row already has, so no OTHER row can hold it.
+    assert(picked?.provider_account_id === "her@example.com",
+      "and updating it cannot duplicate a key it already owns");
+    assert(chooseGrantRow([engineRow, mbRow] as any, "her@example.com")?.id === "row-engine",
+      "in either row order");
+
+    // Signing in through MeetingBrain instead: the subject-keyed row is chosen.
+    assert(chooseGrantRow([mbRow, engineRow] as any, "113853489538272936426")?.id === "row-mb",
+      "the same rule from the other direction");
+
+    // Never more than one row comes back — an array here would be the old bug.
+    const one = chooseGrantRow([mbRow, engineRow] as any, "unseen@example.com");
+    assert(!!one && !Array.isArray(one), "an unclaimed account id still resolves to exactly one row");
+    assert(one!.id === "row-mb" || one!.id === "row-engine", "and it is one of the rows that exist");
+
+    assert(chooseGrantRow([], "x@example.com") === null, "no rows means insert");
+    assert(chooseGrantRow(null, "x@example.com") === null, "and null is not a crash");
+    assert(chooseGrantRow([engineRow] as any, "her@example.com")?.id === "row-engine",
+      "the ordinary single-row reconnect is unchanged");
+
+    // The callback must address the update BY ID. Addressing it by
+    // (user, provider) is precisely what wrote two rows at once.
+    const cb = readFileSync(join(__dirname, "..", "app/api/connections/google/callback/route.ts"), "utf8");
+    assert(/\.update\(row\)\.eq\("id", target\.id\)/.test(cb),
+      "the grant update is addressed by row id");
+    assert(!/\.update\(row\)[\s\S]{0,80}\.eq\("provider", "google"\)/.test(cb),
+      "and never by (user, provider), which is the write that collided");
+    if (failures === before) ok("a reconnect refreshes one row, chosen so the unique key cannot collide");
   }
 
   server.close();
