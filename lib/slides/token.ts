@@ -197,15 +197,20 @@ export async function getUserGoogleToken(userEmail: string): Promise<SlidesAuth>
 
 /** What to tell the user when auth is not available. Phrased as an action they
  *  can take — "no access" is never the whole truth here, since the connection
- *  either exists or is one click away. */
+ *  either exists or is one click away.
+ *
+ *  None of these send the user to Settings any more. The message is shown on a
+ *  card carrying the button that does the thing, and the deck they were trying
+ *  to build is on the screen behind it: directing them to another page to fix
+ *  it by hand is both a longer road and a way to lose the draft they came for. */
 export function authFailureMessage(reason: SlidesAuthFailure): string {
   switch (reason) {
     case "needs_reconnect":
-      return "Slide creation needs one extra Google permission that your existing connection predates. Reconnect Google in Settings → Connections and it will work — your Gmail and Calendar access is unaffected.";
+      return "Slide creation needs one extra Google permission that your existing connection predates. Reconnect Google in Settings → Connections — your Gmail and Calendar access is unaffected.";
     case "not_connected":
-      return "Connect your Google account in Settings → Connections and I can build the deck straight into your Drive.";
+      return "Connect your Google account below and I'll build the deck straight into your Drive.";
     case "refresh_failed":
-      return "Your Google connection has expired or been revoked. Reconnect it in Settings → Connections.";
+      return "Your Google connection has expired or been revoked. Reconnect below and I'll pick the deck back up.";
     case "not_configured":
       return "Google Slides creation isn't configured on this deployment.";
     case "unavailable":

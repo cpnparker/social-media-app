@@ -322,6 +322,10 @@ const account = (over: Partial<any>) => ({
       if (isReconnectable(r)) {
         assert(/connect/i.test(msg), `${r} tells the user to connect, which is what its button does`);
       }
+      // No message sends the user to another page. The card carries the button
+      // and the draft is on the screen behind it; Settings is a longer road to
+      // the same place, and the one the user does not come back from.
+      assert(!/Settings/i.test(msg), `${r} does not route the user away from the card that can fix it (${msg})`);
     }
     assert(reconnectLabel("not_connected") === "Connect Google", "someone who never connected is not asked to reconnect");
     assert(reconnectLabel("needs_reconnect") === "Reconnect Google", "and someone who did is");
