@@ -206,7 +206,7 @@ export async function getUserGoogleToken(userEmail: string): Promise<SlidesAuth>
 export function authFailureMessage(reason: SlidesAuthFailure): string {
   switch (reason) {
     case "needs_reconnect":
-      return "Slide creation needs one extra Google permission that your existing connection predates. Reconnect Google in Settings → Connections — your Gmail and Calendar access is unaffected.";
+      return "Slide creation needs one extra Google permission that your existing connection predates. Reconnect below and I'll build the deck straight away — your Gmail and Calendar access is unaffected.";
     case "not_connected":
       return "Connect your Google account below and I'll build the deck straight into your Drive.";
     case "refresh_failed":
