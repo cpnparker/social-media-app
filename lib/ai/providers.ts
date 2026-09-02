@@ -1797,7 +1797,11 @@ const WORD_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         },
         subtitle: {
           type: "string",
-          description: "A standfirst: the ONE sentence saying what this slide argues or what a chart PROVES, drawn under the title in larger, lighter type. Live on content, case-study, dark-index, cover, closing, section, the timelines AND the chart layouts (bar-chart, stacked-bar) — on a chart it is the finding the bars demonstrate, under an assertion title. Give every evidence slide one.",
+          // Was the SLIDES standfirst text, verbatim: it described chart
+          // layouts and dark-index slides inside the Word tool's schema. A
+          // document has no bar-chart layout, so the model was being briefed on
+          // a field that does not exist here.
+          description: "A standfirst: one sentence under the title saying what the document is or argues, drawn in larger, lighter type. Optional — use it for a report or proposal, skip it for a letter or memo where a subtitle would read oddly.",
         },
         body: {
           type: "string",
