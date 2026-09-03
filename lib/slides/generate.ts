@@ -3894,7 +3894,25 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       chartBandTop = GRID.bodyY + standH + 8;
     }
 
-    if (layout === "stat") requests.push(...statRequests(page, id, slide.stats || [], band, onDark));
+    if (layout === "stat") {
+      // A stat slide's BODY is its second row of figures — the supporting
+      // numbers a source page sets under the headline ones. The layout never
+      // drew it, so a page of seven figures came out as four and an empty
+      // middle, which was the very first thing the client noticed. With a
+      // body the headline row takes the upper share of the band and the body
+      // the rest; without one the row stays centred as before.
+      const hasBody = !!slide.body?.trim();
+      const statBand = hasBody ? Math.floor(band * 0.56) : band;
+      requests.push(...statRequests(page, id, slide.stats || [], statBand, onDark));
+      if (hasBody) {
+        const bodyTop = GRID.bodyY + statBand + 6;
+        const bodyStyle2 = onDark ? TYPE.bodyDark : TYPE.body;
+        requests.push(...textBox(id("body"), page, slide.body, bodyStyle2, {
+          x: GRID.margin, y: bodyTop, width: GRID.contentWidth,
+          height: Math.max(30, GRID.bodyY + band - bodyTop),
+        }, { bullets: true, spaceBelow: 4 }));
+      }
+    }
     else if (slide.chart) {
       requests.push(...(
         layout === "stacked-bar" ? stackedBarRequests(page, id, slide.chart, onDark, chartBandTop, band)
