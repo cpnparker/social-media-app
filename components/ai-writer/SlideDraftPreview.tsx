@@ -69,6 +69,7 @@ function renderRuns(
     const style: React.CSSProperties = {};
     if (run.url) style.textDecoration = "underline";
     if (run.italic) style.fontStyle = "italic";
+    if ((run as any).bold) style.fontWeight = 700;
     if (run.color) style.color = run.color;
     return Object.keys(style).length ? <span key={i} style={style}>{run.text}</span> : <span key={i}>{run.text}</span>;
   });

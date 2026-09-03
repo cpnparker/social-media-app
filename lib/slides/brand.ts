@@ -107,7 +107,11 @@ export const NOTE = {
   pad: 9,
   gap: 10,
   minHeight: 26,
-  maxHeight: 58,
+  /** Five lines of 8pt plus padding. Was 58 - three lines - and a real deck's
+   *  four-sentence takeaways lost their trailing sentences to a silent clip,
+   *  which on those slides was usually the punchline. The content band already
+   *  gives way by exactly this height, so the only cost is band, not overlap. */
+  maxHeight: 82,
   fontSize: 8,
   lineHeight: 11,
 } as const;

@@ -13,7 +13,7 @@
 import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
-  niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, deckWarnings, bandHeightFor,
+  niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, parseBold, deckWarnings, cardGeometry, bandHeightFor,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
@@ -981,8 +981,28 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       `a narrow column of values is never clipped (${effort.join("|")})`);
     const shortCols = denseCells.filter((_, i) => i % 5 === 0 || i % 5 === 3);
     assertTable(shortCols.every((t) => t.slice(-1) !== "\u2026"), "nor is the index column");
-    // And the prose columns are where the ellipsis lands, which is the trade.
-    assertTable(denseCells.some((t) => t.slice(-1) === "\u2026"), "precondition: this table genuinely does not fit, so something must be cut");
+    // This fixture used to HAVE to cut something — every cell rendered on one
+    // line, so the prose columns carried an ellipsis and the check asserted
+    // where the cut landed. Cells wrap now, rows size to their content, and
+    // this table fits whole: the correct assertion flipped from "the cut lands
+    // on prose" to "there is no cut". On a real client scorecard the old
+    // engine truncated nearly every substantive cell while half the slide sat
+    // empty.
+    assertTable(denseCells.every((t) => t.slice(-1) !== "\u2026"),
+      "a table that fits when wrapped is not cut at all");
+
+    // The cut-placement property still holds where a cut is genuinely
+    // unavoidable: a full twelve rows of long prose, at the one-line floor.
+    const overTbl = buildSlideRequests({ layout: "table", title: "Overflow",
+      table: { columns: ["#", "Action", "Owner", "Effort", "Expected outcome"],
+        rows: Array.from({ length: 12 }, (_, i) => [String(i + 1),
+          `A deliberately long action description that cannot fit on a single drawn line of a table cell no matter the split, row ${i + 1}`,
+          "TC Digital + the client web team", "2 hours",
+          `An equally long expected outcome sentence that also exceeds one drawn line at cell size, row ${i + 1}`]) } } as SlideInput, 0, "n");
+    const overCells = (overTbl as any[]).filter((r) => (r.insertText?.objectId || "").match(/_tc\d+_\d+$/)).map((r) => r.insertText.text as string);
+    assertTable(overCells.some((t) => t.slice(-1) === "\u2026"), "a truly overflowing table still cuts something");
+    assertTable(overCells.filter((_, i) => i % 5 === 3).every((t) => t.slice(-1) !== "\u2026"),
+      "and the cut still lands on prose, never on the narrow values");
 
     // The allocation itself, driven directly.
     const w = fitColumnWidths([28, 294, 106, 52, 259], 637);
@@ -1337,18 +1357,35 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       { url: "u", name: "d.txt", type: "text/plain", extractedText: "no slide markers here" } ] }] as any) === 0,
       "and zero for a document that is not a deck");
 
-    assertFid(fidelityAudit(35, 35) === "", "a deck that matches its source says nothing");
-    assertFid(fidelityAudit(0, 0) === "", "and nothing is said when the source is unknown");
-    const short = fidelityAudit(32, 35);
-    assertFid(short.indexOf("35") >= 0 && short.indexOf("32") >= 0, `both counts are named (${short.slice(0, 60)})`);
-    assertFid(/FEWER/.test(short), "and which way it went");
-    assertFid(/merged, split or added/.test(short), "with what to say about it");
-    assertFid(/Do NOT describe the deck as a faithful copy/.test(short),
-      "and it is forbidden from calling a shortened deck faithful");
-    assertFid(/MORE/.test(fidelityAudit(38, 35)), "a deck longer than its source is caught too");
+    assertFid(fidelityAudit(35, 35, true) === "", "a deck that matches its source says nothing");
+    assertFid(fidelityAudit(0, 0, true) === "", "and nothing is said when the source is unknown");
 
-    const audited = (prov.match(/fidelityAudit\(draft\.slides\.length, sourceSlideCount\(messages\)\)/g) || []).length;
-    assertFid(audited === 4, `all four chains run the fidelity audit (${audited} of 4)`);
+    // A SHORT deck is unfinished work, not a talking point. A 38-page client
+    // programme came back as 34 slides ending at the source's page 32 — the
+    // tail (channels, KPIs, takeaways, appendix) simply gone — and the old
+    // wording had the model offer to put the slides back instead of putting
+    // them back. The user shipped the incomplete deck.
+    const short = fidelityAudit(34, 38, true);
+    assertFid(short.indexOf("38") >= 0 && short.indexOf("34") >= 0, `both counts are named (${short.slice(0, 60)})`);
+    assertFid(/INCOMPLETE/.test(short), "a short conversion is called incomplete, not different");
+    assertFid(/CONTINUE NOW without asking/.test(short), "and the instruction is to finish it, not to offer to");
+    assertFid(/insertAfter: 34/.test(short), "with the exact append call to make");
+    assertFid(/Do NOT tell the user the conversion is complete/.test(short),
+      "and it may not describe the deck as done");
+    // Fires for RESTYLE too — merging changes the middle; truncation eats the
+    // tail — but with two slides of tolerance for genuine merging.
+    assertFid(/INCOMPLETE/.test(fidelityAudit(30, 38, false)), "a restyle six short is truncation, not editing");
+    assertFid(fidelityAudit(36, 38, false) === "", "while a restyle two short is within editorial tolerance");
+    assertFid(fidelityAudit(36, 38, true) !== "", "which preserve does not get — one-for-one means one-for-one");
+
+    const long = fidelityAudit(38, 35, true);
+    assertFid(/MORE/.test(long), "a deck longer than its source is caught too");
+    assertFid(fidelityAudit(38, 35, false) === "", "but only under preserve — a restyle may split freely");
+
+    const audited = (prov.match(/fidelityAudit\(draft\.slides\.length, sourceSlideCount\(messages\), /g) || []).length;
+    assertFid(audited === 4, `all four chains run the fidelity audit unconditionally (${audited} of 4)`);
+    assertFid(!/fidelity === "preserve" \? fidelityAudit/.test(prov),
+      "and no chain still gates the audit on the preserve flag — a forgotten flag was a silenced audit");
   }
   if (failures === before20f) pass("a preserve conversion is not told to restructure, all four chains pass the flag, and server-side splits are declared");
 
@@ -1838,6 +1875,104 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     assertL(ctexts.some((t: string) => /standfirst long enough/.test(t)), "the cards slide draws its standfirst");
   }
   if (failures === before20j) pass("the layer diagram keeps its order, arrows and dash - in the deck, the preview and the print - and toned cards carry their accents with the strip below");
+
+  /* 20k. The diff round: what a real client conversion was still missing. */
+  //
+  // A 38-page programme was converted, rendered, and diffed page against page.
+  // Everything in this section is a root cause from that diff: cells clipped
+  // while slides sat half empty, status words where the source has coloured
+  // pills, bold lead-ins flattened, five-card rows crushed to slivers, a
+  // continuation slide padded with its parent's framing.
+  const before20k = failures;
+  console.log(`\n20k. Conversion-diff fixes`);
+  {
+    const assertD = (ok: boolean, m: string) => { if (!ok) fail(m); };
+
+    // BOLD RUNS. "**Focus:** entity authority" — the marker is stripped, the
+    // range lands on the words, and the preview carries it.
+    const pbold = parseBold("**Focus:** entity authority and mentions");
+    assertD(pbold.text === "Focus: entity authority and mentions", `markers stripped (${pbold.text})`);
+    assertD(pbold.ranges.length === 1 && pbold.ranges[0].start === 0 && pbold.ranges[0].end === 6,
+      `the range lands on the lead-in (${JSON.stringify(pbold.ranges)})`);
+    assertD(parseBold("no markers").ranges.length === 0, "text without markers is untouched");
+    assertD(parseBold("unmatched ** stays").text === "unmatched ** stays", "an unmatched marker stays literal");
+    const boldSlide: SlideInput = { layout: "content", title: "T",
+      body: "**It does not lift your ranking.** Volume is not authority.\n**It rarely earns citations.** Models discount templated prose." };
+    const br = buildSlideRequests(boldSlide, 0, "n") as any[];
+    assertD(!br.some((q) => q.insertText && String(q.insertText.text).indexOf("**") >= 0),
+      "no literal asterisks reach the slide");
+    assertD(br.some((q) => q.updateTextStyle?.style?.bold === true && q.updateTextStyle
+
+?.textRange?.type === "FIXED_RANGE"),
+      "the bold ranges are applied");
+    const bpv = toPreviewModel([boldSlide]).slides[0].elements as any[];
+    const bel = bpv.find((e) => /lift your ranking/.test(String(e.text || "")));
+    assertD(!!bel?.accents?.some((a: any) => a.bold), "and the preview keeps them");
+
+    // PILLS. A scorecard's HIGH/MED/LOW render as coloured pills, not words.
+    const score: SlideInput = { layout: "table", title: "Scores",
+      table: { columns: ["Channel", "GEO", "AEO"], rows: [["Website", "HIGH", "HIGH"], ["Email", "NONE", "NONE"], ["Press", "MED", "LOW"]] } };
+    const sr = buildSlideRequests(score, 0, "n") as any[];
+    const pills = sr.filter((q) => (q.createShape?.objectId || "").match(/_tp\d+_\d+$/));
+    assertD(pills.length === 6, `every status value gets a pill (${pills.length} of 6)`);
+    assertD(pills.every((q) => q.createShape.shapeType === "ROUND_RECTANGLE"), "drawn as pills, not boxes");
+    // And the first column never turns into one — "HIGH" as a channel name is
+    // far-fetched, but the rule is cheap to state and the mistake silent.
+    assertD(!sr.some((q) => (q.createShape?.objectId || "").match(/_tp\d+_0$/)), "label columns are never pilled");
+
+    // WRAPPED CELLS. The ten-row scorecard fits every word.
+    const scorecard = ALL.find((sl) => sl.layout === "table" && (sl.table?.rows || []).length >= 9);
+    if (scorecard) {
+      const scr = buildSlideRequests(scorecard, 0, "n") as any[];
+      const cells = scr.filter((q) => (q.insertText?.objectId || "").match(/_tc\d+_\d+$/)).map((q) => q.insertText.text as string);
+      assertD(cells.every((t) => t.slice(-1) !== "\u2026"),
+        "a dense scorecard wraps and steps its type down rather than clipping its argument");
+    }
+
+    // THE SPLITTER'S CONTINUATION carries no cloned framing.
+    const longBody = Array.from({ length: 30 }, (_, i) => `Paragraph ${i + 1} of a body that cannot fit on one slide, written long enough to wrap.`).join("\n");
+    const splitOut = splitOverflowingSlides([{ layout: "content", title: "Long",
+      subtitle: "The standfirst that belongs to the FIRST half only.",
+      note: "Why this matters: the takeaway that must not be cloned.",
+      body: longBody } as SlideInput]);
+    assertD(splitOut.length >= 2, `the long body splits (${splitOut.length})`);
+    for (let i = 1; i < splitOut.length; i++) {
+      assertD(!splitOut[i].subtitle, `continuation ${i} does not repeat the standfirst`);
+      assertD(!splitOut[i].note, `continuation ${i} does not repeat the takeaway`);
+    }
+    // Structured layouts never split — a split copies everything but the body,
+    // so a table slide would print its table twice.
+    const tableLong = splitOverflowingSlides([{ layout: "table", title: "T", body: longBody,
+      table: { columns: ["A"], rows: [["x"]] } } as SlideInput]);
+    assertD(tableLong.length === 1, "a table slide is never split into two tables");
+    // MUTATION SURVIVOR, recorded rather than forced: removing `!slide.table`
+    // from the splittable guard does not fail this assertion, because the
+    // table layout draws bodyRight as its rail and never draws `body` at all —
+    // the splitter's probe finds no body box and declines on its own. The
+    // guard is defence in depth for the day a table gains a body path; the
+    // probe is what actually protects today.
+
+    // FIVE OR SIX CARDS WRAP. One row of six was 103pt a card.
+    assertD(cardGeometry(6).rows === 2 && cardGeometry(6).cols === 3, "six cards set as a 2x3 grid");
+    assertD(cardGeometry(5).rows === 2, "five as 2+3");
+    assertD(cardGeometry(4).rows === 1, "four stay on one row");
+    assertD(cardGeometry(6).cellW > cardGeometry(6).cols * 30, "and each card is wide enough to read");
+
+    // THE NOTE BAR holds a real takeaway. Was capped at three lines; the
+    // fourth sentence — usually the punchline — silently clipped.
+    const longNote = "Why this matters: " + Array.from({ length: 5 }, (_, i) =>
+      `sentence ${i + 1} of a takeaway written at the length real client decks actually use, with a named mechanism, a consequence, and the action it implies for the team next quarter.`).join(" ");
+    // Long enough to need more than the old three-line cap, or this proves
+    // nothing — the first version of this fixture was two lines and "passed"
+    // against the old clamp too.
+    assertD(estimateLines(longNote, GRID.contentWidth - 18, 8) >= 4,
+      `precondition: the fixture needs at least four lines (${estimateLines(longNote, GRID.contentWidth - 18, 8)})`);
+    const nr = buildSlideRequests({ layout: "content", title: "T", body: "x", note: longNote } as SlideInput, 0, "n") as any[];
+    const bar = nr.find((q) => (q.createShape?.objectId || "").endsWith("_noteBar"));
+    assertD(!!bar && bar.createShape.elementProperties.size.height.magnitude > 58,
+      `the note bar grows past the old three-line cap (${bar?.createShape.elementProperties.size.height.magnitude})`);
+  }
+  if (failures === before20k) pass("bold survives to the preview, statuses are pills, dense tables wrap whole, continuations carry no cloned framing, six cards make a grid, and the takeaway keeps its punchline");
 
   /* 21. The analysis formats draw their structure. */
   const before21 = failures;

@@ -67,7 +67,7 @@ export interface PreviewElement {
    *  of wrong from not underlining it at all. */
   links?: { start: number; end: number; url: string }[];
   /** The accent phrase's ranges: italic, and lime on dark grounds. */
-  accents?: { start: number; end: number; italic?: boolean; color?: string }[];
+  accents?: { start: number; end: number; italic?: boolean; bold?: boolean; color?: string }[];
   /** Points of space after each paragraph, and the line-spacing percentage.
    *  Both are set on every text box in the deck; dropping them made a body of
    *  bullets render tighter here than it does in Slides, which is how a block
@@ -234,11 +234,12 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
           // draw those words differently and a preview that draws them plain is
           // a preview of a slide the user is not going to get.
           const st0 = body.style || {};
-          if (!st0.link && (st0.italic || st0.foregroundColor) && typeof body.textRange.startIndex === "number") {
+          if (!st0.link && (st0.italic || st0.foregroundColor || st0.bold) && typeof body.textRange.startIndex === "number") {
             (el.accents ||= []).push({
               start: body.textRange.startIndex,
               end: body.textRange.endIndex,
               italic: !!st0.italic,
+              bold: !!st0.bold,
               color: st0.foregroundColor?.opaqueColor?.rgbColor ? hex(st0.foregroundColor.opaqueColor.rgbColor) : undefined,
             });
             continue;

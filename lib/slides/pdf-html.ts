@@ -75,6 +75,7 @@ function lineHtml(
       const styles: string[] = [];
       if (r.url) styles.push("text-decoration:underline");
       if (r.italic) styles.push("font-style:italic");
+      if ((r as any).bold) styles.push("font-weight:700");
       if (r.color) styles.push(`color:${escapeHtml(r.color)}`);
       const inner = escapeHtml(r.text);
       return styles.length ? `<span style="${styles.join(";")}">${inner}</span>` : inner;

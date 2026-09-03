@@ -452,6 +452,31 @@ export function parseAccents(source: string): { text: string; ranges: { start: n
   return { text, ranges };
 }
 
+/**
+ * Markdown bold, as ranges: "**Focus:** entity authority" strips the markers
+ * and returns where the bold runs sit. The source decks open almost every
+ * bullet with a bold lead-in — the label that makes a card scannable — and a
+ * pipeline that flattens them to uniform weight turns five comparable cards
+ * into five paragraphs. Same shape as parseAccents, same reason it exists.
+ */
+export function parseBold(source: string): { text: string; ranges: { start: number; end: number }[] } {
+  const ranges: { start: number; end: number }[] = [];
+  let text = "";
+  let i = 0;
+  while (i < source.length) {
+    const open = source.indexOf("**", i);
+    if (open < 0) { text += source.slice(i); break; }
+    const close = source.indexOf("**", open + 2);
+    if (close < 0) { text += source.slice(i); break; }   // unmatched stays literal
+    text += source.slice(i, open);
+    const start = text.length;
+    text += source.slice(open + 2, close);
+    if (text.length > start) ranges.push({ start, end: text.length });
+    i = close + 2;
+  }
+  return { text, ranges };
+}
+
 /** Light inks mean a dark ground, which is where the accent goes lime. Derived
  *  from the ink rather than passed in, so no call site can get it wrong. */
 function accentColorFor(style: TypeStyle): string | undefined {
@@ -484,10 +509,20 @@ function textBox(
   // would shift the link ranges — a headline carrying both is not a real case,
   // and leaving the braces visible is more honest than styling the wrong words.
   let accentRanges: { start: number; end: number }[] = [];
-  if (style.font === "Playfair Display" && links.length === 0 && rendered.indexOf("{") >= 0) {
+  const accented = style.font === "Playfair Display" && links.length === 0 && rendered.indexOf("{") >= 0;
+  if (accented) {
     const parsed = parseAccents(rendered);
     rendered = parsed.text;
     accentRanges = parsed.ranges;
+  }
+  // Bold runs, on any field that is not already carrying links or accents —
+  // both index into the final string, and stripping markers under them would
+  // shift their ranges onto the wrong words.
+  let boldRanges: { start: number; end: number }[] = [];
+  if (!accented && links.length === 0 && rendered.indexOf("**") >= 0) {
+    const pb = parseBold(rendered);
+    rendered = pb.text;
+    boldRanges = pb.ranges;
   }
 
   const requests: Req[] = [
@@ -517,6 +552,18 @@ function textBox(
       },
     },
   ];
+
+  for (let bi = 0; bi < boldRanges.length; bi++) {
+    const r = boldRanges[bi];
+    requests.push({
+      updateTextStyle: {
+        objectId,
+        textRange: { type: "FIXED_RANGE", startIndex: r.start, endIndex: r.end },
+        style: { bold: true },
+        fields: "bold",
+      },
+    });
+  }
 
   const accentColor = accentColorFor(style);
   for (let ai = 0; ai < accentRanges.length; ai++) {
@@ -2269,7 +2316,12 @@ function ruleRequests(
  *  width. Square-by-width overflowed: with four cards the picture ate so much
  *  of the card that the body was pushed out of the bottom of its own panel. */
 export function cardGeometry(count: number) {
-  const cols = Math.max(1, Math.min(6, count));
+  // FIVE OR SIX CARDS WRAP TO TWO ROWS. One row of six gave each card 103pt of
+  // width — a heading wrapped to four lines over a body squeezed to a word a
+  // line — while the source decks set the same content as a 2x3 grid. Four
+  // cards and fewer stay on one row, which is where a row still reads as one.
+  const rows = count >= 5 ? 2 : 1;
+  const cols = Math.max(1, Math.min(6, rows === 2 ? Math.ceil(count / 2) : count));
   const cellW = (GRID.contentWidth - CARDS.gap * (cols - 1)) / cols;
   const innerW = cellW - CARDS.padding * 2;
   const thumbH = CARDS.height * 0.42;
@@ -2278,7 +2330,7 @@ export function cardGeometry(count: number) {
   // on a two-card slide — the same swing that made the image grid pick bad
   // crops before its arrangement was chosen by cell shape.
   const thumbW = Math.min(innerW, thumbH * 2.2);
-  return { cols, cellW, innerW, thumbW, thumbH, aspect: thumbW / thumbH };
+  return { cols, rows, cellW, innerW, thumbW, thumbH, aspect: thumbW / thumbH };
 }
 
 /** Repeated blocks across the band.
@@ -2304,7 +2356,7 @@ function cardsRequests(
 ): Req[] {
   const shown = cards.filter(Boolean).slice(0, 6);
   if (!shown.length) return [];
-  const { cellW, innerW: gInnerW, thumbW, thumbH } = cardGeometry(shown.length);
+  const { cols, rows: gridRows, cellW, innerW: gInnerW, thumbW, thumbH } = cardGeometry(shown.length);
 
   // ONE title height for the whole row, taken from the tallest.
   //
@@ -2326,9 +2378,14 @@ function cardsRequests(
   const anyToned = shown.some((c) => toneAt([c.tone || ""], 0));
 
   const out: Req[] = [];
+  // Two grid rows split the band evenly, with the gap between them.
+  const rowH = gridRows === 2 ? (height - CARDS.gap) / 2 : height;
   shown.forEach((card, i) => {
-    const x = GRID.margin + i * (cellW + CARDS.gap);
-    let y = top;
+    const col = i % cols;
+    const gridRow = Math.floor(i / cols);
+    const x = GRID.margin + col * (cellW + CARDS.gap);
+    const rowTop = top + gridRow * (rowH + CARDS.gap);
+    let y = rowTop;
 
     // A TONED card gets the source deck's treatment: a tinted panel with a
     // 3pt accent bar across its top in the tone's strong colour, the heading
@@ -2338,7 +2395,7 @@ function cardsRequests(
     if (tone || anyToned || panelled) {
       out.push(...filledShape(id(`cp${i}`), page, "ROUND_RECTANGLE",
         tone ? tone.tint : COLOR.white, {
-        x, y, width: cellW, height,
+        x, y, width: cellW, height: rowH,
       }));
       if (tone) {
         const ACCENT: { [k: string]: string } = {
@@ -2433,7 +2490,7 @@ function cardsRequests(
     }
 
     if (card.body) {
-      const remaining = top + height - y - (boxed ? CARDS.padding : 0);
+      const remaining = rowTop + rowH - y - (boxed ? CARDS.padding : 0);
       out.push(...textBox(id(`cb${i}`), page, card.body,
         tone ? { ...TYPE.cardBody, color: COLOR.ink } : TYPE.cardBody, {
         x: innerX, y, width: innerW, height: Math.max(20, remaining),
@@ -3271,50 +3328,102 @@ function tableRequests(
   // A dropped row is SAID, never silently cut: a table that quietly shows the
   // first twelve of twenty reads as the whole set.
   const note = dropped > 0 || droppedCols > 0;
-  const tail = SOURCE_BLOCK + (note ? 12 : 0);
+  // No SOURCE_BLOCK here: that constant reserves room for a chart's source
+  // line, which a table never draws. Reserving it anyway cost every table 24pt
+  // of band — precisely the difference between a ten-row scorecard fitting
+  // with wrapped cells at 7pt and falling back to single-line clipping.
+  const tail = note ? 14 : 2;
 
-  // COLUMN WIDTHS ARE MEASURED, NOT WEIGHTED. Sharing the width in proportion
-  // to character counts starves a narrow column: with one column of long domain
-  // names, "DR" got 29px and its own value 0.9 was truncated to "0…" — a table
-  // whose figures cannot be read, which is the one thing it is for. Every
-  // column now gets what its widest cell actually needs, and only the SLACK is
-  // shared out; when there is no slack the wide columns give way first, because
-  // a long label reads fine clipped and a number does not.
-  // What each column needs for its own widest cell. The Slides text inset is
-  // the padding, so nothing is subtracted here: taking a margin off the box AND
-  // letting fitCell subtract the inset again charged every column twice, which
-  // is how an "Effort" column of "1 week" and "2 hours" came out as "1 we…".
-  const natural = columns.map((c, j) => {
-    let cells = 0;
-    for (const r of rows) cells = Math.max(cells, r[j].length);
-    const headW = c.length * TYPE.cellHead.size * PER_CHAR;
-    const cellW = cells * TYPE.cellText.size * PER_CHAR;
-    return Math.max(TABLE_MIN_COL, Math.max(headW, cellW) + TEXT_INSET_X);
-  });
-  const widths = fitColumnWidths(natural, tableW);
-  const xs: number[] = [];
-  let acc = GRID.margin;
-  for (const w of widths) { xs.push(acc); acc += w; }
-
+  // COLUMN WIDTHS ARE MEASURED, NOT WEIGHTED — and now the TYPE is searched
+  // as well. A ten-row scorecard whose "Why" column wraps to two lines cannot
+  // physically fit at 9pt: the band holds ~240pt and ten rows of two-line
+  // cells need ~330, a third of it the fixed 7.2pt Slides inset charged per
+  // cell box. The source deck solves this the honest way — smaller type — so
+  // this engine now does too: it tries 9pt, then 8, 7, 6.5, each at a 3-line
+  // and then 2-line allowance, and commits to the FIRST combination where
+  // every cell fits whole. Only when none fits does it fall back to 9pt
+  // single-line clipping, which is the old behaviour as the floor instead of
+  // the default. Column widths are recomputed per candidate size, because
+  // PER_CHAR scales with the glyphs.
   const aligns = columns.map((_, j) =>
     spec.align?.[j] || (isNumericColumn(rows.map((r) => r[j])) ? "right" : "left")
   );
-  // The Slides text box carries its own inset; there is no second margin.
   const PAD = 0;
-  const inner = (j: number) => Math.max(10, widths[j]);
-
-  // A HEADING MAY WRAP TO TWO LINES; a cell may not. The header block is then
-  // sized to what the headings actually need, rather than to a constant that
-  // was right for the first table anyone tried.
-  const heads = columns.map((c, j) => fitCell(c, inner(j), TYPE.cellHead.size, 2));
-  const headLines = heads.reduce((n, h, j) => Math.max(n, estimateLines(h, inner(j), TYPE.cellHead.size)), 1);
-  const headH = Math.max(22, drawnTextHeight(headLines, TYPE.cellHead.size));
-
   const bottom = CANVAS.height - GRID.margin - tail;
-  const rowH = Math.max(16, Math.min(30, (bottom - top - headH) / rows.length));
+
+  interface TablePlan {
+    size: number; headSize: number; cap: number;
+    widths: number[]; xs: number[]; inner: (j: number) => number;
+    heads: string[]; headH: number;
+    rowHs: number[]; rowCaps: number[]; fits: boolean;
+  }
+  const planFor = (size: number, cap: number): TablePlan => {
+    const headSize = Math.max(8, Math.min(TYPE.cellHead.size, size + 2.5));
+    const natural = columns.map((c, j) => {
+      let cells = 0;
+      for (const r of rows) cells = Math.max(cells, r[j].length);
+      // The heading may wrap to two lines, so its width claim is half its
+      // length; a cell past ~35 characters claims at half rate too, because
+      // two measured lines are the design, not a failure.
+      const headW = Math.ceil(c.length / 2 + 1) * headSize * PER_CHAR;
+      const cellClaim = cells <= 35 ? cells : 35 + (cells - 35) / 2;
+      const cellW = cellClaim * size * PER_CHAR;
+      return Math.max(TABLE_MIN_COL, Math.max(headW, cellW) + TEXT_INSET_X);
+    });
+    const widths = fitColumnWidths(natural, tableW);
+    const xs: number[] = [];
+    let acc = GRID.margin;
+    for (const w of widths) { xs.push(acc); acc += w; }
+    const inner = (j: number) => Math.max(10, widths[j]);
+    const heads = columns.map((c, j) => fitCell(c, inner(j), headSize, 2));
+    const headLines = heads.reduce((n, h, j) => Math.max(n, estimateLines(h, inner(j), headSize)), 1);
+    const headH = Math.max(20, drawnTextHeight(headLines, headSize));
+    const availRows = bottom - top - headH - 4;
+    const rowCaps = rows.map((r) => r.reduce((n, cell, j) => cell.trim()
+      ? Math.max(n, Math.min(cap, estimateLines(cell, inner(j), size)))
+      : n, 1));
+    const rowHs = rowCaps.map((n) => Math.max(15, drawnTextHeight(n, size) + 2));
+    const total = rowHs.reduce((a, b) => a + b, 0);
+    return { size, headSize, cap, widths, xs, inner, heads, headH, rowHs, rowCaps, fits: total <= availRows };
+  };
+
+  let plan: TablePlan | null = null;
+  outer: for (const trySize of [TYPE.cellText.size, 8, 7, 6.5]) {
+    for (const tryCap of [3, 2]) {
+      const cand = planFor(trySize, tryCap);
+      // A candidate only counts when nothing in it is clipped: every cell's
+      // measured lines within the cap, at this size.
+      const clipped = rows.some((r) => r.some((cell, j) =>
+        cell.trim() !== "" && estimateLines(cell, cand.inner(j), trySize) > tryCap));
+      if (cand.fits && !clipped) { plan = cand; break outer; }
+    }
+  }
+  if (!plan) {
+    plan = planFor(TYPE.cellText.size, 1);
+    const availRows = bottom - top - plan.headH - 4;
+    const total = plan.rowHs.reduce((a, b) => a + b, 0);
+    if (total > availRows) {
+      const k = availRows / total;
+      plan.rowHs = plan.rowHs.map((h) => Math.max(13, h * k));
+    }
+  } else {
+    // Deal the slack back, bounded, so the table breathes instead of huddling.
+    const availRows = bottom - top - plan.headH - 4;
+    const total = plan.rowHs.reduce((a, b) => a + b, 0);
+    const extra = Math.min(12, Math.max(0, (availRows - total) / rows.length));
+    plan.rowHs = plan.rowHs.map((h) => h + extra);
+  }
+  const { widths, xs, inner, heads, headH, rowHs, rowCaps } = plan;
+  const cellStyle = { ...TYPE.cellText, size: plan.size };
+  const headStyle = { ...TYPE.cellHead, size: plan.headSize };
+  const rowYs: number[] = [];
+  {
+    let acc2 = top + headH + 4;
+    for (const h of rowHs) { rowYs.push(acc2); acc2 += h; }
+  }
 
   heads.forEach((c, j) => {
-    out.push(...textBox(id(`th${j}`), page, c, TYPE.cellHead, {
+    out.push(...textBox(id(`th${j}`), page, c, headStyle, {
       x: xs[j] + PAD, y: top, width: inner(j), height: headH,
     }, { align: aligns[j] === "right" ? "END" : "START" }));
   });
@@ -3323,8 +3432,28 @@ function tableRequests(
   }, 0.4));
 
   const highlighted = new Set((spec.highlight || []).filter((n) => Number.isInteger(n)));
+
+  // Status and tier values render as COLOURED PILLS, the way the source decks
+  // draw them: a scorecard whose HIGH/MED/LOW all read in the same ink asks
+  // the reader to parse words where the original let them read colour.
+  const PILL: { [k: string]: { fill: string; ink: string } } = {
+    HIGH:   { fill: COLOR.tintTeal,  ink: COLOR.inkTeal },
+    MED:    { fill: COLOR.tintAmber, ink: COLOR.inkAmber },
+    MEDIUM: { fill: COLOR.tintAmber, ink: COLOR.inkAmber },
+    LOW:    { fill: COLOR.tintGrey,  ink: COLOR.ink },
+    NONE:   { fill: COLOR.tintCoral, ink: COLOR.inkCoral },
+    P1:     { fill: COLOR.blue,      ink: COLOR.white },
+    P2:     { fill: COLOR.lav,       ink: COLOR.navy },
+    P3:     { fill: COLOR.tintGrey,  ink: COLOR.ink },
+  };
+  const pillFor = (cell: string) => {
+    const m = cell.trim().toUpperCase().match(/^(HIGH|MEDIUM|MED|LOW|NONE|P[1-3])(?:\s*[·—-].*)?$/);
+    return m ? { key: m[1], spec: PILL[m[1]] } : null;
+  };
+
   rows.forEach((r, i) => {
-    const ry = top + headH + 4 + i * rowH;
+    const ry = rowYs[i];
+    const rowH = rowHs[i];
     if (highlighted.has(i)) {
       out.push(...filledShape(id(`trb${i}`), page, "RECTANGLE", COLOR.tintBlue, {
         x: GRID.margin, y: ry, width: tableW, height: rowH,
@@ -3332,10 +3461,30 @@ function tableRequests(
     }
     r.forEach((cell, j) => {
       if (!cell.trim()) return;
-      const style = j === 0 ? { ...TYPE.cellText, bold: true } : TYPE.cellText;
-      out.push(...textBox(id(`tc${i}_${j}`), page, fitCell(cell, inner(j), style.size), style, {
-        x: xs[j] + PAD, y: ry + rowH / 2 - 8, width: inner(j), height: 16,
-      }, { align: aligns[j] === "right" ? "END" : "START" }));
+      const pill = j > 0 ? pillFor(cell) : null;
+      if (pill) {
+        const label = cell.trim();
+        const pw = Math.min(inner(j), label.length * cellStyle.size * PER_CHAR + 16);
+        const px = aligns[j] === "right" ? xs[j] + inner(j) - pw : xs[j];
+        out.push(...filledShape(id(`tp${i}_${j}`), page, "ROUND_RECTANGLE", pill.spec.fill, {
+          x: px, y: ry + rowH / 2 - 8, width: pw, height: 16,
+        }));
+        out.push(...textBox(id(`tc${i}_${j}`), page, label,
+          { ...cellStyle, bold: true, color: pill.spec.ink }, {
+          x: px, y: ry + rowH / 2 - 8, width: pw, height: 16,
+        }, { align: "CENTER" }));
+        return;
+      }
+      const style = j === 0 ? { ...cellStyle, bold: true } : cellStyle;
+      const capForCell = rowCaps[i];
+      // Never taller than the row that holds it: when the whole table is
+      // squeezed to fit, a full-height text box in a scaled-down row overlaps
+      // the neighbour below — the exact collision the battery's stress table
+      // caught the moment this engine landed.
+      const cellH = Math.min(Math.max(14, rowH - 1), Math.max(16, drawnTextHeight(capForCell, style.size)));
+      out.push(...textBox(id(`tc${i}_${j}`), page, fitCell(cell, inner(j), style.size, capForCell), style, {
+        x: xs[j] + PAD, y: ry + Math.max(1, (rowH - cellH) / 2), width: inner(j), height: cellH,
+      }, { align: aligns[j] === "right" ? "END" : "START", lineSpacing: 1.05 }));
     });
     if (i < rows.length - 1) {
       out.push(...filledShape(id(`trr${i}`), page, "RECTANGLE", COLOR.navy, {
@@ -3349,7 +3498,7 @@ function tableRequests(
     if (dropped > 0) parts.push(`${rows.length} of ${allRows.length} rows`);
     if (droppedCols > 0) parts.push(`${columns.length} of ${(spec.columns || []).length} columns`);
     out.push(...textBox(id("tdrop"), page, `Showing ${parts.join(" and ")}`, TYPE.chartAxis, {
-      x: GRID.margin, y: top + headH + 4 + rows.length * rowH + 4, width: tableW, height: 12,
+      x: GRID.margin, y: rowYs[rowYs.length - 1] + rowHs[rowHs.length - 1] + 4, width: tableW, height: 12,
     }));
   }
 
@@ -4282,8 +4431,15 @@ const SPACE_BELOW = 6;
 function splitOnce(slide: SlideInput, index: number): SlideInput[] {
   const body = slide.body;
   // Only prose layouts overflow this way; a chart's geometry is bounded.
+  // Structured layouts are excluded wholesale: a slide is split by dividing
+  // its BODY, and everything else on it is copied — so splitting a table
+  // slide would print the entire table twice, once per half. The body on
+  // those layouts is commentary, bounded, and better slightly long than
+  // duplicated.
   const splittable = !slide.chart && !slide.stats && !slide.milestones && !slide.tracks &&
-    !slide.cards && !slide.quote && !slide.stages && !slide.logos;
+    !slide.cards && !slide.quote && !slide.stages && !slide.logos &&
+    !slide.table && !slide.comparison && !slide.swot && !slide.matrix &&
+    !slide.venn && !slide.scatter && !slide.layers && !slide.images && !slide.panel;
   if (!body || !splittable) return [slide];
 
   const box = bodyBox(slide, index, "body");
@@ -4332,7 +4488,12 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
       // bodyRight goes with the eyebrow: the spread copies it, so a two-column
       // slide whose LEFT column overflowed repeated its whole right column on
       // the continuation.
+      // The standfirst and the takeaway belong to the FIRST half too. A real
+      // conversion produced a continuation carrying one leftover sentence,
+      // padded to a full slide by the intro and the takeaway repeated verbatim
+      // — framing cloned to dress up a slide that holds almost nothing.
       image: undefined, eyebrow: undefined, notes: undefined, bodyRight: undefined,
+      subtitle: undefined, note: undefined, strip: undefined, tones: undefined,
       continuation: true,
     },
   ];

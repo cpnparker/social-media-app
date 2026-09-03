@@ -31,9 +31,9 @@ export function runsOf(
   line: string,
   offset: number,
   links?: { start: number; end: number; url: string }[],
-  accents?: { start: number; end: number; italic?: boolean; color?: string }[]
-): { text: string; url?: string; italic?: boolean; color?: string }[] {
-  const spans: { start: number; end: number; url?: string; italic?: boolean; color?: string }[] = [
+  accents?: { start: number; end: number; italic?: boolean; bold?: boolean; color?: string }[]
+): { text: string; url?: string; italic?: boolean; bold?: boolean; color?: string }[] {
+  const spans: { start: number; end: number; url?: string; italic?: boolean; bold?: boolean; color?: string }[] = [
     ...(links || []),
     ...(accents || []),
   ];
@@ -41,17 +41,17 @@ export function runsOf(
   const end = offset + line.length;
   const here = spans
     .filter((l) => l.end > offset && l.start < end)
-    .map((l) => ({ start: Math.max(0, l.start - offset), stop: Math.min(line.length, l.end - offset), url: (l as any).url, italic: (l as any).italic, color: (l as any).color }))
+    .map((l) => ({ start: Math.max(0, l.start - offset), stop: Math.min(line.length, l.end - offset), url: (l as any).url, italic: (l as any).italic, bold: (l as any).bold, color: (l as any).color }))
     .sort((a, b) => a.start - b.start);
   if (!here.length) return [{ text: line }];
 
-  const out: { text: string; url?: string; italic?: boolean; color?: string }[] = [];
+  const out: { text: string; url?: string; italic?: boolean; bold?: boolean; color?: string }[] = [];
   let at = 0;
   for (let i = 0; i < here.length; i++) {
     const run = here[i];
     if (run.start > at) out.push({ text: line.slice(at, run.start) });
     if (run.stop > Math.max(at, run.start)) {
-      out.push({ text: line.slice(Math.max(at, run.start), run.stop), url: run.url, italic: run.italic, color: run.color });
+      out.push({ text: line.slice(Math.max(at, run.start), run.stop), url: run.url, italic: run.italic, bold: (run as any).bold, color: run.color });
     }
     at = Math.max(at, run.stop);
   }
