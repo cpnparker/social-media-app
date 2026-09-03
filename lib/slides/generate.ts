@@ -3309,7 +3309,8 @@ export function fitCell(text: string, boxWidth: number, size: number, lines = 1)
 function tableRequests(
   page: string, id: (s: string) => string,
   spec: NonNullable<SlideInput["table"]>, bandTop: number,
-  rail?: string
+  rail?: string,
+  bandBottom?: number
 ): Req[] {
   const columns = (spec.columns || []).map((c) => String(c ?? "")).slice(0, TABLE_MAX_COLS);
   const allRows = (spec.rows || []).filter((r) => Array.isArray(r) && r.some((c) => String(c ?? "").trim() !== ""));
@@ -3349,7 +3350,11 @@ function tableRequests(
     spec.align?.[j] || (isNumericColumn(rows.map((r) => r[j])) ? "right" : "left")
   );
   const PAD = 0;
-  const bottom = CANVAS.height - GRID.margin - tail;
+  // The BAND's bottom, not the canvas's. The table measured itself against
+  // the page edge and ignored the takeaway bar entirely, so on a nine-row
+  // engine table the bar sat squarely on top of the ninth row — DeepSeek was
+  // drawn, and then painted over.
+  const bottom = Math.min(CANVAS.height - GRID.margin - tail, bandBottom ?? Infinity);
 
   interface TablePlan {
     size: number; headSize: number; cap: number;
@@ -3388,7 +3393,10 @@ function tableRequests(
   };
 
   let plan: TablePlan | null = null;
-  outer: for (const trySize of [TYPE.cellText.size, 8, 7, 6.5]) {
+  // 6pt is the floor: the source decks set dense tables at the equivalent of
+  // ~5pt, and a nine-row table with wrapped cells needs it. Small and whole
+  // beats large and cut mid-phrase.
+  outer: for (const trySize of [TYPE.cellText.size, 8, 7, 6.5, 6]) {
     for (const tryCap of [3, 2]) {
       const cand = planFor(trySize, tryCap);
       // A candidate only counts when nothing in it is clipped: every cell's
@@ -3940,7 +3948,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     if (layout === "swot" && slide.swot) requests.push(...swotRequests(page, id, slide.swot, aTop));
     else if (layout === "matrix" && slide.matrix) requests.push(...matrixRequests(page, id, slide.matrix, aTop));
     else if (layout === "comparison" && slide.comparison) requests.push(...comparisonRequests(page, id, slide.comparison, aTop));
-    else if (layout === "table" && slide.table) requests.push(...tableRequests(page, id, slide.table, aTop, slide.bodyRight));
+    else if (layout === "table" && slide.table) requests.push(...tableRequests(page, id, slide.table, aTop, slide.bodyRight, GRID.bodyY + band));
     else if (layout === "scatter" && slide.scatter) requests.push(...scatterRequests(page, id, slide.scatter, onDark, aTop));
     else if (layout === "venn" && slide.venn) requests.push(...vennRequests(page, id, slide.venn, onDark, aTop));
   } else if (layout === "timeline-parallel") {
