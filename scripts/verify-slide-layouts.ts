@@ -1842,6 +1842,32 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     // box is still the old fixed height, the fix did not happen.
     const l3 = boxOf("_sl3")!;
     assertQ(l3.h > 22, `the wrapping label is given the height it needs (${l3.h.toFixed(1)}pt)`);
+
+    // AND THE BODY BELOW THEM. Fixing the label collision immediately caused a
+    // second one: the stat band was a flat 56% of the content band, so a taller
+    // figure block ran straight through the first supporting bullet. This is
+    // the slide as it actually is — four figures AND a body — and the two must
+    // not touch.
+    const withBody: SlideInput = { ...four, body:
+      "**4-5x** conversion rate of AI-referred visitors - reported range across 2026 studies\n" +
+      "**36%** of informational queries now show an AI Overview - commercial 8%, transactional 5%\n" +
+      "**38%** of AI Overview citations come from pages in the organic top 10 - down from 76%" };
+    const wr = buildSlideRequests(withBody, 0, "n") as any[];
+    const wbox = (sfx: string) => {
+      const r = wr.find((q) => (q.createShape?.objectId || "").endsWith(sfx));
+      const e = r?.createShape?.elementProperties;
+      return e ? { y: e.transform.translateY, h: e.size.height.magnitude } : null;
+    };
+    const bodyBox = wbox("_body");
+    assertQ(!!bodyBox, "the supporting bullets are drawn");
+    const statsBottom = Math.max(...["_sd0", "_sd1", "_sd2", "_sd3"].map((s) => {
+      const b = wbox(s); return b ? b.y + b.h : 0;
+    }));
+    assertQ(!!bodyBox && bodyBox.y >= statsBottom,
+      `the bullets start below the source lines, not through them ` +
+      `(figures end ${statsBottom.toFixed(1)}, bullets start ${bodyBox?.y.toFixed(1)})`);
+    assertQ(!!bodyBox && bodyBox.y + bodyBox.h <= GRID.bodyY + GRID.bandHeight + 1,
+      "and the bullets still end inside the band");
     // And the whole block still sits inside the band.
     const lowest = Math.max(...["_sd0", "_sd1", "_sd2", "_sd3"].map((s) => {
       const b = boxOf(s); return b ? b.y + b.h : 0;

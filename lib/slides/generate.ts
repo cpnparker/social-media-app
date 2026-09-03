@@ -1310,12 +1310,20 @@ function heroStat(
   return out;
 }
 
+/** The figures, and the height they actually took.
+ *
+ *  The height is RETURNED rather than assumed by the caller. The stat band was
+ *  a flat 56% of the content band and the body was placed at that mark, so the
+ *  moment labels were measured honestly — and the block grew — the source lines
+ *  were drawn straight through the first body bullet. A block whose height
+ *  depends on its content cannot have its neighbour placed by a constant. */
 function statRequests(
   page: string, id: (s: string) => string,
   stats: { value: string; label: string; detail?: string; primary?: boolean }[],
   band: number = GRID.bandHeight,
-  onDark = false
-): Req[] {
+  onDark = false,
+  topAlign = false
+): { reqs: Req[]; height: number } {
   // EIGHT, not three.
   //
   // This said slice(0, 3), and a source page carrying SEVEN figures with their
@@ -1326,7 +1334,7 @@ function statRequests(
   // a table, so eight is the ceiling and anything beyond it is DECLARED.
   const all = stats.filter(Boolean);
   const shown = all.slice(0, STAT_MAX);
-  if (!shown.length) return [];
+  if (!shown.length) return { reqs: [], height: 0 };
   const dropped = all.length - shown.length;
 
   // A SINGLE stat is the moment the slide exists for — the fee, the headline
@@ -1337,7 +1345,7 @@ function statRequests(
   // `primary` among several does NOT drop the others (that would lose data);
   // it tints that column so the eye lands on it. The single-stat hero is the
   // real fix for the ask slide the audit flagged.
-  if (shown.length === 1) return heroStat(page, id, shown[0], band);
+  if (shown.length === 1) return { reqs: heroStat(page, id, shown[0], band), height: band };
 
   const out: Req[] = [];
 
@@ -1352,7 +1360,7 @@ function statRequests(
     ? CHART.statValueHeight + CHART.statLabelHeight + CHART.statDetailHeight + 4
     : Math.min(112, (band - ROW_GAP) / 2);
   let groupH = cardH * rows + ROW_GAP * (rows - 1);
-  let top = GRID.bodyY + Math.max(0, (band - groupH) / 2);
+  let top = GRID.bodyY + (topAlign ? 0 : Math.max(0, (band - groupH) / 2));
 
   // Size the number to its column instead of trusting one fixed size.
   //
@@ -1443,10 +1451,15 @@ function statRequests(
     );
     const detailLines = Math.max(0,
       ...shown.map((sx) => estimateLines(sx.detail, cell, TYPE.statDetail.size)));
-    const detailH = detailLines ? drawnTextHeight(detailLines, TYPE.statDetail.size) : 0;
+    // One value for the box AND for the height the caller is told about. They
+    // used to differ — the box took a 0.7in floor while the group height took
+    // the measurement — which is the same class of mistake as the fixed label.
+    const detailH = detailLines
+      ? Math.max(drawnTextHeight(detailLines, TYPE.statDetail.size), TYPE.statDetail.size * 1.45 + TEXT_INSET_Y)
+      : 0;
 
     groupH = CHART.statValueHeight + labelH + (detailH ? detailH + 4 : 0);
-    top = GRID.bodyY + Math.max(0, (band - groupH) / 2);
+    top = GRID.bodyY + (topAlign ? 0 : Math.max(0, (band - groupH) / 2));
 
     shown.forEach((sx, i) => {
       const x = GRID.margin + i * (cell + CHART.statGap);
@@ -1462,7 +1475,7 @@ function statRequests(
         }),
         ...textBox(id(`sd${i}`), page, sx.detail, TYPE.statDetail, {
           x, y: top + CHART.statValueHeight + labelH + 4,
-          width: cell, height: Math.max(CHART.statDetailHeight, detailH),
+          width: cell, height: detailH,
         }),
       );
     });
@@ -1474,7 +1487,7 @@ function statRequests(
         x: GRID.margin, y: top + groupH + 4, width: GRID.contentWidth, height: 10,
       }, { align: "END" }));
   }
-  return out;
+  return { reqs: out, height: groupH + (dropped > 0 ? 14 : 0) };
 }
 
 /** Fit a heading into the room above the body, growing UPWARD and shrinking
@@ -4021,11 +4034,17 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       // middle, which was the very first thing the client noticed. With a
       // body the headline row takes the upper share of the band and the body
       // the rest; without one the row stays centred as before.
+      //
+      // The split used to be a flat 56% of the band, with the body placed at
+      // that mark whatever the figures above it did. The moment the labels were
+      // measured honestly the block grew past the mark, and the source lines
+      // were drawn through the first bullet. So: top-align the figures when
+      // there is a body, and start the body where they actually end.
       const hasBody = !!slide.body?.trim();
-      const statBand = hasBody ? Math.floor(band * 0.56) : band;
-      requests.push(...statRequests(page, id, slide.stats || [], statBand, onDark));
+      const stat = statRequests(page, id, slide.stats || [], band, onDark, hasBody);
+      requests.push(...stat.reqs);
       if (hasBody) {
-        const bodyTop = GRID.bodyY + statBand + 6;
+        const bodyTop = GRID.bodyY + stat.height + 10;
         const bodyStyle2 = onDark ? TYPE.bodyDark : TYPE.body;
         requests.push(...textBox(id("body"), page, slide.body, bodyStyle2, {
           x: GRID.margin, y: bodyTop, width: GRID.contentWidth,
