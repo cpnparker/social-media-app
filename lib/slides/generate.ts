@@ -3728,8 +3728,22 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       );
     }
   } else if (layout === "closing") {
+    // THE STACK MOVES UP WHEN THE BODY IS LONG. The action lines live between
+    // the sign-off and the logo; measured honestly, a resources line plus two
+    // contact lines did not fit there, and clamping the box merely clipped
+    // them mid-glyph. So the body's need is measured FIRST, and title and
+    // sign-off shift up by the shortfall — the source's own closing sets its
+    // thank-you high for exactly this reason.
+    const closingLines = (slide.body || "").split("\n").map((l) => l.trim()).filter(Boolean);
+    const closingDrawn = closingLines.reduce((n, l) => n + estimateLines(l, GRID.contentWidth, TYPE.closingAction.size), 0);
+    const closingNeed = closingLines.length
+      ? drawnTextHeight(closingDrawn, TYPE.closingAction.size, 8, closingLines.length) + 4 : 0;
+    const closingLogoTop = LOGO_PLACEMENT.closing.y - 10;
+    const closingRoom = closingLogoTop - (GRID.closingSubtitleY + GRID.closingSubtitleHeight + 14);
+    const closingShift = Math.max(0, Math.min(70, closingNeed - closingRoom));
+    const closingSubY = GRID.closingSubtitleY - closingShift;
     const closing = fitHeading(slide.title, TYPE.coverTitle, GRID.contentWidth, {
-      bottom: GRID.closingSubtitleY - 10,
+      bottom: closingSubY - 10,
       minTop: GRID.eyebrowY + GRID.eyebrowHeight + 6,
       minHeight: GRID.closingTitleHeight,
       minSize: 20,
@@ -3740,7 +3754,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         width: GRID.contentWidth, height: closing.height,
       }, { align: "CENTER" }),
       ...textBox(id("sub"), page, slide.subtitle, TYPE.closingKicker, {
-        x: GRID.margin, y: GRID.closingSubtitleY,
+        x: GRID.margin, y: closingSubY,
         width: GRID.contentWidth, height: GRID.closingSubtitleHeight,
       }, { align: "CENTER" }),
     );
@@ -3749,14 +3763,11 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     // beneath the sign-off. The deck's last slide is the one that says what to
     // do now.
     if (slide.body?.trim()) {
-      const lines = slide.body.split("\n").map((l) => l.trim()).filter(Boolean);
-      const y = GRID.closingSubtitleY + GRID.closingSubtitleHeight + 14;
-      // MEASURED. "lines × 22" counted paragraphs, not drawn lines, so a
-      // resources line long enough to wrap was measured as one — the box came
-      // up short and the splitter dutifully made a "Thank you (continued)".
-      const drawn = lines.reduce((n, l) => n + estimateLines(l, GRID.contentWidth, TYPE.closingAction.size), 0);
-      const h = Math.min(CANVAS.height - GRID.margin - y,
-        drawnTextHeight(drawn, TYPE.closingAction.size, 8, lines.length) + 4);
+      const lines = closingLines;
+      const y = closingSubY + GRID.closingSubtitleHeight + 14;
+      // Measured (see closingNeed above), and stopping above the logo: the
+      // stack has already moved up to make this fit.
+      const h = Math.min(closingLogoTop - y, closingNeed);
       requests.push(...textBox(id("body"), page, lines.join("\n"), TYPE.closingAction, {
         x: GRID.margin, y, width: GRID.contentWidth, height: Math.max(22, h),
       }, { align: "CENTER", spaceBelow: 8 }));
