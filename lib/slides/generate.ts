@@ -1351,8 +1351,8 @@ function statRequests(
   const cardH = rows === 1
     ? CHART.statValueHeight + CHART.statLabelHeight + CHART.statDetailHeight + 4
     : Math.min(112, (band - ROW_GAP) / 2);
-  const groupH = cardH * rows + ROW_GAP * (rows - 1);
-  const top = GRID.bodyY + Math.max(0, (band - groupH) / 2);
+  let groupH = cardH * rows + ROW_GAP * (rows - 1);
+  let top = GRID.bodyY + Math.max(0, (band - groupH) / 2);
 
   // Size the number to its column instead of trusting one fixed size.
   //
@@ -1426,6 +1426,28 @@ function statRequests(
   } else {
     const fitted = Math.floor((cell - INSET) / (longest * PER_CHAR));
     const valueStyle = { ...TYPE.statValue, size: Math.max(22, Math.min(TYPE.statValue.size, fitted)) };
+
+    // MEASURE THE LABEL. It used to get a fixed 0.3in and the source line was
+    // placed immediately below that, so a label wrapping to three lines — "MORE
+    // CLICKS WHEN YOU ARE CITED IN THE AI OVERVIEW" — had its last line drawn
+    // through by its own source. The labels are caps, which is why the naive
+    // estimate said two lines and Google drew three.
+    //
+    // One height for the whole row, taken from the tallest label: the columns
+    // are read across, so their source lines must sit on one baseline.
+    const labelH = Math.max(
+      CHART.statLabelHeight,
+      ...shown.map((sx) => drawnTextHeight(
+        estimateLines(sx.label, cell, TYPE.statLabel.size, false, !!TYPE.statLabel.caps),
+        TYPE.statLabel.size)),
+    );
+    const detailLines = Math.max(0,
+      ...shown.map((sx) => estimateLines(sx.detail, cell, TYPE.statDetail.size)));
+    const detailH = detailLines ? drawnTextHeight(detailLines, TYPE.statDetail.size) : 0;
+
+    groupH = CHART.statValueHeight + labelH + (detailH ? detailH + 4 : 0);
+    top = GRID.bodyY + Math.max(0, (band - groupH) / 2);
+
     shown.forEach((sx, i) => {
       const x = GRID.margin + i * (cell + CHART.statGap);
       // The primary column keeps the others' size but takes the lime accent, so
@@ -1436,11 +1458,11 @@ function statRequests(
           x, y: top, width: cell, height: CHART.statValueHeight,
         }),
         ...textBox(id(`sl${i}`), page, sx.label, TYPE.statLabel, {
-          x, y: top + CHART.statValueHeight, width: cell, height: CHART.statLabelHeight,
+          x, y: top + CHART.statValueHeight, width: cell, height: labelH,
         }),
         ...textBox(id(`sd${i}`), page, sx.detail, TYPE.statDetail, {
-          x, y: top + CHART.statValueHeight + CHART.statLabelHeight + 4,
-          width: cell, height: CHART.statDetailHeight,
+          x, y: top + CHART.statValueHeight + labelH + 4,
+          width: cell, height: Math.max(CHART.statDetailHeight, detailH),
         }),
       );
     });
@@ -1524,14 +1546,39 @@ export const TEXT_INSET_X = SLIDES_TEXT_INSET.x * 2;
 export const TEXT_INSET_Y = SLIDES_TEXT_INSET.y * 2;
 const PER_CHAR = 0.55;              // widest average advance across the deck's faces
 const LINE_LEAD = 1.45;             // 115% paragraph spacing on a ~1.26em face
+/** How much wider an all-caps run runs than that mixed-case average. Measured
+ *  against Google's own render of the deck's caps labels and status pills. */
+export const CAPS_WIDEN = 1.2;
+
+/** How wide a status capsule must be to hold its token on ONE line.
+ *
+ *  The width used to be the token's advance plus a flat 16pt, which did not
+ *  even cover the text box's own 14.4pt of horizontal inset — and the token is
+ *  bold caps, wider again than the mixed-case average PER_CHAR assumes. Every
+ *  capsule on the channel scorecard wrapped inside itself: "MED" drawn as
+ *  "ME / D", "NONE" as "NON / E".
+ *
+ *  Exported because the decision it feeds — capsule, or plain text when even
+ *  this will not fit — is NOT reachable through a real table: fitColumnWidths
+ *  never leaves a status column that narrow, so a check driving the table only
+ *  ever sees the capsule branch and the fallback would be pinned by nothing.
+ *  This function is the seam where both answers can be asked for. */
+export function pillWidth(token: string, size: number): number {
+  return token.length * size * PER_CHAR * CAPS_WIDEN + TEXT_INSET_X + 10;
+}
 
 export function estimateLines(
-  text: string | undefined, boxWidth: number, size: number, bullets = false
+  text: string | undefined, boxWidth: number, size: number, bullets = false, caps = false
 ): number {
   const s = (text ?? "").trim();
   if (!s) return 0;
   const usable = Math.max(size, boxWidth - TEXT_INSET_X - (bullets ? BULLET_INDENT : 0));
-  const perLine = Math.max(1, Math.floor(usable / (size * PER_CHAR)));
+  // CAPITALS ARE WIDER. PER_CHAR is a mixed-case average, and a `caps: true`
+  // style draws every glyph at its widest — a stat label measured as two lines
+  // came back from Google as three, and the source line underneath it was drawn
+  // straight through the third. The line COUNT changes; the leading does not,
+  // so callers still ask drawnTextHeight for the height at the real size.
+  const perLine = Math.max(1, Math.floor(usable / (size * PER_CHAR * (caps ? CAPS_WIDEN : 1))));
   const paras = s.split("\n");
   let lines = 0;
   for (let i = 0; i < paras.length; i++) {
@@ -3477,9 +3524,10 @@ function tableRequests(
         if (!p) return null;
         return j > 0 || /^P[1-3]$/.test(p.key) ? p : null;
       })();
-      if (pill) {
+      const pillW = pill ? pillWidth(cell.trim(), cellStyle.size) : 0;
+      if (pill && pillW <= inner(j)) {
         const label = cell.trim();
-        const pw = Math.min(inner(j), label.length * cellStyle.size * PER_CHAR + 16);
+        const pw = pillW;
         const px = aligns[j] === "right" ? xs[j] + inner(j) - pw : xs[j];
         out.push(...filledShape(id(`tp${i}_${j}`), page, "ROUND_RECTANGLE", pill.spec.fill, {
           x: px, y: ry + rowH / 2 - 8, width: pw, height: 16,
@@ -3547,17 +3595,64 @@ function panelRequests(
   out.push(...filledShape(id("pnl"), page, "ROUND_RECTANGLE", fill, box));
 
   const PAD = 15;                       // the master's 26px inner padding, minus a step for our tighter canvas
-  let cursor = box.y + PAD;
   const innerW = box.width - PAD * 2;
-  if (spec.title?.trim()) {
-    const tStyle: TypeStyle = { font: "Roboto", size: 11, weight: 600, color: inkTitle };
-    const h = drawnTextHeight(estimateLines(spec.title, innerW, tStyle.size), tStyle.size);
-    out.push(...textBox(id("pnt"), page, spec.title, tStyle, {
-      x: box.x + PAD, y: cursor, width: innerW, height: h,
-    }));
-    cursor += h + 8;
+
+  // MEASURED AGAINST THE BOX, not paid out and hoped for.
+  //
+  // The cursor walked down at fixed sizes and never looked at box.height, so a
+  // fourth item whose text wrapped to two lines wrote its last line out through
+  // the bottom of the panel and onto the slide — "…that link back to / you."
+  // with "you." below the rounded corner. Panels are the one place a layout has
+  // a hard, drawn edge, which is exactly why it has to be measured.
+  //
+  // The ladder tightens type and gaps before it drops anything; a drop is the
+  // last resort and is declared on the panel.
+  const PLANS = [
+    { gap: 8, head: 8.5, body: 8,   lead: 1.1 },
+    { gap: 6, head: 8,   body: 7.5, lead: 1.05 },
+    { gap: 5, head: 7.5, body: 7,   lead: 1.0 },
+    { gap: 4, head: 7,   body: 6.5, lead: 1.0 },
+  ];
+  const textW = innerW - 11;
+  const titleStyle: TypeStyle = { font: "Roboto", size: 11, weight: 600, color: inkTitle };
+  const titleH = spec.title?.trim()
+    ? drawnTextHeight(estimateLines(spec.title, innerW, titleStyle.size), titleStyle.size) + 8
+    : 0;
+  const stackHeight = (plan: typeof PLANS[number], n: number) => {
+    let h = titleH;
+    for (let i = 0; i < n; i++) {
+      const it = items[i];
+      if (it.title?.trim()) h += drawnTextHeight(estimateLines(it.title, textW, plan.head), plan.head) + 1;
+      if (it.text?.trim()) h += drawnTextHeight(estimateLines(it.text, textW, plan.body), plan.body);
+      h += plan.gap;
+    }
+    return h;
+  };
+  const room = box.height - PAD * 2;
+  let plan = PLANS[0];
+  let count = items.length;
+  const fitting = PLANS.find((p) => stackHeight(p, items.length) <= room);
+  if (fitting) {
+    plan = fitting;
+  } else {
+    // Nothing fits whole: take the tightest plan and the most items it holds,
+    // keeping back the line that says so — a declaration drawn over the last
+    // item would be its own version of this bug.
+    plan = PLANS[PLANS.length - 1];
+    count = items.length;
+    while (count > 1 && stackHeight(plan, count) > room - 14) count--;
   }
-  items.forEach((it, i) => {
+  const drawn = items.slice(0, count);
+  const shortfall = allItems.length - drawn.length;
+
+  let cursor = box.y + PAD;
+  if (spec.title?.trim()) {
+    out.push(...textBox(id("pnt"), page, spec.title, titleStyle, {
+      x: box.x + PAD, y: cursor, width: innerW, height: titleH - 8,
+    }));
+    cursor += titleH;
+  }
+  drawn.forEach((it, i) => {
     // The dotted circular marker from the master, as a small open ring.
     out.push({
       createShape: {
@@ -3579,9 +3674,8 @@ function panelRequests(
       },
     });
     const textX = box.x + PAD + 11;
-    const textW = innerW - 11;
     if (it.title?.trim()) {
-      const hStyle: TypeStyle = { font: "Roboto", size: 8.5, weight: 600, color: inkTitle };
+      const hStyle: TypeStyle = { font: "Roboto", size: plan.head, weight: 600, color: inkTitle };
       const h = drawnTextHeight(estimateLines(it.title, textW, hStyle.size), hStyle.size);
       out.push(...textBox(id(`pnh${i}`), page, it.title, hStyle, {
         x: textX, y: cursor, width: textW, height: h,
@@ -3589,17 +3683,17 @@ function panelRequests(
       cursor += h + 1;
     }
     if (it.text?.trim()) {
-      const bStyle: TypeStyle = { font: "Roboto", size: 8, weight: 300, color: inkBody };
+      const bStyle: TypeStyle = { font: "Roboto", size: plan.body, weight: 300, color: inkBody };
       const h = drawnTextHeight(estimateLines(it.text, textW, bStyle.size), bStyle.size);
       out.push(...textBox(id(`pnb${i}`), page, it.text, bStyle, {
         x: textX, y: cursor, width: textW, height: h,
-      }, { spaceBelow: 0, lineSpacing: 1.1 }));
+      }, { spaceBelow: 0, lineSpacing: plan.lead }));
       cursor += h;
     }
-    cursor += 8;
+    cursor += plan.gap;
   });
-  if (allItems.length > items.length) {
-    out.push(...textBox(id("pnd"), page, `Showing ${items.length} of ${allItems.length} items`, { font: "Roboto", size: 6, weight: 300, color: inkBody }, {
+  if (shortfall > 0) {
+    out.push(...textBox(id("pnd"), page, `Showing ${drawn.length} of ${allItems.length} items`, { font: "Roboto", size: 6, weight: 300, color: inkBody }, {
       x: box.x + PAD, y: box.y + box.height - 14, width: innerW, height: 10,
     }));
   }

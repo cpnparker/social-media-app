@@ -14,6 +14,7 @@ import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
   niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, parseBold, deckWarnings, cardGeometry, bandHeightFor,
+  CAPS_WIDEN, TEXT_INSET_X, pillWidth,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
@@ -1745,6 +1746,222 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       "and gets no panels");
   }
   if (failures === before20ib) pass("seven figures survive as seven, the takeaway bar owns its own band, and tinted columns carry the contrast");
+
+  /* 20i-quater. Three collisions Google drew that the estimator did not. */
+  //
+  // The 39-slide deck was built, published, and then READ BACK from Google —
+  // which is the only way these three were ever going to surface. All three are
+  // the same mistake in three places: a box sized by assumption rather than by
+  // measurement, drawing over its neighbour or out through its own edge.
+  //
+  //   - A stat label got a fixed 0.3in. "MORE CLICKS WHEN YOU ARE CITED IN THE
+  //     AI OVERVIEW" wrapped to three lines and its own source line was drawn
+  //     through the third. The estimator said two lines because the label is
+  //     CAPS and PER_CHAR is a mixed-case average.
+  //   - A panel's cursor walked down at fixed sizes and never looked at the box
+  //     it was inside, so the fourth item's second line landed on the slide
+  //     below the rounded corner.
+  //   - A status pill's width was the token's advance plus a flat 16pt, which
+  //     did not even cover the text box's own 14.4pt inset. Every capsule on
+  //     the channel scorecard wrapped inside itself: "ME / D", "NON / E".
+  //
+  // MUTATION LOG
+  //   - stat label height back to the fixed CHART constant  → KILLED
+  //   - panel plan ladder bypassed (always PLANS[0])        → KILLED
+  //   - pill width back to the flat `+ 16`                  → KILLED
+  //   - pillWidth loses the inset (the shipped bug, exactly) → KILLED
+  //   - pillWidth stops reading the token's length           → KILLED
+  //   - the `pillW <= inner(j)` fallback removed             → SURVIVED, and
+  //     kept. The first attempt to pin it was a "narrow table" fixture that
+  //     drew eight ordinary pills: fitColumnWidths will not leave a status
+  //     column tight enough, so the loop asserting the fallback ran entirely
+  //     against the branch it meant to exclude — a check testing NOTHING while
+  //     reporting a pass. The branch is genuinely unreachable through today's
+  //     tables; it is a guard for a future narrower column, and no assertion
+  //     here can honestly claim to hold it. What IS pinned is pillWidth, at
+  //     the seam, where both mutations above die.
+  //   - caps widening removed from the STAT LABEL           → SURVIVED, and
+  //     kept anyway. At the four-column width the mixed-case estimate already
+  //     reaches three lines, so CAPS_WIDEN changes nothing there; what fixed
+  //     slide 3 was measuring the label AT ALL. The constant is load-bearing
+  //     for the PILL, where its mutation is killed. Recorded rather than
+  //     tidied away: the widening is the correct measurement, but no assertion
+  //     here depends on it, and a later reader should not think one does.
+  const before20iq = failures;
+  console.log(`\n20i-quater. Boxes measured against what Google actually draws`);
+  {
+    const assertQ = (ok: boolean, m: string) => { if (!ok) fail(m); };
+
+    // CAPS ARE WIDER, and the estimator must say so or every caps box is
+    // measured short.
+    assertQ(CAPS_WIDEN > 1, `an all-caps run is measured wider than mixed case (${CAPS_WIDEN})`);
+    const phrase = "MORE CLICKS WHEN YOU ARE CITED IN THE AI OVERVIEW";
+    // Swept rather than pinned to one width: at most widths the two round to
+    // the same integer, and an assertion tuned to a single lucky width would
+    // pass on a CAPS_WIDEN of 1.0001 and prove nothing.
+    let everWider = false;
+    for (let w = 90; w <= 260; w += 5) {
+      const mixed = estimateLines(phrase, w, 10, false, false);
+      const caps = estimateLines(phrase, w, 10, false, true);
+      assertQ(caps >= mixed, `caps never wraps to FEWER lines than mixed case (w=${w}: ${mixed} → ${caps})`);
+      if (caps > mixed) everWider = true;
+    }
+    assertQ(everWider, "and wraps to more lines across the widths a stat column actually takes");
+
+    // THE STAT LABEL, in the exact shape that collided: four figures, one row,
+    // the fourth carrying the long caps label with a source line under it.
+    const four: SlideInput = {
+      layout: "stat", title: "The Search Landscape Has Changed",
+      stats: [
+        { value: "1B", label: "ChatGPT weekly active users", detail: "passed 1 billion, Aug 2026" },
+        { value: "950M", label: "Gemini app monthly active users", detail: "Q2 2026 · AI Overviews reach 2.5B+" },
+        { value: "68%", label: "of Google searches end without a click", detail: "SparkToro / Similarweb, Jan-Apr 2026" },
+        { value: "+120%", label: "More clicks when you are cited in the AI Overview", detail: "Seer Interactive, 53 brands, 5.47M queries" },
+      ],
+    };
+    const fr = buildSlideRequests(four, 0, "n") as any[];
+    const boxOf = (sfx: string) => {
+      const r = fr.find((q) => (q.createShape?.objectId || "").endsWith(sfx));
+      const e = r?.createShape?.elementProperties;
+      return e ? { y: e.transform.translateY, h: e.size.height.magnitude } : null;
+    };
+    // One row, so no cards — the columns are bare text boxes.
+    assertQ(!fr.some((r) => (r.createShape?.objectId || "").match(/_sc\d+$/)),
+      "four figures stay the one-row treatment");
+    for (let i = 0; i < 4; i++) {
+      const label = boxOf(`_sl${i}`);
+      const detail = boxOf(`_sd${i}`);
+      assertQ(!!label && !!detail, `column ${i} draws both its label and its source line`);
+      if (label && detail) {
+        assertQ(label.y + label.h <= detail.y + 0.5,
+          `column ${i}'s source line starts below its label, not through it ` +
+          `(label ends ${(label.y + label.h).toFixed(1)}, source starts ${detail.y.toFixed(1)})`);
+      }
+    }
+    // The long label is the one that must have grown the row. If every label
+    // box is still the old fixed height, the fix did not happen.
+    const l3 = boxOf("_sl3")!;
+    assertQ(l3.h > 22, `the wrapping label is given the height it needs (${l3.h.toFixed(1)}pt)`);
+    // And the whole block still sits inside the band.
+    const lowest = Math.max(...["_sd0", "_sd1", "_sd2", "_sd3"].map((s) => {
+      const b = boxOf(s); return b ? b.y + b.h : 0;
+    }));
+    assertQ(lowest <= GRID.bodyY + GRID.bandHeight + 1,
+      `and the row still ends inside the band (${lowest.toFixed(1)} vs ${(GRID.bodyY + GRID.bandHeight).toFixed(1)})`);
+
+    // THE PANEL, with the four items that ran out through its bottom edge.
+    const panelled: SlideInput = {
+      layout: "content", eyebrow: "MODULE 2", title: "What Is an Entity? Think {Nodes, Not Strings}",
+      subtitle: "An entity is a distinct, identifiable thing that Google and AI platforms understand as a real-world object, with attributes, relationships and sentiment attached.",
+      body: "Entities form a network of interconnected nodes.\nGoogle's Knowledge Graph links entities together.\nYour job: make the links explicit.",
+      panel: {
+        title: "The entity types around your brand",
+        items: [
+          { title: "Person and Organisation", text: "A named CEO; a listed company." },
+          { title: "Place and Concept", text: "A head-office city; low-carbon construction." },
+          { title: "Product and Event", text: "A flagship platform; an industry expo." },
+          { title: "Partner", text: "Alliances, awards and methods that link back to you." },
+        ],
+      },
+    };
+    const pr = buildSlideRequests(panelled, 0, "n") as any[];
+    const panelShape = pr.find((r) => (r.createShape?.objectId || "").endsWith("_pnl"));
+    assertQ(!!panelShape, "the panel is drawn");
+    const pe = panelShape.createShape.elementProperties;
+    const panelBottom = pe.transform.translateY + pe.size.height.magnitude;
+    const panelTop = pe.transform.translateY;
+    let escaped = 0;
+    for (const r of pr) {
+      const oid = r.createShape?.objectId || "";
+      if (!/_(pnt|pnh\d+|pnb\d+|pnm\d+|pnd)$/.test(oid)) continue;
+      const t = r.createShape.elementProperties;
+      const bottom = t.transform.translateY + t.size.height.magnitude;
+      if (bottom > panelBottom - 1 || t.transform.translateY < panelTop - 1) {
+        escaped++;
+        fail(`panel content ${oid.split("_").pop()} escapes the panel ` +
+          `(ends ${bottom.toFixed(1)}, panel ends ${panelBottom.toFixed(1)})`);
+      }
+    }
+    assertQ(escaped === 0, "nothing is drawn outside the one box on the slide with a hard drawn edge");
+    // All four items are still there — the fix must tighten before it drops.
+    for (const t of ["Person and Organisation", "Place and Concept", "Product and Event", "Partner"]) {
+      assertQ(pr.some((r) => r.insertText?.text === t), `the panel keeps "${t}"`);
+    }
+    // A panel that genuinely cannot hold its items says so rather than
+    // silently drawing three of four.
+    const stuffed = buildSlideRequests({
+      ...panelled,
+      panel: {
+        title: "A panel whose items cannot possibly fit",
+        items: Array.from({ length: 4 }, (_, i) => ({
+          title: `Item ${i} with a heading long enough to wrap onto two lines by itself`,
+          text: "And a body paragraph that keeps going well past the point where four of these could share one panel, so that something has to give and the layout has to say which.".repeat(2),
+        })),
+      },
+    } as SlideInput, 0, "n") as any[];
+    const declared = stuffed.filter((r) => r.insertText && /Showing \d+ of \d+ items/.test(r.insertText.text));
+    assertQ(declared.length === 1, `an overstuffed panel declares what it dropped (${declared.length})`);
+
+    // THE PILL. A status token that wraps is not a pill.
+    const scorecard: SlideInput = {
+      layout: "table", title: "Every Channel, Scored for GEO and AEO",
+      table: {
+        columns: ["Channel", "GEO (cited by LLMs)", "AEO (answer surfaces)", "Why"],
+        rows: [
+          ["Website - entity pages, FAQs, guides", "HIGH", "HIGH", "The canonical source for both RAG retrieval and featured snippets."],
+          ["Wikipedia / Wikidata", "HIGH", "MED", "Most-cited source by Gemini and Perplexity."],
+          ["LinkedIn - long-form, newsletters", "HIGH", "LOW", "#2 after Reddit; 11% of AI answers cite a LinkedIn URL."],
+          ["Tier-1 press & analyst reports", "HIGH", "MED", "Training-data heavyweights."],
+          ["YouTube (with transcripts)", "MED", "HIGH", "Transcripts feed LLMs."],
+          ["Podcasts (published transcripts)", "MED", "LOW", "Premium authority signal."],
+          ["Reddit & forums", "HIGH", "MED", "The most-cited domain in Semrush's study."],
+          ["Email newsletter (send-only)", "NONE", "NONE", "Invisible to LLMs unless also published on the web."],
+          ["Newsletter archive (HTML / LinkedIn)", "MED", "MED", "Clean structure plus a public archive."],
+          ["X / Instagram / TikTok", "LOW", "LOW", "Visual-first or closed to general crawlers."],
+        ],
+      },
+    };
+    const sc = buildSlideRequests(scorecard, 0, "n") as any[];
+    const pills = sc.filter((r) => (r.createShape?.objectId || "").match(/_tp\d+_\d+$/));
+    assertQ(pills.length > 0, `the scorecard draws status pills (${pills.length})`);
+    // Every pill must be wide enough for its token ON ONE LINE, inset included.
+    for (const p of pills) {
+      const oid = p.createShape.objectId;
+      const w = p.createShape.elementProperties.size.width.magnitude;
+      const txt = sc.find((r) => r.insertText?.objectId === oid.replace("_tp", "_tc"));
+      if (!txt) continue;
+      const token = txt.insertText.text as string;
+      const styleReq = sc.find((r) => r.updateTextStyle?.objectId === txt.insertText.objectId && r.updateTextStyle.style?.fontSize);
+      const size = styleReq?.updateTextStyle?.style?.fontSize?.magnitude ?? 9;
+      const needed = token.length * 0.55 * CAPS_WIDEN * size + TEXT_INSET_X;
+      assertQ(w >= needed,
+        `pill "${token}" is wide enough to hold it on one line at ${size}pt ` +
+        `(${w.toFixed(1)}pt, needs ${needed.toFixed(1)}pt) — this is the "ME / D" wrap`);
+    }
+    // THE FALLBACK, at its seam rather than through the table.
+    //
+    // Driving this through a table proves nothing: fitColumnWidths never leaves
+    // a status column narrow enough to refuse a capsule, so a "narrow table"
+    // fixture drew eight perfectly good pills and the assertion below it ran
+    // against the branch it was meant to exclude. That is the check that
+    // silently tests NOTHING, and it is why pillWidth is exported.
+    for (const [token, size] of [["MED", 6], ["NONE", 6], ["MEDIUM", 9], ["HIGH", 8]] as [string, number][]) {
+      const w = pillWidth(token, size);
+      const inkWidth = token.length * size * 0.55 * CAPS_WIDEN;
+      assertQ(w - TEXT_INSET_X >= inkWidth,
+        `"${token}" at ${size}pt has room for its own glyphs inside the box inset ` +
+        `(${(w - TEXT_INSET_X).toFixed(1)}pt usable, ${inkWidth.toFixed(1)}pt of ink)`);
+    }
+    // The inset is the part the old formula missed, so pin it explicitly: a
+    // width that ignores it is smaller than one that does not.
+    assertQ(pillWidth("NONE", 6) > "NONE".length * 6 * 0.55 + 16,
+      "and the capsule is wider than the flat +16 that shipped the wrap");
+    // Wider token, wider capsule; larger type, wider capsule. Both monotonic,
+    // or the formula is not measuring anything.
+    assertQ(pillWidth("MEDIUM", 8) > pillWidth("MED", 8), "a longer token needs a wider capsule");
+    assertQ(pillWidth("MED", 12) > pillWidth("MED", 6), "and larger type needs a wider capsule");
+  }
+  if (failures === before20iq) pass("caps are measured as caps: stat labels clear their sources, panels hold their items, and pills hold their tokens");
 
   /* 20i-ter. The title block does not eat the slide. */
   //
