@@ -1919,6 +1919,12 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     // And the first column never turns into one — "HIGH" as a channel name is
     // far-fetched, but the rule is cheap to state and the mistake silent.
     assertD(!sr.some((q) => (q.createShape?.objectId || "").match(/_tp\d+_0$/)), "label columns are never pilled");
+    // Except a TIER token, which is the row's identity and pilled in the source.
+    const tiers = buildSlideRequests({ layout: "table", title: "Tiers",
+      table: { columns: ["Tier", "What"], rows: [["P1 · CORE", "x"], ["P2 · SUPPORT", "y"], ["HIGH", "z"]] } } as SlideInput, 0, "n") as any[];
+    const tierPills = tiers.filter((q) => (q.createShape?.objectId || "").match(/_tp\d+_0$/));
+    assertD(tierPills.length === 2, `P1/P2 in the first column are pills (${tierPills.length} of 2)`);
+    assertD(!tiers.some((q) => (q.createShape?.objectId || "").endsWith("_tp2_0")), "while HIGH in a label column still is not");
 
     // WRAPPED CELLS. The ten-row scorecard fits every word.
     const scorecard = ALL.find((sl) => sl.layout === "table" && (sl.table?.rows || []).length >= 9);

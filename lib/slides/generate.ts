@@ -3469,7 +3469,14 @@ function tableRequests(
     }
     r.forEach((cell, j) => {
       if (!cell.trim()) return;
-      const pill = j > 0 ? pillFor(cell) : null;
+      // A label column is never a status pill — but a TIER token (P1/P2/P3)
+      // is the row's identity, and the source draws exactly that as a pill in
+      // its first column. Status words stay barred there.
+      const pill = (() => {
+        const p = pillFor(cell);
+        if (!p) return null;
+        return j > 0 || /^P[1-3]$/.test(p.key) ? p : null;
+      })();
       if (pill) {
         const label = cell.trim();
         const pw = Math.min(inner(j), label.length * cellStyle.size * PER_CHAR + 16);
