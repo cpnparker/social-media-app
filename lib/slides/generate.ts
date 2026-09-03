@@ -2769,8 +2769,23 @@ function matrixRequests(
   // likely to sit, and never in the bottom corners, which collide with the axis
   // labels and the densest cluster of items. The axes carry the rest.
   if (m.quadrants) {
-    if (m.quadrants[0]) out.push(...textBox(id("mql0"), page, m.quadrants[0], TYPE.quadLabel, { x: left + 6, y: top + 4, width: w / 2 - 12, height: 12 }));
-    if (m.quadrants[1]) out.push(...textBox(id("mql1"), page, m.quadrants[1], TYPE.quadLabel, { x: midX + 6, y: top + 4, width: w / 2 - 12, height: 12 }, { align: "END" }));
+    // Sized to the TEXT, not to the half-quadrant.
+    //
+    // These were w/2 - 12 wide with the right-hand one set END-aligned, so the
+    // top-right caption's BOX covered the entire right half of the plot while
+    // its visible words occupied a corner of it. Any item label up there
+    // overlapped it by geometry — which the overlap battery reports, correctly,
+    // because a box that wide is a claim on space the caption does not use.
+    const capW = (t: string) => Math.min(w / 2 - 12, Math.max(40, t.length * 4.8 + 10));
+    if (m.quadrants[0]) out.push(...textBox(id("mql0"), page, m.quadrants[0], TYPE.quadLabel, {
+      x: left + 6, y: top + 4, width: capW(m.quadrants[0]), height: 12,
+    }));
+    if (m.quadrants[1]) {
+      const cw = capW(m.quadrants[1]);
+      out.push(...textBox(id("mql1"), page, m.quadrants[1], TYPE.quadLabel, {
+        x: right - 6 - cw, y: top + 4, width: cw, height: 12,
+      }, { align: "END" }));
+    }
   }
 
   // Items: a dot at (x,y), label beside it. y is inverted (1 = top). A label
@@ -2786,7 +2801,11 @@ function matrixRequests(
     // the dot sits high (near a quadrant caption) and above when it sits low.
     const lw = Math.min(140, Math.max(40, it.label.length * 4.6 + 8));
     const lx = px + r + 4 + lw > right ? px - r - 4 - lw : px + r + 4;
-    const ly = py < top + 22 ? py + r + 3 : py - 7;
+    // Clear of the quadrant caption strip (top+4 to top+16), not merely below
+    // the dot: a dot at the very top of the plot put its label straight into
+    // the caption. Only surfaced when the content band grew and the plot moved
+    // up with it, which is exactly what the overlap battery is for.
+    const ly = py < top + 22 ? Math.max(py + r + 3, top + 19) : py - 7;
     out.push(...textBox(id(`ml${i}`), page, it.label, it.highlight ? { ...TYPE.dotLabel, bold: true } : TYPE.dotLabel, {
       x: Math.max(left, lx), y: ly, width: lw, height: 14,
     }, lx < px ? { align: "END" } : {}));
@@ -3215,8 +3234,15 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     ? (railBox(slide) || hasPanel ? GRID.proseNarrow : GRID.proseWidth)
     : GRID.contentWidth;
   const titleWidth = layout === "image-split" ? IMAGE.splitTextWidth : proseColumn;
+  // image-split sets its title in a HALF-WIDTH column, so the same words take
+  // roughly twice the lines. Measuring it against the full-width title band
+  // was survivable while that band was tall; once it tightened, a two-line
+  // title in a narrow column ran out of its box and onto the body beneath.
+  // Its body starts under the title rather than at a fixed y, so the extra
+  // room costs nothing.
+  const split = layout === "image-split";
   const heading = fitHeading(slide.title, onDark ? TYPE.slideTitleDark : TYPE.slideTitle, titleWidth, {
-    bottom: GRID.bodyY - TITLE_GAP,
+    bottom: GRID.bodyY - TITLE_GAP + (split ? 34 : 0),
     minTop: GRID.eyebrowY + GRID.eyebrowHeight + 6,
     minHeight: GRID.titleHeight,
   });
@@ -3511,8 +3537,12 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         width: IMAGE.splitTextWidth, height: titleBox.height,
       }),
       ...textBox(id("body"), page, slide.body, bodyStyle, {
-        x: IMAGE.splitTextX, y: GRID.bodyY,
-        width: IMAGE.splitTextWidth, height: GRID.bodyHeight,
+        x: IMAGE.splitTextX,
+        // Under the title, wherever it ended up — not at a fixed y that the
+        // title may now reach past.
+        y: Math.max(GRID.bodyY, titleBox.y + titleBox.height + 8),
+        width: IMAGE.splitTextWidth,
+        height: Math.max(60, CANVAS.height - GRID.margin - 18 - Math.max(GRID.bodyY, titleBox.y + titleBox.height + 8)),
       }, { bullets: true }),
       // In the TEXT column, not on the picture. On the picture it would sit
       // beside what it credits, but this layout resolves with gradient:false —

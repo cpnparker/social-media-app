@@ -1684,6 +1684,36 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   }
   if (failures === before20ib) pass("seven figures survive as seven, the takeaway bar owns its own band, and tinted columns carry the contrast");
 
+  /* 20i-ter. The title block does not eat the slide. */
+  //
+  // Measured against the source deck this engine was asked to reproduce: our
+  // title block consumed 185pt to its 96, so content began 52% down the slide
+  // where the source begins it at 30%. Every layout started too low, and the
+  // slides that were marginal split into a second slide they did not need — a
+  // three-item column plus a takeaway bar was one such.
+  //
+  // Pinned as a PROPORTION rather than a number, because the failure was never
+  // "bodyY is 133", it was "content starts halfway down the page".
+  const before20it = failures;
+  console.log(`\n20i-ter. Density`);
+  {
+    const assertT = (ok: boolean, m: string) => { if (!ok) fail(m); };
+    const startsAt = GRID.bodyY / CANVAS.height;
+    assertT(startsAt < 0.30, `content starts in the top third of the slide (${Math.round(startsAt * 100)}%)`);
+    assertT(startsAt > 0.18, `but not so high that the title block is cramped (${Math.round(startsAt * 100)}%)`);
+    // The band still ends where it did — clear of the takeaway bar and the
+    // footer. Moving the top up without growing the band would have thrown
+    // away the room instead of using it.
+    const bandBottom = GRID.bodyY + GRID.bandHeight;
+    assertT(bandBottom > 370 && bandBottom < 380,
+      `and the band still ends just above the footer (${bandBottom.toFixed(1)})`);
+    assertT(GRID.columnY === GRID.bodyY, "the column band tracks the body band rather than drifting from it");
+    // The title still has room for two lines between the eyebrow and the body.
+    const room = GRID.bodyY - (GRID.eyebrowY + GRID.eyebrowHeight);
+    assertT(room >= 44, `two lines of title still fit above the body (${room.toFixed(1)}pt)`);
+  }
+  if (failures === before20it) pass("content starts in the top third, and the band still ends above the footer");
+
   /* 21. The analysis formats draw their structure. */
   const before21 = failures;
   console.log(`\n21. SWOT, matrix and comparison draw their parts`);

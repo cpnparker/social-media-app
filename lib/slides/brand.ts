@@ -115,16 +115,29 @@ export const NOTE = {
 export const GRID = {
   margin: 0.34 * IN,          // 24.48 — left and right
   contentWidth: 9.32 * IN,    // 671.04
-  titleY: 1.22 * IN,          // 87.84
+  /* ── THE TITLE BLOCK, MEASURED AGAINST THE SOURCE ────────────────────────
+   *
+   * These were 1.22in / 1.85in, and a conversion of a real 38-page client
+   * deck came back reading emptier than the original at the same word count.
+   * Measured rather than argued: our title block consumed 185pt to the source
+   * deck's 96, so content began 52% down the slide where the source begins it
+   * at 30%. Nothing was wrong with any single layout — every one of them
+   * started too low, and the slides that were marginal overflowed into a
+   * second slide they did not need.
+   *
+   * Tightened to start content at ~26% down, which is the source's own
+   * proportion. bandHeight grows by the same amount so the band still ends
+   * where it did, clear of the footer and the takeaway bar. */
+  titleY: 0.8 * IN,           // 57.6
   titleHeight: 0.63 * IN,     // 45.36
-  bodyY: 1.85 * IN,           // 133.2
-  bodyHeight: 2.81 * IN,      // 202.32
+  bodyY: 1.44 * IN,           // 103.68
+  bodyHeight: 3.22 * IN,      // 231.84 — grown by what bodyY gave back
   /** Foot of the title to the bottom margin. Self-contained blocks — stats, a
    *  bar plot — are centred in this, so five bars sit balanced and eight fill
    *  it. Prose is NOT: bullets centred in the band float away from the title
    *  they belong to, which rendering made obvious and reasoning had not. A
    *  three-bullet slide with dead space wants a picture, not a lower margin. */
-  bandHeight: 3.35 * IN,
+  bandHeight: 3.76 * IN,      // 270.7 — band bottom unchanged at ~374
 
   /** Stops short of the top-right logo (which starts at 8.69in) so a long
    *  eyebrow cannot run underneath it. */
@@ -165,8 +178,8 @@ export const GRID = {
   /** Columns start below the title band (1.22 + 0.63 = 1.85in). The source
    *  layout's own 1.26in assumes a title higher up the page than ours. */
   columnWidth: 4.37 * IN,     // 314.64
-  columnY: 1.85 * IN,
-  columnHeight: 2.81 * IN,
+  columnY: 1.44 * IN,         // tracks bodyY
+  columnHeight: 3.22 * IN,
   columnLeftX: 0.34 * IN,
   columnRightX: 5.28 * IN,
 } as const;
