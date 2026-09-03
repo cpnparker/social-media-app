@@ -13,7 +13,7 @@
 import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
-  niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, deckWarnings,
+  niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, deckWarnings, bandHeightFor,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
@@ -1559,6 +1559,130 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       "and the flag is answered by the DATABASE row, which the Create button stamps from another process");
   }
   if (failures === before20i) pass("no path can write into a Drive deck, decks take their cover's name, the photo phase reports progress, and an existing Drive deck is named to the model");
+
+  /* 20i-bis. The devices the source deck uses on nearly every page. */
+  //
+  // A 38-page client deck was converted and came back visibly poorer than the
+  // original. Three causes, all in the engine rather than the content:
+  //
+  //   - `stat` was capped at THREE figures. A page carrying seven rendered as
+  //     three, with four silently gone. A slide that looks finished and is
+  //     missing more than half its data is the worst failure available here.
+  //   - There was nowhere to put the "Why this matters:" sentence the source
+  //     puts along the foot of almost every page, so it went into `subtitle`
+  //     (competing with the standfirst) or into `body` (reading as one more
+  //     bullet), and the most quotable line on the page lost its emphasis.
+  //   - Two columns were always bare lists with a hairline. The source tints
+  //     them and inks the headings to match, which is how it carries "what
+  //     does not work" against "what does".
+  const before20ib = failures;
+  console.log(`\n20i-bis. Stat grid, takeaway bar, tinted columns`);
+  {
+    const assertD = (ok: boolean, m: string) => { if (!ok) fail(m); };
+
+    // SEVEN FIGURES, all of them drawn.
+    const seven = ["1B", "950M", "68%", "+120%", "4-5x", "36%", "38%"];
+    const statSlide: SlideInput = {
+      layout: "stat", title: "The Search Landscape Has Changed",
+      stats: seven.map((v, i) => ({ value: v, label: `label ${i}`, detail: `source ${i}`, primary: i === 3 })),
+    };
+    const sr = buildSlideRequests(statSlide, 0, "n") as any[];
+    const sTexts = sr.filter((r) => r.insertText).map((r) => r.insertText.text);
+    for (const v of seven) assertD(sTexts.indexOf(v) >= 0, `stat grid draws ${v} — a capped layout dropped four of these`);
+    for (let i = 0; i < 7; i++) assertD(sTexts.indexOf(`source ${i}`) >= 0, `and keeps caption ${i}, which the half-height card used to clip`);
+    // Two rows, and a card behind each figure so the grid is drawn for the eye.
+    const cards = sr.filter((r) => (r.createShape?.objectId || "").match(/_sc\d+$/));
+    assertD(cards.length === 7, `every figure gets a card (${cards.length})`);
+    const ys = Array.from(new Set(cards.map((r) => Math.round(r.createShape.elementProperties.transform.translateY))));
+    assertD(ys.length === 2, `laid out in two rows (${ys.length})`);
+    // The primary card is the MINT one, and its ink is chosen from the CARD
+    // rather than the ground — blue on navy and mint on mint were both shipped
+    // by taking it from the slide.
+    const primaryCard = sr.find((r) => (r.createShape?.objectId || "").endsWith("_sc3"));
+    const primaryFill = sr.find((r) => r.updateShapeProperties?.objectId === primaryCard.createShape.objectId);
+    const pc = primaryFill.updateShapeProperties.shapeProperties.shapeBackgroundFill.solidFill.color.rgbColor;
+    assertD(Math.abs(pc.red - 0.882) < 0.02 && Math.abs(pc.green - 0.961) < 0.02,
+      `the primary figure takes the mint card (${JSON.stringify(pc)})`);
+    // AND ITS INK COMES FROM THE CARD, not from the slide. `stat` is a DARK
+    // layout, so taking the ink from the ground put lime on mint (invisible)
+    // and brand blue on navy (unreadable). This is the assertion that was
+    // missing: the fill check above passed happily with the ink wrong.
+    const inkOf = (sfx: string) => {
+      const r = sr.find((q) => q.updateTextStyle?.objectId?.endsWith(sfx) && q.updateTextStyle.style?.foregroundColor);
+      const c = r?.updateTextStyle?.style?.foregroundColor?.opaqueColor?.rgbColor || {};
+      return [c.red || 0, c.green || 0, c.blue || 0].map((v: number) => Math.round(v * 255)).join(",");
+    };
+    const primaryInk = inkOf("_sv3");
+    const otherInk = inkOf("_sv0");
+    assertD(primaryInk === "15,110,86",
+      `the figure on the mint card is inked dark teal whatever the ground (${primaryInk})`);
+    assertD(primaryInk !== otherInk,
+      "and differs from the figures on the dark cards, which is the whole point of marking it");
+    assertD(otherInk !== "57,80,255",
+      `a figure on a dark card is never brand blue, which is unreadable on navy (${otherInk})`);
+    // Four or fewer keeps the original one-row treatment untouched.
+    const three = buildSlideRequests({ layout: "stat", title: "T",
+      stats: [{ value: "1", label: "a" }, { value: "2", label: "b" }, { value: "3", label: "c" }] } as SlideInput, 0, "n") as any[];
+    assertD(!three.some((r) => (r.createShape?.objectId || "").match(/_sc\d+$/)),
+      "three figures stay the plain one-row treatment, uncarded");
+    // Past the ceiling, the drop is DECLARED.
+    const nine = buildSlideRequests({ layout: "stat", title: "T",
+      stats: Array.from({ length: 9 }, (_, i) => ({ value: `${i}`, label: `l${i}` })) } as SlideInput, 0, "n") as any[];
+    const nineTexts = nine.filter((r) => r.insertText).map((r) => r.insertText.text);
+    assertD(nineTexts.some((t: string) => /Showing 8 of 9 figures/.test(t)),
+      "past the ceiling the slide says how many it dropped");
+
+    // THE TAKEAWAY BAR, on any layout, shortening the band rather than
+    // overlapping it.
+    const noted: SlideInput = { layout: "content", title: "T", body: "prose",
+      note: "Why this matters: the sentence that tells the reader what to do with the slide above it." };
+    const nr = buildSlideRequests(noted, 0, "n") as any[];
+    const bar = nr.find((r) => (r.createShape?.objectId || "").endsWith("_noteBar"));
+    assertD(!!bar, "the takeaway bar is drawn");
+    const barTop = bar.createShape.elementProperties.transform.translateY;
+    const barH = bar.createShape.elementProperties.size.height.magnitude;
+    assertD(barTop + barH <= 389, `it clears the footer (${(barTop + barH).toFixed(1)})`);
+    assertD(bandHeightFor(noted) < GRID.bandHeight,
+      "and the content band above it is shortened, so the two can never overlap");
+    assertD(bandHeightFor({}) === GRID.bandHeight, "while a slide without one keeps the full band");
+    // The bold lead-in is a RUN, so the sentence still wraps as one paragraph.
+    const lead = nr.find((r) => r.updateTextStyle?.style?.bold && r.updateTextStyle.textRange?.type === "FIXED_RANGE");
+    assertD(!!lead, "the lead-in is drawn bold");
+    assertD(lead.updateTextStyle.textRange.endIndex === "Why this matters:".length,
+      `ending at the colon (${lead?.updateTextStyle?.textRange?.endIndex})`);
+    // No content may be drawn inside the bar's own band.
+    for (const r of nr) {
+      const oid = r.createShape?.objectId || "";
+      if (!oid || /_(noteBar|noteTxt|ftl|ftn|logo)$/.test(oid)) continue;
+      const t = r.createShape.elementProperties;
+      assertD(t.transform.translateY + t.size.height.magnitude <= barTop + 1,
+        `${oid.split("_").pop()} stops above the takeaway bar`);
+    }
+
+    // TINTED COLUMNS. The tint makes the card a LIGHT surface whatever the
+    // ground, so heading and body ink come from the tone, not the slide.
+    const toned: SlideInput = { layout: "two-column", title: "T",
+      columns: { left: "What AIO does not do", right: "What AIO is genuinely good for" },
+      body: "left one", bodyRight: "right one", tones: ["coral", "teal"] };
+    const tr = buildSlideRequests(toned, 0, "n") as any[];
+    const panels = tr.filter((r) => (r.createShape?.objectId || "").match(/_t[lr]$/));
+    assertD(panels.length === 2, `both columns get a tinted panel (${panels.length})`);
+    assertD(panels.every((r) => r.createShape.shapeType === "ROUND_RECTANGLE"), "as rounded cards");
+    const lh = tr.find((r) => r.updateTextStyle?.objectId?.endsWith("_lh") && r.updateTextStyle.style?.foregroundColor);
+    const rh = tr.find((r) => r.updateTextStyle?.objectId?.endsWith("_rh") && r.updateTextStyle.style?.foregroundColor);
+    const hex = (c: any) => [c.red, c.green, c.blue].map((v: number) => Math.round((v || 0) * 255)).join(",");
+    assertD(hex(lh.updateTextStyle.style.foregroundColor.opaqueColor.rgbColor) !== hex(rh.updateTextStyle.style.foregroundColor.opaqueColor.rgbColor),
+      "and their headings are inked differently, which is what carries the contrast");
+    // The hairline is the PLAIN treatment's device. Drawing both looked wrong.
+    assertD(!tr.some((r) => (r.createShape?.objectId || "").endsWith("_vrule")),
+      "the hairline gives way to the cards rather than being drawn over them");
+    const plain = buildSlideRequests({ ...toned, tones: undefined }, 0, "n") as any[];
+    assertD(plain.some((r) => (r.createShape?.objectId || "").endsWith("_vrule")),
+      "while a plain two-column keeps its hairline");
+    assertD(!plain.some((r) => (r.createShape?.objectId || "").match(/_t[lr]$/)),
+      "and gets no panels");
+  }
+  if (failures === before20ib) pass("seven figures survive as seven, the takeaway bar owns its own band, and tinted columns carry the contrast");
 
   /* 21. The analysis formats draw their structure. */
   const before21 = failures;

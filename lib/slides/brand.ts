@@ -84,6 +84,34 @@ const IN = 72; // points per inch
 
 export const CANVAS = { width: 10 * IN, height: 5.625 * IN } as const; // 720 × 405
 
+/**
+ * The takeaway bar: a full-width tinted strip along the foot of the slide.
+ *
+ * The device the source deck uses on nearly every page — "The correction that
+ * matters:", "Why this matters:", "Rule of thumb:" — a bold lead-in followed by
+ * the sentence that tells the reader what to DO with the slide above it. Our
+ * engine had nowhere to put it, so it went into `subtitle` (competing with the
+ * standfirst) or into `body` (where it read as one more bullet), and the single
+ * most quotable line on the page lost its emphasis.
+ *
+ * It sits BELOW the content band and above the footer, and it shortens the band
+ * rather than overlapping it — see bandHeightFor.
+ */
+/** Headline figures per slide. Past this a figure stops being a headline
+ *  number and the slide wants a table. */
+export const STAT_MAX = 8;
+
+export const NOTE = {
+  /** Clear of the footer, which occupies the last 11pt. */
+  bottom: 388,
+  pad: 9,
+  gap: 10,
+  minHeight: 26,
+  maxHeight: 58,
+  fontSize: 8,
+  lineHeight: 11,
+} as const;
+
 export const GRID = {
   margin: 0.34 * IN,          // 24.48 — left and right
   contentWidth: 9.32 * IN,    // 671.04

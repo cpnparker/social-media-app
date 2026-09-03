@@ -15,7 +15,7 @@
  */
 
 import {
-  COLOR, GRID, CANVAS, TYPE, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
+  COLOR, GRID, CANVAS, TYPE, NOTE, STAT_MAX, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
   SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, RULE, LAYOUT_STYLE, LOGO_PLACEMENT,
   rgb, logoUrl, textOn, type SlideLayout, type TypeStyle,
 } from "@/lib/slides/brand";
@@ -99,6 +99,16 @@ export interface SlideInput {
     /** Row indices drawn on a tint — the rows that carry the argument. */
     highlight?: number[];
   };
+  /** Tinted panels behind the two columns, with the column header inked to
+   *  match: `["coral","teal"]` is the source deck's negative/positive pair
+   *  ("What AIO does not do" in rose, "What AIO is good for" in mint). Also
+   *  "blue", "amber" and "grey". Omit for the plain hairline treatment. */
+  tones?: string[];
+  /** The takeaway bar along the foot of the slide: the "Why this matters:"
+   *  sentence the source deck puts on nearly every page. A leading "Lead-in:"
+   *  is drawn bold. Works on every layout, and shortens the content band so it
+   *  can never overlap what is above it. */
+  note?: string;
   /** The master template's panel: a rounded card beside the prose, blue with
    *  white ink or the soft lavender variant, carrying a short titled list. The
    *  device the JERA master uses for "The Content Engine is a combination of:".
@@ -297,6 +307,90 @@ function extractLinks(raw: string): { text: string; links: { start: number; end:
     rest = rest.slice(m.index + m[0].length);
   }
   return { text: text + rest, links };
+}
+
+/**
+ * The tinted-panel palette for a two-column slide.
+ *
+ * The source deck almost never sets two columns as bare lists: it puts each in
+ * a soft tinted card with the heading inked to match, and uses rose against
+ * mint to carry "what does not work / what does". The tints and their inks are
+ * the validated pairs already used by SWOT and table rows, so contrast is
+ * settled rather than guessed.
+ */
+const TONES: { [k: string]: { tint: string; ink: string } } = {
+  coral: { tint: COLOR.tintCoral, ink: COLOR.inkCoral },
+  teal:  { tint: COLOR.tintTeal,  ink: COLOR.inkTeal },
+  blue:  { tint: COLOR.tintBlue,  ink: COLOR.inkBlue },
+  amber: { tint: COLOR.tintAmber, ink: COLOR.inkAmber },
+  grey:  { tint: COLOR.tintGrey,  ink: COLOR.navy },
+};
+function toneAt(tones: string[] | undefined, i: number) {
+  const key = String((tones || [])[i] || "").toLowerCase();
+  return TONES[key];
+}
+
+/** How tall the takeaway bar needs to be for its text. */
+function noteHeight(note: string | undefined): number {
+  const text = (note || "").trim();
+  if (!text) return 0;
+  const lines = estimateLines(text, GRID.contentWidth - NOTE.pad * 2, NOTE.fontSize);
+  return Math.min(NOTE.maxHeight, Math.max(NOTE.minHeight, lines * NOTE.lineHeight + NOTE.pad * 2));
+}
+
+/**
+ * The content band, shortened when a takeaway bar is present.
+ *
+ * Every layout that centres a self-contained block — stats, a plot, a card row
+ * — measures against this rather than GRID.bandHeight, so adding a note moves
+ * the content up instead of drawing the bar on top of it.
+ */
+export function bandHeightFor(slide: Pick<SlideInput, "note">): number {
+  const h = noteHeight(slide.note);
+  if (!h) return GRID.bandHeight;
+  return Math.max(90, NOTE.bottom - h - NOTE.gap - GRID.bodyY);
+}
+
+/**
+ * The takeaway bar: the "Why this matters:" sentence along the foot.
+ *
+ * The device the source deck uses on nearly every page. Our engine had nowhere
+ * to put it, so it went into `subtitle` — competing with the standfirst — or
+ * into `body`, where it read as one more bullet, and the most quotable line on
+ * the page lost its emphasis.
+ */
+function noteRequests(
+  page: string, id: (s: string) => string, note: string | undefined, onDark: boolean
+): Req[] {
+  const text = (note || "").trim();
+  if (!text) return [];
+  const h = noteHeight(text);
+  const y = NOTE.bottom - h;
+  const out: Req[] = [
+    ...filledShape(id("noteBar"), page, "ROUND_RECTANGLE", onDark ? COLOR.white : COLOR.tintBlue, {
+      x: GRID.margin, y, width: GRID.contentWidth, height: h,
+    }, onDark ? 0.1 : 1),
+    ...textBox(id("noteTxt"), page, text,
+      { font: "Roboto", size: NOTE.fontSize, weight: 300, color: onDark ? COLOR.greyLight : COLOR.navy }, {
+        x: GRID.margin + NOTE.pad, y: y + NOTE.pad - 3,
+        width: GRID.contentWidth - NOTE.pad * 2, height: h - NOTE.pad,
+      }, { lineSpacing: 1.15 }),
+  ];
+  // The bold lead-in, when the note opens with one. Drawn as a RUN rather than
+  // a second box, so the sentence still wraps as one paragraph — which is what
+  // makes it read as a sentence and not a heading.
+  const colon = text.indexOf(":");
+  if (colon > 0 && colon <= 46) {
+    out.push({
+      updateTextStyle: {
+        objectId: id("noteTxt"),
+        textRange: { type: "FIXED_RANGE", startIndex: 0, endIndex: colon + 1 },
+        style: { bold: true, foregroundColor: { opaqueColor: { rgbColor: rgb(onDark ? COLOR.lime : COLOR.blue) } } },
+        fields: "bold,foregroundColor",
+      },
+    });
+  }
+  return out;
 }
 
 /**
@@ -1110,7 +1204,8 @@ function formatValue(v: number): string {
  *  slide is allowed to shout when it carries a single thing. */
 function heroStat(
   page: string, id: (s: string) => string,
-  stat: { value: string; label: string; detail?: string }
+  stat: { value: string; label: string; detail?: string },
+  band: number = GRID.bandHeight
 ): Req[] {
   // Poppins runs ~0.62 of the point size per character; solve the size that
   // fills the content width, floored so a short value does not become absurd
@@ -1122,11 +1217,11 @@ function heroStat(
   // Bounded by BOTH the content width AND the vertical band — a short value
   // ("0", "64 GW") would otherwise scale so large it ran off the bottom.
   const byWidth = (GRID.contentWidth - INSET) / (Math.max(stat.value.length, 1) * 0.62);
-  const byHeight = (GRID.bandHeight - labelH - (detailH ? detailH + 8 : 0)) / LEAD;
+  const byHeight = (band - labelH - (detailH ? detailH + 8 : 0)) / LEAD;
   const size = Math.max(54, Math.min(150, Math.floor(Math.min(byWidth, byHeight))));
   const valueH = size * LEAD;
   const groupH = valueH + labelH + (detailH ? detailH + 8 : 0);
-  const top = GRID.bodyY + Math.max(0, (GRID.bandHeight - groupH) / 2);
+  const top = GRID.bodyY + Math.max(0, (band - groupH) / 2);
   const out: Req[] = [
     ...textBox(id("sv0"), page, stat.value, { ...TYPE.statValue, size }, {
       x: GRID.margin, y: top, width: GRID.contentWidth, height: valueH,
@@ -1145,10 +1240,22 @@ function heroStat(
 
 function statRequests(
   page: string, id: (s: string) => string,
-  stats: { value: string; label: string; detail?: string; primary?: boolean }[]
+  stats: { value: string; label: string; detail?: string; primary?: boolean }[],
+  band: number = GRID.bandHeight,
+  onDark = false
 ): Req[] {
-  const shown = stats.filter(Boolean).slice(0, 3);
+  // EIGHT, not three.
+  //
+  // This said slice(0, 3), and a source page carrying SEVEN figures with their
+  // sources was rendered as three with four silently gone — the single worst
+  // failure in a conversion, because the slide looks finished. Seven fits
+  // comfortably as two tinted rows, which is exactly how the source deck draws
+  // it. Past eight a figure stops being a headline number and the slide wants
+  // a table, so eight is the ceiling and anything beyond it is DECLARED.
+  const all = stats.filter(Boolean);
+  const shown = all.slice(0, STAT_MAX);
   if (!shown.length) return [];
+  const dropped = all.length - shown.length;
 
   // A SINGLE stat is the moment the slide exists for — the fee, the headline
   // number — and it earns the whole canvas. statRequests used to size every
@@ -1158,14 +1265,22 @@ function statRequests(
   // `primary` among several does NOT drop the others (that would lose data);
   // it tints that column so the eye lands on it. The single-stat hero is the
   // real fix for the ask slide the audit flagged.
-  if (shown.length === 1) return heroStat(page, id, shown[0]);
+  if (shown.length === 1) return heroStat(page, id, shown[0], band);
 
   const out: Req[] = [];
-  const cell = (GRID.contentWidth - CHART.statGap * (shown.length - 1)) / shown.length;
 
-  // Centre the block of figures in the band rather than pinning it to the top.
-  const groupH = CHART.statValueHeight + CHART.statLabelHeight + CHART.statDetailHeight + 4;
-  const top = GRID.bodyY + Math.max(0, (GRID.bandHeight - groupH) / 2);
+  // Two rows once there are more than four, with the wider row on top — the
+  // shape the source deck uses for its 4-then-3 grid.
+  const rows = shown.length > 4 ? 2 : 1;
+  const perRow = Math.ceil(shown.length / rows);
+  const cell = (GRID.contentWidth - CHART.statGap * (perRow - 1)) / perRow;
+
+  const ROW_GAP = 12;
+  const cardH = rows === 1
+    ? CHART.statValueHeight + CHART.statLabelHeight + CHART.statDetailHeight + 4
+    : Math.min(112, (band - ROW_GAP) / 2);
+  const groupH = cardH * rows + ROW_GAP * (rows - 1);
+  const top = GRID.bodyY + Math.max(0, (band - groupH) / 2);
 
   // Size the number to its column instead of trusting one fixed size.
   //
@@ -1181,28 +1296,90 @@ function statRequests(
   // allowance, "92.5 GW" was computed to fit at 50pt and wrapped anyway.
   const INSET = 15;
   const PER_CHAR = 0.62;
-  const longest = Math.max(...shown.map((s) => s.value.length), 1);
-  const fitted = Math.floor((cell - INSET) / (longest * PER_CHAR));
-  const valueStyle = { ...TYPE.statValue, size: Math.max(22, Math.min(TYPE.statValue.size, fitted)) };
+  const longest = Math.max(...shown.map((sx) => sx.value.length), 1);
 
-  shown.forEach((s, i) => {
-    const x = GRID.margin + i * (cell + CHART.statGap);
-    // The primary column keeps the others' size but takes the lime accent, so
-    // one of three numbers reads as THE number without shrinking the rest.
-    const thisValue = s.primary ? { ...valueStyle, color: COLOR.lime } : valueStyle;
-    out.push(
-      ...textBox(id(`sv${i}`), page, s.value, thisValue, {
-        x, y: top, width: cell, height: CHART.statValueHeight,
-      }),
-      ...textBox(id(`sl${i}`), page, s.label, TYPE.statLabel, {
-        x, y: top + CHART.statValueHeight, width: cell, height: CHART.statLabelHeight,
-      }),
-      ...textBox(id(`sd${i}`), page, s.detail, TYPE.statDetail, {
-        x, y: top + CHART.statValueHeight + CHART.statLabelHeight + 4,
-        width: cell, height: CHART.statDetailHeight,
-      }),
-    );
-  });
+  if (rows > 1) {
+    // THE GRID CARD, laid out explicitly rather than by reusing the one-row
+    // heights. Reusing them clipped every caption: the card is half as tall, so
+    // "passed 1 billion, Aug 2026" had 11pt of room for two lines of text.
+    const PAD = 9;
+    const inner = cell - PAD * 2;
+    const fitted = Math.floor((inner - 8) / (longest * PER_CHAR));
+    const vSize = Math.max(18, Math.min(30, fitted));
+    const vH = vSize * 1.32;
+    const labelStyle: TypeStyle = { font: "Roboto", size: 8, weight: 600, color: onDark ? COLOR.white : COLOR.navy };
+    const capStyle: TypeStyle = { font: "Roboto", size: 6.5, weight: 300, color: onDark ? COLOR.greyLight : COLOR.ink };
+    const labelH = Math.min(24, drawnTextHeight(estimateLines(shown.map((x) => x.label || "").sort((a, b) => b.length - a.length)[0] || "", inner, labelStyle.size), labelStyle.size));
+    const capH = Math.max(0, cardH - PAD * 2 - vH - labelH - 4);
+
+    shown.forEach((sx, i) => {
+      const col = i % perRow;
+      const row = Math.floor(i / perRow);
+      const inRow = Math.min(perRow, shown.length - row * perRow);
+      const rowWidth = inRow * cell + (inRow - 1) * CHART.statGap;
+      const x = GRID.margin + (GRID.contentWidth - rowWidth) / 2 + col * (cell + CHART.statGap);
+      const y = top + row * (cardH + ROW_GAP);
+
+      // `primary` takes the mint card, the way the source deck marks the figure
+      // that carries the argument. Everything else takes the quiet tint — and
+      // on a dark ground a 10% white wash, because tintBlue on navy is invisible.
+      const isPrimary = !!sx.primary;
+      out.push(...filledShape(id(`sc${i}`), page, "ROUND_RECTANGLE",
+        isPrimary ? COLOR.tintTeal : onDark ? COLOR.white : COLOR.tintBlue,
+        { x, y, width: cell, height: cardH },
+        onDark && !isPrimary ? 0.1 : 1));
+
+      // Ink is chosen from the CARD, not from the slide: a mint card is a light
+      // surface even on a dark slide, so its text must be dark whatever the
+      // ground. Getting this from the ground put blue on navy and mint on mint.
+      const vInk = isPrimary ? COLOR.inkTeal : onDark ? COLOR.lime : COLOR.blue;
+      const lInk = isPrimary ? COLOR.forest : labelStyle.color;
+      const cInk = isPrimary ? COLOR.ink : capStyle.color;
+      const cx = x + PAD;
+      let cy = y + PAD;
+      out.push(...textBox(id(`sv${i}`), page, sx.value, { ...TYPE.statValue, size: vSize, color: vInk }, {
+        x: cx, y: cy, width: inner, height: vH,
+      }, { align: "CENTER" }));
+      cy += vH;
+      out.push(...textBox(id(`sl${i}`), page, sx.label, { ...labelStyle, color: lInk }, {
+        x: cx, y: cy, width: inner, height: labelH,
+      }, { align: "CENTER" }));
+      cy += labelH + 4;
+      if (capH > 6 && sx.detail) {
+        out.push(...textBox(id(`sd${i}`), page, sx.detail, { ...capStyle, color: cInk }, {
+          x: cx, y: cy, width: inner, height: capH,
+        }, { align: "CENTER", lineSpacing: 1.05 }));
+      }
+    });
+  } else {
+    const fitted = Math.floor((cell - INSET) / (longest * PER_CHAR));
+    const valueStyle = { ...TYPE.statValue, size: Math.max(22, Math.min(TYPE.statValue.size, fitted)) };
+    shown.forEach((sx, i) => {
+      const x = GRID.margin + i * (cell + CHART.statGap);
+      // The primary column keeps the others' size but takes the lime accent, so
+      // one of three numbers reads as THE number without shrinking the rest.
+      const thisValue = sx.primary ? { ...valueStyle, color: COLOR.lime } : valueStyle;
+      out.push(
+        ...textBox(id(`sv${i}`), page, sx.value, thisValue, {
+          x, y: top, width: cell, height: CHART.statValueHeight,
+        }),
+        ...textBox(id(`sl${i}`), page, sx.label, TYPE.statLabel, {
+          x, y: top + CHART.statValueHeight, width: cell, height: CHART.statLabelHeight,
+        }),
+        ...textBox(id(`sd${i}`), page, sx.detail, TYPE.statDetail, {
+          x, y: top + CHART.statValueHeight + CHART.statLabelHeight + 4,
+          width: cell, height: CHART.statDetailHeight,
+        }),
+      );
+    });
+  }
+  // A slide that drops data says so, on the slide.
+  if (dropped > 0) {
+    out.push(...textBox(id("sdrop"), page, `Showing ${shown.length} of ${all.length} figures`,
+      { font: "Roboto", size: 7, weight: 300, color: onDark ? COLOR.greyLight : COLOR.ink }, {
+        x: GRID.margin, y: top + groupH + 4, width: GRID.contentWidth, height: 10,
+      }, { align: "END" }));
+  }
   return out;
 }
 
@@ -1446,7 +1623,8 @@ export function niceTicks(lo: number, hi: number, count = 5): number[] {
  */
 function lineChartRequests(
   page: string, id: (s: string) => string,
-  chart: NonNullable<SlideInput["chart"]>, onDark: boolean, bandTop: number = GRID.bodyY
+  chart: NonNullable<SlideInput["chart"]>, onDark: boolean, bandTop: number = GRID.bodyY,
+  band: number = GRID.bandHeight
 ): Req[] {
   const series = (chart.series || []).filter((sx) => sx.points?.length).slice(0, 3);
   if (!series.length) return [];
@@ -1620,7 +1798,8 @@ function lineChartRequests(
  *  needed and the gridlines that would carry it can go — ink belongs to data. */
 function barChartRequests(
   page: string, id: (s: string) => string,
-  chart: NonNullable<SlideInput["chart"]>, onDark: boolean, bandTop: number = GRID.bodyY
+  chart: NonNullable<SlideInput["chart"]>, onDark: boolean, bandTop: number = GRID.bodyY,
+  band: number = GRID.bandHeight
 ): Req[] {
   const series = chart.series?.[0];
   if (!series?.points?.length) return [];
@@ -1659,7 +1838,7 @@ function barChartRequests(
   const at = (v: number) => plotX + ((v - lo) / span) * plotW;
   const out: Req[] = [];
   // Same treatment as the stats: five bars centre in the band, eight fill it.
-  const bandH = GRID.bodyY + GRID.bandHeight - bandTop;
+  const bandH = GRID.bodyY + band - bandTop;
   const plotTop = bandTop +
     Math.max(0, (bandH - (points.length * fit.rowH + SOURCE_BLOCK)) / 2);
 
@@ -1772,7 +1951,8 @@ function barChartRequests(
  *  disappears — the surface showing through IS the separator. */
 function stackedBarRequests(
   page: string, id: (s: string) => string,
-  chart: NonNullable<SlideInput["chart"]>, onDark: boolean, bandTop: number = GRID.bodyY
+  chart: NonNullable<SlideInput["chart"]>, onDark: boolean, bandTop: number = GRID.bodyY,
+  band: number = GRID.bandHeight
 ): Req[] {
   const supplied = (chart.series || []).filter((s) => s.points?.length);
   if (!supplied.length) return [];
@@ -1838,7 +2018,7 @@ function stackedBarRequests(
   const plotX = GRID.margin + CHART.labelGutter;
   const plotW = GRID.contentWidth - CHART.labelGutter - 52;
   const rowH = fit.rowH;
-  const bandH = GRID.bodyY + GRID.bandHeight - bandTop;
+  const bandH = GRID.bodyY + band - bandTop;
   const plotTop = bandTop +
     Math.max(0, (bandH - (categories.length * rowH + STACK_TAIL)) / 2);
   const GAP = 2;
@@ -3027,6 +3207,9 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
   // A panel narrows the prose exactly as a rail does — the title has to be
   // measured against the width it will actually be drawn in, or fitHeading
   // fits it to a column the panel is about to take a third of.
+  // The content band, shortened when a takeaway bar is present. Computed once
+  // here so every layout below measures against the same number.
+  const band = bandHeightFor(slide);
   const hasPanel = !!(slide.panel && ((slide.panel.items || []).length || slide.panel.title?.trim()));
   const proseColumn = isProse
     ? (railBox(slide) || hasPanel ? GRID.proseNarrow : GRID.proseWidth)
@@ -3212,12 +3395,12 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       chartBandTop = GRID.bodyY + standH + 8;
     }
 
-    if (layout === "stat") requests.push(...statRequests(page, id, slide.stats || []));
+    if (layout === "stat") requests.push(...statRequests(page, id, slide.stats || [], band, onDark));
     else if (slide.chart) {
       requests.push(...(
-        layout === "stacked-bar" ? stackedBarRequests(page, id, slide.chart, onDark, chartBandTop)
-        : layout === "line-chart" ? lineChartRequests(page, id, slide.chart, onDark, chartBandTop)
-        : barChartRequests(page, id, slide.chart, onDark, chartBandTop)));
+        layout === "stacked-bar" ? stackedBarRequests(page, id, slide.chart, onDark, chartBandTop, band)
+        : layout === "line-chart" ? lineChartRequests(page, id, slide.chart, onDark, chartBandTop, band)
+        : barChartRequests(page, id, slide.chart, onDark, chartBandTop, band)));
     }
   } else if (layout === "swot" || layout === "matrix" || layout === "comparison" || layout === "table" || layout === "scatter" || layout === "venn") {
     requests.push(
@@ -3379,38 +3562,79 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       colTop = GRID.bodyY + standH + 12;
     }
 
-    // A hairline between the columns.
-    const midX = (GRID.columnLeftX + GRID.columnWidth + GRID.columnRightX) / 2;
-    requests.push(...filledShape(id("vrule"), page, "RECTANGLE", onDark ? COLOR.greyLight : COLOR.navy, {
-      x: midX, y: colTop, width: RULE.hairlineThickness, height: CANVAS.height - GRID.margin - colTop,
-    }, RULE.hairlineAlpha));
+    // TINTED PANELS, when tones are given, and the hairline when they are not.
+    //
+    // Two bare lists with a rule between them is the treatment the source deck
+    // reserves for its plainest pages; everywhere it wants the reader to feel a
+    // contrast — what works against what does not — it tints the two columns
+    // and inks their headings to match. The hairline is redundant once the
+    // cards are there, and drawing both looked like a mistake.
+    const toneL = toneAt(slide.tones, 0);
+    const toneR = toneAt(slide.tones, 1);
+    const panelBottom = NOTE.bottom - noteHeight(slide.note) - (slide.note?.trim() ? NOTE.gap : 0);
+    const panelH = Math.max(60, panelBottom - colTop);
+    const TONE_PAD = 12;
+    if (toneL || toneR) {
+      if (toneL) requests.push(...filledShape(id("tl"), page, "ROUND_RECTANGLE", toneL.tint, {
+        x: GRID.columnLeftX - TONE_PAD, y: colTop, width: GRID.columnWidth + TONE_PAD * 2, height: panelH,
+      }));
+      if (toneR) requests.push(...filledShape(id("tr"), page, "ROUND_RECTANGLE", toneR.tint, {
+        x: GRID.columnRightX - TONE_PAD, y: colTop, width: GRID.columnWidth + TONE_PAD * 2, height: panelH,
+      }));
+    } else {
+      const midX = (GRID.columnLeftX + GRID.columnWidth + GRID.columnRightX) / 2;
+      requests.push(...filledShape(id("vrule"), page, "RECTANGLE", onDark ? COLOR.greyLight : COLOR.navy, {
+        x: midX, y: colTop, width: RULE.hairlineThickness, height: panelBottom - colTop,
+      }, RULE.hairlineAlpha));
+    }
+    const tinted = !!(toneL || toneR);
 
-    let bodyTop = colTop;
-    const headStyle = onDark ? { ...TYPE.columnHeader, color: COLOR.white } : TYPE.columnHeader;
+    let bodyTop = colTop + (tinted ? TONE_PAD : 0);
+    // A tinted card is a LIGHT surface whatever the ground, so its ink comes
+    // from the tone rather than from the slide.
+    const headStyle = tinted
+      ? { ...TYPE.columnHeader, color: (toneL || toneR)!.ink }
+      : onDark ? { ...TYPE.columnHeader, color: COLOR.white } : TYPE.columnHeader;
     if (slide.columns?.left?.trim() || slide.columns?.right?.trim()) {
       requests.push(
-        ...textBox(id("lh"), page, slide.columns?.left, headStyle, {
-          x: GRID.columnLeftX, y: colTop, width: GRID.columnWidth, height: 20,
+        ...textBox(id("lh"), page, slide.columns?.left,
+          toneL ? { ...headStyle, color: toneL.ink } : headStyle, {
+          x: GRID.columnLeftX, y: bodyTop, width: GRID.columnWidth, height: 20,
         }),
-        ...textBox(id("rh"), page, slide.columns?.right, headStyle, {
-          x: GRID.columnRightX, y: colTop, width: GRID.columnWidth, height: 20,
-        }),
-        ...filledShape(id("lhu"), page, "RECTANGLE", onDark ? COLOR.tealSoft : COLOR.blue, {
-          x: GRID.columnLeftX, y: colTop + 22, width: RULE.accentWidth, height: RULE.thickness,
-        }),
-        ...filledShape(id("rhu"), page, "RECTANGLE", onDark ? COLOR.tealSoft : COLOR.blue, {
-          x: GRID.columnRightX, y: colTop + 22, width: RULE.accentWidth, height: RULE.thickness,
+        ...textBox(id("rh"), page, slide.columns?.right,
+          toneR ? { ...headStyle, color: toneR.ink } : headStyle, {
+          x: GRID.columnRightX, y: bodyTop, width: GRID.columnWidth, height: 20,
         }),
       );
-      bodyTop = colTop + 34;
+      // The accent underline is the plain treatment's device. Inside a tinted
+      // card the coloured heading already does that job, and the extra rule
+      // read as clutter.
+      if (!tinted) {
+        requests.push(
+          ...filledShape(id("lhu"), page, "RECTANGLE", onDark ? COLOR.tealSoft : COLOR.blue, {
+            x: GRID.columnLeftX, y: bodyTop + 22, width: RULE.accentWidth, height: RULE.thickness,
+          }),
+          ...filledShape(id("rhu"), page, "RECTANGLE", onDark ? COLOR.tealSoft : COLOR.blue, {
+            x: GRID.columnRightX, y: bodyTop + 22, width: RULE.accentWidth, height: RULE.thickness,
+          }),
+        );
+      }
+      bodyTop += tinted ? 24 : 34;
     }
 
-    const colH = CANVAS.height - GRID.margin - bodyTop;
+    const colH = Math.max(30, panelBottom - bodyTop - (tinted ? 8 : 0));
+    // Smaller inside a card, which is how the source deck sets it: the tint
+    // already separates the two sides, so the type does not also have to be
+    // full size to hold the column together — and at 10pt a three-item column
+    // plus a takeaway bar overflowed into a second slide it did not need.
+    const colBodyStyle = tinted
+      ? { ...bodyStyle, size: Math.max(8, bodyStyle.size - 1.5), color: COLOR.ink }
+      : bodyStyle;
     requests.push(
-      ...textBox(id("left"), page, slide.body, bodyStyle, {
+      ...textBox(id("left"), page, slide.body, colBodyStyle, {
         x: GRID.columnLeftX, y: bodyTop, width: GRID.columnWidth, height: colH,
       }, { bullets: true }),
-      ...textBox(id("right"), page, slide.bodyRight, bodyStyle, {
+      ...textBox(id("right"), page, slide.bodyRight, colBodyStyle, {
         x: GRID.columnRightX, y: bodyTop, width: GRID.columnWidth, height: colH,
       }, { bullets: true }),
     );
@@ -3481,7 +3705,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     // Four bullets in a 241pt band left 47% of the canvas empty below them.
     // The paragraphs are spread through the band instead — up to a limit, past
     // which a list stops reading as a list and starts reading as loose lines.
-    const bodyHeight = Math.max(40, GRID.bodyY + GRID.bandHeight - bodyTop);
+    const bodyHeight = Math.max(40, GRID.bodyY + band - bodyTop);
     const paras = (slide.body || "").split("\n").map((l) => l.trim()).filter(Boolean);
     let bodySpacing = 6;
     if (paras.length > 1) {
@@ -3505,6 +3729,10 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
         : []),
     );
   }
+
+  // The takeaway bar, on every layout. Drawn after the content so it sits on
+  // top of nothing — the band above was already shortened to make room.
+  requests.push(...noteRequests(page, id, slide.note, onDark));
 
   requests.push(...logoRequests(id("logo"), page, layout, slide));
 
