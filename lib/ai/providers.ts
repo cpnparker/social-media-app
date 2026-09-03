@@ -5396,6 +5396,13 @@ export async function queryMeetingBrain(
           return {
             id: r.id,
             title: r.meeting_title,
+            // Same reason as upcoming_meetings: SAY the day rather than making
+            // the model derive it. dayLabel was added because it answered
+            // Monday's "tomorrow" with Wednesday's meetings — and then it was
+            // wired into exactly one of the five meeting reports. The others
+            // kept handing over a bare date, and the model duly called a
+            // Friday briefing "today".
+            day: dayLabel(r.meeting_date),
             date: localStamp(r.meeting_date),
             attendees: isRecent ? r.attendees : undefined,
             summary: isRecent ? r.summary?.slice(0, 500) : r.summary?.slice(0, 150),
@@ -5403,6 +5410,9 @@ export async function queryMeetingBrain(
           };
         });
         console.log(`[MeetingBrain] Meetings: ${data.length} (${d}d window)`);
+        const noRecordingNote = (data as any[]).some((r) => !r.has_transcript)
+          ? `NOTE: has_transcript: false means no RECORDING, not "no notes". Open the meeting with meeting_details before telling the user there is no record of it.`
+          : undefined;
         let personnelRows = 0;
         for (const r of data as any[]) {
           if (isPersonnelSensitive(r.title, r.summary)) { r.personnel_sensitive = true; personnelRows++; }
@@ -5410,9 +5420,12 @@ export async function queryMeetingBrain(
         return {
           data,
           count: data.length,
-          hint: personnelRows
-            ? `${personnelRows} of these ${data.length} result(s) are marked personnel_sensitive: true. The note below applies to THOSE ROWS ONLY.\n\n${PERSONNEL_NOTICE}`
-            : undefined,
+          hint: [
+            noRecordingNote,
+            personnelRows
+              ? `${personnelRows} of these ${data.length} result(s) are marked personnel_sensitive: true. The note below applies to THOSE ROWS ONLY.\n\n${PERSONNEL_NOTICE}`
+              : undefined,
+          ].filter(Boolean).join("\n") || undefined,
         };
       }
       case "upcoming_meetings": {
@@ -5512,6 +5525,7 @@ export async function queryMeetingBrain(
           return {
             id: r.id,
             title: r.meeting_title,
+            day: dayLabel(r.meeting_date),
             date: localDay(r.meeting_date),
             status: isUpcoming ? "UPCOMING — scheduled, has not happened yet, no notes exist" : "past",
             attendees: r.attendees,
@@ -5521,6 +5535,16 @@ export async function queryMeetingBrain(
         });
         const upcomingNote = data.some((d: any) => d.status !== "past")
           ? `NOTE: Some results are UPCOMING meetings that have not happened yet — they have no transcript or notes. When the user asks about a meeting they HAD (past tense), only consider results with status "past".`
+          : undefined;
+        // `has_transcript: false` says there is no RECORDING. It says nothing
+        // about whether the meeting has notes: notes can live in the summary
+        // fields, or in a Google Doc attached to the calendar entry that
+        // MeetingBrain discarded for being short. Asked to summarise a call
+        // that had just happened, the model read this field on a past meeting
+        // and told the user MeetingBrain had "no transcript and no summary" —
+        // without ever opening the meeting. The notes were there.
+        const noTranscriptNote = data.some((d: any) => d.status === "past" && !d.has_transcript)
+          ? `NOTE: has_transcript: false means there is no RECORDING — it does NOT mean the meeting has no notes. Notes may be in the meeting's summary fields or in a notes document attached to its calendar entry. If the user asks what was discussed in one of these meetings, call meeting_details with its id BEFORE answering. Never tell the user a meeting has no record on the strength of this field alone.`
           : undefined;
         // Search is the path that actually matters here: it is how a drafting
         // turn stumbles into personnel material it never went looking for —
@@ -5541,7 +5565,7 @@ export async function queryMeetingBrain(
         const sensitiveNote = sensitiveCount
           ? `${sensitiveCount} of these ${data.length} result(s) are marked personnel_sensitive: true. The note below applies to THOSE ROWS ONLY — the rest are ordinary meetings.\n\n${PERSONNEL_NOTICE}`
           : undefined;
-        const hint = [fuzzyNote, upcomingNote, sensitiveNote].filter(Boolean).join("\n") || undefined;
+        const hint = [fuzzyNote, upcomingNote, noTranscriptNote, sensitiveNote].filter(Boolean).join("\n") || undefined;
         console.log(`[MeetingBrain] Search q=${qHash(options.query)}: ${data.length} matches (${data.filter((d: any) => d.status !== "past").length} upcoming)`);
         return { data, count: data.length, hint };
       }
@@ -5619,8 +5643,48 @@ export async function queryMeetingBrain(
         // instead of telling the user "no transcript available".
         const hasNotes = !!(d.summary || d.insights || d.external_summary || d.next_steps);
         const transcriptStatus = !transcript ? "none" : transcript.length < 1000 ? "stub_only" : "full";
+
+        // NO RECORD AT ALL, but a notes document attached to the event.
+        //
+        // MeetingBrain stores `document_id` when it finds notes on the calendar
+        // entry, and it writes `error: "Document too short to extract tasks"`
+        // and NOTHING ELSE when the document is short — the transcript, the
+        // local transcript and the summary all stay null. So a meeting with
+        // real notes reads here as a meeting with no record, and the honest
+        // answer ("MeetingBrain has nothing for it") is wrong in the way that
+        // matters: the notes exist, and the user knows they do.
+        //
+        // The id is read from the row directly rather than from the RPC, which
+        // does not return that column — and only AFTER get_meeting_details has
+        // already authorised this meeting for this caller. The RPC stays the
+        // gate; this is one extra column on a row it has already released.
+        let notesDoc: { title?: string; text: string } | null = null;
+        if (!transcript && !hasNotes) {
+          try {
+            const { data: rows } = await mbDb
+              .from("processed_meeting")
+              .select("document_id")
+              .eq("id", options.meetingId)
+              .limit(1);
+            const docId = (rows || [])[0]?.document_id;
+            if (docId) {
+              const { fetchMeetingNotes } = await import("@/lib/gdrive/meeting-notes");
+              const notes = await fetchMeetingNotes(docId, userEmail);
+              if (notes.ok && notes.text) {
+                notesDoc = { title: notes.title, text: notes.text };
+                console.log(`[MeetingBrain] Read ${notes.text.length} chars of notes from the meeting's Google Doc`);
+              } else {
+                console.log(`[MeetingBrain] Meeting has document_id but notes unreadable: ${notes.reason}`);
+              }
+            }
+          } catch (e: any) {
+            console.warn(`[MeetingBrain] notes-document lookup failed: ${e?.message}`);
+          }
+        }
+
         const data = {
           title: d.meeting_title,
+          day: dayLabel(d.meeting_date),
           date: localStamp(d.meeting_date),
           attendees: redactedAttendees,
           summary: d.summary,
@@ -5642,9 +5706,13 @@ export async function queryMeetingBrain(
           coaching_notes: undefined,
           external_summary: d.external_summary,
           tasks: d.tasks,
+          // The notes document, when it is the only record there is.
+          notes_document: notesDoc ? { title: notesDoc.title, text: notesDoc.text } : undefined,
         };
         const notesHint =
-          transcriptStatus !== "full" && hasNotes
+          notesDoc
+            ? `IMPORTANT: MeetingBrain has no transcript or summary for this meeting, but the meeting had a NOTES DOCUMENT attached to its calendar entry and it is in \`notes_document\` above — that IS the record of this meeting. Answer from it. Do NOT tell the user the meeting has no notes, no record, or was not processed.`
+            : transcriptStatus !== "full" && hasNotes
             ? `IMPORTANT: This meeting has ${transcriptStatus === "none" ? "no transcript" : "only a stub transcript"}, but the summary/insights/coaching_notes/external_summary fields above ARE the meeting notes — they are the full record for this meeting. Answer the user's question from them. Do NOT tell the user the meeting has no notes or no record.`
             : undefined;
         // Screen the TITLE and SUMMARY only — see isPersonnelSensitive. The
@@ -5799,6 +5867,7 @@ export async function queryMeetingBrain(
             return {
               meeting_id: r.meeting_id,
               title: r.meeting_title,
+              day: dayLabel(r.meeting_date),
               date: localDay(r.meeting_date),
               client_id: client?.id ?? null,
               client_name: client?.name ?? null,
