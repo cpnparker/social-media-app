@@ -5659,6 +5659,10 @@ export async function queryMeetingBrain(
         // already authorised this meeting for this caller. The RPC stays the
         // gate; this is one extra column on a row it has already released.
         let notesDoc: { title?: string; text: string } | null = null;
+        // A notes document we could SEE but not OPEN. Reported rather than
+        // swallowed: "there are notes, at this link, and I cannot read them"
+        // is a fact the user can act on in a way that "no record" never was.
+        let notesUnreadable: { url?: string; reason: string } | null = null;
         if (!transcript && !hasNotes) {
           try {
             const { data: rows } = await mbDb
@@ -5674,7 +5678,8 @@ export async function queryMeetingBrain(
                 notesDoc = { title: notes.title, text: notes.text };
                 console.log(`[MeetingBrain] Read ${notes.text.length} chars of notes from the meeting's Google Doc`);
               } else {
-                console.log(`[MeetingBrain] Meeting has document_id but notes unreadable: ${notes.reason}`);
+                notesUnreadable = { url: notes.url, reason: notes.reason || "error" };
+                console.log(`[MeetingBrain] Meeting has document_id but notes unreadable: ${notes.reason}${notes.detail ? ` — ${notes.detail}` : ""}`);
               }
             }
           } catch (e: any) {
@@ -5708,9 +5713,12 @@ export async function queryMeetingBrain(
           tasks: d.tasks,
           // The notes document, when it is the only record there is.
           notes_document: notesDoc ? { title: notesDoc.title, text: notesDoc.text } : undefined,
+          notes_document_unreadable: notesUnreadable || undefined,
         };
         const notesHint =
-          notesDoc
+          notesUnreadable
+            ? `IMPORTANT: MeetingBrain stored no transcript or summary for this meeting, but the calendar entry HAS a notes document attached${notesUnreadable.url ? ` (${notesUnreadable.url})` : ""} — it could not be opened with the user's Google connection (${notesUnreadable.reason}). Do NOT tell the user there is no record of the meeting: tell them the notes exist in that document, link it, and say you could not open it${notesUnreadable.reason === "forbidden" ? " — most likely it is not shared with their account, or was created by another attendee" : ""}.`
+            : notesDoc
             ? `IMPORTANT: MeetingBrain has no transcript or summary for this meeting, but the meeting had a NOTES DOCUMENT attached to its calendar entry and it is in \`notes_document\` above — that IS the record of this meeting. Answer from it. Do NOT tell the user the meeting has no notes, no record, or was not processed.`
             : transcriptStatus !== "full" && hasNotes
             ? `IMPORTANT: This meeting has ${transcriptStatus === "none" ? "no transcript" : "only a stub transcript"}, but the summary/insights/coaching_notes/external_summary fields above ARE the meeting notes — they are the full record for this meeting. Answer the user's question from them. Do NOT tell the user the meeting has no notes or no record.`

@@ -40,6 +40,13 @@ export interface MeetingNotes {
   title?: string;
   text?: string;
   reason?: "no_id" | "no_grant" | "not_found" | "forbidden" | "empty" | "error";
+  /** Google's own words. "Forbidden" covers two completely different problems —
+   *  the Docs API not enabled on the project, and the document simply not being
+   *  shared with this user — and only one of them is ours to fix. Guessing
+   *  between them from a status code wasted a deploy. */
+  detail?: string;
+  /** So the user can be handed the document even when we cannot read it. */
+  url?: string;
 }
 
 /** Flatten a Docs API document to plain text: paragraphs and table cells. */
@@ -93,17 +100,28 @@ export async function fetchMeetingNotes(
     return { ok: false, reason: "error" };
   }
 
-  if (res.status === 404) return { ok: false, reason: "not_found" };
-  if (res.status === 401 || res.status === 403) return { ok: false, reason: "forbidden" };
+  const url = `https://docs.google.com/document/d/${id}/edit`;
+  if (res.status === 404) return { ok: false, reason: "not_found", url };
+  if (res.status === 401 || res.status === 403) {
+    const body = await res.text().catch(() => "");
+    let detail = body.slice(0, 300);
+    try {
+      const j = JSON.parse(body);
+      detail = j?.error?.message || j?.error?.status || detail;
+    } catch { /* keep the raw slice */ }
+    console.warn(`[MeetingNotes] Docs API ${res.status} for ${id}: ${detail}`);
+    return { ok: false, reason: "forbidden", detail, url };
+  }
   if (!res.ok) {
-    console.warn(`[MeetingNotes] Docs API ${res.status} for ${id}`);
-    return { ok: false, reason: "error" };
+    const body = await res.text().catch(() => "");
+    console.warn(`[MeetingNotes] Docs API ${res.status} for ${id}: ${body.slice(0, 200)}`);
+    return { ok: false, reason: "error", detail: body.slice(0, 200), url };
   }
 
   const doc: any = await res.json().catch(() => null);
   const text = docToText(doc);
-  if (!text) return { ok: false, reason: "empty" };
+  if (!text) return { ok: false, reason: "empty", url };
   // Generous, and the same reasoning as the transcript cap: a model with room
   // to read the whole thing gives a better answer than one reading half.
-  return { ok: true, title: doc?.title || undefined, text: text.slice(0, 100000) };
+  return { ok: true, title: doc?.title || undefined, text: text.slice(0, 100000), url };
 }
