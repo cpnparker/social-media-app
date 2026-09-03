@@ -1563,6 +1563,23 @@ const LINE_LEAD = 1.45;             // 115% paragraph spacing on a ~1.26em face
  *  against Google's own render of the deck's caps labels and status pills. */
 export const CAPS_WIDEN = 1.2;
 
+/** The lower edge a layout may draw to: its own natural bottom, or the content
+ *  band's, whichever is higher.
+ *
+ *  Every analysis layout — swot, matrix, comparison, scatter, venn — measured
+ *  down to `CANVAS.height - GRID.margin`, the page edge, and so knew nothing
+ *  about the takeaway bar sitting above it. On the comparison slide the seventh
+ *  row was drawn UNDERNEATH the bar: present in the file, invisible on the
+ *  slide, and no warning anywhere. `table` had already been fixed this way one
+ *  layout at a time; this is the same fix applied to the rest of them at once. */
+function floorBand(natural: number, bandBottom?: number, reserve = 0): number {
+  // `reserve` is the room a layout draws BELOW its own bottom — an axis label
+  // sits under the plot, not inside it. The natural bottom already keeps that
+  // room back from the page edge; clamping to the band without subtracting it
+  // again simply moved the label under the bar instead of the row.
+  return Math.min(natural, bandBottom === undefined ? Infinity : bandBottom - reserve);
+}
+
 /** How wide a status capsule must be to hold its token on ONE line.
  *
  *  The width used to be the token's advance plus a flat 16pt, which did not
@@ -2952,7 +2969,7 @@ function logoWallRequests(
  *  cloud is sparse enough not to become a thicket. */
 function scatterRequests(
   page: string, id: (s: string) => string,
-  sc: NonNullable<SlideInput["scatter"]>, onDark: boolean, bandTop: number
+  sc: NonNullable<SlideInput["scatter"]>, onDark: boolean, bandTop: number, bandBottom?: number
 ): Req[] {
   const points = (sc.points || []).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
   if (points.length < 2) return [];
@@ -2964,7 +2981,7 @@ function scatterRequests(
   const right = GRID.margin + GRID.contentWidth - 8;
   const legendH = groups.length > 1 ? 20 : 0;
   const top = bandTop + 8;
-  const bottom = CANVAS.height - GRID.margin - 18 - legendH;
+  const bottom = floorBand(CANVAS.height - GRID.margin - 18 - legendH, bandBottom, 18 + legendH);
   const w = right - left, h = bottom - top;
 
   const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
@@ -3017,13 +3034,13 @@ function scatterRequests(
  *  translucent fills, so the intersections read as the classic diagram. */
 function vennRequests(
   page: string, id: (s: string) => string,
-  venn: NonNullable<SlideInput["venn"]>, onDark: boolean, bandTop: number
+  venn: NonNullable<SlideInput["venn"]>, onDark: boolean, bandTop: number, bandBottom?: number
 ): Req[] {
   const sets = (venn.sets || []).filter((sx) => sx?.label?.trim()).slice(0, 3);
   if (sets.length < 2) return [];
   const palette = onDark ? SERIES_DARK : [COLOR.blue, COLOR.teal, COLOR.coral];
   const top = bandTop + 4;
-  const bottom = CANVAS.height - GRID.margin;
+  const bottom = floorBand(CANVAS.height - GRID.margin, bandBottom);
   const cxMid = GRID.margin + GRID.contentWidth / 2;
   const out: Req[] = [];
 
@@ -3087,7 +3104,7 @@ function vennRequests(
  *  strategy deck, and the model had no way to draw one — it fell to bullets. */
 function swotRequests(
   page: string, id: (s: string) => string,
-  swot: NonNullable<SlideInput["swot"]>, bandTop: number
+  swot: NonNullable<SlideInput["swot"]>, bandTop: number, bandBottom?: number
 ): Req[] {
   const cells: { key: string; head: string; items: string[]; tint: string; ink: string }[] = [
     { key: "s", head: "Strengths", items: swot.strengths || [], tint: COLOR.tintTeal, ink: COLOR.inkTeal },
@@ -3097,7 +3114,7 @@ function swotRequests(
   ];
   const gap = 10;
   const top = bandTop;
-  const bottom = CANVAS.height - GRID.margin;
+  const bottom = floorBand(CANVAS.height - GRID.margin, bandBottom);
   const cw = (GRID.contentWidth - gap) / 2;
   const ch = (bottom - top - gap) / 2;
   const out: Req[] = [];
@@ -3119,10 +3136,10 @@ function swotRequests(
  *  centre, quadrant labels in the corners, items plotted by x and y in 0..1. */
 function matrixRequests(
   page: string, id: (s: string) => string,
-  m: NonNullable<SlideInput["matrix"]>, bandTop: number
+  m: NonNullable<SlideInput["matrix"]>, bandTop: number, bandBottom?: number
 ): Req[] {
   const top = bandTop + 6;
-  const bottom = CANVAS.height - GRID.margin - 16;
+  const bottom = floorBand(CANVAS.height - GRID.margin - 16, bandBottom, 16);
   const left = GRID.margin + 46;
   const right = GRID.margin + GRID.contentWidth - 12;
   const w = right - left, h = bottom - top;
@@ -3206,7 +3223,7 @@ function matrixRequests(
  *  "yes"/"no" draws a tick or cross; anything else prints as text. */
 function comparisonRequests(
   page: string, id: (s: string) => string,
-  cmp: NonNullable<SlideInput["comparison"]>, bandTop: number
+  cmp: NonNullable<SlideInput["comparison"]>, bandTop: number, bandBottom?: number
 ): Req[] {
   const cols = (cmp.columns || []).slice(0, 4);
   const rows = (cmp.rows || []).slice(0, 8);
@@ -3216,7 +3233,7 @@ function comparisonRequests(
   const labelW = GRID.contentWidth * 0.34;
   const colW = (GRID.contentWidth - labelW) / cols.length;
   const headH = 28;
-  const bottom = CANVAS.height - GRID.margin;
+  const bottom = floorBand(CANVAS.height - GRID.margin, bandBottom);
   const rowH = Math.min(40, (bottom - top - headH) / rows.length);
 
   // Header: option names across the top, over a rule.
@@ -4076,12 +4093,12 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       }));
       aTop = GRID.bodyY + standH + 8;
     }
-    if (layout === "swot" && slide.swot) requests.push(...swotRequests(page, id, slide.swot, aTop));
-    else if (layout === "matrix" && slide.matrix) requests.push(...matrixRequests(page, id, slide.matrix, aTop));
-    else if (layout === "comparison" && slide.comparison) requests.push(...comparisonRequests(page, id, slide.comparison, aTop));
+    if (layout === "swot" && slide.swot) requests.push(...swotRequests(page, id, slide.swot, aTop, GRID.bodyY + band));
+    else if (layout === "matrix" && slide.matrix) requests.push(...matrixRequests(page, id, slide.matrix, aTop, GRID.bodyY + band));
+    else if (layout === "comparison" && slide.comparison) requests.push(...comparisonRequests(page, id, slide.comparison, aTop, GRID.bodyY + band));
     else if (layout === "table" && slide.table) requests.push(...tableRequests(page, id, slide.table, aTop, slide.bodyRight, GRID.bodyY + band));
-    else if (layout === "scatter" && slide.scatter) requests.push(...scatterRequests(page, id, slide.scatter, onDark, aTop));
-    else if (layout === "venn" && slide.venn) requests.push(...vennRequests(page, id, slide.venn, onDark, aTop));
+    else if (layout === "scatter" && slide.scatter) requests.push(...scatterRequests(page, id, slide.scatter, onDark, aTop, GRID.bodyY + band));
+    else if (layout === "venn" && slide.venn) requests.push(...vennRequests(page, id, slide.venn, onDark, aTop, GRID.bodyY + band));
   } else if (layout === "timeline-parallel") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {

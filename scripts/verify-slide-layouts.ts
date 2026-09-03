@@ -1986,6 +1986,56 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     // or the formula is not measuring anything.
     assertQ(pillWidth("MEDIUM", 8) > pillWidth("MED", 8), "a longer token needs a wider capsule");
     assertQ(pillWidth("MED", 12) > pillWidth("MED", 6), "and larger type needs a wider capsule");
+
+    // EVERY LAYOUT THAT CAN CARRY A NOTE, not just the one that was checked.
+    //
+    // The existing takeaway-bar assertion drove a `content` slide, and content
+    // was the layout that had been fixed. Meanwhile swot, matrix, comparison,
+    // scatter and venn all measured down to the PAGE EDGE and knew nothing
+    // about the bar: on the published deck the comparison slide's seventh row
+    // — "Measure / CTR, ranking positions / Citation share-of-voice" — was
+    // drawn underneath it. Present in the file, invisible on the slide, and
+    // nothing anywhere said so.
+    const NOTE = "E-E-A-T - Experience, Expertise, Authoritativeness, Trust - is now scored at the entity level, not just the page level.";
+    const withNote: [string, SlideInput][] = [
+      ["comparison", { layout: "comparison", title: "Keywords vs Entities", note: NOTE,
+        comparison: { columns: ["Keyword SEO", "Entity / GEO"], rows: [
+          { label: "Focus", cells: ["Strings of text", "Real-world things"] },
+          { label: "Signal", cells: ["Keyword frequency", "Semantic relevance"] },
+          { label: "Ranking unit", cells: ["A page", "A brand reputation"] },
+          { label: "Target", cells: ["SERP position 1-10", "AI citations"] },
+          { label: "Content goal", cells: ["Match the query", "Answer intent"] },
+          { label: "Link strategy", cells: ["Backlinks to URLs", "Brand mentions"] },
+          { label: "Measure", cells: ["CTR, ranking positions", "Citation share-of-voice"] },
+        ] } }],
+      ["swot", { layout: "swot", title: "T", note: NOTE,
+        swot: { strengths: ["a", "b"], weaknesses: ["c"], opportunities: ["d"], threats: ["e"] } }],
+      ["matrix", { layout: "matrix", title: "T", note: NOTE,
+        matrix: { xAxis: ["low", "high"], yAxis: ["low", "high"], items: [{ label: "One", x: 1, y: 2 }, { label: "Two", x: 3, y: 1 }] } }],
+      ["scatter", { layout: "scatter", title: "T", note: NOTE,
+        scatter: { xAxis: "x", yAxis: "y", points: [{ label: "a", x: 1, y: 2 }, { label: "b", x: 3, y: 4 }] } }],
+      ["venn", { layout: "venn", title: "T", note: NOTE,
+        venn: { sets: [{ label: "One" }, { label: "Two" }, { label: "Three" }], overlap: "Both" } }],
+      ["table", { layout: "table", title: "T", note: NOTE,
+        table: { columns: ["A", "B"], rows: Array.from({ length: 9 }, (_, i) => [`row ${i}`, "value"]) } }],
+    ];
+    for (const [name, s] of withNote) {
+      const reqs = buildSlideRequests(s, 0, "n") as any[];
+      const noteBar = reqs.find((r) => (r.createShape?.objectId || "").endsWith("_noteBar"));
+      assertQ(!!noteBar, `${name} draws its takeaway bar`);
+      if (!noteBar) continue;
+      const barTop = noteBar.createShape.elementProperties.transform.translateY;
+      for (const r of reqs) {
+        const oid = r.createShape?.objectId || "";
+        if (!oid || /_(noteBar|noteTxt|ftl|ftn|logo)$/.test(oid)) continue;
+        const t = r.createShape.elementProperties;
+        if (t.transform.scaleX !== 1 || t.transform.scaleY !== 1) continue;   // rotated marks
+        const bottom = t.transform.translateY + t.size.height.magnitude;
+        assertQ(bottom <= barTop + 1,
+          `${name}: ${oid.split("_").pop()} stops above the takeaway bar ` +
+          `(ends ${bottom.toFixed(1)}, bar starts ${barTop.toFixed(1)})`);
+      }
+    }
   }
   if (failures === before20iq) pass("caps are measured as caps: stat labels clear their sources, panels hold their items, and pills hold their tokens");
 
