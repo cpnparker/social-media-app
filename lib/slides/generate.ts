@@ -3736,7 +3736,12 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     if (slide.body?.trim()) {
       const lines = slide.body.split("\n").map((l) => l.trim()).filter(Boolean);
       const y = GRID.closingSubtitleY + GRID.closingSubtitleHeight + 14;
-      const h = Math.min(CANVAS.height - GRID.margin - y, lines.length * 22 + 8);
+      // MEASURED. "lines × 22" counted paragraphs, not drawn lines, so a
+      // resources line long enough to wrap was measured as one — the box came
+      // up short and the splitter dutifully made a "Thank you (continued)".
+      const drawn = lines.reduce((n, l) => n + estimateLines(l, GRID.contentWidth, TYPE.closingAction.size), 0);
+      const h = Math.min(CANVAS.height - GRID.margin - y,
+        drawnTextHeight(drawn, TYPE.closingAction.size, 8, lines.length) + 4);
       requests.push(...textBox(id("body"), page, lines.join("\n"), TYPE.closingAction, {
         x: GRID.margin, y, width: GRID.contentWidth, height: Math.max(22, h),
       }, { align: "CENTER", spaceBelow: 8 }));
@@ -4442,6 +4447,12 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
     !slide.venn && !slide.scatter && !slide.layers && !slide.images && !slide.panel;
   if (!body || !splittable) return [slide];
 
+  // The cover and the closing size their body box TO THE CONTENT, so the
+  // probe (which measures a two-line body) reports a box the real body would
+  // never be given, and the closing's three wrapped lines became "Thank you
+  // (continued)". A box that grows with its text cannot overflow; it is
+  // clamped to the canvas instead.
+  if (slide.layout === "closing" || slide.layout === "cover") return [slide];
   const box = bodyBox(slide, index, "body");
   if (!box || box.width <= 0) return [slide];
 
