@@ -99,6 +99,26 @@ export interface SlideInput {
     /** Row indices drawn on a tint — the rows that carry the argument. */
     highlight?: number[];
   };
+  /** A stacked layer diagram — the "AI is a new LAYER" picture: horizontal
+   *  bands top to bottom with connector arrows between them, each band either
+   *  one full-width box or a row of small cells. The only way to say
+   *  "everything below feeds the thing above". Up to 5 layers. */
+  layers?: {
+    title?: string;
+    /** One sentence inside the band, under the title. */
+    caption?: string;
+    /** A row of cells instead of a caption: [{title, text?}], up to 8. */
+    cells?: { title?: string; text?: string }[];
+    /** "blue" (solid brand blue, white ink), "dashed" (outlined emphasis),
+     *  or a tint: "teal" | "lav" | "grey" | "coral" | "amber". */
+    style?: string;
+    /** Draw a connector arrow down to the next layer (default true). */
+    arrow?: boolean;
+  }[];
+  /** A full-width band under a cards row — the source deck's "SXO in detail"
+   *  device: a spanning tinted panel holding a title and a row of small
+   *  labelled cells that elaborate ONE of the cards above. */
+  strip?: { title?: string; items?: { title?: string; text?: string }[] };
   /** Tinted panels behind the two columns, with the column header inked to
    *  match: `["coral","teal"]` is the source deck's negative/positive pair
    *  ("What AIO does not do" in rose, "What AIO is good for" in mint). Also
@@ -159,6 +179,11 @@ export interface SlideInput {
   cards?: {
     /** "01", or a short label like "STRATEGY". Drawn as a brand chip. */
     marker?: string;
+    /** Tints this card and draws a coloured accent bar across its top —
+     *  "blue", "teal", "coral", "amber" or "grey". The source deck's
+     *  discipline cards (AEO / GEO / SXO) each carry their own colour; a card
+     *  without a tone keeps the plain treatment. */
+    tone?: string;
     title?: string;
     body?: string;
     /** A Lucide icon name — "target", "line-chart", "users". Drawn small above
@@ -2273,7 +2298,9 @@ export function cardGeometry(count: number) {
  */
 function cardsRequests(
   page: string, id: (s: string) => string,
-  cards: NonNullable<SlideInput["cards"]>
+  cards: NonNullable<SlideInput["cards"]>,
+  top: number = CARDS.y,
+  height: number = CARDS.height
 ): Req[] {
   const shown = cards.filter(Boolean).slice(0, 6);
   if (!shown.length) return [];
@@ -2296,20 +2323,38 @@ function cardsRequests(
   // of text produced a card that was four-fifths empty — their own pillars
   // slide sets that type straight on the slide ground, and it reads lighter.
   const panelled = shown.some((c) => c.resolvedImage?.url);
+  const anyToned = shown.some((c) => toneAt([c.tone || ""], 0));
 
   const out: Req[] = [];
   shown.forEach((card, i) => {
     const x = GRID.margin + i * (cellW + CARDS.gap);
-    let y = CARDS.y;
+    let y = top;
 
-    if (panelled) {
-      out.push(...filledShape(id(`cp${i}`), page, "RECTANGLE", COLOR.white, {
-        x, y, width: cellW, height: CARDS.height,
+    // A TONED card gets the source deck's treatment: a tinted panel with a
+    // 3pt accent bar across its top in the tone's strong colour, the heading
+    // inked to match. One card toned means every card gets at least a plain
+    // panel, or the row reads as one card floating and the rest bare.
+    const tone = toneAt([card.tone || ""], 0);
+    if (tone || anyToned || panelled) {
+      out.push(...filledShape(id(`cp${i}`), page, "ROUND_RECTANGLE",
+        tone ? tone.tint : COLOR.white, {
+        x, y, width: cellW, height,
       }));
+      if (tone) {
+        const ACCENT: { [k: string]: string } = {
+          coral: COLOR.coralDeep, teal: COLOR.inkTeal, blue: COLOR.blue,
+          amber: COLOR.inkAmber, grey: COLOR.navy,
+        };
+        out.push(...filledShape(id(`ca${i}`), page, "RECTANGLE",
+          ACCENT[String(card.tone).toLowerCase()] || COLOR.blue, {
+          x: x + 6, y: y, width: cellW - 12, height: 3,
+        }));
+      }
     }
-    const innerX = panelled ? x + CARDS.padding : x;
-    const innerW = panelled ? cellW - CARDS.padding * 2 : cellW;
-    if (panelled) y += CARDS.padding;
+    const boxed = tone || anyToned || panelled;
+    const innerX = boxed ? x + CARDS.padding : x;
+    const innerW = boxed ? cellW - CARDS.padding * 2 : cellW;
+    if (boxed) y += CARDS.padding + (tone || anyToned ? 3 : 0);
 
     if (card.resolvedImage?.url) {
       out.push({
@@ -2376,7 +2421,8 @@ function cardsRequests(
       // The row's shared height, not this card's own. Still MEASURED rather
       // than assumed — a fixed 30pt box used to let a three-line heading run
       // straight through the body underneath it.
-      out.push(...textBox(id(`ct${i}`), page, card.title, TYPE.cardTitle, {
+      out.push(...textBox(id(`ct${i}`), page, card.title,
+        tone ? { ...TYPE.cardTitle, color: tone.ink } : TYPE.cardTitle, {
         x: innerX, y, width: innerW, height: titleBlockH,
       }, { vBottom: true }));
       y += titleBlockH + 4;
@@ -2387,10 +2433,236 @@ function cardsRequests(
     }
 
     if (card.body) {
-      const remaining = CARDS.y + CARDS.height - y - (panelled ? CARDS.padding : 0);
-      out.push(...textBox(id(`cb${i}`), page, card.body, TYPE.cardBody, {
+      const remaining = top + height - y - (boxed ? CARDS.padding : 0);
+      out.push(...textBox(id(`cb${i}`), page, card.body,
+        tone ? { ...TYPE.cardBody, color: COLOR.ink } : TYPE.cardBody, {
         x: innerX, y, width: innerW, height: Math.max(20, remaining),
       }));
+    }
+  });
+  return out;
+}
+
+/**
+ * The spanning sub-band under a cards row — "SXO in detail": a full-width
+ * tinted panel with a short title and a row of small labelled cells, each
+ * elaborating a part of ONE card above. The device that turns three discipline
+ * cards plus six sub-disciplines into one slide instead of two.
+ */
+function stripRequests(
+  page: string, id: (s: string) => string,
+  strip: NonNullable<SlideInput["strip"]>, top: number, height: number
+): Req[] {
+  const items = (strip.items || []).filter((it) => it && (it.title?.trim() || it.text?.trim())).slice(0, 6);
+  if (!items.length && !strip.title?.trim()) return [];
+  const out: Req[] = [
+    ...filledShape(id("strip"), page, "ROUND_RECTANGLE", COLOR.lav, {
+      x: GRID.margin, y: top, width: GRID.contentWidth, height,
+    }),
+  ];
+  const PAD = 10;
+  let cursor = top + PAD - 2;
+  if (strip.title?.trim()) {
+    out.push(...textBox(id("stt"), page, strip.title,
+      { font: "Roboto", size: 8.5, weight: 600, color: COLOR.blue }, {
+      x: GRID.margin + PAD, y: cursor, width: GRID.contentWidth - PAD * 2, height: 13,
+    }));
+    cursor += 16;
+  }
+  if (items.length) {
+    const gap = 8;
+    const cellW = (GRID.contentWidth - PAD * 2 - gap * (items.length - 1)) / items.length;
+    const cellH = Math.max(24, top + height - cursor - PAD + 2);
+    // Measured, same as the layer cells: the fixed 12pt title box was shorter
+    // than one drawn line of 8pt text.
+    const cellTitleH = items.reduce((tall, it) => it.title?.trim()
+      ? Math.max(tall, drawnTextHeight(estimateLines(it.title, cellW - 8, 8), 8))
+      : tall, 0);
+    items.forEach((it, i) => {
+      const x = GRID.margin + PAD + i * (cellW + gap);
+      out.push(...filledShape(id(`stc${i}`), page, "ROUND_RECTANGLE", COLOR.white, {
+        x, y: cursor, width: cellW, height: cellH,
+      }));
+      if (it.title?.trim()) {
+        out.push(...textBox(id(`sth${i}`), page, it.title,
+          { font: "Roboto", size: 8, weight: 600, color: COLOR.blue }, {
+          x: x + 4, y: cursor + 3, width: cellW - 8, height: cellTitleH,
+        }, { align: "CENTER" }));
+      }
+      if (it.text?.trim()) {
+        out.push(...textBox(id(`stx${i}`), page, it.text,
+          { font: "Roboto", size: 6.5, weight: 300, color: COLOR.ink }, {
+          x: x + 4, y: cursor + 3 + cellTitleH + 1, width: cellW - 8,
+          height: Math.max(8, cellH - cellTitleH - 8),
+        }, { align: "CENTER", lineSpacing: 1.05 }));
+      }
+    });
+  }
+  return out;
+}
+
+/**
+ * The stacked layer diagram — "AI is not a new channel, it's a new LAYER".
+ *
+ * Horizontal bands top to bottom, connector arrows between them, each band
+ * either a full-width box or a row of cells. The source deck's page 5 is this
+ * picture, and no amount of prose replaces it: "everything below feeds the
+ * thing above" is a claim about GEOMETRY, and only a drawing makes it.
+ *
+ * Band heights are allocated by CONTENT: a caption band takes one share, a
+ * cell band takes a share and a half when the cells carry text under their
+ * titles. What remains after the arrows is divided proportionally, so five
+ * layers fit the band exactly and three layers breathe.
+ */
+function layersRequests(
+  page: string, id: (s: string) => string,
+  layers: NonNullable<SlideInput["layers"]>, top: number, height: number
+): Req[] {
+  const shown = layers.filter((l) => l && (l.title?.trim() || (l.cells || []).length)).slice(0, 5);
+  if (!shown.length) return [];
+  // Chrome and type at the SOURCE deck's own proportions: its band titles run
+  // ~10px on a 540 canvas, which is 8-9pt here, and its connectors are small
+  // chevrons, not 14pt arrows. At the earlier, fatter metrics a five-band
+  // diagram measured 356pt against a 270pt band — a third of it pure padding,
+  // because every stacked text box pays the 7.2pt Slides inset.
+  const ARROW_H = 8;
+  const GAP = 1.5;
+  const PAD = 6;
+  const TITLE_SIZE = 9;
+  const CAPTION_SIZE = 7;
+  const CELL_TITLE_SIZE = 7;
+  const CELL_TEXT_SIZE = 5.5;
+  const arrows = shown.slice(0, -1).filter((l) => l.arrow !== false).length;
+  const avail = height - arrows * (ARROW_H + GAP * 2);
+
+  // Band heights are MEASURED from their content, not shared out by weight.
+  // The proportional version put a caption band and a cells band on the same
+  // arithmetic, and the text walked out of the bottom of both — invisibly to
+  // the overrun sweep, which compares text with text, not text with the panel
+  // that is supposed to contain it. Whatever room is left after measuring is
+  // added evenly, so a three-band diagram breathes and a five-band one fits.
+  const cellsOf = (l: (typeof shown)[number]) =>
+    (l.cells || []).filter((c) => c && (c.title?.trim() || c.text?.trim())).slice(0, 8);
+  const innerRowW = GRID.contentWidth - PAD * 2;
+  const measured = shown.map((layer) => {
+    const cells = cellsOf(layer);
+    let need = PAD * 2 - 2;
+    if (layer.title?.trim()) need += drawnTextHeight(estimateLines(layer.title, innerRowW, TITLE_SIZE), TITLE_SIZE) + 1;
+    if (cells.length) {
+      const gap = 6;
+      const cellW = (innerRowW - gap * (cells.length - 1)) / cells.length;
+      const titleH = cells.reduce((t, c) => c.title?.trim()
+        ? Math.max(t, drawnTextHeight(estimateLines(c.title, cellW - 6, CELL_TITLE_SIZE), CELL_TITLE_SIZE)) : t, 0);
+      const textH = cells.reduce((t, c) => c.text?.trim()
+        ? Math.max(t, drawnTextHeight(estimateLines(c.text, cellW - 6, CELL_TEXT_SIZE), CELL_TEXT_SIZE)) : t, 0);
+      need += 3 + titleH + (textH ? 1 + textH : 0) + 5;
+    } else if (layer.caption?.trim()) {
+      need += drawnTextHeight(estimateLines(layer.caption, innerRowW, CAPTION_SIZE), CAPTION_SIZE);
+    }
+    return Math.max(26, need);
+  });
+  const slack = Math.max(0, avail - measured.reduce((a, b) => a + b, 0)) / shown.length;
+
+  const STYLES: { [k: string]: { fill: string; ink: string; sub: string; outline?: boolean } } = {
+    blue:   { fill: COLOR.blue,      ink: COLOR.white,  sub: COLOR.greyLight },
+    dashed: { fill: COLOR.tintBlue,  ink: COLOR.inkBlue, sub: COLOR.ink, outline: true },
+    teal:   { fill: COLOR.tintTeal,  ink: COLOR.inkTeal, sub: COLOR.ink },
+    lav:    { fill: COLOR.lav,       ink: COLOR.navy,   sub: COLOR.ink },
+    grey:   { fill: COLOR.tintGrey,  ink: COLOR.navy,   sub: COLOR.ink },
+    coral:  { fill: COLOR.tintCoral, ink: COLOR.inkCoral, sub: COLOR.ink },
+    amber:  { fill: COLOR.tintAmber, ink: COLOR.inkAmber, sub: COLOR.ink },
+  };
+
+  const out: Req[] = [];
+  let y = top;
+  shown.forEach((layer, li) => {
+    const h = measured[li] + slack;
+    const st = STYLES[String(layer.style || "").toLowerCase()] || STYLES.lav;
+    out.push(...filledShape(id(`ly${li}`), page, "ROUND_RECTANGLE", st.fill, {
+      x: GRID.margin, y, width: GRID.contentWidth, height: h,
+    }));
+    if (st.outline) {
+      out.push({
+        updateShapeProperties: {
+          objectId: id(`ly${li}`),
+          shapeProperties: {
+            outline: { outlineFill: { solidFill: { color: { rgbColor: rgb(COLOR.blue) } } }, weight: pt(1.5), dashStyle: "DASH" },
+          },
+          fields: "outline",
+        },
+      });
+    }
+    const cells = cellsOf(layer);
+    let cy = y + PAD - 2;
+    if (layer.title?.trim()) {
+      // MEASURED, like every other box in this file: the fixed 14pt version
+      // was shorter than one drawn line of 10pt text, and the overrun sweep
+      // flagged every band the moment the fixture joined the battery.
+      const th = drawnTextHeight(estimateLines(layer.title, GRID.contentWidth - PAD * 2, TITLE_SIZE), TITLE_SIZE);
+      out.push(...textBox(id(`lyt${li}`), page, layer.title,
+        { font: "Roboto", size: TITLE_SIZE, weight: 600, color: st.ink }, {
+        x: GRID.margin + PAD, y: cy, width: GRID.contentWidth - PAD * 2, height: th,
+      }, { align: "CENTER" }));
+      cy += th + 1;
+    }
+    if (cells.length) {
+      const gap = 6;
+      const cellW = (GRID.contentWidth - PAD * 2 - gap * (cells.length - 1)) / cells.length;
+      const cellH = Math.max(18, y + h - cy - PAD + 2);
+      // One measured title band for the whole row, same rule as the cards
+      // grid: cells share a baseline or the row reads as clutter.
+      const cellTitleH = cells.reduce((tall, c) => c.title?.trim()
+        ? Math.max(tall, drawnTextHeight(estimateLines(c.title, cellW - 6, CELL_TITLE_SIZE), CELL_TITLE_SIZE))
+        : tall, 0);
+      cells.forEach((c, ci) => {
+        const cx = GRID.margin + PAD + ci * (cellW + gap);
+        out.push(...filledShape(id(`lyc${li}_${ci}`), page, "ROUND_RECTANGLE", COLOR.white, {
+          x: cx, y: cy, width: cellW, height: cellH,
+        }));
+        if (c.title?.trim()) {
+          out.push(...textBox(id(`lyh${li}_${ci}`), page, c.title,
+            { font: "Roboto", size: CELL_TITLE_SIZE, weight: 600, color: COLOR.navy }, {
+            x: cx + 3, y: cy + 3, width: cellW - 6, height: cellTitleH,
+          }, { align: "CENTER" }));
+        }
+        if (c.text?.trim()) {
+          out.push(...textBox(id(`lyx${li}_${ci}`), page, c.text,
+            { font: "Roboto", size: CELL_TEXT_SIZE, weight: 300, color: COLOR.ink }, {
+            x: cx + 3, y: cy + 3 + cellTitleH + 1, width: cellW - 6,
+            height: Math.max(7, cellH - cellTitleH - 7),
+          }, { align: "CENTER", lineSpacing: 1.0 }));
+        }
+      });
+    } else if (layer.caption?.trim()) {
+      out.push(...textBox(id(`lyc${li}`), page, layer.caption,
+        { font: "Roboto", size: CAPTION_SIZE, weight: 300, color: st.sub }, {
+        x: GRID.margin + PAD, y: cy, width: GRID.contentWidth - PAD * 2, height: Math.max(10, y + h - cy - PAD + 2),
+      }, { align: "CENTER", lineSpacing: 1.1 }));
+    }
+    y += h;
+    if (li < shown.length - 1 && layer.arrow !== false) {
+      // A DOWN_ARROW shape between the bands, centred — the connective tissue
+      // that makes the stack read as flow rather than as a pile.
+      out.push({
+        createShape: {
+          objectId: id(`lya${li}`), shapeType: "DOWN_ARROW",
+          elementProperties: {
+            pageObjectId: page,
+            size: { width: pt(12), height: pt(ARROW_H) },
+            transform: { scaleX: 1, scaleY: 1, translateX: GRID.margin + GRID.contentWidth / 2 - 6, translateY: y + GAP, unit: "PT" },
+          },
+        },
+      }, {
+        updateShapeProperties: {
+          objectId: id(`lya${li}`),
+          shapeProperties: {
+            shapeBackgroundFill: { solidFill: { color: { rgbColor: rgb(COLOR.navy) }, alpha: 0.55 } },
+            outline: { propertyState: "NOT_RENDERED" },
+          },
+          fields: "shapeBackgroundFill.solidFill,outline",
+        },
+      });
+      y += ARROW_H + GAP * 2;
     }
   });
   return out;
@@ -3391,8 +3663,55 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       ...textBox(id("title"), page, slide.title, titleStyle, {
         x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
       }),
-      ...cardsRequests(page, id, slide.cards || []),
     );
+    // The row starts under the standfirst when there is one, and under the
+    // title band when there is not — CARDS.y was a fixed constant, which held
+    // while the grid never moved and stopped holding the day it did.
+    let cardsTop = GRID.bodyY;
+    if (slide.subtitle?.trim()) {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(
+        estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size);
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: standH,
+      }));
+      cardsTop = GRID.bodyY + standH + 10;
+    }
+    // The strip and the note both take their room from the card row, so the
+    // three stack without touching: cards, strip, note, footer.
+    const bandBottom = GRID.bodyY + band;
+    const stripItems = (slide.strip?.items || []).length || (slide.strip?.title?.trim() ? 1 : 0);
+    const stripH = stripItems ? Math.min(88, Math.max(48, 20 + 44)) : 0;
+    const cardsH = Math.max(80, bandBottom - cardsTop - (stripH ? stripH + 10 : 0));
+    requests.push(...cardsRequests(page, id, slide.cards || [], cardsTop, cardsH));
+    if (stripH && slide.strip) {
+      requests.push(...stripRequests(page, id, slide.strip, cardsTop + cardsH + 10, stripH));
+    }
+  } else if (layout === "layers") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }),
+    );
+    let diagTop = GRID.bodyY;
+    if (slide.subtitle?.trim()) {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(
+        estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size);
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: standH,
+      }));
+      diagTop = GRID.bodyY + standH + 8;
+    }
+    // A diagram earns the note bar's gap when there is no note: the source
+    // page runs nearly full height, and 12pt is the difference between five
+    // bands fitting and the last one falling off the canvas.
+    requests.push(...layersRequests(page, id, slide.layers || [], diagTop,
+      Math.max(100, GRID.bodyY + band - diagTop + (slide.note?.trim() ? 0 : 12))));
   } else if (layout === "stat" || layout === "bar-chart" || layout === "stacked-bar" || layout === "line-chart") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {

@@ -96,7 +96,16 @@ function elementHtml(el: PreviewElement): string {
   if (el.kind === "rect" || el.kind === "ellipse") {
     const radius = el.kind === "ellipse" ? "border-radius:50%;" : el.rounded ? "border-radius:12px;" : "";
     const fill = el.fill ? `background:${escapeHtml(el.fill)};` : "";
-    return `<div style="position:absolute;${pos}${opacity}${fill}${radius}"></div>`;
+    // The two arrow shapes and the dashed emphasis band, mirrored from the
+    // chat preview — the PDF prints the same picture or it stops being a
+    // print of the preview.
+    const arrow = (el as any).arrow
+      ? "clip-path:polygon(0% 30%, 60% 30%, 60% 0%, 100% 50%, 60% 100%, 60% 70%, 0% 70%);"
+      : (el as any).arrowDown
+      ? "clip-path:polygon(30% 0%, 70% 0%, 70% 55%, 100% 55%, 50% 100%, 0% 55%, 30% 55%);"
+      : "";
+    const dashed = (el as any).dashed ? "border:1.5px dashed #3950FF;box-sizing:border-box;" : "";
+    return `<div style="position:absolute;${pos}${opacity}${fill}${radius}${arrow}${dashed}"></div>`;
   }
 
   // Text. Lines are rendered separately so the range indices — measured

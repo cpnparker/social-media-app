@@ -31,6 +31,7 @@ const REQUIRED_PAYLOAD: { [layout: string]: string } = {
   "logo-wall": "logos",
   quote: "quote",
   "image-grid": "images",
+  layers: "layers",
 };
 
 function isEmptyPayload(v: any): boolean {
@@ -106,7 +107,7 @@ export const PAYLOAD_FIELDS: string[] = Object.keys(REQUIRED_PAYLOAD)
   // `panel` is optional on the content family rather than required by any
   // layout, so deriving from REQUIRED_PAYLOAD alone would leave it the one
   // structured field an edit could not carry.
-  .concat(["panel"])
+  .concat(["panel", "strip", "tones", "note"])
   .filter((f, i, all) => all.indexOf(f) === i);
 
 /** Can this layout be inserted with the fields given? Exported because it is

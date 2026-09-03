@@ -163,7 +163,10 @@ function SlideThumb({
                 // reason that layout exists — into a row of blocks.
                 ...(el.arrow
                   ? { clipPath: "polygon(0% 30%, 60% 30%, 60% 0%, 100% 50%, 60% 100%, 60% 70%, 0% 70%)" }
+                  : el.arrowDown
+                  ? { clipPath: "polygon(30% 0%, 70% 0%, 70% 55%, 100% 55%, 50% 100%, 0% 55%, 30% 55%)" }
                   : {}),
+                ...(el.dashed ? { border: "1.5px dashed #3950FF", background: el.fill || "transparent" } : {}),
               }} />
             );
           }

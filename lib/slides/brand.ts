@@ -384,6 +384,7 @@ export type SlideLayout =
   | "comparison"
   | "table"
   | "statement"
+  | "layers"
   | "scatter"
   | "venn"
   | "cards"
@@ -393,7 +394,7 @@ export type SlideLayout =
   | "closing";
 
 export const LAYOUTS: SlideLayout[] = [
-  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "table", "statement", "scatter", "venn", "cards", "quote", "process", "logo-wall", "closing",
+  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "table", "statement", "scatter", "venn", "cards", "quote", "process", "logo-wall", "layers", "closing",
 ];
 
 /** Horizontal timeline: an axis rule with evenly spaced milestone markers.
@@ -623,6 +624,7 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   "comparison":  { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "table":       { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "statement":   { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  "layers":      { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "scatter":     { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "venn":        { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   cards:         { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },

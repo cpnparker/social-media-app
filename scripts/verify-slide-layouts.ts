@@ -156,6 +156,31 @@ const DECK: SlideInput[] = [
  *  The tool schema puts no maxItems on any of these, so "the model would not
  *  send that" was never true. */
 const STRESS: SlideInput[] = [
+  // The layer diagram, overloaded: five bands, one with eight cells carrying
+  // text, two captions, a suppressed arrow — every feature at its ceiling.
+  { layout: "layers", title: "AI Is Not a New Channel - It's a New Layer",
+    layers: [
+      { title: "Your audience", style: "blue" },
+      { title: "AI synthesis layer", caption: "ChatGPT · Gemini · Claude · Perplexity · Copilot · Google AI Overviews - reads, compares and synthesises across every channel below", style: "dashed" },
+      { title: "Traditional channels", style: "lav", cells: [
+        { title: "Website", text: "Owned content" }, { title: "LinkedIn", text: "Company + expert" },
+        { title: "YouTube", text: "Video + transcript" }, { title: "Earned media", text: "News + editorial" },
+        { title: "Wikipedia", text: "Wikidata entity" }, { title: "Industry pubs", text: "Trade + research" },
+        { title: "Newsletters", text: "Email + web" }, { title: "Podcasts", text: "Audio + transcript" } ] },
+      { title: "Social platforms", caption: "Indirect signals only - visuals are not readable by AI", style: "grey" },
+      { title: "Brands", style: "teal", arrow: false } ] },
+  // Toned cards with the spanning strip and a takeaway bar, all at once.
+  { layout: "cards", title: "The Three Answer Disciplines in 2026",
+    subtitle: "Three disciplines share one goal - being the answer, and a standfirst long enough to wrap onto a second line so the row has to move down under it.",
+    cards: [
+      { title: "AEO - Answer Engine Optimisation", body: "Be the answer. Won on the page, in weeks.", tone: "blue" },
+      { title: "GEO - Generative Engine Optimisation", body: "Be cited. Won around the brand, over months.", tone: "teal" },
+      { title: "SXO - Search Experience Optimisation", body: "Be useful. The umbrella discipline, detailed below.", tone: "amber" } ],
+    strip: { title: "SXO in detail - the sub-disciplines it governs", items: [
+      { title: "SEO", text: "Organic search" }, { title: "SEA", text: "Paid search" },
+      { title: "SEM", text: "SEO and SEA together" }, { title: "SMO", text: "Social media" },
+      { title: "CRO", text: "Conversion rate" }, { title: "UX", text: "Speed, clarity, intent" } ] },
+    note: "This workshop focuses on AEO and GEO - we flag which tactic serves which throughout." },
   { layout: "bar-chart", title: "Twelve categories, more than fit",
     chart: { source: "Source: internal data", series: [{ name: "GW", points:
       Array.from({ length: 12 }, (_, i) => ({ label: `Category ${i + 1}`, value: 100 - i * 7 })) }] } },
@@ -1713,6 +1738,106 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     assertT(room >= 44, `two lines of title still fit above the body (${room.toFixed(1)}pt)`);
   }
   if (failures === before20it) pass("content starts in the top third, and the band still ends above the footer");
+
+  /* 20j. The layer diagram, and the toned card row. */
+  //
+  // Both come from converting a real client deck whose two hardest pages were
+  // a layered architecture picture and a three-discipline card row with a
+  // spanning sub-band. The geometric sweeps above already cover collisions;
+  // this section pins the SEMANTICS - order, arrows, tones - and the preview's
+  // fidelity to them.
+  const before20j = failures;
+  console.log(`\n20j. Layers and toned cards`);
+  {
+    const assertL = (ok: boolean, m: string) => { if (!ok) fail(m); };
+    const layersFixture = ALL.find((sl) => sl.layout === "layers")!;
+    const lr = buildSlideRequests(layersFixture, 0, "n") as any[];
+
+    // Bands render TOP FIRST, in the order given: the whole claim of the
+    // diagram is vertical order, so the builder scrambling it is the one
+    // failure that changes the meaning while passing every collision check.
+    const bandYs: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const r = lr.find((q) => q.createShape?.objectId?.endsWith(`_ly${i}`));
+      assertL(!!r, `band ${i} is drawn`);
+      if (r) bandYs.push(r.createShape.elementProperties.transform.translateY);
+    }
+    for (let i = 1; i < bandYs.length; i++) {
+      assertL(bandYs[i] > bandYs[i - 1], `band ${i} sits below band ${i - 1}`);
+    }
+
+    // Arrows between bands - and NOT after a band that suppressed its arrow.
+    const arrows = lr.filter((q) => q.createShape?.shapeType === "DOWN_ARROW");
+    assertL(arrows.length === 4, `four connectors for five bands (${arrows.length})`);
+    // The dashed emphasis band really is dashed.
+    const dashed = lr.find((q) => q.updateShapeProperties?.shapeProperties?.outline?.dashStyle === "DASH");
+    assertL(!!dashed, "the synthesis band carries its dashed outline");
+    // Cells: all eight, with their text.
+    const texts = lr.filter((q) => q.insertText).map((q) => q.insertText.text);
+    for (const t of ["Website", "Wikidata entity", "Podcasts", "Audio + transcript"]) {
+      assertL(texts.indexOf(t) >= 0, `cell content "${t}" is drawn`);
+    }
+
+    // THE PREVIEW KEEPS ALL OF IT. An arrow drawn as a grey block, or a dashed
+    // band drawn solid, is the preview lying about the deck again.
+    const pv = toPreviewModel([layersFixture]).slides[0].elements as any[];
+    assertL(pv.filter((e) => e.arrowDown).length === 4, "the preview keeps the four downward arrows as arrows");
+    assertL(pv.some((e) => e.dashed), "and the dashed outline as dashed");
+    // And the PDF prints them - the print is a pure function of the preview.
+    const html = deckToHtml(toPreviewModel([layersFixture]), "t");
+    assertL(html.indexOf("clip-path:polygon(30% 0%") >= 0, "the PDF draws the down arrow as an arrow");
+    assertL(html.indexOf("dashed #3950FF") >= 0, "and the dashed band as dashed");
+
+    // CONTAINMENT. The overrun sweep compares text with TEXT; nothing asserts
+    // that a cell's caption stays inside the white cell that frames it — and
+    // the first cut of this layout put every cell caption below its cell and
+    // the sweep stayed green. A framed text that escapes its frame is wrong in
+    // a way only geometry against the PANEL can catch.
+    const insideSomeRect = (el: any, pred: (r: any) => boolean) =>
+      pv.some((r: any) => r.kind === "rect" && pred(r) &&
+        el.x >= r.x - 0.5 && el.y >= r.y - 0.5 &&
+        el.x + el.w <= r.x + r.w + 0.5 && el.y + el.h <= r.y + r.h + 0.5);
+    for (const t of ["Owned content", "Audio + transcript", "Website", "Podcasts"]) {
+      const el = pv.find((e: any) => e.text === t);
+      assertL(!!el && insideSomeRect(el, (r) => String(r.fill).toLowerCase() === "#ffffff"),
+        `cell text "${t}" sits inside its white cell`);
+    }
+    const cap = pv.find((e: any) => /reads, compares and synthesises/.test(String(e.text || "")));
+    assertL(!!cap && insideSomeRect(cap, (r) => r.h < 200),
+      "the synthesis caption stays inside its band");
+
+    // Arrow SUPPRESSION, on a fixture where it is not the last band — on the
+    // main fixture the arrow:false band is last, which slice(0,-1) skips
+    // anyway, so that flag was otherwise untested.
+    const three = buildSlideRequests({ layout: "layers", title: "T", layers: [
+      { title: "A" }, { title: "B", arrow: false }, { title: "C" } ] } as SlideInput, 0, "n") as any[];
+    assertL(three.filter((q) => q.createShape?.shapeType === "DOWN_ARROW").length === 1,
+      "arrow: false suppresses the connector below its own band");
+
+    // TONED CARDS. Each toned card gets a panel and its 3pt accent bar; the
+    // strip sits BELOW the card row and holds all six cells.
+    const cardsFixture = ALL.find((sl) => sl.layout === "cards" && (sl as any).strip)!;
+    const cr = buildSlideRequests(cardsFixture, 0, "n") as any[];
+    for (let i = 0; i < 3; i++) {
+      assertL(cr.some((q) => q.createShape?.objectId?.endsWith(`_ca${i}`)), `card ${i} carries its accent bar`);
+      assertL(cr.some((q) => q.createShape?.objectId?.endsWith(`_cp${i}`) && q.createShape.shapeType === "ROUND_RECTANGLE"), `and its tinted panel`);
+    }
+    const stripPanel = cr.find((q) => q.createShape?.objectId?.endsWith("_strip"));
+    assertL(!!stripPanel, "the strip band is drawn");
+    const cardPanel = cr.find((q) => q.createShape?.objectId?.endsWith("_cp0"));
+    assertL(stripPanel.createShape.elementProperties.transform.translateY >
+      cardPanel.createShape.elementProperties.transform.translateY +
+      cardPanel.createShape.elementProperties.size.height.magnitude,
+      "and it sits below the card row, not on it");
+    const ctexts = cr.filter((q) => q.insertText).map((q) => q.insertText.text);
+    for (const t of ["SEO", "UX", "Speed, clarity, intent"]) {
+      assertL(ctexts.indexOf(t) >= 0, `strip cell "${t}" is drawn`);
+    }
+    // The subtitle pushed the row down - CARDS.y was a fixed constant once,
+    // and a standfirst overlapping the card row is how that would resurface.
+    assertL(ctexts.some((t: string) => /standfirst long enough/.test(t)), "the cards slide draws its standfirst");
+  }
+  if (failures === before20j) pass("the layer diagram keeps its order, arrows and dash - in the deck, the preview and the print - and toned cards carry their accents with the strip below");
 
   /* 21. The analysis formats draw their structure. */
   const before21 = failures;

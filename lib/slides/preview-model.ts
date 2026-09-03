@@ -36,6 +36,10 @@ export interface PreviewElement {
   /** An arrow drawn as a shape, not a rectangle — the process layout's
    *  connectors read as blocks in a preview that ignores this. */
   arrow?: boolean;
+  /** The layer diagram's downward connector — same reasoning as arrow. */
+  arrowDown?: boolean;
+  /** A dashed outline (the layer diagram's emphasis band). */
+  dashed?: boolean;
   /** Where in the slide SPEC this text came from, as a path — ["title"], or
    *  ["stats", 0, "value"], or ["chart","series",0,"points",2,"label"].
    *
@@ -158,6 +162,7 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
           kind: body.shapeType === "ELLIPSE" ? "ellipse" : "rect",
           rounded: body.shapeType === "ROUND_RECTANGLE",
           arrow: body.shapeType === "RIGHT_ARROW",
+          arrowDown: body.shapeType === "DOWN_ARROW",
           x: body.elementProperties.transform.translateX,
           y: body.elementProperties.transform.translateY,
           w: body.elementProperties.size.width.magnitude,
@@ -200,6 +205,8 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
         // photograph underneath completely. The deck was right and the preview
         // was not, which is the one failure a preview cannot have.
         if (el && typeof solid?.alpha === "number") el.opacity = solid.alpha;
+        // The dashed emphasis outline (the layer diagram's synthesis band).
+        if (el && body.shapeProperties?.outline?.dashStyle === "DASH") el.dashed = true;
       } else if (kind === "insertText") {
         const el = byId.get(body.objectId);
         if (el) {
