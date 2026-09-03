@@ -95,8 +95,9 @@ export function stallNotice(toolName?: string): string {
   return (
     `\n\n---\n\n⚠ **This turn was cut off.** ${what} was still being written when it ran out of time, ` +
     `so it never ran and nothing was created. Anything described above as done was not done.\n\n` +
-    `Ask again. If it was a large deck or document, ask for it in smaller parts — a request that takes ` +
-    `more than 90 seconds to write out will be cut off again.`
+    `Ask again — and if it was a large deck or document, ask for it in parts ("do the first twelve slides, ` +
+    `then continue"). A single call that has to write out dozens of slides is what runs out of time; the same ` +
+    `deck built in three or four calls goes through.`
   );
 }
 

@@ -473,12 +473,44 @@ console.log("\n7c. A cut-off turn admits it");
   // THE SENTENCE THAT MATTERS. The text above it claims work was done. Without
   // this the notice is just a warning beside a confident lie.
   assert(/was not done/i.test(n), "and contradicts the claim above it directly");
-  assert(/smaller parts/i.test(n), "and says what to do instead");
+  // Wording changed when TOOL_WRITE_STALL_MS went in: the notice used to blame
+  // "more than 90 seconds", which stopped being the number. What it must still
+  // do is tell the user how to get the deck — in parts — rather than only that
+  // they did not get one.
+  assert(/in parts/i.test(n), "and says what to do instead");
+  assert(/twelve slides/i.test(n), "concretely enough to act on, not just 'try smaller'");
+  assert(!/90 seconds/.test(n), "without quoting a budget that is no longer the budget");
 
   const anon = stallOutcome(true, "Working on it.");
   assert(!!anon.append && (anon.append || "").indexOf("A tool call") >= 0,
     "a stall between tool blocks still produces a notice, without inventing a tool name");
   assert((anon.append || "").indexOf("undefined") < 0, "and never prints undefined at the user");
+}
+
+// ── 7c-bis. A tool call mid-write is busy, not idle ────────────────────────
+//
+// A 38-page conversion for a real client meeting died twice at the 90-second
+// mark with generate_slides half-written. A silent model and a model
+// mid-sentence through a 40,000-character argument are not the same condition,
+// and 90 seconds was only ever calibrated for the first.
+console.log("\n7c-bis. The stall budget knows a tool write from a silence");
+{
+  const prov = readFileSync(join(root, "lib/ai/providers.ts"), "utf8");
+  assert(/const TOOL_WRITE_STALL_MS = /.test(prov), "there is a separate budget for an active tool write");
+  const idle = Number((prov.match(/const STREAM_STALL_MS = ([0-9_]+)/) || [])[1]?.replace(/_/g, "") || 0);
+  const write = Number((prov.match(/const TOOL_WRITE_STALL_MS = ([0-9_]+)/) || [])[1]?.replace(/_/g, "") || 0);
+  assert(write > idle, `and it is longer than the idle budget (${write} vs ${idle})`);
+  // The route allows 300s and a final answer still has to be forced after a
+  // stall, so the budget cannot eat the whole request.
+  assert(write <= 240_000, `but still leaves room to force a final answer inside maxDuration (${write})`);
+  assert(/withStallGuard\(stream, \(\) => \(currentToolId \? TOOL_WRITE_STALL_MS : STREAM_STALL_MS\)\)/.test(prov),
+    "the guard is told which budget applies, per event, from whether a tool call is open");
+  // And the model is told up front, because the append instruction it needs
+  // only arrives in a tool RESULT — which a first call that dies never sees.
+  assert(/A LONG DOCUMENT IS BUILT IN BATCHES, AND THE FIRST CALL IS NOT THE WHOLE DECK/.test(prov),
+    "the tool description tells the model to batch a long conversion before it tries one giant call");
+  assert(/failed twice that way/.test(prov), "and says why, so it is not tidied away as boilerplate");
+  pass("an active tool write gets a real budget, and a long conversion is told to arrive in parts");
 }
 
 // ── 7d. A minute-long deck build shows movement ────────────────────────────

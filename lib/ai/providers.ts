@@ -177,27 +177,63 @@ const DEFAULT_CHAT_TEMPERATURE = 0.4;
  *  (the WBCSD meeting-search bug, 2026-07-17). */
 const STREAM_STALL_MS = 90_000;
 
+/** The budget while a TOOL CALL's arguments are actively being written.
+ *
+ *  A 38-page conversion is one enormous tool call, and the model writes it as a
+ *  single unbroken JSON argument. Twice in a row a real deck for a real client
+ *  meeting died at the 90-second mark with the call half-written — nothing ran,
+ *  nothing was created, and the narration above it had already been persisted
+ *  as though it had.
+ *
+ *  A silent model and a model mid-sentence through a 40,000-character argument
+ *  are not the same condition, and 90 seconds was only ever calibrated for the
+ *  first. The watchdog exists to stop a HUNG stream burning the route's
+ *  maxDuration; the route allows 300s, so a longer budget here still leaves
+ *  room to force a final answer. */
+const TOOL_WRITE_STALL_MS = 210_000;
+
 class StreamStallError extends Error {
-  constructor() {
-    super(`Model stream stalled — no events for ${STREAM_STALL_MS / 1000}s`);
+  constructor(budgetMs: number, public readonly diagnosis: string) {
+    super(`Model stream stalled — no events for ${Math.round(budgetMs / 1000)}s`);
     this.name = "StreamStallError";
   }
 }
 
-/** Wraps an async iterable so every next() races an inactivity timer. */
-async function* withStallGuard<T>(iterable: AsyncIterable<T>): AsyncGenerator<T> {
+/**
+ * Wraps an async iterable so every next() races an inactivity timer.
+ *
+ * `budgetMs` is read per event rather than fixed, so the caller can widen it
+ * while a tool call is mid-write — see TOOL_WRITE_STALL_MS.
+ */
+async function* withStallGuard<T>(
+  iterable: AsyncIterable<T>,
+  budgetMs?: () => number
+): AsyncGenerator<T> {
   const it = iterable[Symbol.asyncIterator]();
   let finished = false;
+  // Measured, because the question "was it silent, or just slow?" decided the
+  // fix and could not be answered from the logs the first two times it fired.
+  let events = 0;
+  let lastAt = Date.now();
   try {
     while (true) {
       let timer: ReturnType<typeof setTimeout> | undefined;
+      const budget = Math.max(1_000, budgetMs?.() ?? STREAM_STALL_MS);
+      const startedAt = Date.now();
       const res = await Promise.race([
         it.next(),
         new Promise<never>((_, rej) => {
-          timer = setTimeout(() => rej(new StreamStallError()), STREAM_STALL_MS);
+          timer = setTimeout(
+            () => rej(new StreamStallError(budget,
+              `after ${events} events; ${Math.round((Date.now() - lastAt) / 1000)}s since the previous one; budget ${Math.round(budget / 1000)}s`)),
+            budget
+          );
         }),
       ]).finally(() => clearTimeout(timer));
       if (res.done) { finished = true; return; }
+      events++;
+      lastAt = Date.now();
+      void startedAt;
       yield res.value; // a consumer break/throw resumes in the finally below
     }
   } finally {
@@ -1556,7 +1592,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                 type: "string",
                 enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "scatter", "venn", "cards", "quote", "process", "logo-wall", "closing"],
                 description:
-                  "ACCENT PHRASE: in any TITLE you may wrap ONE short phrase in braces — Great storytelling can {change the world} — and it is drawn as the brand's italic accent (lime on dark grounds). Use it on the cover, on section dividers, and on roughly one content headline in three; on every slide it stops meaning anything. statement = one big Playfair sentence on the light ground, at most ~14 words, with an optional `subtitle` lead — the slide that makes the argument; reach for it when one sentence IS the point and bullets would dilute it. cover = opening slide, big centred title over a dark ground. section = a divider between parts of the deck — give it an `image.query` for a full-bleed photograph and a numeric `eyebrow` ('01', '02') for a big index numeral; without a photo it falls back to a flat blue field. content = title + body, the FALLBACK when nothing else fits — a bulleted slide is the flattest thing the deck can make, so reach for a layout above it first. Give it a `subtitle` (drawn as a standfirst) and an `image.query` (drawn as a rail down the right) and it stops looking like a document. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. line-chart = a trend over time — months, quarters, years — as a connected line; supply `chart` with each series' points IN TIME ORDER (they are plotted in the order given, evenly spaced). Reach for it whenever the point is that something CHANGED, where a bar chart would only show the endpoints. swot = a four-quadrant SWOT on colour-coded panels; supply `swot` with strengths/weaknesses/opportunities/threats. matrix = a 2x2 priority grid (impact/effort, risk/reward) with items plotted by position; supply `matrix`. comparison = a table weighing options against criteria, with ticks and crosses; supply `comparison`. table = a DATA table, a header row and rows of figures with numeric columns right-aligned under their headings; supply `table`. Reach for it over comparison when the cells are measurements rather than judgements, and over a bar chart when the reader needs the actual numbers. scatter = a scatter plot for a correlation between two measures; supply `scatter` with points that each have x and y. venn = two or three overlapping sets, for where things intersect; supply `venn`. cards = two to six repeated blocks across the slide — pillars, product types, numbered steps, a portfolio of formats. Reach for it whenever a slide would otherwise be a list of things that are the same KIND of thing; supply `cards`. quote = a pull quote on navy with the speaker named beneath — use it for a client testimonial or an executive line, never for your own copy; supply `quote`. process = stages carried left to right by arrows, for a way of working; supply `stages`. logo-wall = client marks on a clean ground, the credibility slide; supply `logos`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter — but defaulting through a whole deck produces exactly the flat deck this tool exists to avoid.",
+                  "A LONG DOCUMENT IS BUILT IN BATCHES, AND THE FIRST CALL IS NOT THE WHOLE DECK. One call cannot write out thirty-eight slides before it is cut off — a 38-page conversion has now failed twice that way, with nothing created and a confident reply above it. When the source has more than about fifteen pages, send the FIRST ~12 slides in `slides` and say in your reply that you are continuing; the tool result then tells you exactly how to append the next batch with editSlide.insertAfter, about ten at a time, until every source page is covered. Do not try to be heroic about it: a deck that arrives in four calls exists, and one that arrives in a single call does not. ACCENT PHRASE: in any TITLE you may wrap ONE short phrase in braces — Great storytelling can {change the world} — and it is drawn as the brand's italic accent (lime on dark grounds). Use it on the cover, on section dividers, and on roughly one content headline in three; on every slide it stops meaning anything. statement = one big Playfair sentence on the light ground, at most ~14 words, with an optional `subtitle` lead — the slide that makes the argument; reach for it when one sentence IS the point and bullets would dilute it. cover = opening slide, big centred title over a dark ground. section = a divider between parts of the deck — give it an `image.query` for a full-bleed photograph and a numeric `eyebrow` ('01', '02') for a big index numeral; without a photo it falls back to a flat blue field. content = title + body, the FALLBACK when nothing else fits — a bulleted slide is the flattest thing the deck can make, so reach for a layout above it first. Give it a `subtitle` (drawn as a standfirst) and an `image.query` (drawn as a rail down the right) and it stops looking like a document. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. line-chart = a trend over time — months, quarters, years — as a connected line; supply `chart` with each series' points IN TIME ORDER (they are plotted in the order given, evenly spaced). Reach for it whenever the point is that something CHANGED, where a bar chart would only show the endpoints. swot = a four-quadrant SWOT on colour-coded panels; supply `swot` with strengths/weaknesses/opportunities/threats. matrix = a 2x2 priority grid (impact/effort, risk/reward) with items plotted by position; supply `matrix`. comparison = a table weighing options against criteria, with ticks and crosses; supply `comparison`. table = a DATA table, a header row and rows of figures with numeric columns right-aligned under their headings; supply `table`. Reach for it over comparison when the cells are measurements rather than judgements, and over a bar chart when the reader needs the actual numbers. scatter = a scatter plot for a correlation between two measures; supply `scatter` with points that each have x and y. venn = two or three overlapping sets, for where things intersect; supply `venn`. cards = two to six repeated blocks across the slide — pillars, product types, numbered steps, a portfolio of formats. Reach for it whenever a slide would otherwise be a list of things that are the same KIND of thing; supply `cards`. quote = a pull quote on navy with the speaker named beneath — use it for a client testimonial or an executive line, never for your own copy; supply `quote`. process = stages carried left to right by arrows, for a way of working; supply `stages`. logo-wall = client marks on a clean ground, the credibility slide; supply `logos`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter — but defaulting through a whole deck produces exactly the flat deck this tool exists to avoid.",
               },
               title: { type: "string", description: "Slide heading." },
               subtitle: {
@@ -8126,7 +8162,9 @@ async function streamAnthropic(
 
     let stalled = false;
     try {
-    for await (const event of withStallGuard(stream)) {
+    // While a tool call's arguments are being written the stream is not idle,
+    // it is busy — give it the wider budget.
+    for await (const event of withStallGuard(stream, () => (currentToolId ? TOOL_WRITE_STALL_MS : STREAM_STALL_MS))) {
       // Detect server tool use (web search — handled by Anthropic internally)
       if (event.type === "content_block_start") {
         const block = (event as any).content_block;
@@ -8224,7 +8262,7 @@ async function streamAnthropic(
 
     } catch (e) {
       if (e instanceof StreamStallError) {
-        console.warn(`[Anthropic] Round ${round} stalled mid-stream${currentToolName ? ` while writing ${currentToolName}` : ""} — aborting tool loop, forcing final answer from gathered context`);
+        console.warn(`[Anthropic] Round ${round} stalled mid-stream${currentToolName ? ` while writing ${currentToolName}` : ""} — ${e.diagnosis}${currentToolInput ? `; ${currentToolInput.length} chars of arguments written` : ""} — aborting tool loop, forcing final answer from gathered context`);
         stalled = true;
         stalledOut = true;
         if (currentToolName) stalledTool = currentToolName;
@@ -9394,7 +9432,7 @@ async function streamAnthropic(
   // failed): rethrow so createStreamingResponse's provider fallback takes the
   // turn — never persist a blank reply as a successful completion.
   if (outcome.rethrow) {
-    throw new StreamStallError();
+    throw new StreamStallError(STREAM_STALL_MS, "rethrown after a stalled round left nothing on screen");
   }
 
   return {
