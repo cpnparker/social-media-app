@@ -14,12 +14,13 @@ import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
   niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, parseBold, deckWarnings, cardGeometry, bandHeightFor,
-  CAPS_WIDEN, TEXT_INSET_X, pillWidth,
+  CAPS_WIDEN, TEXT_INSET_X, pillWidth, droppedContent,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
 import { applyEditSlide, unrenderableSlides, PAYLOAD_FIELDS, insertableLayout } from "../lib/slides/edit";
 import { deckToHtml, safeSrc } from "../lib/slides/pdf-html";
+import { SLIDES_TEXT_INSET } from "../lib/slides/preview-style";
 import { prepareSlidesForBuild, sourceSlideCount, fidelityAudit } from "../lib/ai/providers";
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -1387,6 +1388,59 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     assertFid(audited === 4, `all four chains run the fidelity audit unconditionally (${audited} of 4)`);
     assertFid(!/fidelity === "preserve" \? fidelityAudit/.test(prov),
       "and no chain still gates the audit on the preserve flag — a forgotten flag was a silenced audit");
+
+    // A PDF IS THE CONVERSION THIS AUDIT WAS WRITTEN FOR, AND IT COULD NOT SEE IT.
+    //
+    // `sourceSlideCount` could only count the pptx reader's "--- Slide N ---"
+    // markers. A PDF has none, so sourceCount was 0, `fidelityAudit` returned
+    // "" on its first line, and the one server-side thing that refuses to let
+    // a short conversion be called finished was silent for the exact journey
+    // it exists for. pdf-parse hands the route `numpages`; the route read it
+    // and threw it away. The 38-page programme that this whole section is
+    // named after was a PDF.
+    //
+    // Both ENDS are pinned here, because a marker only one side writes is a
+    // marker nobody reads: the route's literal is lifted out of its own source
+    // and fed to the reader.
+    const routeSrc = readFileSync(join(__dirname, "..", "app/api/ai/conversations/[id]/messages/route.ts"), "utf8");
+    const emits = /return pages > 0 \? `--- PDF: \$\{pages\} pages ---\\n\$\{text\}` : text;/.test(routeSrc);
+    assertFid(emits, "the PDF reader records its page count instead of discarding numpages");
+    assertFid(/const pages = Number\(\(data as any\)\.numpages\) \|\| 0;/.test(routeSrc),
+      "and takes it from pdf-parse rather than guessing");
+    const pdfCount = sourceSlideCount([{ role: "user", content: "x", attachments: [
+      { url: "u", name: "programme.pdf", type: "application/pdf",
+        extractedText: "--- PDF: 38 pages ---\nBuilding Authority on AI ... " } ] }] as any);
+    assertFid(pdfCount === 38, `a PDF's page count is read as its source length (${pdfCount})`);
+    assertFid(fidelityAudit(34, pdfCount, true).indexOf("INCOMPLETE") >= 0,
+      "so 34 slides from a 38-page PDF is now called incomplete — it was silent before");
+    // Not every "PDF" line is a count: prose must not be mistaken for one.
+    assertFid(sourceSlideCount([{ role: "user", content: "x", attachments: [
+      { url: "u", name: "d.pdf", type: "application/pdf", extractedText: "see --- PDF: 12 pages --- inline" } ] }] as any) === 0,
+      "and a mention mid-line is not a page count");
+
+    // THE SCHEMA MAY NOT LIE ABOUT THE MODEL'S OWN BUDGET. It told the model
+    // it had three calls a turn while the guard granted six — a model
+    // rationing itself to three at a dozen slides each stops around thirty-six
+    // and, with the audit silent, has no reason to notice it stopped.
+    const guardSrc = readFileSync(join(__dirname, "..", "lib/ai/tool-loop-guard.ts"), "utf8");
+    const budget = Number((guardSrc.match(/generate_slides:\s*(\d+)/) || [])[1]);
+    assertFid(budget > 0, `the guard's slide budget is readable (${budget})`);
+    const claimed = (prov.match(/capped at (\w+) calls a turn/) || [])[1];
+    const WORD: { [k: string]: number } = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 };
+    assertFid(WORD[claimed] === budget,
+      `the schema tells the model it has "${claimed}" calls a turn while the guard grants ${budget}`);
+
+    // AND THE CONVERSION RULE MUST BE IN THE TOOL'S OWN DESCRIPTION, not buried
+    // in a per-slide enum where it competes with the always-on house rule that
+    // says "10-25 slides". The batching instruction lived inside
+    // slides.items.properties.layout.description — read last, if at all.
+    const desc = (prov.match(/name: "generate_slides",\n\s*description:\n?\s*"([\s\S]*?)",\n/) || [])[1] || "";
+    assertFid(desc.length > 0, "the generate_slides description is readable");
+    assertFid(/HOUSE LENGTH GUIDANCE DOES NOT APPLY TO A CONVERSION/.test(desc),
+      "the tool description overrides the house length rule for a conversion");
+    assertFid(/BUILT IN BATCHES/.test(desc) && /insertAfter/.test(desc),
+      "and carries the batching recipe itself, not only inside a layout enum");
+    assertFid(/preserve/.test(desc), "and names the fidelity mode a conversion needs");
   }
   if (failures === before20f) pass("a preserve conversion is not told to restructure, all four chains pass the flag, and server-side splits are declared");
 
@@ -2499,6 +2553,231 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     if (lseg.length !== 1) fail(`a sliver should stay bare and a wide segment should be labelled: got ${lseg.length} segment labels, expected 1`);
   }
   if (failures === before24) pass("chip text covers its chip and is centred both ways; stacked segments carry their values, slivers stay bare");
+
+  /* 25. A PILL COLUMN IS ONE DEVICE, AND THE PRINT INSETS LIKE THE DECK
+   *
+   * Two defects found on the same slide, from the same photograph.
+   *
+   * FIRST, the tier column drew ONE pill. "P1 · CORE" fitted its 84pt column
+   * at 9pt; "P2 · SUPPORT" and "P3 · LONG TAIL" needed 96 and 108, missed the
+   * width test one cell at a time, and fell through to the plain-text branch.
+   * A three-row ladder rendered as one capsule and two bare labels. Every
+   * per-cell assertion passed the whole time, because per-cell is the bug: the
+   * column is the unit, and it now steps down to one size that fits its
+   * LONGEST token or draws no pills at all.
+   *
+   * SECOND, the print. Slides insets text 7.2pt horizontally and 3.6pt
+   * vertically inside EVERY box, the engine sizes every box as inset + text,
+   * and the chat preview has applied that padding since it was written.
+   * pdf-html never did — so the PDF drew every line high and left of the deck,
+   * and on a 16pt capsule that put the label at the top with an empty band
+   * under it. That is what was actually reported.
+   *
+   * MUTATION LOG
+   *   - pill sized per cell instead of per column   → KILLED (one size assertion)
+   *   - vCenter dropped from the pill label         → KILLED
+   *   - the capsule and its label given different rects → KILLED
+   *   - the inset dropped from pdf-html             → KILLED
+   *   - overflow:hidden restored in pdf-html        → KILLED
+   *   - the fixture widened so no step-down happens → KILLED (precondition)
+   *
+   * SURVIVOR, kept because it says something about the fixture: shortening
+   * ONE row's prose does not widen the tier column, because fitColumnWidths
+   * sizes a column from its WIDEST cell, and the other two rows still carry
+   * paragraphs. The precondition only fires when EVERY prose cell is short —
+   * verified by doing exactly that, which turns it red. So the squeeze is a
+   * property of the table as a whole, and a future edit that trims a single
+   * row will not quietly disarm this section.
+   */
+  const before25 = failures;
+  console.log(`\n25. A pill column is one device, and the print insets like the deck`);
+  {
+    // Prose columns wide enough to squeeze the tier column below what the
+    // longest tier token wants at body size. That squeeze IS the fixture.
+    const tiers: SlideInput = {
+      layout: "table", title: "Not all entities are equal",
+      table: {
+        columns: ["Tier", "What belongs here", "What we do with it", "Volume"],
+        rows: [
+          ["P1 · CORE", "Master entity plus satellites directly linked to revenue and strategic goals: flagship products, key spokespeople, demand-driven concepts", "Full treatment: dedicated pages, schema, relationships mapped, editorial calendar, KPI tracking", "10-15 entities"],
+          ["P2 · SUPPORT", "Supporting experts, secondary products, partners, awards, recurring events, validation concepts", "Pages plus schema, relationships to P1 only, quarterly review", "20-40 entities"],
+          ["P3 · LONG TAIL", "Everything else worth knowing about - locations, minor brands, historical items", "Documented in the map, structured data where cheap, no active campaign", "Everything else"],
+        ],
+      },
+    };
+    const treqs = buildSlideRequests(tiers, 0, "p25a") as any[];
+    const tshapes = new Map<string, any>();
+    for (const r of treqs) if (r.createShape) tshapes.set(r.createShape.objectId, r.createShape.elementProperties);
+    const tgeom = (o: any) => o && {
+      x: o.transform.translateX, y: o.transform.translateY,
+      w: o.size.width.magnitude, h: o.size.height.magnitude,
+    };
+    const sizeOf = new Map<string, number>();
+    for (const r of treqs) {
+      if (r.updateTextStyle?.style?.fontSize?.magnitude !== undefined) {
+        sizeOf.set(r.updateTextStyle.objectId, r.updateTextStyle.style.fontSize.magnitude);
+      }
+    }
+
+    const tierPills = Array.from(tshapes.keys()).filter((k) => /tp\d+_0$/.test(k));
+    if (tierPills.length !== 3) {
+      fail(`the tier column drew ${tierPills.length} of 3 pills — a column that pills some rows and not others is the defect this section exists for`);
+    }
+
+    // PRECONDITION: the column must genuinely be too narrow for the longest
+    // token at body size, or nothing here is being tested. Body size is read
+    // from a prose cell; the pill size from a pill label.
+    const bodySize = sizeOf.get("p25a_s0_tc0_1");
+    const pillSizes: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const v = sizeOf.get(`p25a_s0_tc${i}_0`);
+      if (v !== undefined) pillSizes.push(v);
+    }
+    const headW = tgeom(tshapes.get("p25a_s0_th0"))?.w;
+    if (bodySize === undefined || headW === undefined) {
+      fail(`fixture did not build a readable table (bodySize=${bodySize}, tier column width=${headW})`);
+    } else if (pillWidth("P3 · LONG TAIL", bodySize) <= headW) {
+      fail(`fixture is too roomy: "P3 · LONG TAIL" fits the tier column at body size ${bodySize}, so no step-down happens and this section proves nothing`);
+    }
+
+    // ONE size across the column.
+    if (pillSizes.length !== 3) {
+      fail(`expected 3 tier pill labels, found ${pillSizes.length}`);
+    } else if (new Set(pillSizes).size !== 1) {
+      fail(`tier pills drew at ${pillSizes.join(", ")}pt — a pill column is one device, not three type sizes`);
+    }
+
+    // Capsule and label are the SAME rectangle, centred both ways.
+    const tvcentred: string[] = [];
+    for (const r of treqs) {
+      if (r.updateShapeProperties?.shapeProperties?.contentAlignment === "MIDDLE") tvcentred.push(r.updateShapeProperties.objectId);
+    }
+    const talign = new Map<string, string>();
+    for (const r of treqs) {
+      if (r.updateParagraphStyle?.style?.alignment) talign.set(r.updateParagraphStyle.objectId, r.updateParagraphStyle.style.alignment);
+    }
+    for (const pid of tierPills) {
+      const lid = pid.replace(/tp(\d+)_0$/, "tc$1_0");
+      const cap = tgeom(tshapes.get(pid));
+      const lab = tgeom(tshapes.get(lid));
+      if (!lab) { fail(`pill ${pid} has no label box`); continue; }
+      if (lab.x !== cap.x || lab.y !== cap.y || lab.w !== cap.w || lab.h !== cap.h) {
+        fail(`pill ${pid}: label (${lab.x},${lab.y} ${lab.w}x${lab.h}) does not cover the capsule (${cap.x},${cap.y} ${cap.w}x${cap.h}) — an offset is a guess at centring`);
+      }
+      if (tvcentred.indexOf(lid) === -1) {
+        fail(`pill label ${lid} is not vertically centred (no contentAlignment MIDDLE) — this is the reported defect: the word sits at the top of its own capsule`);
+      }
+      if (talign.get(lid) !== "CENTER") {
+        fail(`pill label ${lid} is not horizontally centred (alignment ${talign.get(lid) || "unset"})`);
+      }
+    }
+
+    // THE PRINT. Every text box in the PDF carries Slides' own inset, scaled
+    // 720pt → 960px, or the print is not a print of the preview.
+    const html = deckToHtml(toPreviewModel([tiers]), "Tiers");
+    const padX = SLIDES_TEXT_INSET.x * (4 / 3);
+    const padY = SLIDES_TEXT_INSET.y * (4 / 3);
+    if (html.indexOf(`padding:${padY}px ${padX}px`) === -1) {
+      fail(`the PDF does not inset its text boxes by Slides' own ${SLIDES_TEXT_INSET.y}/${SLIDES_TEXT_INSET.x}pt — every line prints high and left of the deck`);
+    }
+    if (html.indexOf("box-sizing:border-box") === -1) {
+      fail(`the PDF's text padding is not inside the measured box — without border-box the inset grows the box instead of insetting the text`);
+    }
+    if (/text-align:[a-z]+;overflow:hidden;/.test(html)) {
+      fail(`the PDF hides overflowing text — Slides draws it and lets it run, and hiding it lets an overflowing slide print as a tidy one`);
+    }
+  }
+  if (failures === before25) pass("a pill column steps down as one, its labels centre in their capsules, and the print carries Slides' own inset");
+
+  /* 26. A SLIDE MAY NOT SILENTLY SWALLOW ITS OWN CONTENT
+   *
+   * A 39-slide deck was built, checked against every geometry assertion in
+   * this file, reviewed page by page and published to the user's Drive. Slide
+   * 24 was four empty blue boxes.
+   *
+   * Its spec said `stages: [{ title, body }]`. `processRequests` read
+   * `name`/`caption`. Every sibling layout — cards, layers, panel — uses
+   * title/body, so the shape was the natural guess and the wrong one. The
+   * slide had a `stages` key, so `unrenderableSlides` passed it. Nothing drew
+   * anything, nothing said anything, and the empty slide shipped.
+   *
+   * Two more of the same kind were in the same deck: `venn.overlap` supplied
+   * with THREE sets (only the two-set branch letters it) and `eyebrow` on a
+   * cover (which draws title and subtitle only).
+   *
+   * The assertion is not a table of which layout reads which field — that
+   * table is exactly what drifts. It builds the slide and asks whether the
+   * words in the spec are in the text the deck will contain.
+   *
+   * MUTATION LOG
+   *   - the stages title/body alias removed        → KILLED
+   *   - droppedContent returns [] always           → KILLED
+   *   - deckWarnings stops relaying the drop       → KILLED
+   *   - the audit reports a slide that is fine     → KILLED (false-positive gate)
+   */
+  const before26 = failures;
+  console.log(`\n26. A slide may not silently swallow its own content`);
+  {
+    // THE EXACT SHAPE THAT SHIPPED EMPTY.
+    const process: SlideInput = {
+      layout: "process", title: "Entity mapping",
+      stages: [
+        { title: "We draft", body: "Ahead of session two we drafted a first entity mapping from public sources." },
+        { title: "We refine together", body: "Together we correct errors, hallucinations and obsolete information." },
+        { title: "You prioritise", body: "Your team assigns priority tiers to the retained entities." },
+      ] as any,
+    };
+    const preqs = buildSlideRequests(process, 0, "p26a") as any[];
+    // Compared case-insensitively: TYPE.stageName is a caps style, so the
+    // deck draws "WE REFINE TOGETHER" and the spec says "We refine together".
+    const ptext = preqs.filter((r) => r.insertText).map((r) => r.insertText.text).join(" | ").toLowerCase();
+    if (ptext.indexOf("we refine together") === -1) {
+      fail(`a process slide written {title, body} draws no stage names — this is the four-empty-boxes bug (${ptext.slice(0, 80)})`);
+    }
+    if (ptext.indexOf("your team assigns priority tiers") === -1) {
+      fail(`a process slide written {title, body} draws no stage captions`);
+    }
+    const pdrop = droppedContent(process, 0);
+    if (pdrop.length) fail(`a well-formed process slide reports ${pdrop.length} false drop(s): ${JSON.stringify(pdrop[0])}`);
+
+    // NO FALSE POSITIVES on an ordinary slide, or the report is noise and gets
+    // ignored, which is the same as not having it.
+    const fine: SlideInput = {
+      layout: "content", eyebrow: "MODULE 4", title: "Where AI answers are generated",
+      subtitle: "The spread is the insight, and it is fixable.",
+      body: "Wikipedia and Wikidata are the shared reference layer\nTier-one press carries the citation weight\nLinkedIn profiles beat company pages",
+      note: "One fix lifts every engine at once, because entity clarity is model-agnostic.",
+    };
+    const fdrop = droppedContent(fine, 1);
+    if (fdrop.length) fail(`an ordinary content slide reports ${fdrop.length} false drop(s): ${JSON.stringify(fdrop)}`);
+
+    // AND IT MUST FIRE when content genuinely cannot be drawn. A cover draws
+    // its title and subtitle and nothing else.
+    const cover: SlideInput = {
+      layout: "cover", title: "Building authority on AI",
+      subtitle: "From SEO to GEO",
+      eyebrow: "4-HOUR WORKSHOP · TWO SESSIONS · VIRTUAL · CUSTOMISED PER CLIENT",
+    };
+    // PRECONDITION: the eyebrow really is absent from what the cover draws.
+    const creqs = buildSlideRequests(cover, 0, "p26c") as any[];
+    const ctext = creqs.filter((r) => r.insertText).map((r) => r.insertText.text).join(" | ");
+    if (ctext.toUpperCase().indexOf("CUSTOMISED PER CLIENT") !== -1) {
+      fail(`the cover fixture no longer drops its eyebrow, so this assertion proves nothing — pick a field the cover really ignores`);
+    } else {
+      const cdrop = droppedContent(cover, 0);
+      if (!cdrop.length) fail(`a cover carrying an eyebrow it cannot draw reports nothing — the audit is blind`);
+      else if (cdrop.join(" ").indexOf("CUSTOMISED PER CLIENT") === -1) {
+        fail(`the audit fired but did not name the lost text (${JSON.stringify(cdrop)}) — "a field was dropped" is not actionable`);
+      }
+      // Relayed to the model, with the instruction that matters.
+      const warn = deckWarnings([cover]);
+      if (warn.indexOf("never draws") === -1) fail(`deckWarnings does not relay the drop: ${JSON.stringify(warn.slice(0, 120))}`);
+      if (warn.indexOf("do NOT describe that content as being in the deck") === -1) {
+        fail(`the warning does not forbid the answer the user actually got — a deck described as containing words that are not on it`);
+      }
+    }
+  }
+  if (failures === before26) pass("text that a layout cannot draw is named, reported, and never passed off as being in the deck");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);

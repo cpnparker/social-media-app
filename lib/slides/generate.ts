@@ -197,7 +197,11 @@ export interface SlideInput {
   /** A pull quote and who said it. */
   quote?: { text: string; name?: string; role?: string; image?: { url?: string; query?: string }; resolvedImage?: { url: string } };
   /** Stages, left to right. Three to five reads best. */
-  stages?: { name: string; caption?: string }[];
+  /** `name`/`caption` is the original shape; `title`/`body` is accepted too,
+   *  because every SIBLING layout (cards, layers, panel) uses title/body and a
+   *  process slide written that way drew four empty blue boxes and said
+   *  nothing — the deck shipped with them. */
+  stages?: { name?: string; caption?: string; title?: string; body?: string }[];
   /** Client marks for logo-wall. Fitted whole, never cropped. */
   logos?: { url?: string; query?: string; name?: string; resolvedUrl?: string }[];
   /** Big numbers for the stat layout — three at most, or none of them lands. */
@@ -1094,13 +1098,17 @@ function parallelTimelineRequests(
           // is measured against it. White was hard-coded and is 2.95:1 on the
           // coral track.
           it.inside ? { ...TYPE.phaseInBar, color: textOn(color) } : TYPE.phaseLabel,
+          // The label box is the BAR's rect, and the text centres inside it.
+          // It used to be nudged down 4pt while keeping the bar's full height,
+          // so it hung 4pt past the bar's bottom edge and an 8pt line in a
+          // 12pt bar sat half outside the shape it labels.
           {
             x: it.inside ? it.barX + 6 : it.labelX,
-            y: barY + (it.inside ? 4 : 3),
+            y: barY,
             width: it.labelW,
             height: barHeight,
           },
-          it.alignEnd ? { align: "END" } : {}
+          it.alignEnd ? { align: "END", vCenter: true } : { vCenter: true }
         )
       );
     });
@@ -2305,6 +2313,73 @@ export function isVisualSlide(slide: SlideInput | undefined): boolean {
   );
 }
 
+/** Keys whose strings are instructions to the builder, not words on the slide:
+ *  a photo search, a URL, a colour token. Comparing these against drawn text
+ *  would report a finding on every slide that has a picture. */
+const NON_CONTENT_KEYS = new Set([
+  "layout", "layoutAsked", "tone", "tones", "style", "color", "colour",
+  "url", "src", "query", "resolvedUrl", "resolvedIcon", "imageError",
+  "presentationId", "fidelity", "align", "id", "font",
+]);
+
+const contentKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/** Text a slide CARRIES that its layout never DRAWS.
+ *
+ *  ── WHY THIS IS NOT A TABLE OF WHICH LAYOUT READS WHICH FIELD ──────────────
+ *
+ *  Because that table is the thing that drifts. This builds the slide and asks
+ *  the only question that matters: is each string in the spec somewhere in the
+ *  text the deck will actually contain? A field the layout ignores, a field
+ *  spelled the way a SIBLING layout spells it, a field that only applies in a
+ *  branch this slide did not take — all three answer the same way, and a new
+ *  layout is covered the day it is written.
+ *
+ *  Three real drops, all of them silent, all of them in one delivered deck:
+ *    - `stages: [{ title, body }]` on a process slide, where the renderer read
+ *      `name`/`caption`. Four empty blue boxes, published to Drive.
+ *    - `venn.overlap` with THREE sets, which only the two-set branch draws.
+ *    - `eyebrow` and `body` on a cover, which draws title and subtitle only.
+ *
+ *  Every one of them passed tsc, passed `unrenderableSlides` (the slide had
+ *  the key its layout requires), passed the whole geometry battery, and
+ *  rendered a slide that looked deliberate. Nothing else in this file can
+ *  catch a field that is READ FROM THE WRONG NAME.
+ *
+ *  Compared on a five-word normalised prefix, so the transformations the
+ *  builder legitimately makes — upper-casing, brace-stripping, `fitCell`'s
+ *  ellipsis, a wrapped label — do not read as losses. */
+export function droppedContent(slide: SlideInput, index: number): string[] {
+  let drawn = "";
+  try {
+    const reqs = buildSlideRequests(slide, index, "audit") as any[];
+    const parts: string[] = [];
+    for (const r of reqs) if (r.insertText?.text) parts.push(String(r.insertText.text));
+    drawn = contentKey(parts.join(" \u00b7 "));
+  } catch {
+    return [];   // a slide that cannot build is a different report's problem
+  }
+  const missing: string[] = [];
+  const seen: { [k: string]: true } = {};
+  const walk = (v: any, key: string) => {
+    if (typeof v === "string") {
+      if (NON_CONTENT_KEYS.has(key)) return;
+      const probe = contentKey(v).split(" ").slice(0, 5).join(" ");
+      if (probe.length <= 10) return;          // too short to match reliably
+      if (drawn.indexOf(probe) !== -1) return;
+      if (seen[probe]) return;
+      seen[probe] = true;
+      missing.push(v.trim());
+      return;
+    }
+    if (Array.isArray(v)) { for (const x of v) walk(x, key); return; }
+    if (v && typeof v === "object") { for (const k of Object.keys(v)) walk(v[k], k); }
+  };
+  const any = slide as any;
+  for (const k of Object.keys(any)) walk(any[k], k);
+  return missing;
+}
+
 /** What the deck could not do, in a sentence the model can relay.
  *
  *  The slide says it too — a truncated chart carries its own note — but the
@@ -2321,6 +2396,18 @@ export function deckWarnings(slides: SlideInput[]): string {
     if (s.imagesDropped) {
       const asked = (s.images || []).length;
       notes.push(`slide ${n} shows ${asked - s.imagesDropped} of ${asked} thumbnails; the rest could not be found`);
+    }
+    // Words that are in the slide and will not be on it. Named with the text
+    // itself, because "slide 24 drops a field" is not actionable and
+    // "slide 24 never draws 'We refine together'" is.
+    const lost = droppedContent(s, i);
+    if (lost.length) {
+      const shown = lost.slice(0, 3).map((t) => `"${t.length > 48 ? t.slice(0, 45) + "..." : t}"`).join(", ");
+      notes.push(
+        `slide ${n} carries text its ${s.layout || "content"} layout never draws — ${shown}` +
+        `${lost.length > 3 ? ` and ${lost.length - 3} more` : ""}. Put it in a field this layout uses, or change the layout` +
+        ` — do NOT describe that content as being in the deck`
+      );
     }
   }
   // GROUND RHYTHM, from the design system: roughly 70% light, dark slides as
@@ -2872,7 +2959,9 @@ const MAX_STAGES = 5;
 function processRequests(
   page: string, id: (s: string) => string, stages: NonNullable<SlideInput["stages"]>
 ): Req[] {
-  const shown = stages.filter(Boolean).slice(0, MAX_STAGES);
+  const stageName = (st: any) => String(st?.name ?? st?.title ?? "").trim();
+  const stageCaption = (st: any) => String(st?.caption ?? st?.body ?? "").trim();
+  const shown = stages.filter((st) => st && stageName(st)).slice(0, MAX_STAGES);
   if (!shown.length) return [];
   const gaps = shown.length - 1;
   const boxW = (GRID.contentWidth - gaps * PROCESS.connectorWidth) / shown.length;
@@ -2884,10 +2973,15 @@ function processRequests(
       ...filledShape(id(`pb${i}`), page, "ROUND_RECTANGLE", COLOR.blue, {
         x, y: PROCESS.y, width: boxW, height: PROCESS.boxHeight,
       }),
-      ...textBox(id(`pn${i}`), page, stage.name, TYPE.stageName, {
-        x: x + 8, y: PROCESS.y + PROCESS.boxHeight / 2 - 9, width: boxW - 16, height: 20,
-      }, { align: "CENTER" }),
-      ...textBox(id(`pc${i}`), page, stage.caption, TYPE.stageCaption, {
+      // The name is the ONLY thing inside the blue box — the caption is drawn
+      // below it — so it takes the whole box and centres in it. The 20pt band
+      // hand-placed at boxHeight/2 - 9 centred a ONE-LINE name by arithmetic
+      // and nothing else: a two-line stage name needs 33pt, so it grew out of
+      // the bottom of its own box. An offset is a guess at centring.
+      ...textBox(id(`pn${i}`), page, stageName(stage), TYPE.stageName, {
+        x: x + 8, y: PROCESS.y, width: boxW - 16, height: PROCESS.boxHeight,
+      }, { align: "CENTER", vCenter: true }),
+      ...textBox(id(`pc${i}`), page, stageCaption(stage), TYPE.stageCaption, {
         x, y: PROCESS.captionY, width: boxW, height: PROCESS.captionHeight,
       }, { align: "CENTER" }),
     );
@@ -3536,6 +3630,48 @@ function tableRequests(
     return m ? { key: m[1], spec: PILL[m[1]] } : null;
   };
 
+  /** The capsule is 16pt tall and Slides insets 7.2pt of that, so a label only
+   *  sits inside it up to about 7.5pt. Above that the glyphs ride out of their
+   *  own pill. */
+  const PILL_H = 16;
+  const PILL_MAX_SIZE = 7.5;
+  const PILL_MIN_SIZE = 6;
+
+  /** ONE size per pilled column, chosen by that column's LONGEST token.
+   *
+   *  The tier column asked for 9pt. Its widest token, "P3 · LONG TAIL", needed
+   *  108pt of an 84pt column, so it fell through to the plain-text branch —
+   *  while "P1 · CORE" fitted and drew as a capsule. Three rows of one column
+   *  rendered two different ways, which reads as a broken slide rather than as
+   *  a considered fallback.
+   *
+   *  A pill column is a single visual device: it steps down until its longest
+   *  token fits, and if even the floor will not fit it draws NO pills at all.
+   *  Sizing each cell independently would be worse than either — a column of
+   *  capsules in three different type sizes. */
+  const pillSize: (number | null)[] = columns.map((_, j) => {
+    const tokens: string[] = [];
+    for (const r of rows) {
+      const cell = r[j];
+      if (!cell || !cell.trim()) continue;
+      const p = pillFor(cell);
+      if (!p) continue;
+      // A label column is never a status pill — but a TIER token (P1/P2/P3) is
+      // the row's identity, and the source draws exactly that as a pill in its
+      // first column. Status words stay barred there.
+      if (j === 0 && !/^P[1-3]$/.test(p.key)) continue;
+      tokens.push(cell.trim());
+    }
+    if (!tokens.length) return null;
+    const start = Math.min(cellStyle.size, PILL_MAX_SIZE);
+    for (let sz = start; sz >= PILL_MIN_SIZE; sz -= 0.5) {
+      let all = true;
+      for (const t of tokens) if (pillWidth(t, sz) > inner(j)) { all = false; break; }
+      if (all) return sz;
+    }
+    return null;
+  });
+
   rows.forEach((r, i) => {
     const ry = rowYs[i];
     const rowH = rowHs[i];
@@ -3546,26 +3682,25 @@ function tableRequests(
     }
     r.forEach((cell, j) => {
       if (!cell.trim()) return;
-      // A label column is never a status pill — but a TIER token (P1/P2/P3)
-      // is the row's identity, and the source draws exactly that as a pill in
-      // its first column. Status words stay barred there.
       const pill = (() => {
         const p = pillFor(cell);
         if (!p) return null;
         return j > 0 || /^P[1-3]$/.test(p.key) ? p : null;
       })();
-      const pillW = pill ? pillWidth(cell.trim(), cellStyle.size) : 0;
-      if (pill && pillW <= inner(j)) {
+      const psize = pill ? pillSize[j] : null;
+      if (pill && psize) {
         const label = cell.trim();
-        const pw = pillW;
+        const pw = pillWidth(label, psize);
         const px = aligns[j] === "right" ? xs[j] + inner(j) - pw : xs[j];
-        out.push(...filledShape(id(`tp${i}_${j}`), page, "ROUND_RECTANGLE", pill.spec.fill, {
-          x: px, y: ry + rowH / 2 - 8, width: pw, height: 16,
-        }));
+        const capsule = { x: px, y: ry + rowH / 2 - PILL_H / 2, width: pw, height: PILL_H };
+        out.push(...filledShape(id(`tp${i}_${j}`), page, "ROUND_RECTANGLE", pill.spec.fill, capsule));
+        // vCenter, because the label and the capsule are the SAME rectangle:
+        // Slides top-aligns text and insets it 3.6pt, so without this the word
+        // sits high in its own pill with an empty band beneath it. An offset
+        // would be a guess at centring; contentAlignment is the answer.
         out.push(...textBox(id(`tc${i}_${j}`), page, label,
-          { ...cellStyle, bold: true, color: pill.spec.ink }, {
-          x: px, y: ry + rowH / 2 - 8, width: pw, height: 16,
-        }, { align: "CENTER" }));
+          { ...cellStyle, size: psize, bold: true, color: pill.spec.ink },
+          capsule, { align: "CENTER", vCenter: true }));
         return;
       }
       const style = j === 0 ? { ...cellStyle, bold: true } : cellStyle;

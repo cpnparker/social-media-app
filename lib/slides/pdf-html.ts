@@ -31,7 +31,7 @@
  */
 
 import type { PreviewDeck, PreviewSlide, PreviewElement } from "./preview-model";
-import { runsOf } from "./preview-style";
+import { runsOf, SLIDES_TEXT_INSET } from "./preview-style";
 
 /** 720pt → 960px. */
 const S = 4 / 3;
@@ -126,10 +126,26 @@ function elementHtml(el: PreviewElement): string {
   const size = (el.size || 10) * S;
   const lineHeight = el.lineSpacing ? `line-height:${el.lineSpacing / 100};` : "line-height:1.15;";
   const spaceBelow = el.spaceBelow ? `row-gap:${el.spaceBelow * S}px;` : "";
+  // Slides insets text inside EVERY box — 0.1in left and right, 0.05in top and
+  // bottom — and does not expose the setting through the API. The chat preview
+  // has applied them since the day it was written, and the engine SIZES every
+  // box as inset + text, so the inset is already paid for in the geometry.
+  // This file never applied it, so the PDF drew every line 3.6pt high and 7.2pt
+  // left of where the deck draws it, with the slack falling below the text.
+  //
+  // On a paragraph that reads as a shrug. On a 16pt status pill it reads as a
+  // bug — the label sitting at the top of its capsule with an empty band under
+  // it — which is how it was finally noticed. A print of the preview that
+  // positions text differently from the preview is not a print of the preview.
+  const inset = `padding:${SLIDES_TEXT_INSET.y * S}px ${SLIDES_TEXT_INSET.x * S}px;box-sizing:border-box;`;
   return (
-    `<div style="position:absolute;${pos}${opacity}display:flex;flex-direction:column;${vAlign}${spaceBelow}` +
+    `<div style="position:absolute;${pos}${opacity}display:flex;flex-direction:column;${vAlign}${spaceBelow}${inset}` +
     `font-family:${fontStack(el.font)};font-weight:${weight};font-size:${size}px;${lineHeight}` +
-    `color:${escapeHtml(el.color || "#023250")};text-align:${align};overflow:hidden;">${parts.join("")}</div>`
+    // VISIBLE, because Slides does not reflow, shrink or clip: it draws the
+    // text and lets it run off. Hiding it here would let an overflowing body
+    // print as a tidy slide — the one direction this file is not allowed to be
+    // wrong in. The page section still clips at the canvas edge, as Slides does.
+    `color:${escapeHtml(el.color || "#023250")};text-align:${align};overflow:visible;">${parts.join("")}</div>`
   );
 }
 

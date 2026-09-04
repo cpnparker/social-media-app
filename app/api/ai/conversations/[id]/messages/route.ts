@@ -79,7 +79,19 @@ async function extractDocumentText(att: Attachment): Promise<string | undefined>
         console.warn(`[Messages] PDF ${att.name} parsed but contains no extractable text (likely image-only)`);
         return undefined;
       }
-      return text;
+      // The PAGE COUNT, recorded in the same idiom as the PPTX reader's
+      // `--- Slide N ---` markers, because it is the only thing downstream
+      // that can tell a conversion how long its source was.
+      //
+      // `fidelityAudit` exists to refuse to let a short conversion be called
+      // finished, and it was structurally blind to PDFs: `sourceSlideCount`
+      // can only count markers, a PDF has none, so the audit self-cancelled
+      // on `!sourceCount` and said nothing. pdf-parse hands us `numpages`
+      // right here and this function read it and threw it away. That is how a
+      // 38-page programme came back as 34 slides, ending at the source's page
+      // 32, with nothing in any layer noticing or objecting.
+      const pages = Number((data as any).numpages) || 0;
+      return pages > 0 ? `--- PDF: ${pages} pages ---\n${text}` : text;
     }
 
     if (att.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {

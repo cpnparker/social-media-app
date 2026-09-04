@@ -1463,7 +1463,7 @@ const DOCUMENT_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
               },
               venn: {
                 type: "object",
-                description: "A Venn diagram (venn layout) — two or three overlapping sets, for showing where things intersect. Give `sets` (2 or 3 labels) and, for two sets, an `overlap` label for the intersection (e.g. 'your sweet spot').",
+                description: "A Venn diagram (venn layout) — two or three overlapping sets, for showing where things intersect. Give `sets` (2 or 3 labels). `overlap` labels the intersection (e.g. 'your sweet spot') and is DRAWN ONLY FOR TWO SETS — with three, the circles meet in too small a space to letter, so put that sentence in `note` instead, where it is drawn.",
                 properties: {
                   sets: { type: "array", items: { type: "object", properties: { label: { type: "string" } }, required: ["label"] } },
                   overlap: { type: "string" },
@@ -1516,7 +1516,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   function: {
     name: "generate_slides",
     description:
-      "CALL THIS whenever a deck, presentation, slides, or a preview of any of those is wanted. It RENDERS the slides as actual images in the chat — rendering is something only this tool can do, so writing out what the slides would contain shows the user nothing at all. The rendered deck is a preview: it is not written to Google Drive, so the user reviews it, asks for changes, and presses a button to create it when happy. Call the tool again with the full revised slide list for every change they ask for. Set publish:true ONLY when they explicitly say to create, upload, save or send it to Drive now. Use generate_document instead only when they specifically want a .pptx file to download.",
+      "CALL THIS whenever a deck, presentation, slides, or a preview of any of those is wanted. It RENDERS the slides as actual images in the chat — rendering is something only this tool can do, so writing out what the slides would contain shows the user nothing at all. The rendered deck is a preview: it is not written to Google Drive, so the user reviews it, asks for changes, and presses a button to create it when happy. Call the tool again with the full revised slide list for every change they ask for. Set publish:true ONLY when they explicitly say to create, upload, save or send it to Drive now. Use generate_document instead only when they specifically want a .pptx file to download. CONVERTING AN ATTACHED DOCUMENT: set fidelity:'preserve' — one source page becomes one slide, nothing merged, nothing invented, no dividers added. THE HOUSE LENGTH GUIDANCE DOES NOT APPLY TO A CONVERSION: the source's length is the deck's length, whether that is 8 slides or 40. A LONG SOURCE IS BUILT IN BATCHES — one call cannot write out thirty-eight slides before it is cut off, and a call that is cut off runs NOTHING, so the user gets a confident reply and no deck at all. Send the FIRST ~12 slides in `slides`, say in your reply that you are continuing, then append about ten at a time with editSlide: { insertAfter: N, insertSlides: [ ... ] } — the tool result gives you the exact N — until every source page is covered. You have SIX calls a turn; use them rather than stopping short.",
     parameters: {
       type: "object",
       properties: {
@@ -1554,7 +1554,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             },
             insertSlides: {
               type: "array",
-              description: "ADD SEVERAL slides at once, in order, at `insertAfter`. Each entry is a full slide — the same shape as an entry in `slides`, with its own layout, title, body and payload. THIS IS HOW A LONG DECK IS BUILT: this tool is capped at three calls a turn, so one slide per call would take a dozen turns; build the first dozen with `slides`, then append the rest in one or two batches of about a dozen here. A batch that is too large is cut off exactly as a full deck would be, so keep each one to roughly twelve slides.",
+              description: "ADD SEVERAL slides at once, in order, at `insertAfter`. Each entry is a full slide — the same shape as an entry in `slides`, with its own layout, title, body and payload. THIS IS HOW A LONG DECK IS BUILT: this tool is capped at six calls a turn, so one slide per call would never finish; build the first dozen with `slides`, then append the rest in one or two batches of about a dozen here. A batch that is too large is cut off exactly as a full deck would be, so keep each one to roughly twelve slides.",
               items: { type: "object" },
             },
             layout: {
@@ -4303,6 +4303,12 @@ export function sourceSlideCount(messages?: AIMessage[]): number {
       if (typeof text !== "string") continue;
       const marks = text.match(/^--- Slide \d+ ---$/gm);
       if (marks?.length) return marks.length;
+      // A PDF carries no slide markers, so the reader records its page count
+      // instead. Without this the audit below could only ever police a .pptx,
+      // and the conversion it was WRITTEN for — a 38-page PDF programme — was
+      // the one conversion it could not see.
+      const pdf = text.match(/^--- PDF: (\d+) pages ---$/m);
+      if (pdf) { const n = Number(pdf[1]); if (n > 0) return n; }
     }
   }
   return 0;
@@ -4329,7 +4335,7 @@ export function fidelityAudit(deckLength: number, sourceCount: number, preserve:
   if (deckLength < sourceCount) {
     if (!preserve && sourceCount - deckLength <= 2) return "";
     return (
-      ` THE DECK IS INCOMPLETE: the source has ${sourceCount} slides and this deck has ${deckLength}. ` +
+      ` THE DECK IS INCOMPLETE: the source has ${sourceCount} pages and this deck has ${deckLength} slides. ` +
       `Check which SOURCE pages are not represented — when a conversion comes up short it is almost always the ` +
       `END of the source that is missing, because the call was cut off rather than finished. ` +
       `CONTINUE NOW without asking: call generate_slides again with editSlide: { insertAfter: ${deckLength}, ` +
@@ -4340,7 +4346,7 @@ export function fidelityAudit(deckLength: number, sourceCount: number, preserve:
 
   if (!preserve) return "";
   return (
-    ` The source document has ${sourceCount} slides and this deck has ${deckLength} — MORE than the source. ` +
+    ` The source document has ${sourceCount} pages and this deck has ${deckLength} slides — MORE than the source. ` +
     `The user asked to keep the content the same, so say plainly which source slides you split or added, ` +
     `and offer to put them back one-for-one. Do NOT describe the deck as a faithful copy of the original.`
   );
