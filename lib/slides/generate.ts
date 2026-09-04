@@ -3951,8 +3951,16 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       // rule, a centred title, the kicker beneath, on navy. The photo cover is
       // still the default (the prompt asks for an image.query), but the deck no
       // longer opens on nothing when there is not one.
+      // The accent rule is drawn 22pt above the title, so the TITLE's ceiling
+      // is what keeps the rule off the logo. At a 0.24-height ceiling the rule
+      // landed at y=103 while the logo runs 55.4 to 111.6 — a lime bar struck
+      // straight through the wordmark on the cover of a client deck, and no
+      // geometry check looked at the logo because nothing else on a cover goes
+      // near it. The ceiling is now derived from the logo's own box, and the
+      // floor drops to make room for the title that has to fit under it.
+      const logoFloor = LOGO_PLACEMENT.cover.y + LOGO_PLACEMENT.cover.height;
       const np = fitHeading(slide.title, TYPE.coverTitle, GRID.contentWidth, {
-        bottom: CANVAS.height / 2 + 20, minTop: CANVAS.height * 0.24,
+        bottom: CANVAS.height * 0.62, minTop: logoFloor + 10 + 22,
         minHeight: GRID.coverTitleHeight, minSize: 22,
       });
       requests.push(

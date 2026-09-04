@@ -747,7 +747,60 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   if (phCover.some((r: any) => (r.createShape?.objectId || "").endsWith("_crule"))) {
     fail("the photo cover drew the no-photo composition");
   }
-  if (failures === before19) pass("no-photo cover is centred with an accent rule; the photo cover is unchanged");
+  // AND THE RULE MUST CLEAR THE LOGO. The accent rule is drawn 22pt above the
+  // title, and the title's ceiling used to be a bare fraction of the canvas
+  // (0.24). That put the rule at y=103 while the cover logo runs 55.4 to
+  // 111.6 — a lime bar through the middle of the wordmark, on the opening
+  // slide of a deck that went to a client. Nothing caught it: every other
+  // check on a cover looks at the title and the kicker, and the logo is placed
+  // by a table nothing else on that slide goes near.
+  {
+    // The logo is a createImage, not a createShape — reading only shapes is
+    // how a check that looks for the logo finds nothing and passes anyway.
+    const geomOf = (reqs: any[], suffix: string) => {
+      for (const r of reqs) {
+        const o = r.createShape || r.createImage;
+        if (o && String(o.objectId).endsWith(suffix)) {
+          return { y: o.elementProperties.transform.translateY, h: o.elementProperties.size.height.magnitude };
+        }
+      }
+      return null;
+    };
+    // A two-line title, because that is what pushes the composition upward and
+    // it is the case that actually collided.
+    const LONG_TITLE = "Building Authority on AI: from SEO to GEO";
+    const long = buildSlideRequests(
+      { layout: "cover", title: LONG_TITLE, subtitle: "A strategic workshop" }, 0, "nl") as any[];
+    const rule = geomOf(long, "_crule");
+    const logo = geomOf(long, "_logo");
+    const ttl = geomOf(long, "_title");
+    if (!rule || !logo || !ttl) {
+      fail(`the no-photo cover is missing a rule, logo or title (rule=${!!rule} logo=${!!logo} title=${!!ttl})`);
+    } else {
+      // PRECONDITION: the title really does wrap to two lines here, or this
+      // asserts nothing about the case that failed. Measured from the FITTED
+      // SIZE, not from the box height — fitHeading floors the box at
+      // GRID.coverTitleHeight, so a one-word title produces the same height as
+      // a wrapped one and a height test can never fail. (It did not: shortening
+      // the fixture to "Short" survived the mutation run that found this.)
+      let titleSize = 0;
+      for (const r of long) {
+        if (r.updateTextStyle && String(r.updateTextStyle.objectId).endsWith("_title")) {
+          titleSize = r.updateTextStyle.style?.fontSize?.magnitude || 0;
+        }
+      }
+      const titleLines = titleSize ? estimateLines(LONG_TITLE, GRID.contentWidth, titleSize) : 0;
+      if (titleLines < 2) {
+        fail(`the cover fixture's title draws on ${titleLines} line(s) at ${titleSize}pt — a one-line title does not push the composition up, so this proves nothing about the collision`);
+      }
+      if (rule.y < logo.y + logo.h) {
+        fail(`the cover accent rule (y ${rule.y.toFixed(1)}) is drawn inside the logo (${logo.y.toFixed(1)} to ${(logo.y + logo.h).toFixed(1)}) — a lime bar through the wordmark`);
+      }
+      if (rule.y + rule.h > ttl.y) fail(`the cover accent rule overlaps its own title`);
+      if (ttl.y + ttl.h > CANVAS.height) fail(`the cover title runs off the bottom of the slide`);
+    }
+  }
+  if (failures === before19) pass("no-photo cover is centred with an accent rule that clears the logo; the photo cover is unchanged");
 
   /* 20. A line chart: segments connect the dots, in the preview as in the deck. */
   const before20 = failures;
