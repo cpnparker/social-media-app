@@ -166,6 +166,8 @@ function SlideThumb({
                   ? { clipPath: "polygon(0% 30%, 60% 30%, 60% 0%, 100% 50%, 60% 100%, 60% 70%, 0% 70%)" }
                   : el.arrowDown
                   ? { clipPath: "polygon(30% 0%, 70% 0%, 70% 55%, 100% 55%, 50% 100%, 0% 55%, 30% 55%)" }
+                  : el.arrowUp
+                  ? { clipPath: "polygon(50% 0%, 100% 45%, 70% 45%, 70% 100%, 30% 100%, 30% 45%, 0% 45%)" }
                   : {}),
                 ...(el.dashed ? { border: "1.5px dashed #3950FF", background: el.fill || "transparent" } : {}),
               }} />

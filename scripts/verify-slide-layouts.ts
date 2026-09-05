@@ -14,7 +14,7 @@ import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
   niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, parseBold, deckWarnings, cardGeometry, bandHeightFor,
-  CAPS_WIDEN, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent,
+  CAPS_WIDEN, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent, fitHeading, FOOTER_Y, captionParagraphs, splitStageOwner,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
@@ -25,7 +25,7 @@ import { prepareSlidesForBuild, sourceSlideCount, fidelityAudit } from "../lib/a
 import { readFileSync } from "fs";
 import { join } from "path";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
-import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE } from "../lib/slides/brand";
+import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE, SECTION, TYPE, PROCESS } from "../lib/slides/brand";
 
 const TYPE_STAT_CAP = 54;   // the multi-stat value cap; a hero must exceed it
 let failures = 0;
@@ -140,6 +140,14 @@ const DECK: SlideInput[] = [
       { name: "Production", caption: "Workflow, oversight and approvals." },
       { name: "Distribution", caption: "Planning, publishing and campaigns." },
       { name: "Analytics", caption: "Insights fed back into the process." } ] },
+  // Four across, numeral BESIDE the name, owners run into the captions the
+  // way the model writes them, and a takeaway - the page-23 shape, so the
+  // canvas, overlap and ink sweeps all see the beside variant too.
+  { layout: "process", eyebrow: "Module 5", title: LONG, note: "Why this matters: the map is only as good as the corrections your team makes in step two.", stages: [
+      { name: "We draft", caption: "Ahead of Session 2 we drafted a first entity mapping, based on our understanding of your business from public sources. Owner: TCE" },
+      { name: "We refine together", caption: "Together we refine the proposed entity mapping, correcting any errors and hallucinations, and updating any obsolete information. Owner: TCE + your team" },
+      { name: "You prioritise", caption: "Your team evaluates and assigns priority tiers and attributes to the retained entities in the mapping. Owner: your team" },
+      { name: "We connect", caption: "We configure our AI visibility tool, AuthorityOn, from your work, so it interrogates the models on your selected entities and priority levels. Owner: TCE + your team" } ] },
   { layout: "logo-wall", eyebrow: "Clients", title: LONG,
     logos: Array.from({ length: 8 }, (_, i) => ({ name: `Client ${i + 1}`, resolvedUrl: "logo.png" })) },
   { layout: "closing", title: "Let's map your AI visibility", subtitle: "The next step",
@@ -169,7 +177,7 @@ const STRESS: SlideInput[] = [
         { title: "YouTube", text: "Video + transcript" }, { title: "Earned media", text: "News + editorial" },
         { title: "Wikipedia", text: "Wikidata entity" }, { title: "Industry pubs", text: "Trade + research" },
         { title: "Newsletters", text: "Email + web" }, { title: "Podcasts", text: "Audio + transcript" } ] },
-      { title: "Social platforms", caption: "Indirect signals only - visuals are not readable by AI", style: "grey" },
+      { title: "Social platforms", caption: "Indirect signals only - visuals are not readable by AI", style: "grey", arrow: "up" },
       { title: "Brands", style: "teal", arrow: false } ] },
   // Toned cards with the spanning strip and a takeaway bar, all at once.
   { layout: "cards", title: "The Three Answer Disciplines in 2026",
@@ -1804,8 +1812,37 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       `the figure on the mint card is inked dark teal whatever the ground (${primaryInk})`);
     assertD(primaryInk !== otherInk,
       "and differs from the figures on the dark cards, which is the whole point of marking it");
-    assertD(otherInk !== "57,80,255",
-      `a figure on a dark card is never brand blue, which is unreadable on navy (${otherInk})`);
+    // The purpose of the old "never brand blue" rule was that a figure must be
+    // readable on WHAT IS BEHIND IT. The grid moved to off-white cards, where
+    // brand blue is the reference's own ink for its landscape figures, so the
+    // rule is now the measurement it always stood for: every figure clears
+    // 4.5:1 against its own card's tint.
+    {
+      const fillOf = (sfx: string) => {
+        const r = sr.find((q: any) => q.updateShapeProperties?.objectId?.endsWith(sfx));
+        const c = r?.updateShapeProperties?.shapeProperties?.shapeBackgroundFill?.solidFill?.color?.rgbColor || {};
+        return [c.red || 0, c.green || 0, c.blue || 0];
+      };
+      const lum = (ch: number[]) => {
+        const f = ch.map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));
+        return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2];
+      };
+      const ratio = (a: number[], b: number[]) => {
+        const la = lum(a), lb = lum(b);
+        return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+      };
+      const inkRgb = (sfx: string) => {
+        const r = sr.find((q: any) => q.updateTextStyle?.objectId?.endsWith(sfx) && q.updateTextStyle.style?.foregroundColor);
+        const c = r?.updateTextStyle?.style?.foregroundColor?.opaqueColor?.rgbColor || {};
+        return [c.red || 0, c.green || 0, c.blue || 0];
+      };
+      for (let i = 0; i < 5; i++) {
+        const card = fillOf(`_sc${i}`), ink = inkRgb(`_sv${i}`);
+        if (!card.some(Boolean) && !ink.some(Boolean)) continue;
+        const r = ratio(ink, card);
+        assertD(r >= 4.5, `figure ${i} is ${r.toFixed(2)}:1 on its own card — a number nobody can read`);
+      }
+    }
     // Four or fewer keeps the original one-row treatment untouched.
     const three = buildSlideRequests({ layout: "stat", title: "T",
       stats: [{ value: "1", label: "a" }, { value: "2", label: "b" }, { value: "3", label: "c" }] } as SlideInput, 0, "n") as any[];
@@ -1948,9 +1985,12 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       const e = r?.createShape?.elementProperties;
       return e ? { y: e.transform.translateY, h: e.size.height.magnitude } : null;
     };
-    // One row, so no cards — the columns are bare text boxes.
-    assertQ(!fr.some((r) => (r.createShape?.objectId || "").match(/_sc\d+$/)),
-      "four figures stay the one-row treatment");
+    // FOUR is the grid's threshold now, not five. The reference's page 3 sets
+    // seven figures as 4 + 3 bordered cards on a light ground; ours drew four
+    // as a 54pt navy hero row and demoted the other three to bullets, so the
+    // takeaway's "note the second row" pointed at a row that did not exist.
+    assertQ(fr.filter((r) => (r.createShape?.objectId || "").match(/_sc\d+$/)).length === 4,
+      "four figures are drawn as four cards, not a hero row");
     for (let i = 0; i < 4; i++) {
       const label = boxOf(`_sl${i}`);
       const detail = boxOf(`_sd${i}`);
@@ -2147,16 +2187,23 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       const noteBar = reqs.find((r) => (r.createShape?.objectId || "").endsWith("_noteBar"));
       assertQ(!!noteBar, `${name} draws its takeaway bar`);
       if (!noteBar) continue;
-      const barTop = noteBar.createShape.elementProperties.transform.translateY;
+      const bt = noteBar.createShape.elementProperties;
+      const bar = { x: bt.transform.translateX, y: bt.transform.translateY, w: bt.size.width.magnitude, h: bt.size.height.magnitude };
+      // A full-width bar is cleared VERTICALLY; the Venn's sidebar sits beside
+      // the diagram, so "above it" is only one of three ways to be clear of it.
+      // For the five full-width bars this reduces to the old assertion exactly.
+      if (name !== "venn" && Math.abs(bar.w - GRID.contentWidth) > 0.6) fail(`${name}: the takeaway bar is ${bar.w.toFixed(1)}pt wide, not the full measure — the 2-D rule below must not hide a shrunken bar`);
       for (const r of reqs) {
         const oid = r.createShape?.objectId || "";
-        if (!oid || /_(noteBar|noteTxt|ftl|ftn|logo)$/.test(oid)) continue;
+        if (!oid || /_(noteBar|noteHead|noteTxt|ftl|ftn|logo)$/.test(oid)) continue;
         const t = r.createShape.elementProperties;
-        if (t.transform.scaleX !== 1 || t.transform.scaleY !== 1) continue;   // rotated marks
-        const bottom = t.transform.translateY + t.size.height.magnitude;
-        assertQ(bottom <= barTop + 1,
-          `${name}: ${oid.split("_").pop()} stops above the takeaway bar ` +
-          `(ends ${bottom.toFixed(1)}, bar starts ${barTop.toFixed(1)})`);
+        if (t.transform.scaleX !== 1 || t.transform.scaleY !== 1) continue;
+        const x = t.transform.translateX, y = t.transform.translateY;
+        const right = x + t.size.width.magnitude, bottom = y + t.size.height.magnitude;
+        const clear = bottom <= bar.y + 1 || right <= bar.x + 1 || x >= bar.x + bar.w - 1;
+        assertQ(clear,
+          `${name}: ${oid.split("_").pop()} keeps clear of the takeaway ` +
+          `(ends ${bottom.toFixed(1)}/${right.toFixed(1)}, takeaway at y ${bar.y.toFixed(1)} x ${bar.x.toFixed(1)}-${(bar.x + bar.w).toFixed(1)})`);
       }
     }
   }
@@ -2220,8 +2267,10 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     }
 
     // Arrows between bands - and NOT after a band that suppressed its arrow.
-    const arrows = lr.filter((q) => q.createShape?.shapeType === "DOWN_ARROW");
-    assertL(arrows.length === 4, `four connectors for five bands (${arrows.length})`);
+    const downs = lr.filter((q) => q.createShape?.shapeType === "DOWN_ARROW");
+    const ups = lr.filter((q) => q.createShape?.shapeType === "UP_ARROW");
+    assertL(downs.length === 3 && ups.length === 1, `three down connectors and one up for five bands (${downs.length} down, ${ups.length} up)`);
+    assertL(!!ups[0] && String(ups[0].createShape.objectId).endsWith("_lya3"), "the up arrow is the one under the social band — brands feed the channels");
     // The dashed emphasis band really is dashed.
     const dashed = lr.find((q) => q.updateShapeProperties?.shapeProperties?.outline?.dashStyle === "DASH");
     assertL(!!dashed, "the synthesis band carries its dashed outline");
@@ -2234,7 +2283,8 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     // THE PREVIEW KEEPS ALL OF IT. An arrow drawn as a grey block, or a dashed
     // band drawn solid, is the preview lying about the deck again.
     const pv = toPreviewModel([layersFixture]).slides[0].elements as any[];
-    assertL(pv.filter((e) => e.arrowDown).length === 4, "the preview keeps the four downward arrows as arrows");
+    assertL(pv.filter((e) => e.arrowDown).length === 3 && pv.filter((e) => (e as any).arrowUp).length === 1,
+      "the preview keeps three down arrows and the up arrow as arrows");
     assertL(pv.some((e) => e.dashed), "and the dashed outline as dashed");
     // And the PDF prints them - the print is a pure function of the preview.
     const html = deckToHtml(toPreviewModel([layersFixture]), "t");
@@ -2252,7 +2302,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         el.x + el.w <= r.x + r.w + 0.5 && el.y + el.h <= r.y + r.h + 0.5);
     for (const t of ["Owned content", "Audio + transcript", "Website", "Podcasts"]) {
       const el = pv.find((e: any) => e.text === t);
-      assertL(!!el && insideSomeRect(el, (r) => String(r.fill).toLowerCase() === "#ffffff"),
+      assertL(!!el && insideSomeRect(el, (r) => String(r.fill).toLowerCase() === `#${COLOR.tintBlue.toLowerCase()}`),
         `cell text "${t}" sits inside its white cell`);
     }
     const cap = pv.find((e: any) => /reads, compares and synthesises/.test(String(e.text || "")));
@@ -2425,17 +2475,19 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   // points must spread: the two extreme values land far apart vertically
   const sy = sdots.map((r: any) => r.createShape.elementProperties.transform.translateY);
   if (Math.max(...sy) - Math.min(...sy) < 80) fail("scatter points do not spread on the y-axis");
-  const v2 = buildSlideRequests({ layout: "venn", title: "T", venn: { sets: [{ label: "A" }, { label: "B" }], overlap: "both" } }, 0, "n");
+  const texts = (rs: any[]) => rs.filter((r: any) => r.insertText).map((r: any) => String(r.insertText.text).toLowerCase());
+  const v2 = buildSlideRequests({ layout: "venn", title: "T", venn: { sets: [{ label: "A" }, { label: "B" }], overlap: "both" } }, 0, "n") as any[];
   if (v2.filter((r: any) => (r.createShape?.objectId || "").match(/_vc\d/)).length !== 2) fail("2-set Venn did not draw two circles");
-  if (!v2.some((r: any) => r.insertText && r.insertText.text === "both")) fail("2-set Venn overlap label not drawn");
+  // Case-insensitive: set names are caps now, as the reference letters them.
+  if (texts(v2).indexOf("both") === -1) fail("2-set Venn overlap label not drawn");
   const v3 = buildSlideRequests({ layout: "venn", title: "T", venn: { sets: [{ label: "A" }, { label: "B" }, { label: "C" }] } }, 0, "n");
   if (v3.filter((r: any) => (r.createShape?.objectId || "").match(/_vc\d/)).length !== 3) fail("3-set Venn did not draw three circles");
-  // A "Name (Descriptor)" set label splits into a name and a lighter gloss.
-  const v3d = buildSlideRequests({ layout: "venn", title: "T", venn: { sets: [{ label: "Team knowledge (Digital Authority Briefing)" }, { label: "B" }, { label: "C" }] } }, 0, "n");
-  if (!v3d.some((r: any) => r.insertText && r.insertText.text === "Team knowledge") || !v3d.some((r: any) => r.insertText && r.insertText.text === "Digital Authority Briefing")) {
-    fail("a Venn set label with a parenthetical was not split into name + descriptor");
-  }
-  if (failures === before22) pass("scatter plots and spreads its points; Venn draws its sets with name-over-descriptor labels");
+  // "Name (Descriptor)" AND "Name - descriptor" split into a name and a lighter
+  // gloss: the delivered deck wrote every label with a dash and got nine-word names.
+  const v3d = buildSlideRequests({ layout: "venn", title: "T", venn: { sets: [{ label: "Team knowledge (Digital Authority Briefing)" }, { label: "Direct - LinkedIn, newsletters" }, { label: "C" }] } }, 0, "n") as any[];
+  const t3 = texts(v3d);
+  if (t3.indexOf("team knowledge") === -1 || t3.indexOf("digital authority briefing") === -1) fail("a Venn set label with a parenthetical was not split into name + descriptor");
+  if (t3.indexOf("direct") === -1 || t3.indexOf("linkedin, newsletters") === -1) fail("a Venn set label with a dash was not split into name + descriptor");
 
   /* 23. An attached image lands on the slide, and a REGION of it crops correctly.
    *
@@ -2991,6 +3043,261 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     }
   }
   if (failures === before27) pass("panels and cards hug their words inside the margin, the takeaway follows them, the splitter measures the room, and cells centre in their rows");
+
+  /* 28. THE SECTION DIVIDER IS ONE LOCKUP
+   *
+   * The reference's divider is a 111pt block - kicker, two-line title,
+   * subtitle - with 16pt and 13pt of air in it, centred on the page as a
+   * group. Ours drew the kicker in the page-header slot at y=36, the title in
+   * a fixed 100pt box at y=152 and the subtitle at a fixed y=257: three
+   * orphaned lines with 125pt and 76pt of empty blue between them, and the
+   * kicker reading as a running header. The reviewers: "the three lines never
+   * read as belonging to each other".
+   *
+   * MUTATION LOG
+   *   - kicker back in the header slot            → KILLED
+   *   - fixed title y / fixed 100pt box            → KILLED (stack + centring)
+   *   - sectionTitle back to 26                    → KILLED
+   *   - kicker drawn in TYPE.eyebrowDark (11pt)    → KILLED
+   *   - subtitle back to TYPE.bodyDark             → KILLED
+   *   - subtitle id back to "body"                 → KILLED (preview path)
+   *   - fitHeading ignores the caller's lead       → KILLED
+   *   - long title no longer fitted down           → KILLED (stress)
+   */
+  const before28 = failures;
+  console.log(`\n28. The section divider is one lockup`);
+  {
+    const geomOf = (reqs: any[], suffix: string) => {
+      for (const r of reqs) {
+        const o = r.createShape || r.createImage;
+        if (o && String(o.objectId).endsWith(suffix)) {
+          const t = o.elementProperties.transform;
+          return { x: t.translateX, y: t.translateY, w: o.elementProperties.size.width.magnitude, h: o.elementProperties.size.height.magnitude };
+        }
+      }
+      return null;
+    };
+    const styleOf = (reqs: any[], suffix: string) => {
+      for (const r of reqs) if (r.updateTextStyle && String(r.updateTextStyle.objectId).endsWith(suffix) && r.updateTextStyle.textRange?.type === "ALL") return r.updateTextStyle.style;
+      return null;
+    };
+    const paraOf = (reqs: any[], suffix: string) => {
+      for (const r of reqs) if (r.updateParagraphStyle && String(r.updateParagraphStyle.objectId).endsWith(suffix)) return r.updateParagraphStyle.style;
+      return null;
+    };
+
+    // FIXTURE A: the reference's page 4.
+    const A: SlideInput = { layout: "section", eyebrow: "SESSION 1 · 2 HOURS · VIRTUAL", title: "Understand & {Diagnose}",
+      subtitle: "Build shared vocabulary. See what AI sees. Understand how a brand earns its place in an AI answer." };
+    const ar = buildSlideRequests(A, 3, "p28a") as any[];
+    const kick = geomOf(ar, "_eyebrow"), ttl = geomOf(ar, "_title"), sub = geomOf(ar, "_sub");
+    if (!kick || !ttl || !sub) fail(`the divider drew no kicker, title or subtitle (kicker=${!!kick} title=${!!ttl} sub=${!!sub}) — the subtitle must be id "sub", not "body"`);
+    else {
+      if (kick.y < 100) fail(`the kicker sits at y=${kick.y.toFixed(1)} — in the page-header slot, not in the lockup`);
+      if (Math.abs(ttl.y - (kick.y + kick.h)) > SECTION.kickerGap + 0.5) fail(`the title (${ttl.y.toFixed(1)}) does not follow the kicker (${(kick.y + kick.h).toFixed(1)}) — not one stack`);
+      if (Math.abs(sub.y - (ttl.y + ttl.h)) > SECTION.subtitleGap + 0.5) fail(`the subtitle (${sub.y.toFixed(1)}) does not follow the title (${(ttl.y + ttl.h).toFixed(1)})`);
+      const centre = (kick.y + sub.y + sub.h) / 2;
+      if (Math.abs(centre - CANVAS.height / 2) > 0.5) fail(`the lockup centres at ${centre.toFixed(1)}, not on the canvas (${CANVAS.height / 2})`);
+      // PRECONDITION for the measured-box assertion: the title really is one line.
+      const ttlLines = estimateLines("Understand & Diagnose", GRID.contentWidth, TYPE.sectionTitle.size);
+      if (ttlLines !== 1) fail(`fixture A's title measures ${ttlLines} lines — the one-line assertion below is vacuous`);
+      else if (ttl.h > drawnTextHeight(1, TYPE.sectionTitle.size, 0, 1, SECTION.titleLead) + 0.5) fail(`a one-line title gets a ${ttl.h.toFixed(1)}pt box — the old fixed 100pt, not a measured one`);
+      const ts = styleOf(ar, "_title"), tp = paraOf(ar, "_title");
+      if (!ts || ts.fontSize?.magnitude !== TYPE.sectionTitle.size) fail(`the divider title is not drawn at TYPE.sectionTitle (${ts?.fontSize?.magnitude})`);
+      if (TYPE.sectionTitle.size < 30) fail(`TYPE.sectionTitle is ${TYPE.sectionTitle.size} — the reference's block is ~31pt and ours read a third the height`);
+      if (!tp || Math.abs(tp.lineSpacing - SECTION.titleLead * 100) > 0.01) fail(`the title is drawn at ${tp?.lineSpacing}% — not the ${SECTION.titleLead * 100}% it was fitted at`);
+      if (!tp || (tp.spaceBelow?.magnitude ?? 6) !== 0) fail(`a stacked divider title opens a paragraph gap (spaceBelow ${tp?.spaceBelow?.magnitude})`);
+      const ks = styleOf(ar, "_eyebrow");
+      if (!ks || ks.fontSize?.magnitude !== TYPE.sectionKicker.size) fail(`the kicker is not drawn at TYPE.sectionKicker (${ks?.fontSize?.magnitude})`);
+      if (!(TYPE.sectionKicker.size < TYPE.eyebrowDark.size && TYPE.sectionKicker.size >= 7.5)) fail(`the kicker (${TYPE.sectionKicker.size}) must be lighter than a page eyebrow (${TYPE.eyebrowDark.size}) and never under 7.5`);
+      const ss = styleOf(ar, "_sub");
+      if (!ss || ss.fontSize?.magnitude !== TYPE.standfirstDark.size) fail(`the subtitle is not the standfirst voice (${ss?.fontSize?.magnitude} vs ${TYPE.standfirstDark.size})`);
+      if (ar.some((r) => r.createShape && /_body$/.test(String(r.createShape.objectId)))) fail(`the divider still draws a "_body" box — the preview would edit slide.body, which a divider never draws`);
+      const pel = toPreviewModel([A]).slides[0].elements as any[];
+      if (!pel.some((e) => JSON.stringify(e.path) === JSON.stringify(["subtitle"]))) fail("the preview has no element on path [subtitle] for the divider");
+      if (pel.some((e) => JSON.stringify(e.path) === JSON.stringify(["body"]))) fail("the preview maps the divider's subtitle to path [body]");
+    }
+
+    // FIXTURE D: over a photograph the subtitle is the colour the gradient was solved for.
+    const Dp: SlideInput = { ...A, eyebrow: "PART ONE", resolvedImage: PHOTO_DARK } as any;
+    const dr = buildSlideRequests(Dp, 3, "p28d") as any[];
+    const ds = styleOf(dr, "_sub");
+    const white = ds?.foregroundColor?.opaqueColor?.rgbColor;
+    if (!white || Math.abs(white.red - 1) > 0.01 || Math.abs(white.green - 1) > 0.01 || Math.abs(white.blue - 1) > 0.01) fail(`over a photograph the subtitle is not white (${JSON.stringify(white)}) — the gradient is solved for white, the grey lands under 4.5:1`);
+
+    // FIXTURE B: the numeral keeps its slot and the lockup starts under it.
+    const Bn: SlideInput = { layout: "section", eyebrow: "01", title: "A deliberately long divider title that wraps to two", subtitle: "Build your map, refine and prioritise it." };
+    const br = buildSlideRequests(Bn, 3, "p28b") as any[];
+    const num = geomOf(br, "_num"), bt = geomOf(br, "_title"), bs = geomOf(br, "_sub");
+    if (!num || !bt || !bs) fail("fixture B drew no numeral, title or subtitle");
+    else {
+      if (Math.abs(num.y - GRID.eyebrowY) > 0.5 || Math.abs(num.h - SECTION.numeralHeight) > 0.5) fail(`the numeral left its slot (y ${num.y.toFixed(1)} h ${num.h.toFixed(1)})`);
+      if (bt.y < num.y + num.h - 0.5) fail(`the lockup (title y ${bt.y.toFixed(1)}) starts inside the numeral box (ends ${(num.y + num.h).toFixed(1)})`);
+      const lines = estimateLines(Bn.title, GRID.contentWidth, TYPE.sectionTitle.size);
+      if (lines !== 2) fail(`fixture B's title measures ${lines} lines, not the two the case is about`);
+    }
+
+    // FIXTURE C (stress): a long title is fitted DOWN, and the stack clears the bar and the footer.
+    const Cs: SlideInput = { layout: "section", eyebrow: "PART TWO",
+      title: "A very long section divider title that goes on and on across the whole width of the slide, and then keeps going for another clause, and one more clause after that for good measure so it cannot fit",
+      subtitle: "A two-line subtitle that explains what this part of the programme covers, who it is for, and why the sequence of the modules within it matters to the outcome.",
+      note: "A two-line takeaway bar under the divider, which is rare but allowed, and which the lockup must never be drawn through however long the title above it turns out to be." };
+    const cr = buildSlideRequests(Cs, 3, "p28c") as any[];
+    const ct = geomOf(cr, "_title"), cs = geomOf(cr, "_sub"), ck = geomOf(cr, "_eyebrow"), bar = geomOf(cr, "_noteBar");
+    const cstyle = styleOf(cr, "_title");
+    const need32 = estimateLines(Cs.title, GRID.contentWidth, TYPE.sectionTitle.size);
+    if (need32 < 5) fail(`the stress title measures only ${need32} lines at ${TYPE.sectionTitle.size}pt — the ladder never runs and this proves nothing`);
+    if (!ct || !cs || !ck || !bar || !cstyle) fail("the stress divider drew incompletely");
+    else {
+      const fitted = cstyle.fontSize?.magnitude;
+      if (!(fitted < TYPE.sectionTitle.size && fitted >= SECTION.titleMinSize)) fail(`a long title is drawn at ${fitted}pt — not fitted down (floor ${SECTION.titleMinSize})`);
+      if (cs.y + cs.h > GRID.bodyY + bandHeightFor(Cs) + 0.5) fail(`the stack ends at ${(cs.y + cs.h).toFixed(1)}, past the band's floor ${(GRID.bodyY + bandHeightFor(Cs)).toFixed(1)}`);
+      if (bar.y < cs.y + cs.h + NOTE.gap - 0.5) fail(`the takeaway bar (${bar.y.toFixed(1)}) is drawn through the subtitle (ends ${(cs.y + cs.h).toFixed(1)})`);
+      if (ck.y < SECTION.minTop - 0.5) fail(`the kicker climbed back into the header slot (${ck.y.toFixed(1)})`);
+      for (const r of cr) {
+        const o = r.createShape; if (!o) continue;
+        const bottom = o.elementProperties.transform.translateY + o.elementProperties.size.height.magnitude;
+        if (/_(eyebrow|title|sub)$/.test(o.objectId) && bottom > FOOTER_Y - 4) fail(`${o.objectId} ends at ${bottom.toFixed(1)}, on the footer`);
+      }
+    }
+
+    // fitHeading measures at the caller's lead; callers that pass none are unchanged.
+    const at = fitHeading("One line", TYPE.sectionTitle, 600, { bottom: 400, minTop: 0, minHeight: 0, lineSpacing: SECTION.titleLead }).height;
+    const dflt = fitHeading("One line", TYPE.sectionTitle, 600, { bottom: 400, minTop: 0, minHeight: 0 }).height;
+    if (Math.abs(at - dflt) < 0.01) fail("fitHeading's lineSpacing option changes nothing — the precondition of the next two assertions fails");
+    if (Math.abs(at - drawnTextHeight(1, TYPE.sectionTitle.size, 0, 1, SECTION.titleLead)) > 0.01) fail(`fitHeading at the divider's lead gives ${at.toFixed(2)}, not the measured ${drawnTextHeight(1, TYPE.sectionTitle.size, 0, 1, SECTION.titleLead).toFixed(2)}`);
+    if (Math.abs(dflt - drawnTextHeight(1, TYPE.sectionTitle.size)) > 0.01) fail("fitHeading without a lead no longer measures at LINE_LEAD");
+    // The drawn box must cover the ink model check 11 measures with.
+    if (1.26 * SECTION.titleLead < 1.38 - 0.001) fail(`SECTION.titleLead ${SECTION.titleLead} draws a box (${(1.26 * SECTION.titleLead).toFixed(3)}/line) thinner than the 1.38 ink box the collision check measures — a three-line title would be reported as running onto its subtitle; grow subtitleGap first`);
+  }
+  if (failures === before28) pass("kicker, title and subtitle stack as one measured lockup centred on the page; a long title shrinks rather than pushing the subtitle onto the bar");
+
+  /* 29. PHASE B: WHAT EACH REDESIGNED LAYOUT IS
+   *
+   * Five mutations survived the first run of this section's absence: the
+   * process card's name could go back to white caps, its owner clause could
+   * stay buried in the caption, the Venn's labels could be forced outside,
+   * its sidebar could revert to a full-width bar, and the stat grid could be
+   * drawn on navy again — all with a green battery. Every one of those is a
+   * reviewer finding from the deck the client presented INSTEAD of ours, so
+   * each gets an assertion that names it.
+   *
+   * MUTATION LOG
+   *   - process name back to white caps          → KILLED
+   *   - owner clause left in the caption          → KILLED
+   *   - venn labels forced outside                → KILLED
+   *   - venn note back to the full-width bar      → KILLED
+   *   - stat grid drawn on the navy ground        → KILLED
+   */
+  const before29 = failures;
+  console.log(`\n29. Phase B: what each redesigned layout is`);
+  {
+    const geomOf = (reqs: any[], suffix: string) => {
+      for (let i = 0; i < reqs.length; i++) {
+        const o = reqs[i].createShape || reqs[i].createImage;
+        if (o && String(o.objectId).endsWith(suffix)) {
+          const t = o.elementProperties.transform;
+          return { x: t.translateX, y: t.translateY, w: o.elementProperties.size.width.magnitude, h: o.elementProperties.size.height.magnitude };
+        }
+      }
+      return null;
+    };
+    const textOf = (reqs: any[], suffix: string) => {
+      for (let i = 0; i < reqs.length; i++) if (reqs[i].insertText && String(reqs[i].insertText.objectId).endsWith(suffix)) return String(reqs[i].insertText.text);
+      return "";
+    };
+    const styleOf = (reqs: any[], suffix: string) => {
+      for (let i = 0; i < reqs.length; i++) {
+        const u = reqs[i].updateTextStyle;
+        if (u && u.textRange?.type === "ALL" && String(u.objectId).endsWith(suffix)) return u.style;
+      }
+      return null;
+    };
+
+    // PROCESS: a card, not a pill. Mixed-case bold name, owner split off.
+    const proc: SlideInput = { layout: "process", title: "Entity mapping", stages: [
+      { name: "We draft", caption: "Ahead of session two we drafted a first entity mapping from public sources. Owner: TCE" },
+      { name: "We refine together", caption: "Together we correct errors and obsolete information. Owner: TCE + your team" },
+      { name: "You prioritise", caption: "Your team assigns priority tiers. Owner: your team" },
+    ] };
+    const pr = buildSlideRequests(proc, 0, "p29a") as any[];
+    const nameStyle = styleOf(pr, "_ps0");
+    if (!nameStyle) fail("the process card draws no name (ps0)");
+    else {
+      if (textOf(pr, "_ps0") !== "We draft") fail(`the step name is drawn as "${textOf(pr, "_ps0")}" — the caps pill label is back`);
+      if ((nameStyle.fontSize?.magnitude || 0) < 10) fail(`the step name is ${nameStyle.fontSize?.magnitude}pt — the reference sets it at 10.5, ours was a 9pt caps label`);
+      const fg = nameStyle.foregroundColor?.opaqueColor?.rgbColor || {};
+      const isWhite = (fg.red || 0) > 0.95 && (fg.green || 0) > 0.95 && (fg.blue || 0) > 0.95;
+      if (isWhite) fail("the step name is white — it is navy on a light card now, not a label inside a blue pill");
+    }
+    if (/owner\s*:/i.test(textOf(pr, "_pc0"))) fail(`the description still carries its owner clause: "${textOf(pr, "_pc0").slice(-28)}"`);
+    if (textOf(pr, "_po0") !== "Owner: TCE") fail(`the owner is not on its own line (po0 = "${textOf(pr, "_po0")}")`);
+    { const c0 = geomOf(pr, "_pb0"), o0 = geomOf(pr, "_po0");
+      if (c0 && o0 && o0.y + o0.h > c0.y + c0.h + 0.5) fail("the owner line runs past the foot of its card"); }
+    if (splitStageOwner("Some prose about owners: with a colon", undefined).owner !== "") {
+      fail("a mid-sentence 'owner:' is being read as an owner clause");
+    }
+
+    // VENN: labels inside their own exclusive regions, note as a sidebar.
+    const vn: SlideInput = { layout: "venn", title: "Three arenas",
+      venn: { sets: [
+        { label: "Owned website - entity pages, schema, FAQs" },
+        { label: "Direct - LinkedIn, newsletters, executives" },
+        { label: "Indirect - PR, Wikipedia, analysts" },
+      ], overlap: "Triangulation: one story AI can verify three ways" },
+      note: "Sequence matters: fix the website first, then expand into direct and earned." };
+    const vr = buildSlideRequests(vn, 0, "p29b") as any[];
+    const c0 = geomOf(vr, "_vc0"), c1 = geomOf(vr, "_vc1"), c2 = geomOf(vr, "_vc2");
+    if (!c0 || !c1 || !c2) fail("the venn drew fewer than three circles");
+    else {
+      const R = c0.w / 2;
+      const centre = (g: { x: number; y: number; w: number; h: number }) => [g.x + g.w / 2, g.y + g.h / 2];
+      const cs = [centre(c0), centre(c1), centre(c2)];
+      for (let i = 0; i < 3; i++) {
+        const lab = geomOf(vr, `_vn${i}`);
+        if (!lab) { fail(`the venn drew no label vn${i}`); continue; }
+        const lc = [lab.x + lab.w / 2, lab.y + lab.h / 2];
+        const d = (k: number) => Math.hypot(lc[0] - cs[k][0], lc[1] - cs[k][1]);
+        // INSIDE its own circle and outside the other two: its exclusive region.
+        if (d(i) >= R) fail(`venn label ${i} sits ${d(i).toFixed(0)}pt from its circle's centre (R ${R.toFixed(0)}) — outside the circle it names`);
+        for (let k = 0; k < 3; k++) if (k !== i && d(k) < R) fail(`venn label ${i} sits inside circle ${k} as well — not an exclusive region`);
+      }
+      // Separation: the overlaps are lenses, not a near-total eclipse.
+      const gap = Math.hypot(cs[0][0] - cs[1][0], cs[0][1] - cs[1][1]);
+      if (gap < R) fail(`the venn's circles are ${gap.toFixed(0)}pt apart at R ${R.toFixed(0)} — the overlap swallows the sets`);
+    }
+    const vbar = geomOf(vr, "_noteBar");
+    if (!vbar) fail("the venn slide drew no takeaway at all");
+    else {
+      if (vbar.w >= GRID.contentWidth - 1) fail(`the venn's takeaway is a full-width bar (${vbar.w.toFixed(0)}pt) — the reference sets it as a callout beside the diagram`);
+      if (Math.abs(vbar.x + vbar.w - (GRID.margin + GRID.contentWidth)) > 1) fail(`the venn's callout is not against the right margin (ends ${(vbar.x + vbar.w).toFixed(1)})`);
+      if (!textOf(vr, "_noteHead")) fail("the callout has no heading — the note's lead-in before the colon is what the presenter says out loud");
+    }
+
+    // STAT GRID: four or more figures are cards on the LIGHT ground.
+    const sg: SlideInput = { layout: "stat", title: "The landscape", stats: [
+      { value: "1B", label: "ChatGPT weekly active users", detail: "Aug 2026" },
+      { value: "950M", label: "Gemini app monthly users", detail: "Q2 2026" },
+      { value: "68%", label: "of searches end without a click", detail: "SparkToro" },
+      { value: "+120%", label: "more clicks when cited", detail: "Seer", primary: true },
+    ] };
+    const gr = buildSlideRequests(sg, 0, "p29c") as any[];
+    const bg = gr.find((r: any) => r.updatePageProperties)?.updatePageProperties?.pageProperties?.pageBackgroundFill?.solidFill?.color?.rgbColor || {};
+    const dark = (bg.red || 0) < 0.3 && (bg.green || 0) < 0.3;
+    if (dark) fail("a four-figure stat slide is still drawn on navy — the grid is a light page, and on navy it read as a section break that was not one");
+    if (!gr.some((r: any) => r.updateShapeProperties?.shapeProperties?.outline?.outlineFill)) {
+      fail("the stat cards carry no border — on off-white the tint alone is too faint to read as a card");
+    }
+    // And the lockup follows the ground, or it is invisible on it.
+    const logo = gr.find((r: any) => (r.createImage?.objectId || "").endsWith("_logo"));
+    if (!logo) fail("the stat grid drew no logo");
+    else if (String(logo.createImage.url).indexOf("white") >= 0) fail("the grid carries the WHITE lockup on a light page");
+    // Three figures keep the navy hero row the reviewers preferred.
+    const heroReqs = buildSlideRequests({ ...sg, stats: sg.stats!.slice(0, 3) }, 0, "p29d") as any[];
+    const hbg = heroReqs.find((r: any) => r.updatePageProperties)?.updatePageProperties?.pageProperties?.pageBackgroundFill?.solidFill?.color?.rgbColor || {};
+    if (!((hbg.red || 0) < 0.3 && (hbg.green || 0) < 0.3)) fail("three figures no longer draw the navy hero row — the reviewers scored that ours-better and it must survive");
+  }
+  if (failures === before29) pass("a process step is a card with its owner on its own line, the venn labels inside its circles with the note beside them, and four figures are a light grid");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);

@@ -38,6 +38,10 @@ export interface PreviewElement {
   arrow?: boolean;
   /** The layer diagram's downward connector — same reasoning as arrow. */
   arrowDown?: boolean;
+  /** Its upward connector (brands feed the channels). A preview that draws
+   *  this as a block says the opposite of the deck at the one point the
+   *  presenter is saying "brands push into all of this". */
+  arrowUp?: boolean;
   /** A dashed outline (the layer diagram's emphasis band). */
   dashed?: boolean;
   /** Where in the slide SPEC this text came from, as a path — ["title"], or
@@ -163,6 +167,7 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
           rounded: body.shapeType === "ROUND_RECTANGLE",
           arrow: body.shapeType === "RIGHT_ARROW",
           arrowDown: body.shapeType === "DOWN_ARROW",
+          arrowUp: body.shapeType === "UP_ARROW",
           x: body.elementProperties.transform.translateX,
           y: body.elementProperties.transform.translateY,
           w: body.elementProperties.size.width.magnitude,

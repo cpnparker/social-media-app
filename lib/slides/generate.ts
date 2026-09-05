@@ -15,9 +15,9 @@
  */
 
 import {
-  COLOR, GRID, CANVAS, TYPE, NOTE, STAT_MAX, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
-  SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, RULE, LAYOUT_STYLE, LOGO_PLACEMENT,
-  rgb, logoUrl, textOn, type SlideLayout, type TypeStyle,
+  COLOR, GRID, CANVAS, TYPE, NOTE, STAT_MAX, STAT_GRID_MIN, STAT_GRID, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
+  SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, RULE, LAYOUT_STYLE, LOGO_PLACEMENT, SECTION, VENN,
+  rgb, logoUrl, textOn, type SlideLayout, type TypeStyle, type LayoutStyle,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
 import { captureThumbnails } from "@/lib/slides/preview";
@@ -112,8 +112,11 @@ export interface SlideInput {
     /** "blue" (solid brand blue, white ink), "dashed" (outlined emphasis),
      *  or a tint: "teal" | "lav" | "grey" | "coral" | "amber". */
     style?: string;
-    /** Draw a connector arrow down to the next layer (default true). */
-    arrow?: boolean;
+    /** The connector under this band: "down" (default), "up" when the band
+     *  BENEATH feeds this one — brands push into the channels, the AI layer
+     *  reads across them — or "none". `false` is the old spelling of "none"
+     *  and still works. */
+    arrow?: boolean | "up" | "down" | "none";
   }[];
   /** A full-width band under a cards row — the source deck's "SXO in detail"
    *  device: a spanning tinted panel holding a title and a row of small
@@ -209,7 +212,14 @@ export interface SlideInput {
   /** Client marks for logo-wall. Fitted whole, never cropped. */
   logos?: { url?: string; query?: string; name?: string; resolvedUrl?: string }[];
   /** Big numbers for the stat layout — three at most, or none of them lands. */
-  stats?: { value: string; label: string; detail?: string; primary?: boolean }[];
+  /** Headline figures for the stat layout, one to eight. One is a hero, two
+   *  or three are the navy row, four or more are a grid of cards on the
+   *  light ground — rows of up to four, the reference deck's 4-then-3.
+   *  `tone` ("grey" | "blue" | "teal" | "coral" | "amber") colours a card so
+   *  the grid GROUPS its figures: the reference sets its landscape figures
+   *  on grey and its opportunity figures on mint, which is what lets the
+   *  takeaway say "the green numbers are the upside". */
+  stats?: { value: string; label: string; detail?: string; primary?: boolean; tone?: string }[];
   /** Data for bar-chart and line-chart. */
   chart?: {
     series: { name: string; points: { label: string; value: number }[] }[];
@@ -652,9 +662,10 @@ function textBox(
 }
 
 function logoRequests(
-  objectId: string, pageObjectId: string, layout: SlideLayout, slide?: SlideInput
+  objectId: string, pageObjectId: string, style: LayoutStyle, slide?: SlideInput
 ): Req[] {
-  const style = LAYOUT_STYLE[layout];
+  // The STYLE, not the layout: a stat slide's ground is decided per instance
+  // (slideStyle), and the lockup has to follow the ground it actually sits on.
   if (!style.logo) return [];
   const place = LOGO_PLACEMENT[style.logoPlacement];
   // The picture only gets a say where the logo actually SITS on it — the
@@ -689,7 +700,10 @@ function filledShape(
   color: string,
   box: { x: number; y: number; width: number; height: number },
   /** 0–1. A hairline at full strength is a line; at a fifth it is structure. */
-  alpha?: number
+  alpha?: number,
+  /** A solid hairline edge — the stat card's border. Absent, the default
+   *  border Slides gives a new shape is turned OFF, not left. */
+  outline?: { color: string; alpha?: number; weight: number }
 ): Req[] {
   return [
     {
@@ -713,11 +727,18 @@ function filledShape(
               ...(typeof alpha === "number" ? { alpha } : {}),
             },
           },
-          outline: { propertyState: "NOT_RENDERED" },
+          outline: outline
+            ? {
+                outlineFill: { solidFill: {
+                  color: { rgbColor: rgb(outline.color) },
+                  ...(typeof outline.alpha === "number" ? { alpha: outline.alpha } : {}),
+                } },
+                weight: pt(outline.weight),
+              }
+            : { propertyState: "NOT_RENDERED" },
         },
-        fields: typeof alpha === "number"
-          ? "shapeBackgroundFill.solidFill,outline.propertyState"
-          : "shapeBackgroundFill.solidFill.color,outline.propertyState",
+        fields: (typeof alpha === "number" ? "shapeBackgroundFill.solidFill" : "shapeBackgroundFill.solidFill.color")
+          + (outline ? ",outline" : ",outline.propertyState"),
       },
     },
   ];
@@ -1298,6 +1319,170 @@ function formatValue(v: number): string {
   return String(Number(v.toFixed(2)));
 }
 
+/* ─────────────── The stat card grid (four or more figures) ─────────────── */
+
+type StatIn = { value: string; label: string; detail?: string; primary?: boolean; tone?: string };
+
+/** Four or more figures are drawn as a grid of cards on the LIGHT ground. */
+export function isStatGrid(stats: { value: string }[] | undefined): boolean {
+  return (stats || []).filter(Boolean).length >= STAT_GRID_MIN;
+}
+
+/** The ground a slide is actually drawn on.
+ *
+ *  LAYOUT_STYLE fixes background, lockup and ink per LAYOUT, and `stat` is the
+ *  one layout whose ground depends on the INSTANCE: up to three figures are
+ *  the navy hero row, four or more are a card grid on off-white — the
+ *  reference deck's page 3. On navy the grid was a 10% white wash between two
+ *  light pages, which the room read as a section break that was not one.
+ *
+ *  EVERY reader of onDark, background or logo goes through here —
+ *  buildSlideRequests, the lockup, the rhythm advisor, the image baker and
+ *  the layout check — so no reader can answer for the layout while the slide
+ *  is drawn on the other ground. */
+const STAT_GRID_STYLE: LayoutStyle = { background: COLOR.offWhite, logo: "navy", logoPlacement: "content", onDark: false };
+export function slideStyle(slide: Pick<SlideInput, "layout" | "stats">, index: number): LayoutStyle {
+  const layout = layoutOf(slide.layout, index);
+  return layout === "stat" && isStatGrid(slide.stats) ? STAT_GRID_STYLE : LAYOUT_STYLE[layout];
+}
+
+/** The FIGURE's ink per tone. TONES carries each tint and its heading ink; the
+ *  number on a grey card is brand blue — the reference's own ink for its
+ *  landscape figures, 4.8:1 on tintGrey, enough for a 16pt-plus figure. */
+const STAT_VALUE_INK: { [k: string]: string } = {
+  grey: COLOR.blue, blue: COLOR.blue, teal: COLOR.inkTeal, coral: COLOR.inkCoral, amber: COLOR.inkAmber,
+};
+
+/** Which card a figure takes. An explicit tone wins; `primary` with no tone
+ *  keeps the mint card it always took, so a spec written before tones existed
+ *  draws exactly as it did; everything else is the quiet grey card. */
+function statTone(sx: { primary?: boolean; tone?: string }): string {
+  const key = String(sx.tone || "").toLowerCase();
+  if (TONES[key]) return key;
+  return sx.primary ? "teal" : "grey";
+}
+
+type StatRung = { value: number; label: number; pad: number; rowGap: number; sources: boolean };
+interface StatPlan {
+  rung: StatRung; rows: number; perRow: number;
+  /** Cell width per ROW — a short last row stretches to the measure. */
+  cellW: number[];
+  cardH: number; vSize: number; vH: number; labelH: number; srcH: number;
+  /** Grid plus the declaration line, when one is needed. */
+  height: number; extra: number;
+}
+
+/** Measure one grid at one rung: rows of up to four, a short last row
+ *  STRETCHED to the full measure (the reference's 4-then-3, where the wider
+ *  second row is what gives its longest label two lines instead of three),
+ *  every card the height of the tallest content in the grid. */
+function planStatGrid(stats: StatIn[], rung: StatRung, extra: number): StatPlan {
+  const G = STAT_GRID;
+  const n = stats.length;
+  const rows = Math.ceil(n / G.perRow);
+  const perRow = Math.ceil(n / rows);
+  const cellW: number[] = [];
+  for (let r = 0; r < rows; r++) {
+    const inRow = Math.min(perRow, n - r * perRow);
+    cellW.push((GRID.contentWidth - G.gap * (inRow - 1)) / inRow);
+  }
+  const innerOf = (i: number) => cellW[Math.floor(i / perRow)] - G.padX * 2;
+  // ONE size for every figure, solved from the narrowest cell and the longest
+  // value: Poppins runs ~0.62 of the size per character, and the box carries
+  // its own horizontal inset.
+  let longest = 1, narrowest = Infinity;
+  for (let i = 0; i < n; i++) {
+    longest = Math.max(longest, stats[i].value.length);
+    narrowest = Math.min(narrowest, innerOf(i));
+  }
+  const vSize = Math.max(G.valueMin, Math.min(rung.value, Math.floor((narrowest - TEXT_INSET_X) / (longest * 0.62))));
+  const vH = vSize * G.valueLead;
+  let labelH = 0, srcH = 0;
+  for (let i = 0; i < n; i++) {
+    labelH = Math.max(labelH, drawnTextHeight(estimateLines(stats[i].label, innerOf(i), rung.label), rung.label, 0, 1, G.labelLead));
+    if (rung.sources && stats[i].detail?.trim()) {
+      srcH = Math.max(srcH, drawnTextHeight(
+        estimateLines(stats[i].detail, innerOf(i), TYPE.statCardSource.size), TYPE.statCardSource.size, 0, 1, G.sourceLead));
+    }
+  }
+  const cardH = rung.pad + vH + labelH + (srcH ? G.sourceGap + srcH : 0) + rung.pad;
+  const height = rows * cardH + (rows - 1) * rung.rowGap + extra;
+  return { rung, rows, perRow, cellW, cardH, vSize, vH, labelH, srcH, height, extra };
+}
+
+/** The grid, and where it ends.
+ *
+ *  COMPRESS BEFORE DROPPING: every rung at the full count — the last rung
+ *  gives up the source lines — and only then one figure fewer, the rule every
+ *  plot in this file follows. Whatever goes is DECLARED on the slide; a note
+ *  line is part of the height being fitted, or it is the thing that overflows. */
+function statGridRequests(
+  page: string, id: (s: string) => string, all: StatIn[], band: number, topAlign: boolean
+): { reqs: Req[]; height: number; bottom: number } {
+  const G = STAT_GRID;
+  const DECL_H = 14;
+  const hasSources = (list: StatIn[]) => list.some((s) => !!s.detail?.trim());
+  let shown = all.slice(0, STAT_MAX);
+  let plan: StatPlan | null = null;
+  for (let count = shown.length; count >= STAT_GRID_MIN && !plan; count--) {
+    const subset = all.slice(0, count);
+    for (let r = 0; r < G.rungs.length; r++) {
+      const rung = G.rungs[r];
+      const declares = count < all.length || (!rung.sources && hasSources(subset));
+      const p = planStatGrid(subset, rung, declares ? DECL_H : 0);
+      if (p.height <= band + 0.01) { plan = p; shown = subset; break; }
+    }
+  }
+  if (!plan) {
+    // Four figures at the last rung do not fit the band's 90pt floor. Not
+    // reachable through today's bands (a 3-line label with no sources is
+    // 68pt); a guard, drawn rather than nothing.
+    shown = all.slice(0, STAT_GRID_MIN);
+    plan = planStatGrid(shown, G.rungs[G.rungs.length - 1], DECL_H);
+  }
+  const dropped = all.length - shown.length;
+  const top = GRID.bodyY + (topAlign ? 0 : Math.max(0, (band - plan.height) / 2));
+  const border = { color: COLOR.navy, alpha: G.borderAlpha, weight: G.borderWeight };
+  const out: Req[] = [];
+  for (let i = 0; i < shown.length; i++) {
+    const sx = shown[i];
+    const row = Math.floor(i / plan.perRow), col = i % plan.perRow;
+    const cellW = plan.cellW[row];
+    const inner = cellW - G.padX * 2;
+    const x = GRID.margin + col * (cellW + G.gap);
+    const y = top + row * (plan.cardH + plan.rung.rowGap);
+    const tone = statTone(sx);
+    out.push(...filledShape(id(`sc${i}`), page, "ROUND_RECTANGLE", TONES[tone].tint,
+      { x, y, width: cellW, height: plan.cardH }, undefined, border));
+    out.push(...textBox(id(`sv${i}`), page, sx.value,
+      { ...TYPE.statCardValue, size: plan.vSize, color: STAT_VALUE_INK[tone] },
+      { x: x + G.padX, y: y + plan.rung.pad, width: inner, height: plan.vH }, { align: "CENTER" }));
+    out.push(...textBox(id(`sl${i}`), page, sx.label,
+      { ...TYPE.statCardLabel, size: plan.rung.label, color: TONES[tone].ink },
+      { x: x + G.padX, y: y + plan.rung.pad + plan.vH, width: inner, height: plan.labelH },
+      { align: "CENTER", lineSpacing: G.labelLead }));
+    // The source sits at the FOOT of the card, so the slack a shorter label
+    // leaves falls between label and source — where the reference puts it —
+    // and never between the figure and its caption.
+    if (plan.srcH && sx.detail?.trim()) {
+      out.push(...textBox(id(`sd${i}`), page, sx.detail, TYPE.statCardSource,
+        { x: x + G.padX, y: y + plan.cardH - plan.rung.pad - plan.srcH, width: inner, height: plan.srcH },
+        { align: "CENTER", lineSpacing: G.sourceLead }));
+    }
+  }
+  // A slide that drops data says so, on the slide.
+  const gridBottom = top + plan.height - plan.extra;
+  const said: string[] = [];
+  if (!plan.rung.sources && hasSources(shown)) said.push("Sources omitted for room");
+  if (dropped > 0) said.push(`Showing ${shown.length} of ${all.length} figures`);
+  if (said.length) {
+    out.push(...textBox(id("sdrop"), page, said.join(" · "), TYPE.statCardSource, {
+      x: GRID.margin, y: gridBottom + 4, width: GRID.contentWidth, height: 10,
+    }, { align: "END" }));
+  }
+  return { reqs: out, height: plan.height, bottom: top + plan.height };
+}
+
 /** Up to three headline numbers.
  *
  *  Often the honest answer when a deck reaches for a chart: a single figure
@@ -1349,11 +1534,11 @@ function heroStat(
  *  depends on its content cannot have its neighbour placed by a constant. */
 function statRequests(
   page: string, id: (s: string) => string,
-  stats: { value: string; label: string; detail?: string; primary?: boolean }[],
+  stats: StatIn[],
   band: number = GRID.bandHeight,
   onDark = false,
   topAlign = false
-): { reqs: Req[]; height: number } {
+): { reqs: Req[]; height: number; bottom: number } {
   // EIGHT, not three.
   //
   // This said slice(0, 3), and a source page carrying SEVEN figures with their
@@ -1363,9 +1548,14 @@ function statRequests(
   // it. Past eight a figure stops being a headline number and the slide wants
   // a table, so eight is the ceiling and anything beyond it is DECLARED.
   const all = stats.filter(Boolean);
-  const shown = all.slice(0, STAT_MAX);
-  if (!shown.length) return { reqs: [], height: 0 };
-  const dropped = all.length - shown.length;
+  if (!all.length) return { reqs: [], height: 0, bottom: GRID.bodyY };
+  // FOUR OR MORE take the card grid on the LIGHT ground — see slideStyle()
+  // and statGridRequests. The two-row grid used to live below, on navy at a
+  // 10% white wash, and only from five: at four the figures were a 54pt hero
+  // row with the rest of a source page demoted to bullets beneath it, so the
+  // takeaway's "note the second row" pointed at a row that did not exist.
+  if (isStatGrid(all)) return statGridRequests(page, id, all, band, topAlign);
+  const shown = all;
 
   // A SINGLE stat is the moment the slide exists for — the fee, the headline
   // number — and it earns the whole canvas. statRequests used to size every
@@ -1375,21 +1565,13 @@ function statRequests(
   // `primary` among several does NOT drop the others (that would lose data);
   // it tints that column so the eye lands on it. The single-stat hero is the
   // real fix for the ask slide the audit flagged.
-  if (shown.length === 1) return { reqs: heroStat(page, id, shown[0], band), height: band };
+  if (shown.length === 1) return { reqs: heroStat(page, id, shown[0], band), height: band, bottom: GRID.bodyY + band };
 
   const out: Req[] = [];
 
-  // Two rows once there are more than four, with the wider row on top — the
-  // shape the source deck uses for its 4-then-3 grid.
-  const rows = shown.length > 4 ? 2 : 1;
-  const perRow = Math.ceil(shown.length / rows);
-  const cell = (GRID.contentWidth - CHART.statGap * (perRow - 1)) / perRow;
-
-  const ROW_GAP = 12;
-  const cardH = rows === 1
-    ? CHART.statValueHeight + CHART.statLabelHeight + CHART.statDetailHeight + 4
-    : Math.min(112, (band - ROW_GAP) / 2);
-  let groupH = cardH * rows + ROW_GAP * (rows - 1);
+  // Two or three: the navy hero row, one figure per column.
+  const cell = (GRID.contentWidth - CHART.statGap * (shown.length - 1)) / shown.length;
+  let groupH = CHART.statValueHeight + CHART.statLabelHeight + CHART.statDetailHeight + 4;
   let top = GRID.bodyY + (topAlign ? 0 : Math.max(0, (band - groupH) / 2));
 
   // Size the number to its column instead of trusting one fixed size.
@@ -1408,116 +1590,54 @@ function statRequests(
   const PER_CHAR = 0.62;
   const longest = Math.max(...shown.map((sx) => sx.value.length), 1);
 
-  if (rows > 1) {
-    // THE GRID CARD, laid out explicitly rather than by reusing the one-row
-    // heights. Reusing them clipped every caption: the card is half as tall, so
-    // "passed 1 billion, Aug 2026" had 11pt of room for two lines of text.
-    const PAD = 9;
-    const inner = cell - PAD * 2;
-    const fitted = Math.floor((inner - 8) / (longest * PER_CHAR));
-    const vSize = Math.max(18, Math.min(30, fitted));
-    const vH = vSize * 1.32;
-    const labelStyle: TypeStyle = { font: "Roboto", size: 8, weight: 600, color: onDark ? COLOR.white : COLOR.navy };
-    const capStyle: TypeStyle = { font: "Roboto", size: 6.5, weight: 300, color: onDark ? COLOR.greyLight : COLOR.ink };
-    const labelH = Math.min(24, drawnTextHeight(estimateLines(shown.map((x) => x.label || "").sort((a, b) => b.length - a.length)[0] || "", inner, labelStyle.size), labelStyle.size));
-    const capH = Math.max(0, cardH - PAD * 2 - vH - labelH - 4);
+  const fitted = Math.floor((cell - INSET) / (longest * PER_CHAR));
+  const valueStyle = { ...TYPE.statValue, size: Math.max(22, Math.min(TYPE.statValue.size, fitted)) };
 
-    shown.forEach((sx, i) => {
-      const col = i % perRow;
-      const row = Math.floor(i / perRow);
-      const inRow = Math.min(perRow, shown.length - row * perRow);
-      const rowWidth = inRow * cell + (inRow - 1) * CHART.statGap;
-      const x = GRID.margin + (GRID.contentWidth - rowWidth) / 2 + col * (cell + CHART.statGap);
-      const y = top + row * (cardH + ROW_GAP);
+  // MEASURE THE LABEL. It used to get a fixed 0.3in and the source line was
+  // placed immediately below that, so a label wrapping to three lines — "MORE
+  // CLICKS WHEN YOU ARE CITED IN THE AI OVERVIEW" — had its last line drawn
+  // through by its own source. The labels are caps, which is why the naive
+  // estimate said two lines and Google drew three.
+  //
+  // One height for the whole row, taken from the tallest label: the columns
+  // are read across, so their source lines must sit on one baseline.
+  const labelH = Math.max(
+    CHART.statLabelHeight,
+    ...shown.map((sx) => drawnTextHeight(
+      estimateLines(sx.label, cell, TYPE.statLabel.size, false, !!TYPE.statLabel.caps),
+      TYPE.statLabel.size)),
+  );
+  const detailLines = Math.max(0,
+    ...shown.map((sx) => estimateLines(sx.detail, cell, TYPE.statDetail.size)));
+  // One value for the box AND for the height the caller is told about. They
+  // used to differ — the box took a 0.7in floor while the group height took
+  // the measurement — which is the same class of mistake as the fixed label.
+  const detailH = detailLines
+    ? Math.max(drawnTextHeight(detailLines, TYPE.statDetail.size), TYPE.statDetail.size * 1.45 + TEXT_INSET_Y)
+    : 0;
 
-      // `primary` takes the mint card, the way the source deck marks the figure
-      // that carries the argument. Everything else takes the quiet tint — and
-      // on a dark ground a 10% white wash, because tintBlue on navy is invisible.
-      const isPrimary = !!sx.primary;
-      out.push(...filledShape(id(`sc${i}`), page, "ROUND_RECTANGLE",
-        isPrimary ? COLOR.tintTeal : onDark ? COLOR.white : COLOR.tintBlue,
-        { x, y, width: cell, height: cardH },
-        onDark && !isPrimary ? 0.1 : 1));
+  groupH = CHART.statValueHeight + labelH + (detailH ? detailH + 4 : 0);
+  top = GRID.bodyY + (topAlign ? 0 : Math.max(0, (band - groupH) / 2));
 
-      // Ink is chosen from the CARD, not from the slide: a mint card is a light
-      // surface even on a dark slide, so its text must be dark whatever the
-      // ground. Getting this from the ground put blue on navy and mint on mint.
-      const vInk = isPrimary ? COLOR.inkTeal : onDark ? COLOR.lime : COLOR.blue;
-      const lInk = isPrimary ? COLOR.forest : labelStyle.color;
-      const cInk = isPrimary ? COLOR.ink : capStyle.color;
-      const cx = x + PAD;
-      let cy = y + PAD;
-      out.push(...textBox(id(`sv${i}`), page, sx.value, { ...TYPE.statValue, size: vSize, color: vInk }, {
-        x: cx, y: cy, width: inner, height: vH,
-      }, { align: "CENTER" }));
-      cy += vH;
-      out.push(...textBox(id(`sl${i}`), page, sx.label, { ...labelStyle, color: lInk }, {
-        x: cx, y: cy, width: inner, height: labelH,
-      }, { align: "CENTER" }));
-      cy += labelH + 4;
-      if (capH > 6 && sx.detail) {
-        out.push(...textBox(id(`sd${i}`), page, sx.detail, { ...capStyle, color: cInk }, {
-          x: cx, y: cy, width: inner, height: capH,
-        }, { align: "CENTER", lineSpacing: 1.05 }));
-      }
-    });
-  } else {
-    const fitted = Math.floor((cell - INSET) / (longest * PER_CHAR));
-    const valueStyle = { ...TYPE.statValue, size: Math.max(22, Math.min(TYPE.statValue.size, fitted)) };
-
-    // MEASURE THE LABEL. It used to get a fixed 0.3in and the source line was
-    // placed immediately below that, so a label wrapping to three lines — "MORE
-    // CLICKS WHEN YOU ARE CITED IN THE AI OVERVIEW" — had its last line drawn
-    // through by its own source. The labels are caps, which is why the naive
-    // estimate said two lines and Google drew three.
-    //
-    // One height for the whole row, taken from the tallest label: the columns
-    // are read across, so their source lines must sit on one baseline.
-    const labelH = Math.max(
-      CHART.statLabelHeight,
-      ...shown.map((sx) => drawnTextHeight(
-        estimateLines(sx.label, cell, TYPE.statLabel.size, false, !!TYPE.statLabel.caps),
-        TYPE.statLabel.size)),
+  shown.forEach((sx, i) => {
+    const x = GRID.margin + i * (cell + CHART.statGap);
+    // The primary column keeps the others' size but takes the lime accent, so
+    // one of three numbers reads as THE number without shrinking the rest.
+    const thisValue = sx.primary ? { ...valueStyle, color: COLOR.lime } : valueStyle;
+    out.push(
+      ...textBox(id(`sv${i}`), page, sx.value, thisValue, {
+        x, y: top, width: cell, height: CHART.statValueHeight,
+      }),
+      ...textBox(id(`sl${i}`), page, sx.label, TYPE.statLabel, {
+        x, y: top + CHART.statValueHeight, width: cell, height: labelH,
+      }),
+      ...textBox(id(`sd${i}`), page, sx.detail, TYPE.statDetail, {
+        x, y: top + CHART.statValueHeight + labelH + 4,
+        width: cell, height: detailH,
+      }),
     );
-    const detailLines = Math.max(0,
-      ...shown.map((sx) => estimateLines(sx.detail, cell, TYPE.statDetail.size)));
-    // One value for the box AND for the height the caller is told about. They
-    // used to differ — the box took a 0.7in floor while the group height took
-    // the measurement — which is the same class of mistake as the fixed label.
-    const detailH = detailLines
-      ? Math.max(drawnTextHeight(detailLines, TYPE.statDetail.size), TYPE.statDetail.size * 1.45 + TEXT_INSET_Y)
-      : 0;
-
-    groupH = CHART.statValueHeight + labelH + (detailH ? detailH + 4 : 0);
-    top = GRID.bodyY + (topAlign ? 0 : Math.max(0, (band - groupH) / 2));
-
-    shown.forEach((sx, i) => {
-      const x = GRID.margin + i * (cell + CHART.statGap);
-      // The primary column keeps the others' size but takes the lime accent, so
-      // one of three numbers reads as THE number without shrinking the rest.
-      const thisValue = sx.primary ? { ...valueStyle, color: COLOR.lime } : valueStyle;
-      out.push(
-        ...textBox(id(`sv${i}`), page, sx.value, thisValue, {
-          x, y: top, width: cell, height: CHART.statValueHeight,
-        }),
-        ...textBox(id(`sl${i}`), page, sx.label, TYPE.statLabel, {
-          x, y: top + CHART.statValueHeight, width: cell, height: labelH,
-        }),
-        ...textBox(id(`sd${i}`), page, sx.detail, TYPE.statDetail, {
-          x, y: top + CHART.statValueHeight + labelH + 4,
-          width: cell, height: detailH,
-        }),
-      );
-    });
-  }
-  // A slide that drops data says so, on the slide.
-  if (dropped > 0) {
-    out.push(...textBox(id("sdrop"), page, `Showing ${shown.length} of ${all.length} figures`,
-      { font: "Roboto", size: 7, weight: 300, color: onDark ? COLOR.greyLight : COLOR.ink }, {
-        x: GRID.margin, y: top + groupH + 4, width: GRID.contentWidth, height: 10,
-      }, { align: "END" }));
-  }
-  return { reqs: out, height: groupH + (dropped > 0 ? 14 : 0) };
+  });
+  return { reqs: out, height: groupH, bottom: top + groupH };
 }
 
 /** Fit a heading into the room above the body, growing UPWARD and shrinking
@@ -1543,15 +1663,21 @@ export function fitHeading(
   text: string | undefined,
   style: TypeStyle,
   width: number,
-  opts: { bottom: number; minTop: number; minHeight: number; minSize?: number }
+  opts: { bottom: number; minTop: number; minHeight: number; minSize?: number; lineSpacing?: number }
 ): { style: TypeStyle; y: number; height: number } {
   const floor = opts.minSize ?? TITLE_MIN_SIZE;
   const room = Math.max(opts.minHeight, opts.bottom - opts.minTop);
+  // Measured at the spacing the caller will DRAW at. The section divider sets
+  // its title at 110% rather than the 115% default; fitted at the default the
+  // box carried 2pt of slack per line that the subtitle was then stacked
+  // beneath. Undefined keeps LINE_LEAD, so every other caller is unchanged.
+  const measure = (at: number) =>
+    drawnTextHeight(Math.max(1, estimateLines(text, width, at)), at, 0, 1, opts.lineSpacing);
   let size = style.size;
-  let need = drawnTextHeight(Math.max(1, estimateLines(text, width, size)), size);
+  let need = measure(size);
   while (need > room && size > floor) {
     size -= 1;
-    need = drawnTextHeight(Math.max(1, estimateLines(text, width, size)), size);
+    need = measure(size);
   }
   const height = Math.min(Math.max(need, opts.minHeight), room);
   return { style: size === style.size ? style : { ...style, size }, y: opts.bottom - height, height };
@@ -2446,7 +2572,7 @@ export function deckWarnings(slides: SlideInput[]): string {
   // GROUND RHYTHM, from the design system: roughly 70% light, dark slides as
   // punctuation, and two dark slides in a row reads as a mistake. Advisory —
   // the model is told, the deck still builds.
-  const grounds = slides.map((sl, i) => LAYOUT_STYLE[layoutOf(sl.layout, i)].onDark);
+  const grounds = slides.map((sl, i) => slideStyle(sl, i).onDark);
   const darkShare = grounds.length ? grounds.filter(Boolean).length / grounds.length : 0;
   if (slides.length >= 6 && darkShare > 0.45) {
     notes.push(`${Math.round(darkShare * 100)}% of the deck is on dark grounds — the house ratio is roughly 70% light, with dark slides as punctuation`);
@@ -2833,171 +2959,252 @@ function stripRequests(
   return out;
 }
 
-/**
- * The stacked layer diagram — "AI is not a new channel, it's a new LAYER".
+/** The stacked layer diagram, drawn the way the reference page draws it.
  *
- * Horizontal bands top to bottom, connector arrows between them, each band
- * either a full-width box or a row of cells. The source deck's page 5 is this
- * picture, and no amount of prose replaces it: "everything below feeds the
- * thing above" is a claim about GEOMETRY, and only a drawing makes it.
+ *  Each band is sized to its own words and centred; the widths step with the
+ *  content — the audience band is the widest single-line box, the dashed
+ *  synthesis band spans wider than the bands it sits between, and a band whose
+ *  connector points UP into the band above adopts that band's width so the
+ *  pair reads as one unit. A cells band draws its title as a small band and
+ *  its cells as a FREE grid beneath it, four to a row, wrapping past four: one
+ *  row of eight is what forced the cell type under 8pt. Heading size is keyed
+ *  by style so the stack steps down (12.5 / 10 / 9.5 / 8.5 / 10) and the room
+ *  can tell the audience from the plumbing.
  *
- * Band heights are allocated by CONTENT: a caption band takes one share, a
- * cell band takes a share and a half when the cells carry text under their
- * titles. What remains after the arrows is divided proportionally, so five
- * layers fit the band exactly and three layers breathe.
- */
+ *  Measured at the natural metrics first; when the stack does not fit the
+ *  room it steps down a ladder — chrome, then type, then a single row of
+ *  cells, then the secondary lines — and the last rung SAYS what it dropped.
+ *  Nothing on any rung is below 7.5pt. Leftover room goes into the gaps, a
+ *  little each, never into a band. */
+type LayerArrow = "down" | "up" | "none";
+function layerArrow(v: unknown): LayerArrow {
+  if (v === false || v === "none" || v === "false") return "none";
+  return v === "up" ? "up" : "down";
+}
+
+/** A caption's paragraphs. A newline is one; so is the " - " that follows a
+ *  "·"-separated list, because the reference sets its engine list and the
+ *  gloss on it as two lines and the model writes them as one string. A plain
+ *  sentence with a hyphen in it is left alone. Exported for the battery. */
+export function captionParagraphs(caption: string | undefined): string[] {
+  const s = (caption || "").trim();
+  if (!s) return [];
+  if (s.indexOf("\n") >= 0) return s.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lastDot = s.lastIndexOf(" · ");
+  const dash = lastDot >= 0 ? s.indexOf(" - ", lastDot) : -1;
+  if (dash > lastDot) return [s.slice(0, dash).trim(), s.slice(dash + 3).trim()];
+  return [s];
+}
+
+/** Per-style chrome. `head` is the heading size, keyed by style so the stack
+ *  steps DOWN; `minW` is the band's floor width as a share of the content
+ *  width — the audience band is the hero, the dashed band spans wider than
+ *  its neighbours, everything else hugs its title with a 30% floor. */
+const LAYER_STYLE: { [k: string]: { fill: string; ink: string; sub: string; outline?: boolean; head: number; minW: number } } = {
+  blue:   { fill: COLOR.blue,      ink: COLOR.white,    sub: COLOR.greyLight, head: 12.5, minW: 0.42 },
+  dashed: { fill: COLOR.tintBlue,  ink: COLOR.inkBlue,  sub: COLOR.inkBlue,   head: 10,   minW: 0.60, outline: true },
+  teal:   { fill: COLOR.tintTeal,  ink: COLOR.inkTeal,  sub: COLOR.ink,       head: 10,   minW: 0.30 },
+  lav:    { fill: COLOR.lav,       ink: COLOR.navy,     sub: COLOR.ink,       head: 9.5,  minW: 0.30 },
+  grey:   { fill: COLOR.tintGrey,  ink: COLOR.navy,     sub: COLOR.ink,       head: 8.5,  minW: 0.30 },
+  coral:  { fill: COLOR.tintCoral, ink: COLOR.inkCoral, sub: COLOR.ink,       head: 9.5,  minW: 0.30 },
+  amber:  { fill: COLOR.tintAmber, ink: COLOR.inkAmber, sub: COLOR.ink,       head: 9.5,  minW: 0.30 },
+};
+
+/** The fit ladder: each rung is a complete metric set, and the builder draws
+ *  at the first rung that fits. Chrome gives way before type, type before the
+ *  second row of cells, the secondary lines last. padY and the cell pad stay
+ *  >= TEXT_INSET_Y / 2 on every rung so a text box never leaves its band. */
+interface LayerMetrics {
+  padY: number; rowGap: number; arrowH: number; arrowGap: number;
+  headScale: number; caption: number; cellTitle: number; cellText: number;
+  cellGap: number; cellRowGap: number; oneRow: boolean; secondary: boolean;
+}
+const LAYER_RUNG_0: LayerMetrics = {
+  padY: 6, rowGap: 6, arrowH: 7, arrowGap: 1.5, headScale: 1, caption: 8,
+  cellTitle: 8, cellText: 7.5, cellGap: 12, cellRowGap: 6, oneRow: false, secondary: true,
+};
+const LAYER_RUNG_1: LayerMetrics = { ...LAYER_RUNG_0, padY: 4, rowGap: 4, arrowH: 6, arrowGap: 1, cellRowGap: 4 };
+const LAYER_RUNG_2: LayerMetrics = { ...LAYER_RUNG_1, headScale: 0.92, caption: 7.5, cellTitle: 7.5 };
+const LAYER_RUNG_3: LayerMetrics = { ...LAYER_RUNG_2, oneRow: true, cellGap: 6 };
+const LAYER_RUNG_4: LayerMetrics = { ...LAYER_RUNG_3, secondary: false };
+const LAYER_RUNGS: LayerMetrics[] = [LAYER_RUNG_0, LAYER_RUNG_1, LAYER_RUNG_2, LAYER_RUNG_3, LAYER_RUNG_4];
+
 function layersRequests(
   page: string, id: (s: string) => string,
-  layers: NonNullable<SlideInput["layers"]>, top: number, height: number
-): Req[] {
+  layers: NonNullable<SlideInput["layers"]>, top: number, room: number
+): { requests: Req[]; bottom: number } {
   const shown = layers.filter((l) => l && (l.title?.trim() || (l.cells || []).length)).slice(0, 5);
-  if (!shown.length) return [];
-  // Chrome and type at the SOURCE deck's own proportions: its band titles run
-  // ~10px on a 540 canvas, which is 8-9pt here, and its connectors are small
-  // chevrons, not 14pt arrows. At the earlier, fatter metrics a five-band
-  // diagram measured 356pt against a 270pt band — a third of it pure padding,
-  // because every stacked text box pays the 7.2pt Slides inset.
-  const ARROW_H = 8;
-  const GAP = 1.5;
-  const PAD = 6;
-  const TITLE_SIZE = 9;
-  const CAPTION_SIZE = 7;
-  const CELL_TITLE_SIZE = 7;
-  const CELL_TEXT_SIZE = 5.5;
-  const arrows = shown.slice(0, -1).filter((l) => l.arrow !== false).length;
-  const avail = height - arrows * (ARROW_H + GAP * 2);
-
-  // Band heights are MEASURED from their content, not shared out by weight.
-  // The proportional version put a caption band and a cells band on the same
-  // arithmetic, and the text walked out of the bottom of both — invisibly to
-  // the overrun sweep, which compares text with text, not text with the panel
-  // that is supposed to contain it. Whatever room is left after measuring is
-  // added evenly, so a three-band diagram breathes and a five-band one fits.
+  if (!shown.length) return { requests: [], bottom: top };
+  const PADX = 30;          // ink inset from a band's side
+  const CELL_PADX = 8;
+  const CELL_PADY = 4;      // >= TEXT_INSET_Y / 2, so a cell's boxes stay inside the cell
+  const ARROW_W = 12;
+  const ADMISSION_H = 18;   // the "Showing names only" line, when the last rung draws it
+  const centre = GRID.margin + GRID.contentWidth / 2;
   const cellsOf = (l: (typeof shown)[number]) =>
     (l.cells || []).filter((c) => c && (c.title?.trim() || c.text?.trim())).slice(0, 8);
-  const innerRowW = GRID.contentWidth - PAD * 2;
-  const measured = shown.map((layer) => {
-    const cells = cellsOf(layer);
-    let need = PAD * 2 - 2;
-    if (layer.title?.trim()) need += drawnTextHeight(estimateLines(layer.title, innerRowW, TITLE_SIZE), TITLE_SIZE) + 1;
-    if (cells.length) {
-      const gap = 6;
-      const cellW = (innerRowW - gap * (cells.length - 1)) / cells.length;
-      const titleH = cells.reduce((t, c) => c.title?.trim()
-        ? Math.max(t, drawnTextHeight(estimateLines(c.title, cellW - 6, CELL_TITLE_SIZE), CELL_TITLE_SIZE)) : t, 0);
-      const textH = cells.reduce((t, c) => c.text?.trim()
-        ? Math.max(t, drawnTextHeight(estimateLines(c.text, cellW - 6, CELL_TEXT_SIZE), CELL_TEXT_SIZE)) : t, 0);
-      need += 3 + titleH + (textH ? 1 + textH : 0) + 5;
-    } else if (layer.caption?.trim()) {
-      need += drawnTextHeight(estimateLines(layer.caption, innerRowW, CAPTION_SIZE), CAPTION_SIZE);
-    }
-    return Math.max(26, need);
-  });
-  const slack = Math.max(0, avail - measured.reduce((a, b) => a + b, 0)) / shown.length;
+  const inkW = (lines: string[], size: number) =>
+    lines.reduce((w, l) => Math.max(w, l.trim().length * size * PER_CHAR), 0);
+  const styles = shown.map((l) => LAYER_STYLE[String(l.style || "").toLowerCase()] || LAYER_STYLE.lav);
 
-  const STYLES: { [k: string]: { fill: string; ink: string; sub: string; outline?: boolean } } = {
-    blue:   { fill: COLOR.blue,      ink: COLOR.white,  sub: COLOR.greyLight },
-    dashed: { fill: COLOR.tintBlue,  ink: COLOR.inkBlue, sub: COLOR.ink, outline: true },
-    teal:   { fill: COLOR.tintTeal,  ink: COLOR.inkTeal, sub: COLOR.ink },
-    lav:    { fill: COLOR.lav,       ink: COLOR.navy,   sub: COLOR.ink },
-    grey:   { fill: COLOR.tintGrey,  ink: COLOR.navy,   sub: COLOR.ink },
-    coral:  { fill: COLOR.tintCoral, ink: COLOR.inkCoral, sub: COLOR.ink },
-    amber:  { fill: COLOR.tintAmber, ink: COLOR.inkAmber, sub: COLOR.ink },
+  const plan = (m: LayerMetrics, bonus: number) => {
+    const out: Req[] = [];
+    const heads = styles.map((st) => Math.max(8, Math.round(st.head * m.headScale * 2) / 2));
+    const paras = shown.map((l) => (cellsOf(l).length || !m.secondary) ? [] : captionParagraphs(l.caption));
+    // Widths from the words: the widest line plus the side inset, floored per
+    // style, never past the content width. A band whose connector points UP
+    // into the band above adopts that band's width when its own is narrower.
+    const widths = shown.map((l, i) => {
+      const need = Math.max(inkW([l.title || ""], heads[i]), inkW(paras[i], m.caption)) + PADX * 2;
+      return Math.min(GRID.contentWidth, Math.max(styles[i].minW * GRID.contentWidth, need));
+    });
+    for (let i = 1; i < shown.length; i++) {
+      if (layerArrow(shown[i - 1].arrow) === "up") widths[i] = Math.max(widths[i], widths[i - 1]);
+    }
+    let y = top;
+    let gaps = 0;
+    let dropped = 0;
+    shown.forEach((layer, li) => {
+      const st = styles[li];
+      const head = heads[li];
+      const W = widths[li];
+      const bx = centre - W / 2;
+      const cells = cellsOf(layer);
+      const title = (layer.title || "").trim();
+      const capText = paras[li].join("\n");
+      // The ink spans W - 2*PADX; the box is that plus Slides' own inset, so
+      // the box sits PADX - 7.2 inside the band and the glyphs sit at PADX.
+      const textW = W - PADX * 2 + TEXT_INSET_X;
+      const tx = bx + PADX - TEXT_INSET_X / 2;
+      const titleLines = title ? estimateLines(title, textW, head) : 0;
+      const titleInk = titleLines * head * 1.26;                 // lineSpacing 1.0
+      const capLines = capText ? estimateLines(capText, textW, m.caption) : 0;
+      const capInk = capLines * m.caption * 1.26 * 1.1;          // lineSpacing 1.1
+      const H = m.padY * 2 + titleInk + (capInk ? 1 + capInk : 0);
+      out.push(...filledShape(id(`ly${li}`), page, "ROUND_RECTANGLE", st.fill, { x: bx, y, width: W, height: H }));
+      if (st.outline) {
+        out.push({
+          updateShapeProperties: {
+            objectId: id(`ly${li}`),
+            shapeProperties: {
+              outline: { outlineFill: { solidFill: { color: { rgbColor: rgb(COLOR.blue) } } }, weight: pt(1.5), dashStyle: "DASH" },
+            },
+            fields: "outline",
+          },
+        });
+      }
+      let cy = y + m.padY;
+      if (title) {
+        out.push(...textBox(id(`lyt${li}`), page, title,
+          { font: "Roboto", size: head, weight: 600, color: st.ink }, {
+          x: tx, y: cy - TEXT_INSET_Y / 2, width: textW, height: drawnTextHeight(titleLines, head, 0, 1, 1.0),
+        }, { align: "CENTER", lineSpacing: 1.0 }));
+        cy += titleInk;
+      }
+      if (capText) {
+        out.push(...textBox(id(`lyc${li}`), page, capText,
+          { font: "Roboto", size: m.caption, weight: 300, color: st.sub }, {
+          x: tx, y: cy + 1 - TEXT_INSET_Y / 2, width: textW,
+          height: drawnTextHeight(capLines, m.caption, 0, paras[li].length, 1.1),
+        }, { align: "CENTER", lineSpacing: 1.1, spaceBelow: 0 }));
+      } else if (!m.secondary && !cells.length && layer.caption?.trim()) {
+        dropped += 1;
+      }
+      y += H;
+      if (cells.length) {
+        // A FREE grid under the title band, four to a row, wrapping past four.
+        y += m.rowGap;
+        const perRow = (m.oneRow || cells.length <= 4) ? cells.length : Math.ceil(cells.length / 2);
+        const rows = Math.ceil(cells.length / perRow);
+        const cellW = (GRID.contentWidth - m.cellGap * (perRow - 1)) / perRow;
+        const cellTextW = cellW - CELL_PADX * 2 + TEXT_INSET_X;
+        for (let r = 0; r < rows; r++) {
+          const rowCells = cells.slice(r * perRow, (r + 1) * perRow);
+          const nameLines = rowCells.map((c) => c.title?.trim() ? estimateLines(c.title, cellTextW, m.cellTitle) : 0);
+          const textLines = rowCells.map((c) => (m.secondary && c.text?.trim()) ? estimateLines(c.text, cellTextW, m.cellText) : 0);
+          if (!m.secondary) dropped += rowCells.filter((c) => !!c.text?.trim()).length;
+          // One name band and one text band per row, so the cells share a baseline.
+          const nameInk = Math.max(...nameLines) * m.cellTitle * 1.26;
+          const textInk = Math.max(...textLines) * m.cellText * 1.26;
+          const cellH = CELL_PADY * 2 + nameInk + (textInk ? 1 + textInk : 0);
+          // A short last row is centred, like the reference's 4 + 3 stat cards.
+          const rowW = rowCells.length * cellW + (rowCells.length - 1) * m.cellGap;
+          const x0 = centre - rowW / 2;
+          rowCells.forEach((c, ci) => {
+            const cx = x0 + ci * (cellW + m.cellGap);
+            const cid = `${li}_${r * perRow + ci}`;
+            out.push(...filledShape(id(`lyc${cid}`), page, "ROUND_RECTANGLE", COLOR.tintBlue, { x: cx, y, width: cellW, height: cellH }));
+            if (nameLines[ci]) {
+              out.push(...textBox(id(`lyh${cid}`), page, c.title,
+                { font: "Roboto", size: m.cellTitle, weight: 600, color: COLOR.navy }, {
+                x: cx + CELL_PADX - TEXT_INSET_X / 2, y: y + CELL_PADY - TEXT_INSET_Y / 2, width: cellTextW,
+                height: drawnTextHeight(nameLines[ci], m.cellTitle, 0, 1, 1.0),
+              }, { align: "CENTER", lineSpacing: 1.0 }));
+            }
+            if (textLines[ci]) {
+              out.push(...textBox(id(`lyx${cid}`), page, c.text,
+                { font: "Roboto", size: m.cellText, weight: 300, color: COLOR.ink }, {
+                x: cx + CELL_PADX - TEXT_INSET_X / 2, y: y + CELL_PADY + nameInk + 1 - TEXT_INSET_Y / 2, width: cellTextW,
+                height: drawnTextHeight(textLines[ci], m.cellText, 0, 1, 1.0),
+              }, { align: "CENTER", lineSpacing: 1.0 }));
+            }
+          });
+          y += cellH + (r < rows - 1 ? m.cellRowGap : 0);
+        }
+      }
+      if (li < shown.length - 1) {
+        const dir = layerArrow(layer.arrow);
+        gaps += 1;
+        if (dir === "none") {
+          y += m.rowGap + bonus;       // no connector still means a gap
+        } else {
+          // DOWN_ARROW, or UP_ARROW when the band beneath feeds this one.
+          // Inline rather than through filledShape, whose union has no arrows.
+          out.push({
+            createShape: {
+              objectId: id(`lya${li}`), shapeType: dir === "up" ? "UP_ARROW" : "DOWN_ARROW",
+              elementProperties: {
+                pageObjectId: page,
+                size: { width: pt(ARROW_W), height: pt(m.arrowH) },
+                transform: { scaleX: 1, scaleY: 1, translateX: centre - ARROW_W / 2, translateY: y + m.arrowGap + bonus / 2, unit: "PT" },
+              },
+            },
+          }, {
+            updateShapeProperties: {
+              objectId: id(`lya${li}`),
+              shapeProperties: {
+                shapeBackgroundFill: { solidFill: { color: { rgbColor: rgb(COLOR.navy) }, alpha: 0.55 } },
+                outline: { propertyState: "NOT_RENDERED" },
+              },
+              fields: "shapeBackgroundFill.solidFill,outline",
+            },
+          });
+          y += m.arrowH + m.arrowGap * 2 + bonus;
+        }
+      }
+    });
+    if (dropped) {
+      // The last rung SAYS what it dropped, right-aligned under the stack in
+      // the slot the other layouts use for "Showing N of M" — at 7.5pt, not
+      // the 7pt axis style, because nothing on this layout goes below the floor.
+      const text = `Showing names only - ${dropped} description${dropped > 1 ? "s" : ""} omitted to fit`;
+      const w = Math.min(GRID.contentWidth, text.length * 7.5 * PER_CHAR + TEXT_INSET_X + 4);
+      out.push(...textBox(id("lydrop"), page, text,
+        { font: "Roboto", size: 7.5, weight: 300, color: COLOR.ink }, {
+        x: GRID.margin + GRID.contentWidth - w, y: y + 2, width: w, height: ADMISSION_H - 2,
+      }, { align: "END", lineSpacing: 1.0 }));
+      y += ADMISSION_H;
+    }
+    return { out, bottom: y, gaps, metrics: m };
   };
 
-  const out: Req[] = [];
-  let y = top;
-  shown.forEach((layer, li) => {
-    const h = measured[li] + slack;
-    const st = STYLES[String(layer.style || "").toLowerCase()] || STYLES.lav;
-    out.push(...filledShape(id(`ly${li}`), page, "ROUND_RECTANGLE", st.fill, {
-      x: GRID.margin, y, width: GRID.contentWidth, height: h,
-    }));
-    if (st.outline) {
-      out.push({
-        updateShapeProperties: {
-          objectId: id(`ly${li}`),
-          shapeProperties: {
-            outline: { outlineFill: { solidFill: { color: { rgbColor: rgb(COLOR.blue) } } }, weight: pt(1.5), dashStyle: "DASH" },
-          },
-          fields: "outline",
-        },
-      });
-    }
-    const cells = cellsOf(layer);
-    let cy = y + PAD - 2;
-    if (layer.title?.trim()) {
-      // MEASURED, like every other box in this file: the fixed 14pt version
-      // was shorter than one drawn line of 10pt text, and the overrun sweep
-      // flagged every band the moment the fixture joined the battery.
-      const th = drawnTextHeight(estimateLines(layer.title, GRID.contentWidth - PAD * 2, TITLE_SIZE), TITLE_SIZE);
-      out.push(...textBox(id(`lyt${li}`), page, layer.title,
-        { font: "Roboto", size: TITLE_SIZE, weight: 600, color: st.ink }, {
-        x: GRID.margin + PAD, y: cy, width: GRID.contentWidth - PAD * 2, height: th,
-      }, { align: "CENTER" }));
-      cy += th + 1;
-    }
-    if (cells.length) {
-      const gap = 6;
-      const cellW = (GRID.contentWidth - PAD * 2 - gap * (cells.length - 1)) / cells.length;
-      const cellH = Math.max(18, y + h - cy - PAD + 2);
-      // One measured title band for the whole row, same rule as the cards
-      // grid: cells share a baseline or the row reads as clutter.
-      const cellTitleH = cells.reduce((tall, c) => c.title?.trim()
-        ? Math.max(tall, drawnTextHeight(estimateLines(c.title, cellW - 6, CELL_TITLE_SIZE), CELL_TITLE_SIZE))
-        : tall, 0);
-      cells.forEach((c, ci) => {
-        const cx = GRID.margin + PAD + ci * (cellW + gap);
-        out.push(...filledShape(id(`lyc${li}_${ci}`), page, "ROUND_RECTANGLE", COLOR.white, {
-          x: cx, y: cy, width: cellW, height: cellH,
-        }));
-        if (c.title?.trim()) {
-          out.push(...textBox(id(`lyh${li}_${ci}`), page, c.title,
-            { font: "Roboto", size: CELL_TITLE_SIZE, weight: 600, color: COLOR.navy }, {
-            x: cx + 3, y: cy + 3, width: cellW - 6, height: cellTitleH,
-          }, { align: "CENTER" }));
-        }
-        if (c.text?.trim()) {
-          out.push(...textBox(id(`lyx${li}_${ci}`), page, c.text,
-            { font: "Roboto", size: CELL_TEXT_SIZE, weight: 300, color: COLOR.ink }, {
-            x: cx + 3, y: cy + 3 + cellTitleH + 1, width: cellW - 6,
-            height: Math.max(7, cellH - cellTitleH - 7),
-          }, { align: "CENTER", lineSpacing: 1.0 }));
-        }
-      });
-    } else if (layer.caption?.trim()) {
-      out.push(...textBox(id(`lyc${li}`), page, layer.caption,
-        { font: "Roboto", size: CAPTION_SIZE, weight: 300, color: st.sub }, {
-        x: GRID.margin + PAD, y: cy, width: GRID.contentWidth - PAD * 2, height: Math.max(10, y + h - cy - PAD + 2),
-      }, { align: "CENTER", lineSpacing: 1.1 }));
-    }
-    y += h;
-    if (li < shown.length - 1 && layer.arrow !== false) {
-      // A DOWN_ARROW shape between the bands, centred — the connective tissue
-      // that makes the stack read as flow rather than as a pile.
-      out.push({
-        createShape: {
-          objectId: id(`lya${li}`), shapeType: "DOWN_ARROW",
-          elementProperties: {
-            pageObjectId: page,
-            size: { width: pt(12), height: pt(ARROW_H) },
-            transform: { scaleX: 1, scaleY: 1, translateX: GRID.margin + GRID.contentWidth / 2 - 6, translateY: y + GAP, unit: "PT" },
-          },
-        },
-      }, {
-        updateShapeProperties: {
-          objectId: id(`lya${li}`),
-          shapeProperties: {
-            shapeBackgroundFill: { solidFill: { color: { rgbColor: rgb(COLOR.navy) }, alpha: 0.55 } },
-            outline: { propertyState: "NOT_RENDERED" },
-          },
-          fields: "shapeBackgroundFill.solidFill,outline",
-        },
-      });
-      y += ARROW_H + GAP * 2;
-    }
-  });
-  return out;
+  let chosen = plan(LAYER_RUNGS[0], 0);
+  for (let r = 1; r < LAYER_RUNGS.length && chosen.bottom - top > room; r++) chosen = plan(LAYER_RUNGS[r], 0);
+  // Leftover room goes into the GAPS, up to 12pt each; the rest is left at
+  // the foot, which is where the reference leaves it. A band never grows.
+  const slack = room - (chosen.bottom - top);
+  if (slack > 0 && chosen.gaps > 0) chosen = plan(chosen.metrics, Math.min(12, slack / chosen.gaps));
+  return { requests: chosen.out, bottom: chosen.bottom };
 }
 
 /** A pull quote, set large on navy with the speaker beneath.
@@ -3058,71 +3265,200 @@ function quoteRequests(
   return out;
 }
 
-/** Stages carried left to right by a rule and a chevron.
+/** Numbered step cards carried left to right by arrows.
  *
- *  Drawn rather than bulleted for the same reason a timeline is: a process has
- *  direction, and a list does not show it. Reuses the connector primitives the
- *  timelines already prove. */
-/** Five stages fill the width; a sixth would be a 100pt box with a two-word
+ *  Each stage is a CARD: a coloured numeral circle, a bold name, the
+ *  description, and an "Owner: ..." line anchored to the card's foot. Drawn
+ *  rather than bulleted because a process has direction; drawn as cards
+ *  rather than pills because the pill was the loudest element on the slide
+ *  and carried the least information - 58pt of blue around a 9pt caps label,
+ *  the description that mattered set small and centred beneath it, and the
+ *  owner run into its last sentence. The presenter could not say "step
+ *  three" and point at a 3, and the client's team could not find who owns
+ *  what without reading every card to its end.
+ *
+ *  Cards hug their words: the row is as tall as its tallest card, starts on
+ *  the band's top edge, and reports where it ends so the takeaway bar
+ *  follows it instead of pinning to the foot of the band. */
+/** Five stages fill the width; a sixth would be a 100pt card with a two-word
  *  caption. Bounded, and said out loud rather than quietly trimmed. */
 const MAX_STAGES = 5;
 
+/** One accent per step, cycled; the circle and the card's top rule share it.
+ *  Every one of these carries WHITE at 4.5:1 or better (blue 5.5, teal 6.2,
+ *  amber 6.7, coral 6.9, navy 13). The brand periwinkle that the reference's
+ *  purple suggests is 3.0:1 under white and is left out for that reason.
+ *  textOn() still decides the numeral's ink, so a palette edit cannot quietly
+ *  put white on a ground that will not hold it. */
+const STEP_ACCENTS = [COLOR.blue, COLOR.inkTeal, COLOR.inkAmber, COLOR.inkCoral, COLOR.navy];
+
+/** A TRAILING "Owner: TCE + your team" clause on a caption, split off into
+ *  the owner slot. The reference sets ownership as its own line at the
+ *  card's foot; the schema had nowhere to put it, so the model ran it into
+ *  the description's last sentence. An explicit `owner` wins, and the clause
+ *  is removed from the caption either way so nothing is drawn twice. Only a
+ *  trailing clause is read: "owner:" mid-sentence is prose. Exported so the
+ *  layout check can ask it directly. */
+const OWNER_CLAUSE = /(?:^|\s)\(?owner\s*:\s*([^\n]+?)\)?\s*$/i;
+export function splitStageOwner(caption: string, explicit?: string): { caption: string; owner: string } {
+  let text = (caption || "").trim();
+  let owner = (explicit || "").trim();
+  const m = OWNER_CLAUSE.exec(text);
+  if (m) {
+    if (!owner) owner = m[1].trim().replace(/[.\s]+$/, "");
+    text = text.slice(0, m.index).trim().replace(/[,;:\-]+$/, "").trim();
+  }
+  return { caption: text, owner };
+}
+
 function processRequests(
-  page: string, id: (s: string) => string, stages: NonNullable<SlideInput["stages"]>
+  page: string, id: (s: string) => string, stages: NonNullable<SlideInput["stages"]>,
+  top: number = GRID.bodyY, room: number = GRID.bandHeight, meta?: { bottom: number }
 ): Req[] {
   const stageName = (st: any) => String(st?.name ?? st?.title ?? "").trim();
   const stageCaption = (st: any) => String(st?.caption ?? st?.body ?? "").trim();
   const shown = stages.filter((st) => st && stageName(st)).slice(0, MAX_STAGES);
   if (!shown.length) return [];
-  const gaps = shown.length - 1;
-  const boxW = (GRID.contentWidth - gaps * PROCESS.connectorWidth) / shown.length;
-  const out: Req[] = [];
+  const n = shown.length;
+  const gaps = n - 1;
+  const P = PROCESS;
+  const boxW = (GRID.contentWidth - gaps * P.connectorWidth) / n;
+  const parts = shown.map((st: any) => {
+    const split = splitStageOwner(stageCaption(st), st?.owner);
+    return { name: stageName(st), caption: split.caption, owner: split.owner };
+  });
+  let anyOwner = false;
+  for (let i = 0; i < parts.length; i++) if (parts[i].owner) anyOwner = true;
 
-  shown.forEach((stage, i) => {
-    const x = GRID.margin + i * (boxW + PROCESS.connectorWidth);
+  // The numeral BESIDE the name in four cards or fewer; ABOVE it in five,
+  // where a 115pt card cannot spare a third of its measure and
+  // "Commissioning" would break mid-word beside its circle. The same rule as
+  // the cards layout's inline chips.
+  const beside = n <= 4;
+  // Wide enough for one bold digit ON ONE LINE, inset included - pillWidth's
+  // arithmetic without its capsule padding. An 18pt box holds 3.6pt of glyph
+  // room once Slides' 14.4pt inset is paid, and a bold digit is 5.6.
+  const numeralW = Math.ceil(TEXT_INSET_X + TYPE.stageNumeral.size * PER_CHAR * CAPS_WIDEN);
+  const nameX = beside ? P.pad + P.numeral / 2 + numeralW / 2 : P.pad;
+  const nameW = boxW - nameX - P.pad;
+  const descW = boxW - P.pad * 2;
+  const ownerH = anyOwner ? drawnTextHeight(1, TYPE.stageOwner.size) : 0;
+
+  const nameHs = parts.map((p) =>
+    drawnTextHeight(estimateLines(p.name, nameW, TYPE.stageName.size), TYPE.stageName.size));
+  // ONE head block for the row, so every description starts on one line:
+  // the slack falls under a short name, not above its description.
+  let tallestName = 0;
+  for (let i = 0; i < nameHs.length; i++) tallestName = Math.max(tallestName, nameHs[i]);
+  const headH = beside ? Math.max(P.numeral, tallestName) : P.numeral + P.numeralGap + tallestName;
+  const descTop = top + P.pad + headH + P.headGap;
+
+  // A FIT LADDER for the description: the reference's 8pt at 1.3, then 8pt
+  // at 1.15. The name and the owner never step - 10.5 is the reference's
+  // size and 7.5 is this deck's floor.
+  const PLANS: { size: number; lead: number }[] = [{ size: 8, lead: 1.3 }, { size: 8, lead: 1.15 }];
+  const measure = (plan: { size: number; lead: number }) => {
+    const descHs = parts.map((p) => p.caption
+      ? drawnTextHeight(estimateLines(p.caption, descW, plan.size), plan.size, 4, 1, plan.lead)
+      : 0);
+    let tallest = 0;
+    for (let i = 0; i < descHs.length; i++) tallest = Math.max(tallest, descHs[i]);
+    const cardH = P.pad + headH + P.headGap + tallest + (anyOwner ? P.ownerGap + ownerH : 0) + P.padBottom;
+    return { descHs, cardH: Math.max(P.minHeight, cardH) };
+  };
+  let plan = PLANS[0];
+  let m = measure(plan);
+  for (let k = 1; k < PLANS.length && m.cardH > room + 0.5; k++) { plan = PLANS[k]; m = measure(plan); }
+  // Nothing fits whole: the card ends where the band does and the tightest
+  // plan's text runs a little past its slot - visible in the preview, never
+  // hidden under the bar. The same fallback cardsRequests makes.
+  const cardH = Math.min(m.cardH, room);
+  const cardBottom = top + cardH;
+  const ownerTop = cardBottom - P.padBottom - ownerH;
+  const midY = top + P.pad + P.numeral / 2;   // the numerals' centre line: where the arrows run
+
+  const out: Req[] = [];
+  for (let i = 0; i < n; i++) {
+    const p = parts[i];
+    const x = GRID.margin + i * (boxW + P.connectorWidth);
+    const accent = STEP_ACCENTS[i % STEP_ACCENTS.length];
+    const cx = x + P.pad + P.numeral / 2;
     out.push(
-      ...filledShape(id(`pb${i}`), page, "ROUND_RECTANGLE", COLOR.blue, {
-        x, y: PROCESS.y, width: boxW, height: PROCESS.boxHeight,
+      ...filledShape(id(`pb${i}`), page, "ROUND_RECTANGLE", COLOR.tintGrey, {
+        x, y: top, width: boxW, height: cardH,
       }),
-      // The name is the ONLY thing inside the blue box — the caption is drawn
-      // below it — so it takes the whole box and centres in it. The 20pt band
-      // hand-placed at boxHeight/2 - 9 centred a ONE-LINE name by arithmetic
-      // and nothing else: a two-line stage name needs 33pt, so it grew out of
-      // the bottom of its own box. An offset is a guess at centring.
-      ...textBox(id(`pn${i}`), page, stageName(stage), TYPE.stageName, {
-        x: x + 8, y: PROCESS.y, width: boxW - 16, height: PROCESS.boxHeight,
-      }, { align: "CENTER", vCenter: true }),
-      ...textBox(id(`pc${i}`), page, stageCaption(stage), TYPE.stageCaption, {
-        x, y: PROCESS.captionY, width: boxW, height: PROCESS.captionHeight,
-      }, { align: "CENTER" }),
+      // The top rule, inset by 6 like a toned card's so it does not poke out
+      // of the rounded corners; the reference runs it edge to edge on a
+      // square card.
+      ...filledShape(id(`pk${i}`), page, "RECTANGLE", accent, {
+        x: x + 6, y: top, width: boxW - 12, height: P.accent,
+      }),
+      ...filledShape(id(`pn${i}`), page, "ELLIPSE", accent, {
+        x: cx - P.numeral / 2, y: top + P.pad, width: P.numeral, height: P.numeral,
+      }),
+      // The digit's box is WIDER than its circle and centred on it: a text
+      // box the circle's own size would leave the glyph 3.6pt of room. It is
+      // transparent, so nothing shows but the digit.
+      ...textBox(id(`pnt${i}`), page, String(i + 1), { ...TYPE.stageNumeral, color: textOn(accent) }, {
+        x: cx - numeralW / 2, y: top + P.pad, width: numeralW, height: P.numeral,
+      }, { align: "CENTER", vCenter: true, spaceBelow: 0 }),
+      // Beside its circle and level with it: a one-line name shares the
+      // circle's centre; a two-line name is centred in its own taller box, so
+      // its first line sits ~2pt under the circle's centre and reads aligned.
+      ...textBox(id(`ps${i}`), page, p.name, TYPE.stageName, {
+        x: x + nameX,
+        y: beside ? top + P.pad : top + P.pad + P.numeral + P.numeralGap,
+        width: nameW,
+        height: beside ? Math.max(P.numeral, nameHs[i]) : nameHs[i],
+      }, beside ? { vCenter: true, spaceBelow: 0 } : { spaceBelow: 0 }),
     );
+    if (p.caption) {
+      out.push(...textBox(id(`pc${i}`), page, p.caption, { ...TYPE.stageCaption, size: plan.size }, {
+        x: x + P.pad, y: descTop, width: descW,
+        // Its measured height when the plan fits; what is left above the
+        // owner slot when nothing did.
+        height: Math.max(12, Math.min(m.descHs[i],
+          (anyOwner ? ownerTop - P.ownerGap : cardBottom - P.padBottom) - descTop)),
+      }, { lineSpacing: plan.lead, spaceBelow: 4 }));
+    }
+    if (p.owner) {
+      // Anchored to the card's FOOT, on one baseline across the row - the
+      // line the client's team scans for.
+      out.push(...textBox(id(`po${i}`), page, `Owner: ${p.owner}`, TYPE.stageOwner, {
+        x: x + P.pad, y: ownerTop, width: descW, height: ownerH,
+      }, { spaceBelow: 0 }));
+    }
 
     if (i < gaps) {
-      const cx = x + boxW;
-      const midY = PROCESS.y + PROCESS.boxHeight / 2;
+      const cxr = x + boxW;
       out.push(
         ...filledShape(id(`pr${i}`), page, "RECTANGLE", COLOR.periwinkle, {
-          x: cx + 3, y: midY - PROCESS.connectorThickness / 2,
-          width: PROCESS.connectorWidth - 6 - PROCESS.chevron, height: PROCESS.connectorThickness,
+          x: cxr + 3, y: midY - P.connectorThickness / 2,
+          width: P.connectorWidth - 6 - P.chevron, height: P.connectorThickness,
         }),
         // RIGHT_ARROW, not TRIANGLE. Slides draws a triangle pointing UP, so
         // the first render had five arrowheads aimed at the ceiling on a
-        // left-to-right process — correct geometry, wrong direction.
+        // left-to-right process - correct geometry, wrong direction.
         ...filledShape(id(`pa${i}`), page, "RIGHT_ARROW", COLOR.periwinkle, {
-          x: cx + PROCESS.connectorWidth - 3 - PROCESS.chevron,
-          y: midY - PROCESS.chevron / 2,
-          width: PROCESS.chevron, height: PROCESS.chevron,
+          x: cxr + P.connectorWidth - 3 - P.chevron,
+          y: midY - P.chevron / 2,
+          width: P.chevron, height: P.chevron,
         }),
       );
     }
-  });
+  }
 
+  let bottom = cardBottom;
   if (stages.length > shown.length) {
+    // UNDER THE CARDS, not at the foot of the page, where it sat underneath
+    // the takeaway bar whenever the slide had one.
     out.push(...noteBox(
       id("sdrop"), page, `Showing the first ${shown.length} of ${stages.length} stages`,
-      CANVAS.height - GRID.margin - 16
+      cardBottom + 2
     ));
+    bottom = cardBottom + 18;
   }
+  if (meta) meta.bottom = bottom;
   return out;
 }
 
@@ -3234,73 +3570,282 @@ function scatterRequests(
   return out;
 }
 
+/** "Name (gloss)", "Name - gloss", "Name – gloss", "Name: gloss" → the name and
+ *  its descriptor. The reference labels every set as a bold caps name over a
+ *  small gloss, and the model writes the pair with a dash or a colon as often
+ *  as with brackets: the page this was measured against used dashes, and the
+ *  bracket-only split drew all nine words as one Playfair name. */
+export function splitVennLabel(text: string): { name: string; desc: string } {
+  const t = (text || "").trim();
+  const paren = /^(.*?)\s*\((.*)\)\s*$/.exec(t);
+  if (paren) return { name: paren[1].trim(), desc: paren[2].trim() };
+  const dash = /^(.+?)(?:\s+[-–—]\s+|\s*[–—]\s*|:\s+)(.+)$/.exec(t);
+  if (dash) return { name: dash[1].trim(), desc: dash[2].trim() };
+  return { name: t, desc: "" };
+}
+
+/** Lines a run of words needs at an ink width, wrapping greedily by WORD on the
+ *  estimator's per-character advance. estimateLines wraps by character count,
+ *  which is right for prose and wrong for a label: "YOUR CONTENT PLAN" is two
+ *  lines by count and three by words in a 59pt lens, and Slides draws words.
+ *  Returns undefined when one word alone is wider than the box — Slides cannot
+ *  break it, so the label does not fit whatever the count says. */
+export function wrapLines(text: string, inkWidth: number, size: number, caps = false): number | undefined {
+  const cw = size * PER_CHAR * (caps ? CAPS_WIDEN : 1);
+  const paras = (text || "").trim().split("\n");
+  let lines = 0;
+  for (let p = 0; p < paras.length; p++) {
+    const words = paras[p].split(/\s+/).filter(Boolean);
+    if (!words.length) { lines += 1; continue; }
+    let cur = 0, count = 1;
+    for (let i = 0; i < words.length; i++) {
+      const ww = words[i].length * cw;
+      if (ww > inkWidth + 1e-6) return undefined;
+      const need = cur === 0 ? ww : cur + cw + ww;
+      if (need <= inkWidth + 1e-6) cur = need; else { count++; cur = ww; }
+    }
+    lines += count;
+  }
+  return lines;
+}
+
+/** Sizes a set name is tried at, one size for the whole diagram. */
+const VENN_NAME_SIZES: number[] = [8.5, 8];
+/** The descriptor box starts this far up inside the name box's bottom inset,
+ *  so the gloss sits 13pt under the name — the reference's pitch. */
+const VENN_DESC_TUCK = 4;
+
+export interface VennMeasure {
+  nameSize: number; nameLines: number; descLines: number;
+  nameH: number; descH: number; blockH: number; inkH: number; fits: boolean;
+}
+
+/** Whether a name-over-descriptor label fits an ink box, and how tall it draws. */
+export function measureVennLabel(
+  name: string, desc: string, inkWidth: number, inkHeight: number,
+  nameSize: number, maxNameLines = 3, maxDescLines = 4
+): VennMeasure {
+  const nl = wrapLines(name, inkWidth, nameSize, true);
+  const dl = desc ? wrapLines(desc, inkWidth, TYPE.vennDesc.size) : 0;
+  const nameLines = nl === undefined ? 1 : nl;
+  const descLines = dl === undefined ? 0 : dl;
+  const nameH = drawnTextHeight(nameLines, nameSize);
+  const descH = descLines ? drawnTextHeight(descLines, TYPE.vennDesc.size, 0, 1, 1.0) : 0;
+  const blockH = nameH + (descLines ? descH - VENN_DESC_TUCK : 0);
+  const inkH = blockH - TEXT_INSET_Y;
+  const fits = nl !== undefined && dl !== undefined
+    && nameLines <= maxNameLines && descLines <= maxDescLines && inkH <= inkHeight + 1e-6;
+  return { nameSize, nameLines, descLines, nameH, descH, blockH, inkH, fits };
+}
+
+/** Where a label sits inside its region, in units of R, relative to the
+ *  circle's centre. Solved as the largest inscribed rectangle of each region
+ *  for centres VENN.sep·R apart, then shortened where a taller box would touch
+ *  the centre label. */
+interface VennBox { dx: number; dy: number; w: number; h: number; trim?: boolean }
+const VENN_BOX = {
+  three: {
+    sets: [
+      { dx: -0.325, dy: -0.26, w: 0.93, h: 0.70 },
+      { dx: 0.325, dy: -0.26, w: 0.93, h: 0.70 },
+      { dx: 0, dy: 0.34, w: 1.45, h: 0.66 },
+    ] as VennBox[],
+    meet: { dx: 0, dy: 0, w: 1.10, h: 0.40 } as VennBox,
+  },
+  two: {
+    sets: [
+      { dx: -0.385, dy: 0, w: 0.95, h: 0.80, trim: true },
+      { dx: 0.385, dy: 0, w: 0.95, h: 0.80, trim: true },
+    ] as VennBox[],
+    meet: { dx: 0, dy: 0, w: 0.80, h: 0.58, trim: true } as VennBox,
+  },
+};
+
+interface VennSidebar { head: string; body: string; headH: number; bodyH: number; h: number }
+
+/** The takeaway as a callout beside the diagram. */
+function vennSidebarFor(note: string): VennSidebar {
+  const colon = note.indexOf(":");
+  const hasHead = colon > 0 && colon <= 46;
+  const head = hasHead ? note.slice(0, colon).trim() : "";
+  const body = (hasHead ? note.slice(colon + 1) : note).trim();
+  const innerW = VENN.side.width - VENN.side.pad * 2;
+  const headLines = head ? estimateLines(head, innerW, TYPE.noteHead.size) : 0;
+  const headH = headLines ? drawnTextHeight(headLines, TYPE.noteHead.size) : 0;
+  const paras = Math.max(1, body.split("\n").filter((l) => l.trim()).length);
+  const bodyLines = estimateLines(body, innerW, NOTE.fontSize);
+  const bodyH = bodyLines ? drawnTextHeight(bodyLines, NOTE.fontSize, 4, paras, 1.2) : 0;
+  return { head, body, headH, bodyH, h: VENN.side.pad * 2 + headH + bodyH };
+}
+
 /** A Venn diagram: two or three overlapping sets, drawn as translucent circles
- *  so the overlaps blend. Confirmed on a real Drive render: Slides DOES blend
- *  translucent fills, so the intersections read as the classic diagram. */
+ *  so the overlaps blend.
+ *
+ *  Measured against the reference deck's page — 174pt circles with centres
+ *  ~100pt apart, every set labelled INSIDE its own region, the takeaway as a
+ *  callout beside the diagram. Ours sat 0.92R apart at 50% alpha with 14pt
+ *  serif labels outside: the three-way overlap covered most of each circle,
+ *  the centre went grey-purple, and the picture said "these three are the same
+ *  thing" — the opposite of "three arenas".
+ *  `meta.noteDrawn` tells the caller the note is on the slide already. */
 function vennRequests(
   page: string, id: (s: string) => string,
-  venn: NonNullable<SlideInput["venn"]>, onDark: boolean, bandTop: number, bandBottom?: number
+  venn: NonNullable<SlideInput["venn"]>, onDark: boolean, bandTop: number, bandBottom?: number,
+  note?: string, meta?: { noteDrawn: boolean }
 ): Req[] {
   const sets = (venn.sets || []).filter((sx) => sx?.label?.trim()).slice(0, 3);
   if (sets.length < 2) return [];
-  const palette = onDark ? SERIES_DARK : [COLOR.blue, COLOR.teal, COLOR.coral];
-  const top = bandTop + 4;
-  const bottom = floorBand(CANVAS.height - GRID.margin, bandBottom);
-  const cxMid = GRID.margin + GRID.contentWidth / 2;
   const out: Req[] = [];
-
-  // A set label: the name in Playfair over an optional descriptor in lighter
-  // type, so "Team Knowledge (Digital Authority Briefing)" reads as a name and
-  // a gloss, not one heavy block of caps.
-  const label = (key: string, text: string, x: number, y: number, w: number, align: "START" | "CENTER" | "END") => {
-    const m = /^(.*?)\s*\((.*)\)\s*$/.exec(text.trim());
-    const name = m ? m[1].trim() : text.trim();
-    const desc = m ? m[2].trim() : "";
-    out.push(...textBox(id(`vn${key}`), page, name, TYPE.vennName, { x, y, width: w, height: 18 }, { align }));
-    if (desc) out.push(...textBox(id(`vd${key}`), page, desc, TYPE.vennDesc, { x, y: y + 18, width: w, height: 26 }, { align }));
+  const n = sets.length;
+  const top = bandTop + 4;
+  const fullBottom = floorBand(CANVAS.height - GRID.margin, GRID.bodyY + GRID.bandHeight);
+  const barBottom = floorBand(CANVAS.height - GRID.margin, bandBottom);
+  const cxMid = GRID.margin + GRID.contentWidth / 2;
+  const sep = VENN.sep;
+  const sin60 = Math.sin(Math.PI / 3);
+  const unitW = 2 + sep;
+  const unitH = n === 2 ? 2 : 2 + sep * sin60;
+  const parsed = sets.map((s) => splitVennLabel(s.label));
+  const overlap = venn.overlap?.trim() ? splitVennLabel(venn.overlap) : undefined;
+  const boxes = n === 2 ? VENN_BOX.two : VENN_BOX.three;
+  const inkW = (b: VennBox, R: number) => b.w * R - (b.trim ? TEXT_INSET_X : 0);
+  const radiusFor = (bandH: number, availW: number, labelRoom: number) =>
+    Math.min((bandH - labelRoom) / unitH, availW / unitW, VENN.maxR);
+  const nameSizeFor = (R: number): number | undefined => {
+    for (let si = 0; si < VENN_NAME_SIZES.length; si++) {
+      let all = true;
+      for (let i = 0; i < n; i++) {
+        const b = boxes.sets[i];
+        if (!measureVennLabel(parsed[i].name, parsed[i].desc, inkW(b, R), b.h * R, VENN_NAME_SIZES[si]).fits) { all = false; break; }
+      }
+      if (all) return VENN_NAME_SIZES[si];
+    }
+    return undefined;
   };
-  const bandH = bottom - top;
 
-  if (sets.length === 2) {
-    const labelRoom = 46;   // two-line labels above the circles
-    const R = Math.min((bandH - labelRoom) / 2, GRID.contentWidth / 4.2);
-    const cy = top + labelRoom + R;
-    const off = R * 0.6;
-    const centres = [[cxMid - off, cy], [cxMid + off, cy]];
-    centres.forEach(([cx, cyy], i) => {
-      out.push(...filledShape(id(`vc${i}`), page, "ELLIPSE", palette[i], { x: cx - R, y: cyy - R, width: R * 2, height: R * 2 }, 0.42));
-    });
-    label("0", sets[0].label, centres[0][0] - R, cy - R - labelRoom, R + off, "CENTER");
-    label("1", sets[1].label, centres[1][0] - off, cy - R - labelRoom, R + off, "CENTER");
-    if (venn.overlap?.trim()) {
-      out.push(...textBox(id("vo"), page, venn.overlap, { font: "Roboto", size: 10, bold: true, color: COLOR.navy }, {
-        x: cxMid - 60, y: cy - 9, width: 120, height: 18,
-      }, { align: "CENTER" }));
+  let R = radiusFor(fullBottom - top, GRID.contentWidth, 0);
+  let nameSize = nameSizeFor(R);
+  let bottom = fullBottom;
+  let side: VennSidebar | undefined;
+  const noteText = (note || "").trim();
+  if (nameSize !== undefined && noteText) {
+    const sb = vennSidebarFor(noteText);
+    if (sb.h <= fullBottom - top) side = sb;
+    else {
+      bottom = barBottom;
+      R = radiusFor(bottom - top, GRID.contentWidth, 0);
+      nameSize = nameSizeFor(R);
+    }
+  }
+  const inside = nameSize !== undefined;
+  let room = 0;
+  let outsideM: VennMeasure[] = [];
+  if (!inside) {
+    bottom = barBottom;
+    const availW = n === 2 ? GRID.contentWidth : GRID.contentWidth - 2 * VENN.outsideLabel;
+    R = radiusFor(bottom - top, availW, 46);
+    for (let pass = 0; pass < 2; pass++) {
+      if (n === 2) {
+        const lw = (1 + sep / 2) * R - 8;
+        outsideM = parsed.map((p) => measureVennLabel(p.name, p.desc, lw - TEXT_INSET_X, Infinity, VENN_NAME_SIZES[0], 9, 9));
+        room = Math.max(outsideM[0].blockH, outsideM[1].blockH) + 4;
+      } else {
+        const sideW = cxMid - (1 + sep / 2) * R - 8 - GRID.margin;
+        outsideM = [
+          measureVennLabel(parsed[0].name, parsed[0].desc, sideW - TEXT_INSET_X, Infinity, VENN_NAME_SIZES[0], 9, 9),
+          measureVennLabel(parsed[1].name, parsed[1].desc, sideW - TEXT_INSET_X, Infinity, VENN_NAME_SIZES[0], 9, 9),
+          measureVennLabel(parsed[2].name, parsed[2].desc, 4 * R - TEXT_INSET_X, Infinity, VENN_NAME_SIZES[0], 9, 9),
+        ];
+        room = outsideM[2].blockH + 6;
+      }
+      R = radiusFor(bottom - top, availW, room);
+    }
+  }
+
+  const clusterW = unitW * R, clusterH = unitH * R;
+  const sideX = GRID.margin + GRID.contentWidth - VENN.side.width;
+  const availRight = side ? sideX - VENN.side.gap : GRID.margin + GRID.contentWidth;
+  const cx = Math.min(cxMid, availRight - clusterW / 2);
+  const roomAbove = !inside && n === 2 ? room : 0;
+  const roomBelow = !inside && n === 3 ? room : 0;
+  const clusterTop = top + roomAbove + (bottom - top - roomAbove - roomBelow - clusterH) / 2;
+  const cy0 = clusterTop + R;
+  const centres: [number, number][] = [[cx - sep * R / 2, cy0], [cx + sep * R / 2, cy0]];
+  if (n === 3) centres.push([cx, cy0 + sep * R * sin60]);
+  const clusterBottom = centres[n - 1][1] + R;
+  const meetPt: [number, number] = n === 2 ? [cx, cy0] : [cx, cy0 + sep * R * sin60 / 3];
+
+  for (let i = 0; i < n; i++) {
+    out.push(...filledShape(id(`vc${i}`), page, "ELLIPSE", VENN.fills[i], {
+      x: centres[i][0] - R, y: centres[i][1] - R, width: R * 2, height: R * 2,
+    }, VENN.alpha));
+  }
+
+  const drawLabel = (
+    key: string, p: { name: string; desc: string }, m: VennMeasure,
+    box: { x: number; y: number; width: number }, align: "START" | "CENTER" | "END"
+  ) => {
+    const nameStyle: TypeStyle = { ...TYPE.vennName, size: m.nameSize };
+    out.push(...textBox(id(`vn${key}`), page, p.name, nameStyle,
+      { x: box.x, y: box.y, width: box.width, height: m.nameH }, { align }));
+    if (p.desc && m.descLines) {
+      out.push(...textBox(id(`vd${key}`), page, p.desc, TYPE.vennDesc,
+        { x: box.x, y: box.y + m.nameH - VENN_DESC_TUCK, width: box.width, height: m.descH },
+        { align, lineSpacing: 1.0 }));
+    }
+  };
+
+  if (inside) {
+    for (let i = 0; i < n; i++) {
+      const b = boxes.sets[i], w = inkW(b, R);
+      const m = measureVennLabel(parsed[i].name, parsed[i].desc, w, b.h * R, nameSize as number);
+      const lx = centres[i][0] + b.dx * R, ly = centres[i][1] + b.dy * R;
+      drawLabel(String(i), parsed[i], m, { x: lx - (w + TEXT_INSET_X) / 2, y: ly - m.blockH / 2, width: w + TEXT_INSET_X }, "CENTER");
+    }
+  } else if (n === 2) {
+    const lw = (1 + sep / 2) * R - 8;
+    for (let i = 0; i < 2; i++) {
+      const x = i === 0 ? centres[0][0] - R : cx + 8;
+      drawLabel(String(i), parsed[i], outsideM[i], { x, y: cy0 - R - 4 - outsideM[i].blockH, width: lw }, "CENTER");
     }
   } else {
-    // Three circles, labels RADIATING outward — top above, and the lower two to
-    // the sides in the horizontal space the diagram otherwise wastes. That frees
-    // the vertical room to make the circles bigger and keeps every label off the
-    // circles and clear of the title.
-    const topRoom = 46;
-    const clusterH = 2.68;   // top edge to bottom edge, in units of R
-    const R = Math.min(
-      (bandH - topRoom) / clusterH,
-      (GRID.contentWidth / 2 - 150) / 1.6,
-    );
-    const off = R * 0.6;
-    const clusterTop = top + topRoom + (bandH - topRoom - clusterH * R) / 2;
-    const cy0 = clusterTop + R;
-    const centres = [[cxMid, cy0], [cxMid - off, cy0 + off * 1.15], [cxMid + off, cy0 + off * 1.15]];
-    centres.forEach(([cx, cy], i) => {
-      out.push(...filledShape(id(`vc${i}`), page, "ELLIPSE", palette[i], { x: cx - R, y: cy - R, width: R * 2, height: R * 2 }, 0.4));
-    });
-    // Top: centred above its circle. Left: to the left of the left circle,
-    // right-aligned. Right: to the right of the right circle, left-aligned.
-    label("0", sets[0].label, cxMid - R, centres[0][1] - R - topRoom, R * 2, "CENTER");
-    const leftEdge = centres[1][0] - R, rightEdge = centres[2][0] + R;
-    label("1", sets[1].label, GRID.margin, centres[1][1] - 14, leftEdge - GRID.margin - 8, "END");
-    label("2", sets[2].label, rightEdge + 8, centres[2][1] - 14, GRID.margin + GRID.contentWidth - rightEdge - 8, "START");
+    const leftEdge = centres[0][0] - R, rightEdge = centres[1][0] + R;
+    drawLabel("0", parsed[0], outsideM[0], { x: GRID.margin, y: cy0 - outsideM[0].blockH / 2, width: leftEdge - 8 - GRID.margin }, "END");
+    drawLabel("1", parsed[1], outsideM[1], { x: rightEdge + 8, y: cy0 - outsideM[1].blockH / 2, width: GRID.margin + GRID.contentWidth - rightEdge - 8 }, "START");
+    drawLabel("2", parsed[2], outsideM[2], { x: cx - 2 * R, y: centres[2][1] + R + 6, width: 4 * R }, "CENTER");
+  }
+
+  if (overlap) {
+    const mb = boxes.meet, w = inkW(mb, R), h = mb.h * R;
+    const ns = nameSize === undefined ? VENN_NAME_SIZES[0] : nameSize;
+    const maxName = n === 2 ? 3 : 1;
+    let desc = overlap.desc;
+    let m = measureVennLabel(overlap.name, desc, w, h, ns, maxName, 2);
+    if (!m.fits && desc) { desc = ""; m = measureVennLabel(overlap.name, "", w, h, ns, maxName, 0); }
+    if (m.fits) {
+      drawLabel("o", { name: overlap.name, desc }, m,
+        { x: meetPt[0] - (w + TEXT_INSET_X) / 2, y: meetPt[1] - m.blockH / 2, width: w + TEXT_INSET_X }, "CENTER");
+    }
+  }
+
+  if (side) {
+    const pad = VENN.side.pad, innerW = VENN.side.width - pad * 2;
+    const y = Math.max(top, Math.min(clusterBottom, NOTE.bottom) - side.h);
+    out.push(...filledShape(id("noteBar"), page, "ROUND_RECTANGLE", onDark ? COLOR.white : COLOR.tintBlue, {
+      x: sideX, y, width: VENN.side.width, height: side.h,
+    }, onDark ? 0.1 : 1));
+    let ty = y + pad - 3;
+    if (side.headH) {
+      out.push(...textBox(id("noteHead"), page, side.head, onDark ? TYPE.noteHeadDark : TYPE.noteHead, {
+        x: sideX + pad, y: ty, width: innerW, height: side.headH,
+      }));
+      ty += side.headH;
+    }
+    out.push(...textBox(id("noteTxt"), page, side.body,
+      { font: "Roboto", size: NOTE.fontSize, weight: 300, color: onDark ? COLOR.greyLight : COLOR.navy }, {
+        x: sideX + pad, y: ty, width: innerW, height: side.bodyH,
+      }, { lineSpacing: 1.2, spaceBelow: 4 }));
+    if (meta) meta.noteDrawn = true;
   }
   return out;
 }
@@ -4037,7 +4582,10 @@ function panelRequests(
  *  exercised without a Google round-trip; nothing else should call it. */
 export function buildSlideRequests(slide: SlideInput, index: number, run = "r0"): Req[] {
   const layout: SlideLayout = layoutOf(slide.layout, index);
-  const style = LAYOUT_STYLE[layout];
+  // The ground per INSTANCE, not per layout: four or more figures put a stat
+  // slide on off-white. Everything below — onDark, the page fill, the ink and
+  // the lockup — follows this one decision.
+  const style = slideStyle(slide, index);
   // Object ids are scoped to this RUN, not just the slide index. On an update
   // the deck still holds the previous run's shapes when the new ones are
   // created, and Slides rejects a batch that reuses an existing objectId.
@@ -4079,6 +4627,9 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
    *  their words. The takeaway bar sits just beneath it. Left unset, the bar
    *  keeps its old place at the foot of the band. */
   let contentBottom: number | undefined;
+  /** Set by a layout that has already drawn the note on the slide itself —
+   *  the Venn's sidebar — so the generic bar is not drawn as well. */
+  let noteDrawn = false;
 
   const onDark = style.onDark;
   const bodyStyle = onDark ? TYPE.bodyDark : TYPE.body;
@@ -4214,30 +4765,83 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
   } else if (layout === "section") {
     // A NUMERIC eyebrow ("01", "3") is the divider's index — drawn large in the
     // brand lime, the source deck's signature divider device. A worded eyebrow
-    // ("PART ONE") stays a normal eyebrow. This is not the killed "parse Part N"
-    // regex; it only treats a bare number as a numeral, so it cannot misfire on
-    // "Teil 02" or any localised label.
+    // ("PART ONE") is the KICKER, and it lives in the lockup below, not in the
+    // page-header slot. This is not the killed "parse Part N" regex; it only
+    // treats a bare number as a numeral, so it cannot misfire on "Teil 02" or
+    // any localised label.
     const numeral = slide.eyebrow?.trim().match(/^\d{1,2}$/)?.[0];
+    const numeralBottom = GRID.eyebrowY + SECTION.numeralHeight;
     if (numeral) {
       requests.push(...textBox(id("num"), page, numeral, TYPE.sectionNumeral, {
-        x: GRID.margin, y: GRID.eyebrowY, width: 252, height: 100,
-      }));
-    } else {
-      requests.push(...textBox(id("eyebrow"), page, slide.eyebrow, TYPE.eyebrowDark, {
-        x: GRID.margin, y: GRID.eyebrowY,
-        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+        x: GRID.margin, y: GRID.eyebrowY, width: SECTION.numeralWidth, height: SECTION.numeralHeight,
       }));
     }
-    requests.push(
-      ...textBox(id("title"), page, slide.title, TYPE.sectionTitle, {
-        x: GRID.margin, y: CANVAS.height / 2 - 50,
-        width: GRID.contentWidth, height: 100,
-      }),
-      ...textBox(id("body"), page, slide.subtitle, TYPE.bodyDark, {
-        x: GRID.margin, y: CANVAS.height / 2 + 55,
-        width: GRID.contentWidth, height: 60,
-      }),
-    );
+
+    // ONE LOCKUP. Kicker, title and subtitle are measured as a stack and the
+    // stack is centred on the canvas as a group — the reference's divider is a
+    // 111pt block with 16pt and 13pt of air in it. The old code drew the kicker
+    // at y=36, the title in a fixed 100pt box at y=152 and the subtitle at
+    // y=257: three orphaned lines with 125pt and 76pt of empty blue between
+    // them, and a running header where the title's label should be.
+    const kicker = numeral ? "" : (slide.eyebrow || "").trim();
+    const kickerH = kicker
+      ? drawnTextHeight(estimateLines(kicker, GRID.contentWidth, TYPE.sectionKicker.size, false, true), TYPE.sectionKicker.size)
+      : 0;
+    const subText = (slide.subtitle || "").trim();
+    // WHITE on a photograph: the baked gradient guarantees 4.5:1 for white, and
+    // the standfirst grey (#EBEBEB) lands at ~3.8:1 on the same pixels. On the
+    // flat blue field that grey is 4.7:1 and is the reference's muted second
+    // voice under a white title.
+    const subStyle = sectionPhoto ? { ...TYPE.standfirstDark, color: COLOR.white } : TYPE.standfirstDark;
+    const subLines = subText ? estimateLines(subText, GRID.contentWidth, subStyle.size) : 0;
+    const subH = subLines ? drawnTextHeight(subLines, subStyle.size) : 0;
+    // The room the stack may use: under the numeral (or the header slot) and
+    // above the takeaway bar when there is one — `band` is already shortened
+    // for it — so the stack is never drawn through the bar.
+    const stackCeiling = numeral ? numeralBottom : SECTION.minTop;
+    const stackFloor = GRID.bodyY + band;
+    const aboveTitle = kicker ? kickerH + SECTION.kickerGap : 0;
+    const belowTitle = subText ? SECTION.subtitleGap + subH : 0;
+    // The title is fitted to what is LEFT once the kicker and subtitle have
+    // taken theirs, and shrinks — to SECTION.titleMinSize — rather than pushing
+    // the subtitle onto the bar or the footer. Measured at the lead it is
+    // drawn at, or the box carries slack the subtitle would sit under.
+    const sec = fitHeading(slide.title, TYPE.sectionTitle, GRID.contentWidth, {
+      bottom: stackFloor - belowTitle,
+      minTop: stackCeiling + aboveTitle,
+      minHeight: drawnTextHeight(1, TYPE.sectionTitle.size, 0, 1, SECTION.titleLead),
+      minSize: SECTION.titleMinSize,
+      lineSpacing: SECTION.titleLead,
+    });
+    const stackH = aboveTitle + sec.height + belowTitle;
+    let y = Math.max(stackCeiling, Math.min(CANVAS.height / 2 - stackH / 2, stackFloor - stackH));
+    if (kicker) {
+      requests.push(...textBox(id("eyebrow"), page, kicker, TYPE.sectionKicker, {
+        x: GRID.margin, y, width: GRID.contentWidth, height: kickerH,
+      }));
+      y += kickerH + SECTION.kickerGap;
+    }
+    // spaceBelow 0: a title the model stacks with a newline ("Understand\n&
+    // Diagnose", the reference's own device) keeps the same pitch as one that
+    // wraps, instead of opening a 6pt paragraph gap in the middle of the block.
+    requests.push(...textBox(id("title"), page, slide.title, sec.style, {
+      x: GRID.margin, y, width: GRID.contentWidth, height: sec.height,
+    }, { lineSpacing: SECTION.titleLead, spaceBelow: 0 }));
+    y += sec.height;
+    if (subText) {
+      y += SECTION.subtitleGap;
+      // id "sub", not "body": the preview maps "sub" to the spec path
+      // ["subtitle"], so an in-place edit lands on the field that was drawn.
+      // Under "body" it wrote slide.body, which the divider never draws.
+      requests.push(...textBox(id("sub"), page, subText, subStyle, {
+        x: GRID.margin, y, width: GRID.contentWidth, height: subH,
+      }));
+      y += subH;
+    }
+    // contentBottom is deliberately left unset: the lockup is centred as a
+    // group, so a takeaway bar (rare on a divider) keeps its place at the foot
+    // rather than following the stack to mid-page. stackFloor already keeps
+    // the stack clear of it by NOTE.gap.
   } else if (layout === "timeline") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
@@ -4269,10 +4873,17 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       ...textBox(id("title"), page, slide.title, titleStyle, {
         x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
       }),
-      ...(layout === "process"
-        ? processRequests(page, id, slide.stages || [])
-        : logoWallRequests(page, id, slide.logos || [])),
     );
+    if (layout === "process") {
+      // The row starts on the band's top edge and measures against the band
+      // the takeaway bar has already shortened; where it ends is where the
+      // bar goes.
+      const processMeta = { bottom: 0 };
+      requests.push(...processRequests(page, id, slide.stages || [], GRID.bodyY, band, processMeta));
+      if (processMeta.bottom) contentBottom = processMeta.bottom;
+    } else {
+      requests.push(...logoWallRequests(page, id, slide.logos || []));
+    }
   } else if (layout === "cards") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
@@ -4333,8 +4944,13 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     // A diagram earns the note bar's gap when there is no note: the source
     // page runs nearly full height, and 12pt is the difference between five
     // bands fitting and the last one falling off the canvas.
-    requests.push(...layersRequests(page, id, slide.layers || [], diagTop,
-      Math.max(100, GRID.bodyY + band - diagTop + (slide.note?.trim() ? 0 : 12))));
+    // The room is the band, exactly. The 12pt the diagram borrowed when there
+    // was no note ran the last band to 386, under the footer at 381; the
+    // ladder inside layersRequests is what fits five bands now. The diagram
+    // reports where it ends so the takeaway bar follows it (Phase A rule).
+    const lay = layersRequests(page, id, slide.layers || [], diagTop, Math.max(100, GRID.bodyY + band - diagTop));
+    requests.push(...lay.requests);
+    contentBottom = lay.bottom;
   } else if (layout === "stat" || layout === "bar-chart" || layout === "stacked-bar" || layout === "line-chart") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
@@ -4377,8 +4993,14 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       // were drawn through the first bullet. So: top-align the figures when
       // there is a body, and start the body where they actually end.
       const hasBody = !!slide.body?.trim();
-      const stat = statRequests(page, id, slide.stats || [], band, onDark, hasBody);
+      const grid = isStatGrid(slide.stats);
+      // The grid is top-aligned whenever something follows it — bullets, or
+      // the takeaway — so the bar sits just under the cards and the slack
+      // falls BELOW the bar, where the reference page leaves it. Alone, it
+      // centres in the band like every other self-contained block.
+      const stat = statRequests(page, id, slide.stats || [], band, onDark, hasBody || (grid && !!slide.note?.trim()));
       requests.push(...stat.reqs);
+      if (grid && !hasBody) contentBottom = stat.bottom;
       if (hasBody) {
         const bodyTop = GRID.bodyY + stat.height + 10;
         const room = Math.max(30, GRID.bodyY + band - bodyTop);
@@ -4433,7 +5055,11 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       if (tableMeta.bottom) contentBottom = tableMeta.bottom;
     }
     else if (layout === "scatter" && slide.scatter) requests.push(...scatterRequests(page, id, slide.scatter, onDark, aTop, GRID.bodyY + band));
-    else if (layout === "venn" && slide.venn) requests.push(...vennRequests(page, id, slide.venn, onDark, aTop, GRID.bodyY + band));
+    else if (layout === "venn" && slide.venn) {
+      const vennMeta = { noteDrawn: false };
+      requests.push(...vennRequests(page, id, slide.venn, onDark, aTop, GRID.bodyY + band, slide.note, vennMeta));
+      noteDrawn = vennMeta.noteDrawn;
+    }
   } else if (layout === "timeline-parallel") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
@@ -4776,10 +5402,10 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
 
   // The takeaway bar, on every layout. Drawn after the content so it sits on
   // top of nothing — the band above was already shortened to make room.
-  requests.push(...noteRequests(page, id, slide.note, onDark,
+  if (!noteDrawn) requests.push(...noteRequests(page, id, slide.note, onDark,
     contentBottom !== undefined ? contentBottom + NOTE.gap : undefined));
 
-  requests.push(...logoRequests(id("logo"), page, layout, slide));
+  requests.push(...logoRequests(id("logo"), page, style, slide));
 
   // The footer, from the master template: "The Content Engine" at the left and
   // the page number at the right of every slide except the cover and the
@@ -5299,7 +5925,7 @@ export async function resolveDeckImages(
           : null;
         // Tell the baker where this layout's lockup will land, so it measures
         // the part of the picture the mark actually sits on.
-        const style = LAYOUT_STYLE[layoutOf(slide.layout, slideIndex)];
+        const style = slideStyle(slide, slideIndex);
         const place = LOGO_PLACEMENT[style.logoPlacement];
         const r = await resolveImage(styled(slide.image), generate, {
           aspect: railShape

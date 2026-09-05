@@ -101,6 +101,43 @@ export const CANVAS = { width: 10 * IN, height: 5.625 * IN } as const; // 720 ×
  *  number and the slide wants a table. */
 export const STAT_MAX = 8;
 
+/** Four or more figures are a GRID of cards on the light ground; up to three
+ *  are the navy hero row. The count decides, not the model — slideStyle() in
+ *  generate.ts is where the ground follows it. */
+export const STAT_GRID_MIN = 4;
+
+/** The stat card grid, measured from the reference deck's page 3 (1281px =
+ *  720pt): 84pt cards in rows of four with 12pt gaps, a short last row
+ *  stretched to the full measure, a 24pt figure over an 8pt bold label with
+ *  the source pinned at the foot of the card.
+ *
+ *  `rungs` is the fit ladder: compression before anything is dropped. The
+ *  last rung gives up the source lines — declared on the slide — before any
+ *  figure goes. */
+export const STAT_GRID = {
+  perRow: 4,
+  gap: 12,
+  padX: 8,
+  /** A figure never shrinks below this; at 16pt bold Poppins it is still
+   *  large text for contrast purposes. */
+  valueMin: 16,
+  valueLead: 1.3,
+  labelLead: 1.1,
+  sourceLead: 1.05,
+  sourceGap: 2,
+  /** The card's edge: navy at 12%, three-quarters of a point. On off-white
+   *  the grey tint alone is faint; the border is what makes it a card. */
+  borderAlpha: 0.12,
+  borderWeight: 0.75,
+  rungs: [
+    { value: 24, label: 8,   pad: 4, rowGap: 12, sources: true },
+    { value: 22, label: 8,   pad: 4, rowGap: 12, sources: true },
+    { value: 20, label: 8,   pad: 4, rowGap: 10, sources: true },
+    { value: 18, label: 7.5, pad: 3, rowGap: 8,  sources: true },
+    { value: 18, label: 7.5, pad: 3, rowGap: 8,  sources: false },
+  ],
+} as const;
+
 export const NOTE = {
   /** Clear of the footer, which occupies the last 11pt. */
   bottom: 374,
@@ -205,6 +242,44 @@ export const RULE = {
   gapAbove: 8,
 } as const;
 
+/** The section divider's lockup: kicker, title, subtitle as ONE measured stack,
+ *  centred on the canvas as a group.
+ *
+ *  Measured from the reference deck's dividers (pages 4 and 22, on the 720x405
+ *  canvas): kicker at y=143, a two-line title at 164-232, subtitle at 244-254 -
+ *  one 111pt block centred at y=199 with 16pt and 13pt of air between its rows.
+ *  Ours drew the kicker in the page-header slot at y=36, the title at a fixed
+ *  y=152 in a fixed 100pt box and the subtitle at a fixed y=257, so three lines
+ *  sat 125pt and 76pt apart and never read as belonging to each other. */
+export const SECTION = {
+  /** The stack never rises back into the page-header slot it was moved out of. */
+  minTop: 48,
+  /** Title line spacing as a multiple of Slides' 100%. The 115% default put
+   *  46pt between two 32pt lines where the reference's block sits at 38pt.
+   *  110% is the TIGHTEST setting at which the drawn box (1.26 x 1.10 = 1.386
+   *  of the size per line) still covers the 1.38-per-line ink box the layout
+   *  check measures collisions with (check 11), so a three-line title can
+   *  never be reported as running onto its subtitle. Tighten this and the gaps
+   *  below have to grow to absorb the difference. */
+  titleLead: 1.1,
+  /** Floor of the fit ladder - the cover's. Below it a divider title is body
+   *  copy on a blue field. */
+  titleMinSize: 22,
+  /** Box-to-box gaps. ZERO on purpose: every text box carries Slides' fixed
+   *  3.6pt inset top and bottom, and the title's line box carries ~7pt of
+   *  slack above its caps and below its descenders, so butted boxes already
+   *  show ~17pt of air between kicker and title and ~15pt between title and
+   *  subtitle - the reference's 16 and 13. A gap on top of the insets is what
+   *  the old fixed positions were, by 76pt. */
+  kickerGap: 0,
+  subtitleGap: 0,
+  /** The index numeral keeps its slot: GRID.eyebrowY, 100pt tall - exactly
+   *  drawnTextHeight(1, 64) at the 115% default. The lockup starts no higher
+   *  than its foot. */
+  numeralWidth: 252,
+  numeralHeight: 100,
+} as const;
+
 /* ─────────────── Type ─────────────── */
 
 /** Playfair Display for every heading, Roboto for everything else, Poppins for
@@ -239,7 +314,20 @@ export const TYPE: Record<string, TypeStyle> = {
   closingKicker: { font: "Roboto", size: 12, color: COLOR.white, caps: true },
   /** The action lines on a closing slide — an email, a next step, a URL. */
   closingAction: { font: "Roboto", size: 11, weight: 300, color: COLOR.greyLight },
-  sectionTitle:  { font: "Playfair Display", size: 26, color: COLOR.white },
+  /** The divider title. At 26pt on one line it read a third the height of the
+   *  reference's two-line 31pt block from the back of the room. Stepped to 32,
+   *  one above the 30pt cover, and fitted DOWN to SECTION.titleMinSize by
+   *  fitHeading when a long one would push the subtitle onto the takeaway bar.
+   *  Weight stays Regular: the brand's display face is Playfair Regular on every
+   *  dark ground, and size is what carries to the corridor. */
+  sectionTitle:  { font: "Playfair Display", size: 32, color: COLOR.white },
+  /** The divider's kicker ("SESSION 1 · 2 HOURS · VIRTUAL"). It now sits INSIDE
+   *  the lockup, 16pt above a 32pt title, so it has to read as that title's
+   *  label and not as a heading of its own; at the 11pt eyebrow size it
+   *  out-weighed the 11.5pt light subtitle under it. The reference sets it at
+   *  8.6pt letter-spaced; the Slides API TextStyle has no tracking field, so
+   *  9.5pt bold caps is where the same visual weight lands without it. */
+  sectionKicker: { font: "Roboto", size: 9.5, bold: true, color: COLOR.white, caps: true },
   /** The big index numeral on a section divider — the source deck's signature
    *  device. Lime on blue clears contrast (11.3:1); on a photo it sits on the
    *  baked gradient's foot, so it is only drawn from a numeric eyebrow where the
@@ -261,8 +349,17 @@ export const TYPE: Record<string, TypeStyle> = {
   /** A two-column comparison header — "Before"/"After", over an accent rule. */
   columnHeader:  { font: "Playfair Display", size: 14, color: COLOR.navy },
   quadHeader:    { font: "Roboto", size: 11, bold: true, color: COLOR.navy, caps: true },
-  vennName:      { font: "Playfair Display", size: 14, color: COLOR.navy },
-  vennDesc:      { font: "Roboto", size: 9, weight: 300, color: COLOR.ink },
+  /** A Venn set's name: bold caps at the reference's 8.6pt. Was Playfair 14,
+   *  which only ever fitted OUTSIDE the circles. The layout steps it to 8 when
+   *  that is what it takes to keep every label inside (VENN_NAME_SIZES). */
+  vennName:      { font: "Roboto", size: 8.5, bold: true, color: COLOR.navy, caps: true },
+  /** Its gloss, on the 7.5pt floor at REGULAR weight — Light at this size
+   *  thins to nothing on a tint. */
+  vennDesc:      { font: "Roboto", size: 7.5, color: COLOR.ink },
+  /** The heading of a takeaway drawn as a sidebar callout beside a diagram —
+   *  the reference's 10pt bold over 8pt body. */
+  noteHead:      { font: "Roboto", size: 10, bold: true, color: COLOR.navy },
+  noteHeadDark:  { font: "Roboto", size: 10, bold: true, color: COLOR.white },
   quadItem:      { font: "Roboto", size: 9, weight: 300, color: COLOR.navy },
   axisEnd:       { font: "Roboto", size: 8, bold: true, color: COLOR.ink, caps: true },
   quadLabel:     { font: "Roboto", size: 8, weight: 300, color: COLOR.ink },
@@ -299,6 +396,13 @@ export const TYPE: Record<string, TypeStyle> = {
   statValue:     { font: "Poppins", size: 54, color: COLOR.white },
   statLabel:     { font: "Roboto", size: 10, bold: true, color: COLOR.lime, caps: true },
   statDetail:    { font: "Roboto", size: 9, weight: 300, color: COLOR.greyLight },
+  /** The stat CARD (four or more figures, light ground): the reference's
+   *  24pt figure / 8pt bold label / 7pt source, with the source held at the
+   *  deck's 7.5pt floor. Colours here are the grey card's; a toned card
+   *  overrides them from its tone. */
+  statCardValue: { font: "Poppins", size: 24, color: COLOR.blue },
+  statCardLabel: { font: "Roboto", size: 8, bold: true, color: COLOR.navy },
+  statCardSource:{ font: "Roboto", size: 7.5, weight: 300, color: COLOR.ink },
   chartCategory: { font: "Roboto", size: 9, weight: 300, color: COLOR.navy },
   chartValue:    { font: "Roboto", size: 9, bold: true, color: COLOR.navy },
   chartAxis:     { font: "Roboto", size: 7, weight: 300, color: COLOR.ink },
@@ -320,8 +424,19 @@ export const TYPE: Record<string, TypeStyle> = {
   quoteText:     { font: "Playfair Display", size: 22, color: COLOR.white },
   quoteName:     { font: "Roboto", size: 10, bold: true, color: COLOR.lime, caps: true },
   quoteRole:     { font: "Roboto", size: 9, weight: 300, color: COLOR.greyLight },
-  stageName:     { font: "Roboto", size: 9, bold: true, color: COLOR.white, caps: true },
+  /** A step's name on its card: bold, MIXED CASE, navy, 10.5pt - the
+   *  reference's own size. Was 9pt white caps centred in a 58pt blue pill,
+   *  where the pill was the loudest thing on the slide and the name the
+   *  smallest, and the presenter could not say "step three" and point at a 3. */
+  stageName:     { font: "Roboto", size: 10.5, bold: true, color: COLOR.navy },
   stageCaption:  { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
+  /** The digit in the step's coloured circle. Its colour is decided per step
+   *  by textOn(accent), never read from here. */
+  stageNumeral:  { font: "Roboto", size: 8.5, bold: true, color: COLOR.white },
+  /** "Owner: TCE + your team", anchored to the card's foot. The reference
+   *  sets it at 6.5pt grey; 7.5 is this deck's floor, and ink rather than
+   *  navy is the closest the palette has to their secondary grey. */
+  stageOwner:    { font: "Roboto", size: 7.5, weight: 300, color: COLOR.ink },
   /** A client's name, set when their mark is not available. Playfair rather
    *  than a picture of a wordmark: it is plainly OUR typography naming them,
    *  not a reproduction of a logo we do not have. */
@@ -511,16 +626,35 @@ export const QUOTE = {
   portrait: { x: 7.9 * IN, y: 1.75 * IN, size: 1.6 * IN },
 } as const;
 
-/** Stages joined left to right. */
+/** Numbered step cards joined left to right.
+ *
+ *  Card internals are in points, measured off the reference page (p23): a
+ *  17pt circle 12pt in from the card's top-left, the name beside it, the
+ *  description 6pt under the head, the owner line 10pt off the foot. There
+ *  is no `y`, no box height and no caption y any more: the row starts on the
+ *  band's top edge and is as tall as its words, and reports where it ends. */
 export const PROCESS = {
-  y: 2.25 * IN,
-  boxHeight: 0.78 * IN,
-  /** The rule and chevron that carry the eye from one stage to the next. */
+  /** The rule and chevron that carry the eye from one stage to the next,
+   *  drawn on the numerals' centre line so the row reads "1 -> 2 -> 3". */
   connectorWidth: 0.34 * IN,
   connectorThickness: 2,
   chevron: 9,
-  captionY: 3.2 * IN,
-  captionHeight: 0.9 * IN,
+  /** Card inset: top and sides. */
+  pad: 12,
+  /** Foot inset, under the owner line. */
+  padBottom: 10,
+  /** The coloured rule along the card's top edge. */
+  accent: 3,
+  /** The numeral circle's diameter (reference 17; 18 keeps the digit's line
+   *  box inside its inset at the same ratio the cards' marker chip proves). */
+  numeral: 18,
+  /** Circle to name when the numeral sits ABOVE the name (five cards). */
+  numeralGap: 4,
+  /** Head block to description. */
+  headGap: 6,
+  /** Description to the owner slot. */
+  ownerGap: 8,
+  minHeight: 40,
 } as const;
 
 /** Client marks on a clean ground. Never cropped — a cropped logo is a
@@ -569,6 +703,36 @@ export const CARDS = {
  *  scripts/validate_palette.js before touching either. */
 export const SERIES_LIGHT = ["3950FF", "B36B00", "00998A", "8E44AD", "D6342A"] as const;
 export const SERIES_DARK  = ["6B7BFF", "B87C1C", "1CA48F", "9A70C6", "E8604F"] as const;
+
+/** The Venn diagram, measured against the reference deck's page.
+ *
+ *  Its 174pt circles sit with centres ~100pt apart, so each set keeps a large
+ *  exclusive region and the overlaps are lenses. Ours sat 0.92R apart: the
+ *  three-way overlap covered most of each circle and the picture said "these
+ *  three are the same thing", the opposite of "three arenas". */
+export const VENN = {
+  /** Centre-to-centre distance in units of the radius. */
+  sep: 1.15,
+  /** The largest radius drawn: the reference's R=87 fills the same band. */
+  maxR: 92,
+  /** PASTEL bases drawn at `alpha`, blue then teal then amber, from the same
+   *  families as tintBlue / tintTeal / tintAmber. Fitted from the reference
+   *  page, whose seven regions these three reproduce to the unit at 0.6.
+   *
+   *  Not saturated hues at low alpha. 3950FF/01EAC8/FF6255 at 0.4 stacked to
+   *  a centre of #A4A0AC (luminance 0.36, 5.2:1 on navy) that projected as
+   *  mud, and the coral read as a warning rather than an arena. The LAST
+   *  circle drawn owns 60% of every region it covers, so amber last makes the
+   *  centre a warm khaki. */
+  fills: ["9DC0E9", "99D7CA", "F2CD9B"],
+  alpha: 0.6,
+  /** The takeaway as a callout beside the diagram: the reference's 180pt
+   *  box, 24pt clear of the circles, 10pt of padding. */
+  side: { width: 180, gap: 24, pad: 10 },
+  /** Room kept either side of a three-set cluster for labels that radiate
+   *  outward when they cannot fit inside. */
+  outsideLabel: 150,
+} as const;
 
 /** Charts sit in the same body band as prose, so a deck reads consistently. */
 export const CHART = {
@@ -619,6 +783,9 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   "image-grid":  { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   // Full-bleed photograph with a scrim — text is always light on it.
   feature:       { background: null,           logo: "white", logoPlacement: "content", onDark: true },
+  // The HERO row's ground (one to three figures). Four or more are a card
+  // grid on off-white — decided per instance by slideStyle() in generate.ts,
+  // which is the only place a stat slide's ground may be read from.
   stat:          { background: COLOR.navy,     logo: "white", logoPlacement: "content", onDark: true },
   "bar-chart":   { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "stacked-bar": { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
@@ -639,3 +806,7 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   "logo-wall":   { background: COLOR.white,    logo: "navy",  logoPlacement: "content", onDark: false },
   closing:      { background: null,           logo: "white", logoPlacement: "closing", onDark: true },
 };
+
+/** One layout's ground, lockup and ink. Named so a resolver can return it
+ *  for a slide whose ground is decided per instance. */
+export type LayoutStyle = (typeof LAYOUT_STYLE)[SlideLayout];

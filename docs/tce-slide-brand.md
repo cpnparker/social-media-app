@@ -90,7 +90,7 @@ brand system.
 | Role | Font | Weight | Size (on the 10 in canvas) | Colour |
 |---|---|---|---|---|
 | Cover title | **Playfair Display** | Regular | 30 pt | #EBEBEB on photo |
-| Section title | **Playfair Display** | Regular | 23–26 pt | #FFFFFF on blue |
+| Section title | **Playfair Display** | Regular | 32 pt, fitted down to 22 pt when long | #FFFFFF on blue |
 | Slide title | **Playfair Display** | Regular | 19–21 pt | #023250 on light |
 | Card / item heading | **Playfair Display** | Regular | 11 pt | #3950FF |
 | Eyebrow / kicker | **Roboto** | Bold, ALL CAPS | 11 pt | #023250 or #FFFFFF |
