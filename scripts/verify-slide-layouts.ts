@@ -14,7 +14,7 @@ import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
   niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, parseBold, deckWarnings, cardGeometry, bandHeightFor,
-  CAPS_WIDEN, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent, fitHeading, FOOTER_Y, captionParagraphs, splitStageOwner,
+  CAPS_WIDEN, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent, fitHeading, FOOTER_Y, captionParagraphs, splitStageOwner, slideStyle,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
@@ -75,6 +75,18 @@ const DECK: SlideInput[] = [
       { value: "64 GW", label: "Global capacity", detail: "Installed by end of 2023." },
       { value: "70%", label: "Cost fall since 2010", detail: "Competitive with fossil." },
       { value: "380 GW", label: "IEA projection", detail: "Under current policies." } ] },
+  // The stat GRID (four or more figures, light ground) — the reference deck's
+  // page 3. Labels of deliberately different lengths, so the row's shared
+  // label height carries real slack and the centring rule has something to
+  // measure; and a takeaway, so the bar has to follow the cards.
+  { layout: "stat", eyebrow: "Context", title: LONG,
+    note: "The correction that matters: search did not collapse, it split.",
+    stats: [
+      { value: "1B", label: "ChatGPT weekly active users", detail: "passed 1 billion, Aug 2026" },
+      { value: "950M", label: "Gemini app monthly active users", detail: "Q2 2026 - AI Overviews reach 2.5B+" },
+      { value: "68%", label: "of Google searches end without a click", detail: "SparkToro / Similarweb, Jan-Apr 2026" },
+      { value: "+120%", label: "more clicks when you ARE cited in the AI Overview", detail: "Seer Interactive, 53 brands", tone: "teal" },
+      { value: "4-5x", label: "conversion rate", detail: "reported range across 2026 studies" } ] },
   { layout: "bar-chart", eyebrow: "Capacity", title: LONG,
     subtitle: "A standfirst stating the finding the bars prove, long enough to wrap onto two lines.",
     chart: { source: "Source: a report with a long name, 2024", highlight: 1,
@@ -354,7 +366,10 @@ deck.slides.forEach((page, i) => {
   const logo = page.elements.find((e) => e.kind === "image" && e.src?.includes("logo_engine"));
   if (!logo) return;
   const white = logo.src!.includes("white");
-  const style = LAYOUT_STYLE[slide.layout!];
+  // Through the RESOLVER, like every reader in the builder: a stat slide's
+  // ground depends on its figure count, and reading the table directly made
+  // this check report a navy lockup on the light grid.
+  const style = slideStyle(slide, i);
   if (style.background === null) {
     // Over a photograph the CONTRAST is measured at bake time and delivered as
     // resolvedImage.logo. The check used to stop here, so nothing asserted the
@@ -3298,6 +3313,98 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     if (!((hbg.red || 0) < 0.3 && (hbg.green || 0) < 0.3)) fail("three figures no longer draw the navy hero row — the reviewers scored that ours-better and it must survive");
   }
   if (failures === before29) pass("a process step is a card with its owner on its own line, the venn labels inside its circles with the note beside them, and four figures are a light grid");
+
+  /* 30. A LABEL INSIDE A SHAPE IS CENTRED IN IT
+   *
+   * "Make sure labels are always centred in pills and in heading boxes. Your
+   * version had them aligned with the top or bottom and looked silly."
+   *
+   * The cause is always the same: a row shares ONE box height so that the
+   * things below it line up — the tallest heading in a card row, the tallest
+   * label in a stat grid — and then a short label is drawn at the top of that
+   * shared box with the slack under it. Bottom-aligning moves the hole rather
+   * than removing it; centring is the only placement that reads as deliberate
+   * at every line count.
+   *
+   * This asserts the RULE, not four fixes: every text box that a filled shape
+   * covers, with more than 4pt of slack around its own drawn text, must carry
+   * contentAlignment MIDDLE. Driven over every fixture in DECK and STRESS, so
+   * a new layout inherits it the day it is written.
+   *
+   * THE EXCEPTION, named rather than silent: a body of prose whose ROW shares
+   * a baseline — the two-column bodies and a card's body — is top-aligned on
+   * purpose. Centring those would let a three-line column and a six-line one
+   * start at different heights, which is the fault this rule exists to stop,
+   * one level up. They are listed by id, so a new id is covered by default.
+   *
+   * MUTATION LOG
+   *   - vCenter dropped from a card heading   → KILLED
+   *   - dropped from a stat card's label      → KILLED
+   *   - dropped from a stat card's source     → KILLED
+   *   - a body id added to the exception list → KILLED (the list is asserted
+   *     to be exactly the four that share a baseline)
+   */
+  const before30 = failures;
+  console.log(`\n30. A label inside a shape is centred in it`);
+  {
+    // Bodies whose ROW shares a start line. Anything else covered by a shape
+    // is a label and must centre.
+    // "qi" is a SWOT quadrant's bulleted list: four quadrants read across as
+    // a grid, so their first bullets must start on one line whatever each
+    // quadrant holds — the same reason as the two-column bodies.
+    const BASELINE_BODIES = ["left", "right", "cb", "noteTxt", "qi"];
+    if (BASELINE_BODIES.length !== 5) fail("the baseline-body exception list changed size — say why in the comment above");
+    let checked = 0;
+    const all: SlideInput[] = ([] as SlideInput[]).concat(DECK as any, STRESS as any);
+    all.forEach((slide, si) => {
+      const reqs = buildSlideRequests(slide, si, `p30_${si}`) as any[];
+      const shapes = new Map<string, any>(), filled = new Set<string>(), mid = new Set<string>();
+      const sizes = new Map<string, number>(), texts = new Map<string, string>(), spacing = new Map<string, number>();
+      for (const r of reqs) {
+        if (r.createShape) shapes.set(r.createShape.objectId, r.createShape.elementProperties);
+        if (r.updateShapeProperties) {
+          const sp = r.updateShapeProperties.shapeProperties;
+          if (sp?.contentAlignment === "MIDDLE") mid.add(r.updateShapeProperties.objectId);
+          if (sp?.shapeBackgroundFill) filled.add(r.updateShapeProperties.objectId);
+        }
+        if (r.insertText) texts.set(r.insertText.objectId, String(r.insertText.text));
+        if (r.updateTextStyle?.style?.fontSize) sizes.set(r.updateTextStyle.objectId, r.updateTextStyle.style.fontSize.magnitude);
+        if (r.updateParagraphStyle?.style?.lineSpacing) spacing.set(r.updateParagraphStyle.objectId, r.updateParagraphStyle.style.lineSpacing / 100);
+      }
+      const boxOf = (oid: string) => {
+        const e = shapes.get(oid); if (!e) return null;
+        return { x: e.transform.translateX, y: e.transform.translateY, w: e.size.width.magnitude, h: e.size.height.magnitude };
+      };
+      texts.forEach((txt, oid) => {
+        if (filled.has(oid)) return;
+        const suffix = String(oid).split("_").pop() || "";
+        const kind = suffix.replace(/\d+(_\d+)?$/, "");
+        // By PREFIX: a SWOT quadrant's list is "qis"/"qiw"/"qio"/"qit" — the
+        // key is a letter, so stripping trailing digits leaves it attached.
+        let isBody = false;
+        for (let bi = 0; bi < BASELINE_BODIES.length; bi++) if (kind.indexOf(BASELINE_BODIES[bi]) === 0) isBody = true;
+        if (isBody) return;
+        const b = boxOf(oid); if (!b) return;
+        const size = sizes.get(oid) || 10;
+        const need = drawnTextHeight(Math.max(1, estimateLines(txt, b.w, size)), size, 0, 1, spacing.get(oid));
+        if (b.h - need <= 4) return;                     // hugs its words
+        let covered = false;
+        filled.forEach((fid) => {
+          if (covered || fid === oid) return;
+          const f = boxOf(fid); if (!f) return;
+          if (f.x - 0.6 <= b.x && f.y - 0.6 <= b.y && f.x + f.w + 0.6 >= b.x + b.w && f.y + f.h + 0.6 >= b.y + b.h) covered = true;
+        });
+        if (!covered) return;
+        checked++;
+        if (!mid.has(oid)) {
+          fail(`${slide.layout}: "${txt.slice(0, 26)}" (${kind}) sits in a shape with ${(b.h - need).toFixed(1)}pt of slack and is not centred in it`);
+        }
+      });
+    });
+    // The sweep must actually find labels, or it asserts nothing at all.
+    if (checked < 12) fail(`only ${checked} covered labels were measured across ${all.length} fixtures — the sweep is not reaching the layouts it is meant to police`);
+  }
+  if (failures === before30) pass("every label a shape encloses is centred in it; only the bodies that share a row baseline stay top-aligned");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);

@@ -121,7 +121,12 @@ export const STAT_GRID = {
   /** A figure never shrinks below this; at 16pt bold Poppins it is still
    *  large text for contrast purposes. */
   valueMin: 16,
-  valueLead: 1.3,
+  /** The figure's box, as a multiple of the face's natural line height. 1.0
+   *  is the tightest that still COVERS the line Slides draws: at 1.3 the box
+   *  was 31pt for a 24pt figure whose line box is 37, so every number
+   *  overran onto its own label — caught the moment the grid was put through
+   *  the shared fixture sweep. */
+  valueLead: 1.0,
   labelLead: 1.1,
   sourceLead: 1.05,
   sourceGap: 2,

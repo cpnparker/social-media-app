@@ -1113,12 +1113,15 @@ function parallelTimelineRequests(
     );
 
     requests.push(
+      // Centred in the track's own band rather than hand-offset by half its
+      // box: a two-line workstream name drawn from a computed top sits high
+      // in its band, which is the fault the label rule exists to stop.
       ...textBox(id(`tn${ti}`), page, tr.name, TYPE.trackName, {
         x: GRID.margin,
-        y: cursorY + trackHeight / 2 - 12,
+        y: cursorY,
         width: P.labelGutter - 12,
-        height: 24,
-      })
+        height: trackHeight,
+      }, { vCenter: true })
     );
 
     tr.items.forEach((it, pi) => {
@@ -1396,7 +1399,7 @@ function planStatGrid(stats: StatIn[], rung: StatRung, extra: number): StatPlan 
     narrowest = Math.min(narrowest, innerOf(i));
   }
   const vSize = Math.max(G.valueMin, Math.min(rung.value, Math.floor((narrowest - TEXT_INSET_X) / (longest * 0.62))));
-  const vH = vSize * G.valueLead;
+  const vH = drawnTextHeight(1, vSize, 0, 1, G.valueLead);
   let labelH = 0, srcH = 0;
   for (let i = 0; i < n; i++) {
     labelH = Math.max(labelH, drawnTextHeight(estimateLines(stats[i].label, innerOf(i), rung.label), rung.label, 0, 1, G.labelLead));
@@ -1456,18 +1459,22 @@ function statGridRequests(
       { x, y, width: cellW, height: plan.cardH }, undefined, border));
     out.push(...textBox(id(`sv${i}`), page, sx.value,
       { ...TYPE.statCardValue, size: plan.vSize, color: STAT_VALUE_INK[tone] },
-      { x: x + G.padX, y: y + plan.rung.pad, width: inner, height: plan.vH }, { align: "CENTER" }));
+      { x: x + G.padX, y: y + plan.rung.pad, width: inner, height: plan.vH },
+      { align: "CENTER", lineSpacing: G.valueLead }));
+    // One height for every label in the grid, so the sources sit on one
+    // baseline — and the label CENTRED in it, or a one-line label under a
+    // two-line neighbour hangs off the top of its own slot.
     out.push(...textBox(id(`sl${i}`), page, sx.label,
       { ...TYPE.statCardLabel, size: plan.rung.label, color: TONES[tone].ink },
       { x: x + G.padX, y: y + plan.rung.pad + plan.vH, width: inner, height: plan.labelH },
-      { align: "CENTER", lineSpacing: G.labelLead }));
+      { align: "CENTER", lineSpacing: G.labelLead, vCenter: true }));
     // The source sits at the FOOT of the card, so the slack a shorter label
     // leaves falls between label and source — where the reference puts it —
     // and never between the figure and its caption.
     if (plan.srcH && sx.detail?.trim()) {
       out.push(...textBox(id(`sd${i}`), page, sx.detail, TYPE.statCardSource,
         { x: x + G.padX, y: y + plan.cardH - plan.rung.pad - plan.srcH, width: inner, height: plan.srcH },
-        { align: "CENTER", lineSpacing: G.sourceLead }));
+        { align: "CENTER", lineSpacing: G.sourceLead, vCenter: true }));
     }
   }
   // A slide that drops data says so, on the slide.
@@ -2880,10 +2887,16 @@ function cardsRequests(
     // title and its body, not above it.
     const blockH = Math.max(titleBlockH, inline ? CARDS.markerHeight : 0);
     if (card.title) {
+      // CENTRED in the row's shared block. The block is the tallest heading's
+      // height so every body in the row starts on one line; a one-line
+      // heading in a two-line block was drawn hard against the top of it,
+      // with 19pt of tint under the words. Bottom-aligning it (the first
+      // attempt) put the hole between the chip and the heading instead —
+      // both read as a mistake, and centring is what the eye expects.
       out.push(...textBox(id(`ct${i}`), page, card.title,
         { ...TYPE.cardTitle, size: titleSize, ...(tone ? { color: tone.ink } : {}) }, {
         x: titleX, y: inline ? y - 3 : y, width: titleW, height: blockH,
-      }, inline ? { vCenter: true } : {}));
+      }, { vCenter: true }));
     }
     y += blockH + 4;
 
@@ -3787,11 +3800,11 @@ function vennRequests(
   ) => {
     const nameStyle: TypeStyle = { ...TYPE.vennName, size: m.nameSize };
     out.push(...textBox(id(`vn${key}`), page, p.name, nameStyle,
-      { x: box.x, y: box.y, width: box.width, height: m.nameH }, { align }));
+      { x: box.x, y: box.y, width: box.width, height: m.nameH }, { align, vCenter: true }));
     if (p.desc && m.descLines) {
       out.push(...textBox(id(`vd${key}`), page, p.desc, TYPE.vennDesc,
         { x: box.x, y: box.y + m.nameH - VENN_DESC_TUCK, width: box.width, height: m.descH },
-        { align, lineSpacing: 1.0 }));
+        { align, lineSpacing: 1.0, vCenter: true }));
     }
   };
 
