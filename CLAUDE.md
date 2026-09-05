@@ -19,6 +19,34 @@ npx tsx scripts/verify-post-taint-policy.ts  # every registered tool is classifi
 npx tsx scripts/verify-safe-fetch.ts         # the SSRF guard blocks internal hosts in every notation
 ```
 
+## AuthorityOn checks
+
+One script guards the AuthorityOn (AI-visibility platform) integration in
+`lib/authorityon/mcp.ts` and its tool in `lib/ai/providers.ts`. Run it before
+shipping anything that touches the report list, the fence, the taint, or the
+Word document builder:
+
+```
+npx tsx scripts/verify-authorityon.ts
+```
+
+The key lives ONLY in Vercel, marked sensitive: `vercel env pull` returns the
+literal `[SENSITIVE]`, so the raw MCP smoke test cannot be run from a laptop.
+The equivalent proof is a brand listing through the deployed app, which
+exercises auth, `tools/call` and the SSE framing at once.
+
+Two decisions worth knowing before "hardening" anything. The text-bearing
+reports set the SOFT taint (the Drive/Slack/MeetingBrain one), not the mailbox
+one: the hard taint blocks every generate_* tool for the rest of the turn, and
+"pull the AI answers and build me a deck" is one turn and the headline use
+case. And the taint is per TURN — a cross-turn injection test proves nothing.
+
+Check 8 is the one that came from use rather than reading: an advisory report
+went out as two files because the model's first call had no body and the
+builder uploaded it. `buildWordAndMaybeDoc` now refuses under 200 characters
+with nothing created, for all four chains, and the check was red against the
+live bug before the guard existed.
+
 ## Voice checks
 
 ```
